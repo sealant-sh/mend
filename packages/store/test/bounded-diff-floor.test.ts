@@ -3,50 +3,65 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "@mend/test-ci/effect-vitest";
-import { Effect, Layer } from "effect";
+import { describe, expect, it, TestClock } from "@mend/test-ci/effect-vitest";
+import { Clock, Effect, Fiber, Layer, type Scope } from "effect";
 
 import { type DiffFileFactsListing, Store, StoreConfig } from "../src/store.ts";
 
 const MAX_BYTES = 8 * 1024 * 1024;
-/** The test's own deadline: the listing it blocks ends there, the floor is found long before. */
-const DEADLINE_MS = 2_000;
+const DEADLINE_MS = 10_000;
 
-type Scenario = "wide" | "renames" | "move" | "special" | "bytes" | "directory";
+type Scenario = "wide" | "renames" | "move" | "special" | "bytes" | "long" | "flat" | "directory";
+
+/** Which git calls the shim holds on a FIFO, beside the whole listings it always holds. */
+type Held = "none" | "ls-tree" | "by-path";
 
 /**
  * A range whose whole listing never prints: a `git` in front of the real one holds a range
- * listing with no pathspec (`git diff --name-status …`, `--numstat` too) as git itself does while
- * it walks a range too wide to finish within the deadline (it prints a range's files only after
- * walking all of it). Every other git call runs for real, so these tests run on the live clock:
- * the floor is real git work the TestClock cannot step, and the deadline is the test's own.
- * `directory` also holds every directory read (`ls-tree`), so the walk cannot get past the root.
+ * listing with no pathspec (`git diff --name-status …`, `--numstat` too) on a FIFO nobody writes,
+ * as git itself does while it walks a range too wide to finish within the deadline (it prints a
+ * range's files only after walking all of it). Every other git call runs for real. The FIFO's
+ * write end opens once a held git holds the read end, which is how a test knows it is running.
+ * A held call runs `cat` as a child of the shim's shell and records both pids, as git's own
+ * children would hold the output pipes: the deadline has to stop the group, not one process.
  */
-const repository = (scenario: Scenario) =>
+const repository = (scenario: Scenario, held: Held = "none") =>
   Effect.acquireRelease(
     Effect.sync(() => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-bounded-floor-"));
       const root = path.join(dir, "repo");
       const shims = path.join(dir, "bin");
+      const listingFifo = path.join(dir, "listing");
+      const heldFifo = path.join(dir, "held");
+      const pids = path.join(dir, "pids");
+      const ends = path.join(dir, "ends");
       fs.mkdirSync(root);
       fs.mkdirSync(shims);
+      execFileSync("mkfifo", [listingFifo, heldFifo]);
       const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
       const git = (...args: ReadonlyArray<string>) =>
         execFileSync(realGit, ["-c", "user.name=t", "-c", "user.email=t@localhost", ...args], {
           cwd: root,
           encoding: "utf8",
         }).trim();
-      const write = (name: string | Buffer, body: string | Buffer) =>
-        fs.writeFileSync(
+      const write = (name: string | Buffer, body: string | Buffer) => {
+        const file =
           typeof name === "string"
             ? path.join(root, name)
-            : Buffer.concat([Buffer.from(`${root}/`), name]),
-          body,
-        );
+            : Buffer.concat([Buffer.from(`${root}/`), name]);
+        fs.mkdirSync(path.dirname(file.toString()), { recursive: true });
+        fs.writeFileSync(file, body);
+      };
+      const long = ["d".repeat(240), "e".repeat(240), "f".repeat(240)].join("/");
       git("init", "-qb", "main");
       write("kept.txt", "kept\n");
       if (scenario === "renames") {
         for (let file = 0; file < 100; file++) write(`a-old-${pad(file)}`, `unique ${file}\n`);
+      }
+      if (scenario === "long") {
+        for (let file = 0; file < 100; file++) {
+          write(`a/${long}/f${pad(file)}`, `unique ${file}\n`);
+        }
       }
       if (scenario === "move") write("z-source.txt", "one\ntwo\nthree\n");
       if (scenario === "special") write("a deleted\nfile.txt", "old\n");
@@ -56,7 +71,6 @@ const repository = (scenario: Scenario) =>
       switch (scenario) {
         case "wide":
           for (const directory of ["a", "b", "c"]) {
-            fs.mkdirSync(path.join(root, directory));
             for (let file = 0; file < 100; file++) {
               const name = `${directory}/f${pad(file)}.txt`;
               write(name, `${name}\n`);
@@ -86,14 +100,34 @@ const repository = (scenario: Scenario) =>
           break;
         case "bytes":
           write(
-            Buffer.concat([Buffer.from("a-"), Buffer.from([255]), Buffer.from(".txt")]),
+            Buffer.concat([Buffer.from("a-"), Buffer.from([0x80]), Buffer.from(".txt")]),
             "bytes\n",
           );
-          write("b.txt", "after\n");
+          write("a-Z.txt", "sibling\n");
+          write("b*.txt", "star\n");
+          break;
+        case "long":
+          // 100 moves and 200 additions under paths of about 730 bytes: 400 paths, far past
+          // what one command line holds one by one.
+          for (let file = 0; file < 100; file++) {
+            fs.mkdirSync(path.join(root, "b", long), { recursive: true });
+            fs.renameSync(
+              path.join(root, "a", long, `f${pad(file)}`),
+              path.join(root, "b", long, `f${pad(file)}`),
+            );
+          }
+          for (let file = 0; file < 200; file++)
+            write(`c/${long}/f${pad(file)}`, `added ${file}\n`);
+          break;
+        case "flat":
+          // 2,000 files of 200-byte names in one directory: selected one by one, they pass the
+          // command line's bound.
+          for (let file = 0; file < 2_000; file++) {
+            write(`flat/f${String(file).padStart(4, "0")}${"x".repeat(190)}`, `flat ${file}\n`);
+          }
           break;
         case "directory":
           write("0-first.txt", "first\n");
-          fs.mkdirSync(path.join(root, "a"));
           write("a/f.txt", "new\n");
           break;
       }
@@ -103,69 +137,169 @@ const repository = (scenario: Scenario) =>
       }
       git("commit", "-qm", "top");
       const top = git("rev-parse", "HEAD");
+      // Whole listing: `git diff …` with no pathspec. Floor listing: `git --no-literal-pathspecs
+      // diff … -- <pathspecs>`. A held call keeps the output pipe open from a child of its shell.
+      const hold = (fifo: string) =>
+        `{ cat ${JSON.stringify(fifo)} & echo "$$ $!" >> ${JSON.stringify(pids)}; wait; exit 0; }`;
       fs.writeFileSync(
         path.join(shims, "git"),
         [
           "#!/bin/sh",
-          `[ "$1" = diff ] && exec sleep 600`,
-          ...(scenario === "directory" ? [`[ "$1" = ls-tree ] && exec sleep 600`] : []),
+          `[ "$1" = diff ] && ${hold(listingFifo)}`,
+          ...(held === "ls-tree" ? [`[ "$1" = ls-tree ] && ${hold(heldFifo)}`] : []),
+          ...(held === "by-path" ? [`[ "$1" = --no-literal-pathspecs ] && ${hold(heldFifo)}`] : []),
+          // A floor listing that runs for real records its end, after its output pipe closes.
+          `[ "$1" = --no-literal-pathspecs ] && { ${JSON.stringify(realGit)} "$@"; s=$?; echo end >> ${JSON.stringify(ends)}; exit $s; }`,
           `exec ${JSON.stringify(realGit)} "$@"`,
           "",
         ].join("\n"),
         { mode: 0o755 },
       );
       const hostPath = process.env["PATH"];
-      return { dir, root, shims, base, top, hostPath };
+      return { dir, root, shims, listingFifo, heldFifo, pids, ends, base, top, hostPath };
     }),
-    ({ dir, hostPath }) =>
+    ({ dir, pids, hostPath }) =>
       Effect.sync(() => {
         if (hostPath === undefined) delete process.env["PATH"];
         else process.env["PATH"] = hostPath;
+        for (const pid of recordedPids(pids)) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // Already gone, as the deadline left it.
+          }
+        }
         fs.rmSync(dir, { recursive: true, force: true });
       }),
   );
 
 const pad = (index: number) => String(index).padStart(3, "0");
 
-/** The whole listing by the real git, then the same range with its listing held, cut by the deadline. */
-const wholeThenCut = (scenario: Scenario, minFiles: number) =>
+const recordedPids = (file: string): ReadonlyArray<number> =>
+  fs.existsSync(file)
+    ? fs
+        .readFileSync(file, "utf8")
+        .trim()
+        .split("\n")
+        .flatMap((line) => line.split(" ").map(Number))
+    : [];
+
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const writeEnd = (fifo: string) =>
+  Effect.acquireRelease(
+    Effect.promise(() => fs.promises.open(fifo, "w")),
+    (handle) => Effect.promise(() => handle.close()),
+  );
+
+/** Waits for a condition real work meets, while virtual time stands still. */
+const until = (condition: () => boolean) =>
+  Effect.promise(async () => {
+    while (!condition()) await new Promise((resolve) => setTimeout(resolve, 5));
+  });
+
+/**
+ * The whole listing by the real git, then the same range with its listing held: the floor runs
+ * from half the deadline, its real git work finishes while virtual time stands still (every
+ * deadline sleep but the held listings' is cancelled), then the deadline cuts the listing.
+ * `sequence` takes the test between the floor's start and the deadline.
+ */
+const wholeThenCut = (
+  scenario: Scenario,
+  minFiles: number,
+  options: {
+    readonly held?: Held;
+    /** How many times the floor lists by path before it is satisfied: one, unless moves pair. */
+    readonly rounds?: number;
+    readonly sequence?: (fixture: {
+      heldFifo: string;
+      pids: string;
+    }) => Effect.Effect<void, never, Scope.Scope>;
+  } = {},
+) =>
   Effect.gen(function* () {
-    const { root, shims, base, top } = yield* repository(scenario);
+    const held = options.held ?? "none";
+    const fixture = yield* repository(scenario, held);
+    const { root, shims, listingFifo, pids, ends } = fixture;
     const store = yield* Store.pipe(
       Effect.provide(Store.layer.pipe(Layer.provide(StoreConfig.layerFor(root)))),
     );
-    const whole = yield* store.diffFileFactsBounded(root, base, top, { maxBytes: MAX_BYTES });
-    process.env["PATH"] = `${shims}${path.delimiter}${process.env["PATH"] ?? ""}`;
-    const startedAt = performance.now();
-    const cut = yield* store.diffFileFactsBounded(root, base, top, {
+    const whole = yield* store.diffFileFactsBounded(root, fixture.base, fixture.top, {
       maxBytes: MAX_BYTES,
-      deadlineMs: DEADLINE_MS,
-      minFiles,
     });
-    return { whole, cut, elapsedMs: performance.now() - startedAt };
+    process.env["PATH"] = `${shims}${path.delimiter}${process.env["PATH"] ?? ""}`;
+    const testClock = yield* Clock.clockWith(Effect.succeed);
+    const sleeping = new Set<symbol>();
+    const counted: Clock.Clock = {
+      ...testClock,
+      sleep: (duration) =>
+        Effect.suspend(() => {
+          const token = Symbol();
+          sleeping.add(token);
+          return testClock
+            .sleep(duration)
+            .pipe(Effect.ensuring(Effect.sync(() => sleeping.delete(token))));
+        }),
+    };
+    const running = yield* store
+      .diffFileFactsBounded(root, fixture.base, fixture.top, {
+        maxBytes: MAX_BYTES,
+        deadlineMs: DEADLINE_MS,
+        minFiles,
+      })
+      .pipe(Effect.provideService(Clock.Clock, counted), Effect.forkChild);
+    yield* writeEnd(listingFifo);
+    yield* until(() => recordedPids(pids).length === 4);
+    yield* TestClock.adjust(DEADLINE_MS / 2);
+    yield* (options.sequence ?? (() => Effect.void))(fixture);
+    // The floor's own git work is done: its listings by path have ended (two a round), and only
+    // the held calls' deadlines still sleep, two for the whole listings and two more for a held
+    // listing by path.
+    const endsExpected = held === "by-path" ? 0 : 2 * (options.rounds ?? 1);
+    yield* until(
+      () => recordedLines(ends) === endsExpected && sleeping.size === (held === "by-path" ? 4 : 2),
+    );
+    expect(running.pollUnsafe()).toBeUndefined();
+    yield* TestClock.adjust(DEADLINE_MS - (yield* Clock.currentTimeMillis));
+    const cut = yield* Fiber.join(running);
+    const at = yield* Clock.currentTimeMillis;
+    return { whole, cut, at, pids };
   });
+
+const recordedLines = (file: string) =>
+  fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).length : 0;
 
 const newPaths = (listing: DiffFileFactsListing) => listing.facts.map((fact) => fact.newPath);
 
 describe("a listing the deadline cuts before git printed a file", () => {
-  it.live("answers the range's first files in git's order, cut, never none", () =>
-    Effect.gen(function* () {
-      const { whole, cut } = yield* wholeThenCut("wide", 150);
-      expect(whole.cut).toBe(false);
-      expect(whole.facts).toHaveLength(301);
-      expect(cut.cut).toBe(true);
-      // a/ whole, then half of b/; c/ and kept.txt past them.
-      expect(cut.facts).toEqual(whole.facts.slice(0, 150));
-      expect(newPaths(cut)[0]).toBe("a/f000.txt");
-      expect(newPaths(cut)[149]).toBe("b/f049.txt");
-    }),
+  it.effect(
+    "answers the range's first files in git's order, cut, never none, at the deadline",
+    () =>
+      Effect.gen(function* () {
+        const { whole, cut, at } = yield* wholeThenCut("wide", 150);
+        expect(whole.cut).toBe(false);
+        expect(whole.facts).toHaveLength(301);
+        expect(at).toBe(DEADLINE_MS);
+        expect(cut.cut).toBe(true);
+        // a/ whole, then half of b/; c/ and kept.txt past them.
+        expect(cut.facts).toEqual(whole.facts.slice(0, 150));
+        expect(newPaths(cut)[0]).toBe("a/f000.txt");
+        expect(newPaths(cut)[149]).toBe("b/f049.txt");
+      }),
   );
 
-  it.live(
+  it.effect(
     "counts facts, not paths: moves pair into one fact each and the floor fills past them",
     () =>
       Effect.gen(function* () {
-        const { whole, cut } = yield* wholeThenCut("renames", 200);
+        const { whole, cut } = yield* wholeThenCut("renames", 200, { rounds: 2 });
         expect(whole.facts).toHaveLength(300);
         expect(whole.facts.filter((fact) => fact.status === "renamed")).toHaveLength(100);
         // 200 paths were 100 moves: the walk went on until 200 facts, and the range ran out first.
@@ -173,7 +307,28 @@ describe("a listing the deadline cuts before git printed a file", () => {
       }),
   );
 
-  it.live("pairs a move whose sides are both within the first files", () =>
+  it.effect("pairs moves under long paths: directories taken whole are one pathspec each", () =>
+    Effect.gen(function* () {
+      const { whole, cut } = yield* wholeThenCut("long", 200, { rounds: 2 });
+      expect(whole.facts).toHaveLength(300);
+      expect(whole.facts.filter((fact) => fact.status === "renamed")).toHaveLength(100);
+      expect(cut).toEqual(whole);
+    }),
+  );
+
+  it.effect("shortens a selection past the command line's bound, never splits it", () =>
+    Effect.gen(function* () {
+      const { whole, cut } = yield* wholeThenCut("flat", 1_500);
+      expect(whole.facts).toHaveLength(2_000);
+      expect(cut.cut).toBe(true);
+      // 1,500 names of 200 bytes pass 256 KiB: the first that fit were listed, whole.
+      expect(cut.facts.length).toBeGreaterThan(1_000);
+      expect(cut.facts.length).toBeLessThan(1_500);
+      expect(cut.facts).toEqual(whole.facts.slice(0, cut.facts.length));
+    }),
+  );
+
+  it.effect("pairs a move whose sides are both within the first files", () =>
     Effect.gen(function* () {
       const { whole, cut } = yield* wholeThenCut("move", 4);
       expect(whole.facts[0]).toMatchObject({ status: "renamed", oldPath: "z-source.txt" });
@@ -181,7 +336,7 @@ describe("a listing the deadline cuts before git printed a file", () => {
     }),
   );
 
-  it.live("lists a move whose source lies past the first files as the addition it is there", () =>
+  it.effect("lists a move whose source lies past the first files as the addition it is there", () =>
     Effect.gen(function* () {
       const { whole, cut } = yield* wholeThenCut("move", 1);
       const target = whole.facts[0];
@@ -193,7 +348,7 @@ describe("a listing the deadline cuts before git printed a file", () => {
     }),
   );
 
-  it.live(
+  it.effect(
     "lists names with spaces and newlines, a binary file and a gitlink as the whole listing does",
     () =>
       Effect.gen(function* () {
@@ -210,24 +365,54 @@ describe("a listing the deadline cuts before git printed a file", () => {
       }),
   );
 
-  it.live("keeps a name's bytes that are not UTF-8 through to git", () =>
+  it.effect("reaches a name of bytes that are not UTF-8, and a wildcard in a name, literally", () =>
     Effect.gen(function* () {
       const { whole, cut } = yield* wholeThenCut("bytes", 200);
-      expect(newPaths(whole)).toEqual(["a-�.txt", "b.txt"]);
+      expect(newPaths(whole)).toEqual(["a-Z.txt", "a-�.txt", "b*.txt"]);
       expect(cut).toEqual({ facts: whole.facts, cut: false });
     }),
   );
 
-  it.live(
-    "answers by the deadline with the files it found when a directory read never returns",
+  it.effect(
+    "answers at the deadline with the files it found when a directory read never returns",
     () =>
       Effect.gen(function* () {
-        const { whole, cut, elapsedMs } = yield* wholeThenCut("directory", 200);
+        const { whole, cut, at, pids } = yield* wholeThenCut("directory", 200, {
+          held: "ls-tree",
+          sequence: ({ heldFifo }) =>
+            Effect.gen(function* () {
+              yield* writeEnd(heldFifo);
+              // The walk's share of the budget ends: the held directory read is stopped, and the
+              // root's file, found before it, is listed by path for real.
+              yield* TestClock.adjust(DEADLINE_MS / 4);
+            }),
+        });
         expect(newPaths(whole)).toEqual(["0-first.txt", "a/f.txt"]);
-        // The root's own file was listed; the directory below it was not read within the deadline.
+        expect(at).toBe(DEADLINE_MS);
         expect(cut).toEqual({ facts: whole.facts.slice(0, 1), cut: true });
-        expect(elapsedMs).toBeGreaterThanOrEqual(DEADLINE_MS);
-        expect(elapsedMs).toBeLessThan(2 * DEADLINE_MS);
+        // Stopped at the deadline: gone once reaped, moments later; one left running stays.
+        yield* until(() => recordedPids(pids).every((pid) => !alive(pid)));
+      }),
+  );
+
+  it.effect(
+    "answers at the deadline, with no git left running, when the listing by path never returns",
+    () =>
+      Effect.gen(function* () {
+        const { cut, at, pids } = yield* wholeThenCut("wide", 150, {
+          held: "by-path",
+          sequence: (held) =>
+            Effect.gen(function* () {
+              yield* writeEnd(held.heldFifo);
+              yield* until(() => recordedPids(held.pids).length === 8);
+            }),
+        });
+        expect(at).toBe(DEADLINE_MS);
+        expect(cut).toEqual({ facts: [], cut: true });
+        // Each held call was a shell and its child: the deadline stopped both, as one group.
+        expect(recordedPids(pids)).toHaveLength(8);
+        // Stopped at the deadline: gone once reaped, moments later; one left running stays.
+        yield* until(() => recordedPids(pids).every((pid) => !alive(pid)));
       }),
   );
 });

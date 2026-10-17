@@ -717,32 +717,45 @@ const lsTreeEntries = (raw: Buffer, side: "old" | "new"): ReadonlyArray<TreeLeve
 /** A git run under the budget left to the operation that asks for it. */
 type CappedRun = (args: ReadonlyArray<string>) => Effect.Effect<CappedBytes, GitError>;
 
-/** The first paths of a range: `complete` when they are all of its paths. */
-interface FirstPaths {
-  readonly paths: ReadonlyArray<Buffer>;
+/** One pathspec of a floor: a file, or a directory the walk took whole (every file below it). */
+interface SelectedPath {
+  readonly path: Buffer;
+  readonly whole: boolean;
+}
+
+/**
+ * The first files of a range, as pathspecs: `complete` when they cover all of its files, `cut`
+ * when a directory read was cut short (past the budget, or the bytes), so no wider walk helps.
+ */
+interface Selection {
+  readonly items: ReadonlyArray<SelectedPath>;
   readonly complete: boolean;
+  readonly cut: boolean;
 }
 
 const SLASH = Buffer.from("/");
 
 /**
- * The first `limit` paths of the range `a..b`, in git's order (a directory's entries by name,
+ * The first `limit` files of the range `a..b`, in git's order (a directory's entries by name,
  * each directory's files before the next entry), found one directory at a time: a directory on
  * both sides is compared without recursing (`diff-tree`), one on a single side is read
  * (`ls-tree`). Each read is one directory, so the first files cost their depth in reads however
- * wide the range is; a directory read cut short (past the budget, or the bytes) answers its first
- * entries and the paths are not `complete`. Renames are not paired: a moved file is its old path
- * and its new one.
+ * wide the range is. A directory the walk took whole is selected as one pathspec, so a wide floor
+ * stays a short command line; the files of the directory it stopped in are selected one by one.
+ * A directory read cut short (past the budget, or the bytes) leaves the selection incomplete.
+ * Renames are not paired: a moved file is its old path and its new one.
  */
 const firstChangedPaths = (
   a: string,
   b: string,
   limit: number,
   run: CappedRun,
-): Effect.Effect<FirstPaths, GitError> =>
+): Effect.Effect<Selection, GitError> =>
   Effect.gen(function* () {
-    const paths: Array<Buffer> = [];
+    const items: Array<SelectedPath> = [];
+    let files = 0;
     let complete = true;
+    let cut = false;
     const read = (oldTree: string | null, newTree: string | null) =>
       Effect.gen(function* () {
         if (oldTree === null && newTree === null) return [];
@@ -751,33 +764,97 @@ const firstChangedPaths = (
             ? ["diff-tree", "--raw", "-z", "--no-renames", oldTree, newTree]
             : ["ls-tree", "-z", newTree ?? oldTree ?? ""],
         );
-        if (listed.cut) complete = false;
+        if (listed.cut) {
+          complete = false;
+          cut = true;
+        }
         return oldTree !== null && newTree !== null
           ? rawDiffEntries(listed.stdout)
           : lsTreeEntries(listed.stdout, newTree !== null ? "new" : "old");
       });
+    /** Walks one directory; true when every entry below it was taken. */
     const level = (
       prefix: Buffer,
       oldTree: string | null,
       newTree: string | null,
-    ): Effect.Effect<void, GitError> =>
+    ): Effect.Effect<boolean, GitError> =>
       Effect.gen(function* () {
-        for (const entry of yield* read(oldTree, newTree)) {
-          if (paths.length >= limit) {
+        const entries = yield* read(oldTree, newTree);
+        for (const entry of entries) {
+          if (files >= limit) {
             complete = false;
-            return;
+            return false;
           }
           const at = Buffer.concat([prefix, entry.name]);
           // Git orders a file before a directory of the same name, whichever side has which.
-          if (entry.file) paths.push(at);
+          if (entry.file) {
+            items.push({ path: at, whole: false });
+            files += 1;
+          }
           if (entry.oldTree !== null || entry.newTree !== null) {
-            yield* level(Buffer.concat([at, SLASH]), entry.oldTree, entry.newTree);
+            const mark = items.length;
+            const whole = yield* level(Buffer.concat([at, SLASH]), entry.oldTree, entry.newTree);
+            if (!whole) return false;
+            items.splice(mark, items.length - mark, { path: at, whole: true });
           }
         }
+        return complete;
       });
     yield* level(Buffer.alloc(0), a, b);
-    return { paths, complete };
+    return { items, complete, cut };
   });
+
+/** What a floor's pathspecs may add up to: well inside every platform's argument limit. */
+const SELECTION_BYTES = 256 * 1024;
+
+/** A valid UTF-8 character at `at`, as its byte length, or 0 where the bytes are not one. */
+const utf8Length = (bytes: Buffer, at: number): number => {
+  const lead = bytes[at] ?? 0;
+  const length =
+    lead < 0x80 ? 1 : lead < 0xc2 ? 0 : lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : lead < 0xf5 ? 4 : 0;
+  if (length === 0 || at + length > bytes.length) return 0;
+  const sequence = bytes.subarray(at, at + length);
+  return Buffer.from(sequence.toString("utf8"), "utf8").equals(sequence) ? length : 0;
+};
+
+const GLOB_META = new Set(["\\", "*", "?", "[", "]"]);
+
+/**
+ * `path` as pathspecs git takes literally. A name of valid UTF-8 is `:(literal)` itself. A
+ * name with other bytes cannot be an argument (a string carries only UTF-8), so it is a
+ * `:(glob)` with `?` for each such byte (wildmatch matches bytes), its wildcards escaped; the
+ * listing is then filtered to the names selected, in case the glob matched a sibling too.
+ * A directory taken whole matches as its own name and as everything below it.
+ */
+const pathspecsOf = ({ path: name, whole }: SelectedPath): ReadonlyArray<string> => {
+  const text = name.toString("utf8");
+  if (Buffer.from(text, "utf8").equals(name)) {
+    return [`:(literal)${text}`];
+  }
+  let glob = "";
+  for (let at = 0; at < name.length; ) {
+    const length = utf8Length(name, at);
+    if (length === 0) {
+      glob += "?";
+      at += 1;
+      continue;
+    }
+    const character = name.subarray(at, at + length).toString("utf8");
+    glob += GLOB_META.has(character) ? `\\${character}` : character;
+    at += length;
+  }
+  return whole ? [`:(glob)${glob}`, `:(glob)${glob}/**`] : [`:(glob)${glob}`];
+};
+
+/** Whether a listed path (as git spells it) is one the selection asked for. */
+const selectedBy =
+  (items: ReadonlyArray<SelectedPath>) =>
+  (listed: string | null): boolean =>
+    listed !== null &&
+    items.some(({ path: name, whole }) => {
+      const text = name.toString("utf8");
+      return listed === text || (whole && listed.startsWith(`${text}/`));
+    });
 
 const sha = (value: string) => Sha.make(value);
 
@@ -1649,29 +1726,28 @@ export class Store extends Context.Service<
                 ? Effect.succeed({ stdout: Buffer.alloc(0), cut: true })
                 : gitCappedBytes(args, dir, options.maxBytes, budget),
             );
-        const listing = (
-          format: string,
-          paths: ReadonlyArray<string> | undefined,
-          pathspecs: ReadonlyArray<Buffer> | undefined,
-        ) =>
+        const listing = (format: string, pathspecs: ReadonlyArray<string> | undefined) =>
           Effect.flatMap(left(options.deadlineMs), (budget) => {
             if (budget === 0) return Effect.succeed({ stdout: "", cut: true });
+            // The caller's paths are literal by flag; a floor's carry their own magic.
             const args =
-              paths === undefined && pathspecs === undefined ? [] : ["--literal-pathspecs"];
+              options.paths === undefined
+                ? pathspecs === undefined
+                  ? []
+                  : ["--no-literal-pathspecs"]
+                : ["--literal-pathspecs"];
             args.push("diff", format, "-z", "--find-renames");
             if (options.ignoreWhitespace === true) args.push("--ignore-all-space");
             args.push(a, b);
-            if (paths !== undefined) args.push("--", ...paths);
-            return gitCappedBytes(args, dir, options.maxBytes, budget, pathspecs).pipe(
+            if (options.paths !== undefined) args.push("--", ...options.paths);
+            else if (pathspecs !== undefined) args.push("--", ...pathspecs);
+            return gitCappedBytes(args, dir, options.maxBytes, budget).pipe(
               Effect.map(({ stdout, cut }) => ({ stdout: stdout.toString("utf8"), cut })),
             );
           });
-        const list = Effect.fn(function* (
-          paths: ReadonlyArray<string> | undefined,
-          pathspecs?: ReadonlyArray<Buffer>,
-        ) {
+        const list = Effect.fn(function* (pathspecs: ReadonlyArray<string> | undefined) {
           const [names, counts] = yield* Effect.all(
-            [listing("--name-status", paths, pathspecs), listing("--numstat", paths, pathspecs)],
+            [listing("--name-status", pathspecs), listing("--numstat", pathspecs)],
             { concurrency: 2 },
           );
           const records = nameStatusRecords(names.stdout);
@@ -1701,7 +1777,7 @@ export class Store extends Context.Service<
           minFiles === undefined ||
           options.deadlineMs === undefined
         ) {
-          return yield* list(options.paths);
+          return yield* list(undefined);
         }
         // Git prints a range's files only after walking the whole range, so a deadline mid-walk
         // lists nothing. The first files are found directory by directory and listed by path,
@@ -1715,15 +1791,30 @@ export class Store extends Context.Service<
           const walkUntil = elapsed + (deadlineMs - elapsed) / 2;
           let found: DiffFileFactsListing = { facts: [], cut: true };
           for (let limit = minFiles; ; limit *= 2) {
-            const first = yield* firstChangedPaths(a, b, limit, run(walkUntil));
-            if (first.paths.length === 0) return found;
-            const listed = yield* list(undefined, first.paths);
-            const complete = first.complete && !listed.cut;
-            if (listed.facts.length >= found.facts.length) {
-              found = { facts: listed.facts, cut: !complete };
+            const selection = yield* firstChangedPaths(a, b, limit, run(walkUntil));
+            // One command line for both listings, within every platform's limit: a selection
+            // past it is shortened, never split, since each listing pairs renames on its own.
+            const items: Array<SelectedPath> = [];
+            const pathspecs: Array<string> = [];
+            let bytes = 0;
+            for (const item of selection.items) {
+              const specs = pathspecsOf(item);
+              bytes += specs.reduce((sum, spec) => sum + Buffer.byteLength(spec) + 1, 0);
+              if (bytes > SELECTION_BYTES) break;
+              items.push(item);
+              pathspecs.push(...specs);
             }
+            if (items.length === 0) return found;
+            const shortened = items.length < selection.items.length;
+            const listed = yield* list(pathspecs);
+            const selected = selectedBy(items);
+            const facts = listed.facts.filter(
+              (fact) => selected(fact.newPath) || selected(fact.oldPath),
+            );
+            const complete = selection.complete && !shortened && !listed.cut;
+            if (facts.length >= found.facts.length) found = { facts, cut: !complete };
             // Renames pair two paths into one fact: more paths until the facts reach the floor.
-            if (complete || listed.facts.length >= minFiles || first.paths.length < limit) {
+            if (complete || shortened || facts.length >= minFiles || selection.cut) {
               return found;
             }
             if ((yield* left(deadlineMs)) === 0) return found;

@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 
 import { redactRepositoryUrl, redactUrlCredentials } from "@mend/domain/workbench";
 import { Context, Effect, Scheduler, Schema } from "effect";
@@ -327,20 +327,29 @@ export interface CappedBytes {
   readonly cut: boolean;
 }
 
-const NUL = Buffer.from([0]);
+/**
+ * Stop a capped run: git and whatever it started (an external diff, a filter), as one process
+ * group, so nothing of it outlives the answer. Git was started as the group's leader.
+ */
+const stopGroup = (child: ChildProcess) => {
+  if (child.pid === undefined) return;
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    child.kill();
+  }
+};
 
 /**
- * `gitCapped`, as bytes. `pathspecs`, when given, are the paths git lists, as bytes: an argument
- * string carries only UTF-8, so a name with other bytes reaches git through `xargs -0`, which
- * starts git with the NUL-ended paths it reads from its input, after `--`. Stopped on
- * interruption, so a run no one waits for does not keep walking.
+ * `gitCapped`, as bytes. Git runs as the leader of its own process group, which the cap, the
+ * deadline and interruption stop whole: a child git started would otherwise keep the output
+ * pipes open past the answer.
  */
 export const gitCappedBytes = (
   args: ReadonlyArray<string>,
   cwd: string,
   maxBytes: number,
   deadlineMs?: number,
-  pathspecs?: ReadonlyArray<Buffer>,
 ): Effect.Effect<CappedBytes, GitError> =>
   Effect.contextWith((context: Context.Context<never>) =>
     Effect.callback<CappedBytes, GitError>((resume) => {
@@ -349,23 +358,12 @@ export const gitCappedBytes = (
       let cut = false;
       let stderr = Buffer.alloc(0);
       let settled = false;
-      const child =
-        pathspecs === undefined
-          ? spawn("git", [...args], {
-              cwd,
-              env: gitProcessEnv(undefined),
-              stdio: ["ignore", "pipe", "pipe"],
-            })
-          : spawn("xargs", ["-0", "git", ...args, "--"], {
-              cwd,
-              env: gitProcessEnv(undefined),
-              stdio: ["pipe", "pipe", "pipe"],
-            });
-      if (pathspecs !== undefined && child.stdin !== null) {
-        // A run stopped before it read its input ends the pipe first: nothing to report.
-        child.stdin.on("error", () => {});
-        child.stdin.end(Buffer.concat(pathspecs.flatMap((pathspec) => [pathspec, NUL])));
-      }
+      const child = spawn("git", [...args], {
+        cwd,
+        env: gitProcessEnv(undefined),
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: true,
+      });
       // Armed now, on this fiber's Clock, in a fiber that never yields before its sleep registers.
       // A forked deadline arms only once the scheduler starts it: git could finish past the bound
       // and answer whole.
@@ -377,7 +375,7 @@ export const gitCappedBytes = (
                 Effect.andThen(
                   Effect.sync(() => {
                     cut = true;
-                    child.kill();
+                    stopGroup(child);
                   }),
                 ),
               ),
@@ -395,7 +393,7 @@ export const gitCappedBytes = (
           chunks.push(chunk.subarray(0, room));
           kept = maxBytes;
           cut = true;
-          child.kill();
+          stopGroup(child);
           return;
         }
         chunks.push(chunk);
@@ -442,7 +440,7 @@ export const gitCappedBytes = (
       });
       return Effect.sync(() => {
         disarm?.();
-        child.kill();
+        stopGroup(child);
       });
     }),
   );
