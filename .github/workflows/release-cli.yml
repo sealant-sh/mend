@@ -219,6 +219,18 @@ jobs:
       cancel-in-progress: false
       queue: max
     steps:
+      # Only the manifest reader, which binds the index's platforms (scripts/release-manifest.mjs),
+      # and the Node version it runs on. The tag push's own commit: the manifest must name it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .node-version
+            scripts/release-manifest.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-manifest
@@ -228,9 +240,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Every tag is read before any is written, and the read after the write decides: a create
-      # that reports an error but left this run's digest is done, any other digest is refused, and
-      # a tag still unreadable fails.
+      # The platforms are bound again on the exact index each image's tag will name, before any
+      # tag is read or written. Every tag is read before any is written, and the read after the
+      # write decides: a create that reports an error but left this run's digest is done, any other
+      # digest is refused, and a tag still unreadable fails.
       - name: Publish each accepted index as its version
         env:
           MANIFEST: ${{ github.workspace }}/release/release-manifest.json
@@ -277,6 +290,17 @@ jobs:
               echo "::error::The release manifest records no index digest for $image."
               exit 1
             fi
+            # The index, read by that digest, must map each arch's platform, once and in a variant
+            # that arch's build has, to the build the manifest records for it, as merge and
+            # acceptance required. The manifest outlives the one-day digest artifacts, so a re-run
+            # of this job can still check it.
+            for arch in amd64 arm64; do
+              node "$GITHUB_WORKSPACE/scripts/release-manifest.mjs" resolve "$MANIFEST" \
+                "$repository" "$image" "$arch" >/dev/null
+            done
+          done
+          for image in "${images[@]}"; do
+            repository="ghcr.io/$GITHUB_REPOSITORY_OWNER/$image"
             current=$(read_tag "$repository:$VERSION")
             if [[ $current == absent ]]; then
               create[$image]=1

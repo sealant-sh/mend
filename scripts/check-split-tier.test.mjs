@@ -202,7 +202,7 @@ test("each target's split-tier job runs the manifest's own tiers on both arches"
     assert.match(
       images.run,
       target === "ghcr"
-        ? /release-manifest\.mjs digest "\$MANIFEST" "\$image" "\$arch"/
+        ? /release-manifest\.mjs resolve "\$MANIFEST" "\$REGISTRY\/\$image" "\$image" "\$arch"/
         : /release-manifest\.mjs check-archive "\$MANIFEST" "\$image" "\$ARCH" "\$archive"/,
     );
     const smoke = steps.find((step) => step.run === "node scripts/check-split-tier.mjs");

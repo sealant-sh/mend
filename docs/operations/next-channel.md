@@ -108,18 +108,27 @@ approved by the owner, so the stable package's credential is never in an unatten
 image.yml writes `release-manifest.json` (kept 90 days) for each run: the version, the baseline
 version and the commit; for each image (`mend`, `mend-before`, `mend-api`, `mend-web`), its index
 digest and its amd64 and arm64 platform digests; and the CLI tarball by file name, sha512 and npm
-integrity. The index digest is the one `imagetools create` reported for what it pushed, never a
-later read of the tag, which another run can move; it is recorded only once that index, read by its
-digest, holds exactly the build's manifests for linux/amd64 and linux/arm64
-(`scripts/release-manifest.mjs check-index`). Its `cli` job packs `@sealant/mend` once and
-normalizes it with `scripts/normalize-npm-tarball.mjs`, the manifest rewrite the publisher makes.
-Packaged acceptance reads the manifest from its own run, never another run's. It pulls each image by
-its platform digest for its own arch, tags only the pulled image ID with the name
-`mend server setup` expects, and fails unless the running server is that ID, after setup and after
-the upgrade. It installs the tarball named in the manifest after checking its sha512, the file the
-npm job then publishes. A stable release's `promote-images` reads the manifest too: each
-`:<version>` tag must still resolve to the manifest's index digest, and `latest` is created from
-that digest, never from the tag.
+integrity. A platform digest is what that arch's build job pushed: an attested single-platform index
+(build-push-action's default provenance), whose one runnable manifest is the build. The index digest
+is the one `imagetools create` reported for what it pushed, never a later read of the tag, which
+another run can move. It is recorded only once that index, read by its digest, maps `linux/amd64` to
+the amd64 build and `linux/arm64` to the arm64 build, each once and in a variant that build has
+(none for amd64, none or `v8` for arm64), and holds only those builds and their attestations
+(`scripts/release-manifest.mjs check-index`). The arch of each build comes from its build job's
+artifact name. A swapped label, a duplicated or missing platform, another variant, another build
+under either platform, a digest listed twice, and an attestation annotation on a runnable platform
+are each refused: only an annotated `unknown/unknown` descriptor is an attestation, since containerd
+ignores the annotation and pulls the first descriptor whose platform matches. Its `cli` job packs
+`@sealant/mend` once and normalizes it with `scripts/normalize-npm-tarball.mjs`, the manifest
+rewrite the publisher makes. Packaged acceptance reads the manifest from its own run, never another
+run's. For its own arch, it resolves each image through the index the manifest records, read by that
+digest, as a consumer of `:<version>` resolves it, and refuses before any pull unless that is the
+build the manifest records for the arch (`scripts/release-manifest.mjs resolve`). It pulls that
+digest, tags only the pulled image ID with the name `mend server setup` expects, and fails unless
+the running server is that ID, after setup and after the upgrade. It installs the tarball named in
+the manifest after checking its sha512, the file the npm job then publishes. A stable release's
+`promote-images` reads the manifest too: each `:<version>` tag must still resolve to the manifest's
+index digest, and `latest` is created from that digest, never from the tag.
 
 `target: archive` (an image.yml or release-acceptance.yml dispatch input; `ghcr` is the default)
 builds the same images without a push or a ghcr login. Each image is exported to a one-day run
@@ -364,7 +373,11 @@ name the version that replaces it.
 A release's images reach `:<version>` only after its own acceptance passed. image.yml's `merge`
 creates each multi-arch index under `staging-<run id>-<run attempt>` and records its digest in the
 release manifest. Packaged acceptance pulls by digest, never by tag. Then release-cli.yml's
-`finalize-images` reads each image's `:<version>` and:
+`finalize-images`, before it reads or writes any tag, reads each image's index by the digest the
+manifest records and binds its platforms again, as `merge` and acceptance did: each arch's platform
+must map to the build the manifest records for that arch. The manifest outlives the one-day digest
+artifacts, so a re-run can still check. Any mismatch fails with nothing written. Then it reads each
+image's `:<version>` and:
 
 - absent (the registry answered not found): creates it from the manifest's index digest;
 - already this run's digest: done;

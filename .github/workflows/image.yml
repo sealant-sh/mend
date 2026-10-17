@@ -263,19 +263,19 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
+      # One directory per build, named for its arch: which digest is which arch's build is kept.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/digests
           pattern: digests-${{ matrix.image.id }}--*
-          merge-multiple: true
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Create and inspect the multi-arch candidate
-        working-directory: /tmp/digests
         env:
+          ID: ${{ matrix.image.id }}
           REPOSITORY: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}
           VERSION:
             ${{ matrix.image.baseline && needs.version.outputs.before || needs.version.outputs.value
@@ -292,17 +292,27 @@ jobs:
             *) tag=staging-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT ;;
           esac
           sources=()
-          for digest in *; do sources+=("$REPOSITORY@sha256:$digest"); done
+          for arch in amd64 arm64; do
+            built=(/tmp/digests/digests-"$ID--$arch"/*)
+            digest=${built[0]##*/}
+            if [[ ${#built[@]} -ne 1 || ! $digest =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::The $ID $arch digests artifact holds '${built[*]##*/}', not one image digest."
+              exit 1
+            fi
+            sources+=("$REPOSITORY@sha256:$digest")
+          done
           mkdir -p "$RUNNER_TEMP/index"
           docker buildx imagetools create --metadata-file "$RUNNER_TEMP/index/create.json" \
             --tag "$REPOSITORY:$tag" "${sources[@]}"
           docker buildx imagetools inspect "$REPOSITORY:$tag"
       # The index digest goes in the release manifest: the one create reported, never the tag's,
       # which another publisher can move (a dev tag is rebuilt). That index and each source are read
-      # by digest, and the index must hold exactly the sources, for amd64 and arm64.
+      # by digest, and the index must hold exactly the sources, each arch's build under that arch's
+      # platform.
       - name: Check and record the index digest
         working-directory: ${{ runner.temp }}/index
         env:
+          ID: ${{ matrix.image.id }}
           REPOSITORY: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}
         run: |
           set -euo pipefail
@@ -313,10 +323,10 @@ jobs:
           fi
           docker buildx imagetools inspect "$REPOSITORY@$digest" --raw >index.json
           sources=()
-          for file in /tmp/digests/*; do
-            source=${file##*/}
+          for arch in amd64 arm64; do
+            source=$(cd "/tmp/digests/digests-$ID--$arch" && ls)
             docker buildx imagetools inspect "$REPOSITORY@sha256:$source" --raw >"source-$source.json"
-            sources+=("sha256:$source=source-$source.json")
+            sources+=("$arch=sha256:$source=source-$source.json")
           done
           node "$GITHUB_WORKSPACE/scripts/release-manifest.mjs" check-index create.json index.json \
             "${sources[@]}" >digest
@@ -507,7 +517,8 @@ jobs:
           docker buildx imagetools create --metadata-file "$RUNNER_TEMP/index/create.json" \
             --tag "$REPOSITORY:$VERSION" "${sources[@]}"
           docker buildx imagetools inspect "$REPOSITORY:$VERSION"
-      # As merge records it: the digest create reported, checked against the sources by digest.
+      # As merge records it: the digest create reported, checked against the sources by digest, each
+      # arch's build under that arch's platform.
       - name: Check and record the index digest
         working-directory: ${{ runner.temp }}/index
         env:
@@ -525,7 +536,7 @@ jobs:
           for arch in amd64 arm64; do
             source=$(cd "/tmp/digests/digests-$ID--$arch" && ls)
             docker buildx imagetools inspect "$REPOSITORY@sha256:$source" --raw >"source-$source.json"
-            sources+=("sha256:$source=source-$source.json")
+            sources+=("$arch=sha256:$source=source-$source.json")
           done
           node "$GITHUB_WORKSPACE/scripts/release-manifest.mjs" check-index create.json index.json \
             "${sources[@]}" >digest
@@ -700,9 +711,12 @@ jobs:
       # stock Ubuntu host.
       - if: runner.environment == 'github-hosted'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      # Setup runs any local image that carries the version's tag, and a tag on ghcr can move. Pull
-      # this arch's platform digest from the manifest, record the ID it pulled as, and tag only that
-      # ID with the name setup expects; acceptance then requires the running server to be it.
+      # Setup runs any local image that carries the version's tag, and a tag on ghcr can move. This
+      # arch's platform is resolved through the index, as a consumer of :<version> resolves it: the
+      # index is read by the digest the manifest records, and the digest it maps this arch's
+      # platform to must be this arch's build, as the manifest records it, before anything is pulled
+      # (release-manifest.mjs resolve). Pull that digest, record the ID it pulled as, and tag only
+      # that ID with the name setup expects; acceptance then requires the running server to be it.
       - name: Pull the candidates by digest
         id: images
         env:
@@ -719,7 +733,7 @@ jobs:
           esac
           for entry in "mend-before $BEFORE before" "mend $VERSION target"; do
             read -r image version output <<<"$entry"
-            digest=$(node scripts/release-manifest.mjs digest "$MANIFEST" "$image" "$arch")
+            digest=$(node scripts/release-manifest.mjs resolve "$MANIFEST" "$REPOSITORY" "$image" "$arch")
             docker pull "$REPOSITORY@$digest"
             id=$(docker image inspect "$REPOSITORY@$digest" --format '{{.Id}}')
             docker tag "$id" "$REPOSITORY:$version"
@@ -1016,8 +1030,8 @@ jobs:
       # GitHub's Ubuntu 24.04 images refuse unprivileged user namespaces; as packaged-smoke.
       - if: runner.environment == 'github-hosted'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      # As packaged-smoke: this arch's platform digest from the manifest, the ID it pulled as,
-      # tagged with the name the upgrade expects.
+      # As packaged-smoke: this arch's platform, resolved through the index the manifest records and
+      # bound to this arch's build, the ID it pulled as, tagged with the name the upgrade expects.
       - name: Pull the candidate by digest
         if: matrix.transition.waived == ''
         id: images
@@ -1032,7 +1046,7 @@ jobs:
             ARM64) arch=arm64 ;;
             *) echo "::error::No candidate is built for $RUNNER_ARCH."; exit 1 ;;
           esac
-          digest=$(node scripts/release-manifest.mjs digest "$MANIFEST" mend "$arch")
+          digest=$(node scripts/release-manifest.mjs resolve "$MANIFEST" "$REPOSITORY" mend "$arch")
           docker pull "$REPOSITORY@$digest"
           id=$(docker image inspect "$REPOSITORY@$digest" --format '{{.Id}}')
           docker tag "$id" "$REPOSITORY:$VERSION"
@@ -1310,8 +1324,8 @@ jobs:
         with:
           name: release-manifest
           path: ${{ runner.temp }}/release
-      # As packaged-smoke: this arch's platform digest from the manifest, the ID it pulled as,
-      # tagged with the name the Compose file runs.
+      # As packaged-smoke: this arch's platform, resolved through the index the manifest records and
+      # bound to this arch's build, the ID it pulled as, tagged with the name the Compose file runs.
       - name: Pull the tiers by digest
         id: images
         env:
@@ -1327,7 +1341,7 @@ jobs:
           esac
           for entry in "mend-api api" "mend-web web"; do
             read -r image output <<<"$entry"
-            digest=$(node scripts/release-manifest.mjs digest "$MANIFEST" "$image" "$arch")
+            digest=$(node scripts/release-manifest.mjs resolve "$MANIFEST" "$REGISTRY/$image" "$image" "$arch")
             docker pull "$REGISTRY/$image@$digest"
             id=$(docker image inspect "$REGISTRY/$image@$digest" --format '{{.Id}}')
             docker tag "$id" "$REGISTRY/$image:$VERSION"

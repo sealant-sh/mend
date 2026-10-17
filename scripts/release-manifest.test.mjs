@@ -21,6 +21,18 @@ import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 
 import {
+  OCI_INDEX,
+  acceptedIndexes,
+  annotated,
+  attestationOf,
+  buildsOf,
+  childOf,
+  imageManifest,
+  indexOf,
+  refusedIndexes,
+  releaseIndex,
+} from "./fixtures/release-indexes.mjs";
+import {
   ARCHES,
   IMAGES,
   archiveIdentity,
@@ -28,6 +40,8 @@ import {
   checkArchive,
   checkCli,
   checkIndex,
+  resolvePlatform,
+  selectPlatform,
   validateManifest,
 } from "./release-manifest.mjs";
 
@@ -524,7 +538,8 @@ test("the cli job packs once, normalizes, checks the result, and holds no creden
 /**
  * A stand-in docker that records its argv. `image inspect` answers FIXTURE_ID when it is set, else
  * the reference it was asked about, as Docker does for an image ID; with FIXTURE_ONLY, it knows no
- * other image.
+ * other image. `imagetools inspect <reference> --raw` answers the registry's documents
+ * (`serve(reference, bytes)`), and buildx's not-found for any other reference.
  */
 const standIn = (t) => {
   const directory = scratch(t);
@@ -532,12 +547,20 @@ const standIn = (t) => {
   mkdirSync(bin);
   const calls = path.join(directory, "calls.jsonl");
   writeFileSync(calls, "");
+  const registry = path.join(directory, "registry.json");
+  writeFileSync(registry, "{}");
   writeFileSync(
     path.join(bin, "docker"),
     `#!${process.execPath}
-const { appendFileSync } = require("node:fs");
+const { appendFileSync, readFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");
+if (args.slice(0, 3).join(" ") === "buildx imagetools inspect" && args[4] === "--raw" && args.length === 5) {
+  const served = JSON.parse(readFileSync(${JSON.stringify(registry)}, "utf8"))[args[3]];
+  if (served === undefined) { console.error("ERROR: " + args[3] + ": not found"); process.exit(1); }
+  process.stdout.write(Buffer.from(served, "base64"));
+  process.exit(0);
+}
 if (args[0] === "image" && args[1] === "inspect") {
   if (process.env.FIXTURE_ONLY && !process.env.FIXTURE_ONLY.split(" ").includes(args[2])) process.exit(1);
   console.log(process.env.FIXTURE_ID ?? args[2]);
@@ -561,10 +584,55 @@ if (args[0] === "image" && args[1] === "inspect") {
         .filter(Boolean)
         .map((line) => JSON.parse(line)),
     outputs: () => readFileSync(output, "utf8"),
+    serve: (reference, bytes) => {
+      const served = JSON.parse(readFileSync(registry, "utf8"));
+      served[reference] = bytes.toString("base64");
+      writeFileSync(registry, JSON.stringify(served));
+    },
+    reset: () => {
+      writeFileSync(calls, "");
+      writeFileSync(output, "");
+      writeFileSync(registry, "{}");
+    },
   };
 };
 
-test("online acceptance pulls this arch's digests from the manifest and tags only the IDs it pulled", (t) => {
+const ROOT = fileURLToPath(new URL("../", import.meta.url));
+/** Where each image is pushed: mend-before is the baseline build of mend. */
+const repositoryOf = (name) => `ghcr.io/sealant-sh/${name === "mend-before" ? "mend" : name}`;
+/**
+ * One release on the stand-in's registry: each image's two attested builds and their index, as
+ * merge staged them, served by digest, and the manifest that records them. `indexes` replaces an
+ * image's index with another document, which the manifest then records.
+ */
+const stage = (fake, indexes = {}) => {
+  const release = Object.fromEntries(IMAGES.map((name) => [name, buildsOf(name)]));
+  const staged = Object.fromEntries(
+    IMAGES.map((name) => [name, indexes[name] ?? releaseIndex(release[name])]),
+  );
+  for (const name of IMAGES) {
+    fake.serve(`${repositoryOf(name)}@${staged[name].digest}`, staged[name].bytes);
+    for (const arch of ARCHES)
+      fake.serve(
+        `${repositoryOf(name)}@${release[name][arch].source.digest}`,
+        release[name][arch].source.bytes,
+      );
+  }
+  const manifest = manifestFor(
+    mkdtempSync(path.join(fake.directory, "records-")),
+    Object.fromEntries(
+      IMAGES.flatMap((name) =>
+        ARCHES.map((arch) => [`${name}/${arch}`, release[name][arch].source.digest.slice(7)]),
+      ),
+    ),
+  );
+  for (const name of IMAGES) manifest.images[name].index = staged[name].digest;
+  return { release, staged, file: writeManifest(fake.directory, validateManifest(manifest)) };
+};
+const RUNNER_ARCH = { amd64: "X64", arm64: "ARM64" };
+const rawRead = (reference) => ["buildx", "imagetools", "inspect", reference, "--raw"];
+
+test("online acceptance resolves this arch's builds through their indexes and tags only the IDs it pulled", (t) => {
   const smoke = jobs["packaged-smoke"];
   assert.deepEqual(smoke.needs, ["version", "merge", "release-manifest"]);
   const downloads = smoke.steps.filter((entry) =>
@@ -576,18 +644,18 @@ test("online acceptance pulls this arch's digests from the manifest and tags onl
   );
   const pull = step("packaged-smoke", "Pull the candidates by digest");
   const fake = standIn(t);
-  const manifest = manifestFor(fake.directory);
-  const file = writeManifest(fake.directory, manifest);
-  for (const [arch, runner] of [
-    ["amd64", "X64"],
-    ["arm64", "ARM64"],
-  ]) {
+  const { release, staged, file } = stage(fake);
+  const id = `sha256:${"c".repeat(64)}`;
+  for (const arch of ARCHES) {
+    fake.reset();
+    stage(fake);
     const run = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", pull.run], {
+      cwd: ROOT,
       encoding: "utf8",
       env: {
         ...fake.env,
-        FIXTURE_ID: `sha256:${"c".repeat(64)}`,
-        RUNNER_ARCH: runner,
+        FIXTURE_ID: id,
+        RUNNER_ARCH: RUNNER_ARCH[arch],
         REPOSITORY: "ghcr.io/sealant-sh/mend",
         MANIFEST: file,
         BEFORE: "0.0.0-acceptance.9.1",
@@ -595,16 +663,19 @@ test("online acceptance pulls this arch's digests from the manifest and tags onl
       },
     });
     assert.equal(run.status, 0, run.stderr);
-    const id = `sha256:${"c".repeat(64)}`;
-    const calls = fake.calls().slice(-6);
-    const before = `ghcr.io/sealant-sh/mend@${manifest.images["mend-before"].platforms[arch]}`;
-    const target = `ghcr.io/sealant-sh/mend@${manifest.images.mend.platforms[arch]}`;
-    assert.deepEqual(calls, [
-      ["pull", before],
-      ["image", "inspect", before, "--format", "{{.Id}}"],
+    // Each image's index and this arch's build, read raw by the digests the manifest records,
+    // then the runnable manifest the index maps this arch to: what a consumer of the tag pulls.
+    const pulled = (name) => `ghcr.io/sealant-sh/mend@${release[name][arch].image.digest}`;
+    assert.deepEqual(fake.calls(), [
+      rawRead(`ghcr.io/sealant-sh/mend@${staged["mend-before"].digest}`),
+      rawRead(`ghcr.io/sealant-sh/mend@${release["mend-before"][arch].source.digest}`),
+      ["pull", pulled("mend-before")],
+      ["image", "inspect", pulled("mend-before"), "--format", "{{.Id}}"],
       ["tag", id, "ghcr.io/sealant-sh/mend:0.0.0-acceptance.9.1"],
-      ["pull", target],
-      ["image", "inspect", target, "--format", "{{.Id}}"],
+      rawRead(`ghcr.io/sealant-sh/mend@${staged.mend.digest}`),
+      rawRead(`ghcr.io/sealant-sh/mend@${release.mend[arch].source.digest}`),
+      ["pull", pulled("mend")],
+      ["image", "inspect", pulled("mend"), "--format", "{{.Id}}"],
       ["tag", id, "ghcr.io/sealant-sh/mend:1.2.3"],
     ]);
   }
@@ -623,6 +694,112 @@ test("online acceptance pulls this arch's digests from the manifest and tags onl
     step("packaged-smoke", "Check the CLI tarball against the manifest").run,
     /check-cli/,
   );
+});
+
+/** The ghcr acceptance steps that pull, the images each pulls in order, and the env they run in. */
+const PULLS = [
+  {
+    job: "packaged-smoke",
+    name: "Pull the candidates by digest",
+    images: ["mend-before", "mend"],
+    env: {
+      REPOSITORY: "ghcr.io/sealant-sh/mend",
+      BEFORE: "0.0.0-acceptance.9.1",
+      VERSION: "1.2.3",
+    },
+  },
+  {
+    job: "previous-upgrade",
+    name: "Pull the candidate by digest",
+    images: ["mend"],
+    env: { REPOSITORY: "ghcr.io/sealant-sh/mend", VERSION: "1.2.3" },
+  },
+  {
+    job: "split-tier-smoke",
+    name: "Pull the tiers by digest",
+    images: ["mend-api", "mend-web"],
+    env: { REGISTRY: "ghcr.io/sealant-sh", VERSION: "1.2.3" },
+  },
+];
+
+test("each ghcr acceptance pulls only what the index maps its arch to, once that is its arch's build", (t) => {
+  const fake = standIn(t);
+  const pullsOf = () =>
+    fake
+      .calls()
+      .filter(([command]) => command === "pull")
+      .map(([, reference]) => reference);
+  const run = ({ job, name, env }, arch, indexes) => {
+    fake.reset();
+    const staged = stage(fake, indexes);
+    const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", step(job, name).run], {
+      cwd: ROOT,
+      encoding: "utf8",
+      env: { ...fake.env, RUNNER_ARCH: RUNNER_ARCH[arch], MANIFEST: staged.file, ...env },
+    });
+    return { ...result, output: result.stdout + result.stderr, staged };
+  };
+  for (const pull of PULLS) {
+    for (const arch of ARCHES) {
+      // The real index, its attestations unknown/unknown, in each order and with arm64 as v8.
+      for (const { label, index } of acceptedIndexes(buildsOf(pull.images[0]))) {
+        const result = run(pull, arch, { [pull.images[0]]: index });
+        assert.equal(result.status, 0, `${pull.job} ${label} ${arch}: ${result.output}`);
+        assert.deepEqual(
+          pullsOf(),
+          pull.images.map(
+            (name) => `${repositoryOf(name)}@${result.staged.release[name][arch].image.digest}`,
+          ),
+          `${pull.job} ${label} ${arch}`,
+        );
+      }
+      // Every index the binding refuses, as the first image's: this leg refuses it, naming why,
+      // and pulls nothing, unless the index maps this arch to its own build.
+      for (const { label, index, problems } of refusedIndexes(buildsOf(pull.images[0]))) {
+        const result = run(pull, arch, { [pull.images[0]]: index });
+        const at = `${pull.job} ${label} ${arch}`;
+        if (problems[arch] === undefined) {
+          assert.equal(result.status, 0, `${at}: ${result.output}`);
+          continue;
+        }
+        assert.equal(result.status, 1, `${at}: ${result.output}`);
+        assert.match(result.output, problems[arch], at);
+        assert.deepEqual(pullsOf(), [], `${at} pulls nothing`);
+      }
+    }
+    // The second image is bound too: refused after the first image's pull, and itself not pulled.
+    if (pull.images.length === 2) {
+      const [first, second] = pull.images;
+      const swapped = refusedIndexes(buildsOf(second))[0];
+      assert.equal(swapped.label, "swapped labels");
+      for (const arch of ARCHES) {
+        const result = run(pull, arch, { [second]: swapped.index });
+        assert.equal(result.status, 1, `${pull.job} ${arch}: ${result.output}`);
+        assert.match(result.output, swapped.problems[arch]);
+        assert.deepEqual(pullsOf(), [
+          `${repositoryOf(first)}@${result.staged.release[first][arch].image.digest}`,
+        ]);
+      }
+    }
+    // An index the registry does not serve by the recorded digest is refused before any pull.
+    fake.reset();
+    const { file } = stage(fake);
+    const manifest = JSON.parse(readFileSync(file, "utf8"));
+    manifest.images[pull.images[0]].index = `sha256:${"9".repeat(64)}`;
+    writeFileSync(file, JSON.stringify(manifest));
+    const unserved = spawnSync(
+      "bash",
+      ["--noprofile", "--norc", "-e", "-c", step(pull.job, pull.name).run],
+      {
+        cwd: ROOT,
+        encoding: "utf8",
+        env: { ...fake.env, RUNNER_ARCH: "X64", MANIFEST: file, ...pull.env },
+      },
+    );
+    assert.equal(unserved.status, 1, pull.job);
+    assert.match(unserved.stderr, /not found[\s\S]*Could not read /, pull.job);
+    assert.deepEqual(pullsOf(), [], pull.job);
+  }
 });
 
 test("archive acceptance loads only its arch's checked archives, as their config digests, offline", (t) => {
@@ -762,130 +939,206 @@ test("the manifest job writes from this run's records, whichever merge ran", (t)
 
 // --- the index imagetools create pushed ---
 
-const OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json";
-const OCI_INDEX = "application/vnd.oci.image.index.v1+json";
-/** A registry document: its bytes and the digest it is read by. */
-const doc = (value) => {
-  const bytes = Buffer.from(JSON.stringify(value));
-  return { bytes, digest: sha256(bytes), value };
-};
-const imageManifest = (arch) =>
-  doc({
-    schemaVersion: 2,
-    mediaType: OCI_MANIFEST,
-    config: {
-      mediaType: "application/vnd.oci.image.config.v1+json",
-      digest: `sha256:${hex(arch)}`,
-      size: 1,
-    },
-    layers: [],
-  });
-const childOf = (manifest, os, architecture, variant) => ({
-  mediaType: OCI_MANIFEST,
-  digest: manifest.digest,
-  size: manifest.bytes.length,
-  platform: { os, architecture, ...(variant ? { variant } : {}) },
-});
-/** BuildKit's attestation entry for `manifest`. */
-const attestationOf = (manifest) => ({
-  mediaType: OCI_MANIFEST,
-  digest: `sha256:${hex(`attestation of ${manifest.digest}`)}`,
-  size: 1,
-  platform: { os: "unknown", architecture: "unknown" },
-  annotations: {
-    "vnd.docker.reference.digest": manifest.digest,
-    "vnd.docker.reference.type": "attestation-manifest",
-  },
-});
-const indexOf = (manifests) => doc({ schemaVersion: 2, mediaType: OCI_INDEX, manifests });
 const created = (index) => ({
   "containerimage.descriptor": { mediaType: OCI_INDEX, digest: index.digest },
 });
 const amd64 = imageManifest("amd64");
 const arm64 = imageManifest("arm64");
 const plainChildren = [childOf(amd64, "linux", "amd64"), childOf(arm64, "linux", "arm64")];
+/** A source as merge names it: the build job's arch, and the document it pushed. */
+const built = (arch, document) => ({ arch, ...document });
+/** Plain builds, as archive-merge's sources are: each arch's image manifest itself. */
+const builds = [built("amd64", amd64), built("arm64", arm64)];
+/** Mend's ghcr builds: each arch's attested single-platform index. */
+const RELEASE = buildsOf("mend");
+const attestedSources = ARCHES.map((arch) => built(arch, RELEASE[arch].source));
 
 test("an index made from two plain image manifests is the one create reported", () => {
   const index = indexOf(plainChildren);
-  assert.equal(checkIndex(created(index), index.bytes, [amd64, arm64]), index.digest);
+  assert.equal(checkIndex(created(index), index.bytes, builds), index.digest);
   // containerimage.digest, where buildx writes it, must agree with the descriptor.
   assert.equal(
-    checkIndex({ ...created(index), "containerimage.digest": index.digest }, index.bytes, [
-      amd64,
-      arm64,
-    ]),
+    checkIndex({ ...created(index), "containerimage.digest": index.digest }, index.bytes, builds),
     index.digest,
   );
   assert.throws(
     () =>
-      checkIndex({ ...created(index), "containerimage.digest": amd64.digest }, index.bytes, [
-        amd64,
-        arm64,
-      ]),
+      checkIndex({ ...created(index), "containerimage.digest": amd64.digest }, index.bytes, builds),
     /two different ones/,
   );
-  assert.throws(() => checkIndex({}, index.bytes, [amd64, arm64]), /no index digest/);
+  assert.throws(() => checkIndex({}, index.bytes, builds), /no index digest/);
+  // BuildKit's arm64 builds may carry the v8 variant.
+  const v8 = indexOf([plainChildren[0], childOf(arm64, "linux", "arm64", "v8")]);
+  assert.equal(checkIndex(created(v8), v8.bytes, builds), v8.digest);
 });
 
 test("an index made from attested single-platform indexes holds each source's children", () => {
-  const sources = [amd64, arm64].map((manifest, at) =>
-    indexOf([plainChildren[at], attestationOf(manifest)]),
-  );
-  const index = indexOf(sources.flatMap((source) => source.value.manifests));
-  assert.equal(checkIndex(created(index), index.bytes, sources), index.digest);
+  // The real shape, with its unknown/unknown attestations, in either order and with arm64 as v8.
+  for (const { label, index } of acceptedIndexes(RELEASE))
+    assert.equal(checkIndex(created(index), index.bytes, attestedSources), index.digest, label);
   // An attestation of a source left out is a source's manifest missing.
-  const partial = indexOf([...plainChildren, attestationOf(amd64)]);
-  assert.throws(() => checkIndex(created(partial), partial.bytes, sources), /lacks sha256:/);
+  const partial = indexOf([
+    childOf(RELEASE.amd64.image, "linux", "amd64"),
+    attestationOf(RELEASE.amd64.image),
+    childOf(RELEASE.arm64.image, "linux", "arm64"),
+  ]);
+  assert.throws(
+    () => checkIndex(created(partial), partial.bytes, attestedSources),
+    /lacks sha256:/,
+  );
   // A source index of two platforms is not one arch's build.
   const both = indexOf(plainChildren);
-  assert.throws(() => checkIndex(created(both), both.bytes, [both]), /more than one platform/);
-});
-
-test("an index missing one source's manifest is refused", () => {
-  const other = imageManifest("someone else's arm64");
-  const index = indexOf([plainChildren[0], childOf(other, "linux", "arm64")]);
   assert.throws(
-    () => checkIndex(created(index), index.bytes, [amd64, arm64]),
-    new RegExp(`lacks ${arm64.digest}`),
+    () => checkIndex(created(both), both.bytes, [built("amd64", both), built("arm64", arm64)]),
+    /more than one platform/,
+  );
+  // Nor is one whose second runnable child wears an attestation's annotation.
+  const hidden = indexOf([plainChildren[0], annotated(childOf(arm64, "linux", "amd64"))]);
+  assert.throws(
+    () => checkIndex(created(both), both.bytes, [built("amd64", hidden), built("arm64", arm64)]),
+    /amd64 source sha256:[0-9a-f]{64} is an index of more than one platform/,
   );
 });
 
-test("an index whose platforms are not exactly linux/amd64 and linux/arm64 is refused", () => {
-  const arm = imageManifest("arm/v7");
-  for (const [children, sources] of [
-    [
-      [plainChildren[0], childOf(arm, "linux", "arm", "v7")],
-      [amd64, arm],
-    ],
-    [
-      [plainChildren[0], childOf(arm64, "linux", "amd64")],
-      [amd64, arm64],
-    ],
-    [[plainChildren[0]], [amd64]],
-  ]) {
-    const index = indexOf(children);
+test("each arch's platform must name that arch's build: a swap, a duplicate, a wrong variant, another build or an annotated runnable descriptor is refused", () => {
+  for (const { label, index, problems } of refusedIndexes(RELEASE))
     assert.throws(
-      () => checkIndex(created(index), index.bytes, sources),
-      /not linux\/amd64 and linux\/arm64/,
+      () => checkIndex(created(index), index.bytes, attestedSources),
+      problems.amd64 ?? problems.arm64,
+      label,
     );
-  }
-  // Nor may it hold a manifest no source gave it.
-  const extra = indexOf([...plainChildren, childOf(imageManifest("extra"), "linux", "riscv64")]);
-  assert.throws(() => checkIndex(created(extra), extra.bytes, [amd64, arm64]), /from no source/);
+  // The builds' artifacts named for the other arch: the arch comes from the artifact, so refused.
+  const index = releaseIndex(RELEASE);
+  assert.throws(
+    () =>
+      checkIndex(created(index), index.bytes, [
+        built("amd64", RELEASE.arm64.source),
+        built("arm64", RELEASE.amd64.source),
+      ]),
+    new RegExp(
+      `maps linux/amd64 to ${RELEASE.amd64.image.digest}, not ${RELEASE.arm64.image.digest}, the amd64 build`,
+    ),
+  );
+  // Plain builds are bound the same way.
+  const refused = (children, problem, sources = builds) => {
+    const bad = indexOf(children);
+    assert.throws(() => checkIndex(created(bad), bad.bytes, sources), problem);
+  };
+  refused(
+    [childOf(amd64, "linux", "arm64"), childOf(arm64, "linux", "amd64")],
+    new RegExp(`maps linux/amd64 to ${arm64.digest}, not ${amd64.digest}, the amd64 build`),
+  );
+  refused([childOf(amd64, "windows", "amd64"), plainChildren[1]], /holds windows\/amd64 /);
+  refused([{ ...plainChildren[0], platform: undefined }, plainChildren[1]], /holds no platform /);
+  // One source per arch, no more and no fewer.
+  for (const sources of [[builds[0]], [builds[0], built("amd64", arm64)], [...builds, builds[1]]])
+    refused(plainChildren, /exactly one source per arch/, sources);
+  // A real attestation, annotated and for unknown/unknown, is still one: excluded from the
+  // platforms, it is only a child no plain source names.
+  refused([...plainChildren, attestationOf(amd64), attestationOf(arm64)], /from no source/);
+});
+
+test("an index missing a source, holding another, or holding more is refused", () => {
+  const other = imageManifest("someone else's arm64");
+  const foreign = indexOf([plainChildren[0], childOf(other, "linux", "arm64")]);
+  assert.throws(
+    () => checkIndex(created(foreign), foreign.bytes, builds),
+    new RegExp(`maps linux/arm64 to ${other.digest}, not ${arm64.digest}`),
+  );
+  const extra = indexOf([...plainChildren, attestationOf(imageManifest("extra"))]);
+  assert.throws(() => checkIndex(created(extra), extra.bytes, builds), /from no source/);
+  const riscv = indexOf([...plainChildren, childOf(imageManifest("extra"), "linux", "riscv64")]);
+  assert.throws(() => checkIndex(created(riscv), riscv.bytes, builds), /holds linux\/riscv64/);
 });
 
 test("the audit's case: a single arm64 manifest in place of the created index is refused", () => {
   // Reported as created, the lone manifest is not a multi-arch index.
   assert.throws(
-    () => checkIndex(created(arm64), arm64.bytes, [amd64, arm64]),
+    () => checkIndex(created(arm64), arm64.bytes, builds),
     /single image manifest, not a multi-arch index/,
   );
   // Create reported its own index; bytes read for any other digest (the moved tag's) do not hash to it.
   const index = indexOf(plainChildren);
-  assert.throws(() => checkIndex(created(index), arm64.bytes, [amd64, arm64]), /does not hash to/);
+  assert.throws(() => checkIndex(created(index), arm64.bytes, builds), /does not hash to/);
   // The index the moved tag names, a lone arm64 child, fails on its own terms too.
   const moved = indexOf([plainChildren[1]]);
-  assert.throws(() => checkIndex(created(moved), moved.bytes, [amd64, arm64]), /lacks/);
+  assert.throws(() => checkIndex(created(moved), moved.bytes, builds), /0 linux\/amd64 entries/);
+});
+
+/** A registry that serves `documents` by digest, as `imagetools inspect …@<digest> --raw` does. */
+const servedBy = (...documents) => {
+  const served = new Map(documents.map((entry) => [entry.digest, entry.bytes]));
+  return (digest) => {
+    assert.ok(served.has(digest), `nothing serves ${digest}`);
+    return served.get(digest);
+  };
+};
+/** The manifest's entry for an image whose index is `index` and whose builds are `release`'s. */
+const recorded = (index, release = RELEASE) => ({
+  images: {
+    mend: {
+      index: index.digest,
+      platforms: Object.fromEntries(ARCHES.map((arch) => [arch, release[arch].source.digest])),
+    },
+  },
+});
+
+test("select resolves an arch through the index as a consumer would; resolve binds it to that arch's build", () => {
+  const registry = (index) => servedBy(index, ...ARCHES.map((arch) => RELEASE[arch].source));
+  for (const { label, index } of acceptedIndexes(RELEASE))
+    for (const arch of ARCHES) {
+      const build = RELEASE[arch].image.digest;
+      assert.equal(selectPlatform(index.bytes, index.digest, arch), build, `${label} ${arch}`);
+      assert.equal(resolvePlatform(recorded(index), "mend", arch, registry(index)), build);
+    }
+  // Every refused index: at each arch it holds at, select refuses it or answers another build,
+  // and resolve refuses it; at an arch it does not hold at, both answer that arch's build.
+  for (const { label, index, problems } of refusedIndexes(RELEASE))
+    for (const arch of ARCHES) {
+      const build = RELEASE[arch].image.digest;
+      const resolve = () => resolvePlatform(recorded(index), "mend", arch, registry(index));
+      if (problems[arch] === undefined) {
+        assert.equal(selectPlatform(index.bytes, index.digest, arch), build, `${label} ${arch}`);
+        assert.equal(resolve(), build, `${label} ${arch}`);
+        continue;
+      }
+      assert.throws(resolve, problems[arch], `${label} ${arch}`);
+      let selected;
+      try {
+        selected = selectPlatform(index.bytes, index.digest, arch);
+      } catch (error) {
+        assert.match(error.message, problems[arch], `${label} ${arch}`);
+        continue;
+      }
+      assert.notEqual(selected, build, `${label} ${arch}: select answered the build`);
+    }
+  // Plain builds resolve to themselves.
+  const plain = indexOf(plainChildren);
+  const plainRelease = Object.fromEntries(
+    ARCHES.map((arch, at) => [arch, { source: [amd64, arm64][at] }]),
+  );
+  for (const [at, arch] of ARCHES.entries())
+    assert.equal(
+      resolvePlatform(recorded(plain, plainRelease), "mend", arch, servedBy(plain, amd64, arm64)),
+      builds[at].digest,
+    );
+  // A build recorded under the other arch is not this arch's, even in a correct index.
+  const index = releaseIndex(RELEASE);
+  const misrecorded = recorded(index, { amd64: RELEASE.arm64, arm64: RELEASE.amd64 });
+  assert.throws(
+    () => resolvePlatform(misrecorded, "mend", "amd64", registry(index)),
+    new RegExp(
+      `maps linux/amd64 to ${RELEASE.amd64.image.digest}, not ${RELEASE.arm64.image.digest}, the amd64 build the release manifest records for mend \\(in ${RELEASE.arm64.source.digest}\\)`,
+    ),
+  );
+  const swapped = refusedIndexes(RELEASE)[0].index;
+  assert.throws(() => selectPlatform(index.bytes, swapped.digest, "amd64"), /does not hash to/);
+  assert.throws(() => selectPlatform(amd64.bytes, amd64.digest, "amd64"), /not a multi-arch index/);
+  assert.throws(() => selectPlatform(index.bytes, index.digest, "riscv64"), /No build for riscv64/);
+  assert.throws(
+    () => resolvePlatform(recorded(index), "mend", "riscv64", registry(index)),
+    /No mend for riscv64/,
+  );
 });
 
 test("no step learns the index digest from the tag; both merges check what create reported", (t) => {
@@ -908,23 +1161,38 @@ test("no step learns the index digest from the tag; both merges check what creat
     const record = step(job, "Check and record the index digest");
     assert.match(record.run, /check-index create\.json index\.json/);
     assert.match(record.run, /inspect "\$REPOSITORY@\$digest" --raw >index\.json/);
+    assert.match(record.run, /sources\+=\("\$arch=sha256:\$source=source-\$source\.json"\)/);
     const steps = jobs[job].steps;
     const upload = steps.findIndex((entry) => entry.with?.name === "index-${{ matrix.image.id }}");
     assert.ok(upload > steps.indexOf(record), `${job} uploads the digest after checking it`);
+    // Each build's digest arrives in a directory named for its arch, never merged into one.
+    for (const entry of steps.filter((each) => each.uses?.startsWith("actions/download-artifact@")))
+      assert.equal(entry.with["merge-multiple"], undefined, `${job} keeps each arch's directory`);
   }
 
-  // merge's step as written, its /tmp/digests moved to a fixture, against a registry stand-in
-  // whose tag has moved to a lone arm64 index: it records the index create reported.
+  // Each merge's step as written, its /tmp/digests moved to a fixture, against a registry stand-in
+  // whose tag has moved to a lone arm64 index: it records the index create reported, and only once
+  // that index maps each arch's platform to that arch's build.
   const directory = scratch(t);
   const digests = path.join(directory, "digests");
   const documents = path.join(directory, "documents");
   const work = path.join(directory, "index");
   for (const dir of [digests, documents, work, path.join(directory, "bin")]) mkdirSync(dir);
-  const index = indexOf(plainChildren);
-  for (const entry of [amd64, arm64, index, indexOf([plainChildren[1]])])
+  const sources = ARCHES.map((arch) => RELEASE[arch].source);
+  const index = releaseIndex(RELEASE);
+  const lone = indexOf(RELEASE.arm64.source.value.manifests);
+  const refused = refusedIndexes(RELEASE);
+  for (const entry of [...sources, index, lone, ...refused.map((each) => each.index)])
     writeFileSync(path.join(documents, entry.digest), entry.bytes);
-  for (const entry of [amd64, arm64]) writeFileSync(path.join(digests, entry.digest.slice(7)), "");
-  writeFileSync(path.join(work, "create.json"), JSON.stringify(created(index)));
+  // One directory per build, named for its arch, as download-artifact lays them out.
+  const lay = (byArch) => {
+    rmSync(digests, { recursive: true, force: true });
+    for (const [arch, entry] of Object.entries(byArch)) {
+      mkdirSync(path.join(digests, `digests-mend--${arch}`), { recursive: true });
+      writeFileSync(path.join(digests, `digests-mend--${arch}`, entry.digest.slice(7)), "");
+    }
+  };
+  lay({ amd64: RELEASE.amd64.source, arm64: RELEASE.arm64.source });
   writeFileSync(
     path.join(directory, "bin", "docker"),
     `#!${process.execPath}
@@ -936,32 +1204,69 @@ process.stdout.write(readFileSync(${JSON.stringify(documents)} + "/" + args[3].s
 `,
   );
   chmodSync(path.join(directory, "bin", "docker"), 0o755);
-  const record = step("merge", "Check and record the index digest");
-  const run = (create) => {
-    writeFileSync(path.join(work, "create.json"), JSON.stringify(create));
-    return spawnSync(
-      "bash",
-      ["--noprofile", "--norc", "-e", "-c", record.run.replaceAll("/tmp/digests", digests)],
-      {
-        cwd: work,
-        encoding: "utf8",
-        env: {
-          PATH: `${path.join(directory, "bin")}:${process.env.PATH}`,
-          REPOSITORY: "ghcr.invalid/fixture/mend",
-          GITHUB_WORKSPACE: fileURLToPath(new URL("../", import.meta.url)),
+  for (const job of ["merge", "archive-merge"]) {
+    const record = step(job, "Check and record the index digest");
+    const run = (create) => {
+      writeFileSync(path.join(work, "create.json"), JSON.stringify(create));
+      rmSync(path.join(work, "digest"), { force: true });
+      return spawnSync(
+        "bash",
+        ["--noprofile", "--norc", "-e", "-c", record.run.replaceAll("/tmp/digests", digests)],
+        {
+          cwd: work,
+          encoding: "utf8",
+          env: {
+            PATH: `${path.join(directory, "bin")}:${process.env.PATH}`,
+            ID: "mend",
+            REPOSITORY: "ghcr.invalid/fixture/mend",
+            GITHUB_WORKSPACE: fileURLToPath(new URL("../", import.meta.url)),
+          },
         },
-      },
-    );
-  };
-  const recorded = run(created(index));
-  assert.equal(recorded.status, 0, recorded.stderr);
-  assert.equal(readFileSync(path.join(work, "digest"), "utf8"), `${index.digest}\n`);
-  // Had create reported the lone index the tag now names, nothing would be recorded.
-  rmSync(path.join(work, "digest"));
-  const lone = run(created(indexOf([plainChildren[1]])));
-  assert.equal(lone.status, 1);
-  assert.match(lone.stderr, /lacks/);
-  assert.equal(readFileSync(path.join(work, "digest"), "utf8"), "");
+      );
+    };
+    const written = () => readFileSync(path.join(work, "digest"), "utf8");
+    const recordedRun = run(created(index));
+    assert.equal(recordedRun.status, 0, `${job}: ${recordedRun.stderr}`);
+    assert.equal(written(), `${index.digest}\n`, job);
+    // Had create reported the lone index the tag now names, nothing would be recorded.
+    const moved = run(created(lone));
+    assert.equal(moved.status, 1, job);
+    assert.match(moved.stderr, /0 linux\/amd64 entries/, job);
+    assert.equal(written(), "", job);
+    // Every index the binding refuses, created and reported as it would be, is not recorded.
+    for (const { label, index: bad, problems } of refused) {
+      const result = run(created(bad));
+      assert.equal(result.status, 1, `${job} ${label}`);
+      assert.match(result.stderr, problems.amd64 ?? problems.arm64, `${job} ${label}`);
+      assert.equal(written(), "", `${job} ${label}`);
+    }
+    // The builds' artifacts named for the other arch: the arch comes from the artifact, so refused.
+    lay({ amd64: RELEASE.arm64.source, arm64: RELEASE.amd64.source });
+    const misnamed = run(created(index));
+    assert.equal(misnamed.status, 1, job);
+    assert.match(misnamed.stderr, /maps linux\/amd64 to .*, the amd64 build/, job);
+    lay({ amd64: RELEASE.amd64.source, arm64: RELEASE.arm64.source });
+    const nothing = run({});
+    assert.equal(nothing.status, 1, job);
+    assert.match(nothing.stdout, /reported no index digest/, job);
+  }
+  // A source given without its arch is refused by the script.
+  const file = path.join(work, "index.json");
+  writeFileSync(file, index.bytes);
+  writeFileSync(path.join(work, "a.json"), RELEASE.amd64.source.bytes);
+  const unnamed = spawnSync(
+    process.execPath,
+    [
+      script,
+      "check-index",
+      path.join(work, "create.json"),
+      file,
+      `${RELEASE.amd64.source.digest}=a.json`,
+    ],
+    { cwd: work, encoding: "utf8" },
+  );
+  assert.equal(unnamed.status, 1);
+  assert.match(unnamed.stderr, /is not <arch>=<digest>=<file>/);
 });
 
 // A status-function call in a job's `if`, ignoring quoted strings: `'always()' != ''` names none.

@@ -4,8 +4,6 @@
  * Every consumer reads it from its own run's `release-manifest` artifact.
  *
  *   write <out>                    from the run's digests-*, index-* and cli records (env below)
- *   digest <manifest> <image> <arch>
- *                                  prints that image's platform digest for that arch
  *   archive-digest <archive>       prints an image archive's platform manifest digest
  *   check-archive <manifest> <image> <arch> <archive>
  *                                  refuses the archive unless its platform manifest digest is the
@@ -14,16 +12,22 @@
  *                                  containerd image store)
  *   check-cli <manifest> <dir>     refuses <dir> unless it holds exactly the manifest's CLI tarball
  *                                  with its sha512; prints the tarball's path
- *   check-index <metadata> <index> <digest>=<source>...
+ *   check-index <metadata> <index> <arch>=<digest>=<source>...
  *                                  refuses the index `imagetools create --metadata-file` reported
  *                                  unless <index> (its raw JSON, read by that digest) holds exactly
- *                                  the given sources' manifests for linux/amd64 and linux/arm64;
- *                                  prints its digest
+ *                                  the given sources, each arch's build under that arch's platform
+ *                                  and nowhere else; prints its digest
+ *   resolve <manifest> <repository> <image> <arch>
+ *                                  reads <repository>@<the image's index> and @<its arch digest>
+ *                                  raw, by the digests the manifest records, and prints the digest
+ *                                  the index maps that arch's platform to, as a consumer of the
+ *                                  index would select it, refusing unless it is that arch's build
  *
  * `write` reads VERSION, BEFORE, COMMIT, DIGESTS (a directory of digests-<image>--<arch>/<hex>, as
  * download-artifact lays them out), INDEXES (index-<image>/digest) and CLI (the cli job's
  * {file, sha512, integrity}).
  */
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -48,7 +52,25 @@ const INDEX_TYPES = new Set([
   "application/vnd.oci.image.index.v1+json",
   "application/vnd.docker.distribution.manifest.list.v2+json",
 ]);
-const PLATFORMS = ARCHES.map((arch) => `linux/${arch}`);
+/**
+ * What each arch's build is, as an index descriptor's platform: os, architecture, and the variants
+ * BuildKit writes for it (none for amd64; none or v8 for arm64). Anything else is another platform.
+ */
+const PLATFORM = {
+  amd64: { os: "linux", architecture: "amd64", variants: [undefined] },
+  arm64: { os: "linux", architecture: "arm64", variants: [undefined, "v8"] },
+};
+const platformName = (platform) =>
+  [platform?.os, platform?.architecture, platform?.variant].filter(Boolean).join("/") ||
+  "no platform";
+/** The arch whose build a descriptor's platform names, or undefined for any other platform. */
+const archOf = (platform) =>
+  ARCHES.find(
+    (arch) =>
+      platform?.os === PLATFORM[arch].os &&
+      platform?.architecture === PLATFORM[arch].architecture &&
+      PLATFORM[arch].variants.includes(platform?.variant || undefined),
+  );
 
 class Refused extends Error {}
 
@@ -243,10 +265,18 @@ export function checkCli(manifest, dir) {
   return tarball;
 }
 
-/** An entry BuildKit adds beside each platform manifest of an attested build. */
+/** Annotated as BuildKit annotates the attestation it adds beside a platform manifest. */
+const annotatedAttestation = (descriptor) =>
+  descriptor.annotations?.["vnd.docker.reference.type"] === "attestation-manifest";
+/**
+ * An attestation, which no platform resolution selects: annotated as one, and for no runnable
+ * platform (BuildKit writes unknown/unknown). The annotation alone excludes nothing: containerd's
+ * platform resolver does not read it, and takes the first descriptor whose platform matches.
+ */
 const isAttestation = (descriptor) =>
-  descriptor.annotations?.["vnd.docker.reference.type"] === "attestation-manifest" ||
-  (descriptor.platform?.os === "unknown" && descriptor.platform?.architecture === "unknown");
+  annotatedAttestation(descriptor) &&
+  descriptor.platform?.os === "unknown" &&
+  descriptor.platform?.architecture === "unknown";
 
 /** A registry document read by digest (`imagetools inspect …@<digest> --raw`): it must hash to it. */
 function document(bytes, digest, what) {
@@ -262,12 +292,60 @@ function document(bytes, digest, what) {
 }
 
 /**
+ * The index's runnable descriptors for each arch, in the index's order. Every descriptor that is not
+ * an attestation counts toward a platform, whatever its annotations: an attestation annotation on a
+ * descriptor for a runnable platform is refused, any platform but the builds' is refused, and so is
+ * a digest the index lists twice. The first of an arch's entries is the one containerd would select.
+ */
+function platformEntries(index, digest) {
+  for (const descriptor of index.manifests)
+    ensure(
+      isAttestation(descriptor) || !annotatedAttestation(descriptor),
+      `The index ${digest} has ${descriptor.digest} annotated as an attestation for ${platformName(descriptor.platform)}, a platform a consumer can select`,
+    );
+  const counted = new Map();
+  for (const descriptor of index.manifests)
+    counted.set(descriptor.digest, (counted.get(descriptor.digest) ?? 0) + 1);
+  for (const [listed, times] of counted)
+    ensure(times === 1, `The index ${digest} lists ${listed} ${times} times`);
+  const entries = Object.fromEntries(ARCHES.map((arch) => [arch, []]));
+  for (const descriptor of index.manifests.filter((entry) => !isAttestation(entry))) {
+    const arch = archOf(descriptor.platform);
+    ensure(
+      arch !== undefined,
+      `The index ${digest} holds ${platformName(descriptor.platform)} (${descriptor.digest}), not ${ARCHES.map((name) => `linux/${name}`).join(" or ")}`,
+    );
+    entries[arch].push(descriptor);
+  }
+  return entries;
+}
+
+/**
+ * The runnable manifest one arch's build job pushed as <digest>: the document itself when it is an
+ * image manifest, or the one runnable child of a single-platform index, which BuildKit pushes when
+ * it adds an attestation (Mend's builds do: build-push-action's default provenance).
+ */
+function buildOf(parsed, digest, arch) {
+  if (!parsed.index) return digest;
+  const runnable = parsed.manifests.filter((descriptor) => !isAttestation(descriptor));
+  ensure(
+    runnable.length === 1,
+    `The ${arch} source ${digest} is an index of more than one platform`,
+  );
+  return runnable[0].digest;
+}
+
+/**
  * The digest `imagetools create` reported for the index it pushed, once that index is the one this
  * job asked for. The tag it pushed can move before anything reads it again, so the digest comes
- * from create's own metadata and the index is read by that digest. Every source must be in it: a
- * plain image manifest as a child, a single-platform index (an attested build) by each of its
- * children. It must hold nothing else, and its platform entries, attestations aside, must be
- * exactly linux/amd64 and linux/arm64.
+ * from create's own metadata and the index is read by that digest. Each source is one arch's build,
+ * named by the arch its build job recorded: a plain image manifest, or a single-platform index (an
+ * attested build) whose one runnable child is the build. The index must map each arch's platform to
+ * that arch's build and to nothing else, hold every source's children (attestations too), and hold
+ * nothing more. A platform label swapped between two descriptors, a platform listed twice or
+ * missing, a variant the build does not have, a digest listed twice, and an attestation annotation
+ * on a descriptor for a runnable platform are each refused: only an annotated unknown/unknown
+ * descriptor is an attestation (isAttestation).
  */
 export function checkIndex(metadata, indexBytes, sources) {
   const reported = [
@@ -281,38 +359,95 @@ export function checkIndex(metadata, indexBytes, sources) {
   const [digest] = reported;
   const index = document(indexBytes, digest, "The created index");
   ensure(index.index, `The created ${digest} is a single image manifest, not a multi-arch index`);
+  ensure(
+    sources.length === ARCHES.length &&
+      ARCHES.every((arch) => sources.filter((source) => source.arch === arch).length === 1),
+    `check-index needs exactly one source per arch (${ARCHES.join(", ")}), not ${sources.map(({ arch }) => arch).join(", ") || "none"}`,
+  );
+  const entries = platformEntries(index, digest);
+  // platformEntries refused any digest listed twice, so each descriptor is counted once here.
   const children = new Set(index.manifests.map((descriptor) => descriptor.digest));
   const expected = new Set();
-  ensure(sources.length > 0, "check-index needs the sources given to imagetools create");
-  for (const { digest: source, bytes } of sources) {
-    const parsed = document(bytes, source, `Source ${source}`);
+  for (const { arch, digest: source, bytes } of sources) {
+    const parsed = document(bytes, source, `The ${arch} source ${source}`);
+    const build = buildOf(parsed, source, arch);
+    ensure(
+      entries[arch].length === 1,
+      `The created index has ${entries[arch].length} linux/${arch} entries (${entries[arch].map((entry) => entry.digest).join(", ") || "none"}), not one`,
+    );
+    ensure(
+      entries[arch][0].digest === build,
+      `The created index maps linux/${arch} to ${entries[arch][0].digest}, not ${build}, the ${arch} build`,
+    );
     const wanted = parsed.index
       ? parsed.manifests.map((descriptor) => descriptor.digest)
       : [source];
-    if (parsed.index)
-      ensure(
-        parsed.manifests.filter((descriptor) => !isAttestation(descriptor)).length === 1,
-        `Source ${source} is an index of more than one platform`,
-      );
     for (const child of wanted) {
-      ensure(children.has(child), `The created index lacks ${child}, from source ${source}`);
+      ensure(
+        children.has(child),
+        `The created index lacks ${child}, from the ${arch} source ${source}`,
+      );
       expected.add(child);
     }
   }
   const extra = [...children].filter((child) => !expected.has(child));
   ensure(extra.length === 0, `The created index holds ${extra.join(", ")}, from no source`);
-  const platforms = index.manifests
-    .filter((descriptor) => !isAttestation(descriptor))
-    .map(({ platform }) =>
-      [platform?.os, platform?.architecture, platform?.variant].filter(Boolean).join("/"),
-    )
-    .toSorted();
-  ensure(
-    JSON.stringify(platforms) === JSON.stringify(PLATFORMS),
-    `The created index is for ${platforms.join(", ") || "no platform"}, not ${PLATFORMS.join(" and ")}`,
-  );
   return digest;
 }
+
+/**
+ * The digest the index <bytes>, read by <digest>, maps <arch>'s platform to: what a consumer pulling
+ * the index for that platform gets. containerd takes the first descriptor whose platform matches,
+ * annotations aside; exactly one may match (platformEntries refuses the rest), so the first is the
+ * only one and it is the one the binding checked.
+ */
+export function selectPlatform(bytes, digest, arch) {
+  ensure(ARCHES.includes(arch), `No build for ${arch}`);
+  const index = document(bytes, digest, `The index ${digest}`);
+  ensure(index.index, `${digest} is a single image manifest, not a multi-arch index`);
+  const entries = platformEntries(index, digest)[arch];
+  ensure(
+    entries.length === 1,
+    `The index ${digest} has ${entries.length} linux/${arch} entries, not one`,
+  );
+  return entries[0].digest;
+}
+
+/**
+ * The digest a consumer of <image>'s index gets for <arch>, once it is that arch's build. `read`
+ * answers a document's raw bytes by its digest. The index the manifest records, read by its digest,
+ * must map the arch's platform to the build the manifest records for the arch (its build job's
+ * digest, read by that digest: the runnable manifest itself, or an attested build's one runnable
+ * child). merge's check bound the two; this binds them again on the index a later job reads.
+ */
+export function resolvePlatform(manifest, image, arch, read) {
+  ensure(IMAGES.includes(image) && ARCHES.includes(arch), `No ${image} for ${arch}`);
+  const { index, platforms } = manifest.images[image];
+  const mapped = selectPlatform(read(index), index, arch);
+  const source = platforms[arch];
+  const build = buildOf(
+    document(read(source), source, `The ${arch} build ${source}`),
+    source,
+    arch,
+  );
+  ensure(
+    mapped === build,
+    `The index ${index} maps linux/${arch} to ${mapped}, not ${build}, the ${arch} build the release manifest records for ${image}${build === source ? "" : ` (in ${source})`}`,
+  );
+  return mapped;
+}
+
+/** A registry document's raw bytes, read by digest; a failed read is refused, never guessed. */
+const registryReader = (repository) => (digest) => {
+  const reference = `${repository}@${digest}`;
+  try {
+    return execFileSync("docker", ["buildx", "imagetools", "inspect", reference, "--raw"], {
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+  } catch {
+    throw new Refused(`Could not read ${reference}`);
+  }
+};
 
 function main([command, ...args]) {
   const { env } = process;
@@ -329,29 +464,31 @@ function main([command, ...args]) {
       writeFileSync(args[0], `${JSON.stringify(manifest, null, 2)}\n`);
       return JSON.stringify(manifest);
     }
-    case "digest:3": {
-      const [file, image, arch] = args;
-      ensure(IMAGES.includes(image) && ARCHES.includes(arch), `No ${image} for ${arch}`);
-      return readManifest(file).images[image].platforms[arch];
-    }
     case "archive-digest:1":
       return archiveIdentity(args[0]).platform;
     case "check-archive:4":
       return checkArchive(readManifest(args[0]), args[1], args[2], args[3]).join(" ");
     case "check-cli:2":
       return checkCli(readManifest(args[0]), args[1]);
+    case "resolve:4": {
+      const [file, repository, image, arch] = args;
+      return resolvePlatform(readManifest(file), image, arch, registryReader(repository));
+    }
     default:
       if (command === "check-index" && args.length >= 3) {
         const [metadata, index, ...given] = args;
         const sources = given.map((entry) => {
-          const at = entry.indexOf("=");
-          ensure(at > 0, `${entry} is not <digest>=<file>`);
-          return { digest: entry.slice(0, at), bytes: readFileSync(entry.slice(at + 1)) };
+          const [arch, digest, file] = entry.split("=");
+          ensure(
+            ARCHES.includes(arch) && file !== undefined && entry.split("=").length === 3,
+            `${entry} is not <arch>=<digest>=<file>`,
+          );
+          return { arch, digest, bytes: readFileSync(file) };
         });
         return checkIndex(JSON.parse(readFileSync(metadata, "utf8")), readFileSync(index), sources);
       }
       throw new Refused(
-        "usage: release-manifest.mjs write <out> | digest <manifest> <image> <arch> | archive-digest <archive> | check-archive <manifest> <image> <arch> <archive> | check-cli <manifest> <dir> | check-index <metadata> <index> <digest>=<source>...",
+        "usage: release-manifest.mjs write <out> | archive-digest <archive> | check-archive <manifest> <image> <arch> <archive> | check-cli <manifest> <dir> | resolve <manifest> <repository> <image> <arch> | check-index <metadata> <index> <arch>=<digest>=<source>...",
       );
   }
 }
