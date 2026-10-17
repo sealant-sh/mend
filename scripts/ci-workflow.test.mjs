@@ -199,6 +199,19 @@ test("the publisher's tarball check is compared with the normalizer on every pul
     !commands("packaging").some((command) => command.includes("scripts/republish.test.mjs")),
     "the parity test runs once, in static",
   );
+  // The rest of the publish block's tests, split from republish.test.mjs by area, run beside it.
+  const split = globSync("scripts/republish*.test.mjs", { cwd: root }).toSorted();
+  assert.ok(split.length > 1, split.join(", "));
+  for (const file of split) {
+    assert.ok(
+      run.some((command) => command.split(/\s+/).includes(file)),
+      `static runs ${file}`,
+    );
+    assert.ok(
+      !commands("packaging").some((command) => command.includes(file)),
+      `${file} runs once, in static`,
+    );
+  }
 });
 
 test("packaging retains browser, Docker, OpenTofu and acceptance contracts in its own job", () => {

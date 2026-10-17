@@ -4,8 +4,9 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
 import { runServerProcess, serverComposeArgs, serverProcessDeadlines } from "./server-runtime.ts";
@@ -107,16 +108,52 @@ it("a completed command is not subsequently timed out", async () => {
   ).toEqual({ status: 0, stdout: "done\n", stderr: "" });
 });
 
+/** A child that prints its PID, then writes `marker`, then runs until it is killed. */
+const pidThenMarker = (marker: string): ReadonlyArray<string> => [
+  "-e",
+  `console.log(process.pid); require("node:fs").writeFileSync(${JSON.stringify(marker)}, ""); setInterval(() => {}, 1000)`,
+];
+
 it(
   "applies the default deadline with absent options or only a private stdout destination",
   async () => {
     const runtime = nodeServerSetupRuntime();
-    const file = path.join(temporary(), "default-timeout.partial");
-    const args = ["-e", "console.log(process.pid); setInterval(() => {}, 1000)"];
-    const [captured, streamed] = await Promise.all([
-      runtime.run(process.execPath, args),
-      runtime.run(process.execPath, args, { stdoutFile: file }),
-    ]);
+    const root = temporary();
+    const file = path.join(root, "default-timeout.partial");
+    const capturedMarker = path.join(root, "captured.ready");
+    const streamedMarker = path.join(root, "streamed.ready");
+    // Only the deadline's own timer is virtual: the children, their signals and pipes stay real.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let settled = false;
+    const running = Promise.all([
+      runtime.run(process.execPath, pidThenMarker(capturedMarker)),
+      runtime.run(process.execPath, pidThenMarker(streamedMarker), { stdoutFile: file }),
+    ]).finally(() => {
+      settled = true;
+    });
+    const bound = new AbortController();
+    const [captured, streamed] = await (async () => {
+      try {
+        while (!fs.existsSync(capturedMarker) || !fs.existsSync(streamedMarker)) await delay(10);
+        vi.advanceTimersByTime(serverProcessDeadlines.ordinary - 1);
+        await delay(50);
+        expect(settled).toBe(false);
+        vi.advanceTimersByTime(1);
+        return await Promise.race([
+          running,
+          delay(10_000, undefined, { signal: bound.signal }).then(() => {
+            throw new Error("the default deadline did not fire at its full length");
+          }),
+        ]);
+      } catch (cause) {
+        // A failure above still fires the deadlines, so no child outlives the test.
+        vi.runOnlyPendingTimers();
+        throw cause;
+      } finally {
+        bound.abort();
+        vi.useRealTimers();
+      }
+    })();
     for (const result of [captured, streamed]) {
       expect(result.error).toBe(`Process timed out after ${serverProcessDeadlines.ordinary}ms`);
       expect(result.status).toBeNull();

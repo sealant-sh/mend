@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const cli = fileURLToPath(new URL("bench.mjs", import.meta.url));
+const virtualSleepsClock = fileURLToPath(new URL("fixtures/virtual-sleeps.mjs", import.meta.url));
 const runId = "live01";
 const otherRunId = "other1";
 const actorOf = (request) => {
@@ -18,8 +19,10 @@ const session = (id, ownerUserId) => ({ id, ownerUserId, status: "running", sett
 const tree = (id, name, sessions) => ({ id, name, sessions });
 
 // Each child invokes the unchanged public CLI, including its real private-state lock,
-// 10-second reconciliation grace and 2-second retry delay. Only the HTTP peer is local.
-const cleanupFixture = async (t, { mode }) => {
+// 10-second reconciliation grace and 2-second retry delay. Only the HTTP peer is local. With
+// `virtualSleeps`, the CLI's own waits are recorded (`run()`'s `sleeps`) and taken at once
+// (fixtures/virtual-sleeps.mjs); its lock, requests and every other timer stay native.
+const cleanupFixture = async (t, { mode, virtualSleeps = false }) => {
   const directory = mkdtempSync(path.join(tmpdir(), "st-bench-live-cleanup-"));
   let server = null;
   let child = null;
@@ -177,10 +180,13 @@ const cleanupFixture = async (t, { mode }) => {
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
+  const sleepsFile = path.join(directory, "sleeps");
   const run = async () => {
+    writeFileSync(sleepsFile, "");
     child = spawn(
       process.execPath,
       [
+        ...(virtualSleeps ? ["--import", virtualSleepsClock] : []),
         cli,
         "cleanup",
         "--url",
@@ -200,6 +206,7 @@ const cleanupFixture = async (t, { mode }) => {
           HOME: path.join(directory, "home"),
           TMPDIR: directory,
           ST_BENCH_STATE_DIR: state,
+          ...(virtualSleeps ? { ST_BENCH_TEST_SLEEPS: sleepsFile } : {}),
           PATH: "/usr/bin:/bin",
         },
         stdio: ["ignore", "pipe", "pipe"],
@@ -219,7 +226,8 @@ const cleanupFixture = async (t, { mode }) => {
     assert.equal(signal, null, stderr);
     assert.deepEqual(failures, []);
     assert.equal(readFileSync(unrelated, "utf8"), other, "another run's obligation remains exact");
-    return { status, stderr };
+    const sleeps = readFileSync(sleepsFile, "utf8").split("\n").filter(Boolean).map(Number);
+    return { status, stderr, sleeps };
   };
   return {
     run,
