@@ -12,12 +12,16 @@ const tag = "v0.0.1-nightly.20261013.1";
 // Independent inventory: adding a mapping requires reviewing the expected copied contract.
 const shared = [
   "Array",
+  "backgroundActivitySettings",
   "changeRequestUrl",
   "keybindings",
   "model",
   "orchestrationV2PendingBackgroundWork",
   "path",
+  "schemaJson",
+  "serverSettings",
   "sourceControl",
+  "Struct",
   "threadPullRequests",
   "threadTranscript",
 ];

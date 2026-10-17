@@ -31,6 +31,7 @@ import {
   ServerProviderUpdateError,
   ServerSelfUpdateError,
   ServerSettingsError,
+  type ServerSettings,
   type OrchestrationV2ShellStreamItem,
   UsageLimitSourceError,
   VcsUnsupportedOperationError,
@@ -57,6 +58,7 @@ import { GatewayEnvironment } from "./environment.ts";
 import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
+import { modelPreferencesUpdateOf } from "./model-preferences.ts";
 import { makeReviewHandlers } from "./review.ts";
 import { RPC_REQUIRED_SCOPES } from "./rpc-scopes.ts";
 import {
@@ -66,7 +68,7 @@ import {
   providersFromMend,
   type PersonLogins,
 } from "./server-config.ts";
-import type { BearerSession } from "./state.ts";
+import type { BearerSession, GatewayStateError } from "./state.ts";
 import { makeVcsHandlers } from "./vcs.ts";
 
 /**
@@ -99,6 +101,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.serverProbe,
   WS_METHODS.agentSessionsScan,
   WS_METHODS.serverGetConfig,
+  WS_METHODS.serverGetSettings,
+  WS_METHODS.serverUpdateSettings,
   WS_METHODS.serverRefreshProviders,
   WS_METHODS.subscribeServerConfig,
   WS_METHODS.subscribeServerLifecycle,
@@ -266,6 +270,7 @@ export interface GatewayRpcInput {
 }
 
 const MODELS_SOURCE = "Mend GET /api/harnesses/models";
+const PREFERENCES_SOURCE = "the t3code gateway's state";
 /** How long the config waits for the person's logins (Mend asks the platform) before leaving them unknown. */
 const LOGINS_DEADLINE = "2 seconds";
 /** What a client is shown of the providers, without when it was read: what a change is. */
@@ -331,77 +336,85 @@ export const makeGatewayRpcHandlers = ({
   const authorize = (bearer: BearerSession) =>
     hub.isRefused(bearer.deviceToken) ? Effect.fail(deviceRefused(READ)) : Effect.void;
 
+  const settingsReadFailure = (cause: GatewayStateError) =>
+    new ServerSettingsError({ settingsPath: PREFERENCES_SOURCE, operation: "read-file", cause });
+  const readSettings = hub.settings(session).pipe(Effect.mapError(settingsReadFailure));
+
   /**
    * The person's config. Mend's catalog is read with their device token; a revoked device
    * answers t3code's authorization error, an unreachable Mend its settings error (the client
    * retries both differently: blocked, or transient). The config is encoded here first, so a
    * mapping bug is a typed failure logged by the gateway, never a defect in the client.
    */
-  const loadServerConfig = Effect.gen(function* () {
-    yield* authorize(session);
-    const catalogRead = mend.listHarnessModels(session.deviceToken).pipe(
-      Effect.catchTags({
-        MendDeviceRefused: () =>
-          Effect.fail(
-            new EnvironmentAuthorizationError({
-              message: "Mend no longer accepts this device. Pair again from Mend.",
-              requiredScope: READ,
-            }),
+  const loadServerConfigWith = (settingsRead: Effect.Effect<ServerSettings, ServerSettingsError>) =>
+    Effect.gen(function* () {
+      yield* authorize(session);
+      const catalogRead = mend.listHarnessModels(session.deviceToken).pipe(
+        Effect.catchTags({
+          MendDeviceRefused: () =>
+            Effect.fail(
+              new EnvironmentAuthorizationError({
+                message: "Mend no longer accepts this device. Pair again from Mend.",
+                requiredScope: READ,
+              }),
+            ),
+          MendUnavailable: (cause) =>
+            Effect.logWarning("t3 gateway could not read Mend's model catalog", { cause }).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new ServerSettingsError({
+                    settingsPath: MODELS_SOURCE,
+                    operation: "read-file",
+                    cause,
+                  }),
+                ),
+              ),
+            ),
+        }),
+      );
+      // Beside the catalog, never in front of it: a slow or failed read leaves the logins unknown.
+      const loginsRead = mend.connectedAccounts(session.deviceToken).pipe(
+        Effect.flatMap((accounts) =>
+          Effect.map(Clock.currentTimeMillis, (now): PersonLogins => loginsOf(accounts, now)),
+        ),
+        Effect.timeoutOption(LOGINS_DEADLINE),
+        Effect.map(Option.getOrNull),
+        Effect.catch((cause) =>
+          Effect.logDebug("t3 gateway could not read the person's logins", { cause }).pipe(
+            Effect.as(null),
           ),
-        MendUnavailable: (cause) =>
-          Effect.logWarning("t3 gateway could not read Mend's model catalog", { cause }).pipe(
+        ),
+      );
+      const [catalogs, logins, settings] = yield* Effect.all(
+        [catalogRead, loginsRead, settingsRead],
+        { concurrency: "unbounded" },
+      );
+      const checkedAt = DateTime.formatIso(yield* DateTime.now);
+      const config = makeServerConfig({
+        environment: descriptor,
+        auth: environment.auth,
+        paths,
+        providers: providersFromMend(catalogs, checkedAt, logins),
+        settings,
+      });
+      yield* encodeServerConfig(config).pipe(
+        Effect.catch((cause) =>
+          Effect.logError("t3 gateway built a server config t3code cannot read", { cause }).pipe(
             Effect.andThen(
               Effect.fail(
                 new ServerSettingsError({
                   settingsPath: MODELS_SOURCE,
-                  operation: "read-file",
+                  operation: "normalize",
                   cause,
                 }),
               ),
             ),
           ),
-      }),
-    );
-    // Beside the catalog, never in front of it: a slow or failed read leaves the logins unknown.
-    const loginsRead = mend.connectedAccounts(session.deviceToken).pipe(
-      Effect.flatMap((accounts) =>
-        Effect.map(Clock.currentTimeMillis, (now): PersonLogins => loginsOf(accounts, now)),
-      ),
-      Effect.timeoutOption(LOGINS_DEADLINE),
-      Effect.map(Option.getOrNull),
-      Effect.catch((cause) =>
-        Effect.logDebug("t3 gateway could not read the person's logins", { cause }).pipe(
-          Effect.as(null),
         ),
-      ),
-    );
-    const [catalogs, logins] = yield* Effect.all([catalogRead, loginsRead], {
-      concurrency: "unbounded",
+      );
+      return config;
     });
-    const checkedAt = DateTime.formatIso(yield* DateTime.now);
-    const config = makeServerConfig({
-      environment: descriptor,
-      auth: environment.auth,
-      paths,
-      providers: providersFromMend(catalogs, checkedAt, logins),
-    });
-    yield* encodeServerConfig(config).pipe(
-      Effect.catch((cause) =>
-        Effect.logError("t3 gateway built a server config t3code cannot read", { cause }).pipe(
-          Effect.andThen(
-            Effect.fail(
-              new ServerSettingsError({
-                settingsPath: MODELS_SOURCE,
-                operation: "normalize",
-                cause,
-              }),
-            ),
-          ),
-        ),
-      ),
-    );
-    return config;
-  });
+  const loadServerConfig = loadServerConfigWith(readSettings);
 
   return WsRpcGroup.of({
     // ── Served ──────────────────────────────────────────────────────────────
@@ -413,7 +426,10 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.subscribeServerConfig]: () =>
       Stream.unwrap(
         Effect.gen(function* () {
-          const config = yield* loadServerConfig;
+          const subscription = yield* hub
+            .subscribeSettings(session)
+            .pipe(Effect.mapError(settingsReadFailure));
+          const config = yield* loadServerConfigWith(Effect.succeed(subscription.settings));
           const changes = yield* hub.accountChanges;
           let last = providersPrint(config.providers);
           const updates = Stream.merge(
@@ -439,8 +455,16 @@ export const makeGatewayRpcHandlers = ({
               payload: { providers },
             })),
           );
+          const settingsUpdates = subscription.changes.pipe(
+            Stream.catchTag("SubscriberFellBehind", () => Stream.fromEffect(readSettings)),
+            Stream.map((settings) => ({
+              version: 1 as const,
+              type: "settingsUpdated" as const,
+              payload: { settings },
+            })),
+          );
           return Stream.make({ version: 1 as const, type: "snapshot" as const, config }).pipe(
-            Stream.concat(updates),
+            Stream.concat(Stream.merge(updates, settingsUpdates)),
           );
         }),
       ).pipe(Stream.scoped),
@@ -714,8 +738,25 @@ export const makeGatewayRpcHandlers = ({
       Effect.fail(new ServerSelfUpdateError({ reason: SELF_UPDATE_REASON })),
     [WS_METHODS.serverUpsertKeybinding]: () => refuse(WS_METHODS.serverUpsertKeybinding),
     [WS_METHODS.serverRemoveKeybinding]: () => refuse(WS_METHODS.serverRemoveKeybinding),
-    [WS_METHODS.serverGetSettings]: () => refuse(WS_METHODS.serverGetSettings),
-    [WS_METHODS.serverUpdateSettings]: () => refuse(WS_METHODS.serverUpdateSettings),
+    [WS_METHODS.serverGetSettings]: () => authorize(session).pipe(Effect.andThen(readSettings)),
+    [WS_METHODS.serverUpdateSettings]: (input) =>
+      Effect.gen(function* () {
+        yield* authorize(session);
+        const patch = modelPreferencesUpdateOf(input);
+        if (patch === null) {
+          return yield* refuse(WS_METHODS.serverUpdateSettings);
+        }
+        return yield* hub.updateModelPreferences(session, patch).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ServerSettingsError({
+                settingsPath: PREFERENCES_SOURCE,
+                operation: "write-file",
+                cause,
+              }),
+          ),
+        );
+      }),
     [WS_METHODS.serverDiscoverSourceControl]: () => refuse(WS_METHODS.serverDiscoverSourceControl),
     [WS_METHODS.serverGetTraceDiagnostics]: () => refuse(WS_METHODS.serverGetTraceDiagnostics),
     [WS_METHODS.serverGetProcessDiagnostics]: () => refuse(WS_METHODS.serverGetProcessDiagnostics),

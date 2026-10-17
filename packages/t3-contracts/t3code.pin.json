@@ -573,6 +573,16 @@
       "blob": "dea902cfc47e04d07290f2c96973bb922aa9ac40",
       "sha256": "0363179ee901a401b1164e61aac4b2253a57e0f929fe86816f0aa4e457d4ce3e"
     },
+    "t3-shared/src/Struct.ts": {
+      "upstream": "packages/shared/src/Struct.ts",
+      "blob": "f703bcabfaa83fc43d3d8251f2be113c58a879c3",
+      "sha256": "102b756d9104e40afe8cd12d2f7993af679abf6b0f464f46ffd5960c829173b0"
+    },
+    "t3-shared/src/backgroundActivitySettings.ts": {
+      "upstream": "packages/shared/src/backgroundActivitySettings.ts",
+      "blob": "fbba3359c4607ba9e53b70a09d845b067c1e806e",
+      "sha256": "e0b2ca568d5235ebc0535ba14cee3b2f6068560793f7e15b2654911afe1b1896"
+    },
     "t3-shared/src/changeRequestUrl.ts": {
       "upstream": "packages/shared/src/changeRequestUrl.ts",
       "blob": "3c24ed75019563ee754ac8168e402cbf20678614",
@@ -597,6 +607,16 @@
       "upstream": "packages/shared/src/path.ts",
       "blob": "d887262c08ba15e80de7d5d1dfd2487982d0edda",
       "sha256": "b995ad0ff71ac10e54f4bb3d102f8a8a2b74e6ecd5c4803244dbb10a10a57f86"
+    },
+    "t3-shared/src/schemaJson.ts": {
+      "upstream": "packages/shared/src/schemaJson.ts",
+      "blob": "a65ad62573e634d9d991165a9cfbac06ef696b3d",
+      "sha256": "d51597b73cc1df217227d7a58a59e37cf3df2c9a4ae851142dfd42924fc1827a"
+    },
+    "t3-shared/src/serverSettings.ts": {
+      "upstream": "packages/shared/src/serverSettings.ts",
+      "blob": "5371cf76e8a79d2e3219a3c8b89d43ee727a23ef",
+      "sha256": "2ce880a622a3b2ca3468390edb6bcc185c5438bccafc743798d758131c91d971"
     },
     "t3-shared/src/sourceControl.ts": {
       "upstream": "packages/shared/src/sourceControl.ts",

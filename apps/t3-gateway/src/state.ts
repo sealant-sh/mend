@@ -8,6 +8,8 @@ import {
   AuthEnvironmentScope,
   AuthSessionId,
   EnvironmentId,
+  ModelFavorites,
+  ProviderModelPreferences,
 } from "@mend/t3-contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -18,6 +20,7 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
 import { GatewayConfig } from "./config.ts";
+import { NO_MODEL_PREFERENCES, type ModelPreferences } from "./model-preferences.ts";
 import type { EntryState, StoredEntry, StoredQueue } from "./queue.ts";
 
 /**
@@ -331,6 +334,18 @@ export class GatewayState extends Context.Service<
     readonly listNextEfforts: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
+    /** A person's model favorites, hidden models and model order; unset until a client sets them. */
+    readonly modelPreferences: (
+      mendUserId: string,
+    ) => Effect.Effect<ModelPreferences, GatewayStateError>;
+    /**
+     * Replaces a person's model preferences with `change` of the kept ones, read and written in one
+     * step, so two clients' changes never lose one another. Answers what was kept.
+     */
+    readonly updateModelPreferences: (
+      mendUserId: string,
+      change: (current: ModelPreferences) => ModelPreferences,
+    ) => Effect.Effect<ModelPreferences, GatewayStateError>;
     /** Every bearer neither revoked nor expired at `now`: what a start checks with Mend. */
     readonly liveSessions: (
       now: number,
@@ -540,6 +555,13 @@ const MIGRATIONS: ReadonlyArray<string> = [
     PRIMARY KEY (mend_user_id, mend_session_id)
   );
   `,
+  `
+  CREATE TABLE model_preferences (
+    mend_user_id TEXT PRIMARY KEY,
+    favorites TEXT,
+    provider_model_preferences TEXT
+  );
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -639,6 +661,12 @@ const LifecycleRow = Schema.Struct({
   snoozed_at: Schema.NullOr(Schema.String),
 });
 const decodeLifecycleRows = Schema.decodeUnknownEffect(Schema.Array(LifecycleRow));
+const ModelPreferencesRow = Schema.Struct({
+  favorites: Schema.NullOr(Schema.fromJsonString(ModelFavorites)),
+  provider_model_preferences: Schema.NullOr(Schema.fromJsonString(ProviderModelPreferences)),
+});
+const decodeModelPreferencesRow = Schema.decodeUnknownSync(ModelPreferencesRow);
+const encodeModelPreferencesRow = Schema.encodeSync(ModelPreferencesRow);
 const ImageBytesRow = Schema.Struct({ ...ImageRow.fields, bytes: Schema.Uint8Array });
 const decodeImageBytesRow = Schema.decodeUnknownEffect(ImageBytesRow);
 const storedImageOf = (row: typeof ImageRow.Type): StoredImage => ({
@@ -1396,6 +1424,41 @@ export const openGatewayState = (
         ),
       );
 
+    const readModelPreferences = (mendUserId: string): ModelPreferences => {
+      const row = database
+        .prepare(
+          "SELECT favorites, provider_model_preferences FROM model_preferences WHERE mend_user_id = ?",
+        )
+        .get(mendUserId);
+      if (row === undefined) return NO_MODEL_PREFERENCES;
+      const decodedRow = decodeModelPreferencesRow(row);
+      return {
+        favorites: decodedRow.favorites,
+        providerModelPreferences: decodedRow.provider_model_preferences,
+      };
+    };
+
+    const modelPreferences = (mendUserId: string) =>
+      run("modelPreferences", () => readModelPreferences(mendUserId));
+
+    const updateModelPreferences = (
+      mendUserId: string,
+      change: (current: ModelPreferences) => ModelPreferences,
+    ) =>
+      run("updateModelPreferences", () => {
+        const next = change(readModelPreferences(mendUserId));
+        const row = encodeModelPreferencesRow({
+          favorites: next.favorites,
+          provider_model_preferences: next.providerModelPreferences,
+        });
+        database
+          .prepare(
+            "INSERT OR REPLACE INTO model_preferences (mend_user_id, favorites, provider_model_preferences) VALUES (?, ?, ?)",
+          )
+          .run(mendUserId, row.favorites, row.provider_model_preferences);
+        return next;
+      });
+
     const liveSessions = (now: number) =>
       run("liveSessions", () =>
         database
@@ -1457,6 +1520,8 @@ export const openGatewayState = (
       listVisited,
       setNextEffort,
       listNextEfforts,
+      modelPreferences,
+      updateModelPreferences,
       liveSessions,
       peopleWithQueuedMessages,
     };

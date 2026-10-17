@@ -144,6 +144,7 @@ by an older gateway no longer reads files, which now need a permission of their 
 | Files and `@`-mentions             | The session's worktree as it stands: the file tree, reading a file, searching contents. The Files tab is read-only                                                                                                                                                                                                                                                                    |
 | Branch status                      | The session's branch and its change against its base. The branch picker lists the project's branches, any of them a new worktree's base, and the thread's own                                                                                                                                                                                                                         |
 | Terminal                           | Mend's own shell beside the agent, opened with a single-use ticket                                                                                                                                                                                                                                                                                                                    |
+| Model favorites                    | Your own, kept by the gateway: the star in the model picker sticks on every device you pair, and nobody else sees it                                                                                                                                                                                                                                                                  |
 
 Some of t3code has no counterpart in Mend. The gateway does not grant the permissions behind it, so
 t3code shows those controls inert with its own wording, or it refuses them with t3code's own error:
@@ -160,11 +161,11 @@ t3code shows those controls inert with its own wording, or it refuses them with 
   operations (commit, push, branches, removing a worktree). Landing a change stays in Mend
   ([Land a change](/guides/land-a-change/)).
 - **The environment:** providers other than Codex and Claude, provider sign-in and setup, settings
-  and keybinding changes, usage and limits, scheduled tasks (the page lists none), the in-app
-  browser, devices (the device panel says Mend runs none), diagnostics and resource telemetry,
-  storage cleanup, MCP apps and connecting an agent over MCP, T3 Connect, and updating the server:
-  the gateway updates with Mend. Pairing and revoking are done in Mend, with `mend pair` and your
-  devices.
+  and keybinding changes (hiding and reordering models among them), usage and limits, scheduled
+  tasks (the page lists none), the in-app browser, devices (the device panel says Mend runs none),
+  diagnostics and resource telemetry, storage cleanup, MCP apps and connecting an agent over MCP, T3
+  Connect, and updating the server: the gateway updates with Mend. Pairing and revoking are done in
+  Mend, with `mend pair` and your devices.
 
 ## Limits worth knowing
 
@@ -249,9 +250,9 @@ The gateway keeps one SQLite file of its own, in its own volume on a packaged se
 (`mend-t3-gateway`, `/opt/mend-t3-gateway/state/state.sqlite` in the container): its environment id,
 each paired client, the thread ids t3code gave, the queue, images attached to messages (one never
 sent is let go of after seven days) and what each sent message carried, deleted sessions Mend still
-keeps, each person's archived, settled and snoozed threads and when they last saw each, and the mode
-and effort chosen for an agent's next start. Mend's database is never touched; losing the file loses
-pairings and t3code-side ids, never Mend's records.
+keeps, each person's archived, settled and snoozed threads and when they last saw each, their model
+favorites, and the mode and effort chosen for an agent's next start. Mend's database is never
+touched; losing the file loses pairings and t3code-side ids, never Mend's records.
 
 The file holds each paired person's Mend device token, which acts as that person until the device is
 revoked: the gateway needs it to read Mend and send queued messages when no client is connected. It
