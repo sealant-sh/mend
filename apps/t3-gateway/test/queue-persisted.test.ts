@@ -18,12 +18,18 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
 import {
+  DEFAULT_QUEUE_TIMINGS,
+  nextStep,
+  PREPARED_BEFORE_RESTART,
   restoredQueue,
+  retryPreparation,
   SENDER_GONE,
   SENT_BEFORE_RESTART,
   storedOf,
+  type SessionView,
   type StoredQueue,
 } from "../src/queue.ts";
+import { openGatewayState } from "../src/state.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
@@ -452,13 +458,26 @@ const stored = (state: StoredQueue["entries"][number]["state"], sender = "bearer
   error: state === "failed" ? "Mend refused it." : null,
   launches: state === "launching" ? 1 : 0,
   imageIds: [],
+  workspacePreparation: null,
+  preparationFailed: false,
 });
+
+const LIVE: SessionView = {
+  known: true,
+  agentLive: true,
+  turnOpen: false,
+  status: "running",
+  updatedAt: "2026-10-10T09:00:00.000Z",
+  summary: null,
+  evidence: 1,
+};
 
 describe("what a restart makes of each message", () => {
   it("queues again what waited, fails what was on its way, and keeps what settled", () => {
     const queue = restoredQueue(
       {
         held: true,
+        preparation: null,
         entries: [
           stored("queued"),
           stored("launching"),
@@ -488,8 +507,104 @@ describe("what a restart makes of each message", () => {
     );
   });
 
+  it("fails an opening message whose worktree was being prepared as a preparation, and holds what follows", () => {
+    const preparing = {
+      ...stored("preparing"),
+      workspacePreparation: { type: "worktree" as const, baseRef: "main" },
+    };
+    const queue = restoredQueue(
+      { held: false, preparation: null, entries: [preparing, stored("queued")] },
+      () => "mdt_token",
+    );
+    assert.deepStrictEqual(
+      queue.entries.map((entry) => [entry.state, entry.error, entry.preparationFailed]),
+      [
+        ["failed", PREPARED_BEFORE_RESTART, true],
+        ["queued", null, false],
+      ],
+    );
+    assert.isTrue(queue.held);
+    assert.deepStrictEqual(storedOf(queue).entries[0]?.workspacePreparation, {
+      type: "worktree",
+      baseRef: "main",
+    });
+  });
+
+  it.effect(
+    "keeps an opening message its preparation released as queued through the state file, and sends it",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const path = join(mkdtempSync(join(tmpdir(), "t3-gateway-prepared-")), "state.sqlite");
+          const released = {
+            ...stored("queued"),
+            workspacePreparation: { type: "worktree" as const, baseRef: "main" },
+          };
+          const state = yield* openGatewayState(path);
+          yield* state.saveQueue("user-1", "session-1", {
+            held: false,
+            preparation: null,
+            entries: [released],
+          });
+          const [kept] = yield* state.loadQueues("user-1");
+          assert.isDefined(kept);
+          if (kept === undefined) return;
+          const queue = restoredQueue(kept.queue, () => "mdt_token");
+          assert.deepStrictEqual(
+            queue.entries.map((entry) => [entry.state, entry.preparationFailed]),
+            [["queued", false]],
+          );
+          assert.isNull(queue.preparation);
+          const step = nextStep(queue, LIVE, 0, DEFAULT_QUEUE_TIMINGS);
+          assert.strictEqual(step?.kind, "send");
+        }),
+      ),
+  );
+
+  it.effect(
+    "brings a preparation a restart cut short back failed through the state file, with its setup shell",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const path = join(mkdtempSync(join(tmpdir(), "t3-gateway-cut-")), "state.sqlite");
+          const opening = {
+            ...stored("preparing"),
+            workspacePreparation: { type: "worktree" as const, baseRef: "main" },
+          };
+          const state = yield* openGatewayState(path);
+          yield* state.saveQueue("user-1", "session-1", {
+            held: false,
+            preparation: { status: "running", setupProcessId: "process-7" },
+            entries: [opening, stored("queued")],
+          });
+          const [kept] = yield* state.loadQueues("user-1");
+          assert.isDefined(kept);
+          if (kept === undefined) return;
+          const queue = restoredQueue(kept.queue, () => "mdt_token");
+          assert.deepStrictEqual(queue.preparation, {
+            status: "failed",
+            setupProcessId: "process-7",
+          });
+          assert.deepStrictEqual(
+            queue.entries.map((entry) => [entry.state, entry.preparationFailed]),
+            [
+              ["failed", true],
+              ["queued", false],
+            ],
+          );
+          assert.isTrue(queue.held);
+          const retried = retryPreparation(queue, opening.runId);
+          assert.strictEqual(retried?.staleProcessId, "process-7");
+          assert.isNull(nextStep(queue, LIVE, 0, DEFAULT_QUEUE_TIMINGS));
+        }),
+      ),
+  );
+
   it("fails a message whose sender is no longer paired, and lets go of a hold with nothing queued", () => {
-    const queue = restoredQueue({ held: true, entries: [stored("queued", "gone")] }, () => null);
+    const queue = restoredQueue(
+      { held: true, preparation: null, entries: [stored("queued", "gone")] },
+      () => null,
+    );
     assert.strictEqual(queue.entries[0]?.state, "failed");
     assert.strictEqual(queue.entries[0]?.error, SENDER_GONE);
     assert.isFalse(queue.held);

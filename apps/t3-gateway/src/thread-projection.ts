@@ -3,6 +3,7 @@ import {
   CheckpointScopeId,
   MessageId,
   NodeId,
+  ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   ProviderDriverKind,
   RunId,
   RuntimeRequestId,
@@ -692,7 +693,8 @@ const pendingEntries = (
       parentItemId: null,
       ordinal: ordinalBase + 1,
       status: "failed",
-      title: null,
+      // A failed preparation is t3code's own, which its timeline offers to retry.
+      title: entry.preparationFailed ? "Workspace preparation failed" : null,
       startedAt: requested,
       completedAt: requested,
       updatedAt: requested,
@@ -700,7 +702,7 @@ const pendingEntries = (
       failure: {
         class: "unknown",
         message: truncate(nonEmpty(entry.error, "Mend did not take this message."), 4_000),
-        code: null,
+        code: entry.preparationFailed ? ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE : null,
         retryable: null,
       },
     });

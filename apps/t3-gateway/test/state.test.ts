@@ -155,8 +155,16 @@ describe("stored grants", () => {
           }
         }),
       );
+      // Back to migration 15, so the widening (16) runs on the next open; what migration 17 added
+      // goes too, since it runs again after it.
       const old = new DatabaseSync(path);
-      old.exec("PRAGMA user_version = 15");
+      old.exec(`
+        ALTER TABLE queued_messages DROP COLUMN workspace_preparation;
+        ALTER TABLE queued_messages DROP COLUMN preparation_failed;
+        DROP TABLE queue_preparations;
+        DROP TABLE project_scripts;
+        PRAGMA user_version = 15;
+      `);
       old.close();
 
       const read = yield* Effect.scoped(

@@ -758,6 +758,21 @@ export class FakeWorkbench {
         })),
       );
     }
+    if (method === "POST" && collection === "projects" && sub === "refresh") {
+      return body().then((value) => {
+        record(value);
+        if (this.projectView(id) === null) return json(404, { _tag: "NotFound" });
+        const branches = this.branches.get(id) ?? [{ name: "main", isDefault: true }];
+        return json(
+          200,
+          branches.map((branch) => ({
+            ...branch,
+            sha: "9d3c1f0a2b4e6d8f0a1c3e5b7d9f1a3c5e7b9d1f",
+            committedAt: "2026-10-17T12:00:00.000Z",
+          })),
+        );
+      });
+    }
     if (method === "GET" && collection === "projects" && sub === "worktrees") {
       if (this.projectView(id) === null) return json(404, { _tag: "NotFound" });
       const names = new Set(
@@ -1289,6 +1304,8 @@ export class FakeWorkbench {
    * or at a checkpoint (keyed by checkpoint id).
    */
   readonly fileContents = new Map<string, Map<string, string>>();
+  /** Files every new worktree starts with (its t3.json, say), by path. */
+  readonly newWorktreeFiles = new Map<string, string>();
   /** `GET /api/changes/:id/stats`, by change id. */
   readonly stats = new Map<string, { files: number; additions: number; deletions: number }>();
   /** Change id → its landings, newest first (`GET /api/changes/:id/landings`). */
@@ -1529,6 +1546,9 @@ export class FakeWorkbench {
     this.turns.set(id, []);
     this.items.set(id, []);
     this.requests.set(id, []);
+    if (joined === undefined && this.newWorktreeFiles.size > 0) {
+      this.fileContents.set(session.worktreeId, new Map(this.newWorktreeFiles));
+    }
     this.emit({ type: "session", sessionId: id, projectId });
     return session;
   }

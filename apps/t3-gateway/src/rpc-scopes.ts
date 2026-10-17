@@ -257,23 +257,55 @@ const assetUrlScopes = (payload: unknown): ReadonlyArray<AuthEnvironmentScope> =
         : [AuthOrchestrationReadScope],
   });
 
+/** Project id → the project actions to keep for it, or null to let go of them. */
+export type ProjectActionsPatch = NonNullable<ServerSettingsPatch["projectScriptOverrides"]>;
+
+/**
+ * The one settings change the gateway takes: the project actions of the person's projects
+ * (`projectScriptOverrides`, which t3code's "From t3.json" import and action editor send), alone in
+ * its patch. Null for any other update.
+ */
+export const projectActionsPatchOf = (payload: unknown): ProjectActionsPatch | null =>
+  Option.match(decodeSettingsUpdate(payload), {
+    onNone: () => null,
+    onSome: (update) => {
+      const { projectScriptOverrides, ...rest } = update.patch;
+      const alone =
+        update.providerInstanceMutation === undefined &&
+        Object.values(rest).every((value) => value === undefined);
+      return alone && projectScriptOverrides !== undefined ? projectScriptOverrides : null;
+    },
+  });
+
 /**
  * A settings update needs the scopes its patch touches, and `providers:manage` with a provider
  * mutation; one carrying only a provider mutation needs only that (t3code's
  * `requiredScopesForSettingsUpdate`). A payload that does not decode needs `settings:write`.
  */
+/**
+ * What saving project actions needs. t3code asks `settings:write`, because its server runs a setup
+ * action on its own host. The gateway runs one only in the person's own Mend workspace, as them,
+ * which `terminal:operate` already lets them do by typing it, so `settings:write` stays withheld.
+ */
+const PROJECT_ACTIONS_SCOPES: ReadonlyArray<AuthEnvironmentScope> = [
+  AuthOrchestrationOperateScope,
+  AuthTerminalOperateScope,
+];
+
 const settingsUpdateScopes = (payload: unknown): ReadonlyArray<AuthEnvironmentScope> =>
-  Option.match(decodeSettingsUpdate(payload), {
-    onNone: () => [AuthSettingsWriteScope],
-    onSome: (update) => {
-      if (modelPreferencesUpdateOf(update) !== null) return [AuthOrchestrationOperateScope];
-      const scopes = requiredScopesForServerSettingsPatch(update.patch);
-      if (update.providerInstanceMutation === undefined) return scopes;
-      return Object.values(update.patch).every((value) => value === undefined)
-        ? [AuthProvidersManageScope]
-        : [...new Set([...scopes, AuthProvidersManageScope])];
-    },
-  });
+  projectActionsPatchOf(payload) !== null
+    ? PROJECT_ACTIONS_SCOPES
+    : Option.match(decodeSettingsUpdate(payload), {
+        onNone: () => [AuthSettingsWriteScope],
+        onSome: (update) => {
+          if (modelPreferencesUpdateOf(update) !== null) return [AuthOrchestrationOperateScope];
+          const scopes = requiredScopesForServerSettingsPatch(update.patch);
+          if (update.providerInstanceMutation === undefined) return scopes;
+          return Object.values(update.patch).every((value) => value === undefined)
+            ? [AuthProvidersManageScope]
+            : [...new Set([...scopes, AuthProvidersManageScope])];
+        },
+      });
 
 const projectMutationScopes = (payload: unknown): ReadonlyArray<AuthEnvironmentScope> =>
   Option.match(decodeProjectMutation(payload), {

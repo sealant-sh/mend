@@ -10,15 +10,17 @@ Code is coming in 0.36 patch releases, before 0.37.
 
 `mend server setup --t3-gateway` turns it on. t3code's desktop, mobile and web clients add it as an
 environment, pair with a code from `mend pair`, and see this Mend's projects and sessions as their
-projects and threads: start a thread in a new or an existing worktree, from a base branch, send
-messages and up to 100 images, pick with `$` the skills Mend gives the session, @-mention project
-files, queue, edit and reorder what waits, answer approvals, choose the model, effort and permission
-mode for the agent's next start, rename, stop, archive and delete, read each turn's diff, the
-thread's files and its change, find text in a thread, open a terminal, pin threads and order the
-sidebar, and star models in the model picker, kept for that person alone, each as the person who
-paired and under Mend's own rules. From the git panel, the change's owner pushes the thread's change
-and opens its pull request through Mend's landing. t3code shows a provider as connected only when
-Mend holds that person's login for it.
+projects and threads: start a thread in a new or an existing worktree, from a base branch or from
+origin's latest, with the person's own setup action (imported from t3.json, never run from the file
+by itself) run on t3code's setup card before the first message (a failed setup is retried from the
+thread), keep project actions, send messages and up to 100 images, pick with `$` the skills Mend
+gives the session, @-mention project files, queue, edit and reorder what waits, answer approvals,
+choose the model, effort and permission mode for the agent's next start, rename, stop, archive and
+delete, read each turn's diff, the thread's files and its change, find text in a thread, open a
+terminal, pin threads and order the sidebar, and star models in the model picker, kept for that
+person alone, each as the person who paired and under Mend's own rules. From the git panel, the
+change's owner pushes the thread's change and opens its pull request through Mend's landing. t3code
+shows a provider as connected only when Mend holds that person's login for it.
 
 It runs in the Mend container on a listener of its own (port 3120, or `--t3-gateway-port`), and
 setup and `mend server status` say whether it answered. `--no-t3-gateway` turns it off. Off, nothing

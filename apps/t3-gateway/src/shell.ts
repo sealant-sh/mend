@@ -13,6 +13,7 @@ import {
   ThreadId,
   type ModelSelection,
   type OrchestrationProjectShell,
+  type ProjectScript,
   type OrchestrationV2AppThread,
   type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2PendingRuntimeRequestSummary,
@@ -35,6 +36,7 @@ import type {
 } from "./mend-workbench.ts";
 import { modelOptionsOf, shownModelOf, type ThreadModelOptions } from "./model-options.ts";
 import type { ThreadNotices } from "./notices.ts";
+import type { WorkspacePreparation } from "./queue.ts";
 import { harnessOwnModelOf, harnessProvider } from "./server-config.ts";
 import type { StoredImage, ThreadLifecycle } from "./state.ts";
 
@@ -165,6 +167,10 @@ export interface PendingRun {
   readonly requestedAt: string;
   readonly state: "queued" | "starting" | "preparing" | "failed" | "cancelled";
   readonly error: string | null;
+  /** A launch's opening message: the new worktree it waits for, as t3code's run names it. */
+  readonly workspacePreparation: WorkspacePreparation | null;
+  /** It failed while its worktree was prepared: t3code offers to retry the preparation. */
+  readonly preparationFailed: boolean;
 }
 
 /**
@@ -321,7 +327,11 @@ export const threadModelOptionsOf = (source: ThreadSource): ThreadModelOptions =
   nextEffort: source.nextEffort,
 });
 
-export const projectShellOf = (project: MendProject): OrchestrationProjectShell => ({
+/** A project as t3code's shell shows it, with the actions the person saved for it. */
+export const projectShellOf = (
+  project: MendProject,
+  scripts: ReadonlyArray<ProjectScript>,
+): OrchestrationProjectShell => ({
   id: ProjectId.make(project.id),
   title: project.name.trim().length > 0 ? project.name : project.id,
   workspaceRoot: project.storePath,
@@ -330,7 +340,7 @@ export const projectShellOf = (project: MendProject): OrchestrationProjectShell 
   // Every Mend session works in a worktree of its own: a new thread starts in a new worktree, as
   // a launch into the project's root is refused (`launch.ts`).
   defaultThreadEnvMode: "worktree",
-  scripts: [],
+  scripts: [...scripts],
   createdAt: project.createdAt,
   updatedAt: project.updatedAt,
 });
@@ -456,6 +466,9 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
       ...(entry.state === "queued"
         ? { queuePosition: ++queuePosition, queueHeld: source.queueHeld }
         : {}),
+      ...(entry.workspacePreparation === null
+        ? {}
+        : { workspacePreparation: entry.workspacePreparation }),
       requestedAt,
       startedAt: null,
       completedAt: settled ? requestedAt : null,

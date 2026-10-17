@@ -300,6 +300,14 @@ export class MendClient extends Context.Service<
       deviceToken: string,
       projectId: string,
     ) => MendRead<ReadonlyArray<MendBranch>>;
+    /**
+     * `POST /api/projects/:id/refresh`: fetches every origin branch into the project's store, then
+     * answers its branches, so a worktree made from a branch afterwards starts at origin's tip.
+     */
+    readonly refreshProject: (
+      deviceToken: string,
+      projectId: string,
+    ) => MendCommand<ReadonlyArray<MendBranch>>;
     /** `GET /api/projects/:id/worktrees`: the names of the project's worktrees. */
     readonly worktreeNames: (
       deviceToken: string,
@@ -791,6 +799,18 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           decodeBranches,
         );
 
+      const refreshProject = (deviceToken: string, projectId: string) =>
+        answered(
+          command(
+            "POST /api/projects/:id/refresh",
+            `/api/projects/${encodeURIComponent(projectId)}/refresh`,
+            deviceToken,
+            {},
+            decodeBranches,
+          ),
+          "POST /api/projects/:id/refresh",
+        );
+
       const worktreeNames = (deviceToken: string, projectId: string) =>
         read(
           "GET /api/projects/:id/worktrees",
@@ -1207,6 +1227,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         workspaceRetirement,
         changeDiff,
         projectBranches,
+        refreshProject,
         worktreeNames,
         changeStats,
         changeLandings,

@@ -33,6 +33,7 @@ class GatedMendClient {
   readonly workspaceRetirement: DeviceCalls["workspaceRetirement"];
   readonly changeDiff: DeviceCalls["changeDiff"];
   readonly projectBranches: DeviceCalls["projectBranches"];
+  readonly refreshProject: DeviceCalls["refreshProject"];
   readonly worktreeNames: DeviceCalls["worktreeNames"];
   readonly projectFiles: DeviceCalls["projectFiles"];
   readonly listSkills: DeviceCalls["listSkills"];
@@ -74,6 +75,7 @@ class GatedMendClient {
     this.workspaceRetirement = calls.workspaceRetirement;
     this.changeDiff = calls.changeDiff;
     this.projectBranches = calls.projectBranches;
+    this.refreshProject = calls.refreshProject;
     this.worktreeNames = calls.worktreeNames;
     this.projectFiles = calls.projectFiles;
     this.listSkills = calls.listSkills;
@@ -141,6 +143,7 @@ export const gateDeviceCalls = (
       guard(token, mend.workspaceRetirement(token, sessionId)),
     changeDiff: (token, changeId) => guard(token, mend.changeDiff(token, changeId)),
     projectBranches: (token, projectId) => guard(token, mend.projectBranches(token, projectId)),
+    refreshProject: (token, projectId) => guard(token, mend.refreshProject(token, projectId)),
     worktreeNames: (token, projectId) => guard(token, mend.worktreeNames(token, projectId)),
     changeStats: (token, changeId) => guard(token, mend.changeStats(token, changeId)),
     changeLandings: (token, changeId) => guard(token, mend.changeLandings(token, changeId)),

@@ -123,6 +123,13 @@ export interface Terminals {
   readonly close: (session: BearerSession, input: TerminalCloseInput) => Effect.Effect<void>;
   /** Every terminal event of the person's terminals (`subscribeTerminalEvents`). */
   readonly events: Stream.Stream<TerminalEvent, SubscriberFellBehind>;
+  /** The Mend shell a terminal holds now, or null when it holds none. */
+  readonly processOf: (threadId: string, terminalId: string) => string | null;
+  /** One terminal's events from the moment this subscribes, for as long as the scope lasts. */
+  readonly observe: (
+    threadId: string,
+    terminalId: string,
+  ) => Effect.Effect<Stream.Stream<TerminalEvent, SubscriberFellBehind>, never, Scope.Scope>;
   /** The person's terminals, then each change (`subscribeTerminalMetadata`). */
   readonly metadata: Stream.Stream<TerminalMetadataStreamEvent, SubscriberFellBehind>;
   /** Ends every terminal: the hub is going. */
@@ -603,6 +610,10 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
     restart,
     close,
     events: eventStream,
+    processOf: (threadId, terminalId) =>
+      terminals.get(keyOf(threadId, terminalId))?.processId ?? null,
+    observe: (threadId, terminalId) =>
+      events.subscribe((event) => event.threadId === threadId && event.terminalId === terminalId),
     metadata: metadataStream,
     closeAll,
   };
