@@ -2,7 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import type { ChangeId, SessionId } from "@mend/domain";
 import { ChangeTour, TourStop } from "@mend/domain/workbench";
 import { eq } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -74,7 +74,7 @@ export const ChangeToursRepoLive: Layer.Layer<ChangeToursRepo, never, MendDB | P
               approach: tour.approach,
               stops,
               diffDigest: tour.diffDigest,
-              createdAt: new Date(),
+              createdAt: yield* DateTime.nowAsDate,
             },
           })
           .returning()

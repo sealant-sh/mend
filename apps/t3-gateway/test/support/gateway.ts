@@ -7,6 +7,7 @@ import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Stream from "effect/Stream";
 
 import { AssetTracingDisabledLive, AssetUrlsLive } from "../../src/assets.ts";
 import { GatewayAuthLive } from "../../src/auth.ts";
@@ -15,6 +16,7 @@ import { GatewayEnvironmentLive } from "../../src/environment.ts";
 import { GatewayRoutesLive } from "../../src/http.ts";
 import { ProjectionsLive } from "../../src/hub.ts";
 import { MendClient, type MendCommand } from "../../src/mend-client.ts";
+import type { MendEventPointer } from "../../src/mend-workbench.ts";
 import type { QueueTimings } from "../../src/queue.ts";
 import { GatewayAppLive, MendClientFetchLive } from "../../src/server.ts";
 import { GatewayStateLive } from "../../src/state.ts";
@@ -34,21 +36,54 @@ export interface LaunchObserver {
   ) => Effect.Effect<void>;
 }
 
-// Only the observed launch case uses this composition. Every dependency remains its live
-// implementation; the wrapper captures the whole caller fiber, not a child HTTP fiber.
-const gatewayWithLaunchObserver = (observer: LaunchObserver) => {
+type ClientObservers = {
+  readonly launchObserver?: LaunchObserver;
+  /** Called on the next pull, after the live SSE consumer handled the previous pointer. */
+  readonly eventConsumed?: (pointer: MendEventPointer) => Effect.Effect<void>;
+  /** Captures a completion effect when the live HTTP device check starts. */
+  readonly deviceCheckObserver?: () => Effect.Effect<void>;
+};
+
+// These observers wrap the live client without replacing its requests or decoded responses.
+const gatewayWithClientObservers = (observers: ClientObservers) => {
+  const { launchObserver, eventConsumed, deviceCheckObserver } = observers;
   const client = Layer.effect(
     MendClient,
     Effect.map(MendClient, (live) => ({
       ...live,
       launchProtocol: (...args: Parameters<typeof live.launchProtocol>) =>
-        Effect.gen(function* () {
-          const fiber = yield* Effect.fiber;
-          yield* observer.started(args[1], fiber);
-          return yield* live
-            .launchProtocol(...args)
-            .pipe(Effect.tapError((error) => observer.failed(args[1], error)));
-        }),
+        launchObserver === undefined
+          ? live.launchProtocol(...args)
+          : Effect.gen(function* () {
+              const fiber = yield* Effect.fiber;
+              yield* launchObserver.started(args[1], fiber);
+              return yield* live
+                .launchProtocol(...args)
+                .pipe(Effect.tapError((error) => launchObserver.failed(args[1], error)));
+            }),
+      checkDevice: (token: string) =>
+        deviceCheckObserver === undefined
+          ? live.checkDevice(token)
+          : Effect.suspend(() => {
+              const completed = deviceCheckObserver();
+              return live.checkDevice(token).pipe(Effect.tap(() => completed));
+            }),
+      events: (token: string) =>
+        eventConsumed === undefined
+          ? live.events(token)
+          : live.events(token).pipe(Stream.rechunk(1), (stream) =>
+              Stream.transformPull(stream, (pull) =>
+                Effect.sync(() => {
+                  let previous: MendEventPointer | null = null;
+                  return Effect.gen(function* () {
+                    if (previous !== null) yield* eventConsumed(previous);
+                    const chunk = yield* pull;
+                    previous = chunk[0];
+                    return chunk;
+                  });
+                }),
+              ),
+            ),
     })),
   ).pipe(Layer.provide(MendClientFetchLive));
   return GatewayRoutesLive.pipe(
@@ -71,11 +106,9 @@ const gatewayWithLaunchObserver = (observer: LaunchObserver) => {
 export const gatewayTestLayer = (
   mendUrl: URL,
   statePath = ":memory:",
-  options: {
+  options: ClientObservers & {
     readonly hubIdleTimeToLive?: Duration.Input;
     readonly queueTimings?: Partial<QueueTimings>;
-    /** Uses the same live dependencies with a client observer for one launch completion test. */
-    readonly launchObserver?: LaunchObserver;
     /**
      * Serves with the request logger on, as production does, and collects every log line (JSON)
      * here. Without it, nothing is logged.
@@ -84,9 +117,11 @@ export const gatewayTestLayer = (
   } = {},
 ) =>
   HttpRouter.serve(
-    options.launchObserver === undefined
+    options.launchObserver === undefined &&
+      options.eventConsumed === undefined &&
+      options.deviceCheckObserver === undefined
       ? GatewayAppLive
-      : gatewayWithLaunchObserver(options.launchObserver),
+      : gatewayWithClientObservers(options),
     {
       disableLogger: options.logs === undefined,
       disableListenLog: true,

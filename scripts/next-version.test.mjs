@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { changeset, repository } from "./next-version.helpers.mjs";
 import {
   changesetLevels,
   compareNext,
@@ -18,9 +19,6 @@ import {
   registryRecord,
   strayNextBuilds,
 } from "./next-version.mjs";
-
-const changeset = (entries) =>
-  `---\n${entries.map(([name, level]) => `"${name}": ${level}`).join("\n")}\n---\n\nWhat changed.\n`;
 
 test("the base is the larger of what the changesets imply and what was already handed out", () => {
   const plan = (changesets, packageVersion = "0.36.0", handedOut = []) =>
@@ -87,47 +85,6 @@ test("a stable release refuses next builds it would leave out", () => {
   );
 });
 
-const home = process.cwd();
-
-/** A throwaway repository with Mend's layout: apps/cli/package.json and .changeset/. */
-const repository = (t) => {
-  const repo = mkdtempSync(path.join(tmpdir(), "next-version-"));
-  const cwd = home;
-  process.chdir(repo);
-  t.after(() => {
-    process.chdir(cwd);
-    rmSync(repo, { recursive: true, force: true });
-  });
-  const git = (...args) =>
-    execFileSync("git", args, {
-      cwd: repo,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        GIT_AUTHOR_NAME: "t",
-        GIT_AUTHOR_EMAIL: "t@example.com",
-        GIT_COMMITTER_NAME: "t",
-        GIT_COMMITTER_EMAIL: "t@example.com",
-      },
-    }).trim();
-  const write = (file, text) => {
-    mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
-    writeFileSync(path.join(repo, file), text);
-  };
-  const remove = (file) => unlinkSync(path.join(repo, file));
-  const commit = (message) => {
-    git("add", "-A");
-    git("commit", "--allow-empty", "-q", "-m", message);
-    return git("rev-parse", "HEAD");
-  };
-  const setVersion = (version) =>
-    write("apps/cli/package.json", JSON.stringify({ name: "@sealant/mend", version }));
-  git("init", "-q", "-b", "main");
-  write(".changeset/config.json", "{}");
-  write(".changeset/README.md", "not a changeset");
-  return { repo, git, write, remove, commit, setVersion };
-};
-
 test("the reviewed histories: a minor before a patch's tag, a reverted minor, a tag, a preview", (t) => {
   const r = repository(t);
   const published = [];
@@ -185,108 +142,6 @@ test("the reviewed histories: a minor before a patch's tag, a reverted minor, a 
   process.chdir(shallow);
   assert.throws(() => nextVersionOf("HEAD", "apps/cli"), /shallow clone/);
   process.chdir(r.repo);
-});
-
-test("every generated history publishes strictly increasing versions", (t) => {
-  const levels = ["patch", "minor", "major"];
-  const bump = (version, level) => {
-    const [a, b, c] = version.split(".").map(Number);
-    return level === "major"
-      ? `${a + 1}.0.0`
-      : level === "minor"
-        ? `${a}.${b + 1}.0`
-        : `${a}.${b}.${c + 1}`;
-  };
-  // A small deterministic generator, so a failure names a reproducible seed.
-  const random = (seed) => () => {
-    seed = (seed * 1103515245 + 12345) % 2 ** 31;
-    return seed / 2 ** 31;
-  };
-  const seen = new Set();
-  for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
-    const r = repository(t);
-    const pick = random(seed);
-    let tagged = "0.36.0";
-    let version = tagged;
-    let changesets = new Map();
-    let counter = 0;
-    let versionPr;
-    r.setVersion(version);
-    r.commit("release");
-    r.git("tag", `v${tagged}`);
-    const published = [];
-    const steps = [];
-    for (let step = 0; step < 24; step += 1) {
-      const roll = pick();
-      let op;
-      if (roll < 0.22) {
-        op = "patch";
-        const file = `.changeset/c${(counter += 1)}.md`;
-        r.write(file, changeset([["@sealant/mend", "patch"]]));
-        changesets.set(file, "patch");
-      } else if (roll < 0.36) {
-        op = "minor";
-        const file = `.changeset/c${(counter += 1)}.md`;
-        r.write(file, changeset([["@sealant/mend", "minor"]]));
-        changesets.set(file, "minor");
-      } else if (roll < 0.46) {
-        op = "revert a minor changeset";
-        const minor = [...changesets].find(([, level]) => level === "minor");
-        if (minor !== undefined) {
-          r.remove(minor[0]);
-          changesets.delete(minor[0]);
-        }
-      } else if (roll < 0.62 && changesets.size > 0 && versionPr === undefined) {
-        op = "version packages";
-        const level = [...changesets.values()].reduce(
-          (top, value) => Math.max(top, levels.indexOf(value)),
-          0,
-        );
-        const before = { version, changesets: new Map(changesets) };
-        version = bump(tagged, levels[level]);
-        for (const file of changesets.keys()) r.remove(file);
-        changesets = new Map();
-        r.setVersion(version);
-        versionPr = { before, version };
-      } else if (roll < 0.7 && versionPr !== undefined) {
-        op = "revert the version packages merge";
-        version = versionPr.before.version;
-        changesets = versionPr.before.changesets;
-        for (const [file, level] of changesets)
-          r.write(file, changeset([["@sealant/mend", level]]));
-        r.setVersion(version);
-        versionPr = undefined;
-      } else if (roll < 0.86 && versionPr !== undefined && versionPr.commit !== undefined) {
-        // The tag goes on the Version Packages commit, which may be behind HEAD by now.
-        op = `tag v${versionPr.version}`;
-        r.git("tag", `v${versionPr.version}`, versionPr.commit);
-        tagged = versionPr.version;
-        versionPr = undefined;
-      } else {
-        op = "plain";
-      }
-      seen.add(op.startsWith("tag ") ? "tag" : op);
-      const sha = r.commit(op);
-      if (op === "version packages") versionPr.commit = sha;
-      const next = nextVersionOf("HEAD", "apps/cli", published);
-      steps.push(`${op} → ${next}`);
-      const last = published.at(-1);
-      if (last !== undefined) {
-        assert.ok(compareNext(next, last) > 0, `seed ${seed}:\n${steps.join("\n")}`);
-      }
-      published.push(next);
-    }
-  }
-  // The histories cover every move the scheme has to survive.
-  assert.deepEqual([...seen].sort(), [
-    "minor",
-    "patch",
-    "plain",
-    "revert a minor changeset",
-    "revert the version packages merge",
-    "tag",
-    "version packages",
-  ]);
 });
 
 const response = (status, body = {}) => ({ ok: status === 200, status, json: async () => body });

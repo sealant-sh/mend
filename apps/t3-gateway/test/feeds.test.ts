@@ -1,4 +1,3 @@
-import { assert, describe, it } from "@effect/vitest";
 import {
   WS_METHODS,
   type DeviceServiceState,
@@ -12,6 +11,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import { NO_DEVICE_HUB } from "../src/rpc.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer, t3Client } from "./support/gateway.ts";

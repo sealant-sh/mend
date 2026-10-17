@@ -15,6 +15,7 @@ import {
   type TerminalSessionSnapshot,
   type TerminalSummary,
 } from "@mend/t3-contracts";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -200,8 +201,9 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
     moved = false,
   ) =>
     Effect.gen(function* () {
+      const now = yield* DateTime.now;
       terminal.sequence += 1;
-      terminal.updatedAt = new Date().toISOString();
+      terminal.updatedAt = DateTime.formatIso(now);
       yield* events.publish([
         event({
           threadId: terminal.threadId,
@@ -369,6 +371,7 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
     Effect.gen(function* () {
       const sessionId = yield* host.threadSession(input.threadId);
       if (sessionId === null) return yield* lookup(input.threadId, input.terminalId);
+      const now = yield* DateTime.now;
       const terminal: Terminal = {
         threadId: input.threadId,
         terminalId: input.terminalId,
@@ -377,7 +380,7 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
         status: "starting",
         history: terminals.get(keyOf(input.threadId, input.terminalId))?.history ?? "",
         processId: null,
-        updatedAt: new Date().toISOString(),
+        updatedAt: DateTime.formatIso(now),
         sequence: terminals.get(keyOf(input.threadId, input.terminalId))?.sequence ?? 0,
         openedBy: session,
         scope: null,

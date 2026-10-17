@@ -1122,26 +1122,31 @@ const ptyOutputTail = (pty: {
     readonly data: string | Uint8Array;
   }>;
 }): Effect.Effect<string> =>
-  Effect.tryPromise({
-    try: async () => {
+  Effect.scoped(
+    Effect.gen(function* () {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 3000);
-      let text = "";
-      try {
-        for await (const chunk of pty.output({ signal: controller.signal })) {
-          text +=
-            typeof chunk.data === "string" ? chunk.data : new TextDecoder().decode(chunk.data);
-          if (text.length > 4000) {
-            text = text.slice(-4000);
+      yield* Effect.sleep("3 seconds").pipe(
+        Effect.andThen(Effect.sync(() => controller.abort())),
+        Effect.forkScoped,
+      );
+      return yield* Effect.tryPromise({
+        try: async (signal) => {
+          let text = "";
+          for await (const chunk of pty.output({
+            signal: AbortSignal.any([signal, controller.signal]),
+          })) {
+            text +=
+              typeof chunk.data === "string" ? chunk.data : new TextDecoder().decode(chunk.data);
+            if (text.length > 4000) {
+              text = text.slice(-4000);
+            }
           }
-        }
-      } finally {
-        clearTimeout(timer);
-      }
-      return text.slice(-1500).trim();
-    },
-    catch: () => new Error("output unavailable"),
-  }).pipe(Effect.orElseSucceed(() => ""));
+          return text.slice(-1500).trim();
+        },
+        catch: () => new Error("output unavailable"),
+      }).pipe(Effect.orElseSucceed(() => ""));
+    }),
+  );
 
 /** How long `mend service run` waits for the declared port before reporting unreachable. */
 const SERVICE_START_TIMEOUT_MS = 60_000;
@@ -2611,6 +2616,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
   Layer.effect(
     SessionEngine,
     Effect.gen(function* () {
+      // Capture the layer's clock for synchronous protocol callbacks as well as engine effects.
+      // Epoch milliseconds remain comparable with persisted records and platform timestamps.
+      const clock = yield* Clock.Clock;
+      const scope = yield* Effect.scope;
       const sealant = yield* SealantClient;
       // Whose platform identity a call about a workspace runs as (`workspace-caller.ts`): the
       // engine tells it when a creator is recorded, and asks it before restoring a process.
@@ -3209,9 +3218,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspaceId: string,
         wait: Duration.Duration,
       ) {
-        const deadline = Date.now() + Duration.toMillis(wait);
+        const deadline = clock.currentTimeMillisUnsafe() + Duration.toMillis(wait);
         while (!(yield* evidenceSettled(workspaceId))) {
-          if (Date.now() >= deadline) return false;
+          if (clock.currentTimeMillisUnsafe() >= deadline) return false;
           yield* Effect.sleep(EVIDENCE_SETTLE_LOOK);
         }
         return true;
@@ -3398,11 +3407,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             reading.headN,
           );
         }
-        if (kind === "final") recentFinals.set(workspace.id, { reading, atMs: Date.now() });
+        if (kind === "final")
+          recentFinals.set(workspace.id, { reading, atMs: clock.currentTimeMillisUnsafe() });
         throughputs.set(
           workspace.id,
           observeCaptureThroughput(throughputs.get(workspace.id) ?? null, {
-            atMs: Date.now(),
+            atMs: clock.currentTimeMillisUnsafe(),
             uploadedBytes: reading.uploadedBytes,
             registered: reading.registered,
           }),
@@ -3477,7 +3487,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         if (capture === null) return;
         const head = yield* capture.repo.headOf(session.worktreeId);
-        const observedAt = new Date();
+        const observedAt = new Date(clock.currentTimeMillisUnsafe());
         const failing = captureSnapFailing(reading)
           ? {
               since: reading.snapFailingSince ?? observedAt,
@@ -3649,7 +3659,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         if (capture === null) return;
         const last = statusReads.get(sessionId);
-        const nowMs = Date.now();
+        const nowMs = clock.currentTimeMillisUnsafe();
         if (last !== undefined && nowMs - last < minIntervalMs) return;
         const session = yield* sessions
           .byId(sessionId)
@@ -3890,9 +3900,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         worktreeId: WorktreeId,
         wait: Duration.Duration,
       ) {
-        const deadline = performance.now() + Duration.toMillis(wait);
+        const startedAt = clock.currentTimeNanosUnsafe();
+        const waitMs = Duration.toMillis(wait);
         while ((yield* executorStopping(worktreeId)) !== null) {
-          if (performance.now() >= deadline) return false;
+          if (Number(clock.currentTimeNanosUnsafe() - startedAt) / 1_000_000 >= waitMs)
+            return false;
           yield* Effect.sleep(STOP_SETTLE_LOOK);
         }
         return true;
@@ -3914,7 +3926,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly word: DrainWord;
         readonly source: CheckpointSource | null;
       } | null> {
-        const deadline = performance.now() + Duration.toMillis(CHECKPOINT_FLUSH_TIMEOUT);
+        const deadline =
+          clock.currentTimeNanosUnsafe() + Duration.toNanosUnsafe(CHECKPOINT_FLUSH_TIMEOUT);
         while (true) {
           const saved = drainSaved.get(workspaceId);
           if (saved !== undefined) {
@@ -3940,7 +3953,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }),
             };
           }
-          if (performance.now() >= deadline) {
+          if (clock.currentTimeNanosUnsafe() >= deadline) {
             return { word: "refused", source: null };
           }
           yield* Effect.sleep(DRAIN_WORD_LOOK);
@@ -4585,7 +4598,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         function* (
           session: Session,
           ownLaunch: string | null,
-          deadline: number = Date.now() + Duration.toMillis(drainPolicy.leaseWait),
+          deadline: number = clock.currentTimeMillisUnsafe() +
+            Duration.toMillis(drainPolicy.leaseWait),
         ) {
           let said: string | null = null;
           while (true) {
@@ -4604,12 +4618,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const handingOver =
               holder.kind === "held" &&
               memoryHandovers.has(session.worktreeId) &&
-              Date.now() < deadline;
+              clock.currentTimeMillisUnsafe() < deadline;
             if (handingOver) {
               yield* Effect.sleep(drainPolicy.leaseWaitInterval);
               continue;
             }
-            if (holder.kind === "free" || holder.kind === "held" || Date.now() >= deadline) {
+            if (
+              holder.kind === "free" ||
+              holder.kind === "held" ||
+              clock.currentTimeMillisUnsafe() >= deadline
+            ) {
               if (said !== null) {
                 yield* Effect.logInfo(
                   `session engine: capture mode · launch waited for the worktree · ${holder.kind}`,
@@ -5107,7 +5125,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           state: yield* keptDrainState(session),
           reading,
           waitMs,
-          nextAtMs: Date.now() + waitMs,
+          nextAtMs: clock.currentTimeMillisUnsafe() + waitMs,
         });
       });
       /**
@@ -5119,7 +5137,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         const kept = keptDrains.get(session.id);
         if (kept === undefined || session.captureNotSavedAt === null) return false;
-        if (session.sealantWorkspaceId === null || Date.now() >= kept.nextAtMs) return false;
+        if (session.sealantWorkspaceId === null || clock.currentTimeMillisUnsafe() >= kept.nextAtMs)
+          return false;
         if ((yield* keptDrainState(session)) !== kept.state) return false;
         const lookup = yield* lookupWorkspace(session.sealantWorkspaceId).pipe(
           asSealantUser(session.ownerUserId),
@@ -5189,11 +5208,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const awaitTerminated = Effect.fn("SessionEngine.awaitTerminated")(function* (
         workspaceId: SealantWorkspaceId,
       ) {
-        const deadline = Date.now() + Duration.toMillis(drainPolicy.terminationWait);
+        const deadline =
+          clock.currentTimeMillisUnsafe() + Duration.toMillis(drainPolicy.terminationWait);
         while (true) {
           const lookup = yield* lookupWorkspace(workspaceId);
           if (lookup.kind === "gone") return true;
-          if (Date.now() >= deadline) return false;
+          if (clock.currentTimeMillisUnsafe() >= deadline) return false;
           yield* Effect.sleep(drainPolicy.pollInterval);
         }
       });
@@ -5585,11 +5605,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           pendingBytes: current.capturePendingBytes,
           refused: current.captureRefused,
           registeredAt: current.captureRegisteredAt,
-          observedAt: new Date(),
+          observedAt: new Date(clock.currentTimeMillisUnsafe()),
           incompleteReason: retained ? CAPTURE_EXECUTOR_RETAINED : "in-progress",
           incompleteDetail: detail,
         });
-        yield* sessions.markCaptureNotSaved(sessionId, new Date());
+        yield* sessions.markCaptureNotSaved(sessionId, new Date(clock.currentTimeMillisUnsafe()));
       });
 
       const runDrain = Effect.fn("SessionEngine.runDrain")(function* (
@@ -5600,7 +5620,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         const session = yield* sessions.byId(sessionId);
         let previous: CaptureReading | null = null;
-        let progressAtMs = Date.now();
+        let progressAtMs = clock.currentTimeMillisUnsafe();
         let begun = false;
         while (true) {
           if (discards.has(workspaceId)) return "discarded" as const;
@@ -5753,7 +5773,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             previous === null ? recentFinals.get(workspaceId) : undefined;
           const reused: CaptureReading | null =
             recent !== undefined &&
-            Date.now() - recent.atMs <= FINAL_ANSWER_REUSE_MS &&
+            clock.currentTimeMillisUnsafe() - recent.atMs <= FINAL_ANSWER_REUSE_MS &&
             !captureSaved(recent.reading)
               ? recent.reading
               : null;
@@ -5775,7 +5795,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     // asks (the harvest it once stood beside is put off until it, decision 50).
                     Effect.tap(() => Effect.sync(() => recentFinals.delete(workspaceId))),
                   );
-          const nowMs = Date.now();
+          const nowMs = clock.currentTimeMillisUnsafe();
           const receivedAt = new Date(
             reused !== null && recent !== undefined ? recent.atMs : nowMs,
           );
@@ -6265,7 +6285,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         discardedBy?: string | null,
       ) {
-        const requestedAt = new Date();
+        const requestedAt = new Date(clock.currentTimeMillisUnsafe());
         const session = yield* sessions.byId(sessionId);
         const workspaceId = session.sealantWorkspaceId;
         if (session.captureDrain === null || workspaceId === null) {
@@ -6391,7 +6411,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* removeIfRequested(sessionId);
             return;
           }
-          discardedAt = new Date();
+          discardedAt = new Date(clock.currentTimeMillisUnsafe());
           yield* Effect.logWarning(
             "session engine: unsaved captures discarded by the owner · the platform ended the workspace",
           ).pipe(Effect.annotateLogs(annotations));
@@ -6486,7 +6506,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return "removed" as const;
           }
         }
-        yield* sessions.requestRemoval(sessionId, new Date());
+        yield* sessions.requestRemoval(sessionId, new Date(clock.currentTimeMillisUnsafe()));
         if (!inFlight) {
           yield* Effect.forkIn(stopWorkspaceIfUnleased(sessionId), scope);
         }
@@ -6562,7 +6582,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const workspace = yield* sealant.getWorkspace(workspaceId);
           const at = yield* sealant.runtimeDeadline(workspace);
           const previous = runtimeDeadlines.get(workspaceId);
-          runtimeDeadlines.set(workspaceId, { at, readAtMs: Date.now() });
+          runtimeDeadlines.set(workspaceId, { at, readAtMs: clock.currentTimeMillisUnsafe() });
           if (at !== null && previous?.at?.getTime() !== at.getTime()) {
             yield* Effect.logInfo(
               "session engine: capture mode · the platform's deadline · observed",
@@ -6696,7 +6716,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* sessions.recordAcceptedWorkspace(
             sessionId,
             workspaceId,
-            createAskedAtOf(key) ?? new Date(),
+            createAskedAtOf(key) ?? new Date(clock.currentTimeMillisUnsafe()),
             key,
           );
           yield* workspaceCaller.recorded(workspaceId, session.ownerUserId);
@@ -6827,8 +6847,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           // The lease is released once the termination is observed; when it was not, it lapses
           // with the executor's heartbeats. Wait for either, bounded.
-          const deadline = Date.now() + 60_000;
-          while (Date.now() < deadline && !stoppedDuringReplacement.has(session.id)) {
+          const deadline = clock.currentTimeMillisUnsafe() + 60_000;
+          while (
+            clock.currentTimeMillisUnsafe() < deadline &&
+            !stoppedDuringReplacement.has(session.id)
+          ) {
             const lease = yield* capture.repo.leaseOf(session.worktreeId);
             if (lease === null || !lease.live) break;
             yield* Effect.sleep(Duration.seconds(2));
@@ -7150,7 +7173,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             if (
               !statusReading.has(session.id) &&
               (lastRead === undefined ||
-                Date.now() - lastRead >= Duration.toMillis(drainPolicy.statusInterval))
+                clock.currentTimeMillisUnsafe() - lastRead >=
+                  Duration.toMillis(drainPolicy.statusInterval))
             ) {
               statusReading.add(session.id);
               yield* Effect.forkIn(
@@ -7172,7 +7196,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               !deadlineReading.has(session.sealantWorkspaceId) &&
               (deadline === undefined ||
                 (deadline.at === null &&
-                  Date.now() - deadline.readAtMs >= Duration.toMillis(drainPolicy.statusInterval)))
+                  clock.currentTimeMillisUnsafe() - deadline.readAtMs >=
+                    Duration.toMillis(drainPolicy.statusInterval)))
             ) {
               deadlineReading.add(session.sealantWorkspaceId);
               yield* Effect.forkIn(
@@ -7205,7 +7230,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               pendingObjects: session.capturePending,
               objectsPerSecond: throughput?.objectsPerSecond ?? null,
             });
-            if (executorCapDue(plan, Date.now())) {
+            if (executorCapDue(plan, clock.currentTimeMillisUnsafe())) {
               yield* Effect.logInfo("session engine: capture mode · planned drain due").pipe(
                 Effect.annotateLogs({
                   sessionId: session.id,
@@ -7308,7 +7333,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // P1-1), so an exec that writes a secret carries a single-use ticket instead and redeems it
       // over the session channel (`pickup-tickets.ts`). Held in memory, by this process, which
       // also serves the channel of every session it launches.
-      const pickups = makePickupTickets();
+      const pickups = makePickupTickets({
+        now: () => clock.currentTimeMillisUnsafe(),
+        schedule: (run, ms) => {
+          const fiber = Effect.runSync(
+            clock
+              .sleep(Duration.millis(ms))
+              .pipe(Effect.andThen(Effect.sync(run)), Effect.forkIn(scope)),
+          );
+          return () => fiber.interruptUnsafe();
+        },
+      });
       /**
        * What each identity ticket answered (docs/adr/0016, decision 4), by the ticket's hash, for
        * a minute: a retry from the same channel whose first answer was lost gets the same answer
@@ -7319,8 +7354,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         {
           readonly channel: string;
           readonly answer: ReturnType<typeof pickupAnswerOf>;
-          /** `performance.now()`: a monotonic clock, so no clock step stretches the window. */
-          readonly expiresAt: number;
+          /** Monotonic nanoseconds: a system-clock step cannot stretch the retry window. */
+          readonly expiresAt: bigint;
         }
       >();
       /**
@@ -7335,6 +7370,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly done: Deferred.Deferred<ReturnType<typeof pickupAnswerOf>, Error>;
         }
       >();
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          pickups.clear();
+          identityAnswers.clear();
+        }),
+      );
       /** A ticket whose exec has ended: forgotten, and so is any identity it answered. */
       const discardPickup = (ticket: string) => {
         pickups.discard(ticket);
@@ -7410,6 +7451,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * exactly that one, when the write ends (mend#615 review 2).
        */
       const writeTokens = makeWriteTokens({
+        now: () => clock.currentTimeMillisUnsafe(),
         revoke: (token) => channelTokens.revokeToken(token),
         fork: (effect) => Effect.suspend(() => effect.pipe(Effect.forkIn(scope), Effect.asVoid)),
         ttl: Duration.millis(WRITE_TOKEN_TTL_MS),
@@ -7546,7 +7588,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const answered = identityAnswers.get(key);
             if (
               answered !== undefined &&
-              answered.expiresAt > performance.now() &&
+              answered.expiresAt > clock.currentTimeNanosUnsafe() &&
               answered.channel === channelKeyOf(channel)
             ) {
               yield* Effect.logInfo("session engine: pickup answered again · a retry").pipe(
@@ -7636,13 +7678,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const kept = {
               channel: channelKeyOf(channel),
               answer,
-              expiresAt: performance.now() + IDENTITY_ANSWER_MS,
+              expiresAt: clock.currentTimeNanosUnsafe() + BigInt(IDENTITY_ANSWER_MS) * 1_000_000n,
             };
             identityAnswers.set(key, kept);
             // Swept on its own: nothing keeps the token's bytes past the window.
-            setTimeout(() => {
-              if (identityAnswers.get(key) === kept) identityAnswers.delete(key);
-            }, IDENTITY_ANSWER_MS).unref();
+            yield* clock.sleep(Duration.millis(IDENTITY_ANSWER_MS)).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  if (identityAnswers.get(key) === kept) identityAnswers.delete(key);
+                }),
+              ),
+              Effect.forkIn(scope),
+            );
             yield* Deferred.succeed(done, answer);
             identityInFlight.delete(key);
             yield* Effect.logInfo("session engine: pickup redeemed").pipe(
@@ -7849,7 +7896,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const agentBridge = yield* AgentBridge;
       /** Open bridge-op attributions, ended when the transport closes. */
       const bridgeContexts = new Map<string, () => void>();
-      const scope = yield* Effect.scope;
       // Per-person harness homes (docs/adr/0016), `MEND_HARNESS_LAYOUT=person` unless the operator
       // opts out: with `MEND_HARNESS_LAYOUT=shared` and no worktree recorded `person`, a launch
       // reads one row here and runs as before.
@@ -8200,7 +8246,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const agentProcess = yield* agentProcessForRun(sessionId, sealantRunId);
           if (agentProcess === null || agentProcess.firstOutputAt !== null) return;
           const observed = new Date(occurredAt);
-          const at = Number.isNaN(observed.getTime()) ? new Date() : observed;
+          const at = Number.isNaN(observed.getTime())
+            ? new Date(clock.currentTimeMillisUnsafe())
+            : observed;
           const stamped = yield* processes.markFirstOutput(agentProcess.id, at);
           if (stamped) yield* clearAgentStartingWords(sessionId);
         }).pipe(
@@ -8760,7 +8808,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const manifest: HarnessStateManifest = {
           harness: harness,
           providerSessionId,
-          capturedAt: new Date().toISOString(),
+          capturedAt: new Date(clock.currentTimeMillisUnsafe()).toISOString(),
         };
         yield* Effect.tryPromise({
           try: () => fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2)),
@@ -8903,7 +8951,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
           spanOf,
         );
-        return opencodeConversationOf(listed, yield* spanOf(agent), others, Date.now());
+        return opencodeConversationOf(
+          listed,
+          yield* spanOf(agent),
+          others,
+          clock.currentTimeMillisUnsafe(),
+        );
       });
 
       /**
@@ -8978,7 +9031,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const manifest: HarnessStateManifest = {
           harness,
           providerSessionId,
-          capturedAt: new Date().toISOString(),
+          capturedAt: new Date(clock.currentTimeMillisUnsafe()).toISOString(),
         };
         yield* Effect.tryPromise({
           try: async () => {
@@ -9266,7 +9319,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const stateManifest: HarnessStateManifest = {
           harness,
           providerSessionId,
-          capturedAt: new Date().toISOString(),
+          capturedAt: new Date(clock.currentTimeMillisUnsafe()).toISOString(),
         };
         yield* io("write-manifest", manifestPath, () =>
           fs.writeFile(manifestPath, JSON.stringify(stateManifest, null, 2)),
@@ -9343,7 +9396,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const manifest: HarnessStateManifest = {
           harness,
           providerSessionId: live.providerSessionId,
-          capturedAt: new Date().toISOString(),
+          capturedAt: new Date(clock.currentTimeMillisUnsafe()).toISOString(),
         };
         yield* Effect.tryPromise({
           try: () => fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2)),
@@ -9400,9 +9453,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.matchEffect({
             onFailure: (error) =>
               Effect.gen(function* () {
-                const failedAt = new Date(
-                  yield* Effect.clockWith((clock) => clock.currentTimeMillis),
-                );
+                const failedAt = new Date(yield* Clock.currentTimeMillis);
                 yield* sessions.recordWorkspaceTtlRenewalFailure(
                   sessionId,
                   workspaceId,
@@ -9415,9 +9466,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }),
             onSuccess: (expiresAt) =>
               Effect.gen(function* () {
-                const renewedAt = new Date(
-                  yield* Effect.clockWith((clock) => clock.currentTimeMillis),
-                );
+                const renewedAt = new Date(yield* Clock.currentTimeMillis);
                 yield* sessions.recordWorkspaceTtlRenewal(
                   sessionId,
                   workspaceId,
@@ -10666,7 +10715,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 : latest,
             0,
           );
-          const now = Date.now();
+          const now = clock.currentTimeMillisUnsafe();
           for (const harness of Object.keys(HARNESS_STATE)) {
             const observed = rows.find(
               (row) =>
@@ -10900,7 +10949,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const argv = harnessWarmupArgv(harness);
         if (argv === null) return Effect.void;
         return Effect.gen(function* () {
-          const started = Date.now();
+          const started = clock.currentTimeMillisUnsafe();
           const result = yield* sealant
             .exec(workspace, argv)
             .pipe(Effect.timeout(drainPolicy.harnessWarmupTimeout));
@@ -10909,7 +10958,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               sessionId,
               harness,
               exitCode: result.exitCode,
-              elapsedMs: Date.now() - started,
+              elapsedMs: clock.currentTimeMillisUnsafe() - started,
             }),
           );
         }).pipe(
@@ -12645,8 +12694,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const inHome = (relative: string) => path.posix.join(home, relative);
           const kept =
             as === undefined
-              ? skillsKeptDir()
-              : path.posix.join(as.places.saved, personSavedPathOf(skillsKeptDir()));
+              ? skillsKeptDir(new Date(clock.currentTimeMillisUnsafe()))
+              : path.posix.join(
+                  as.places.saved,
+                  personSavedPathOf(skillsKeptDir(new Date(clock.currentTimeMillisUnsafe()))),
+                );
           const vacate = vacateSkillsExec(home, kept, plan);
           const prepared = yield* as === undefined
             ? sealant.exec(workspace, vacate)
@@ -12711,7 +12763,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A person's profile lives in their home `R`, which is never saved: their keys
         // (`mcp.json`) never reach their saved directory.
         const home = as === undefined ? HARNESS_HOME_MOUNT_PATH : as.places.home;
-        const prepare = preparePiProfileExec(home, piProfileKeptDir(), plan);
+        const prepare = preparePiProfileExec(
+          home,
+          piProfileKeptDir(new Date(clock.currentTimeMillisUnsafe())),
+          plan,
+        );
         const prepared = yield* (
           as === undefined ? sealant.exec(workspace, prepare) : execAsPerson(workspace, as, prepare)
         ).pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
@@ -12761,7 +12817,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (as !== undefined) return yield* deliverPersonMemory(session, project, workspace, as);
         if (session.ownerUserId === null) return;
         const stored = yield* agentMemory.forLaunch(session.ownerUserId, project.id);
-        const plan = planAgentMemory(stored);
+        const plan = planAgentMemory(stored, new Date(clock.currentTimeMillisUnsafe()));
         if (capture === null) {
           const home = harnessHomePathOf(project.storePath, session.id);
           // Nothing stored and nothing delivered before: nothing to write, not even a record.
@@ -12842,7 +12898,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const stored = yield* agentMemory.forLaunch(as.person.accountId, project.id);
         // Nothing stored and nothing delivered before: nothing to write, not even a record.
         if (stored.length === 0 && (as.records.get("memory-delivered") ?? null) === null) return;
-        const plan = mapAgentMemoryPlan(planAgentMemory(stored), personSavedPathOf);
+        const plan = mapAgentMemoryPlan(
+          planAgentMemory(stored, new Date(clock.currentTimeMillisUnsafe())),
+          personSavedPathOf,
+        );
         // Already in `P` as stored, from their earlier start in this executor: nothing to stage or
         // run (a same-person join of a live executor).
         if (personMemoryInPlace(plan.list, as.records)) {
@@ -12975,7 +13034,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               credited = from.userId;
             }
           }
-          const kept = agentMemoryHandoverKeptDir();
+          const kept = agentMemoryHandoverKeptDir(new Date(clock.currentTimeMillisUnsafe()));
           const result = yield* sealant.exec(
             workspace,
             handOverAgentMemoryExec(HARNESS_HOME_MOUNT_PATH, kept, owner ?? ""),
@@ -13390,7 +13449,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           summarised,
           imported,
           live,
-          now: Date.now(),
+          now: clock.currentTimeMillisUnsafe(),
         });
         if (plan.full.length === 0 && plan.stubs.length === 0) return [];
         const files = yield* prepareCarriedConversations(plan);
@@ -15372,7 +15431,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? []
             : [uncheckedStop("what runs in it could not be checked: the check did not finish")]),
         ];
-        return { live, stops, checkedAt: new Date() };
+        return { live, stops, checkedAt: new Date(clock.currentTimeMillisUnsafe()) };
       });
 
       /**
@@ -15400,8 +15459,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* Effect.logInfo(
           "session engine: pre-release executor · saved · replaced · the next launch runs each person as themselves",
         ).pipe(Effect.annotateLogs({ sessionId: holder.id, workspaceId, manual: plan.manual }));
-        const deadline = Date.now() + 60_000;
-        while (Date.now() < deadline) {
+        const deadline = clock.currentTimeMillisUnsafe() + 60_000;
+        while (clock.currentTimeMillisUnsafe() < deadline) {
           const lease = yield* capture.repo.leaseOf(holder.worktreeId);
           if (lease === null || !lease.live) break;
           yield* Effect.sleep(Duration.seconds(2));
@@ -15652,7 +15711,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* harnessLayouts.clearRetirement(retirement.workspaceId);
           return;
         }
-        if (!atBoot && Date.now() - retirement.updatedAt.getTime() < RETIRING_STALE_MS) return;
+        if (
+          !atBoot &&
+          clock.currentTimeMillisUnsafe() - retirement.updatedAt.getTime() < RETIRING_STALE_MS
+        )
+          return;
         yield* harnessLayouts.unmarkRetiring(retirement.workspaceId, {
           stops: retirement.stops,
           reason: "not replaced · the replacement did not finish; looked at again",
@@ -15670,7 +15733,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         if (capture === null || harnessLayoutConfig.flag !== "person") return;
         const live = new Set<string>();
-        const now = Date.now();
+        const now = clock.currentTimeMillisUnsafe();
         for (const session of yield* sessions.listUnsettled()) {
           const workspaceId = session.sealantWorkspaceId;
           if (workspaceId === null || !ACTIVE_STATUSES.has(session.status)) continue;
@@ -16385,7 +16448,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 resumeId: protocolResumeId,
               });
               if (plan.kind === "launch") correlationId = plan.launchCorrelationId;
-              yield* sessions.planRelaunch(sessionId, encodeRelaunchPlan(plan), new Date());
+              yield* sessions.planRelaunch(
+                sessionId,
+                encodeRelaunchPlan(plan),
+                new Date(clock.currentTimeMillisUnsafe()),
+              );
               relaunching.add(sessionId);
             }
             const outcome = yield* stopWorkspaceQuietly(sessionId, {
@@ -16559,7 +16626,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // executor; a launch that would need a second executor for a leased worktree is refused
         // with `worktree_leased`.
         if (capture !== null && adopted === null) {
-          const waitStartedAt = Date.now();
+          const waitStartedAt = clock.currentTimeMillisUnsafe();
           const waitDeadline = waitStartedAt + Duration.toMillis(drainPolicy.leaseWait);
           let holder = yield* awaitWorktreeHolder(session, reusedCreateKey, waitDeadline);
           // The join counts as in use first (`joining`), then looks at its holder once more: a
@@ -16580,7 +16647,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* Effect.logInfo(
               `session engine: capture mode · the lease holder is ${again.kind} at the join · the launch waits`,
             ).pipe(Effect.annotateLogs({ sessionId, holderSessionId: holder.sessionId }));
-            if (Date.now() >= waitDeadline) {
+            if (clock.currentTimeMillisUnsafe() >= waitDeadline) {
               holder = again;
               break;
             }
@@ -16636,7 +16703,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   : holder.kind === "ending"
                     ? `worktree leased · session ${holder.sessionId}'s executor is saving before it ends · start again once it has`
                     : `worktree leased · session ${holder.sessionId}'s lease lapsed under epoch ${holder.epoch} · its executor ${holder.state === "answering" ? "still answers" : "was not answered for"} · nothing stopped · it may hold work not yet saved`;
-            const waitedMinutes = Math.round((Date.now() - waitStartedAt) / 60_000);
+            const waitedMinutes = Math.round(
+              (clock.currentTimeMillisUnsafe() - waitStartedAt) / 60_000,
+            );
             const error = new SealantPlatformError({
               code: "worktree_leased",
               status: 409,
@@ -16667,7 +16736,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         let launchClaim: { readonly epoch: number } | null = null;
         // The cold executor's launch identity, minted before its lease is claimed: the lease is
         // bound to it (cross-repo decision 11), and so are its token and its create.
-        const coldLaunchKey = reusedCreateKey ?? executorCreateKeyFor(sessionId, new Date());
+        const coldLaunchKey =
+          reusedCreateKey ??
+          executorCreateKeyFor(sessionId, new Date(clock.currentTimeMillisUnsafe()));
         let launchLayout: LaunchLayout =
           adopted !== null && standbyLayout !== null
             ? standbyLayout
@@ -16880,7 +16951,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // running since it warmed), else the moment before the create — never later than the
         // executor's real start.
         let executorStartedAt =
-          adopted !== null && claimedEntry !== null ? claimedEntry.createdAt : new Date();
+          adopted !== null && claimedEntry !== null
+            ? claimedEntry.createdAt
+            : new Date(clock.currentTimeMillisUnsafe());
         let provisioned = adopted ?? (yield* provisionCold(coldLaunchKey));
         let claimedPerson: {
           readonly executorLayout: HarnessLayout;
@@ -16954,7 +17027,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return yield* error;
             }
             executorCreated = false;
-            const fallbackKey = executorCreateKeyFor(sessionId, new Date());
+            const fallbackKey = executorCreateKeyFor(
+              sessionId,
+              new Date(clock.currentTimeMillisUnsafe()),
+            );
             // A cold launch of its own: its layout is decided for its own executor, as any cold
             // launch's is, never carried over from the standby's.
             launchLayout = yield* decideLayout(fallbackKey, null);
@@ -16972,7 +17048,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ),
                 settleOnFailure,
               );
-            executorStartedAt = new Date();
+            executorStartedAt = new Date(clock.currentTimeMillisUnsafe());
             provisioned = yield* provisionCold(fallbackKey);
           } else {
             // Claimed: what a cold launch runs right after its create runs now, and not before
@@ -17242,7 +17318,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               if (native === "") break;
               const converted = convertNativeSession(manifest.harness, other, native, {
                 cwd: "/workspace/repo",
-                now: new Date().toISOString(),
+                now: new Date(clock.currentTimeMillisUnsafe()).toISOString(),
               });
               if (converted === null) continue;
               yield* placeConvertedFiles(
@@ -17985,7 +18061,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 openTurn: wait.openTurn,
                 work: wait.work,
               }),
-              since: before?.turnId === wait.turnId ? before.since : new Date(),
+              since:
+                before?.turnId === wait.turnId
+                  ? before.since
+                  : new Date(clock.currentTimeMillisUnsafe()),
             }),
           );
         }).pipe(
@@ -18910,7 +18989,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         (sessionId: SessionId) =>
         (workspace: Workspace): Effect.Effect<void> =>
           Effect.gen(function* () {
-            const since = Date.now();
+            const since = clock.currentTimeMillisUnsafe();
             yield* sayLaunchPhase(sessionId, LAUNCH_BOOTING);
             while (true) {
               yield* Effect.sleep(drainPolicy.createPhaseInterval);
@@ -18930,7 +19009,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               if (Option.isNone(runtime)) continue;
               const building =
                 runtime.value === null &&
-                Date.now() - since >= Duration.toMillis(drainPolicy.imageBuildAfter);
+                clock.currentTimeMillisUnsafe() - since >=
+                  Duration.toMillis(drainPolicy.imageBuildAfter);
               yield* sayLaunchPhase(sessionId, building ? LAUNCH_PREPARING : LAUNCH_BOOTING);
             }
           }).pipe(
@@ -19921,7 +20001,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // remains only for pairs conversion cannot express.
           nativeImport = convertNativeSession(manifest.harness, target, native, {
             cwd: "/workspace/repo",
-            now: new Date().toISOString(),
+            now: new Date(clock.currentTimeMillisUnsafe()).toISOString(),
           });
           if (nativeImport === null) {
             const turns = extractTranscript(manifest.harness, native);
@@ -20051,7 +20131,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ).length;
           if (held === 0) {
             beganDrain = session.captureDrain === null;
-            yield* sessions.beginCaptureDrain(sessionId, "stop", new Date());
+            yield* sessions.beginCaptureDrain(
+              sessionId,
+              "stop",
+              new Date(clock.currentTimeMillisUnsafe()),
+            );
           }
         }
         // Stop = end the agent. Every live agent process closes (the daemon reaps its process
@@ -21184,7 +21268,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
       ) =>
         Effect.gen(function* () {
-          const deadline = Date.now() + SERVICE_START_TIMEOUT_MS;
+          const deadline = clock.currentTimeMillisUnsafe() + SERVICE_START_TIMEOUT_MS;
           for (;;) {
             const reachable = yield* serviceHost.probe(workspaceId, workspacePort);
             if (reachable) {
@@ -21206,7 +21290,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   (tail === "" ? "" : `\n--- output ---\n${tail}`),
               });
             }
-            if (Date.now() >= deadline) {
+            if (clock.currentTimeMillisUnsafe() >= deadline) {
               return false;
             }
             yield* Effect.sleep("500 millis");
@@ -22257,7 +22341,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * most recent first, who may still run in it. Nobody else's credentials warm a workspace.
        */
       const hotPoolOwners = Effect.fn("SessionEngine.hotPoolOwners")(function* (project: Project) {
-        const since = new Date(Date.now() - Duration.toMillis(HOT_POOL_RECENT_OWNER_WINDOW));
+        const since = new Date(
+          clock.currentTimeMillisUnsafe() - Duration.toMillis(HOT_POOL_RECENT_OWNER_WINDOW),
+        );
         const recent = yield* sessions.recentOwnersForProject(
           project.id,
           since,
@@ -23349,7 +23435,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // then once a minute, not on every tick.
             Effect.andThen(
               Effect.suspend(() => {
-                const now = Date.now();
+                const now = clock.currentTimeMillisUnsafe();
                 if (now - lastAccessReconcile < ACCESS_RECONCILE_MS) return Effect.void;
                 lastAccessReconcile = now;
                 return reconcileAccess();

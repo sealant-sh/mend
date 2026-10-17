@@ -18,12 +18,11 @@ jobs:
   version:
     name: Open version PR
     if: github.repository == 'sealant-sh/Mend'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
       pull-requests: write
-      actions: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
@@ -41,11 +40,9 @@ jobs:
           title: "chore: version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # The Version PR is opened with GITHUB_TOKEN, so no pull_request workflow runs on it. A
-      # dispatch is exempt from that rule, and its checks attach to the branch's head commit.
-      - name: Run packaged acceptance on the Version PR
-        if: steps.changesets.outputs.pullRequestNumber != ''
-        run: gh workflow run release-acceptance.yml --ref changeset-release/main
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+      # Nothing is dispatched on the Version PR. GitHub's own pull_request runs for this
+      # bot-authored branch stop at the contributor approval policy, and a dispatched CI run on
+      # every main merge cost a full box run for a head that was usually replaced. Whoever cuts a
+      # release runs both on the head they will merge (docs/operations/next-channel.md, step 8):
+      #   gh workflow run ci.yml --ref changeset-release/main
+      #   gh workflow run release-acceptance.yml --ref changeset-release/main

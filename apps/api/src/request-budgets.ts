@@ -1,5 +1,5 @@
 import { addressSubject, clientAddressOf } from "@mend/network";
-import { Cause, Effect, FileSystem, Option, type Layer } from "effect";
+import { Cause, Clock, Effect, FileSystem, Option, type Layer } from "effect";
 import {
   HttpIncomingMessage,
   HttpRouter,
@@ -122,7 +122,7 @@ export const budgetRefusal = (
 export const requestBudgets = (
   budgets: Budgets["Service"],
   trustedProxies: ReadonlyArray<string>,
-  now: () => number = Date.now,
+  now?: () => number,
 ): Layer.Layer<never, never, HttpRouter.HttpRouter> =>
   HttpRouter.middleware(
     (handler) =>
@@ -140,7 +140,7 @@ export const requestBudgets = (
         const internal =
           socket !== undefined && isLoopbackSocket(socket) && (forwardedFor ?? "").trim() === "";
 
-        const at = now();
+        const at = now?.() ?? (yield* Clock.currentTimeMillis);
         if (isSignInAttempt(request.method, pathname)) {
           const wait = budgets.signIns.take(address, limits.signInAttemptsPerMinute, at);
           if (wait !== null) {

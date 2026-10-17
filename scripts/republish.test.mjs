@@ -1,226 +1,87 @@
 // The publish job's republish block, run as written in this repository's workflow, against a stub
 // npm registry on 127.0.0.1, with tarballs crafted the ways three reviews found to fool a check of
-// the tarball as built. The same file lives in sealant-sh/mend, sealant-sh/sealant and
-// sealant-sh/sealantd. Keep them identical.
+// the tarball as built. Mend's block publishes the run's own normalized tarball byte for byte and
+// checks the registry's integrity after; sealant-sh/sealant and sealant-sh/sealantd still rebuild
+// the tarball they publish, so their copies of this file differ from this one.
+
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import http from "node:http";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { gzipSync } from "node:zlib";
+import { fileURLToPath } from "node:url";
 
-const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
-// npm's bundled pacote by default; REPUBLISH_TEST_PACOTE runs the same tests against another one.
-const PACOTE =
-  process.env.REPUBLISH_TEST_PACOTE ??
-  path.join(
-    execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim(),
-    "npm/node_modules/pacote",
-  );
+import {
+  block,
+  COMMIT,
+  goodEntries,
+  manifest,
+  NAME,
+  PACOTE,
+  publish,
+  registry,
+  seeded,
+  sha512,
+  tarGz,
+} from "./republish.helpers.mjs";
 
-/** The republish block, from whichever workflow carries it. */
-const block = (() => {
-  for (const file of ["next.yml", "release-cli.yml"]) {
-    const workflow = path.join(root, ".github/workflows", file);
-    if (!existsSync(workflow)) continue;
-    const text = readFileSync(workflow, "utf8");
-    const begin = text.indexOf("# --- republish ---");
-    const end = text.indexOf("# --- end republish ---");
-    if (begin < 0 || end < begin) continue;
-    const lines = text.slice(begin, end).split("\n");
-    const indent = /^ */.exec(lines[0] ?? "")?.[0].length ?? 0;
-    return lines.map((line) => line.slice(indent)).join("\n");
-  }
-  throw new Error("No workflow carries the republish block.");
-})();
-
-/** A ustar archive of `entries` (name → text), names as given, so any path trick can be written. */
-const tarGz = (entries) => {
-  const blocks = [];
-  for (const [name, text] of entries) {
-    const content = Buffer.from(text);
-    const header = Buffer.alloc(512);
-    header.write(name, 0, 100);
-    header.write("0000644\0", 100);
-    header.write("0000000\0", 108);
-    header.write("0000000\0", 116);
-    header.write(`${content.length.toString(8).padStart(11, "0")}\0`, 124);
-    header.write("00000000000\0", 136);
-    header.write("        ", 148);
-    header.write("0", 156);
-    header.write("ustar\0", 257);
-    header.write("00", 263);
-    const sum = [...header].reduce((total, byte) => total + byte, 0);
-    header.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148);
-    blocks.push(header, content, Buffer.alloc((512 - (content.length % 512)) % 512));
-  }
-  blocks.push(Buffer.alloc(1024));
-  return gzipSync(Buffer.concat(blocks));
-};
-
-const NAME = "@sealant/sdk-next";
-const COMMIT = "c0ffee";
-const manifest = (version, extra = {}, name = NAME) =>
-  JSON.stringify({
-    name,
-    version,
-    gitHead: COMMIT,
-    main: "./dist/index.js",
-    files: ["dist"],
-    scripts: { prepack: "echo never", postpack: "echo never" },
-    ...extra,
+test("a tarball whose sha512 is not the manifest's is refused before npm runs", async (t) => {
+  const stub = await registry(t, seeded());
+  const tampered = [...goodEntries("0.39.0-next.9"), ["package/dist/extra.js", "evil();\n"]];
+  const result = await publish(t, stub, goodEntries("0.39.0-next.9"), "0.39.0-next.9", "next", {
+    tamper: tampered,
   });
-const goodEntries = (version) => [
-  ["package/package.json", manifest(version)],
-  ["package/dist/index.js", "export {};\n"],
-];
+  assert.notEqual(result.status, 0, result.output);
+  assert.match(result.output, /has another sha512 than the release manifest records/);
+  assert.equal(stub.log.length, 0);
+});
 
-/** A stub registry: GET packument and dist-tags, PUT publish, PUT dist-tag. */
-const registry = async (t, seed = {}) => {
-  const packages = new Map(Object.entries(seed));
-  const log = [];
-  const server = http.createServer((request, response) => {
-    let body = "";
-    request.on("data", (chunk) => (body += chunk));
-    request.on("end", () => {
-      const url = decodeURIComponent(request.url ?? "");
-      const tagMatch = /^\/-\/package\/(.+)\/dist-tags\/([^/]+)$/.exec(url);
-      if (request.method === "PUT" && tagMatch !== null) {
-        const record = packages.get(tagMatch[1]);
-        record["dist-tags"][tagMatch[2]] = JSON.parse(body);
-        log.push({ distTag: tagMatch[2], version: JSON.parse(body) });
-        response.writeHead(200).end("{}");
-        return;
-      }
-      const tagsMatch = /^\/-\/package\/(.+)\/dist-tags$/.exec(url);
-      if (request.method === "GET" && tagsMatch !== null) {
-        const record = packages.get(tagsMatch[1]);
-        if (record === undefined) response.writeHead(404).end("{}");
-        else
-          response
-            .writeHead(200, { "content-type": "application/json" })
-            .end(JSON.stringify(record["dist-tags"]));
-        return;
-      }
-      const name = url.slice(1);
-      if (request.method === "GET") {
-        const record = packages.get(name);
-        if (record === undefined) response.writeHead(404).end("{}");
-        else
-          response
-            .writeHead(200, { "content-type": "application/json" })
-            .end(JSON.stringify(record));
-        return;
-      }
-      if (request.method === "PUT") {
-        const published = JSON.parse(body);
-        const record = packages.get(name) ?? { name, versions: {}, "dist-tags": {} };
-        Object.assign(record.versions, published.versions);
-        Object.assign(record["dist-tags"], published["dist-tags"]);
-        const [version] = Object.keys(published.versions);
-        packages.set(name, record);
-        log.push({
-          publish: version,
-          distTags: published["dist-tags"],
-          manifest: published.versions[version],
-        });
-        response.writeHead(201).end("{}");
-        return;
-      }
-      response.writeHead(405).end();
+test("a release manifest of another version, commit or file is refused before npm runs", async (t) => {
+  for (const [record, problem] of [
+    [{ version: "0.39.0-next.8" }, /is for 0\.39\.0-next\.8, not 0\.39\.0-next\.9/],
+    [{ commit: "beef" }, /is from beef, not c0ffee/],
+    [{ cli: { file: "other.tgz", sha512: "0", integrity: "sha512-x" } }, /names other\.tgz/],
+  ]) {
+    const stub = await registry(t, seeded());
+    const result = await publish(t, stub, goodEntries("0.39.0-next.9"), "0.39.0-next.9", "next", {
+      record,
     });
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => server.close());
-  const { port } = server.address();
-  return { url: `http://127.0.0.1:${port}/`, log, packages };
-};
-
-/**
- * Runs the caller's sequence on a crafted tarball against the stub, as the workflows do: check the
- * artifact directory, then publish_rebuilt from a fresh empty directory. `artifact` adds files to
- * the artifact directory; `skipCheck` leaves check_artifacts out, to show the empty directory alone
- * keeps a planted .npmrc from configuring npm.
- */
-const publish = async (
-  t,
-  stub,
-  entries,
-  version,
-  channel = "next",
-  { artifact = {}, skipCheck = false, name = NAME } = {},
-) => {
-  const directory = mkdtempSync(path.join(tmpdir(), "republish-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const artifacts = path.join(directory, "artifacts");
-  mkdirSync(artifacts);
-  writeFileSync(path.join(artifacts, "in.tgz"), tarGz(entries));
-  for (const [file, text] of Object.entries(artifact))
-    writeFileSync(path.join(artifacts, file), text);
-  const npmrc = path.join(directory, "npmrc");
-  writeFileSync(npmrc, `${stub.url.replace("http:", "")}:_authToken=test\n`);
-  const script = [
-    "set -euo pipefail",
-    block,
-    skipCheck ? "" : 'check_artifacts "$ARTIFACTS" in.tgz',
-    'cd "$(mktemp -d)"',
-    'publish_rebuilt "$ARTIFACTS/in.tgz" "$@"',
-  ].join("\n");
-  const child = spawn("bash", ["-c", script, "republish", name, version, COMMIT, channel], {
-    cwd: artifacts,
-    env: {
-      ...process.env,
-      ARTIFACTS: artifacts,
-      REPUBLISH_TEST_PACOTE: PACOTE,
-      NPM_CONFIG_REGISTRY: stub.url,
-      NPM_CONFIG_USERCONFIG: npmrc,
-    },
-  });
-  let output = "";
-  child.stdout.on("data", (chunk) => (output += chunk));
-  child.stderr.on("data", (chunk) => (output += chunk));
-  const status = await new Promise((resolve) => child.on("close", resolve));
-  return { status, output };
-};
-
-const seeded = (versions = {}, distTags = { latest: "0.38.1" }) => ({
-  [NAME]: {
-    name: NAME,
-    versions: { "0.38.1": { version: "0.38.1" }, ...versions },
-    "dist-tags": distTags,
-  },
+    assert.notEqual(result.status, 0, result.output);
+    assert.match(result.output, problem);
+    assert.equal(stub.log.length, 0);
+  }
 });
 
-test("a good tarball is rebuilt and published under next, without its scripts", async (t) => {
-  const stub = await registry(t, seeded());
-  const { status, output } = await publish(t, stub, goodEntries("0.39.0-next.9"), "0.39.0-next.9");
-  assert.equal(status, 0, output);
-  assert.equal(stub.log.length, 1);
-  assert.deepEqual(stub.log[0].distTags, { next: "0.39.0-next.9" });
-  assert.equal(stub.log[0].manifest.scripts, undefined);
-  assert.equal(stub.packages.get(NAME)["dist-tags"].latest, "0.38.1");
-});
-
-test("a `tag` field in the manifest is dropped, so it cannot publish as latest", async (t) => {
-  const stub = await registry(t, seeded());
-  const entries = [
+test("a tarball that is not normalized is refused, never rewritten: `tag`, scripts, publishConfig, .npmrc", async (t) => {
+  for (const [entries, problem] of [
+    [[["package/package.json", manifest("0.39.0-next.9", { tag: "latest" })]], /it keeps tag/],
     [
-      "package/package.json",
-      manifest("0.39.0-next.9", {
-        tag: "latest",
-        publishConfig: { tag: "latest", registry: "https://evil.example/", access: "public" },
-      }),
+      [["package/package.json", manifest("0.39.0-next.9", { scripts: { postinstall: "x" } })]],
+      /it keeps scripts/,
     ],
-    ["package/dist/index.js", ""],
-  ];
-  const { status, output } = await publish(t, stub, entries, "0.39.0-next.9");
-  assert.equal(status, 0, output);
-  assert.deepEqual(stub.log[0].distTags, { next: "0.39.0-next.9" });
-  assert.equal(stub.log[0].manifest.tag, undefined);
-  assert.deepEqual(stub.log[0].manifest.publishConfig, { access: "public" });
-  assert.equal(stub.packages.get(NAME)["dist-tags"].latest, "0.38.1");
+    [
+      [
+        [
+          "package/package.json",
+          manifest("0.39.0-next.9", {
+            publishConfig: { tag: "latest", registry: "https://evil.example/", access: "public" },
+          }),
+        ],
+      ],
+      /publishConfig holds more than access/,
+    ],
+    [
+      [...goodEntries("0.39.0-next.9"), ["package/.npmrc", "registry=https://evil.example/\n"]],
+      /it holds \.npmrc/,
+    ],
+  ]) {
+    const stub = await registry(t, seeded());
+    const result = await publish(t, stub, entries, "0.39.0-next.9");
+    assert.notEqual(result.status, 0, result.output);
+    assert.match(result.output, problem);
+    assert.equal(stub.log.length, 0);
+  }
 });
 
 /**
@@ -287,71 +148,7 @@ test("with npm's own pacote today, the crafted manifests are the ones read, and 
   assert.match(result.output, /version 0\.39\.0, not 0\.39\.0-next\.9/);
 });
 
-test("next never moves back: an older version than the current next is refused", async (t) => {
-  const stub = await registry(
-    t,
-    seeded(
-      { "0.39.0-next.12": { gitHead: "later" } },
-      { latest: "0.38.1", next: "0.39.0-next.12" },
-    ),
-  );
-  const { status, output } = await publish(
-    t,
-    stub,
-    goodEntries("0.39.0-next.11"),
-    "0.39.0-next.11",
-  );
-  assert.notEqual(status, 0, output);
-  assert.equal(stub.log.length, 0);
-  assert.match(output, /next is already 0\.39\.0-next\.12/);
-});
-
-test("a version already published from this commit is done; from another, refused", async (t) => {
-  const stub = await registry(t, seeded({ "0.39.0-next.9": { gitHead: COMMIT } }));
-  assert.equal((await publish(t, stub, goodEntries("0.39.0-next.9"), "0.39.0-next.9")).status, 0);
-  assert.equal(stub.log.length, 0);
-  const other = await registry(t, seeded({ "0.39.0-next.9": { gitHead: "elsewhere" } }));
-  const refused = await publish(t, other, goodEntries("0.39.0-next.9"), "0.39.0-next.9");
-  assert.notEqual(refused.status, 0);
-  assert.match(refused.output, /published from elsewhere/);
-});
-
-test("a package document over 256 KB is read, not passed as an argument", async (t) => {
-  // Linux caps one argument at 128 KB (MAX_ARG_STRLEN): @sealant/mend's document passed it at
-  // v0.36.0-next.601, and the job died with "Argument list too long" (run 37342721738).
-  const padding = "x".repeat(200);
-  const versions = Object.fromEntries(
-    Array.from({ length: 1500 }, (_, i) => [`0.0.${i}`, { gitHead: "older", readme: padding }]),
-  );
-  const distTags = Object.fromEntries(
-    Array.from({ length: 8000 }, (_, i) => [`channel-${i}`, `0.0.${i % 1500}`]),
-  );
-  const large = () =>
-    seeded(
-      { ...versions, "0.39.0-next.8": { gitHead: "older" } },
-      { ...distTags, latest: "0.38.1", next: "0.39.0-next.8" },
-    );
-  const stub = await registry(t, large());
-  assert.ok(JSON.stringify(stub.packages.get(NAME)).length > 256 * 1024);
-  assert.ok(JSON.stringify(stub.packages.get(NAME)["dist-tags"]).length > 128 * 1024);
-  const { status, output } = await publish(t, stub, goodEntries("0.39.0-next.9"), "0.39.0-next.9");
-  assert.equal(status, 0, output);
-  assert.equal(stub.log.length, 1);
-  assert.deepEqual(stub.log[0].distTags, { next: "0.39.0-next.9" });
-  // The same document read back: published from this commit is done; next never moves back.
-  assert.equal((await publish(t, stub, goodEntries("0.39.0-next.9"), "0.39.0-next.9")).status, 0);
-  assert.equal(stub.log.length, 1);
-  const older = await publish(
-    t,
-    await registry(t, large()),
-    goodEntries("0.39.0-next.7"),
-    "0.39.0-next.7",
-  );
-  assert.notEqual(older.status, 0, older.output);
-  assert.match(older.output, /next is already 0\.39\.0-next\.8/);
-});
-
-test("an artifact holding anything but the expected tarball is refused before npm runs", async (t) => {
+test("an artifact holding anything but the expected tarball or manifest is refused before npm runs", async (t) => {
   for (const [file, text] of [
     [".npmrc", "https-proxy=http://127.0.0.1:9/\nstrict-ssl=false\n"],
     ["extra.tgz", "x"],
@@ -385,37 +182,6 @@ test("a root binding.gyp is refused: npm would turn it into an install script", 
   assert.notEqual(result.status, 0, result.output);
   assert.match(result.output, /binding\.gyp/);
   assert.equal(stub.log.length, 0);
-});
-
-test("a registry failure stops the job instead of being read as nothing published", async (t) => {
-  const stub = await registry(t, {});
-  const { status, output } = await publish(t, stub, goodEntries("0.39.0-next.9"), "0.39.0-next.9");
-  assert.notEqual(status, 0);
-  assert.match(output, /answered 404/);
-  assert.equal(stub.log.length, 0);
-});
-
-test("a stable release publishes under latest with the same rewrite", async (t) => {
-  const mend = "@sealant/mend";
-  const seed = {
-    [mend]: { name: mend, versions: { "0.38.1": {} }, "dist-tags": { latest: "0.38.1" } },
-  };
-  const entries = [
-    ["package/package.json", manifest("0.39.0", {}, mend)],
-    ["package/dist/index.js", ""],
-  ];
-  const stub = await registry(t, seed);
-  const result = await publish(t, stub, entries, "0.39.0", "latest", { name: mend });
-  assert.equal(result.status, 0, result.output);
-  assert.deepEqual(stub.log[0].distTags, { latest: "0.39.0" });
-  const next = [
-    ["package/package.json", manifest("0.39.0-next.9", {}, mend)],
-    ["package/dist/index.js", ""],
-  ];
-  const refused = await publish(t, await registry(t, seed), next, "0.39.0-next.9", "latest", {
-    name: mend,
-  });
-  assert.notEqual(refused.status, 0);
 });
 
 test("a prerelease must be a -next package, or Mend itself", async (t) => {
@@ -481,4 +247,85 @@ test("a -next package's sibling dependency must be its exact -next alias", async
     "0.39.0-next.9",
   );
   assert.notEqual(aliased.status, 0);
+});
+
+test("the block's check and normalize-npm-tarball.mjs --check give the same answers", async (t) => {
+  // The publisher runs no repository file, so it carries the check written out; this holds the
+  // copy to the script image.yml's cli job ran.
+  const normalizer = fileURLToPath(new URL("./normalize-npm-tarball.mjs", import.meta.url));
+  const directory = mkdtempSync(path.join(tmpdir(), "republish-parity-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const version = "0.39.0-next.9";
+  const cases = {
+    normalized: goodEntries(version),
+    "a tag": [["package/package.json", manifest(version, { tag: "latest" })]],
+    scripts: [["package/package.json", manifest(version, { scripts: { prepare: "x" } })]],
+    "publishConfig beyond access": [
+      [
+        "package/package.json",
+        manifest(version, { publishConfig: { access: "public", tag: "x" } }),
+      ],
+    ],
+    "publishConfig without access": [
+      ["package/package.json", manifest(version, { publishConfig: {} })],
+    ],
+    "only access": [
+      ["package/package.json", manifest(version, { publishConfig: { access: "public" } })],
+    ],
+    "an .npmrc": [...goodEntries(version), ["package/lib/.npmrc", "x=1\n"]],
+    "a binding.gyp": [...goodEntries(version), ["package/binding.gyp", "{}"]],
+    "a forged commit": [["package/package.json", manifest(version, { gitHead: "forged" })]],
+    "another version": [["package/package.json", manifest("0.39.0-next.8")]],
+    "a stable version": [["package/package.json", manifest("0.39.0")]],
+    "a plain name under next": [["package/package.json", manifest(version, {}, "@sealant/sdk")]],
+    "an alias": [["package/package.json", manifest(version, { dependencies: { a: "npm:b@1" } })]],
+    "a sibling alias": [
+      [
+        "package/package.json",
+        manifest(version, {
+          dependencies: { "@sealant/api-contracts": `npm:@sealant/api-contracts-next@${version}` },
+        }),
+      ],
+    ],
+  };
+  const answers = {};
+  for (const [label, entries] of Object.entries(cases)) {
+    const tarball = path.join(directory, `${Object.keys(answers).length}.tgz`);
+    writeFileSync(tarball, tarGz(entries));
+    const args = [NAME, version, COMMIT, "next"];
+    const fromBlock = await new Promise((resolve) => {
+      const child = spawn(
+        "bash",
+        ["-c", `set -euo pipefail\n${block}\ncheck_tarball "$@"`, "check", tarball, ...args],
+        { env: { ...process.env, REPUBLISH_TEST_PACOTE: PACOTE }, stdio: "ignore" },
+      );
+      child.on("close", resolve);
+    });
+    const script = spawnSync(
+      process.execPath,
+      [
+        normalizer,
+        "--check",
+        tarball,
+        "--name",
+        NAME,
+        "--version",
+        version,
+        "--commit",
+        COMMIT,
+        "--channel",
+        "next",
+      ],
+      { env: { ...process.env, NORMALIZE_PACOTE: PACOTE }, encoding: "utf8" },
+    ).status;
+    answers[label] = [fromBlock === 0, script === 0];
+  }
+  for (const [label, [byBlock, byScript]] of Object.entries(answers))
+    assert.equal(byBlock, byScript, `${label}: block ${byBlock}, script ${byScript}`);
+  assert.deepEqual(
+    Object.entries(answers)
+      .filter(([, [accepted]]) => accepted)
+      .map(([label]) => label),
+    ["normalized", "only access", "a sibling alias"],
+  );
 });

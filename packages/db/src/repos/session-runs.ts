@@ -1,7 +1,7 @@
 import { type SealantRunId, type SealantWorkspaceId, type SessionId } from "@mend/domain";
 import { SessionRun } from "@mend/domain/workbench";
 import { and, asc, desc, eq, isNotNull, isNull, lt, max } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -221,7 +221,7 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
     ) {
       yield* db
         .update(sessionRuns)
-        .set({ lastSeenSequence: sequence, updatedAt: new Date() })
+        .set({ lastSeenSequence: sequence, updatedAt: yield* DateTime.nowAsDate })
         .where(and(eq(sessionRuns.sealantRunId, id), lt(sessionRuns.lastSeenSequence, sequence)))
         .pipe(Effect.orDie);
     });
@@ -231,7 +231,7 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
       outcome: SessionRunOutcome,
       summary: string | null,
     ) {
-      const now = new Date();
+      const now = yield* DateTime.nowAsDate;
       yield* db
         .update(sessionRuns)
         .set({ status: outcome, summary, settledAt: now, updatedAt: now })
@@ -246,7 +246,7 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
     ) {
       yield* db
         .update(sessionRuns)
-        .set({ status: outcome, summary, updatedAt: new Date() })
+        .set({ status: outcome, summary, updatedAt: yield* DateTime.nowAsDate })
         .where(and(eq(sessionRuns.sealantRunId, id), isNotNull(sessionRuns.settledAt)))
         .pipe(Effect.orDie);
     });

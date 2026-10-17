@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
+import { Clock, Deferred, Duration, Effect } from "effect";
+import { afterEach, describe, expect } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import { ids } from "../../test/support/tenancy-harness.ts";
@@ -112,29 +114,55 @@ describe("the event stream lifecycle", () => {
     expect(api.listen).toEqual({ starts: 1, ends: 0 });
   });
 
-  it("a stream closed the way removal closes it releases what it held, and other accounts' streams go on", async () => {
-    // `closeConnectionsOf` is the registry call member removal makes (`connections.closeForUser`).
-    // Removal itself, with its revocations, is member-removal.test.ts's.
-    const world = await createTenancyApi();
-    api = world;
-    const carol = await api.events("carol");
-    const alice = await api.events("alice");
-    expect(await api.openConnections("carol", "event-stream")).toBe(1);
+  it.effect(
+    "a stream closed the way removal closes it releases what it held, and other accounts' streams go on",
+    () =>
+      Effect.gen(function* () {
+        // `closeConnectionsOf` is the registry call member removal makes (`connections.closeForUser`).
+        // Removal itself, with its revocations, is member-removal.test.ts's.
+        const clock = yield* Clock.clockWith(Effect.succeed);
+        const graceSleeping = yield* Deferred.make<void>();
+        // The route receives this clock; the test keeps the TestClock controller. A stream's
+        // one-second revocation grace is the only one-second sleep the route asks for.
+        const observedClock: Clock.Clock = {
+          currentTimeMillisUnsafe: () => clock.currentTimeMillisUnsafe(),
+          currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
+          currentTimeMillis: clock.currentTimeMillis,
+          currentTimeNanos: clock.currentTimeNanos,
+          sleep: (duration) =>
+            Duration.toMillis(duration) === 1_000
+              ? Deferred.succeed(graceSleeping, undefined).pipe(
+                  Effect.andThen(clock.sleep(duration)),
+                )
+              : clock.sleep(duration),
+        };
+        const world = yield* Effect.acquireRelease(
+          Effect.promise(() => createTenancyApi({}, { effectClock: observedClock })),
+          (fixture) => Effect.promise(() => fixture.dispose()),
+        );
+        const carol = yield* Effect.promise(() => world.events("carol"));
+        const alice = yield* Effect.promise(() => world.events("alice"));
+        expect(yield* Effect.promise(() => world.openConnections("carol", "event-stream"))).toBe(1);
 
-    expect(await api.closeConnectionsOf("carol")).toBe(1);
-    await eventually(
-      "carol's stream released",
-      async () => (await openStreams(world, "carol")) === 0,
-    );
-    // The revoked stream ends: nothing more arrives on it.
-    await api.notify(sessionEvent);
-    expect(await carol.next(SILENCE_MS)).toBeNull();
+        expect(yield* Effect.promise(() => world.closeConnectionsOf("carol"))).toBe(1);
+        yield* Deferred.await(graceSleeping);
+        yield* TestClock.adjust("1 second");
+        yield* Effect.promise(() =>
+          eventually(
+            "carol's stream released",
+            async () => (await openStreams(world, "carol")) === 0,
+          ),
+        );
+        // The revoked stream ends: nothing more arrives on it.
+        yield* Effect.promise(() => world.notify(sessionEvent));
+        expect(yield* Effect.promise(() => carol.next(SILENCE_MS))).toBeNull();
 
-    expect(await arrives(alice)).toContain(sharedA.session);
-    expect(api.listen).toEqual({ starts: 1, ends: 0 });
-    await carol.close();
-    await alice.close();
-  });
+        expect(yield* Effect.promise(() => arrives(alice))).toContain(sharedA.session);
+        expect(world.listen).toEqual({ starts: 1, ends: 0 });
+        yield* Effect.promise(() => carol.close());
+        yield* Effect.promise(() => alice.close());
+      }),
+  );
 
   it("a removed account's stream says why it ended, even when the close comes first", async () => {
     // Removal closes the account's streams on the same bus event its page must hear. When the

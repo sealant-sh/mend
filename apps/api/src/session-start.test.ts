@@ -32,8 +32,8 @@ import {
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { SessionEngine, SessionLaunchSetupError } from "@mend/sessions";
+import { TestClock } from "@mend/test-ci/effect-vitest";
 import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
-import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";

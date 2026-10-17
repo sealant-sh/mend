@@ -2,34 +2,118 @@ name: Image
 
 # Publish immutable candidate tags first. The caller promotes stable latest tags
 # only after native packaged acceptance, npm publication, and release assets.
+#
+# `target` says where the images go. `ghcr` pushes them by digest and merges the candidate tags on
+# ghcr. `archive` pushes nothing: each image is exported as an archive, assembled into its multi-arch
+# index in a registry inside the merge job, and accepted from the archive, so a run proves its
+# images without writing to ghcr. Either way the run writes release-manifest.json: every image by
+# digest and the one CLI tarball, which acceptance installs and checks by sha512.
 on:
   workflow_call:
     inputs:
       version:
         required: false
         type: string
+      target:
+        required: false
+        type: string
+        default: ghcr
+    # Which acceptance passed, `ghcr` or `archive`, and nothing when none did. A caller's `needs`
+    # also passes when every job here was skipped (a fork: `version` never runs), so a publisher
+    # reads this instead of trusting the call's result alone.
+    # All three of a target's acceptances must pass: the same-source packaged acceptance, the
+    # upgrade from every release in the upgrade window, and the split-tier smoke.
+    outputs:
+      accepted:
+        value: >-
+          ${{ (jobs.packaged-smoke.outputs.accepted == 'ghcr' &&
+          jobs.previous-upgrade.outputs.accepted == 'ghcr' && jobs.split-tier-smoke.outputs.accepted
+          == 'ghcr') && 'ghcr' || ((jobs.archive-acceptance.outputs.accepted == 'archive' &&
+          jobs.archive-previous-upgrade.outputs.accepted == 'archive' &&
+          jobs.archive-split-tier-smoke.outputs.accepted == 'archive') && 'archive' || '') }}
   workflow_dispatch:
     inputs:
       version:
         description: "Exact candidate version; otherwise use a dev version from this commit"
         required: false
         type: string
+      target:
+        description: "ghcr pushes the candidates; archive builds and accepts them without a push"
+        required: false
+        type: choice
+        options: [ghcr, archive]
+        default: ghcr
 
-# Only the jobs that push hold packages: write.
+# Only the jobs that push hold packages: write; the archive jobs never do. Every job runs on a
+# GitHub-hosted runner, a fresh VM: the box's runner VMs keep state between jobs, so code from an
+# earlier pull request could change what these jobs build, accept or push. Every artifact a job
+# downloads comes from its own run: an artifact of another run is not what this one built.
 permissions:
   contents: read
 
 jobs:
   version:
     if: github.repository == 'sealant-sh/mend'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
+    # Reads the repository's tags (gh api); every job here names its own permissions, so none
+    # inherits whatever its caller grants.
+    permissions:
+      contents: read
     outputs:
       value: ${{ steps.resolve.outputs.version }}
       before: ${{ steps.resolve.outputs.before }}
       commit: ${{ steps.commit.outputs.commit }}
     steps:
-      # A dispatch of image.yml itself pushes ghcr.io/sealant-sh/mend:<version>, the tag
-      # `mend server setup` pulls: from main only, and only for a version that has its git tag (built
+      # A workflow_call input is any string; a target nothing handles would build and accept nothing.
+      # A dry-run version (release-cli.yml's dispatch) builds to archives only: it never reaches ghcr.
+      # This fails early on the version input; the resolve step checks the version it resolves.
+      - name: Check the target
+        env:
+          TARGET: ${{ inputs.target }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          case $TARGET in
+            ghcr | archive) ;;
+            *)
+              echo "::error::target is ghcr or archive, not '$TARGET'."
+              exit 1
+              ;;
+          esac
+          if [[ $TARGET != archive && $VERSION == *dryrun* ]]; then
+            echo "::error::$VERSION is a dry-run version; it builds to archives only, never to $TARGET."
+            exit 1
+          fi
+      # The target is checked again against the version this step resolves: the input is optional,
+      # and release-acceptance.yml dispatched on a tag passes none, so the version can come from the
+      # tag alone. It runs before any step writes an output.
+      - name: Resolve one version for image labels and tags
+        id: resolve
+        env:
+          OVERRIDE_VERSION: ${{ inputs.version }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          const { GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_OUTPUT, OVERRIDE_VERSION, TARGET } = process.env;
+          const tagged = GITHUB_REF.startsWith('refs/tags/');
+          const tagVersion = tagged ? GITHUB_REF_NAME.replace(/^v/, '') : undefined;
+          if (tagged && OVERRIDE_VERSION && OVERRIDE_VERSION !== tagVersion) {
+            throw new Error('A release tag cannot be overridden with another version.');
+          }
+          const version = OVERRIDE_VERSION || tagVersion || `0.0.0-dev.sha${GITHUB_SHA.slice(0, 12)}`;
+          const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$/.exec(version);
+          if (!match || (match[4]?.split('.') ?? []).some(p => !/^[0-9A-Za-z-]+$/.test(p) || /^0\d+$/.test(p))) {
+            throw new Error('Expected an exact Docker-compatible Mend semantic version.');
+          }
+          if (TARGET !== 'archive' && version.includes('dryrun')) {
+            throw new Error(`${version} is a dry-run version; it builds to archives only, never to ${TARGET}.`);
+          }
+          const before = `0.0.0-acceptance.${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT}`;
+          appendFileSync(GITHUB_OUTPUT, `version=${version}\nbefore=${before}\n`);
+          NODE
+      # A dispatch of image.yml itself pushes to ghcr.io/sealant-sh/mend (a real version only under
+      # its staging tag; release-cli.yml's finalize-images alone writes :<version>, the tag
+      # `mend server setup` pulls): from main only, and only for a version that has its git tag (built
       # from that tag's commit, not main's head), or a dev or acceptance build. A call from
       # release-acceptance.yml or release-cli.yml carries its caller's event and ref, so the check
       # reads github.workflow_ref, the top-level workflow, and builds the caller's commit.
@@ -69,29 +153,9 @@ jobs:
             esac
           fi
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
-      - name: Resolve one version for image labels and tags
-        id: resolve
-        env:
-          OVERRIDE_VERSION: ${{ inputs.version }}
-        run: |
-          node --input-type=module <<'NODE'
-          import { appendFileSync } from 'node:fs';
-          const { GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_OUTPUT, OVERRIDE_VERSION } = process.env;
-          const tagged = GITHUB_REF.startsWith('refs/tags/');
-          const tagVersion = tagged ? GITHUB_REF_NAME.replace(/^v/, '') : undefined;
-          if (tagged && OVERRIDE_VERSION && OVERRIDE_VERSION !== tagVersion) {
-            throw new Error('A release tag cannot be overridden with another version.');
-          }
-          const version = OVERRIDE_VERSION || tagVersion || `0.0.0-dev.sha${GITHUB_SHA.slice(0, 12)}`;
-          const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$/.exec(version);
-          if (!match || (match[4]?.split('.') ?? []).some(p => !/^[0-9A-Za-z-]+$/.test(p) || /^0\d+$/.test(p))) {
-            throw new Error('Expected an exact Docker-compatible Mend semantic version.');
-          }
-          const before = `0.0.0-acceptance.${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT}`;
-          appendFileSync(GITHUB_OUTPUT, `version=${version}\nbefore=${before}\n`);
-          NODE
 
   build:
+    if: inputs.target == 'ghcr'
     permissions:
       contents: read
       packages: write
@@ -104,10 +168,15 @@ jobs:
           - { id: mend-api, name: mend-api, dockerfile: apps/api/Dockerfile, baseline: false }
           - { id: mend-web, name: mend-web, dockerfile: apps/web/Dockerfile, baseline: false }
         platform:
-          - { arch: amd64, runner: blacksmith-4vcpu-ubuntu-2404 }
-          - { arch: arm64, runner: blacksmith-4vcpu-ubuntu-2404-arm }
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
     runs-on: ${{ matrix.platform.runner }}
     steps:
+      # Disk use on / and /mnt every 5 s, so the step summary shows this job's peak on a hosted runner.
+      - name: Start the disk sampler
+        run: >-
+          nohup bash -c 'while :; do df -B1 --output=used / /mnt 2>/dev/null | tail -n +2 | paste
+          -sd" "; sleep 5; done' >"$RUNNER_TEMP/disk-used.log" 2>&1 &
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.version.outputs.commit }}
@@ -147,12 +216,32 @@ jobs:
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
+      # Telemetry only: it never turns the job's result red, and says so when it has nothing.
+      - name: Report peak disk use
+        if: always()
+        continue-on-error: true
+        run: |
+          df -h / /mnt 2>/dev/null || df -h / || true
+          log=$RUNNER_TEMP/disk-used.log
+          if [ -s "$log" ]; then
+            report=$(awk '$1 ~ /^[0-9]+$/ { n++; if ($1 > r) r = $1; if ($2 ~ /^[0-9]+$/) { two = 1; if ($2 > m) m = $2 } }
+              END { if (!n) { print "Disk use unavailable: no samples"; exit }
+                printf "Sampled peak disk used (every 5 s, %d samples): / %d MiB", n, r / 1048576
+                if (two) printf ", /mnt %d MiB\n", m / 1048576; else print ", /mnt not present" }' \
+              "$log") || report="Disk use unavailable: the samples could not be read"
+          else
+            report="Disk use unavailable: the sampler wrote no samples"
+          fi
+          echo "$report"
+          echo "$report" >>"$GITHUB_STEP_SUMMARY" ||
+            echo "::warning::Could not write the disk report to the step summary"
 
   merge:
+    if: inputs.target == 'ghcr'
     permissions:
       contents: read
       packages: write
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     needs: [version, build]
     strategy:
       matrix:
@@ -162,43 +251,423 @@ jobs:
           - { id: mend-api, name: mend-api, baseline: false }
           - { id: mend-web, name: mend-web, baseline: false }
     steps:
+      # Only the index check (scripts/release-manifest.mjs) and the Node version it runs on.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+          sparse-checkout: |
+            .node-version
+            scripts/release-manifest.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      # One directory per build, named for its arch: which digest is which arch's build is kept.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/digests
           pattern: digests-${{ matrix.image.id }}--*
-          merge-multiple: true
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Create and inspect the multi-arch candidate
-        working-directory: /tmp/digests
         env:
+          ID: ${{ matrix.image.id }}
           REPOSITORY: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}
           VERSION:
             ${{ matrix.image.baseline && needs.version.outputs.before || needs.version.outputs.value
             }}
         run: |
           set -euo pipefail
-          # A version is pushed once. Overwriting ghcr.io/sealant-sh/mend:<version> would change
-          # what every server pinned to it pulls. Only a commit's own dev build may be rebuilt.
-          if [[ $VERSION != 0.0.0-dev.* && $VERSION != 0.0.0-acceptance.* ]] &&
-            docker buildx imagetools inspect "$REPOSITORY:$VERSION" >/dev/null 2>&1; then
-            echo "::error::$REPOSITORY:$VERSION already exists; a version is pushed once."
+          # A real version's index is staged under this run's own tag: :<version> is what every
+          # server pinned to it pulls, so only release-cli.yml's finalize-images writes it, once,
+          # after this run's acceptance passed (it also refuses a version that exists). A dev or
+          # acceptance build keeps its own mutable tag: release acceptance, the box's previews and
+          # mend-before name it, and a commit's own dev build may be rebuilt.
+          case $VERSION in
+            0.0.0-dev.* | 0.0.0-acceptance.*) tag=$VERSION ;;
+            *) tag=staging-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT ;;
+          esac
+          sources=()
+          for arch in amd64 arm64; do
+            built=(/tmp/digests/digests-"$ID--$arch"/*)
+            digest=${built[0]##*/}
+            if [[ ${#built[@]} -ne 1 || ! $digest =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::The $ID $arch digests artifact holds '${built[*]##*/}', not one image digest."
+              exit 1
+            fi
+            sources+=("$REPOSITORY@sha256:$digest")
+          done
+          mkdir -p "$RUNNER_TEMP/index"
+          docker buildx imagetools create --metadata-file "$RUNNER_TEMP/index/create.json" \
+            --tag "$REPOSITORY:$tag" "${sources[@]}"
+          docker buildx imagetools inspect "$REPOSITORY:$tag"
+      # The index digest goes in the release manifest: the one create reported, never the tag's,
+      # which another publisher can move (a dev tag is rebuilt). That index and each source are read
+      # by digest, and the index must hold exactly the sources, each arch's build under that arch's
+      # platform.
+      - name: Check and record the index digest
+        working-directory: ${{ runner.temp }}/index
+        env:
+          ID: ${{ matrix.image.id }}
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}
+        run: |
+          set -euo pipefail
+          digest=$(jq -r '."containerimage.digest" // ."containerimage.descriptor".digest // ""' create.json)
+          if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::imagetools create reported no index digest."
             exit 1
           fi
+          docker buildx imagetools inspect "$REPOSITORY@$digest" --raw >index.json
           sources=()
-          for digest in *; do sources+=("$REPOSITORY@sha256:$digest"); done
-          docker buildx imagetools create --tag "$REPOSITORY:$VERSION" "${sources[@]}"
+          for arch in amd64 arm64; do
+            source=$(cd "/tmp/digests/digests-$ID--$arch" && ls)
+            docker buildx imagetools inspect "$REPOSITORY@sha256:$source" --raw >"source-$source.json"
+            sources+=("$arch=sha256:$source=source-$source.json")
+          done
+          node "$GITHUB_WORKSPACE/scripts/release-manifest.mjs" check-index create.json index.json \
+            "${sources[@]}" >digest
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: index-${{ matrix.image.id }}
+          path: ${{ runner.temp }}/index/digest
+          if-no-files-found: error
+          retention-days: 1
+
+  # Every image of an archive run, built as build does but exported to a file, not pushed. The
+  # docker exporter, not oci: it writes the same OCI index.json and blobs and adds the manifest.json
+  # that Docker's classic image store needs to load an archive. No attestations, so index.json names
+  # the platform manifest itself, the digest acceptance checks.
+  archive-build:
+    if: inputs.target == 'archive'
+    permissions:
+      contents: read
+    needs: version
+    strategy:
+      matrix:
+        image:
+          - { id: mend, name: mend, dockerfile: Dockerfile, baseline: false }
+          - { id: mend-before, name: mend, dockerfile: Dockerfile, baseline: true }
+          - { id: mend-api, name: mend-api, dockerfile: apps/api/Dockerfile, baseline: false }
+          - { id: mend-web, name: mend-web, dockerfile: apps/web/Dockerfile, baseline: false }
+        platform:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.platform.runner }}
+    steps:
+      # Disk use on / and /mnt every 5 s, so the step summary shows this job's peak on a hosted runner.
+      - name: Start the disk sampler
+        run: >-
+          nohup bash -c 'while :; do df -B1 --output=used / /mnt 2>/dev/null | tail -n +2 | paste
+          -sd" "; sleep 5; done' >"$RUNNER_TEMP/disk-used.log" 2>&1 &
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          driver-opts: image=moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+      - run: mkdir -p "$RUNNER_TEMP/archive"
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          platforms: linux/${{ matrix.platform.arch }}
+          build-args:
+            MEND_VERSION=${{ matrix.image.baseline && needs.version.outputs.before ||
+            needs.version.outputs.value }}
+          labels: org.opencontainers.image.revision=${{ needs.version.outputs.commit }}
+          provenance: false
+          sbom: false
+          outputs: type=docker,dest=${{ runner.temp }}/archive/${{ matrix.image.id }}.tar
+      # The digest is computed from the archive itself and must be the one BuildKit reports, so the
+      # manifest records what the file holds.
+      - name: Record the platform digest from the archive
+        env:
+          ARCHIVE: ${{ runner.temp }}/archive/${{ matrix.image.id }}.tar
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          platform=$(node scripts/release-manifest.mjs archive-digest "$ARCHIVE")
+          if [[ $platform != "$DIGEST" ]]; then
+            echo "::error::The archive holds $platform; BuildKit reported '$DIGEST'."
+            exit 1
+          fi
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${platform#sha256:}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: digests-${{ matrix.image.id }}--${{ matrix.platform.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+      # Layers are compressed already. They expire after a day; nothing deletes them sooner, which
+      # would need actions: write in every caller (next-channel.md).
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: archive-${{ matrix.image.id }}--${{ matrix.platform.arch }}
+          path: ${{ runner.temp }}/archive/${{ matrix.image.id }}.tar
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      # Telemetry only: it never turns the job's result red, and says so when it has nothing.
+      - name: Report peak disk use
+        if: always()
+        continue-on-error: true
+        run: |
+          df -h / /mnt 2>/dev/null || df -h / || true
+          log=$RUNNER_TEMP/disk-used.log
+          if [ -s "$log" ]; then
+            report=$(awk '$1 ~ /^[0-9]+$/ { n++; if ($1 > r) r = $1; if ($2 ~ /^[0-9]+$/) { two = 1; if ($2 > m) m = $2 } }
+              END { if (!n) { print "Disk use unavailable: no samples"; exit }
+                printf "Sampled peak disk used (every 5 s, %d samples): / %d MiB", n, r / 1048576
+                if (two) printf ", /mnt %d MiB\n", m / 1048576; else print ", /mnt not present" }' \
+              "$log") || report="Disk use unavailable: the samples could not be read"
+          else
+            report="Disk use unavailable: the sampler wrote no samples"
+          fi
+          echo "$report"
+          echo "$report" >>"$GITHUB_STEP_SUMMARY" ||
+            echo "::warning::Could not write the disk report to the step summary"
+
+  # The same multi-arch index merge makes, assembled in a registry that lives and dies with this job:
+  # it proves both arches' archives make one index, and gives the manifest that index's digest.
+  archive-merge:
+    if: inputs.target == 'archive'
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    needs: [version, archive-build]
+    strategy:
+      matrix:
+        image:
+          - { id: mend, name: mend, baseline: false }
+          - { id: mend-before, name: mend, baseline: true }
+          - { id: mend-api, name: mend-api, baseline: false }
+          - { id: mend-web, name: mend-web, baseline: false }
+    steps:
+      # Only the index check (scripts/release-manifest.mjs) and the Node version it runs on.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+          sparse-checkout: |
+            .node-version
+            scripts/release-manifest.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: /tmp/archives
+          pattern: archive-${{ matrix.image.id }}--*
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.image.id }}--*
+      - name: Start a registry on loopback inside this job
+        run: docker run --detach --name registry --publish 127.0.0.1:5000:5000 registry:2
+      # The registry speaks plain HTTP on loopback; imagetools reads the builder's registry config.
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          driver-opts: image=moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+          buildkitd-config-inline: |
+            [registry."127.0.0.1:5000"]
+              http = true
+      # skopeo keeps each manifest's bytes (--preserve-digests), so the registry holds the digest the
+      # archive was recorded under; the inspect proves it.
+      - name: Push both arches' archives to it
+        env:
+          ID: ${{ matrix.image.id }}
+          REPOSITORY: 127.0.0.1:5000/${{ matrix.image.name }}
+        run: |
+          set -euo pipefail
+          command -v skopeo >/dev/null || {
+            echo "::error::skopeo is missing from this runner image."
+            exit 1
+          }
+          for arch in amd64 arm64; do
+            digest=$(cd "/tmp/digests/digests-$ID--$arch" && ls)
+            skopeo copy --preserve-digests --dest-tls-verify=false \
+              "oci-archive:/tmp/archives/archive-$ID--$arch/$ID.tar" "docker://$REPOSITORY:$arch"
+            docker buildx imagetools inspect "$REPOSITORY@sha256:$digest" >/dev/null
+          done
+      - name: Create and inspect the multi-arch candidate in the job's registry
+        env:
+          ID: ${{ matrix.image.id }}
+          REPOSITORY: 127.0.0.1:5000/${{ matrix.image.name }}
+          VERSION:
+            ${{ matrix.image.baseline && needs.version.outputs.before || needs.version.outputs.value
+            }}
+        run: |
+          set -euo pipefail
+          sources=()
+          for arch in amd64 arm64; do
+            sources+=("$REPOSITORY@sha256:$(cd "/tmp/digests/digests-$ID--$arch" && ls)")
+          done
+          mkdir -p "$RUNNER_TEMP/index"
+          docker buildx imagetools create --metadata-file "$RUNNER_TEMP/index/create.json" \
+            --tag "$REPOSITORY:$VERSION" "${sources[@]}"
           docker buildx imagetools inspect "$REPOSITORY:$VERSION"
+      # As merge records it: the digest create reported, checked against the sources by digest, each
+      # arch's build under that arch's platform.
+      - name: Check and record the index digest
+        working-directory: ${{ runner.temp }}/index
+        env:
+          ID: ${{ matrix.image.id }}
+          REPOSITORY: 127.0.0.1:5000/${{ matrix.image.name }}
+        run: |
+          set -euo pipefail
+          digest=$(jq -r '."containerimage.digest" // ."containerimage.descriptor".digest // ""' create.json)
+          if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::imagetools create reported no index digest."
+            exit 1
+          fi
+          docker buildx imagetools inspect "$REPOSITORY@$digest" --raw >index.json
+          sources=()
+          for arch in amd64 arm64; do
+            source=$(cd "/tmp/digests/digests-$ID--$arch" && ls)
+            docker buildx imagetools inspect "$REPOSITORY@sha256:$source" --raw >"source-$source.json"
+            sources+=("$arch=sha256:$source=source-$source.json")
+          done
+          node "$GITHUB_WORKSPACE/scripts/release-manifest.mjs" check-index create.json index.json \
+            "${sources[@]}" >digest
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: index-${{ matrix.image.id }}
+          path: ${{ runner.temp }}/index/digest
+          if-no-files-found: error
+          retention-days: 1
+
+  # The one @sealant/mend tarball of this run, stamped with its version and commit, normalized the
+  # way the publisher rewrites a manifest. Acceptance installs this file and checks its sha512. No
+  # caches and no id-token: other jobs, running unowned code, write those caches, and nothing this
+  # job runs, the dependencies' build tools included, may reach a credential.
+  cli:
+    name: Pack @sealant/mend
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      record: ${{ steps.pack.outputs.record }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Set the version and commit
+        working-directory: apps/cli
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+          COMMIT: ${{ needs.version.outputs.commit }}
+        run: |
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npm pkg set "gitHead=$COMMIT"
+      # pnpm pack builds (prepack) and materializes catalog and workspace specifiers. The normalized
+      # tarball is checked again as the publisher will check it: already normalized, never repacked.
+      - name: Build, pack and normalize
+        id: pack
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+          COMMIT: ${{ needs.version.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/packed" "$RUNNER_TEMP/cli"
+          (cd apps/cli && pnpm pack --pack-destination "$RUNNER_TEMP/packed")
+          packed=("$RUNNER_TEMP"/packed/*.tgz)
+          if [[ ${#packed[@]} -ne 1 || ! -f ${packed[0]} ]]; then
+            echo "::error::pnpm pack must make exactly one tarball."
+            exit 1
+          fi
+          expected=(--name @sealant/mend --version "$VERSION" --commit "$COMMIT")
+          record=$(node scripts/normalize-npm-tarball.mjs "${packed[0]}" --out "$RUNNER_TEMP/cli" "${expected[@]}")
+          file=$(jq -r .file <<<"$record")
+          checked=$(node scripts/normalize-npm-tarball.mjs --check "$RUNNER_TEMP/cli/$file" "${expected[@]}")
+          if [[ $checked != "$record" ]]; then
+            echo "::error::The normalized tarball does not check as it was recorded."
+            exit 1
+          fi
+          echo "record=$record" >>"$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mend-cli
+          path: ${{ runner.temp }}/cli/*.tgz
+          if-no-files-found: error
+          retention-days: 90
+
+  # One record of what this run built: every image by its index and platform digests, and the CLI
+  # tarball by file name, sha512 and integrity. Acceptance reads it from this run and nowhere else.
+  release-manifest:
+    name: Write the release manifest
+    needs: [version, merge, archive-merge, cli]
+    # merge or archive-merge, by target; the other one is skipped.
+    if: >-
+      !cancelled() && needs.version.result == 'success' && needs.cli.result == 'success' &&
+      ((inputs.target == 'ghcr' && needs.merge.result == 'success') || (inputs.target == 'archive'
+      && needs.archive-merge.result == 'success'))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      # One directory per artifact, named for its image and arch.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/records/digests
+          pattern: digests-*
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/records/indexes
+          pattern: index-*
+      - name: Write release-manifest.json
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+          BEFORE: ${{ needs.version.outputs.before }}
+          COMMIT: ${{ needs.version.outputs.commit }}
+          DIGESTS: ${{ runner.temp }}/records/digests
+          INDEXES: ${{ runner.temp }}/records/indexes
+          CLI: ${{ needs.cli.outputs.record }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/manifest"
+          node scripts/release-manifest.mjs write "$RUNNER_TEMP/manifest/release-manifest.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/manifest/release-manifest.json
+          if-no-files-found: error
+          retention-days: 90
 
   packaged-smoke:
     name: Packaged Mend acceptance
-    needs: [version, merge]
+    # As archive-acceptance: the archive jobs above release-manifest are skipped on a ghcr run.
+    if: >-
+      ${{ !cancelled() && inputs.target == 'ghcr' && needs.version.result == 'success' &&
+      needs.merge.result == 'success' && needs.release-manifest.result == 'success' }}
+    needs: [version, merge, release-manifest]
     strategy:
       matrix:
-        runner: [blacksmith-4vcpu-ubuntu-2404, blacksmith-4vcpu-ubuntu-2404-arm]
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
     # Usually ~18 min; v0.35.0's amd64 run took 27.6 (its Ubuntu dotfiles scenario 760 s against
     # 67 s on arm64), 2.4 min inside the old 30. A cold workspace image build on a slow mirror is
@@ -207,7 +676,14 @@ jobs:
     permissions:
       contents: read
       packages: read
+    outputs:
+      accepted: ${{ steps.accepted.outputs.target }}
     steps:
+      # Disk use on / and /mnt every 5 s, so the step summary shows this job's peak on a hosted runner.
+      - name: Start the disk sampler
+        run: >-
+          nohup bash -c 'while :; do df -B1 --output=used / /mnt 2>/dev/null | tail -n +2 | paste
+          -sd" "; sleep 5; done' >"$RUNNER_TEMP/disk-used.log" 2>&1 &
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.version.outputs.commit }}
@@ -216,22 +692,782 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mend-cli
+          path: ${{ runner.temp }}/cli
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-          cache: pnpm
+          # No pnpm store cache: other jobs, running unowned code, write that cache.
       - run: pnpm install --frozen-lockfile --ignore-scripts
+      # GitHub's Ubuntu 24.04 images keep Ubuntu's default, which refuses unprivileged user
+      # namespaces, so every session fails to launch. Allow them here the way an operator does on a
+      # stock Ubuntu host.
+      - if: runner.environment == 'github-hosted'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # Setup runs any local image that carries the version's tag, and a tag on ghcr can move. This
+      # arch's platform is resolved through the index, as a consumer of :<version> resolves it: the
+      # index is read by the digest the manifest records, and the digest it maps this arch's
+      # platform to must be this arch's build, as the manifest records it, before anything is pulled
+      # (release-manifest.mjs resolve). Pull that digest, record the ID it pulled as, and tag only
+      # that ID with the name setup expects; acceptance then requires the running server to be it.
+      - name: Pull the candidates by digest
+        id: images
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/mend
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+          BEFORE: ${{ needs.version.outputs.before }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          case $RUNNER_ARCH in
+            X64) arch=amd64 ;;
+            ARM64) arch=arm64 ;;
+            *) echo "::error::No candidate is built for $RUNNER_ARCH."; exit 1 ;;
+          esac
+          for entry in "mend-before $BEFORE before" "mend $VERSION target"; do
+            read -r image version output <<<"$entry"
+            digest=$(node scripts/release-manifest.mjs resolve "$MANIFEST" "$REPOSITORY" "$image" "$arch")
+            docker pull "$REPOSITORY@$digest"
+            id=$(docker image inspect "$REPOSITORY@$digest" --format '{{.Id}}')
+            docker tag "$id" "$REPOSITORY:$version"
+            echo "$output=$id" >>"$GITHUB_OUTPUT"
+          done
+      - name: Check the CLI tarball against the manifest
+        id: cli
+        env:
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+        run: |
+          set -euo pipefail
+          tarball=$(node scripts/release-manifest.mjs check-cli "$MANIFEST" "$RUNNER_TEMP/cli")
+          echo "tarball=$tarball" >>"$GITHUB_OUTPUT"
       # Both image stamps are built from the resolved candidate commit. This transition
       # exercises upgrade mechanics, not a previous released server or historical schema.
       - name: Exercise packaged install and same-source version transition
         env:
           MEND_TEST_IMAGE:
             ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.before }}
+          MEND_TEST_IMAGE_ID: ${{ steps.images.outputs.before }}
           MEND_TEST_VERSION: ${{ needs.version.outputs.before }}
           MEND_TEST_UPGRADE_IMAGE:
             ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.value }}
+          MEND_TEST_UPGRADE_IMAGE_ID: ${{ steps.images.outputs.target }}
           MEND_TEST_UPGRADE_VERSION: ${{ needs.version.outputs.value }}
+          MEND_TEST_IMAGE_IDENTITY: digest
+          MEND_TEST_CLI_TARBALL: ${{ steps.cli.outputs.tarball }}
+        run: node scripts/check-packaged-server.mjs
+      # Reached only when acceptance passed on this arch; a failed arch fails the job.
+      - name: Record the acceptance
+        id: accepted
+        run: echo "target=ghcr" >>"$GITHUB_OUTPUT"
+      # Telemetry only: it never turns the job's result red, and says so when it has nothing.
+      - name: Report peak disk use
+        if: always()
+        continue-on-error: true
         run: |
-          pnpm --filter @sealant/mend exec npm version "$MEND_TEST_UPGRADE_VERSION" --no-git-tag-version --allow-same-version
-          node scripts/check-packaged-server.mjs
+          df -h / /mnt 2>/dev/null || df -h / || true
+          log=$RUNNER_TEMP/disk-used.log
+          if [ -s "$log" ]; then
+            report=$(awk '$1 ~ /^[0-9]+$/ { n++; if ($1 > r) r = $1; if ($2 ~ /^[0-9]+$/) { two = 1; if ($2 > m) m = $2 } }
+              END { if (!n) { print "Disk use unavailable: no samples"; exit }
+                printf "Sampled peak disk used (every 5 s, %d samples): / %d MiB", n, r / 1048576
+                if (two) printf ", /mnt %d MiB\n", m / 1048576; else print ", /mnt not present" }' \
+              "$log") || report="Disk use unavailable: the samples could not be read"
+          else
+            report="Disk use unavailable: the sampler wrote no samples"
+          fi
+          echo "$report"
+          echo "$report" >>"$GITHUB_STEP_SUMMARY" ||
+            echo "::warning::Could not write the disk report to the step summary"
+
+  # The same acceptance on the archives: each arch loads only its own two Mend archives, after their
+  # platform manifest digests match the manifest, and setup runs offline, so nothing it starts comes
+  # from ghcr.
+  archive-acceptance:
+    name: Packaged Mend acceptance from the archives
+    # A job whose if names no status function also needs every job above it to have succeeded, and
+    # the ghcr jobs above release-manifest are skipped here: so the needs are checked by hand.
+    if: >-
+      ${{ !cancelled() && inputs.target == 'archive' && needs.version.result == 'success' &&
+      needs.release-manifest.result == 'success' }}
+    needs: [version, release-manifest]
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      accepted: ${{ steps.accepted.outputs.target }}
+    steps:
+      # Disk use on / and /mnt every 5 s, so the step summary shows this job's peak on a hosted runner.
+      - name: Start the disk sampler
+        run: >-
+          nohup bash -c 'while :; do df -B1 --output=used / /mnt 2>/dev/null | tail -n +2 | paste
+          -sd" "; sleep 5; done' >"$RUNNER_TEMP/disk-used.log" 2>&1 &
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - name: Name this runner's arch
+        id: platform
+        run: |
+          case $RUNNER_ARCH in
+            X64) echo "arch=amd64" >>"$GITHUB_OUTPUT" ;;
+            ARM64) echo "arch=arm64" >>"$GITHUB_OUTPUT" ;;
+            *) echo "::error::No candidate is built for $RUNNER_ARCH."; exit 1 ;;
+          esac
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: archive-mend--${{ steps.platform.outputs.arch }}
+          path: ${{ runner.temp }}/archives/mend
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: archive-mend-before--${{ steps.platform.outputs.arch }}
+          path: ${{ runner.temp }}/archives/mend-before
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mend-cli
+          path: ${{ runner.temp }}/cli
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          # No pnpm store cache: other jobs, running unowned code, write that cache.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      # GitHub's Ubuntu 24.04 images keep Ubuntu's default, which refuses unprivileged user
+      # namespaces, so every session fails to launch. Allow them here the way an operator does on a
+      # stock Ubuntu host.
+      - if: runner.environment == 'github-hosted'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # The archive's platform manifest is checked against the manifest before Docker sees it. The
+      # image ID is then the config digest of that manifest (the manifest digest itself on Docker's
+      # containerd image store); the loaded image must be one of them, and only that ID is tagged
+      # with the name setup expects.
+      - name: Load the candidates from their archives
+        id: images
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/mend
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+          ARCH: ${{ steps.platform.outputs.arch }}
+          BEFORE: ${{ needs.version.outputs.before }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          for entry in "mend-before $BEFORE before" "mend $VERSION target"; do
+            read -r image version output <<<"$entry"
+            archive=$RUNNER_TEMP/archives/$image/$image.tar
+            ids=$(node scripts/release-manifest.mjs check-archive "$MANIFEST" "$image" "$ARCH" "$archive")
+            docker load --input "$archive"
+            id=
+            for candidate in $ids; do
+              if [[ $(docker image inspect "$candidate" --format '{{.Id}}' 2>/dev/null) == "$candidate" ]]; then
+                id=$candidate
+                break
+              fi
+            done
+            if [[ -z $id ]]; then
+              echo "::error::$image did not load as its config digest or its manifest digest ($ids)."
+              exit 1
+            fi
+            docker tag "$id" "$REPOSITORY:$version"
+            echo "$output=$id" >>"$GITHUB_OUTPUT"
+          done
+      # Offline setup pulls nothing, so the images it starts beside Mend are pulled here, by the tags
+      # setup names (server-setup.ts, server-mirrors.ts), with the guard image the Mend image's label
+      # names. Setup refuses with "Preload <image>" if this list falls behind it.
+      - name: Preload the images setup runs beside Mend
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/mend
+          BEFORE: ${{ needs.version.outputs.before }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          images=(postgres:17-alpine dxflrs/garage:v2.4.1 nginx:1.29-alpine registry:3.1)
+          for version in "$BEFORE" "$VERSION"; do
+            images+=("$(docker image inspect "$REPOSITORY:$version" \
+              --format '{{index .Config.Labels "dev.sealant.mend.network-guard-image"}}')")
+          done
+          for image in "${images[@]}"; do docker pull "$image"; done
+      - name: Check the CLI tarball against the manifest
+        id: cli
+        env:
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+        run: |
+          set -euo pipefail
+          tarball=$(node scripts/release-manifest.mjs check-cli "$MANIFEST" "$RUNNER_TEMP/cli")
+          echo "tarball=$tarball" >>"$GITHUB_OUTPUT"
+      - name: Exercise packaged install and same-source version transition offline
+        env:
+          MEND_TEST_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.before }}
+          MEND_TEST_IMAGE_ID: ${{ steps.images.outputs.before }}
+          MEND_TEST_VERSION: ${{ needs.version.outputs.before }}
+          MEND_TEST_UPGRADE_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.value }}
+          MEND_TEST_UPGRADE_IMAGE_ID: ${{ steps.images.outputs.target }}
+          MEND_TEST_UPGRADE_VERSION: ${{ needs.version.outputs.value }}
+          MEND_TEST_IMAGE_IDENTITY: digest
+          MEND_TEST_CLI_TARBALL: ${{ steps.cli.outputs.tarball }}
+          MEND_TEST_OFFLINE: "1"
+        run: node scripts/check-packaged-server.mjs
+      # Reached only when acceptance passed on this arch; a failed arch fails the job.
+      - name: Record the acceptance
+        id: accepted
+        run: echo "target=archive" >>"$GITHUB_OUTPUT"
+      # Telemetry only: it never turns the job's result red, and says so when it has nothing.
+      - name: Report peak disk use
+        if: always()
+        continue-on-error: true
+        run: |
+          df -h / /mnt 2>/dev/null || df -h / || true
+          log=$RUNNER_TEMP/disk-used.log
+          if [ -s "$log" ]; then
+            report=$(awk '$1 ~ /^[0-9]+$/ { n++; if ($1 > r) r = $1; if ($2 ~ /^[0-9]+$/) { two = 1; if ($2 > m) m = $2 } }
+              END { if (!n) { print "Disk use unavailable: no samples"; exit }
+                printf "Sampled peak disk used (every 5 s, %d samples): / %d MiB", n, r / 1048576
+                if (two) printf ", /mnt %d MiB\n", m / 1048576; else print ", /mnt not present" }' \
+              "$log") || report="Disk use unavailable: the samples could not be read"
+          else
+            report="Disk use unavailable: the sampler wrote no samples"
+          fi
+          echo "$report"
+          echo "$report" >>"$GITHUB_STEP_SUMMARY" ||
+            echo "::warning::Could not write the disk report to the step summary"
+
+  # The candidate's upgrade window (scripts/upgrade-window.mjs): each published release a server may
+  # be on when it upgrades to this candidate, read from npm and checked against the live markers,
+  # each pinned in release/upgrade-from.json, and any waiver for exactly this candidate. A dry run
+  # or dev build takes the window of the next build main would release.
+  upgrade-window:
+    name: Choose the releases to upgrade from
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      transitions: ${{ steps.plan.outputs.transitions }}
+      release: ${{ steps.plan.outputs.release }}
+      derived: ${{ steps.plan.outputs.derived }}
+    steps:
+      # Full history and tags: a dry run's window is that of scripts/next-version.mjs on main.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Plan the transitions
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: node scripts/upgrade-window.mjs plan "$VERSION"
+
+  # An upgrade from each release in the window to this run's candidate, on a fresh runner of its
+  # own, beside the same-source packaged acceptance (scripts/check-previous-upgrade.mjs).
+  previous-upgrade:
+    name: Upgrade from a published release
+    if: >-
+      ${{ !cancelled() && inputs.target == 'ghcr' && needs.version.result == 'success' &&
+      needs.merge.result == 'success' && needs.release-manifest.result == 'success' &&
+      needs.upgrade-window.result == 'success' }}
+    needs: [version, merge, release-manifest, upgrade-window]
+    strategy:
+      fail-fast: false
+      matrix:
+        transition: ${{ fromJSON(needs.upgrade-window.outputs.transitions) }}
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # The old release's setup, a seeded session, the upgrade and the checks after it: about the
+    # same work as packaged acceptance, on its own fresh runner.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      accepted: ${{ steps.accepted.outputs.target }}
+    steps:
+      # Disk use on / and /mnt every 5 s, so the step summary shows this job's peak on a hosted runner.
+      - name: Start the disk sampler
+        run: >-
+          nohup bash -c 'while :; do df -B1 --output=used / /mnt 2>/dev/null | tail -n +2 | paste
+          -sd" "; sleep 5; done' >"$RUNNER_TEMP/disk-used.log" 2>&1 &
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mend-cli
+          path: ${{ runner.temp }}/cli
+      # GitHub's Ubuntu 24.04 images refuse unprivileged user namespaces; as packaged-smoke.
+      - if: runner.environment == 'github-hosted'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # As packaged-smoke: this arch's platform, resolved through the index the manifest records and
+      # bound to this arch's build, the ID it pulled as, tagged with the name the upgrade expects.
+      - name: Pull the candidate by digest
+        if: matrix.transition.waived == ''
+        id: images
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/mend
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          case $RUNNER_ARCH in
+            X64) arch=amd64 ;;
+            ARM64) arch=arm64 ;;
+            *) echo "::error::No candidate is built for $RUNNER_ARCH."; exit 1 ;;
+          esac
+          digest=$(node scripts/release-manifest.mjs resolve "$MANIFEST" "$REPOSITORY" mend "$arch")
+          docker pull "$REPOSITORY@$digest"
+          id=$(docker image inspect "$REPOSITORY@$digest" --format '{{.Id}}')
+          docker tag "$id" "$REPOSITORY:$VERSION"
+          echo "target=$id" >>"$GITHUB_OUTPUT"
+      # A transition the waiver file waives for exactly this candidate is recorded, never run, and
+      # never counted as passed.
+      - name: Record a waived transition
+        if: matrix.transition.waived != ''
+        env:
+          FROM: ${{ matrix.transition.from }}
+          WAIVED: ${{ matrix.transition.waived }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          echo "::warning::The upgrade from $FROM to $VERSION is waived: $WAIVED"
+          echo "- $VERSION from $FROM: **waived**: $WAIVED" >>"$GITHUB_STEP_SUMMARY"
+      - name: Check the CLI tarball against the manifest
+        if: matrix.transition.waived == ''
+        id: cli
+        env:
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+        run: |
+          set -euo pipefail
+          tarball=$(node scripts/release-manifest.mjs check-cli "$MANIFEST" "$RUNNER_TEMP/cli")
+          echo "tarball=$tarball" >>"$GITHUB_OUTPUT"
+      - name: Upgrade from the release to the candidate
+        if: matrix.transition.waived == ''
+        env:
+          MEND_UPGRADE_FROM: ${{ matrix.transition.from }}
+          MEND_UPGRADE_DERIVED: ${{ needs.upgrade-window.outputs.derived == 'true' && '1' || '' }}
+          MEND_TEST_UPGRADE_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.value }}
+          MEND_TEST_UPGRADE_IMAGE_ID: ${{ steps.images.outputs.target }}
+          MEND_TEST_UPGRADE_VERSION: ${{ needs.version.outputs.value }}
+          MEND_TEST_CLI_TARBALL: ${{ steps.cli.outputs.tarball }}
+          MEND_UPGRADE_ARTIFACTS: ${{ runner.temp }}/upgrade-artifacts
+          # A next build's pins are read live, its assets' sha256 from the GitHub API.
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-previous-upgrade.mjs
+      # The server's logs and `mend server status` from a failed transition: whose failure it was
+      # (harness or product) is in the step's own output.
+      - name: Keep the server logs of a failed upgrade
+        if: failure() && matrix.transition.waived == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: previous-upgrade-ghcr-${{ matrix.transition.from }}--${{ runner.arch }}
+          path: ${{ runner.temp }}/upgrade-artifacts
+          if-no-files-found: warn
+          retention-days: 7
+      # Reached only when the transition passed, or was waived, on this arch.
+      - name: Record the acceptance
+        id: accepted
+        run: echo "target=ghcr" >>"$GITHUB_OUTPUT"
+      # Telemetry only: it never turns the job's result red, and says so when it has nothing.
+      - name: Report peak disk use
+        if: always()
+        continue-on-error: true
+        run: |
+          df -h / /mnt 2>/dev/null || df -h / || true
+          log=$RUNNER_TEMP/disk-used.log
+          if [ -s "$log" ]; then
+            report=$(awk '$1 ~ /^[0-9]+$/ { n++; if ($1 > r) r = $1; if ($2 ~ /^[0-9]+$/) { two = 1; if ($2 > m) m = $2 } }
+              END { if (!n) { print "Disk use unavailable: no samples"; exit }
+                printf "Sampled peak disk used (every 5 s, %d samples): / %d MiB", n, r / 1048576
+                if (two) printf ", /mnt %d MiB\n", m / 1048576; else print ", /mnt not present" }' \
+              "$log") || report="Disk use unavailable: the samples could not be read"
+          else
+            report="Disk use unavailable: the sampler wrote no samples"
+          fi
+          echo "$report"
+          echo "$report" >>"$GITHUB_STEP_SUMMARY" ||
+            echo "::warning::Could not write the disk report to the step summary"
+
+  # The same upgrade from each release in the window, to the candidate loaded from its archive; the
+  # candidate's upgrade pulls nothing.
+  archive-previous-upgrade:
+    name: Upgrade from a published release to the archives
+    if: >-
+      ${{ !cancelled() && inputs.target == 'archive' && needs.version.result == 'success' &&
+      needs.release-manifest.result == 'success' && needs.upgrade-window.result == 'success' }}
+    needs: [version, release-manifest, upgrade-window]
+    strategy:
+      fail-fast: false
+      matrix:
+        transition: ${{ fromJSON(needs.upgrade-window.outputs.transitions) }}
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # The old release's setup, a seeded session, the upgrade and the checks after it: about the
+    # same work as packaged acceptance, on its own fresh runner.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      accepted: ${{ steps.accepted.outputs.target }}
+    steps:
+      # Disk use on / and /mnt every 5 s, so the step summary shows this job's peak on a hosted runner.
+      - name: Start the disk sampler
+        run: >-
+          nohup bash -c 'while :; do df -B1 --output=used / /mnt 2>/dev/null | tail -n +2 | paste
+          -sd" "; sleep 5; done' >"$RUNNER_TEMP/disk-used.log" 2>&1 &
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Name this runner's arch
+        id: platform
+        run: |
+          case $RUNNER_ARCH in
+            X64) echo "arch=amd64" >>"$GITHUB_OUTPUT" ;;
+            ARM64) echo "arch=arm64" >>"$GITHUB_OUTPUT" ;;
+            *) echo "::error::No candidate is built for $RUNNER_ARCH."; exit 1 ;;
+          esac
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: archive-mend--${{ steps.platform.outputs.arch }}
+          path: ${{ runner.temp }}/archives/mend
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mend-cli
+          path: ${{ runner.temp }}/cli
+      - if: runner.environment == 'github-hosted'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # As archive-acceptance: checked against the manifest before Docker sees it, loaded, and only
+      # the loaded ID tagged with the name the upgrade expects.
+      - name: Load the candidate from its archive
+        if: matrix.transition.waived == ''
+        id: images
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/mend
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+          ARCH: ${{ steps.platform.outputs.arch }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          archive=$RUNNER_TEMP/archives/mend/mend.tar
+          ids=$(node scripts/release-manifest.mjs check-archive "$MANIFEST" mend "$ARCH" "$archive")
+          docker load --input "$archive"
+          id=
+          for candidate in $ids; do
+            if [[ $(docker image inspect "$candidate" --format '{{.Id}}' 2>/dev/null) == "$candidate" ]]; then
+              id=$candidate
+              break
+            fi
+          done
+          if [[ -z $id ]]; then
+            echo "::error::mend did not load as its config digest or its manifest digest ($ids)."
+            exit 1
+          fi
+          docker tag "$id" "$REPOSITORY:$VERSION"
+          echo "target=$id" >>"$GITHUB_OUTPUT"
+      # The candidate's offline upgrade pulls nothing: the images it starts beside Mend, by the tags
+      # it names, as archive-acceptance preloads them. The old release's own are pulled by digest
+      # in the scenario and tagged over these.
+      - name: Preload the images the candidate runs beside Mend
+        if: matrix.transition.waived == ''
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/mend
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          images=(postgres:17-alpine dxflrs/garage:v2.4.1 nginx:1.29-alpine registry:3.1)
+          images+=("$(docker image inspect "$REPOSITORY:$VERSION" \
+            --format '{{index .Config.Labels "dev.sealant.mend.network-guard-image"}}')")
+          for image in "${images[@]}"; do docker pull "$image"; done
+      # A transition the waiver file waives for exactly this candidate is recorded, never run, and
+      # never counted as passed.
+      - name: Record a waived transition
+        if: matrix.transition.waived != ''
+        env:
+          FROM: ${{ matrix.transition.from }}
+          WAIVED: ${{ matrix.transition.waived }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          echo "::warning::The upgrade from $FROM to $VERSION is waived: $WAIVED"
+          echo "- $VERSION from $FROM: **waived**: $WAIVED" >>"$GITHUB_STEP_SUMMARY"
+      - name: Check the CLI tarball against the manifest
+        if: matrix.transition.waived == ''
+        id: cli
+        env:
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+        run: |
+          set -euo pipefail
+          tarball=$(node scripts/release-manifest.mjs check-cli "$MANIFEST" "$RUNNER_TEMP/cli")
+          echo "tarball=$tarball" >>"$GITHUB_OUTPUT"
+      - name: Upgrade from the release to the candidate
+        if: matrix.transition.waived == ''
+        env:
+          MEND_UPGRADE_FROM: ${{ matrix.transition.from }}
+          MEND_UPGRADE_DERIVED: ${{ needs.upgrade-window.outputs.derived == 'true' && '1' || '' }}
+          MEND_TEST_UPGRADE_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.value }}
+          MEND_TEST_UPGRADE_IMAGE_ID: ${{ steps.images.outputs.target }}
+          MEND_TEST_UPGRADE_VERSION: ${{ needs.version.outputs.value }}
+          MEND_TEST_CLI_TARBALL: ${{ steps.cli.outputs.tarball }}
+          MEND_UPGRADE_ARTIFACTS: ${{ runner.temp }}/upgrade-artifacts
+          # A next build's pins are read live, its assets' sha256 from the GitHub API.
+          GH_TOKEN: ${{ github.token }}
+          MEND_TEST_OFFLINE: "1"
+        run: node scripts/check-previous-upgrade.mjs
+      # The server's logs and `mend server status` from a failed transition: whose failure it was
+      # (harness or product) is in the step's own output.
+      - name: Keep the server logs of a failed upgrade
+        if: failure() && matrix.transition.waived == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: previous-upgrade-archive-${{ matrix.transition.from }}--${{ runner.arch }}
+          path: ${{ runner.temp }}/upgrade-artifacts
+          if-no-files-found: warn
+          retention-days: 7
+      # Reached only when the transition passed, or was waived, on this arch.
+      - name: Record the acceptance
+        id: accepted
+        run: echo "target=archive" >>"$GITHUB_OUTPUT"
+      # Telemetry only: it never turns the job's result red, and says so when it has nothing.
+      - name: Report peak disk use
+        if: always()
+        continue-on-error: true
+        run: |
+          df -h / /mnt 2>/dev/null || df -h / || true
+          log=$RUNNER_TEMP/disk-used.log
+          if [ -s "$log" ]; then
+            report=$(awk '$1 ~ /^[0-9]+$/ { n++; if ($1 > r) r = $1; if ($2 ~ /^[0-9]+$/) { two = 1; if ($2 > m) m = $2 } }
+              END { if (!n) { print "Disk use unavailable: no samples"; exit }
+                printf "Sampled peak disk used (every 5 s, %d samples): / %d MiB", n, r / 1048576
+                if (two) printf ", /mnt %d MiB\n", m / 1048576; else print ", /mnt not present" }' \
+              "$log") || report="Disk use unavailable: the samples could not be read"
+          else
+            report="Disk use unavailable: the sampler wrote no samples"
+          fi
+          echo "$report"
+          echo "$report" >>"$GITHUB_STEP_SUMMARY" ||
+            echo "::warning::Could not write the disk report to the step summary"
+
+  # mend-api and mend-web, the images the Helm chart runs, started as the chart starts them
+  # (scripts/split-tier/compose.yaml: Postgres, the API, the web tier) and checked through the web
+  # tier's port (scripts/check-split-tier.mjs): health and version, the first account, bearer auth,
+  # a ticketed WebSocket, and a restart. Each arch runs the images the manifest names for it.
+  split-tier-smoke:
+    name: Split-tier smoke
+    if: >-
+      ${{ !cancelled() && inputs.target == 'ghcr' && needs.version.result == 'success' &&
+      needs.merge.result == 'success' && needs.release-manifest.result == 'success' }}
+    needs: [version, merge, release-manifest]
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      accepted: ${{ steps.accepted.outputs.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/release
+      # As packaged-smoke: this arch's platform, resolved through the index the manifest records and
+      # bound to this arch's build, the ID it pulled as, tagged with the name the Compose file runs.
+      - name: Pull the tiers by digest
+        id: images
+        env:
+          REGISTRY: ghcr.io/${{ github.repository_owner }}
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          case $RUNNER_ARCH in
+            X64) arch=amd64 ;;
+            ARM64) arch=arm64 ;;
+            *) echo "::error::No candidate is built for $RUNNER_ARCH."; exit 1 ;;
+          esac
+          for entry in "mend-api api" "mend-web web"; do
+            read -r image output <<<"$entry"
+            digest=$(node scripts/release-manifest.mjs resolve "$MANIFEST" "$REGISTRY/$image" "$image" "$arch")
+            docker pull "$REGISTRY/$image@$digest"
+            id=$(docker image inspect "$REGISTRY/$image@$digest" --format '{{.Id}}')
+            docker tag "$id" "$REGISTRY/$image:$VERSION"
+            echo "$output=$id" >>"$GITHUB_OUTPUT"
+          done
+      - name: Run the split tiers and check them through the web tier
+        env:
+          MEND_SPLIT_VERSION: ${{ needs.version.outputs.value }}
+          MEND_SPLIT_API_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend-api:${{ needs.version.outputs.value }}
+          MEND_SPLIT_API_IMAGE_ID: ${{ steps.images.outputs.api }}
+          MEND_SPLIT_WEB_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend-web:${{ needs.version.outputs.value }}
+          MEND_SPLIT_WEB_IMAGE_ID: ${{ steps.images.outputs.web }}
+          MEND_SPLIT_ARTIFACTS: ${{ runner.temp }}/split-tier-artifacts
+        run: node scripts/check-split-tier.mjs
+      # Both containers' logs and the Compose state from a failed smoke: whose failure it was
+      # (harness or product) is in the step's own output.
+      - name: Keep the logs of a failed smoke
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: split-tier-ghcr--${{ runner.arch }}
+          path: ${{ runner.temp }}/split-tier-artifacts
+          if-no-files-found: warn
+          retention-days: 7
+      # Reached only when the smoke passed on this arch.
+      - name: Record the acceptance
+        id: accepted
+        run: echo "target=ghcr" >>"$GITHUB_OUTPUT"
+
+  # The same smoke on the archives: each arch loads its own mend-api and mend-web archives, after
+  # their platform manifest digests match the manifest. Only Postgres is pulled, by digest.
+  archive-split-tier-smoke:
+    name: Split-tier smoke from the archives
+    if: >-
+      ${{ !cancelled() && inputs.target == 'archive' && needs.version.result == 'success' &&
+      needs.release-manifest.result == 'success' }}
+    needs: [version, release-manifest]
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      accepted: ${{ steps.accepted.outputs.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Name this runner's arch
+        id: platform
+        run: |
+          case $RUNNER_ARCH in
+            X64) echo "arch=amd64" >>"$GITHUB_OUTPUT" ;;
+            ARM64) echo "arch=arm64" >>"$GITHUB_OUTPUT" ;;
+            *) echo "::error::No candidate is built for $RUNNER_ARCH."; exit 1 ;;
+          esac
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: archive-mend-api--${{ steps.platform.outputs.arch }}
+          path: ${{ runner.temp }}/archives/mend-api
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: archive-mend-web--${{ steps.platform.outputs.arch }}
+          path: ${{ runner.temp }}/archives/mend-web
+      # As archive-acceptance: the archive is checked against the manifest before Docker sees it,
+      # and the loaded image must be its config or manifest digest.
+      - name: Load the tiers from their archives
+        id: images
+        env:
+          REGISTRY: ghcr.io/${{ github.repository_owner }}
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+          ARCH: ${{ steps.platform.outputs.arch }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          for entry in "mend-api api" "mend-web web"; do
+            read -r image output <<<"$entry"
+            archive=$RUNNER_TEMP/archives/$image/$image.tar
+            ids=$(node scripts/release-manifest.mjs check-archive "$MANIFEST" "$image" "$ARCH" "$archive")
+            docker load --input "$archive"
+            id=
+            for candidate in $ids; do
+              if [[ $(docker image inspect "$candidate" --format '{{.Id}}' 2>/dev/null) == "$candidate" ]]; then
+                id=$candidate
+                break
+              fi
+            done
+            if [[ -z $id ]]; then
+              echo "::error::$image did not load as its config digest or its manifest digest ($ids)."
+              exit 1
+            fi
+            docker tag "$id" "$REGISTRY/$image:$VERSION"
+            echo "$output=$id" >>"$GITHUB_OUTPUT"
+          done
+      - name: Run the split tiers and check them through the web tier
+        env:
+          MEND_SPLIT_VERSION: ${{ needs.version.outputs.value }}
+          MEND_SPLIT_API_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend-api:${{ needs.version.outputs.value }}
+          MEND_SPLIT_API_IMAGE_ID: ${{ steps.images.outputs.api }}
+          MEND_SPLIT_WEB_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend-web:${{ needs.version.outputs.value }}
+          MEND_SPLIT_WEB_IMAGE_ID: ${{ steps.images.outputs.web }}
+          MEND_SPLIT_ARTIFACTS: ${{ runner.temp }}/split-tier-artifacts
+        run: node scripts/check-split-tier.mjs
+      - name: Keep the logs of a failed smoke
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: split-tier-archive--${{ runner.arch }}
+          path: ${{ runner.temp }}/split-tier-artifacts
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Record the acceptance
+        id: accepted
+        run: echo "target=archive" >>"$GITHUB_OUTPUT"

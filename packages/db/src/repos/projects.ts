@@ -8,7 +8,7 @@ import {
   type ProjectVisibility,
 } from "@mend/domain/workbench";
 import { and, asc, eq } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -219,7 +219,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       ) {
         const [row] = yield* db
           .update(projects)
-          .set({ visibility, updatedAt: new Date() })
+          .set({ visibility, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(projects.id, id))
           .returning()
           .pipe(Effect.orDie);
@@ -235,7 +235,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       ) {
         const [row] = yield* db
           .update(projects)
-          .set({ createdByUserId: userId, updatedAt: new Date() })
+          .set({ createdByUserId: userId, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(projects.id, id))
           .returning()
           .pipe(Effect.orDie);
@@ -261,7 +261,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
           .set({
             ...cascade,
             ...(autoLand === undefined ? {} : { autoLand }),
-            updatedAt: new Date(),
+            updatedAt: yield* DateTime.nowAsDate,
           })
           .where(eq(projects.id, id))
           .returning()
@@ -278,7 +278,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       ) {
         const [row] = yield* db
           .update(projects)
-          .set({ autoLand: choice, updatedAt: new Date() })
+          .set({ autoLand: choice, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(projects.id, id))
           .returning()
           .pipe(Effect.orDie);
@@ -294,7 +294,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       ) {
         const [row] = yield* db
           .update(projects)
-          .set({ gitAuthMode: mode, updatedAt: new Date() })
+          .set({ gitAuthMode: mode, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(projects.id, id))
           .returning()
           .pipe(Effect.orDie);
@@ -310,7 +310,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       ) {
         const [row] = yield* db
           .update(projects)
-          .set({ workspaceImage: image, updatedAt: new Date() })
+          .set({ workspaceImage: image, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(projects.id, id))
           .returning()
           .pipe(Effect.orDie);
@@ -326,7 +326,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       ) {
         const [row] = yield* db
           .update(projects)
-          .set({ applyDotfiles, updatedAt: new Date() })
+          .set({ applyDotfiles, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(projects.id, id))
           .returning()
           .pipe(Effect.orDie);
@@ -342,7 +342,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       ) {
         const [row] = yield* db
           .update(projects)
-          .set({ defaultShellProfile, updatedAt: new Date() })
+          .set({ defaultShellProfile, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(projects.id, id))
           .returning()
           .pipe(Effect.orDie);
@@ -358,7 +358,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       ) {
         const [row] = yield* db
           .update(projects)
-          .set({ inheritUserSkills, updatedAt: new Date() })
+          .set({ inheritUserSkills, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(projects.id, id))
           .returning()
           .pipe(Effect.orDie);
@@ -374,7 +374,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       ) {
         const [row] = yield* db
           .update(projects)
-          .set({ hotSessions, updatedAt: new Date() })
+          .set({ hotSessions, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(projects.id, id))
           .returning()
           .pipe(Effect.orDie);
@@ -390,7 +390,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       ) {
         const [row] = yield* db
           .update(projects)
-          .set({ installCommand, updatedAt: new Date() })
+          .set({ installCommand, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(projects.id, id))
           .returning()
           .pipe(Effect.orDie);
@@ -406,7 +406,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       ) {
         const [row] = yield* db
           .update(projects)
-          .set({ installEnabled, updatedAt: new Date() })
+          .set({ installEnabled, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(projects.id, id))
           .returning()
           .pipe(Effect.orDie);

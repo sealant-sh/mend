@@ -16,8 +16,7 @@ import { ids } from "../../test/support/tenancy-harness.ts";
 /**
  * `GET /api/worktrees/:id/contents` (ADR 0012, phase 3): one file of a worktree, as it stands or at
  * a checkpoint, or the lines matching a search, over the colocated `WorktreeReads` on a real
- * repository, behind the worktree's visibility. The last tests print their latency: median and
- * 90th percentile of 40 requests.
+ * repository, behind the worktree's visibility. Hardware latency has a separate explicit lane.
  */
 
 const git = (cwd: string, ...args: ReadonlyArray<string>) =>
@@ -36,8 +35,8 @@ beforeAll(async () => {
   const repo = join(tmp, "repo");
   mkdirSync(join(repo, "src"), { recursive: true });
   git(repo, "init", "-q", "-b", "main");
-  // A repository of a realistic size for a search: 2,000 files of 40 lines.
-  for (let file = 0; file < 2_000; file++) {
+  // A small real repository establishes search correctness; the 2,000-file workload is perf-only.
+  for (let file = 0; file < 2; file++) {
     const lines = Array.from(
       { length: 40 },
       (_, line) => `export const value${file}_${line} = ${line};`,
@@ -100,19 +99,6 @@ afterAll(async () => {
 const contents = (user: "alice" | "carol", query: string) =>
   api.request(user, "GET", `/api/worktrees/${WORKTREE}/contents?${query}`);
 
-const timed = async (query: string) => {
-  const samples: Array<number> = [];
-  for (let i = 0; i < 40; i++) {
-    const started = performance.now();
-    const response = await contents("alice", query);
-    expect(response.status).toBe(200);
-    await response.arrayBuffer();
-    samples.push(performance.now() - started);
-  }
-  const sorted = samples.toSorted((a, b) => a - b);
-  return { median: sorted[20] ?? 0, p90: sorted[36] ?? 0 };
-};
-
 describe("a worktree's files", () => {
   it("reads one file as it stands, and at a checkpoint", async () => {
     const now = await (await contents("alice", "path=src/parser.ts")).json();
@@ -147,15 +133,5 @@ describe("a worktree's files", () => {
     expect((await contents("alice", "path=src/missing.ts")).status).toBe(404);
     expect((await contents("alice", "")).status).toBe(422);
     expect((await contents("alice", "path=a&query=b")).status).toBe(422);
-  });
-
-  it("answers in time: one file, and a search of 2,000 files", async () => {
-    const read = await timed("path=src/parser.ts");
-    const search = await timed("query=value1999_39&limit=100");
-    console.log(
-      `GET /api/worktrees/:id/contents · file median ${read.median.toFixed(1)} ms · p90 ${read.p90.toFixed(1)} ms · search median ${search.median.toFixed(1)} ms · p90 ${search.p90.toFixed(1)} ms`,
-    );
-    expect(read.p90).toBeLessThan(1_000);
-    expect(search.p90).toBeLessThan(2_000);
   });
 });

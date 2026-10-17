@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { it as effectIt } from "@effect/vitest";
+import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Exit, Fiber, Layer } from "effect";
 import { afterAll, describe, expect, it } from "vitest";
 
@@ -136,6 +136,41 @@ describe("capture proofs are bound to the store and stand only once nothing can 
       "CaptureIntegrityError",
     );
   });
+
+  effectIt.effect(
+    "#9 a proof stands from the instant the last PUT URL expires, on the Effect clock",
+    () =>
+      Effect.gen(function* () {
+        const { key, good, bad } = packPair("wt-expiry");
+        const root = freshDir("expiry");
+        const urlsExpireAt = 15 * 60 * 1000;
+        const replaceable = Layer.effect(
+          BlobStore,
+          Effect.map(BlobStore, (inner): typeof BlobStore.Service => ({
+            ...inner,
+            identity: `garage-like:${root}`,
+            replaceableUntil: () => Effect.succeed(urlsExpireAt),
+          })),
+        ).pipe(Layer.provide(BlobStoreFsLive(root)));
+        const problem = (reuseProofs: boolean) =>
+          storedObjectProblem(key, { reuseProofs }).pipe(Effect.provide(replaceable));
+        yield* uploadObjects(new Map([[key, good]])).pipe(Effect.provide(replaceable));
+
+        // Read while a URL could still replace the bytes: the proof does not stand, so the next ask
+        // reads again and finds what replaced them.
+        yield* TestClock.adjust(urlsExpireAt - 1);
+        expect(yield* problem(false)).toBeNull();
+        replaceInPlace(root, key, bad);
+        expect(yield* problem(true)).toMatch(/holds bytes that hash to/);
+
+        // Read once every URL expired: the proof stands, and is answered without reading again.
+        replaceInPlace(root, key, good);
+        yield* TestClock.adjust(1);
+        expect(yield* problem(false)).toBeNull();
+        replaceInPlace(root, key, bad);
+        expect(yield* problem(true)).toBeNull();
+      }),
+  );
 
   effectIt.live(
     "interrupted verification releases its slots and an existing waiter reads the pack itself",

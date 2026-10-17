@@ -79,7 +79,17 @@ import {
   makeSourcePolicy,
   SourcePolicy,
 } from "@mend/store";
-import { Duration, Effect, Layer, ManagedRuntime, Queue, Schema, Stream } from "effect";
+import {
+  Clock,
+  Context,
+  Duration,
+  Effect,
+  Layer,
+  ManagedRuntime,
+  Queue,
+  Schema,
+  Stream,
+} from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 
 import { ProjectAccessLive } from "../../src/access.ts";
@@ -158,6 +168,10 @@ export const createTenancyApi = async (
   options: {
     readonly urlBearers?: "accept" | "refuse";
     readonly clock?: () => number;
+    /** Effect-owned request deadlines, when a test drives them with TestClock. */
+    readonly effectClock?: Clock.Clock;
+    /** Cancellation of this fixture's ordinary API requests, including failed timeout probes. */
+    readonly requestSignal?: AbortSignal;
     /** `MEND_EXPOSURE` and its gate as this world reports them; loopback and empty unless stated. */
     readonly exposure?: {
       readonly exposure: ExposureConfig["Service"]["exposure"];
@@ -480,7 +494,11 @@ export const createTenancyApi = async (
     Layer.provide(HttpServer.layerServices),
   );
   const runtime = ManagedRuntime.make(authorization);
-  const context = await runtime.runPromise(Effect.context<Layer.Success<typeof authorization>>());
+  const services = await runtime.runPromise(Effect.context<Layer.Success<typeof authorization>>());
+  const context =
+    options.effectClock === undefined
+      ? services
+      : Context.add(services, Clock.Clock, options.effectClock);
   const { handler, dispose } = HttpRouter.toWebHandler(apiLayer, { disableLogger: true });
   const rawLayer = Layer.merge(TtyRoutes, ServiceTunnelRoutes).pipe(
     Layer.provide(HttpServer.layerServices),
@@ -525,7 +543,14 @@ export const createTenancyApi = async (
     Layer.provide(busLayer),
     Layer.provide(authorization),
   );
-  const eventRoutes = HttpRouter.toWebHandler(eventsLayer, { disableLogger: true });
+  // A streamed body runs on the handler's own services, not the request's context: the stream
+  // reads an Effect clock only when the handler is built with it.
+  const eventRoutes = HttpRouter.toWebHandler(
+    options.effectClock === undefined
+      ? eventsLayer
+      : Layer.merge(eventsLayer, Layer.succeed(Clock.Clock, options.effectClock)),
+    { disableLogger: true },
+  );
 
   return {
     world,
@@ -537,6 +562,7 @@ export const createTenancyApi = async (
         new Request(`http://api.internal${path}`, {
           method,
           headers,
+          ...(options.requestSignal === undefined ? {} : { signal: options.requestSignal }),
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         }),
         context,

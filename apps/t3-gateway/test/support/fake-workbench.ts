@@ -148,6 +148,7 @@ export class FakeWorkbench {
   readonly sharedControl = new Map<string, string>();
   readonly calls: Array<FakeCall> = [];
   private readonly streams = new Set<ServerResponse>();
+  private readonly firstEventStream = Promise.withResolvers<void>();
   private seq = 0;
   private ids = 0;
   /** How long `GET /api/sessions/:id/requests` takes, to hold a read in flight. */
@@ -178,6 +179,33 @@ export class FakeWorkbench {
     readonly entered: () => void;
     readonly answer: Promise<number>;
   } | null = null;
+  private nextRequestsRead: {
+    readonly sessionId: string;
+    readonly entered: () => void;
+    readonly answer: Promise<void>;
+  } | null = null;
+  private nextTurnsRead: {
+    readonly sessionId: string;
+    readonly entered: () => void;
+  } | null = null;
+
+  /** Holds one request-list answer and observes the concurrent turn-list data capture. */
+  holdNextRequestsRead(sessionId: string): {
+    readonly entered: Promise<void>;
+    readonly turnsRead: Promise<void>;
+    readonly release: () => void;
+  } {
+    const entered = Promise.withResolvers<void>();
+    const turnsRead = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<void>();
+    this.nextRequestsRead = { sessionId, entered: () => entered.resolve(), answer: answer.promise };
+    this.nextTurnsRead = { sessionId, entered: () => turnsRead.resolve() };
+    return {
+      entered: entered.promise,
+      turnsRead: turnsRead.promise,
+      release: () => answer.resolve(),
+    };
+  }
 
   /** Holds the next real HTTP launch request until the test chooses its refusal status. */
   holdNextLaunch(): {
@@ -189,11 +217,24 @@ export class FakeWorkbench {
     this.nextLaunchAnswer = { entered: () => entered.resolve(), answer: answer.promise };
     return { entered: entered.promise, release: answer.resolve };
   }
+  private nextAgent: Promise<void> | null = null;
+
+  /** The next launch's agent comes up on `release`, instead of `launchLiveDelayMs` after it. */
+  holdNextAgent(): { readonly release: () => void } {
+    const up = Promise.withResolvers<void>();
+    this.nextAgent = up.promise;
+    return { release: () => up.resolve() };
+  }
   /** `DELETE /api/sessions/:id` keeps the row until the workspace stops (`removed: false`). */
   removalLeavesWorkspace = false;
 
   get eventStreams(): number {
     return this.streams.size;
+  }
+
+  /** Resolves when the first real HTTP event stream is registered to receive pointers. */
+  waitForEventStream(): Promise<void> {
+    return this.firstEventStream.promise;
   }
 
   private nextId(prefix: string): string {
@@ -467,6 +508,7 @@ export class FakeWorkbench {
       });
       response.write(": ping\n\n");
       this.streams.add(response);
+      this.firstEventStream.resolve();
       request.on("close", () => this.streams.delete(response));
       return true;
     }
@@ -745,6 +787,11 @@ export class FakeWorkbench {
       if (method === "GET" && sub === "turns") {
         // As Mend reads them when the request arrives; a delayed answer is that read, late.
         const answer = structuredClone(this.turns.get(id) ?? []);
+        const observed = this.nextTurnsRead;
+        if (observed?.sessionId === id) {
+          this.nextTurnsRead = null;
+          observed.entered();
+        }
         if (this.turnsReadDelayMs === 0) return json(200, answer);
         return new Promise<boolean>((resolve) =>
           setTimeout(() => resolve(json(200, answer)), this.turnsReadDelayMs),
@@ -756,6 +803,13 @@ export class FakeWorkbench {
       }
       if (method === "GET" && sub === "requests") {
         const answer = this.requests.get(id) ?? [];
+        const held = this.nextRequestsRead;
+        if (held?.sessionId === id) {
+          const captured = structuredClone(answer);
+          this.nextRequestsRead = null;
+          held.entered();
+          return held.answer.then(() => json(200, captured));
+        }
         if (this.requestsDelayMs === 0) return json(200, answer);
         return new Promise<boolean>((resolve) =>
           setTimeout(() => resolve(json(200, answer)), this.requestsDelayMs),
@@ -987,7 +1041,7 @@ export class FakeWorkbench {
     const prompt =
       "prompt" in payload && typeof payload.prompt === "string" ? payload.prompt : null;
     if (this.launchBringsAgentUp) {
-      setTimeout(() => {
+      const bringUp = () => {
         const previous = this.agents.get(session.id);
         if (previous === undefined) return;
         const recorded = previous.protocolOptions;
@@ -1012,7 +1066,11 @@ export class FakeWorkbench {
         session.updatedAt = tick();
         this.emit({ type: "session-process", sessionId: session.id, projectId: session.projectId });
         if (prompt !== null && prompt !== "") this.addTurn(session.id, prompt, "running");
-      }, this.launchLiveDelayMs);
+      };
+      const held = this.nextAgent;
+      this.nextAgent = null;
+      if (held === null) setTimeout(bringUp, this.launchLiveDelayMs);
+      else void held.then(bringUp);
     }
     return json(200, { ...session });
   }

@@ -1,3 +1,5 @@
+import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
+import { Clock, Duration, Effect, Scope } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -139,3 +141,44 @@ describe("putting a taken ticket back (review 4 of mend#553, P3-1)", () => {
     expect(tickets.restore("x".repeat(43), taken.entry)).toBe(false);
   });
 });
+
+effectIt.effect("clear removes held and spent pickups and cancels their Clock expiry work", () =>
+  Effect.gen(function* () {
+    const clock = yield* Clock.Clock;
+    const scope = yield* Scope.Scope;
+    const expired: number[] = [];
+    const tickets = makePickupTickets({
+      now: () => clock.currentTimeMillisUnsafe(),
+      schedule: (run, ms) => {
+        const fiber = Effect.runSync(
+          Effect.forkIn(
+            clock.sleep(Duration.millis(ms)).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  expired.push(ms);
+                  run();
+                }),
+              ),
+              Effect.provideService(Clock.Clock, clock),
+            ),
+            scope,
+          ),
+        );
+        return () => fiber.interruptUnsafe();
+      },
+    });
+    yield* Effect.addFinalizer(() => Effect.sync(() => tickets.clear()));
+    const held = tickets.mint(binding, files);
+    const spent = tickets.mint(binding, files);
+    expect(tickets.take(spent)).toEqual({ kind: "taken", entry: { binding, files } });
+    expect(tickets.take(spent)).toEqual({ kind: "spent", binding });
+    expect(tickets.size()).toBe(1);
+    yield* Effect.yieldNow;
+    tickets.clear();
+    expect(tickets.size()).toBe(0);
+    expect(tickets.take(held)).toEqual({ kind: "unknown" });
+    expect(tickets.take(spent)).toEqual({ kind: "unknown" });
+    yield* TestClock.adjust(PICKUP_TICKET_TTL_MS);
+    expect(expired).toEqual([]);
+  }),
+);

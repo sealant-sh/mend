@@ -250,6 +250,21 @@ whichever is larger. The JSON report includes raw samples, database version, fix
 runtime context. Its 120-second test/setup budget is confined to this command. The default suite has
 no performance benchmark to skip, and its semantic checks retain their normal timeouts.
 
+The capture restorability measurement also has an explicit command:
+
+```sh
+MEND_VERIFY_BENCH_REPORT=/tmp/mend-capture-verification.json pnpm --filter @mend/store bench:capture-verification
+```
+
+It builds a format-2 section with 126,000 files and 21,211 directories, verifies it twice against
+local filesystem blobs, and records both raw durations, counts, revision and machine context. The
+report is printed; `MEND_VERIFY_BENCH_REPORT` optionally saves the same JSON to an existing parent
+directory. The first verification follows fixture upload, so it does not establish an OS cold-cache
+result. This is a measurement with no latency budget, not a release gate or a remote blob-store
+result. Its ten-minute hang guard applies only to this command. The ordinary
+`capture-verify-shares-thread.test.ts` responsiveness regression remains in the correctness suite.
+`MEND_MEASURE_VERIFY` is no longer needed; ordinary tests do not collect this measurement.
+
 Keep adverse measurements too. In
 [#740's run before benchmark separation](https://github.com/sealant-sh/mend/actions/runs/38185126396),
 the enriched list read measured 72.6 ms median against 37.1 ms for the plain read, exceeding its
@@ -348,22 +363,31 @@ The verify toolkit can capture evidence without making an LLM verdict a prerequi
 
 For 0.36, the owner's 2026-10-10 decision is to run the fresh-install check on stock Ubuntu 24.04
 and repeat it on the release candidate. The previous 0.35.1 upgrade VM test was dropped because
-there were no external Mend installations to support. That is an accepted coverage gap for this
-release, not evidence that historical upgrades work. The VM and client runs remain distinct from CI;
-this audit follow-up has not executed them.
+there were no external Mend installations to support. The VM and client runs remain distinct from
+CI; this audit follow-up has not executed them.
 
-When compatibility with an earlier supported release becomes a release requirement, add a separate
-lane using that release's actual artifacts. Seed durable projects, sessions and checkpoints, upgrade
-to the exact candidate artifacts, then check old data, authentication, a new session, review and
-restart recovery. Rebuilding the candidate with an older version stamp does not supply this
-evidence.
+A CI lane closes that 0.35.1 gap: image.yml's `previous-upgrade` and `archive-previous-upgrade` jobs
+([the upgrade window](next-channel.md#the-upgrade-window); the scenario is
+`scripts/check-previous-upgrade.mjs`). Dry run 4, run 38965446723 on `a5809999e` (2026-10-16),
+passed it end to end inside the release workflow on both architectures: from 0.35.1 (committed pins)
+and from 0.36.0-next.792 (pins read live) to the archived candidate
+`0.36.0-next.993.dryrun.38965446723.1`, through the release gate. A scratch probe before it, run
+38946598409, upgraded a seeded 0.35.1 to the published 0.36.0-next.792 on the same two
+architectures. The ghcr-mode `previous-upgrade` job, which pulls the candidate by digest instead of
+loading archives, has not run yet; the first watched `-next` tag runs it. Each release a candidate
+may be upgraded from is installed from its actual artifacts: its npm CLI, its ghcr image by digest,
+its GitHub release setup assets, pinned in `release/upgrade-from.json` for a stable release and read
+live for a next build. A project, a session with its checkpoints and a Review comment are seeded on
+it; the candidate's CLI upgrades it to the exact candidate image; old data, authentication, a new
+session, a restart and the migration level are then checked.
 
 `REL-01` is partially addressed: the existing packaged smoke already labels its same-source
 version-transition evidence in its script header and final output. The CI step now uses the same
 wording. Both images come from the candidate revision; a successful smoke run establishes upgrade
 mechanics and retention, not compatibility with an earlier server implementation or schema. Its
 additional previous-CLI generation check tests configuration compatibility, not an older
-server/database. Historical server-upgrade coverage remains absent under the 0.36 decision above.
+server/database. Coverage of an upgrade from an earlier server is the lane above, proven by dry
+run 4.
 
 ## Provider adapter contracts and compatibility
 
@@ -380,3 +404,49 @@ partial until a separate mandatory lane pins actual provider versions and drives
 homes and owned model-server fixtures, without live accounts or paid provider requests. Engine
 workspace setup flags and platform pipe behavior also remain covered at their existing seams, not by
 this subprocess fixture.
+
+## Worktree route performance
+
+Ordinary API tests exercise real Git file/checkpoint reads, search and path/visibility refusals,
+large bounded patches, the 400,000-file listing fixture, and 1,200 renames. They contain no hardware
+latency assertions or skipped benchmark rows. The rename integration also checks independently known
+rendered paths and the exact omitted tail; the parser's own literal table remains separate. Actual
+route deadline tests use Deferred read readiness and TestClock: a blocked listing cuts at 20
+seconds, while a listing that consumed 10 seconds leaves only 10 seconds for rendering. They observe
+reader interruption and preserve known omitted paths. Their live hang guard only cleans up broken
+tests; it is not a production latency budget.
+
+Run the explicit performance lane on an otherwise idle Linux machine, using the same candidate,
+Node/Git versions, filesystem and hardware when comparing results:
+
+```sh
+GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+MEND_WORKTREE_PERF_CONTEXT=local-serial \
+MEND_WORKTREE_PERF_REPORT=/tmp/mend-worktree-reads.json \
+pnpm --filter @mend/api-server bench:worktree-reads
+```
+
+The command creates and removes only its owned temporary Git repositories. It disables global and
+system Git configuration and rejects inherited Git location, template, counted and parameter
+configuration overrides. It uses explicit empty init templates. No account, database or external
+service is required. The measurement uses the actual HTTP Request handler, tenancy fixture and Store
+reads; it does not measure TCP, real login/database/platform services or a deployed instance.
+
+After five warmup rounds it records three rounds of 40 samples per query, rotating query order.
+Every round retains the existing strict p90 budgets: under 1,000 ms for a forty-file diff and for
+one file, and under 2,000 ms for search across 2,000 forty-line files plus the parser file. The
+400,000-file fixture retains its single response-time budget of under 25,000 ms. Diff timing
+includes JSON body consumption; contents timing includes array-buffer consumption, with checks after
+timing; the wide timing ends when the response arrives, as its original budget did. The lane runs
+one worker with file parallelism disabled and a 120-second outer test/setup guard.
+
+The JSON report contains raw samples and partial rounds, completeness, budgets, workload counts,
+source hashes, commit/dirty state, Node/Git/OS/CPU/memory/load and filesystem context. It is written
+before budget assertions, so retain failures alongside passes. A pass applies to that fixture and
+recorded environment; neither an idle declaration nor a local pass proves every production workload
+meets the budget. Default `pnpm test` does not run this lane.
+
+The manually dispatched **Worktree reads performance** workflow runs this command on the existing
+8-vCPU Ubuntu 24.04 runner, with no other package tests or builds in that job, and uploads the JSON
+report even when a budget fails. Dispatch it for the candidate branch when release evidence is
+needed. A workflow definition or an ordinary CI pass does not mean that dispatch ran.

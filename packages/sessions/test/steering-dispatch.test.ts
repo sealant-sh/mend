@@ -1,4 +1,3 @@
-import { describe, expect, it } from "@effect/vitest";
 import { AgentConversationRepo, SessionProcessesRepo, SessionsRepo } from "@mend/db";
 import {
   AgentItemId,
@@ -9,8 +8,10 @@ import {
 } from "@mend/domain";
 import { AgentItem, AgentTurn, SessionProcess, type TurnPayer } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
+import { it } from "@mend/test-ci/effect-vitest";
 import type { InteractiveSession } from "@sealant/sdk";
 import { Effect, Fiber, Layer } from "effect";
+import { describe, expect } from "vitest";
 
 import {
   type ConversationWait,

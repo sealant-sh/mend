@@ -120,7 +120,8 @@ export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureR
     Effect.gen(function* () {
       const capture = yield* CaptureRuntime;
 
-      const run = Effect.fn("CaptureRetention.run")(function* (now: number = Date.now()) {
+      const run = Effect.fn("CaptureRetention.run")(function* (passAt?: number) {
+        const now = passAt ?? (yield* Clock.currentTimeMillis);
         const report = {
           chains: 0,
           capturesThinned: 0,

@@ -1,6 +1,6 @@
 import { Change, ChangeId, type IssueId, type Sha } from "@mend/domain";
 import { eq, sql } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -62,7 +62,7 @@ export const ChangesRepoLive: Layer.Layer<ChangesRepo, never, MendDB> = Layer.ef
             branch: sql`CASE WHEN ${facts.branch} = '' THEN ${changes.branch} ELSE ${facts.branch} END`,
             baseSha: sql`COALESCE(${changes.baseSha}, ${facts.baseSha})`,
             headSha: sql`COALESCE(${facts.headSha}, ${changes.headSha})`,
-            updatedAt: new Date(),
+            updatedAt: yield* DateTime.nowAsDate,
           },
         })
         .returning()

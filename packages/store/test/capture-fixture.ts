@@ -298,3 +298,54 @@ export const uploadObjects = (objects: ReadonlyMap<string, Uint8Array>) =>
       { discard: true },
     );
   });
+
+// ─── Materialized trees ─────────────────────────────────────────────────────
+
+/** A tree as `materialize` lays it down, with each file's and directory's mtime kept apart. */
+export interface TreeDescription {
+  /** Every entry's kind, path, mode, symlink target and content hash, in walk order. */
+  readonly entries: Array<string>;
+  /** Each file's and directory's mtime in nanoseconds, by path. */
+  readonly mtimes: Map<string, bigint>;
+}
+
+export const describeTree = (root: string): TreeDescription => {
+  const entries: Array<string> = [];
+  const mtimes = new Map<string, bigint>();
+  const walk = (at: string, rel: string) => {
+    for (const name of fs.readdirSync(at).toSorted()) {
+      const full = path.join(at, name);
+      const relPath = rel === "" ? name : `${rel}/${name}`;
+      const stat = fs.lstatSync(full, { bigint: true });
+      const mode = (stat.mode & 0o7777n).toString(8);
+      if (stat.isDirectory()) {
+        entries.push(`dir ${relPath} ${mode}`);
+        mtimes.set(relPath, stat.mtimeNs);
+        walk(full, relPath);
+      } else if (stat.isSymbolicLink()) {
+        entries.push(`symlink ${relPath} -> ${fs.readlinkSync(full)}`);
+      } else {
+        entries.push(`file ${relPath} ${mode} ${sha256Hex(fs.readFileSync(full))}`);
+        mtimes.set(relPath, stat.mtimeNs);
+      }
+    }
+  };
+  walk(root, "");
+  return { entries, mtimes };
+};
+
+/**
+ * The largest distance between two trees' mtimes of the same path, in nanoseconds. `materialize`
+ * sets an mtime through Node's `utimes`, which takes seconds as a double, so it lands within a
+ * microsecond of the recorded nanoseconds; a millisecond rounding would flip across a half.
+ */
+export const mtimeDriftNs = (a: TreeDescription, b: TreeDescription): bigint => {
+  let drift = 0n;
+  for (const [relPath, ns] of a.mtimes) {
+    const other = b.mtimes.get(relPath);
+    if (other === undefined) throw new Error(`${relPath} has no mtime in the other tree.`);
+    const apart = ns > other ? ns - other : other - ns;
+    if (apart > drift) drift = apart;
+  }
+  return drift;
+};

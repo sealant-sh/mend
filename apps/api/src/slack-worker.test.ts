@@ -3,8 +3,8 @@ import { OrganizationId } from "@mend/domain";
 import { SlackApiError } from "@mend/slack/client";
 import { SlackSocket, type SlackEnvelope } from "@mend/slack/socket";
 import { SecretCipher } from "@mend/store";
+import { TestClock } from "@mend/test-ci/effect-vitest";
 import { type Cause, Clock, Duration, Effect, Layer, Queue, Stream } from "effect";
-import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import { SlackRunner } from "./slack-runner.ts";

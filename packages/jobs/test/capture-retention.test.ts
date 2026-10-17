@@ -15,7 +15,7 @@ import {
 import { makeMemoryCaptureStore } from "@mend/sessions/testing";
 import { BlobStore, BlobStoreFsLive, captureKeys, packIdxKeyOf } from "@mend/store";
 import { Effect, Layer } from "effect";
-import { FastCheck } from "effect/testing";
+import * as FastCheck from "effect/testing/FastCheck";
 import { describe, expect, it } from "vitest";
 
 import {

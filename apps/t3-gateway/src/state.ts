@@ -9,6 +9,7 @@ import {
   AuthSessionId,
   EnvironmentId,
 } from "@mend/t3-contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -1062,23 +1063,25 @@ export const openGatewayState = (
       });
 
     const reserveSequences = (from: number, count: number) =>
-      run("reserveSequences", () => {
-        database.exec("BEGIN IMMEDIATE");
-        try {
-          const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(SEQUENCE_HIGH);
-          const high =
-            row === undefined ? Date.now() : Number(Schema.decodeUnknownSync(MetaRow)(row).value);
-          const start = Math.max(high, from);
-          database
-            .prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
-            .run(SEQUENCE_HIGH, String(start + count));
-          database.exec("COMMIT");
-          return start;
-        } catch (error) {
-          database.exec("ROLLBACK");
-          throw error;
-        }
-      });
+      Effect.flatMap(Clock.currentTimeMillis, (now) =>
+        run("reserveSequences", () => {
+          database.exec("BEGIN IMMEDIATE");
+          try {
+            const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(SEQUENCE_HIGH);
+            const high =
+              row === undefined ? now : Number(Schema.decodeUnknownSync(MetaRow)(row).value);
+            const start = Math.max(high, from);
+            database
+              .prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+              .run(SEQUENCE_HIGH, String(start + count));
+            database.exec("COMMIT");
+            return start;
+          } catch (error) {
+            database.exec("ROLLBACK");
+            throw error;
+          }
+        }),
+      );
 
     const saveImages = (
       mendUserId: string,

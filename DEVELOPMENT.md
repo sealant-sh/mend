@@ -142,8 +142,16 @@ node --test scripts/bundle-packaging.test.mjs scripts/process-supervisor.test.mj
   scripts/check-packaged-server.test.mjs scripts/release-publication.test.mjs \
   scripts/packaged-ssh-acceptance.test.mjs scripts/packaged-git-access-acceptance.test.mjs \
   scripts/packaged-dotfiles-acceptance.test.mjs scripts/helm-chart.test.mjs \
-  scripts/edge-overlay.test.mjs scripts/aws-compose.test.mjs scripts/aws-tofu.test.mjs
+  scripts/edge-overlay.test.mjs scripts/aws-compose.test.mjs scripts/aws-tofu.test.mjs \
+  scripts/release-manifest.test.mjs scripts/ghcr-staging-cleanup.test.mjs \
+  scripts/upgrade-window.test.mjs
 ```
+
+The publisher's inline tarball check and `normalize-npm-tarball.mjs --check` must agree; CI's static
+job runs their parity test on every pull request:
+`node --test scripts/republish.test.mjs scripts/normalize-npm-tarball.test.mjs`. The same step runs
+the rest of the publish block's tests: `scripts/republish.registry.test.mjs`,
+`scripts/republish.floor.test.mjs` and `scripts/republish.overrides.test.mjs`.
 
 This is the list CI runs. The bundle-contract test needs the Docker Compose plugin, not a running
 daemon. `edge-overlay` and `aws-compose` skip without `docker compose` on PATH, and `helm-chart`

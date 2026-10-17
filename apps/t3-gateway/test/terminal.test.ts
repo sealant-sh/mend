@@ -1,4 +1,3 @@
-import { assert, describe, it } from "@effect/vitest";
 import {
   WS_METHODS,
   type TerminalAttachStreamEvent,
@@ -11,10 +10,12 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 
 import { ttyUrlOf } from "../src/terminals.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * The terminal (ADR 0012, phase 3): Mend's shell beside the agent, over `/api/tty`, opened with a
@@ -253,8 +254,9 @@ describe("the terminal socket", () => {
     ),
   );
 
-  it.live("stops every shell and socket of the person's terminals when their hub goes", () =>
+  it.effect("stops every shell and socket of the person's terminals when their hub goes", () =>
     Effect.gen(function* () {
+      const timers = yield* GatewayTimers;
       const mend = yield* startFakeMend;
       setup(mend);
       yield* Effect.gen(function* () {
@@ -270,15 +272,24 @@ describe("the terminal socket", () => {
           }),
         );
         // The client is gone; the hub outlives it briefly, then goes, and its terminals with it.
-        yield* eventually(
-          () => !Array.from(mend.tty.shells.values()).some((shell) => shell.running),
-          "the shell to be stopped",
+        yield* timers.runOut(
+          "100 millis",
+          "the idle hub's time to live",
+          Effect.sync(() =>
+            assert.isTrue(Array.from(mend.tty.shells.values()).some((shell) => shell.running)),
+          ),
+        );
+        yield* TestClock.withLive(
+          eventually(
+            () => !Array.from(mend.tty.shells.values()).some((shell) => shell.running),
+            "the shell to be stopped",
+          ),
         );
       }).pipe(
         Effect.scoped,
         Effect.provide(gatewayTestLayer(mend.url, ":memory:", { hubIdleTimeToLive: "100 millis" })),
       );
-    }),
+    }).pipe(withGatewayTimers),
   );
 
   it("is Mend's /api/tty on its origin, as a WebSocket URL, for exactly the process", () => {

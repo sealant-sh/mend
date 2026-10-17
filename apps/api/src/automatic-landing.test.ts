@@ -63,7 +63,7 @@ import {
   MendKeys,
   SourcePolicy,
 } from "@mend/store";
-import { Duration, Effect, Layer, Schema } from "effect";
+import { Deferred, Duration, Effect, Fiber, Layer, Schema } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";
@@ -116,6 +116,11 @@ interface World {
   /** What each ask for a capture flush answers, in order; `flushed` once they run out. */
   flushes: Array<CaptureFlushObservation>;
   flushAsks: number;
+  flushGate: {
+    readonly started: Deferred.Deferred<void>;
+    readonly release: Deferred.Deferred<void>;
+  } | null;
+  timeline: Array<string>;
   /** What each turn's agent said and did, by turn id. */
   items: Map<string, ReadonlyArray<AgentItem>>;
   opened: Array<PullRequestOpenedEvent>;
@@ -143,6 +148,8 @@ const blankWorld = (): World => ({
   changedFilesReads: 0,
   flushes: [],
   flushAsks: 0,
+  flushGate: null,
+  timeline: [],
   items: new Map(),
   opened: [],
 });
@@ -351,6 +358,7 @@ const layer = Layer.mergeAll(
   Layer.mock(WorktreeReads, {
     changedFiles: (_project, _worktree, base) =>
       Effect.sync(() => {
+        world.timeline.push("read-change");
         world.changedFilesReads += 1;
         return {
           value: world.changed.get(base) ?? [],
@@ -377,6 +385,7 @@ const layer = Layer.mergeAll(
   Layer.mock(Landing, {
     land: (input) =>
       Effect.suspend(() => {
+        world.timeline.push("land");
         world.lands.push(input);
         if (world.landRefusal !== null) return Effect.fail(world.landRefusal);
         const row = landed(`landing-${world.lands.length}`, { createdAt: NOW });
@@ -386,8 +395,14 @@ const layer = Layer.mergeAll(
   Layer.mock(SessionEngine, {
     launchUnderWay: () => false,
     flushCaptures: () =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         world.flushAsks += 1;
+        world.timeline.push("flush-start");
+        if (world.flushGate !== null) {
+          yield* Deferred.succeed(world.flushGate.started, undefined);
+          yield* Deferred.await(world.flushGate.release);
+        }
+        world.timeline.push("flush-completed");
         return world.flushes.shift() ?? "flushed";
       }),
   }),
@@ -744,6 +759,63 @@ describe("automatic landing (docs/adr/0007, When a completed turn lands)", () =>
 });
 
 describe("automatic landing waits for the captures (docs/adr/0007, amended 2026-09-27)", () => {
+  it.each(["queued", "running"] as const)(
+    "a new %s turn arriving while captures flush supersedes the earlier completed turn",
+    async (status) => {
+      world.turns = [turn(0)];
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const started = yield* Deferred.make<void>();
+            const release = yield* Deferred.make<void>();
+            world.flushGate = { started, release };
+            const lander = yield* makeAutomaticLanding({
+              now: () => NOW.getTime(),
+              flushPause: Duration.zero,
+            });
+            const considering = yield* lander.consider(SESSION).pipe(Effect.forkScoped);
+            yield* Deferred.await(started).pipe(Effect.timeout("2 seconds"));
+            expect(world.changedFilesReads).toBe(0);
+            expect(world.lands).toEqual([]);
+            world.turns.push(turn(1, { status, endedAt: null }));
+            yield* Deferred.succeed(release, undefined);
+            yield* Fiber.join(considering);
+            expect(decisions()).toEqual([
+              [0, "skipped"],
+              [1, null],
+            ]);
+            expect(world.lands).toEqual([]);
+          }),
+        ).pipe(Effect.provide(OwnerLandingLive.pipe(Layer.provideMerge(layer)))),
+      );
+    },
+  );
+  it("a held flush completes before any change read or landing when no later turn arrives", async () => {
+    world.turns = [turn(0)];
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const started = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          world.flushGate = { started, release };
+          const lander = yield* makeAutomaticLanding({
+            now: () => NOW.getTime(),
+            flushPause: Duration.zero,
+          });
+          const considering = yield* lander.consider(SESSION).pipe(Effect.forkScoped);
+          yield* Deferred.await(started).pipe(Effect.timeout("2 seconds"));
+          expect(world.timeline).toEqual(["flush-start"]);
+          expect(considering.pollUnsafe()).toBeUndefined();
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(considering);
+          expect(world.timeline).toEqual(["flush-start", "flush-completed", "read-change", "land"]);
+          expect(decisions()).toEqual([[0, "attempted"]]);
+          expect(world.lands).toHaveLength(1);
+        }),
+      ).pipe(Effect.provide(OwnerLandingLive.pipe(Layer.provideMerge(layer)))),
+    );
+  });
+
   it("asks the executor to flush before it reads the change, and lands once it caught up", async () => {
     world.turns = [turn(0)];
     world.flushes = ["incomplete"];

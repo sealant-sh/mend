@@ -1,8 +1,9 @@
 import { PgClient } from "@effect/sql-pg";
-import { Effect, Layer, Redacted } from "effect";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
+import { DateTime, Effect, Layer, Redacted } from "effect";
 import * as Str from "effect/String";
 import { SqlClient } from "effect/unstable/sql";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
@@ -185,37 +186,37 @@ describe.skipIf(postgres.skip)("launch identity (0083), in Postgres", () => {
     });
     expect(result.after).toBeNull();
   });
-  it("a person's tokens in one launch end when their logins there are released, and nobody else's do, nor one minted after (docs/adr/0016, Delivery 14)", async () => {
-    const result = await run(
+  it.effect(
+    "a person's tokens in one launch end when their logins there are released, and nobody else's do, nor one minted after (docs/adr/0016, Delivery 14)",
+    () =>
       Effect.gen(function* () {
         const tokens = yield* SessionChannelTokensRepo;
         const own = yield* tokens.issue("s-release", "launch:s-release:1:a");
         const maria = yield* tokens.issuePerson("launch:s-release:1:a", "user-maria");
         const alice = yield* tokens.issuePerson("launch:s-release:1:a", "user-alice");
         const elsewhere = yield* tokens.issuePerson("launch:s-other:1:a", "user-maria");
-        yield* Effect.sleep("5 millis");
-        const releaseBegan = new Date();
-        yield* Effect.sleep("5 millis");
+        yield* TestClock.adjust("5 millis");
+        const releaseBegan = yield* DateTime.nowAsDate;
+        yield* TestClock.adjust("5 millis");
         // A start of Maria's after the release began: its token is not the release's to revoke.
         const restarted = yield* tokens.issuePerson("launch:s-release:1:a", "user-maria");
         yield* tokens.revokePerson("launch:s-release:1:a", "user-maria", releaseBegan);
         // Idempotent.
         yield* tokens.revokePerson("launch:s-release:1:a", "user-maria", releaseBegan);
-        return {
+        const result = {
           restarted: (yield* tokens.resolve(restarted))?.accountId ?? null,
           maria: yield* tokens.resolve(maria),
           alice: (yield* tokens.resolve(alice))?.accountId ?? null,
           own: (yield* tokens.resolve(own))?.sessionId ?? null,
           elsewhere: (yield* tokens.resolve(elsewhere))?.launchId ?? null,
         };
-      }),
-    );
-    expect(result).toEqual({
-      restarted: "user-maria",
-      maria: null,
-      alice: "user-alice",
-      own: "s-release",
-      elsewhere: "launch:s-other:1:a",
-    });
-  });
+        expect(result).toEqual({
+          restarted: "user-maria",
+          maria: null,
+          alice: "user-alice",
+          own: "s-release",
+          elsewhere: "launch:s-other:1:a",
+        });
+      }).pipe(Effect.provide(reposLayer)),
+  );
 });

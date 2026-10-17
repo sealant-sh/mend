@@ -3,11 +3,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { it, expect } from "@effect/vitest";
 import { piProfileDigest } from "@mend/db";
 import { validatePiProfile, type PiProfileFile } from "@mend/domain/workbench";
+import { it } from "@mend/test-ci/effect-vitest";
 import { Effect, Schema } from "effect";
-import { FastCheck } from "effect/testing";
+import * as FastCheck from "effect/testing/FastCheck";
+import { expect } from "vitest";
 
 import { PERSON_SAVED_STATE } from "../src/harness-layout.ts";
 import { PI_PROFILE_HOME_DIR, materializePiProfile, planPiProfile } from "../src/pi-profile.ts";

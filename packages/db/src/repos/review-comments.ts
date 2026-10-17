@@ -8,7 +8,7 @@ import {
   type CommentState,
 } from "@mend/domain/workbench";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -162,7 +162,7 @@ export const ReviewCommentsRepoLive: Layer.Layer<
     ) {
       const [row] = yield* db
         .update(reviewComments)
-        .set({ state, updatedAt: new Date() })
+        .set({ state, updatedAt: yield* DateTime.nowAsDate })
         .where(eq(reviewComments.id, id))
         .returning({ changeId: reviewComments.changeId })
         .pipe(Effect.orDie);
@@ -175,7 +175,7 @@ export const ReviewCommentsRepoLive: Layer.Layer<
     ) {
       yield* db
         .update(reviewComments)
-        .set({ sentToSessionId: sessionId, updatedAt: new Date() })
+        .set({ sentToSessionId: sessionId, updatedAt: yield* DateTime.nowAsDate })
         .where(eq(reviewComments.id, id))
         .pipe(Effect.orDie);
     });
@@ -187,7 +187,7 @@ export const ReviewCommentsRepoLive: Layer.Layer<
       if (ids.length === 0) return 0;
       const rows = yield* db
         .update(reviewComments)
-        .set({ sentToSessionId: sessionId, updatedAt: new Date() })
+        .set({ sentToSessionId: sessionId, updatedAt: yield* DateTime.nowAsDate })
         .where(and(inArray(reviewComments.id, ids), isNull(reviewComments.sentToSessionId)))
         .returning({ id: reviewComments.id, changeId: reviewComments.changeId })
         .pipe(Effect.orDie);

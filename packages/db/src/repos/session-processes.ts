@@ -13,7 +13,7 @@ import {
   type SessionProcessStatus,
 } from "@mend/domain/workbench";
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { DateTime, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -171,7 +171,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
     ) {
       const rows = yield* db
         .update(sessionProcesses)
-        .set({ status, updatedAt: new Date() })
+        .set({ status, updatedAt: yield* DateTime.nowAsDate })
         .where(and(eq(sessionProcesses.id, id), isNull(sessionProcesses.exitedAt)))
         .returning({ sessionId: sessionProcesses.sessionId })
         .pipe(Effect.orDie);
@@ -282,7 +282,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
     ) {
       const rows = yield* db
         .update(sessionProcesses)
-        .set({ label, updatedAt: new Date() })
+        .set({ label, updatedAt: yield* DateTime.nowAsDate })
         .where(and(eq(sessionProcesses.id, id), isNull(sessionProcesses.exitedAt)))
         .returning({ sessionId: sessionProcesses.sessionId })
         .pipe(Effect.orDie);
@@ -296,7 +296,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
     ) {
       yield* db
         .update(sessionProcesses)
-        .set({ providerSessionId, updatedAt: new Date() })
+        .set({ providerSessionId, updatedAt: yield* DateTime.nowAsDate })
         .where(eq(sessionProcesses.id, id))
         .pipe(Effect.orDie);
     });
@@ -307,7 +307,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
     ) {
       const rows = yield* db
         .update(sessionProcesses)
-        .set({ firstOutputAt: at, updatedAt: new Date() })
+        .set({ firstOutputAt: at, updatedAt: yield* DateTime.nowAsDate })
         .where(and(eq(sessionProcesses.id, id), isNull(sessionProcesses.firstOutputAt)))
         .returning({ sessionId: sessionProcesses.sessionId })
         .pipe(Effect.orDie);
@@ -323,7 +323,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
     ) {
       const rows = yield* db
         .update(sessionProcesses)
-        .set({ hostPort, updatedAt: new Date() })
+        .set({ hostPort, updatedAt: yield* DateTime.nowAsDate })
         .where(and(eq(sessionProcesses.id, id), isNull(sessionProcesses.exitedAt)))
         .returning({ sessionId: sessionProcesses.sessionId })
         .pipe(Effect.orDie);
@@ -338,7 +338,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
     ) {
       yield* db
         .update(sessionProcesses)
-        .set({ sealantSessionId, sealantRunId, updatedAt: new Date() })
+        .set({ sealantSessionId, sealantRunId, updatedAt: yield* DateTime.nowAsDate })
         .where(and(eq(sessionProcesses.id, id), isNull(sessionProcesses.exitedAt)))
         .pipe(Effect.orDie);
     });
@@ -348,7 +348,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       outcome: "exited" | "stopped",
       exitCode: number | null,
     ) {
-      const now = new Date();
+      const now = yield* DateTime.nowAsDate;
       const rows = yield* db
         .update(sessionProcesses)
         .set({ status: outcome, exitCode, exitedAt: now, updatedAt: now })
@@ -363,7 +363,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       workspaceId: SealantWorkspaceId,
       kinds?: ReadonlyArray<SessionProcessKind>,
     ) {
-      const now = new Date();
+      const now = yield* DateTime.nowAsDate;
       const rows = yield* db
         .update(sessionProcesses)
         .set({ status: "exited", exitedAt: now, updatedAt: now })

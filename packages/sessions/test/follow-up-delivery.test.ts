@@ -1,4 +1,3 @@
-import { describe, expect, it } from "@effect/vitest";
 import {
   AgentConversationRepo,
   FollowUpsRepo,
@@ -33,8 +32,9 @@ import {
   Session,
   SessionProcess,
 } from "@mend/domain/workbench";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Fiber, Layer } from "effect";
-import { TestClock } from "effect/testing";
+import { describe, expect } from "vitest";
 
 import { SessionNotLiveError } from "../src/engine.ts";
 import {

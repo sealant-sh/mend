@@ -1,4 +1,3 @@
-import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   MessageId,
@@ -14,9 +13,11 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as Option from "effect/Option";
 
 import { detectImageType, IMAGES_NOTE, parseDataUrl, turnInputOf, wordsOf } from "../src/images.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * Images on a message (ADR 0012, phase 2): kept by the gateway from t3code's data URL, placed in
@@ -254,9 +255,10 @@ describe("what a message may carry", () => {
     ),
   );
 
-  it.live("places an image again for a new agent, and once for the same one", () =>
+  it.effect("places an image again for a new agent, and once for the same one", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
         mend.workbench.addProject("project-1", "mend");
         mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
         mend.workbench.launchBringsAgentUp = true;
@@ -269,14 +271,18 @@ describe("what a message may carry", () => {
         yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
           send("message-one", "Look", kept.attachments),
         );
-        yield* eventually(() => posts(mend, "/turns").length === 1, "the first turn");
+        yield* TestClock.withLive(
+          eventually(() => posts(mend, "/turns").length === 1, "the first turn"),
+        );
         const [turn] = mend.workbench.turns.get("session-1") ?? [];
         if (turn !== undefined) mend.workbench.setTurn(turn, "completed");
         // The same agent: the image is where Mend put it.
         yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
           send("message-two", "Again", kept.attachments),
         );
-        yield* eventually(() => posts(mend, "/turns").length === 2, "the second turn");
+        yield* TestClock.withLive(
+          eventually(() => posts(mend, "/turns").length === 2, "the second turn"),
+        );
         assert.strictEqual(posts(mend, "/images").length, 1);
         // A new agent may run in another workspace: the image is placed again.
         const [, second] = mend.workbench.turns.get("session-1") ?? [];
@@ -285,14 +291,16 @@ describe("what a message may carry", () => {
         yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
           send("message-three", "Once more", kept.attachments),
         );
-        yield* eventually(
+        // A send that finds the agent gone waits out its backoff, then reads and launches.
+        yield* timers.drive(
+          { within: "1 second", deadline: "5 seconds" },
           () => (mend.workbench.turns.get("session-1") ?? []).length === 3,
           "the third turn",
         );
         assert.strictEqual(mend.workbench.launches.length, 1);
         assert.strictEqual(posts(mend, "/images").length, 2);
       }),
-    ),
+    ).pipe(withGatewayTimers),
   );
 
   it.live("a sent message shows the images its turn carried, not those edited out", () =>

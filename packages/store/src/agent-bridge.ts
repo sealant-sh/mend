@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
 
-import { Effect, Layer } from "effect";
+import { Clock, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendKeysConfig } from "./git-auth.ts";
@@ -74,7 +74,8 @@ const AGENT_FAILURE = Buffer.from([0, 0, 0, 1, 5]);
 /**
  * A touch can take as long as a human takes; the share client already fails
  * a request at 60s, so this server-side backstop only catches a vanished
- * client that never answered at all.
+ * client that never answered at all. It is armed from socket and share-frame callbacks, outside
+ * any fiber, so it is a native timer.
  */
 const REQUEST_TIMEOUT_MS = 75_000;
 
@@ -119,7 +120,7 @@ export const bridgeSocketName = (userId: string): string =>
   `${createHash("sha256").update(userId).digest("hex").slice(0, 16)}.sock`;
 
 /** One account's bridge: its socket, its share client, its FIFO of agent requests. */
-const makeUserBridge = (socketPath: string) => {
+const makeUserBridge = (socketPath: string, clock: Clock.Clock) => {
   const bridgeDir = path.dirname(socketPath);
   let client: AgentBridgeClient | null = null;
   let server: net.Server | null = null;
@@ -244,7 +245,7 @@ const makeUserBridge = (socketPath: string) => {
     fs.chmodSync(socketPath, 0o600);
     server = bridgeServer;
     client = incoming;
-    since = new Date();
+    since = new Date(clock.currentTimeMillisUnsafe());
     return {
       feed: (frame: string) => {
         let parsed: ShareFrame;
@@ -291,6 +292,7 @@ export const AgentBridgeLive: Layer.Layer<AgentBridge, never, MendKeysConfig> = 
   AgentBridge,
   Effect.gen(function* () {
     const config = yield* MendKeysConfig;
+    const clock = yield* Clock.Clock;
     const bridgesRoot = path.join(config.root, "_bridge");
     // The one shared socket from before per-account bridges; nothing serves it any more.
     yield* Effect.sync(() => fs.rmSync(path.join(bridgesRoot, "agent.sock"), { force: true }));
@@ -301,7 +303,7 @@ export const AgentBridgeLive: Layer.Layer<AgentBridge, never, MendKeysConfig> = 
     const bridgeOf = (userId: string) => {
       const existing = bridges.get(userId);
       if (existing !== undefined) return existing;
-      const created = makeUserBridge(socketPath(userId));
+      const created = makeUserBridge(socketPath(userId), clock);
       bridges.set(userId, created);
       return created;
     };

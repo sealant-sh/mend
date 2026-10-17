@@ -13,7 +13,7 @@ import {
   captureScopesOf,
 } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
-import { Effect, Layer, Option } from "effect";
+import { Clock, Effect, Layer, Option } from "effect";
 
 /**
  * `CaptureStoreRepo` in memory with the SQL's semantics (`repos/capture-store.ts`): the claim
@@ -44,8 +44,11 @@ export interface MemoryCaptureStore {
   readonly claims: Map<string, Map<string, number>>;
   readonly packs: Map<string, PackRow>;
   readonly summaries: Map<string, CaptureSummaryRow>;
-  /** `recordSeal` never answers while set: a process that stops before its late seal lands. */
-  readonly holdRecordSeal: { held: boolean };
+  /**
+   * `recordSeal` never answers while set: a process that stops before its late seal lands.
+   * `parked` runs as each call is held, so a test can wait for that process to get there.
+   */
+  readonly holdRecordSeal: { held: boolean; parked: () => void };
 }
 
 /** A lease row; `launchId` absent reads null (a lease bound to no launch). */
@@ -78,7 +81,10 @@ const holdsAs = (
 export const makeMemoryCaptureStore = (
   baseOf: (worktreeId: WorktreeId) => string | null = () => null,
 ): MemoryCaptureStore => {
-  const clock = { now: () => Date.now() };
+  // The default follows the Clock that owns the store layer. A test can still
+  // replace clock.now to model deliberate store/engine skew without moving timers.
+  let currentTimeMillis = Date.now;
+  const clock = { now: () => currentTimeMillis() };
   const leases = new Map<string, MemoryLease>();
   const chains = new Map<string, MemoryChain>();
   const tombstones = new Map<string, { worktreeId: string; deleted: boolean }>();
@@ -90,7 +96,7 @@ export const makeMemoryCaptureStore = (
   const goneWorktrees = new Set<string>();
   const boundIndexCutover = { until: 0 };
   const launchAnswers = new Map<string, ReadonlyArray<string>>();
-  const holdRecordSeal = { held: false };
+  const holdRecordSeal = { held: false, parked: () => {} };
   /** A live deletion claim on `key`: some pass may still delete its bytes. */
   const claimed = (key: string) =>
     [...(claims.get(key)?.values() ?? [])].some((expiresAt) => expiresAt > clock.now());
@@ -114,7 +120,7 @@ export const makeMemoryCaptureStore = (
           live: live(lease),
         };
   };
-  const layer = Layer.succeed(CaptureStoreRepo, {
+  const repository: CaptureStoreRepo["Service"] = {
     init: (worktreeId) =>
       Effect.sync(() => {
         if (!leases.has(worktreeId)) {
@@ -343,7 +349,11 @@ export const makeMemoryCaptureStore = (
             .toSorted((a, b) => b.epoch - a.epoch)[0] ?? null,
       ),
     recordSeal: (input) =>
-      Effect.suspend(() => (holdRecordSeal.held ? Effect.never : Effect.void)).pipe(
+      Effect.suspend(() => {
+        if (!holdRecordSeal.held) return Effect.void;
+        holdRecordSeal.parked();
+        return Effect.never;
+      }).pipe(
         Effect.andThen(
           Effect.sync(() => {
             const chain = chains.get(input.worktreeId);
@@ -642,7 +652,14 @@ export const makeMemoryCaptureStore = (
           if (row !== undefined) packs.set(id, { ...row, state, updatedAt: new Date(clock.now()) });
         }
       }),
-  });
+  };
+  const layer: Layer.Layer<CaptureStoreRepo> = Layer.effect(
+    CaptureStoreRepo,
+    Effect.map(Clock.Clock, (owner) => {
+      currentTimeMillis = () => owner.currentTimeMillisUnsafe();
+      return repository;
+    }),
+  );
 
   return {
     layer,

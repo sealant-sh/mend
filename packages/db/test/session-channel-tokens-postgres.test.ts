@@ -1,7 +1,8 @@
 import { PgClient } from "@effect/sql-pg";
-import { Effect, Layer, Redacted } from "effect";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
+import { Clock, Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/unstable/sql";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
@@ -58,12 +59,9 @@ describe.skipIf(postgres.skip)("a one-off write's token, in Postgres (mend#615 r
     );
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("is its person's, write-only; a bulk revocation of theirs never reaches it, its own revocation does", async () => {
-    await run(
+  it.effect(
+    "is its person's, write-only; a bulk revocation of theirs never reaches it, its own revocation does",
+    () =>
       Effect.gen(function* () {
         const repo = yield* SessionChannelTokensRepo;
         const own = yield* repo.issuePerson("launch-pg", "user-maria");
@@ -76,7 +74,11 @@ describe.skipIf(postgres.skip)("a one-off write's token, in Postgres (mend#615 r
           writeOnly: true,
         });
         expect((yield* repo.resolve(own))?.writeOnly).toBe(false);
-        yield* repo.revokePerson("launch-pg", "user-maria", new Date(Date.now() + 60_000));
+        yield* repo.revokePerson(
+          "launch-pg",
+          "user-maria",
+          new Date((yield* Clock.currentTimeMillis) + 60_000),
+        );
         expect(yield* repo.resolve(own)).toBeNull();
         expect((yield* repo.resolve(paste))?.writeOnly).toBe(true);
         yield* repo.revokeToken(paste);
@@ -84,22 +86,19 @@ describe.skipIf(postgres.skip)("a one-off write's token, in Postgres (mend#615 r
         expect((yield* repo.resolve(other))?.writeOnly).toBe(true);
         yield* repo.revokeLaunch("launch-pg");
         expect(yield* repo.resolve(other)).toBeNull();
-      }),
-    );
-  });
+      }).pipe(Effect.provide(repoLayer)),
+  );
 
-  it("lapses once its time is up", async () => {
-    await run(
-      Effect.gen(function* () {
-        const repo = yield* SessionChannelTokensRepo;
-        const paste = yield* repo.issueWrite("launch-ttl", "user-maria");
-        const own = yield* repo.issuePerson("launch-ttl", "user-maria");
-        expect((yield* repo.resolve(paste))?.writeOnly).toBe(true);
-        // Only the clock that reads the row moves: the row was issued now.
-        vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + WRITE_TOKEN_TTL_MS + 1000 });
-        expect(yield* repo.resolve(paste)).toBeNull();
-        expect((yield* repo.resolve(own))?.accountId).toBe("user-maria");
-      }),
-    );
-  });
+  it.effect("lapses once its time is up", () =>
+    Effect.gen(function* () {
+      const repo = yield* SessionChannelTokensRepo;
+      const paste = yield* repo.issueWrite("launch-ttl", "user-maria");
+      const own = yield* repo.issuePerson("launch-ttl", "user-maria");
+      expect((yield* repo.resolve(paste))?.writeOnly).toBe(true);
+      // Only the clock that reads the row moves: the row was issued now.
+      yield* TestClock.adjust(WRITE_TOKEN_TTL_MS + 1000);
+      expect(yield* repo.resolve(paste)).toBeNull();
+      expect((yield* repo.resolve(own))?.accountId).toBe("user-maria");
+    }).pipe(Effect.provide(repoLayer)),
+  );
 });

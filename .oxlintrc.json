@@ -30,6 +30,93 @@
   },
   "overrides": [
     {
+      // Every package whose Effect tests run on the shared guard (step 2c). t3-gateway has its own
+      // Effect and Vitest and its own guard copy, below.
+      "files": [
+        "packages/sessions/**/*.{ts,tsx,mts,cts,js,mjs,cjs}",
+        "packages/db/**/*.{ts,tsx,mts,cts,js,mjs,cjs}",
+        "packages/jobs/**/*.{ts,tsx,mts,cts,js,mjs,cjs}",
+        "packages/store/**/*.{ts,tsx,mts,cts,js,mjs,cjs}",
+        "apps/api/**/*.{ts,tsx,mts,cts,js,mjs,cjs}"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "effect/testing",
+                "message": "Import TestClock from @mend/test-ci/effect-vitest so replacement clocks keep the CI warning guard."
+              },
+              {
+                "name": "@effect/vitest",
+                "message": "Use @mend/test-ci/effect-vitest so captured TestClock warnings fail the runner; ordinary assertions and hooks come from vitest."
+              }
+            ],
+            "patterns": [
+              {
+                "group": [
+                  "effect/testing/TestClock",
+                  "effect/testing/TestClock.*",
+                  "effect/testing/index",
+                  "effect/testing/index.*"
+                ],
+                "message": "Import TestClock from @mend/test-ci/effect-vitest so replacement clocks keep the CI warning guard."
+              },
+              {
+                "group": ["@effect/vitest/*"],
+                "message": "Use @mend/test-ci/effect-vitest so captured TestClock warnings fail the runner; ordinary assertions and hooks come from vitest."
+              }
+            ]
+          }
+        ],
+        // no-restricted-imports never sees require(); none of these packages uses CommonJS.
+        "import/no-commonjs": "error"
+      }
+    },
+    {
+      "files": ["apps/t3-gateway/**/*.{ts,tsx,mts,cts,js,mjs,cjs}"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "effect/testing",
+                "message": "Import TestClock from test/support/effect-vitest.ts so replacement clocks keep the CI warning guard."
+              },
+              {
+                "name": "@effect/vitest",
+                "message": "Use test/support/effect-vitest.ts so captured TestClock warnings fail the runner; ordinary assertions and hooks come from vitest."
+              }
+            ],
+            "patterns": [
+              {
+                "group": [
+                  "effect/testing/TestClock",
+                  "effect/testing/TestClock.*",
+                  "effect/testing/index",
+                  "effect/testing/index.*"
+                ],
+                "message": "Import TestClock from test/support/effect-vitest.ts so replacement clocks keep the CI warning guard."
+              },
+              {
+                "group": ["@effect/vitest/*"],
+                "message": "Use test/support/effect-vitest.ts so captured TestClock warnings fail the runner; ordinary assertions and hooks come from vitest."
+              }
+            ]
+          }
+        ],
+        // no-restricted-imports never sees require(); none of these packages uses CommonJS.
+        "import/no-commonjs": "error"
+      }
+    },
+    {
+      // The guard itself wraps the raw entrypoints.
+      "files": ["apps/t3-gateway/test/support/effect-vitest.ts"],
+      "rules": { "no-restricted-imports": "off" }
+    },
+    {
       "files": ["packages/ui/src/components/ui/**"],
       "rules": {
         "no-shadow": "off"

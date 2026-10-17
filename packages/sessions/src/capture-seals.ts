@@ -9,7 +9,7 @@ import {
   keysOfSections,
   storedCaptureProblem,
 } from "@mend/store";
-import { Duration, Effect, Layer, Semaphore } from "effect";
+import { Clock, Duration, Effect, Layer, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 import { makeSingleFlight } from "./single-flight.ts";
@@ -357,7 +357,8 @@ export const makeCaptureSealsStore = (options?: {
     Effect.gen(function* () {
       const repo = yield* CaptureStoreRepo;
       const blobs = yield* BlobStore;
-      const now = options?.now ?? Date.now;
+      const clock = yield* Clock.Clock;
+      const now = options?.now ?? (() => clock.currentTimeMillisUnsafe());
       const sealedCompletion = Effect.fn("CaptureSeals.sealedCompletion")(function* (
         worktreeId: WorktreeId,
         executorId: string,
@@ -375,6 +376,6 @@ export const makeCaptureSealsStore = (options?: {
     }),
   );
 
-/** `makeCaptureSealsStore` on the wall clock: what the API provides beside the capture store. */
+/** `makeCaptureSealsStore` on Effect's wall clock: what the API provides beside the capture store. */
 export const CaptureSealsStoreLive: Layer.Layer<CaptureSeals, never, CaptureStoreRepo | BlobStore> =
   makeCaptureSealsStore();

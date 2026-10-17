@@ -1,0 +1,41 @@
+name: Worktree reads performance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worktree-reads-performance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: [self-hosted, box, linux, x64]
+    timeout-minutes: 10
+    env:
+      GIT_CONFIG_NOSYSTEM: "1"
+      GIT_CONFIG_GLOBAL: /dev/null
+      MEND_WORKTREE_PERF_CONTEXT: dedicated-ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - run: pnpm install --frozen-lockfile
+      # One worker, no concurrent package tests/builds in this job. This is a separate measurement,
+      # not a claim made by ordinary CI correctness checks.
+      - run: pnpm --filter @mend/api-server bench:worktree-reads
+        env:
+          MEND_WORKTREE_PERF_REPORT: ${{ runner.temp }}/worktree-reads.json
+      - name: Keep raw samples and environment, including adverse budget results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: worktree-reads-${{ github.sha }}
+          path: ${{ runner.temp }}/worktree-reads.json
+          if-no-files-found: error

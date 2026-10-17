@@ -10,7 +10,7 @@ import {
 } from "@mend/domain";
 import { type DiffDigest, FollowUp } from "@mend/domain/workbench";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -265,7 +265,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
         .set({
           status: "delivering",
           deliveryError: null,
-          deliveryStartedAt: new Date(),
+          deliveryStartedAt: yield* DateTime.nowAsDate,
           deliveryAttemptId: attemptId,
           deliveryLeaseExpiresAt: leaseExpiresAt,
         })
@@ -344,7 +344,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
         deliveryError: null,
         deliveryAttemptId: null,
         deliveryLeaseExpiresAt: null,
-        deliveredAt: new Date(),
+        deliveredAt: yield* DateTime.nowAsDate,
       });
     });
 

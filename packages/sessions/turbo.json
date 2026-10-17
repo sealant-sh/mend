@@ -1,0 +1,17 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "cache": false,
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        ".env*",
+        "$TURBO_ROOT$/scripts/bench/lib.mjs",
+        "$TURBO_ROOT$/deploy/**",
+        "$TURBO_ROOT$/.claude/skills/verify/**",
+        "$TURBO_ROOT$/apps/docs/src/content/docs/concepts/provider-logins.md",
+        "$TURBO_ROOT$/.oxlintrc.json"
+      ]
+    }
+  }
+}

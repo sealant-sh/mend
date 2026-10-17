@@ -1,4 +1,3 @@
-import { assert, describe, it } from "@effect/vitest";
 import {
   ORCHESTRATION_V2_WS_METHODS,
   ThreadId,
@@ -28,6 +27,7 @@ import {
 } from "../src/notices.ts";
 import { threadShellOf, type ThreadSource } from "../src/shell.ts";
 import { threadProjectionOf, TURN_ORDINAL_STRIDE } from "../src/thread-projection.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer, PERSON } from "./support/gateway.ts";

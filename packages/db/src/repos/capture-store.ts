@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import type { Sha, WorktreeId } from "@mend/domain";
 import { asc, eq, inArray, sql as drizzleSql } from "drizzle-orm";
-import { Effect, Layer, Option, Schema } from "effect";
+import { DateTime, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -1413,7 +1413,11 @@ export const CaptureStoreRepoLive: Layer.Layer<
         // weighs and retires it there.
         .onConflictDoUpdate({
           target: packs.id,
-          set: { state: "uploaded", key: drizzleSql`excluded.key`, updatedAt: new Date() },
+          set: {
+            state: "uploaded",
+            key: drizzleSql`excluded.key`,
+            updatedAt: yield* DateTime.nowAsDate,
+          },
           setWhere: eq(packs.state, "retired"),
         })
         .pipe(Effect.orDie);
@@ -1572,7 +1576,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       if (packIds.length === 0) return;
       yield* db
         .update(packs)
-        .set({ state, updatedAt: new Date() })
+        .set({ state, updatedAt: yield* DateTime.nowAsDate })
         .where(inArray(packs.id, [...packIds]))
         .pipe(Effect.orDie);
     });

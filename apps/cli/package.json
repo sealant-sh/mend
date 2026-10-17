@@ -53,6 +53,7 @@
     "@effect/vitest": "catalog:",
     "@mend/domain": "workspace:*",
     "@mend/network": "workspace:*",
+    "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
     "@mend/workspace-ssh": "workspace:*",
     "@types/node": "catalog:",

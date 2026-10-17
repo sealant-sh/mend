@@ -1,4 +1,3 @@
-import { assert, describe, it } from "@effect/vitest";
 import {
   ORCHESTRATION_PROTOCOL_HEADER,
   ORCHESTRATION_PROTOCOL_VERSION_TEXT,
@@ -16,10 +15,12 @@ import { NO_LIFECYCLE } from "../src/lifecycle.ts";
 import type { MendItem, MendProcess, MendProject, MendSession } from "../src/mend-workbench.ts";
 import { NO_NOTICES } from "../src/notices.ts";
 import { threadProjectionOf, TURN_ORDINAL_STRIDE } from "../src/thread-projection.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * Phase 1's thread (ADR 0012, "The surface"): one protocol session in full, its turns as runs,
@@ -214,9 +215,10 @@ describe("a thread", () => {
     ),
   );
 
-  it.live("catches up a watched thread's items after Mend's stream drops", () =>
+  it.effect("catches up a watched thread's items after Mend's stream drops", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
         const { workbench } = mend;
         workbench.addProject("project-1", "mend");
         workbench.addSession({ id: "session-1", projectId: "project-1" });
@@ -232,20 +234,26 @@ describe("a thread", () => {
             threadId: ThreadId.make("session-1"),
           }),
         );
-        yield* thread.next(
-          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        yield* TestClock.withLive(
+          thread.next(
+            (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+          ),
         );
 
         // The final answer lands while the gateway is not listening.
         workbench.dropStreams();
         workbench.updateItem(answer, { text: "The whole answer.", status: "completed" });
         workbench.setTurn(turn, "completed");
+        yield* timers.runOut("1 second", "the reconnect to Mend's event stream");
 
-        const caught = yield* thread.next(
-          turnItemEvent(
-            (item) => item.type === "assistant_message" && item.id === answer.id && !item.streaming,
+        const caught = yield* TestClock.withLive(
+          thread.next(
+            turnItemEvent(
+              (item) =>
+                item.type === "assistant_message" && item.id === answer.id && !item.streaming,
+            ),
+            "10 seconds",
           ),
-          "10 seconds",
         );
         assert.isTrue(
           caught.event.type === "turn-item.updated" &&
@@ -253,7 +261,7 @@ describe("a thread", () => {
             caught.event.payload.text === "The whole answer.",
         );
       }),
-    ),
+    ).pipe(withGatewayTimers),
   );
 
   it.live("answers a thread the person does not have with t3code's typed refusals", () =>

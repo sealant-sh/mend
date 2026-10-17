@@ -1,17 +1,177 @@
 name: CI
 
+# No push trigger: every commit reaches main through the merge queue, whose merge_group run tests
+# exactly that commit and is the trusted cache writer. It runs what the group's pull requests
+# affect, or the full graph when they touch anything Turbo cannot attribute to a package; the
+# nightly run tests everything (docs/operations/merge-queue.md).
 on:
-  push:
-    branches: [main]
   pull_request:
+  merge_group:
+    types: [checks_requested]
+  # Version Packages pull requests need an explicit dispatch because their bot-authored
+  # pull_request runs stop for the repository's contributor approval policy before any job starts.
+  # The release runs it on the head it will merge (docs/operations/next-channel.md, step 8).
+  workflow_dispatch:
+  schedule:
+    - cron: "23 2 * * *"
 
 # Checks read the repository and write nothing.
+# Box runners provide a persistent pnpm store; setup-node must not restore a remote copy.
 permissions:
   contents: read
 
+env:
+  TURBO_SCM_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+
+# A pull request and a dispatched branch (such as the Version PR) keep only their newest run: an
+# older head's result is never what the required check reads.
+concurrency:
+  group:
+    ${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name ==
+    'workflow_dispatch' && github.ref) || github.run_id }}
+  cancel-in-progress:
+    ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+
 jobs:
-  checks:
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+  # `changes` and `checks` are seconds of work on GitHub's arm64 runners, free for this public
+  # repository, so neither waits for a box slot. The box serves Core and sealantd too, and an
+  # aggregate job queues only when its last lane finishes: on the box, merge group 38746126993's
+  # 10-second `checks` waited 13.4 minutes behind their runs (docs/operations/merge-queue.md).
+  changes:
+    runs-on: ubuntu-24.04-arm
+    env:
+      CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
+    outputs:
+      mobile: ${{ steps.scope.outputs.mobile }}
+      packaging: ${{ steps.scope.outputs.packaging }}
+      graph: ${{ steps.scope.outputs.graph }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Verify local CI selection
+        run:
+          node --test --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
+          --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
+          scripts/ci-scope.test.mjs
+      - id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            node scripts/ci-scope.mjs "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT_NAME" = merge_group ]; then
+            node scripts/ci-scope.mjs --merge-group "$QUEUE_BASE_SHA" "$QUEUE_HEAD_SHA" >> "$GITHUB_OUTPUT"
+          else
+            node scripts/ci-scope.mjs --all >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Archive per-file test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-${{ github.job }}
+          path: .ci-reports/test/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+  static:
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: [self-hosted, box, linux, x64]
+    env:
+      CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
+      # A merge group's graph from the changes job: affected or full (scripts/ci-scope.mjs).
+      CI_GRAPH: ${{ needs.changes.outputs.graph }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - run: pnpm install --frozen-lockfile
+      - name: Configure Turbo cache and runtime identity
+        run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
+      - name: Exercise CI guards against both installed Vitest versions
+        run: pnpm --filter @mend/test-ci test:integration
+      - name: Verify CI selection and required results
+        run:
+          node --test --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
+          --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
+          scripts/ci-scope.test.mjs scripts/test-only-imports.test.mjs
+          scripts/remove-package-tests.test.mjs scripts/ci-workflow.test.mjs
+          scripts/ci-turbo.test.mjs scripts/ci-cache.test.mjs
+      - name: Verify timing analysis against source budgets
+        run:
+          node --test --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
+          --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
+          scripts/ci-timings.test.mjs scripts/ci-runtime-timings.test.mjs
+      # The publisher checks its tarball with an inline copy of normalize-npm-tarball.mjs --check, so
+      # it runs no repository code beside its id-token. The two copies can drift from either side, so
+      # their parity test runs on every pull request, whatever the change's scope.
+      - name: Verify the publisher's inline tarball check against the normalizer
+        run:
+          node --test --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
+          --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
+          scripts/republish.test.mjs scripts/normalize-npm-tarball.test.mjs
+          scripts/republish.registry.test.mjs scripts/republish.floor.test.mjs
+          scripts/republish.overrides.test.mjs scripts/ci-node-reporter.test.mjs
+          scripts/ci-test-report.test.mjs
+      - run: node scripts/ci-shards.mjs --check
+      # Every install reads the committed lockfile, so a package published after the commit (a
+      # Sealant prerelease included) never drifts in. The brackets keep this step from matching
+      # itself.
+      - name: Installs stay bound to the lockfile
+        run: |
+          if git grep -nE 'lockfile[=]false|PNPM_CONFIG_LOCKFIL[E]|no-frozen-lockfil[e]' -- \
+            .github Dockerfile 'apps/*/Dockerfile' 'scripts/*.sh' 'tooling/**'; then
+            echo "::error::Install with --frozen-lockfile, not without the lockfile."
+            exit 1
+          fi
+      # Cached builds restore generated routes before their own typecheck.
+      - run: node scripts/ci-turbo.mjs build typecheck lint
+      - run: pnpm format:check
+      # This was unconditional in checks, so it remains independent of packaging scope.
+      - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml
+
+      - name: Archive Turbo task hashes and cache outcomes
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: turbo-${{ github.job }}
+          path: .turbo/runs/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Archive per-file test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-${{ github.job }}
+          path: .ci-reports/test/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test-engines:
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: [self-hosted, box, linux, x64]
     services:
       postgres:
         image: postgres:17
@@ -25,16 +185,180 @@ jobs:
           --health-cmd "pg_isready -U mend -d mend" --health-interval 5s --health-timeout 5s
           --health-retries 10
     env:
+      CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
+      # A merge group's graph from the changes job: affected or full (scripts/ci-scope.mjs).
+      CI_GRAPH: ${{ needs.changes.outputs.graph }}
       MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
+      # Bound both levels on an 8-vCPU / 7-GiB runner, including its Postgres.
+      # The shard runner permits two packages; Vitest 3 and 5 each get three workers.
+      VITEST_MAX_THREADS: "3"
+      VITEST_MAX_FORKS: "3"
+      VITEST_MAX_WORKERS: "3"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - run: pnpm install --frozen-lockfile
+      - name: Configure Turbo cache and runtime identity
+        run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
+      - name: Build isolated zsh fixture for default shell-profile tests
+        run:
+          docker build -t mend-shell-profile-test:alpine-3.22
+          packages/sessions/test/fixtures/shell-profile
+      - name: Tests including required PostgreSQL repositories, migrations and jobs
+        run: node scripts/ci-shards.mjs engines
+
+      - name: Archive Turbo task hashes and cache outcomes
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: turbo-${{ github.job }}
+          path: .turbo/runs/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Archive per-file test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-${{ github.job }}
+          path: .ci-reports/test/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test-clients-a:
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: [self-hosted, box, linux, x64]
+    env:
+      CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
+      # A merge group's graph from the changes job: affected or full (scripts/ci-scope.mjs).
+      CI_GRAPH: ${{ needs.changes.outputs.graph }}
+      VITEST_MAX_THREADS: "3"
+      VITEST_MAX_FORKS: "3"
+      VITEST_MAX_WORKERS: "3"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - run: pnpm install --frozen-lockfile
+      - name: Configure Turbo cache and runtime identity
+        run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
+      # Desktop's font-browser regression launches Chromium unconditionally in this job.
+      - name: Install Chromium for desktop browser tests
+        run:
+          pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
+      # The old checks build copied this tracked installer before marketing tests.
+      - name: Prepare the marketing installer in this checkout
+        run: node apps/marketing/scripts/sync-install-script.mjs
+      - name: CLI, client and shared-library tests
+        run: node scripts/ci-shards.mjs clients-a
+      - name: AWS shell regression tests with local command fixtures
+        run: pnpm run test:aws-shell
+      - name: Live S3 contracts on disposable Garage and strict MinIO fixtures
+        run: pnpm run test:s3-contract
+      - name: CI shard process supervision regressions
+        run:
+          node --test --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
+          --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
+          scripts/ci-shards.test.mjs
+
+      - name: Archive Turbo task hashes and cache outcomes
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: turbo-${{ github.job }}
+          path: .turbo/runs/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Archive per-file test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-${{ github.job }}
+          path: .ci-reports/test/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test-clients-b:
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: [self-hosted, box, linux, x64]
+    env:
+      CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
+      # A merge group's graph from the changes job: affected or full (scripts/ci-scope.mjs).
+      CI_GRAPH: ${{ needs.changes.outputs.graph }}
+      VITEST_MAX_THREADS: "3"
+      VITEST_MAX_FORKS: "3"
+      VITEST_MAX_WORKERS: "3"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - run: pnpm install --frozen-lockfile
+      - name: Configure Turbo cache and runtime identity
+        run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
+      - name: CLI, client and shared-library tests
+        run: node scripts/ci-shards.mjs clients-b
+
+      - name: Archive Turbo task hashes and cache outcomes
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: turbo-${{ github.job }}
+          path: .turbo/runs/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Archive per-file test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-${{ github.job }}
+          path: .ci-reports/test/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+  packaging:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.packaging != 'false' }}
+    runs-on: [self-hosted, box, linux, x64]
+    env:
+      CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
+      # The tree no longer matches the commit once package tests are removed: never write a cache.
+      TURBO_CACHE: local:r,remote:r
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-          cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The scope skips this lane for a change confined to package tests, so the lane must not
+      # read them: delete them before any lane step (scripts/remove-package-tests.mjs).
+      - name: Remove package tests this lane may not read
+        run: node scripts/remove-package-tests.mjs
       - name: Install OpenTofu for evaluated offline AWS gate tests
         uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
         with:
@@ -49,61 +373,104 @@ jobs:
       - name: Install Chromium for verification evidence tests
         run:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
-      # Every install reads the committed lockfile, so a package published after the commit (a
-      # Sealant prerelease included) never drifts in. The brackets keep this step from matching
-      # itself.
-      - name: Installs stay bound to the lockfile
+      - name: Require the packaging tools and Docker daemon
         run: |
-          if git grep -nE 'lockfile[=]false|PNPM_CONFIG_LOCKFIL[E]|no-frozen-lockfil[e]' -- \
-            .github Dockerfile 'apps/*/Dockerfile' 'scripts/*.sh' 'tooling/**'; then
-            echo "::error::Install with --frozen-lockfile, not without the lockfile."
-            exit 1
-          fi
-      # Build first: the vite builds generate the gitignored routeTree.gen.ts
-      # files that typecheck needs — CI was red for weeks on exactly this.
-      - run: pnpm build
-      - run: pnpm typecheck
-      - run: pnpm lint
-      - run: pnpm format:check
-      # PostgreSQL suites create their own databases. Never reuse a cached local skipped run.
-      - name: Tests including required PostgreSQL repositories, migrations and jobs
-        run: pnpm exec turbo test --force
-      - name: AWS shell regression tests with local command fixtures
-        run: pnpm run test:aws-shell
-      - name: Live S3 contracts on disposable Garage and strict MinIO fixtures
-        run: pnpm run test:s3-contract
+          docker info > /dev/null
+          docker compose version
+          helm version --short
+          tofu version
       - name:
           Check packaging contracts, supervision, acceptance helpers, the mirrors, and the Helm
           chart
         run:
-          node --test scripts/bundle-packaging.test.mjs scripts/process-supervisor.test.mjs
+          node --test --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
+          --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
+          scripts/bundle-packaging.test.mjs scripts/process-supervisor.test.mjs
           scripts/check-packaged-server.test.mjs scripts/release-publication.test.mjs
-          scripts/packaged-ssh-acceptance.test.mjs scripts/packaged-git-access-acceptance.test.mjs
+          scripts/ghcr-staging-cleanup.test.mjs scripts/upgrade-window.test.mjs
+          scripts/check-split-tier.test.mjs scripts/packaged-ssh-acceptance.test.mjs
+          scripts/packaged-git-access-acceptance.test.mjs
           scripts/packaged-dotfiles-acceptance.test.mjs scripts/helm-chart.test.mjs
           scripts/edge-overlay.test.mjs scripts/aws-compose.test.mjs scripts/aws-tofu.test.mjs
-          scripts/next-version.test.mjs scripts/sealant-pins.test.mjs
-          scripts/check-release-pins.test.mjs scripts/mend-migrations.test.mjs
-          scripts/republish.test.mjs scripts/preview-deploy.test.mjs scripts/bench/*.test.mjs
-          scripts/mirrors-runtime.test.mjs scripts/verify-stack/lib.test.mjs
-          scripts/verify-stack/lifecycle.test.mjs scripts/verify-stack/lifecycle.e2e.test.mjs
+          scripts/next-version.test.mjs scripts/next-version.histories.test.mjs
+          scripts/sealant-pins.test.mjs scripts/check-release-pins.test.mjs
+          scripts/mend-migrations.test.mjs scripts/release-manifest.test.mjs
+          scripts/preview-deploy.test.mjs scripts/bench/*.test.mjs scripts/mirrors-runtime.test.mjs
+          scripts/verify-stack/lib.test.mjs scripts/verify-stack/lifecycle.test.mjs
+          scripts/verify-stack/lifecycle.e2e.test.mjs
+          scripts/verify-stack/lifecycle.locking.e2e.test.mjs
+          scripts/verify-stack/lifecycle.resources.e2e.test.mjs
+          scripts/verify-stack/lifecycle.recording.e2e.test.mjs
           scripts/vscode-acceptance-evidence.test.mjs .claude/skills/verify/scripts/leaks.test.mjs
+          .claude/skills/verify/scripts/leaks.closed-roots.test.mjs
+          .claude/skills/verify/scripts/leaks.frames.test.mjs
           .claude/skills/verify/scripts/slots.test.mjs .claude/skills/verify/scripts/guard.test.mjs
           .claude/skills/verify/scripts/secrets.test.mjs
           .claude/skills/verify/scripts/local-outer.test.mjs
-      - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml
+
+      - name: Archive per-file test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-${{ github.job }}
+          path: .ci-reports/test/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
 
   # The phone app's web build is what verification runs drive. It must bundle, render statically,
   # and load in a browser from both the export and the dev server (apps/mobile/scripts/check-web.mjs).
   mobile-web:
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.mobile != 'false' }}
+    runs-on: [self-hosted, box, linux, x64]
+    env:
+      # The tree no longer matches the commit once package tests are removed: never write a cache.
+      TURBO_CACHE: local:r,remote:r
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-          cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The scope skips this lane for a change confined to package tests, so the lane must not
+      # read them: delete them before any lane step (scripts/remove-package-tests.mjs).
+      - name: Remove package tests this lane may not read
+        run: node scripts/remove-package-tests.mjs
       - run:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
       - run: pnpm --filter @mend/mobile check:web
+
+  # Retain the required check name. A missing classifier or skipped required job
+  # must fail, even when every job that did run passed.
+  checks:
+    needs: [changes, static, test-engines, test-clients-a, test-clients-b, packaging, mobile-web]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04-arm
+    steps:
+      # The gate reads only `needs`: no checkout, and the runner image's Node runs it.
+      - name: Require every selected CI job
+        env:
+          CI_JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node --input-type=module <<'NODE'
+          const jobs = JSON.parse(process.env.CI_JOB_RESULTS);
+          for (const name of ["changes", "static", "test-engines", "test-clients-a", "test-clients-b"]) {
+            if (jobs[name]?.result !== "success") {
+              throw new Error(`${name} must succeed, observed ${jobs[name]?.result ?? "missing"}`);
+            }
+          }
+          for (const [name, output] of [["packaging", "packaging"], ["mobile-web", "mobile"]]) {
+            const selected = jobs.changes.outputs?.[output];
+            if (selected !== "true" && selected !== "false") {
+              throw new Error(`Missing or invalid ${output} selection: ${selected}`);
+            }
+            const result = jobs[name]?.result;
+            if (result !== "success" && !(selected === "false" && result === "skipped")) {
+              throw new Error(`${name} was selected=${selected}, observed ${result ?? "missing"}`);
+            }
+          }
+          console.log("All required CI jobs passed.");
+          NODE

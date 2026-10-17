@@ -11,10 +11,11 @@ import {
 } from "@mend/db";
 import { InvitationId, OrganizationId } from "@mend/domain";
 import { Invitation, Organization, OrganizationMember } from "@mend/domain/workbench";
-import { Effect, Layer, ManagedRuntime, Option } from "effect";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
+import { Clock, Context, Effect, Layer, ManagedRuntime, Option } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect } from "vitest";
 
 import { ProjectAccess } from "../access.ts";
 import { ExposureConfig, type ExposureOutcome } from "../exposure.ts";
@@ -176,7 +177,7 @@ const runtime = ManagedRuntime.make(all);
 const context = await runtime.runPromise(Effect.context<Layer.Success<typeof all>>());
 const { handler, dispose } = HttpRouter.toWebHandler(apiLayer, { disableLogger: true });
 
-const call = (user: string, method: string, path: string, body?: unknown) =>
+const call = (user: string, method: string, path: string, body?: unknown, clock?: Clock.Clock) =>
   handler(
     new Request(`http://api.internal/api${path}`, {
       method,
@@ -186,15 +187,13 @@ const call = (user: string, method: string, path: string, body?: unknown) =>
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }),
-    context,
+    clock === undefined ? context : Context.add(context, Clock.Clock, clock),
   );
 
 afterAll(async () => {
   await dispose();
   await runtime.dispose();
 });
-
-afterEach(() => vi.useRealTimers());
 
 beforeEach(() => {
   organizationRows.clear();
@@ -289,43 +288,50 @@ describe("operator recovery (docs/adr/0003)", () => {
     expect({ writes, audited }).toEqual({ writes: [], audited: [] });
   });
 
-  it("invites an owner into the selected organization with a normalized email and thirty-day cap", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(NOW);
-    const response = await call(
-      "alice",
-      "POST",
-      `/operator/organizations/${globex.id}/invitations`,
-      {
-        email: "  New.Owner@Example.invalid  ",
-        expiresInDays: 90,
-      },
-    );
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      path: "/join/operator-invite-token",
-      expiresAt: "2026-10-17T10:00:00.000Z",
-    });
-    expect(minted).toEqual([
-      {
-        organizationId: globex.id,
-        role: "owner",
-        email: "new.owner@example.invalid",
-        createdByUserId: "alice",
-        expiresAt: new Date("2026-10-17T10:00:00.000Z"),
-      },
-    ]);
-    expect(audited).toEqual([
-      {
-        organizationId: globex.id,
-        actorUserId: "alice",
-        action: "invitation.created",
-        subjectType: "invitation",
-        subjectId: "operator-invitation",
-        data: { role: "owner", emailBound: true, byOperator: true },
-      },
-    ]);
-  });
+  it.effect(
+    "invites an owner into the selected organization with a normalized email and thirty-day cap",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW.getTime());
+        const clock = yield* Clock.clockWith(Effect.succeed);
+        const response = yield* Effect.promise(() =>
+          call(
+            "alice",
+            "POST",
+            `/operator/organizations/${globex.id}/invitations`,
+            {
+              email: "  New.Owner@Example.invalid  ",
+              expiresInDays: 90,
+            },
+            clock,
+          ),
+        );
+        expect(response.status).toBe(200);
+        expect(yield* Effect.promise(() => response.json())).toEqual({
+          path: "/join/operator-invite-token",
+          expiresAt: "2026-10-17T10:00:00.000Z",
+        });
+        expect(minted).toEqual([
+          {
+            organizationId: globex.id,
+            role: "owner",
+            email: "new.owner@example.invalid",
+            createdByUserId: "alice",
+            expiresAt: new Date("2026-10-17T10:00:00.000Z"),
+          },
+        ]);
+        expect(audited).toEqual([
+          {
+            organizationId: globex.id,
+            actorUserId: "alice",
+            action: "invitation.created",
+            subjectType: "invitation",
+            subjectId: "operator-invitation",
+            data: { role: "owner", emailBound: true, byOperator: true },
+          },
+        ]);
+      }),
+  );
 
   it.each([
     { id: "missing-org", email: "valid@example.invalid", status: 404 },

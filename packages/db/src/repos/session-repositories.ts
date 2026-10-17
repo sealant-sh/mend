@@ -13,7 +13,7 @@ import {
   type SessionRepositoryState,
 } from "@mend/domain/workbench";
 import { and, asc, eq } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -220,7 +220,7 @@ export const SessionRepositoriesRepoLive: Layer.Layer<
       state: SessionRepositoryState,
       error: string | null,
     ) {
-      const now = new Date();
+      const now = yield* DateTime.nowAsDate;
       const [row] = yield* db
         .update(sessionRepositories)
         .set({
@@ -265,7 +265,7 @@ export const SessionRepositoriesRepoMemory: Layer.Layer<SessionRepositoriesRepo>
     const list = () => [...rows.values()];
     return {
       create: (input) =>
-        Effect.suspend(() => {
+        Effect.flatMap(DateTime.nowAsDate, (now) => {
           const taken = list().some(
             (row) =>
               row.sessionId === input.sessionId &&
@@ -276,7 +276,6 @@ export const SessionRepositoriesRepoMemory: Layer.Layer<SessionRepositoriesRepo>
               new SessionRepositoryTakenError({ sessionId: input.sessionId, name: input.name }),
             );
           }
-          const now = new Date();
           const row = new SessionRepository({
             id: SessionRepositoryId.make(crypto.randomUUID()),
             ...input,
@@ -311,10 +310,9 @@ export const SessionRepositoriesRepoMemory: Layer.Layer<SessionRepositoriesRepo>
       listForProject: (projectId) =>
         Effect.sync(() => list().filter((row) => row.projectId === projectId)),
       setState: (id, state, error) =>
-        Effect.sync(() => {
+        Effect.map(DateTime.nowAsDate, (now) => {
           const row = rows.get(id);
           if (row === undefined) return;
-          const now = new Date();
           rows.set(
             id,
             new SessionRepository({

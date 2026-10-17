@@ -2,7 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import { SessionId, WorktreeId, type ProjectId, type Sha } from "@mend/domain";
 import { Worktree } from "@mend/domain/workbench";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -146,7 +146,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
       ) {
         yield* db
           .update(worktrees)
-          .set({ baseSha, baseRef, updatedAt: new Date() })
+          .set({ baseSha, baseRef, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(worktrees.id, id))
           .pipe(Effect.orDie);
       });
@@ -158,7 +158,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
       ) {
         const [row] = yield* db
           .update(worktrees)
-          .set({ name, branch, updatedAt: new Date() })
+          .set({ name, branch, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(worktrees.id, id))
           .returning({ projectId: worktrees.projectId })
           .pipe(Effect.orDie);

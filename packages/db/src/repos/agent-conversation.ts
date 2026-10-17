@@ -35,7 +35,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
@@ -293,7 +293,7 @@ export const cancelOpenTurnRows = Effect.fn("AgentConversationRepo.cancelOpenTur
   turnIds: ReadonlyArray<AgentTurnId>,
 ) {
   if (turnIds.length === 0) return [];
-  const now = new Date();
+  const now = yield* DateTime.nowAsDate;
   const rows = yield* db
     .update(agentRequests)
     .set({
@@ -528,7 +528,7 @@ export const AgentConversationRepoLive: Layer.Layer<
               .limit(1)
               .for("update", { skipLocked: true });
             if (queued === undefined) return null;
-            const now = new Date();
+            const now = yield* DateTime.nowAsDate;
             const [row] = yield* tx
               .update(agentTurns)
               .set({ status: "running", startedAt: now })
@@ -607,7 +607,7 @@ export const AgentConversationRepoLive: Layer.Layer<
                 billedUserId: payer.userId,
                 billedAccountId: payer.accountId,
                 billedAccountName: payer.accountName,
-                startedAt: new Date(),
+                startedAt: yield* DateTime.nowAsDate,
               })
               .returning();
             if (row === undefined) return yield* Effect.die("harness turn insert returned no row");
@@ -715,7 +715,7 @@ export const AgentConversationRepoLive: Layer.Layer<
     ) {
       const [row] = yield* db
         .update(agentTurns)
-        .set({ status: "failed", error, endedAt: new Date() })
+        .set({ status: "failed", error, endedAt: yield* DateTime.nowAsDate })
         .where(eq(agentTurns.id, id))
         .returning()
         .pipe(Effect.orDie);
@@ -744,7 +744,7 @@ export const AgentConversationRepoLive: Layer.Layer<
     ) {
       const [row] = yield* db
         .update(agentTurns)
-        .set({ landingClaimedAt: new Date() })
+        .set({ landingClaimedAt: yield* DateTime.nowAsDate })
         .where(
           and(
             eq(agentTurns.id, id),
@@ -782,7 +782,7 @@ export const AgentConversationRepoLive: Layer.Layer<
     ) {
       const [row] = yield* db
         .update(agentTurns)
-        .set({ status, usage, error, endedAt: new Date() })
+        .set({ status, usage, error, endedAt: yield* DateTime.nowAsDate })
         .where(
           and(eq(agentTurns.sessionId, sessionId), eq(agentTurns.providerTurnId, providerTurnId)),
         )
@@ -841,7 +841,7 @@ export const AgentConversationRepoLive: Layer.Layer<
                   title: input.title,
                   text: input.text,
                   data: input.data,
-                  updatedAt: new Date(),
+                  updatedAt: yield* DateTime.nowAsDate,
                 })
                 .where(eq(agentItems.id, existing.id))
                 .returning();
@@ -1018,7 +1018,7 @@ export const AgentConversationRepoLive: Layer.Layer<
             decision: "decision" in response ? response.decision : null,
             answers: "answers" in response ? response.answers : null,
             decidedBy,
-            decidedAt: new Date(),
+            decidedAt: yield* DateTime.nowAsDate,
             responseDelivery: "sending",
           })
           .where(
@@ -1084,7 +1084,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       function* (processId: SessionProcessId, providerRequestId: string) {
         const rows = yield* db
           .update(agentRequests)
-          .set({ status: "resolved", decidedAt: new Date() })
+          .set({ status: "resolved", decidedAt: yield* DateTime.nowAsDate })
           .where(
             and(
               eq(agentRequests.processId, processId),
@@ -1150,7 +1150,7 @@ export const AgentConversationRepoLive: Layer.Layer<
               .from(agentItems)
               .where(eq(agentItems.sessionId, sessionId));
             let seq = position?.value ?? 0;
-            const now = new Date();
+            const now = yield* DateTime.nowAsDate;
             for (const task of running) {
               seq += 1;
               yield* tx
@@ -1172,7 +1172,7 @@ export const AgentConversationRepoLive: Layer.Layer<
     const cancelOpenForProcess = Effect.fn("AgentConversationRepo.cancelOpenForProcess")(function* (
       processId: SessionProcessId,
     ) {
-      const now = new Date();
+      const now = yield* DateTime.nowAsDate;
       const rows = yield* db
         .update(agentRequests)
         .set({
@@ -1228,7 +1228,7 @@ export const AgentConversationRepoLive: Layer.Layer<
               .where(eq(agentItems.sessionId, sessionId));
             let ordinal = (turnPosition?.value ?? -1) + 1;
             let seq = (itemPosition?.value ?? 0) + 1;
-            const now = new Date();
+            const now = yield* DateTime.nowAsDate;
             let count = 0;
             for (const turn of turns) {
               if (seen.has(turn.providerTurnId)) continue;
@@ -1337,7 +1337,7 @@ export const AgentConversationRepoLive: Layer.Layer<
         .update(sessionProcesses)
         .set({
           protocolOutputSeq: cursor.nextSequence,
-          updatedAt: new Date(),
+          updatedAt: yield* DateTime.nowAsDate,
         })
         .where(
           and(

@@ -70,9 +70,10 @@
   "devDependencies": {
     "@babel/plugin-transform-object-rest-spread": "^7.29.7",
     "@mend/api-contracts": "workspace:*",
+    "@mend/test-ci": "workspace:*",
     "@types/react": "catalog:",
     "babel-preset-expo": "~57.0.5",
-    "playwright-core": "^1.64.0",
+    "playwright-core": "catalog:",
     "typescript": "~6.0.3",
     "vitest": "catalog:"
   }

@@ -2,7 +2,6 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { assert, describe, it } from "@effect/vitest";
 import {
   ORCHESTRATION_V2_WS_METHODS,
   ThreadId,
@@ -12,6 +11,7 @@ import {
 import * as Effect from "effect/Effect";
 
 import { makeReplayLog, makeSequencer } from "../src/replay.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
@@ -58,6 +58,7 @@ describe("replay after a sequence", () => {
           const session = mend.workbench.sessions.get("session-1");
           if (session !== undefined) session.label = "After";
           mend.workbench.emit({ type: "session", sessionId: "session-1", projectId: "project-1" });
+          // Real time: Mend's rename reaches the gateway over a real socket; nothing signals it
           yield* Effect.sleep("300 millis");
 
           yield* Effect.scoped(
@@ -112,6 +113,7 @@ describe("replay after a sequence", () => {
         );
         // The agent answers while the client is away.
         mend.workbench.addItem(turn, { kind: "assistant-message", text: "It reads tokens." });
+        // Real time: Mend's item reaches the gateway over a real socket; nothing signals it
         yield* Effect.sleep("300 millis");
 
         const resumed = yield* Effect.scoped(
@@ -175,11 +177,24 @@ describe("replay sizes as they go out (595-R2-N1)", () => {
             return (yield* thread.next(isThreadSnapshot)).snapshotSequence;
           }),
         );
+        // The first subscription is away; a second client observes the actual publication.
+        const { rpc: observerRpc } = yield* pairAndConnect(mend, "UTF8-OBSERVER");
+        const observer = yield* feed(
+          observerRpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
+        );
+        yield* observer.next(isThreadSnapshot);
         // 400,000 characters, 1.2 MB in UTF-8: past the 1 MiB a thread's replay keeps.
         const text = "漢".repeat(400_000);
         assert.isAbove(Buffer.byteLength(text), 1024 * 1024);
         mend.workbench.addItem(turn, { kind: "assistant-message", text });
-        yield* Effect.sleep("500 millis");
+        const published = yield* observer.next(
+          (item): item is Extract<Item, { kind: "event" }> =>
+            item.kind === "event" &&
+            item.event.type === "message.updated" &&
+            item.event.payload.role === "assistant" &&
+            item.event.payload.text === text,
+        );
+        assert.isAbove(published.sequence, before);
         const resumed = yield* Effect.scoped(
           Effect.gen(function* () {
             const thread = yield* feed(

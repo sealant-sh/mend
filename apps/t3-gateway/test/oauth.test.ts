@@ -1,10 +1,10 @@
-import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 
 import { BEARER_TTL_MS, GRANTED_SCOPES, WITHHELD_SCOPES } from "../src/auth.ts";
 import { forwardedChain } from "../src/http.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";
 

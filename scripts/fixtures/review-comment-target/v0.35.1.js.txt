@@ -1,0 +1,29 @@
+// v0.35.1: apps/api/src/routes/workbench.ts, the slice comment target check, verbatim but for indentation.
+const target = payload.target;
+const hasPath = target.oldPath !== null || target.newPath !== null;
+const hasNoLocation =
+target.side === null &&
+target.startLine === null &&
+target.endLine === null &&
+target.hunkContextHash === null;
+const fileExists = files.some(
+(file) => file.oldPath === target.oldPath && file.newPath === target.newPath,
+);
+const lineTargetComplete =
+target.side !== null &&
+target.startLine !== null &&
+target.endLine !== null &&
+target.hunkContextHash !== null;
+const targetValid =
+(!hasPath && hasNoLocation) ||
+(hasPath && hasNoLocation && fileExists) ||
+(hasPath &&
+lineTargetComplete &&
+lineAnchorExists(files, {
+oldPath: target.oldPath,
+newPath: target.newPath,
+side: target.side,
+startLine: target.startLine,
+endLine: target.endLine,
+hunkContextHash: target.hunkContextHash,
+}));

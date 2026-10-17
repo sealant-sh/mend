@@ -46,6 +46,7 @@ import {
   ownsComposeContainer,
   ownsWorkspaceContainer,
   readPrivateIdentity,
+  readImageIdentity,
   readPreviousCli,
   readUpgradeInputs,
   requestFailureEvidence,
@@ -2104,6 +2105,64 @@ test("image pin evidence rejects retags and runtime-only health version override
       version,
     ),
   );
+});
+
+test("image pin evidence rejects a stamped local image under the tag when CI verified another by digest", () => {
+  // The audit's probe: an image built locally, stamped with the candidate's version and tagged as
+  // ghcr.io/sealant-sh/mend:<version>, runs, because setup takes any local image with that tag.
+  // Its container, image and stamps agree with each other; only the verified ID tells it apart.
+  const version = "0.23.0";
+  const tag = `ghcr.io/sealant-sh/mend:${version}`;
+  const verified = `sha256:${"a".repeat(64)}`;
+  const local = {
+    Id: `sha256:${"b".repeat(64)}`,
+    Config: {
+      Env: [`MEND_VERSION=${version}`],
+      Labels: { "org.opencontainers.image.version": version },
+    },
+  };
+  const container = { Image: local.Id, Config: { Image: tag, Env: local.Config.Env } };
+  assert.doesNotThrow(() => assertImagePin(container, local, tag, version));
+  assert.throws(
+    () => assertImagePin(container, local, tag, version, verified),
+    /pulled or loaded by digest/,
+  );
+  const genuine = { ...local, Id: verified };
+  assert.doesNotThrow(() =>
+    assertImagePin({ ...container, Image: verified }, genuine, tag, version, verified),
+  );
+});
+
+const id = (c) => `sha256:${c.repeat(64)}`;
+
+test("digest identity requires each image ID it applies to; a local run keeps today's checks", () => {
+  const upgrade = { image: "ghcr.io/sealant-sh/mend:2.0.0", version: "2.0.0" };
+  assert.deepEqual(readImageIdentity({}, upgrade), { image: undefined, upgrade: undefined });
+  assert.deepEqual(readImageIdentity({ MEND_TEST_IMAGE_ID: id("a") }, undefined), {
+    image: id("a"),
+    upgrade: undefined,
+  });
+  const digest = { MEND_TEST_IMAGE_IDENTITY: "digest" };
+  assert.deepEqual(
+    readImageIdentity(
+      { ...digest, MEND_TEST_IMAGE_ID: id("a"), MEND_TEST_UPGRADE_IMAGE_ID: id("b") },
+      upgrade,
+    ),
+    { image: id("a"), upgrade: id("b") },
+  );
+  assert.deepEqual(readImageIdentity({ ...digest, MEND_TEST_IMAGE_ID: id("a") }, undefined), {
+    image: id("a"),
+    upgrade: undefined,
+  });
+  for (const [source, target] of [
+    [digest, undefined],
+    [{ ...digest, MEND_TEST_IMAGE_ID: id("a") }, upgrade],
+    [{ ...digest, MEND_TEST_UPGRADE_IMAGE_ID: id("b") }, upgrade],
+    [{ MEND_TEST_IMAGE_IDENTITY: "tag", MEND_TEST_IMAGE_ID: id("a") }, undefined],
+    [{ MEND_TEST_IMAGE_ID: "sha256:short" }, undefined],
+    [{ MEND_TEST_UPGRADE_IMAGE_ID: id("b") }, undefined],
+  ])
+    assert.throws(() => readImageIdentity(source, target), JSON.stringify(source));
 });
 
 test("upgrade retention changes only the generation and pin, never credentials or deployment", () => {

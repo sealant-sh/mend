@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   MessageId,
@@ -17,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
@@ -129,6 +129,7 @@ describe("archive", () => {
 
           // What was queued is held: nothing reaches Mend when the turn ends.
           mend.workbench.setTurn(open, "completed");
+          // Real time: rules out a send over the socket; no gateway timer runs under it
           yield* Effect.sleep("300 millis");
           assert.strictEqual(
             mend.workbench.calls.filter(
@@ -244,6 +245,7 @@ describe("archive", () => {
         );
         assert.strictEqual(tagOf(resumed), "OrchestrationV2DispatchCommandError");
         mend.workbench.setTurn(open, "completed");
+        // Real time: rules out a send over the socket; no gateway timer runs under it
         yield* Effect.sleep("400 millis");
         assert.strictEqual(
           mend.workbench.calls.filter(
@@ -280,6 +282,7 @@ describe("archive", () => {
           const { rpc } = yield* pairAndConnect(mend, "ARCHIVE-DURABLE-AFTER");
           const kept = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot]({});
           assert.strictEqual(kept.threads.length, 1);
+          // Real time: rules out a send over the socket; no gateway timer runs under it
           yield* Effect.sleep("400 millis");
           assert.strictEqual(
             mend.workbench.calls.filter(

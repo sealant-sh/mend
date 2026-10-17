@@ -8,7 +8,7 @@ import {
   piProfileFileBytes,
   validatePiProfileFilePath,
 } from "@mend/domain/workbench";
-import { Effect, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
 
 import {
   SKILLS_VACATE_PROGRAM,
@@ -106,7 +106,7 @@ export const planPiProfile = (profile: {
   };
 };
 
-/** A fresh kept directory for one delivery, relative to the harness home. */
+/** A fresh kept directory for one delivery. Effect callers supply Clock time; the default is for standalone callers. */
 export const piProfileKeptDir = (now: Date = new Date()): string =>
   path.posix.join(
     PI_PROFILE_KEPT_DIR,
@@ -244,32 +244,38 @@ export const materializePiProfile = (
   harnessHomePath: string,
   plan: PiProfilePlan | null,
 ): Effect.Effect<ReadonlyArray<SkillsVacateOutcome>, PiProfileDeliveryError> =>
-  Effect.tryPromise({
-    try: async () => {
-      // A harness home that was never made was never mounted: nothing here would reach pi.
-      await fs.access(harnessHomePath);
-      const [command, ...args] = preparePiProfileExec(harnessHomePath, piProfileKeptDir(), plan);
-      const prepared = spawnSync(command ?? "sh", args, { encoding: "utf8" });
-      const outcomes = parseSkillsVacateOutcomes(prepared.stdout ?? "");
-      if (prepared.status !== 0) {
-        throw new Error(`could not clear ${PI_PROFILE_HOME_DIR}: ${prepared.stderr ?? ""}`);
-      }
-      if (plan === null) return outcomes;
-      // As the workspace writer does (`workspace-files.ts`): directories 0755, files 0644.
-      for (const file of piProfileFilesToWrite(plan, outcomes)) {
-        const filePath = path.join(harnessHomePath, file.path);
-        await fs.mkdir(path.dirname(filePath), { recursive: true });
-        await fs.chmod(path.dirname(filePath), 0o755);
-        await fs.writeFile(filePath, file.bytes, { mode: 0o644 });
-        await fs.chmod(filePath, 0o644);
-      }
-      return outcomes;
-    },
-    catch: (error) =>
-      new PiProfileDeliveryError({
-        message: `the pi profile could not be written into the harness home: ${String(error)}`,
-      }),
-  });
+  Clock.clockWith((clock) =>
+    Effect.tryPromise({
+      try: async () => {
+        // A harness home that was never made was never mounted: nothing here would reach pi.
+        await fs.access(harnessHomePath);
+        const [command, ...args] = preparePiProfileExec(
+          harnessHomePath,
+          piProfileKeptDir(new Date(clock.currentTimeMillisUnsafe())),
+          plan,
+        );
+        const prepared = spawnSync(command ?? "sh", args, { encoding: "utf8" });
+        const outcomes = parseSkillsVacateOutcomes(prepared.stdout ?? "");
+        if (prepared.status !== 0) {
+          throw new Error(`could not clear ${PI_PROFILE_HOME_DIR}: ${prepared.stderr ?? ""}`);
+        }
+        if (plan === null) return outcomes;
+        // As the workspace writer does (`workspace-files.ts`): directories 0755, files 0644.
+        for (const file of piProfileFilesToWrite(plan, outcomes)) {
+          const filePath = path.join(harnessHomePath, file.path);
+          await fs.mkdir(path.dirname(filePath), { recursive: true });
+          await fs.chmod(path.dirname(filePath), 0o755);
+          await fs.writeFile(filePath, file.bytes, { mode: 0o644 });
+          await fs.chmod(filePath, 0o644);
+        }
+        return outcomes;
+      },
+      catch: (error) =>
+        new PiProfileDeliveryError({
+          message: `the pi profile could not be written into the harness home: ${String(error)}`,
+        }),
+    }),
+  );
 
 /**
  * Runs before pi starts in a session (`PI_SEED`), with pi's agent directory as `argv[1]`, and does

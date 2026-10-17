@@ -32,7 +32,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { posix } from "node:path";
 
-import { Effect, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
 
 import { savedDirOf } from "./harness-layout.ts";
 import { HARNESS_HOME_MOUNT_PATH } from "./harness-state.ts";
@@ -162,7 +162,7 @@ export const checkPastedImage = Effect.fn("checkPastedImage")(function* (
   }
   const name = pastedImageName(
     mediaType,
-    options.now ?? new Date(),
+    options.now ?? new Date(yield* Clock.currentTimeMillis),
     options.nonce ?? Math.random().toString(16).slice(2, 6).padEnd(4, "0"),
   );
   return { mediaType, name } satisfies CheckedPastedImage;

@@ -9,6 +9,7 @@
     "./testing": "./test/capture-fixture.ts"
   },
   "scripts": {
+    "bench:capture-verification": "vitest run --config vitest.performance.config.ts",
     "lint": "oxlint . --no-error-on-unmatched-pattern",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsgo -p tsconfig.json --noEmit"
@@ -21,6 +22,7 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
     "typescript": "catalog:",

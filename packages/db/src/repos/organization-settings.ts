@@ -1,7 +1,7 @@
 import { inheritedOrganizationSettings, OrganizationSettings, WorkspaceImage } from "@mend/domain";
 import type { OrganizationId } from "@mend/domain";
 import { eq } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -98,7 +98,7 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
           .values({ organizationId, ...values })
           .onConflictDoUpdate({
             target: organizationSettingsTable.organizationId,
-            set: { ...values, updatedAt: new Date() },
+            set: { ...values, updatedAt: yield* DateTime.nowAsDate },
           })
           .pipe(Effect.orDie);
         return settings;
@@ -126,7 +126,7 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
               const values = yield* columns(next);
               yield* tx
                 .update(organizationSettingsTable)
-                .set({ ...values, updatedAt: new Date() })
+                .set({ ...values, updatedAt: yield* DateTime.nowAsDate })
                 .where(eq(organizationSettingsTable.organizationId, organizationId));
               return next;
             }),

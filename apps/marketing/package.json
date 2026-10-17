@@ -33,6 +33,7 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "catalog:",
+    "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
     "@tanstack/devtools-vite": "catalog:",
     "@types/node": "catalog:",

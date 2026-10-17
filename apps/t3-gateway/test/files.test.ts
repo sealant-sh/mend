@@ -1,4 +1,3 @@
-import { assert, describe, it } from "@effect/vitest";
 import { WS_METHODS } from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -7,6 +6,7 @@ import * as Option from "effect/Option";
 
 import { entriesOf, listEntries, matchScore, searchEntries } from "../src/files.ts";
 import { highlightLines } from "../src/highlight.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
@@ -263,6 +263,7 @@ describe("matching", () => {
       const line = `${"a".repeat(27)}!a`;
       const query = { query: "(a+)+$", caseSensitive: true, wholeWord: false, useRegex: true };
       let ticks = 0;
+      // Real time: counts the event loop's real ticks while the 250 ms budget runs out
       const timer = setInterval(() => {
         ticks += 1;
       }, 10);

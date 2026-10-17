@@ -2,7 +2,6 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { assert, describe, it } from "@effect/vitest";
 import {
   WS_METHODS,
   CommandId,
@@ -26,10 +25,12 @@ import { mendAnswersOf, mendDecisionOf } from "../src/commands.ts";
 import type { MendCommand } from "../src/mend-client.ts";
 import type { QueueTimings } from "../src/queue.ts";
 import { openGatewayState } from "../src/state.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer, type LaunchObserver } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * Phase 1's commands (ADR 0012, "The surface"): a follow-up, also after the idle stop; the
@@ -124,6 +125,7 @@ describe("message.dispatch", () => {
           mend.workbench.setTurn(open, "completed");
           // A second pointer while the first read is under way: its read starts once that one
           // lands, around when "First" is sent, and may answer from before Mend took it.
+          // Real time: the first read is in flight on the fake Mend's 300 ms setTimeout
           yield* Effect.sleep("100 millis");
           mend.workbench.emit({
             type: "agent-conversation",
@@ -132,6 +134,7 @@ describe("message.dispatch", () => {
           });
           yield* eventually(() => posts(mend, "/turns").length === 1, "the first message");
           // "First" runs in Mend: nothing else goes out, whatever read lands late.
+          // Real time: late reads land on the fake Mend's 300 ms setTimeouts; nothing may go out
           yield* Effect.sleep("1500 millis");
           assert.strictEqual(posts(mend, "/turns").length, 1);
           mend.workbench.turnsReadDelayMs = 0;
@@ -302,6 +305,7 @@ describe("review round 1", () => {
             }),
           );
           // The client is gone for longer than an idle hub lives.
+          // Real time: the gateway must take the real socket close before the idle window counts
           yield* Effect.sleep("800 millis");
           mend.workbench.setTurn(turn, "completed");
           yield* eventually(() => posts(mend, "/turns").length === 1, "the queued turn");
@@ -331,6 +335,7 @@ describe("review round 1", () => {
           message("session-1", "message-doomed", "Try this"),
         );
         yield* eventually(() => posts(mend, "/launch").length === 1, "the launch");
+        // Real time: the launch's answer reaches the gateway over a socket; nothing signals it
         yield* Effect.sleep("200 millis");
         // Provisioning fails after the launch answered.
         mend.workbench.failSession("session-1", "launch failed: Transport error (POST /v1/users)");
@@ -393,6 +398,7 @@ describe("review round 1", () => {
         });
         yield* thread.next(runEvent((run) => run.id === runId && run.status === "cancelled"));
         // The agent comes up; nothing is sent, and no turn is interrupted.
+        // Real time: the agent comes up on the fake Mend's 800 ms setTimeout; nothing may go out
         yield* Effect.sleep("1500 millis");
         assert.strictEqual(posts(mend, "/turns").length, 0);
         assert.strictEqual(posts(mend, "/interrupt").length, 0);
@@ -414,6 +420,7 @@ describe("review round 1", () => {
           { concurrency: 2 },
         );
         yield* eventually(() => posts(mend, "/turns").length === 1, "the turn");
+        // Real time: rules out a second send over the socket; no gateway timer runs under it
         yield* Effect.sleep("300 millis");
         assert.strictEqual(posts(mend, "/turns").length, 1);
       }),
@@ -441,6 +448,7 @@ describe("review round 2", () => {
         );
         yield* eventually(() => posts(mend, "/turns").length === 1, "the send");
         // The socket closes without waiting for the device poll.
+        // Real time: polls until the real socket closes
         yield* Effect.gen(function* () {
           for (;;) {
             const probe = yield* Effect.exit(
@@ -475,6 +483,7 @@ describe("review round 2", () => {
             // The hub stops Mend's stream and is not held by the queue it failed.
             yield* eventually(() => mend.workbench.eventStreams === 0, "the stream to close");
             const reads = mend.workbench.calls.length;
+            // Real time: rules out reads after the hub went; no gateway timer is left to run
             yield* Effect.sleep("1 second");
             assert.strictEqual(mend.workbench.calls.length, reads);
             assert.strictEqual(posts(mend, "/turns").length, 0);
@@ -521,6 +530,7 @@ describe("review round 2", () => {
           runEvent((run) => run.userMessageId === "message-2" && run.queueHeld === true),
         );
         // The agent comes up: the second message stays held.
+        // Real time: the agent comes up on the fake Mend's 600 ms setTimeout; nothing may go out
         yield* Effect.sleep("1200 millis");
         assert.strictEqual(posts(mend, "/turns").length, 0);
         yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
@@ -581,6 +591,7 @@ describe("review round 2", () => {
         yield* eventually(() => posts(mend, "/launch").length === 1, "the launch");
         // Someone else's turn with the same words lands while the agent comes up.
         const theirs = mend.workbench.addTurn("session-1", "Run the tests", "completed");
+        // Real time: the agent comes up on the fake Mend's 600 ms setTimeout
         yield* eventually(() => posts(mend, "/turns").length === 1, "the message's own turn");
         const mine = yield* thread.next(
           runEvent((run) => run.userMessageId === "message-mine" && run.status !== "preparing"),
@@ -597,10 +608,11 @@ describe("review round 2", () => {
     ),
   );
 
-  it.live("a session removed with queued work fails it and lets the hub go", () =>
+  it.effect("a session removed with queued work fails it and lets the hub go", () =>
     withGateway(
       (mend) =>
         Effect.gen(function* () {
+          const timers = yield* GatewayTimers;
           setup(mend);
           mend.workbench.addTurn("session-1", "A long job");
           yield* Effect.scoped(
@@ -611,36 +623,49 @@ describe("review round 2", () => {
                   threadId: ThreadId.make("session-1"),
                 }),
               );
-              yield* thread.next(
-                (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+              yield* TestClock.withLive(
+                thread.next(
+                  (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+                ),
               );
               yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
                 message("session-1", "message-orphan", "Behind it"),
               );
               const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
               mend.workbench.removeSession("session-1");
-              yield* shell.next(
-                (item): item is Extract<typeof item, { kind: "thread.removed" }> =>
-                  item.kind === "thread.removed",
+              yield* TestClock.withLive(
+                shell.next(
+                  (item): item is Extract<typeof item, { kind: "thread.removed" }> =>
+                    item.kind === "thread.removed",
+                ),
               );
             }),
           );
-          // No client and nothing that can progress: the hub goes, and its stream with it.
-          yield* eventually(() => mend.workbench.eventStreams === 0, "the hub to go");
+          // No client and nothing that can progress: the hub goes after its idle time, and its
+          // stream with it.
+          yield* timers.runOut(
+            "200 millis",
+            "the idle hub's time to live",
+            Effect.sync(() => assert.strictEqual(mend.workbench.eventStreams, 1)),
+          );
+          yield* TestClock.withLive(
+            eventually(() => mend.workbench.eventStreams === 0, "the hub to go"),
+          );
           assert.strictEqual(posts(mend, "/turns").length, 0);
         }),
       undefined,
       { hubIdleTimeToLive: "200 millis" },
-    ),
+    ).pipe(withGatewayTimers),
   );
 });
 
 describe("review round 3", () => {
   // Reproduction from the round-3 review (repro-wedge.test.ts), kept as a regression test.
-  it.live("a relaunch Mend forgets neither wedges the queue nor holds the hub", () =>
+  it.effect("a relaunch Mend forgets neither wedges the queue nor holds the hub", () =>
     withGateway(
       (mend) =>
         Effect.gen(function* () {
+          const timers = yield* GatewayTimers;
           const { workbench } = mend;
           setup(mend);
           const session = workbench.sessions.get("session-1");
@@ -654,26 +679,32 @@ describe("review round 3", () => {
                   threadId: ThreadId.make("session-1"),
                 }),
               );
-              yield* thread.next(
-                (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+              yield* TestClock.withLive(
+                thread.next(
+                  (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+                ),
               );
               yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
                 message("session-1", "message-first", "first"),
               );
-              const preparing = yield* thread.next(
-                runEvent(
-                  (run) => run.userMessageId === "message-first" && run.status === "preparing",
+              const preparing = yield* TestClock.withLive(
+                thread.next(
+                  runEvent(
+                    (run) => run.userMessageId === "message-first" && run.status === "preparing",
+                  ),
                 ),
               );
               const runId =
                 preparing.event.type === "run.updated"
                   ? preparing.event.payload.id
                   : RunId.make("none");
-              yield* Effect.sleep("300 millis");
+              // Mend answered the launch: the queue waits on its deadline.
+              yield* timers.parked("1 second", "the first launch's deadline");
               // Mend restarts mid-launch: the row reads settled `stopped` again, updatedAt unchanged.
               if (session !== undefined) session.status = "stopped";
               workbench.emit({ type: "session", sessionId: "session-1", projectId: "project-1" });
-              yield* Effect.sleep("300 millis");
+              // Real time: the gateway's read of the stopped row lands with nothing to signal it
+              yield* TestClock.withLive(Effect.sleep("300 millis"));
               // Taken back, it stops blocking at once: the next message moves.
               yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
                 type: "run.interrupt",
@@ -685,31 +716,44 @@ describe("review round 3", () => {
               yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
                 message("session-1", "message-second", "second"),
               );
-              yield* eventually(() => posts(mend, "/launch").length === 2, "the second launch");
+              yield* TestClock.withLive(
+                eventually(() => posts(mend, "/launch").length === 2, "the second launch"),
+              );
               // And a launch that never brings the agent up fails at its deadline.
-              yield* thread.next(
-                runEvent(
-                  (run) => run.userMessageId === "message-second" && run.status === "failed",
+              yield* timers.runOut("1 second", "the second launch's deadline");
+              yield* TestClock.withLive(
+                thread.next(
+                  runEvent(
+                    (run) => run.userMessageId === "message-second" && run.status === "failed",
+                  ),
                 ),
               );
             }),
           );
           // Nothing can progress: the hub goes after its idle time.
-          yield* eventually(() => workbench.eventStreams === 0, "the hub to go");
+          yield* timers.runOut(
+            "200 millis",
+            "the idle hub's time to live",
+            Effect.sync(() => assert.strictEqual(workbench.eventStreams, 1)),
+          );
+          yield* TestClock.withLive(
+            eventually(() => workbench.eventStreams === 0, "the hub to go"),
+          );
           assert.strictEqual(posts(mend, "/turns").length, 0);
         }),
       undefined,
       { hubIdleTimeToLive: "200 millis", queueTimings: { launchDeadlineMs: 1_000 } },
-    ),
+    ).pipe(withGatewayTimers),
   );
 
   // Reproduction from the round-3 review (repro-hotloop.test.ts), kept as a regression test.
-  it.live(
+  it.effect(
     "a 409 while the row reads running is retried after a backoff and a fresh read, not looped",
     () =>
       withGateway(
         (mend) =>
           Effect.gen(function* () {
+            const timers = yield* GatewayTimers;
             setup(mend);
             const { rpc } = yield* pairAndConnect(mend, "HOTLOOP");
             const thread = yield* feed(
@@ -717,67 +761,92 @@ describe("review round 3", () => {
                 threadId: ThreadId.make("session-1"),
               }),
             );
-            yield* thread.next(
-              (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+            yield* TestClock.withLive(
+              thread.next(
+                (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+              ),
             );
             mend.workbench.turnsNotLive = true;
             yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
               message("session-1", "message-busy", "hello"),
             );
-            yield* Effect.sleep("1 second");
+            // The first 409 waits out its backoff, the second waits out a doubled one: one second
+            // in, the gateway has tried twice and waits.
+            yield* timers.runOut("500 millis", "the backoff after the first 409");
+            yield* timers.parked("1 second", "the backoff after the second 409");
+            yield* TestClock.adjust("500 millis");
             const tried = posts(mend, "/turns").length;
             assert.isAtMost(tried, 2, `POST /turns ${tried} times in 1 s`);
             // Mend takes turns again: after its backoff and a fresh read, the message goes out.
             mend.workbench.turnsNotLive = false;
-            yield* thread.next(
-              runEvent((run) => run.userMessageId === "message-busy" && run.status === "running"),
-              "10 seconds",
+            yield* timers.runOut("1 second", "the backoff after the second 409");
+            yield* TestClock.withLive(
+              thread.next(
+                runEvent((run) => run.userMessageId === "message-busy" && run.status === "running"),
+                "10 seconds",
+              ),
             );
             assert.isAtMost(posts(mend, "/turns").length, tried + 2);
           }),
         undefined,
         { queueTimings: { retryBaseMs: 500, retryMaxMs: 1_000 } },
-      ),
+      ).pipe(withGatewayTimers),
   );
 
-  it.live("a message Mend keeps answering not-live fails at its deadline with Mend's reason", () =>
-    withGateway(
-      (mend) =>
-        Effect.gen(function* () {
-          setup(mend);
-          const { rpc } = yield* pairAndConnect(mend, "NOTLIVEDEADLINE");
-          const thread = yield* feed(
-            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
-              threadId: ThreadId.make("session-1"),
-            }),
-          );
-          yield* thread.next(
-            (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
-          );
-          mend.workbench.turnsNotLive = true;
-          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
-            message("session-1", "message-stuck", "hello"),
-          );
-          yield* thread.next(
-            runEvent((run) => run.userMessageId === "message-stuck" && run.status === "failed"),
-            "10 seconds",
-          );
-          const failure = yield* thread.next(
-            (item): item is Extract<Item, { kind: "event" }> =>
-              item.kind === "event" &&
-              item.event.type === "turn-item.updated" &&
-              item.event.payload.type === "error",
-          );
-          assert.isTrue(
-            failure.event.type === "turn-item.updated" &&
-              failure.event.payload.type === "error" &&
-              failure.event.payload.failure.message.includes("ProtocolSessionNotLive"),
-          );
-          assert.isAtMost(posts(mend, "/turns").length, 6);
-        }),
-      undefined,
-      { queueTimings: { retryBaseMs: 200, retryMaxMs: 400, sendDeadlineMs: 1_500 } },
-    ),
+  it.effect(
+    "a message Mend keeps answering not-live fails at its deadline with Mend's reason",
+    () =>
+      withGateway(
+        (mend) =>
+          Effect.gen(function* () {
+            const timers = yield* GatewayTimers;
+            setup(mend);
+            const { rpc } = yield* pairAndConnect(mend, "NOTLIVEDEADLINE");
+            const thread = yield* feed(
+              rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+                threadId: ThreadId.make("session-1"),
+              }),
+            );
+            yield* TestClock.withLive(
+              thread.next(
+                (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+              ),
+            );
+            mend.workbench.turnsNotLive = true;
+            yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+              message("session-1", "message-stuck", "hello"),
+            );
+            const failed = yield* TestClock.withLive(
+              thread.next(
+                runEvent((run) => run.userMessageId === "message-stuck" && run.status === "failed"),
+                "10 seconds",
+              ),
+            ).pipe(Effect.forkChild);
+            // Each 409 waits out its backoff, until the send deadline.
+            yield* timers.drive(
+              { within: "1500 millis", deadline: "10 seconds" },
+              () => failed.pollUnsafe() !== undefined,
+              "the send deadline",
+            );
+            yield* Fiber.join(failed);
+            const failure = yield* TestClock.withLive(
+              thread.next(
+                (item): item is Extract<Item, { kind: "event" }> =>
+                  item.kind === "event" &&
+                  item.event.type === "turn-item.updated" &&
+                  item.event.payload.type === "error",
+              ),
+            );
+            assert.isTrue(
+              failure.event.type === "turn-item.updated" &&
+                failure.event.payload.type === "error" &&
+                failure.event.payload.failure.message.includes("ProtocolSessionNotLive"),
+            );
+            assert.isAtMost(posts(mend, "/turns").length, 6);
+          }),
+        undefined,
+        { queueTimings: { retryBaseMs: 200, retryMaxMs: 400, sendDeadlineMs: 1_500 } },
+      ).pipe(withGatewayTimers),
   );
 
   it.live(
@@ -802,6 +871,7 @@ describe("review round 3", () => {
           yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
             message("session-1", "message-race", "Go on"),
           );
+          // Real time: the agent comes up on the fake Mend's 500 ms setTimeout
           yield* eventually(() => posts(mend, "/turns").length === 1, "the message's turn");
           assert.strictEqual(posts(mend, "/launch").length, 1);
           yield* thread.next(
@@ -814,12 +884,13 @@ describe("review round 3", () => {
 
 describe("review round 4", () => {
   // Reproduction from the round-4 review (repro-deadline-carry.test.ts), kept as a regression test.
-  it.live(
+  it.effect(
     "a relaunch starts the send deadline and backoff again for the new agent",
     () =>
       withGateway(
         (mend) =>
           Effect.gen(function* () {
+            const timers = yield* GatewayTimers;
             const { workbench } = mend;
             setup(mend);
             const { rpc } = yield* pairAndConnect(mend, "CARRY");
@@ -828,34 +899,54 @@ describe("review round 4", () => {
                 threadId: ThreadId.make("session-1"),
               }),
             );
-            yield* thread.next(
-              (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+            yield* TestClock.withLive(
+              thread.next(
+                (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+              ),
             );
             // The idle stop has claimed the session: 409s while the row still reads running.
             workbench.turnsNotLive = true;
             yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
               message("session-1", "message-carry", "hello"),
             );
-            yield* Effect.sleep("400 millis");
-            // The stop finishes and the gateway relaunches; the new agent outlasts the send deadline.
+            yield* timers.runOut("100 millis", "the backoff after the first 409");
+            yield* timers.runOut("200 millis", "the backoff after the second 409");
+            yield* timers.parked("200 millis", "the backoff after the third 409");
+            // The stop finishes and the gateway relaunches; the new agent outlasts the send
+            // deadline.
             workbench.turnsNotLive = false;
-            workbench.launchLiveDelayMs = 2_500;
+            const agent = workbench.holdNextAgent();
             workbench.stopAgent("session-1");
-            yield* eventually(() => posts(mend, "/launch").length === 1, "the relaunch");
+            yield* timers.runOut("200 millis", "the backoff after the third 409");
+            yield* TestClock.withLive(
+              eventually(() => posts(mend, "/launch").length === 1, "the relaunch"),
+            );
+            yield* TestClock.adjust("2400 millis");
             // Its row reads running a moment before its protocol host attaches: one more 409.
-            yield* Effect.sleep("2400 millis");
             workbench.turnsNotLive = true;
-            yield* Effect.sleep("600 millis");
+            const tried = posts(mend, "/turns").length;
+            agent.release();
+            yield* TestClock.withLive(
+              eventually(() => posts(mend, "/turns").length > tried, "the new agent's 409"),
+            );
+            // The new agent's 409s wait the first backoffs again, past the old deadline.
+            yield* timers.runOut("100 millis", "the backoff after the new agent's first 409");
+            yield* timers.parked("200 millis", "the backoff after the new agent's second 409");
             workbench.turnsNotLive = false;
-            yield* thread.next(
-              runEvent((run) => run.userMessageId === "message-carry" && run.status === "running"),
-              "5 seconds",
+            yield* timers.runOut("200 millis", "the backoff after the new agent's second 409");
+            yield* TestClock.withLive(
+              thread.next(
+                runEvent(
+                  (run) => run.userMessageId === "message-carry" && run.status === "running",
+                ),
+                "5 seconds",
+              ),
             );
             assert.strictEqual(workbench.turns.get("session-1")?.length ?? 0, 1);
           }),
         undefined,
         { queueTimings: { retryBaseMs: 100, retryMaxMs: 200, sendDeadlineMs: 2_000 } },
-      ),
+      ).pipe(withGatewayTimers),
     20_000,
   );
 
@@ -981,6 +1072,7 @@ describe("run.interrupt and the queue", () => {
           yield* thread.next(runEvent((run) => run.status === "queued" && run.queueHeld === true));
           yield* thread.next(runEvent((run) => run.id === turn.id && run.status === "interrupted"));
           // Held: nothing goes out though no turn is open.
+          // Real time: rules out a send over the socket; no gateway timer runs under it
           assert.isTrue(
             yield* thread.quiet(
               (item) =>

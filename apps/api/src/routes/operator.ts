@@ -13,7 +13,7 @@ import { Auth } from "@mend/auth";
 import { AuditEventsRepo, OrganizationsRepo, UsersRepo } from "@mend/db";
 import type { OrganizationId } from "@mend/domain";
 import { organizationNameIssue } from "@mend/domain/workbench";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
@@ -141,7 +141,9 @@ export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (hand
             role: "owner",
             email: email.email,
             createdByUserId: actor,
-            expiresAt: new Date(Date.now() + invitationDays(payload.expiresInDays) * DAY_MS),
+            expiresAt: new Date(
+              (yield* Clock.currentTimeMillis) + invitationDays(payload.expiresInDays) * DAY_MS,
+            ),
           })
           .pipe(
             Effect.catchTag("OrganizationNotFoundError", () => new NotFound({ id: params.id })),

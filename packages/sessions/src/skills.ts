@@ -5,7 +5,7 @@ import * as path from "node:path";
 
 import type { SkillWithFiles } from "@mend/domain/workbench";
 import { validateSkillFilePath, validateSkillName } from "@mend/domain/workbench";
-import { Effect, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
 
 import { shellQuote } from "./workspace-files.ts";
 
@@ -302,6 +302,7 @@ export const SKILLS_VACATE_PROGRAM = [
 ].join("");
 
 /** A fresh kept directory for one delivery, relative to the harness home. */
+// Effect callers supply Clock time; this standalone name builder retains its host-time default.
 export const skillsKeptDir = (now: Date = new Date()): string =>
   path.posix.join(
     SKILLS_KEPT_DIR,
@@ -383,54 +384,56 @@ export const materializeSkills = (
   harnessHomePath: string,
   bundles: ReadonlyArray<SkillWithFiles>,
 ): Effect.Effect<ReadonlyArray<SkillsVacateOutcome>, SkillMaterializeError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const plan = planSkills(
-        parseManagedSkills(await readOptional(path.join(harnessHomePath, MANAGED_MANIFEST))),
-        bundles,
-        parseManagedSkillDigests(await readOptional(path.join(harnessHomePath, MANAGED_DIGESTS))),
-      );
-      if (plan === null) return [];
-      for (const directory of plan.directories) {
-        await fs.mkdir(path.join(harnessHomePath, directory), { recursive: true });
-      }
-      const vacated = spawnSync(
-        process.execPath,
-        [
-          "-e",
-          SKILLS_VACATE_PROGRAM,
-          harnessHomePath,
-          skillsKeptDir(),
-          JSON.stringify(plan.vacate),
-        ],
-        { encoding: "utf8" },
-      );
-      const outcomes = parseSkillsVacateOutcomes(vacated.stdout ?? "");
-      if (vacated.status !== 0) {
-        throw new Error(
-          `could not clear ${
-            outcomes
-              .filter((outcome) => outcome.outcome === "error")
-              .map((outcome) => `${outcome.dir} (${outcome.detail ?? "error"})`)
-              .join(", ") || `the skills directories (${vacated.stderr ?? ""})`
-          }`,
+  Clock.clockWith((clock) =>
+    Effect.tryPromise({
+      try: async () => {
+        const plan = planSkills(
+          parseManagedSkills(await readOptional(path.join(harnessHomePath, MANAGED_MANIFEST))),
+          bundles,
+          parseManagedSkillDigests(await readOptional(path.join(harnessHomePath, MANAGED_DIGESTS))),
         );
-      }
-      // As the workspace writer does (`workspace-files.ts`): each file's directory 0755, the
-      // file 0644. Every path here is under a directory the vacate just cleared.
-      for (const file of skillFilesToWrite(plan, outcomes)) {
-        const filePath = path.join(harnessHomePath, file.path);
-        await fs.mkdir(path.dirname(filePath), { recursive: true });
-        await fs.chmod(path.dirname(filePath), 0o755);
-        await fs.writeFile(filePath, file.contents, { encoding: "utf8", mode: 0o644 });
-        await fs.chmod(filePath, 0o644);
-      }
-      await fs.writeFile(path.join(harnessHomePath, MANAGED_MANIFEST), plan.manifest, "utf8");
-      await fs.writeFile(path.join(harnessHomePath, MANAGED_DIGESTS), plan.digests, "utf8");
-      return outcomes;
-    },
-    catch: (error) =>
-      new SkillMaterializeError({
-        message: `skills could not be written into the harness home: ${String(error)}`,
-      }),
-  });
+        if (plan === null) return [];
+        for (const directory of plan.directories) {
+          await fs.mkdir(path.join(harnessHomePath, directory), { recursive: true });
+        }
+        const vacated = spawnSync(
+          process.execPath,
+          [
+            "-e",
+            SKILLS_VACATE_PROGRAM,
+            harnessHomePath,
+            skillsKeptDir(new Date(clock.currentTimeMillisUnsafe())),
+            JSON.stringify(plan.vacate),
+          ],
+          { encoding: "utf8" },
+        );
+        const outcomes = parseSkillsVacateOutcomes(vacated.stdout ?? "");
+        if (vacated.status !== 0) {
+          throw new Error(
+            `could not clear ${
+              outcomes
+                .filter((outcome) => outcome.outcome === "error")
+                .map((outcome) => `${outcome.dir} (${outcome.detail ?? "error"})`)
+                .join(", ") || `the skills directories (${vacated.stderr ?? ""})`
+            }`,
+          );
+        }
+        // As the workspace writer does (`workspace-files.ts`): each file's directory 0755, the
+        // file 0644. Every path here is under a directory the vacate just cleared.
+        for (const file of skillFilesToWrite(plan, outcomes)) {
+          const filePath = path.join(harnessHomePath, file.path);
+          await fs.mkdir(path.dirname(filePath), { recursive: true });
+          await fs.chmod(path.dirname(filePath), 0o755);
+          await fs.writeFile(filePath, file.contents, { encoding: "utf8", mode: 0o644 });
+          await fs.chmod(filePath, 0o644);
+        }
+        await fs.writeFile(path.join(harnessHomePath, MANAGED_MANIFEST), plan.manifest, "utf8");
+        await fs.writeFile(path.join(harnessHomePath, MANAGED_DIGESTS), plan.digests, "utf8");
+        return outcomes;
+      },
+      catch: (error) =>
+        new SkillMaterializeError({
+          message: `skills could not be written into the harness home: ${String(error)}`,
+        }),
+    }),
+  );

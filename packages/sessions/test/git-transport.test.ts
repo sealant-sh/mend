@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { FastCheck } from "effect/testing";
+import * as FastCheck from "effect/testing/FastCheck";
 import { describe, expect, it } from "vitest";
 
 import {

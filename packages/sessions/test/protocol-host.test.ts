@@ -1,4 +1,3 @@
-import { describe, expect, it } from "@effect/vitest";
 import {
   AgentConversationRepo,
   SessionProcessesRepo,
@@ -13,8 +12,10 @@ import {
   SessionProcessId,
 } from "@mend/domain";
 import { AgentItem, AgentTurn, SessionProcess } from "@mend/domain/workbench";
+import { it } from "@mend/test-ci/effect-vitest";
 import type { InteractiveSession } from "@sealant/sdk";
 import { Deferred, Effect, Layer } from "effect";
+import { describe, expect } from "vitest";
 
 import { ProtocolHost, ProtocolHostLive } from "../src/protocol-host.ts";
 

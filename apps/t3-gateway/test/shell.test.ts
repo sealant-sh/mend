@@ -1,4 +1,3 @@
-import { assert, describe, it } from "@effect/vitest";
 import {
   ORCHESTRATION_PROTOCOL_HEADER,
   ORCHESTRATION_PROTOCOL_VERSION_TEXT,
@@ -10,10 +9,12 @@ import * as Effect from "effect/Effect";
 
 import { refreshKeyOf } from "../src/hub.ts";
 import { pointerOfSseLine } from "../src/mend-client.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * Phase 1's shell (ADR 0012, "The surface"): Mend's projects and protocol sessions, kept live from
@@ -21,10 +22,16 @@ import { pairAndConnect } from "./support/rpc.ts";
  * appears without the client asking again.
  */
 
-const withGateway = <A, E, R>(test: (mend: FakeMend) => Effect.Effect<A, E, R>) =>
+const withGateway = <A, E, R>(
+  test: (mend: FakeMend) => Effect.Effect<A, E, R>,
+  options: Parameters<typeof gatewayTestLayer>[2] = {},
+) =>
   Effect.gen(function* () {
     const mend = yield* startFakeMend;
-    return yield* test(mend).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    return yield* test(mend).pipe(
+      Effect.scoped,
+      Effect.provide(gatewayTestLayer(mend.url, ":memory:", options)),
+    );
   });
 
 type Item = OrchestrationV2ShellStreamItem;
@@ -156,30 +163,35 @@ describe("the shell", () => {
     ),
   );
 
-  it.live("reads everything again after Mend's stream drops", () =>
+  it.effect("reads everything again after Mend's stream drops", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
         const { workbench } = mend;
         workbench.addProject("project-1", "mend");
         const { rpc } = yield* pairAndConnect(mend, "RECONNECT");
         const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
-        yield* shell.next(isKind("snapshot"));
+        yield* TestClock.withLive(shell.next(isKind("snapshot")));
 
         // Mend restarts; a session is started while the gateway is not listening, and Mend's
         // reads fail for a while after its event stream is back.
         workbench.projectsDown = true;
         workbench.dropStreams();
         workbench.addSession({ id: "session-missed", projectId: "project-1" });
-        yield* Effect.sleep("1500 millis");
+        yield* timers.runOut("1 second", "the reconnect to Mend's event stream");
+        yield* timers.parked("3 seconds", "the full read's retry after Mend failed it");
         workbench.projectsDown = false;
-        const caught = yield* shell.next(
-          (item): item is Extract<Item, { kind: "thread.updated" }> =>
-            item.kind === "thread.updated" && item.thread.id === "session-missed",
-          "10 seconds",
+        yield* timers.runOut("3 seconds", "the full read's retry after Mend failed it");
+        const caught = yield* TestClock.withLive(
+          shell.next(
+            (item): item is Extract<Item, { kind: "thread.updated" }> =>
+              item.kind === "thread.updated" && item.thread.id === "session-missed",
+            "10 seconds",
+          ),
         );
         assert.strictEqual(caught.thread.status, "idle");
       }),
-    ),
+    ).pipe(withGatewayTimers),
   );
 });
 
@@ -207,6 +219,7 @@ describe("devices and late pointers", () => {
           workbench.emit({ type: "user", userId: "user-1", facet: "devices" });
 
           // Its socket closes: nothing more answers on it.
+          // Real time: polls until the real socket closes
           yield* Effect.gen(function* () {
             for (;;) {
               const probe = yield* Effect.exit(
@@ -250,6 +263,7 @@ describe("devices and late pointers", () => {
           headers: { authorization: `Bearer ${access.access_token}` },
         });
         assert.isFalse(state.authenticated);
+        // Real time: polls until the real socket closes
         yield* Effect.gen(function* () {
           for (;;) {
             const probe = yield* Effect.exit(
@@ -281,6 +295,7 @@ describe("devices and late pointers", () => {
           while (workbench.eventStreams > 0) yield* Effect.sleep("100 millis");
         }).pipe(Effect.timeout("5 seconds"));
         const reads = workbench.calls.length;
+        // Real time: rules out reads after the hub closed its stream; no gateway timer is left
         yield* Effect.sleep("1500 millis");
         assert.strictEqual(workbench.eventStreams, 0);
         assert.strictEqual(workbench.calls.length, reads);
@@ -288,30 +303,52 @@ describe("devices and late pointers", () => {
     ),
   );
 
-  it.live("a pointer that arrives during the first full read is applied after it", () =>
-    withGateway((mend) =>
-      Effect.gen(function* () {
-        const { workbench } = mend;
-        workbench.addProject("project-1", "mend");
-        workbench.addSession({ id: "session-1", projectId: "project-1" });
-        const turn = workbench.addTurn("session-1", "A turn that ends during the read");
-        const { rpc } = yield* pairAndConnect(mend, "LATEPOINTER");
-        // The read holds on requests after it read the turn as running; the turn ends meanwhile.
-        workbench.requestsDelayMs = 800;
-        const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
-        yield* Effect.sleep("300 millis");
-        workbench.setTurn(turn, "completed");
-        const { snapshot } = yield* shell.next(isKind("snapshot"));
-        workbench.requestsDelayMs = 0;
-        assert.strictEqual(snapshot.threads[0]?.status, "running");
-        const caught = yield* shell.next(
-          (item): item is Extract<Item, { kind: "thread.updated" }> =>
-            item.kind === "thread.updated" && item.thread.status === "completed",
-        );
-        assert.strictEqual(caught.thread.id, "session-1");
-      }),
-    ),
-  );
+  it.live("a pointer that arrives during the first full read is applied after it", () => {
+    const pointerConsumed = Promise.withResolvers<void>();
+    const deviceChecked = Promise.withResolvers<void>();
+    let awaitingDeviceCheck = false;
+    return withGateway(
+      (mend) =>
+        Effect.gen(function* () {
+          const { workbench } = mend;
+          workbench.addProject("project-1", "mend");
+          workbench.addSession({ id: "session-1", projectId: "project-1" });
+          const turn = workbench.addTurn("session-1", "A turn that ends during the read");
+          const { rpc } = yield* pairAndConnect(mend, "LATEPOINTER");
+          // Hold the request read until the concurrent turn read captured its running state.
+          const reading = workbench.holdNextRequestsRead("session-1");
+          yield* Effect.addFinalizer(() => Effect.sync(reading.release));
+          const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+          yield* Effect.promise(() => Promise.all([reading.entered, reading.turnsRead]));
+          yield* Effect.promise(() => workbench.waitForEventStream());
+          workbench.setTurn(turn, "completed");
+          yield* Effect.promise(() => pointerConsumed.promise);
+          // The worker handles device checks while the full read is held. This following key
+          // proves it handled the conversation pointer before the request answer is released.
+          awaitingDeviceCheck = true;
+          workbench.emit({ type: "user", userId: "user-1", facet: "devices" });
+          yield* Effect.promise(() => deviceChecked.promise);
+          reading.release();
+          const { snapshot } = yield* shell.next(isKind("snapshot"));
+          assert.strictEqual(snapshot.threads[0]?.status, "running");
+          const caught = yield* shell.next(
+            (item): item is Extract<Item, { kind: "thread.updated" }> =>
+              item.kind === "thread.updated" && item.thread.status === "completed",
+          );
+          assert.strictEqual(caught.thread.id, "session-1");
+        }),
+      {
+        eventConsumed: (pointer) =>
+          Effect.sync(() => {
+            if (pointer.type === "agent-conversation" && pointer.sessionId === "session-1") {
+              pointerConsumed.resolve();
+            }
+          }),
+        deviceCheckObserver: () =>
+          awaitingDeviceCheck ? Effect.sync(() => deviceChecked.resolve()) : Effect.void,
+      },
+    );
+  });
 });
 
 describe("Mend's pointers", () => {

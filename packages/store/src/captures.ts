@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { pipeline as pipelinePromise } from "node:stream/promises";
 import * as zlib from "node:zlib";
 
-import { Effect, Exit, Result, Schema, Semaphore } from "effect";
+import { Clock, Effect, Exit, Result, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 import { BlobNotFoundError, BlobStore, BlobStoreError, isValidBlobKey } from "./blob-store.ts";
@@ -724,7 +724,9 @@ const endStretch = () => {
  * Yield to the event loop — timers, sockets, every other fiber — once the thread has been held
  * `COOPERATE_SLICE_MS` since this stretch of work began; otherwise nothing, so work that ends
  * sooner runs as it always did. `Effect.yieldNow` reschedules the fiber through the scheduler's
- * `setImmediate`, after pending I/O callbacks run.
+ * `setImmediate`, after pending I/O callbacks run. The stretch is measured on the host's
+ * monotonic clock, never Effect's `Clock`: what it meters is how long this thread really ran, and
+ * a test clock that stands still would let verification hold the thread for good.
  */
 export const cooperate: Effect.Effect<void> = Effect.suspend(() => {
   const now = performance.now();
@@ -821,7 +823,7 @@ export const storedObjectProblem = (
       const provenAt = contentVerified.get(proofKey(store, key));
       if (provenAt !== undefined && (yield* proofStands(store, key, provenAt))) return null;
     }
-    const atMs = Date.now();
+    const atMs = yield* Clock.currentTimeMillis;
     const problem = yield* readStoredObjectProblem(key);
     if (problem === null) rememberContentVerified(store, key, atMs);
     return problem;
@@ -1162,7 +1164,7 @@ export const makeChunkSource = (
 
     const fetchPack = (key: string) =>
       Effect.gen(function* () {
-        const atMs = Date.now();
+        const atMs = yield* Clock.currentTimeMillis;
         const bytes = yield* store.get(key);
         yield* verifyDigest(key, bytes);
         rememberContentVerified(store, key, atMs);
@@ -1320,7 +1322,7 @@ export const withCaptureReadPass = <A, E, R>(
     if (current !== null && current.store === store.identity) return yield* self;
     const pass: CaptureReadPassState = {
       store: store.identity,
-      startedAtMs: Date.now(),
+      startedAtMs: yield* Clock.currentTimeMillis,
       dirReaders: new Map(),
       indexes: new Map(),
       locations: new Map(),
@@ -1389,7 +1391,7 @@ const openDirPack = (key: string): Effect.Effect<OpenedPack, CaptureReadError, B
       dirPackCache.set(cacheKey, cached);
       return cached;
     }
-    const atMs = Date.now();
+    const atMs = yield* Clock.currentTimeMillis;
     const bytes = yield* store.get(key);
     yield* verifyDigest(key, bytes);
     rememberContentVerified(store, key, atMs);
@@ -2240,7 +2242,7 @@ const packEntriesOf = (
       if (pass !== null && pass.store === store.identity) pass.indexes.set(key, cached.entries);
       return cached.entries;
     }
-    const atMs = Date.now();
+    const atMs = yield* Clock.currentTimeMillis;
     const size = knownSize ?? (yield* store.head(key))?.size;
     if (size === undefined) return yield* new BlobNotFoundError({ key });
     const entries = entriesByHash(yield* readPackIndexRemote(key, size));
@@ -2315,7 +2317,7 @@ export const verifyPackPayloads = (
           const { promise, resolve } = Promise.withResolvers<boolean>();
           payloadsInFlight.set(cacheKey, promise);
           yield* Effect.gen(function* () {
-            const atMs = Date.now();
+            const atMs = yield* Clock.currentTimeMillis;
             const entries = yield* verifyPackBytes(key, yield* store.get(key)).pipe(
               // The worker could not run the check (it would not start, it died): that says
               // nothing about the pack. Read again and checked here, as before there were
@@ -3255,7 +3257,7 @@ const makeClassMembers = (manifest: CaptureManifest) => {
           pass.digests.set(memo, proven.digest);
           return proven.digest;
         }
-        const atMs = Date.now();
+        const atMs = yield* Clock.currentTimeMillis;
         const digest = yield* memberDigest(section, member, as).pipe(
           Effect.orElseSucceed(() => null),
         );
@@ -3655,7 +3657,7 @@ const storedGitPackProblem = (
     if (expected === null) return `${key} names no sha256`;
     const idxKey = packIdxKeyOf(key);
     const idx = yield* store.get(idxKey);
-    const readAtMs = Date.now();
+    const readAtMs = yield* Clock.currentTimeMillis;
     const stream = yield* store.getStream(key);
     return yield* Effect.acquireUseRelease(
       Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "mend-seal-pack-"))),

@@ -1,4 +1,3 @@
-import { it as effectIt } from "@effect/vitest";
 import {
   HarnessLayoutsRepo,
   type HarnessLayoutsMemoryState,
@@ -18,6 +17,7 @@ import {
   PersonLayoutPlatform,
   SealantPlatformError,
 } from "@mend/sealant";
+import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
 import { claudeCode, type Run, type Workspace } from "@sealant/sdk";
 import {
   ConfigProvider,
@@ -30,7 +30,6 @@ import {
   Logger,
   Scope,
 } from "effect";
-import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -1234,7 +1233,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
    * Alice's person launch, prepared (unless `prepared` is false: a Mend that restarted, whose
    * memory of the executor is empty); then whatever `then` does with its steps.
    */
-  const withPersonExecutor = <A, E>(
+  const withPersonExecutorEffect = <A, E>(
     core: CoreCalls,
     then: (executor: Executor) => Effect.Effect<A, E>,
     options: {
@@ -1243,47 +1242,48 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       readonly execTakes?: Duration.Duration;
     } = {},
   ) =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        const execs: Array<{ readonly script: string; readonly user: string | null }> = [];
-        const log: Array<string> = [];
-        const revoked: Array<{ readonly accountId: string; readonly issuedBefore: number }> = [];
-        const forks: Array<Effect.Effect<void>> = [];
-        const state = makeHarnessLayoutsMemoryState();
-        const first = yield* stepsWith("person", state, {
-          platform: platformOf(core),
-          execs,
-          log,
-          revoked,
-          forks,
-          grace: options.grace ?? Duration.zero,
-          ...(options.execTakes === undefined ? {} : { execTakes: options.execTakes }),
-        });
-        const layout = yield* first.steps.decide(decideInput("launch-1"));
-        const alice = yield* first.repo.ensureIdentity("user-alice");
-        yield* first.steps.settlePrepare({
-          layout,
-          ...settleInput(
-            "launch-1",
-            `mend-layout probed\nmend-layout made ${alice.name}\nmend-layout ready\n`,
-          ),
-        });
-        // A restart: a new engine over the same store, remembering nothing of the executor.
-        const steps =
-          options.prepared === false
-            ? (yield* stepsWith("person", state, {
-                platform: platformOf(core),
-                execs,
-                log,
-                revoked,
-                forks,
-                grace: options.grace ?? Duration.zero,
-                ...(options.execTakes === undefined ? {} : { execTakes: options.execTakes }),
-              })).steps
-            : first.steps;
-        return yield* then({ steps, repo: first.repo, execs, log, revoked, forks, state });
-      }),
-    );
+    Effect.gen(function* () {
+      const execs: Array<{ readonly script: string; readonly user: string | null }> = [];
+      const log: Array<string> = [];
+      const revoked: Array<{ readonly accountId: string; readonly issuedBefore: number }> = [];
+      const forks: Array<Effect.Effect<void>> = [];
+      const state = makeHarnessLayoutsMemoryState();
+      const first = yield* stepsWith("person", state, {
+        platform: platformOf(core),
+        execs,
+        log,
+        revoked,
+        forks,
+        grace: options.grace ?? Duration.zero,
+        ...(options.execTakes === undefined ? {} : { execTakes: options.execTakes }),
+      });
+      const layout = yield* first.steps.decide(decideInput("launch-1"));
+      const alice = yield* first.repo.ensureIdentity("user-alice");
+      yield* first.steps.settlePrepare({
+        layout,
+        ...settleInput(
+          "launch-1",
+          `mend-layout probed\nmend-layout made ${alice.name}\nmend-layout ready\n`,
+        ),
+      });
+      // A restart: a new engine over the same store, remembering nothing of the executor.
+      const steps =
+        options.prepared === false
+          ? (yield* stepsWith("person", state, {
+              platform: platformOf(core),
+              execs,
+              log,
+              revoked,
+              forks,
+              grace: options.grace ?? Duration.zero,
+              ...(options.execTakes === undefined ? {} : { execTakes: options.execTakes }),
+            })).steps
+          : first.steps;
+      return yield* then({ steps, repo: first.repo, execs, log, revoked, forks, state });
+    });
+
+  const withPersonExecutor = <A, E>(...args: Parameters<typeof withPersonExecutorEffect<A, E>>) =>
+    Effect.runPromise(withPersonExecutorEffect(...args));
 
   const start = (
     steps: ReturnType<typeof makeHarnessLayoutSteps>,
@@ -1658,17 +1658,17 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(core.posts.filter((post) => post.onBehalfOf === "user-maria")).toHaveLength(2);
   });
 
-  it.each([
+  effectIt.effect.each([
     { mode: "transient", failures: 1, attempts: 2 },
     { mode: "exhausted", failures: 5, attempts: 5 },
   ])(
     "observes the $mode credential DELETE policy and the next idle check/start",
-    async ({ mode, failures, attempts }) => {
+    ({ mode, failures, attempts }) => {
       const core = coreCalls();
       const warnings: Array<string> = [];
       let heldExternalCredentials = true;
       let deletes = 0;
-      await withPersonExecutor(core, ({ steps, repo, revoked, execs, log }) =>
+      return withPersonExecutorEffect(core, ({ steps, repo, revoked, execs, log }) =>
         Effect.gen(function* () {
           const entered = yield* Deferred.make<void>();
           core.deleteResult = () =>
@@ -1725,7 +1725,6 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
           expect(revoked).toHaveLength(1);
         }).pipe(
           Effect.scoped,
-          Effect.provide(TestClock.layer()),
           Effect.provide(
             Logger.layer([
               Logger.make((entry) => warnings.push(`${entry.logLevel}: ${String(entry.message)}`)),
@@ -1763,37 +1762,45 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(result.log.filter((line) => line.startsWith("revoke:"))).toEqual([]);
   });
 
-  it("race: a start while a release's DELETE is in flight waits for it, then gets a new token the release never revokes (review of mend#564, P2-1 A)", async () => {
-    const core = coreCalls();
-    const result = await withPersonExecutor(core, ({ steps, log, revoked }) =>
+  effectIt.effect(
+    "race: a start while a release's DELETE is in flight waits for it, then gets a new token the release never revokes (review of mend#564, P2-1 A)",
+    () =>
       Effect.gen(function* () {
-        yield* start(steps, "user-maria");
-        core.deleteGate = yield* Deferred.make<void>();
-        const gate = core.deleteGate;
-        const releasing = yield* release(steps, []).pipe(Effect.forkChild);
-        // Wait until the DELETE is in flight.
-        while (!core.calls.some((call) => call.startsWith("delete:"))) yield* Effect.yieldNow;
-        const starting = yield* start(steps, "user-maria").pipe(Effect.forkChild);
-        yield* Effect.sleep(Duration.millis(5));
-        const postsWhileDeleting = core.posts.length;
-        yield* Deferred.succeed(gate, undefined);
-        yield* Fiber.join(releasing);
-        yield* Fiber.join(starting);
-        return { log, revoked, postsWhileDeleting };
+        const core = coreCalls();
+        const result = yield* withPersonExecutorEffect(core, ({ steps, log, revoked }) =>
+          Effect.gen(function* () {
+            yield* start(steps, "user-maria");
+            core.deleteGate = yield* Deferred.make<void>();
+            const gate = core.deleteGate;
+            const releasing = yield* release(steps, []).pipe(Effect.forkChild);
+            // Wait until the DELETE is in flight.
+            while (!core.calls.some((call) => call.startsWith("delete:"))) yield* Effect.yieldNow;
+            const starting = yield* start(steps, "user-maria").pipe(Effect.forkChild);
+            yield* TestClock.adjust(Duration.millis(5));
+            const postsWhileDeleting = core.posts.length;
+            yield* Deferred.succeed(gate, undefined);
+            yield* Fiber.join(releasing);
+            yield* Fiber.join(starting);
+            return { log, revoked, postsWhileDeleting };
+          }),
+        );
+        // The start waited: nothing of it ran while the DELETE was in flight.
+        expect(result.postsWhileDeleting).toBe(1);
+        const order = result.log.map((line) => line.replace(/@\d+$/, ""));
+        const revokedAt = order.indexOf("revoke:user-maria");
+        const mintedAgain = order.lastIndexOf("mint:user-maria");
+        expect(revokedAt).toBeGreaterThan(-1);
+        expect(mintedAgain).toBeGreaterThan(revokedAt);
+        // The release revokes only what was minted before it began.
+        const minted = Number(
+          result.log.findLast((line) => line.startsWith("mint:"))?.split("@")[1],
+        );
+        expect(result.revoked[0]?.issuedBefore ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(
+          minted,
+        );
+        expect(core.posts.filter((post) => post.onBehalfOf === "user-maria")).toHaveLength(2);
       }),
-    );
-    // The start waited: nothing of it ran while the DELETE was in flight.
-    expect(result.postsWhileDeleting).toBe(1);
-    const order = result.log.map((line) => line.replace(/@\d+$/, ""));
-    const revokedAt = order.indexOf("revoke:user-maria");
-    const mintedAgain = order.lastIndexOf("mint:user-maria");
-    expect(revokedAt).toBeGreaterThan(-1);
-    expect(mintedAgain).toBeGreaterThan(revokedAt);
-    // The release revokes only what was minted before it began.
-    const minted = Number(result.log.findLast((line) => line.startsWith("mint:"))?.split("@")[1]);
-    expect(result.revoked[0]?.issuedBefore ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(minted);
-    expect(core.posts.filter((post) => post.onBehalfOf === "user-maria")).toHaveLength(2);
-  });
+  );
 
   it("keeps a person's logins through the grace after a start, and checks again once it has passed", async () => {
     const core = coreCalls();

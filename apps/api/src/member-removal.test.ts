@@ -14,9 +14,9 @@ import { OrganizationId, ProjectId, SessionId } from "@mend/domain";
 import { Organization } from "@mend/domain/workbench";
 import { SealantClients, SealantPlatformError } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
+import { TestClock } from "@mend/test-ci/effect-vitest";
 import { Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
-import { TestClock } from "effect/testing";
 import { Socket } from "effect/unstable/socket";
 import { describe, expect, it } from "vitest";
 

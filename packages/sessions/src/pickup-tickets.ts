@@ -92,35 +92,49 @@ export interface PickupTickets {
   readonly discard: (ticket: string) => void;
   /** Tickets redeemable now (tests). */
   readonly size: () => number;
+  /** Discard every ticket and tombstone and cancel their expiry work when their owner closes. */
+  readonly clear: () => void;
 }
 
-/** A timer that never keeps the process alive on its own. */
+/** Standalone callers have no Effect scope. Engine callers supply a Clock-owned scheduler. */
 const later = (run: () => void, ms: number) => {
   const timer = setTimeout(run, ms);
   timer.unref?.();
-  return timer;
+  return () => clearTimeout(timer);
 };
 
 const keyOf = (ticket: string) => createHash("sha256").update(ticket).digest("hex");
 
 export const makePickupTickets = (
-  options: { readonly ttlMs?: number; readonly now?: () => number } = {},
+  options: {
+    readonly ttlMs?: number;
+    /** Effect owners inject Clock time; standalone callers use host time. */
+    readonly now?: () => number;
+    /** Schedule expiry and return its cancellation. Effect owners tie it to their scope. */
+    readonly schedule?: (run: () => void, ms: number) => () => void;
+  } = {},
 ): PickupTickets => {
   const ttlMs = options.ttlMs ?? PICKUP_TICKET_TTL_MS;
   const now = options.now ?? Date.now;
+  const schedule = options.schedule ?? later;
   const held = new Map<
     string,
-    PickupEntry & { readonly expiresAt: number; readonly timer: ReturnType<typeof setTimeout> }
+    PickupEntry & { readonly expiresAt: number; readonly cancelExpiry: () => void }
   >();
   // A redeemed ticket's binding, never its files, until the backstop.
   const spent = new Map<
     string,
-    { readonly binding: PickupBinding; readonly expiresAt: number; discarded?: boolean }
+    {
+      readonly binding: PickupBinding;
+      readonly expiresAt: number;
+      readonly cancelExpiry: () => void;
+      discarded?: boolean;
+    }
   >();
   const drop = (key: string) => {
     const entry = held.get(key);
     if (entry === undefined) return;
-    clearTimeout(entry.timer);
+    entry.cancelExpiry();
     held.delete(key);
   };
   return {
@@ -128,8 +142,8 @@ export const makePickupTickets = (
       const ticket = randomBytes(32).toString("base64url");
       const key = keyOf(ticket);
       // The bytes go when the ticket does, redeemed or not: nothing outlives the backstop.
-      const timer = later(() => held.delete(key), ttlMs);
-      held.set(key, { binding, files, expiresAt: now() + ttlMs, timer });
+      const cancelExpiry = schedule(() => held.delete(key), ttlMs);
+      held.set(key, { binding, files, expiresAt: now() + ttlMs, cancelExpiry });
       return ticket;
     },
     take: (ticket) => {
@@ -144,8 +158,8 @@ export const makePickupTickets = (
       }
       drop(key);
       if (now() >= entry.expiresAt) return { kind: "unknown" };
-      spent.set(key, { binding: entry.binding, expiresAt: entry.expiresAt });
-      later(() => spent.delete(key), Math.max(0, entry.expiresAt - now()));
+      const cancelExpiry = schedule(() => spent.delete(key), Math.max(0, entry.expiresAt - now()));
+      spent.set(key, { binding: entry.binding, expiresAt: entry.expiresAt, cancelExpiry });
       return { kind: "taken", entry: { binding: entry.binding, files: entry.files } };
     },
     restore: (ticket, entry) => {
@@ -154,14 +168,15 @@ export const makePickupTickets = (
       const tomb = spent.get(key);
       if (tomb === undefined || tomb.discarded === true || held.has(key)) return false;
       const remaining = tomb.expiresAt - now();
+      tomb.cancelExpiry();
       spent.delete(key);
       if (remaining <= 0) return false;
-      const timer = later(() => held.delete(key), remaining);
+      const cancelExpiry = schedule(() => held.delete(key), remaining);
       held.set(key, {
         binding: entry.binding,
         files: entry.files,
         expiresAt: tomb.expiresAt,
-        timer,
+        cancelExpiry,
       });
       return true;
     },
@@ -174,6 +189,12 @@ export const makePickupTickets = (
       if (tomb !== undefined) tomb.discarded = true;
     },
     size: () => held.size,
+    clear: () => {
+      for (const entry of held.values()) entry.cancelExpiry();
+      for (const tomb of spent.values()) tomb.cancelExpiry();
+      held.clear();
+      spent.clear();
+    },
   };
 };
 

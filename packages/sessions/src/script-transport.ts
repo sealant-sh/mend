@@ -2,7 +2,8 @@
  * Shared transport prelude for the staged scripts: the session socket when it is mounted,
  * else the network endpoint the launch env names. Dependency-free node. The token is read from
  * the environment, or from the file `MEND_SESSION_TOKEN_FILE` names, and only ever placed in an
- * Authorization header — never printed, never logged.
+ * Authorization header — never printed, never logged. The emitted Node process has no Effect
+ * runtime, so its request deadline uses the native socket timer.
  *
  * In a person-layout executor (docs/adr/0016, decision 4) every process Mend starts names its
  * person's token file, and any other process of a person finds it in their passwd home (review
