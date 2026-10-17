@@ -609,7 +609,8 @@ export class FakeWorkbench {
       return json(200, { worktreeId: id, file: null, search: { matches, truncated: false } });
     }
     if (method === "GET" && collection === "worktrees" && sub === "diff") {
-      const key = `${url.searchParams.get("from") ?? "base"}..${url.searchParams.get("to") ?? ""}`;
+      const whitespace = url.searchParams.get("whitespace") === "ignore" ? " -w" : "";
+      const key = `${url.searchParams.get("from") ?? "base"}..${url.searchParams.get("to") ?? ""}${whitespace}`;
       const range = this.ranges.get(key);
       if (range === undefined) return json(404, { _tag: "NotFound", id: key });
       return json(200, {
@@ -1098,7 +1099,7 @@ export class FakeWorkbench {
       createdAt: string;
     }>
   >();
-  /** `GET /api/worktrees/:id/diff`, by `<from or base>..<to>`. */
+  /** `GET /api/worktrees/:id/diff`, by `<from or base>..<to>`, then ` -w` when whitespace is ignored. */
   readonly ranges = new Map<
     string,
     {

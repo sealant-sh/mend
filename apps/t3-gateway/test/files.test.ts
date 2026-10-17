@@ -96,6 +96,29 @@ describe("project files for the composer", () => {
   );
 });
 
+describe("a file the agent just wrote", () => {
+  it.live("is in the tree the next time it is asked for, a second on: never fifteen", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.files.set("session-1", ["README.md"]);
+        const { rpc } = yield* pairAndConnect(mend, "FRESH");
+        const tree = rpc[WS_METHODS.projectsListEntries]({ cwd: WORKTREE, directoryPath: "" }).pipe(
+          Effect.map((listed) => listed.entries.map((entry) => entry.path)),
+        );
+        const before = fileReads(mend).length;
+        yield* Effect.all([tree, tree, tree, tree], { concurrency: "unbounded" });
+        assert.strictEqual(fileReads(mend).length - before, 1);
+
+        mend.workbench.files.set("session-1", ["README.md", "parser.ts"]);
+        yield* Effect.sleep("1100 millis");
+        assert.deepStrictEqual(yield* tree, ["parser.ts", "README.md"]);
+      }),
+    ),
+  );
+});
+
 describe("a listing Mend cut", () => {
   it.live("never makes a search look complete: what lies past the cut is said to be missing", () =>
     withGateway((mend) =>
@@ -180,11 +203,18 @@ describe("reading and searching a worktree's files", () => {
           ),
           "workspace_path_outside_root",
         );
-        // The project's root has no files of its own to read.
         assert.strictEqual(
           failureOf(
             yield* Effect.exit(
               rpc[WS_METHODS.projectsReadFile]({ cwd: STORE, relativePath: "README.md" }),
+            ),
+          ),
+          "operation_failed",
+        );
+        assert.strictEqual(
+          failureOf(
+            yield* Effect.exit(
+              rpc[WS_METHODS.projectsReadFile]({ cwd: "/etc", relativePath: "passwd" }),
             ),
           ),
           "workspace_path_outside_root",

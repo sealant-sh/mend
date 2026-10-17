@@ -1,8 +1,3 @@
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import { WS_METHODS, type VcsStatusStreamEvent } from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -46,8 +41,7 @@ describe("VCS status", () => {
         assert.isFalse(status.isDefaultRef);
         assert.isTrue(status.isRepo);
         assert.isTrue(status.hasPrimaryRemote);
-        // Mend's totals are the branch against its base; it has no read of uncommitted work.
-        assert.isFalse(status.hasWorkingTreeChanges);
+        assert.isTrue(status.hasWorkingTreeChanges);
         assert.deepStrictEqual(status.workingTree, { files: [], insertions: 0, deletions: 0 });
         assert.deepStrictEqual(status.branchChanges, {
           baseRef: "main",
@@ -236,56 +230,53 @@ describe("VCS status", () => {
     ).pipe(withGatewayTimers),
   );
 
-  it.live(
-    "a committed branch change on a clean tree is the branch's, never shown as uncommitted",
-    () =>
-      withGateway((mend) =>
-        Effect.gen(function* () {
-          // A real repository: the session's branch committed one line, and its tree is clean.
-          const dir = mkdtempSync(join(tmpdir(), "t3-gateway-vcs-"));
-          yield* Effect.addFinalizer(() =>
-            Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
-          );
-          const git = (...args: ReadonlyArray<string>) =>
-            execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@localhost", ...args], {
-              cwd: dir,
-            }).toString();
-          git("init", "-q", "-b", "main");
-          writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
-          git("add", "-A");
-          git("commit", "-q", "-m", "base");
-          const base = git("rev-parse", "HEAD").trim();
-          git("checkout", "-q", "-b", "mend/wt-session-1");
-          writeFileSync(join(dir, "a.ts"), "export const a = 1;\nexport const b = 2;\n");
-          git("commit", "-q", "-am", "the agent's commit");
-          assert.strictEqual(git("status", "--porcelain"), "");
-          // Mend's change stats: the worktree against its base, as `git diff --numstat` counts.
-          const counted = git("diff", "--numstat", base)
-            .trim()
-            .split("\n")
-            .filter((line) => line.length > 0)
-            .map((line) => line.split("\t").map(Number));
-          const stats = {
-            files: counted.length,
-            additions: counted.reduce((sum, [added = 0]) => sum + added, 0),
-            deletions: counted.reduce((sum, [, deleted = 0]) => sum + deleted, 0),
-          };
-          assert.deepStrictEqual(stats, { files: 1, additions: 1, deletions: 0 });
+  it.live("never calls a worktree clean while its change has files, committed or not", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.stats.set("change-session-1", { files: 0, additions: 0, deletions: 0 });
+        const { rpc } = yield* pairAndConnect(mend, "CLEAN");
+        const clean = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+        assert.isFalse(clean.hasWorkingTreeChanges);
+        mend.workbench.stats.set("change-session-1", { files: 1, additions: 1, deletions: 0 });
+        const changed = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+        assert.isTrue(changed.hasWorkingTreeChanges);
+        assert.deepStrictEqual(changed.workingTree, { files: [], insertions: 0, deletions: 0 });
+        assert.deepStrictEqual(changed.branchChanges, {
+          baseRef: "main",
+          insertions: 1,
+          deletions: 0,
+        });
+      }),
+    ),
+  );
 
-          mend.workbench.addProject("project-1", "mend");
-          mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
-          mend.workbench.stats.set("change-session-1", stats);
-          const { rpc } = yield* pairAndConnect(mend, "REAL-GIT");
-          const status = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
-          assert.isFalse(status.hasWorkingTreeChanges);
-          assert.deepStrictEqual(status.workingTree, { files: [], insertions: 0, deletions: 0 });
-          assert.deepStrictEqual(status.branchChanges, {
-            baseRef: "main",
-            insertions: 1,
-            deletions: 0,
-          });
-        }),
-      ),
+  it.effect("sends what a refresh read down the status stream at once", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.stats.set("change-session-1", { files: 1, additions: 10, deletions: 0 });
+        const { rpc } = yield* pairAndConnect(mend, "REFRESH");
+        const stream = yield* feed(rpc[WS_METHODS.subscribeVcsStatus]({ cwd: WORKTREE }));
+        yield* TestClock.withLive(
+          stream.next(
+            (event): event is Extract<Event, { _tag: "snapshot" }> => event._tag === "snapshot",
+          ),
+        );
+        mend.workbench.stats.set("change-session-1", { files: 2, additions: 30, deletions: 0 });
+        const refreshed = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+        assert.strictEqual(refreshed.branchChanges?.insertions, 30);
+        const updated = yield* TestClock.withLive(
+          stream.next(
+            (event): event is Extract<Event, { _tag: "localUpdated" }> =>
+              event._tag === "localUpdated",
+          ),
+        );
+        assert.strictEqual(updated.local.branchChanges?.insertions, 30);
+      }),
+    ).pipe(withGatewayTimers),
   );
 
   it.live("refuses to remove a worktree: the grant leaves out source-control:write", () =>

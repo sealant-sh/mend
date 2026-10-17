@@ -10,7 +10,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
-import { splitPatch, unquoteGitPath } from "../src/review.ts";
+import { splitPatch, unquoteGitPath, withoutWhitespaceOnlyHunks } from "../src/review.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
@@ -329,4 +329,141 @@ describe("whole added and deleted files", () => {
       );
     }
   }
+});
+
+const lines = (count: number, at: (n: number) => string) =>
+  Array.from({ length: count }, (_, index) => `${at(index + 1)}\n`).join("");
+
+const gitDiffWithAndWithoutWhitespace = () => {
+  const dir = mkdtempSync(join(tmpdir(), "mend-review-whitespace-"));
+  try {
+    const git = (...args: ReadonlyArray<string>) => {
+      const run = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@localhost", ...args], {
+        cwd: dir,
+        encoding: "utf8",
+        timeout: 5_000,
+        env: {
+          PATH: process.env["PATH"],
+          HOME: dir,
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          LC_ALL: "C",
+        },
+      });
+      assert.isUndefined(run.error);
+      return run.stdout;
+    };
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(dir, "indented.ts"), "const a = 1;\nconst b = 2;\nconst c = 3;\n");
+    writeFileSync(join(dir, "changed.ts"), "export const x = 1;\n");
+    writeFileSync(join(dir, "moved.ts"), "one\ntwo\nthree\nfour\nfive\nsix\n");
+    writeFileSync(
+      join(dir, "long.ts"),
+      lines(30, (n) => `line ${n}`),
+    );
+    writeFileSync(join(dir, "blank.ts"), "alpha\nbeta\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "base");
+    writeFileSync(join(dir, "indented.ts"), "const a = 1;\n    const b = 2;\nconst c = 3;\n");
+    writeFileSync(join(dir, "changed.ts"), "export const x = 2;\n");
+    git("mv", "moved.ts", "renamed.ts");
+    writeFileSync(join(dir, "renamed.ts"), "one\n  two\nthree\nfour\nfive\nsix\n");
+    writeFileSync(
+      join(dir, "long.ts"),
+      lines(30, (n) => (n === 3 ? "  line 3" : n === 27 ? "line twenty-seven" : `line ${n}`)),
+    );
+    writeFileSync(join(dir, "blank.ts"), "alpha\n\nbeta\n");
+    git("add", "-A");
+    return {
+      full: git("diff", "--cached", "-M", "HEAD"),
+      ignoring: git("diff", "--cached", "-M", "-w", "HEAD"),
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+describe("whitespace ignored on Changes", () => {
+  it("leaves out the hunks that change only whitespace, as git diff -w does", () => {
+    const { full, ignoring } = gitDiffWithAndWithoutWhitespace();
+    assert.include(full, "    const b = 2;");
+    assert.strictEqual(withoutWhitespaceOnlyHunks(full), ignoring);
+  });
+
+  it("keeps whole a hunk that changes whitespace and more: nothing shown is invented", () => {
+    const mixed = [
+      "diff --git a/m.ts b/m.ts",
+      "index 1111111..2222222 100644",
+      "--- a/m.ts",
+      "+++ b/m.ts",
+      "@@ -1,2 +1,2 @@",
+      "-const a = 1;",
+      "-const b = 2;",
+      "+  const a = 1;",
+      "+const b = 3;",
+      "",
+    ].join("\n");
+    assert.strictEqual(withoutWhitespaceOnlyHunks(mixed), mixed);
+  });
+
+  it.live("previews the change without them when the panel ignores whitespace", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const { full } = gitDiffWithAndWithoutWhitespace();
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          changeId: "change-1",
+        });
+        mend.workbench.diffs.set("change-1", {
+          diff: full,
+          files: [
+            { path: "blank.ts", additions: 1, deletions: 0 },
+            { path: "changed.ts", additions: 1, deletions: 1 },
+            { path: "indented.ts", additions: 1, deletions: 1 },
+            { path: "long.ts", additions: 2, deletions: 2 },
+            { path: "renamed.ts", additions: 1, deletions: 1 },
+          ],
+        });
+        const { rpc } = yield* pairAndConnect(mend, "WHITESPACE");
+        const cwd = "/var/lib/mend/store/project-1/worktrees/wt-session-1";
+        const statsOf = (ignoreWhitespace: boolean) =>
+          rpc[WS_METHODS.reviewGetDiffPreview]({ cwd, ignoreWhitespace }).pipe(
+            Effect.map((preview) => {
+              const [source] = preview.sources;
+              return {
+                headRef: source?.headRef,
+                files: source?.files?.map((file) => [file.path, file.additions, file.deletions]),
+              };
+            }),
+          );
+        assert.deepStrictEqual(yield* statsOf(false), {
+          headRef: "mend/wt-session-1",
+          files: [
+            ["blank.ts", 1, 0],
+            ["changed.ts", 1, 1],
+            ["indented.ts", 1, 1],
+            ["long.ts", 2, 2],
+            ["renamed.ts", 1, 1],
+          ],
+        });
+        assert.deepStrictEqual(yield* statsOf(true), {
+          headRef: "mend/wt-session-1",
+          files: [
+            ["blank.ts", 1, 0],
+            ["changed.ts", 1, 1],
+            ["long.ts", 1, 1],
+            ["renamed.ts", 0, 0],
+          ],
+        });
+        const indented = yield* rpc[WS_METHODS.reviewGetDiffPreview]({
+          cwd,
+          ignoreWhitespace: true,
+          file: { path: "indented.ts", previousPath: null, sourceKind: "branch-range" },
+        });
+        assert.strictEqual(indented.sources[0]?.diff, "");
+      }),
+    ),
+  );
 });

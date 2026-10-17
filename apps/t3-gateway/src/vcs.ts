@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
 import type { GatedMend } from "./device-gate.ts";
+import { makeFanout } from "./fanout.ts";
 import type { CwdLocation, PersonHub } from "./hub.ts";
 import type { MendBranch } from "./mend-client.ts";
 import type { BearerSession } from "./state.ts";
@@ -25,9 +26,9 @@ import type { BearerSession } from "./state.ts";
  * - The ref is the session's branch; the project's root is its default branch.
  * - Mend's change is the worktree against its base, committed or not, which is t3code's
  *   `branchChanges`: those totals.
- * - Mend has no read of the worktree's HEAD, index or uncommitted files, so nothing is claimed
- *   about them: `hasWorkingTreeChanges` is false and `workingTree` empty, rather than base-diff
- *   totals presented as uncommitted work.
+ * - Mend has no read of the worktree's HEAD, index or uncommitted files, and t3code says "Worktree
+ *   is clean" when `hasWorkingTreeChanges` is false: it is true whenever the change has files, and
+ *   `workingTree` stays empty.
  * - Mend tracks no upstream for a session's branch (landing is its own step, ADR 0007), so the
  *   remote half is null: nothing ahead, behind or in review is claimed.
  *
@@ -35,7 +36,8 @@ import type { BearerSession } from "./state.ts";
  * changes in the shell (every session there adds to its one change), or a thread goes, and every
  * fifteen seconds besides, as a change can move without its threads changing. Reads come at most
  * once a second, however busy the worktree: a burst is one read at the end of its second, never
- * put off while the burst lasts.
+ * put off while the burst lasts. `vcs.refreshStatus` sends what it read down the socket's streams
+ * of that `cwd` at once: t3code drops the call's answer and waits for the stream.
  */
 
 /** At most one read of a worktree's status this often while it keeps changing. */
@@ -53,7 +55,7 @@ export const localStatusOf = (
   hasPrimaryRemote: location.hasOrigin,
   isDefaultRef: location.branch === location.defaultBranch,
   refName: location.branch.trim().length > 0 ? location.branch : null,
-  hasWorkingTreeChanges: false,
+  hasWorkingTreeChanges: stats !== null && stats.files > 0,
   workingTree: EMPTY_TREE,
   ...(location.sessionId === null
     ? {}
@@ -132,6 +134,7 @@ export const makeVcsHandlers = (input: {
   readonly session: BearerSession;
 }) => {
   const { hub, mend, session } = input;
+  const refreshed = makeFanout<{ readonly cwd: string; readonly local: VcsStatusLocalResult }>();
 
   /** Where `cwd` is, and its status now. */
   const statusAt = (operation: string, cwd: string) =>
@@ -153,6 +156,7 @@ export const makeVcsHandlers = (input: {
 
   const refreshStatus = (request: VcsStatusInput) =>
     statusAt("vcs.refreshStatus", request.cwd).pipe(
+      Effect.tap(({ local }) => refreshed.publish([{ cwd: request.cwd, local }])),
       Effect.map(
         ({ local }): VcsStatusResult => ({
           ...local,
@@ -174,6 +178,7 @@ export const makeVcsHandlers = (input: {
         const shell = yield* hub
           .subscribeShell(undefined)
           .pipe(Effect.mapError((error) => failed(operation, request.cwd)(error.message)));
+        const asked = yield* refreshed.subscribe((entry) => entry.cwd === request.cwd);
         const first = yield* statusAt(operation, request.cwd);
         const snapshot: VcsStatusStreamEvent = {
           _tag: "snapshot",
@@ -194,7 +199,7 @@ export const makeVcsHandlers = (input: {
           ),
           Stream.map(() => undefined),
         );
-        const updates = Stream.merge(moved, Stream.tick(VCS_POLL).pipe(Stream.drop(1))).pipe(
+        const read = Stream.merge(moved, Stream.tick(VCS_POLL).pipe(Stream.drop(1))).pipe(
           Stream.groupedWithin(Number.MAX_SAFE_INTEGER, VCS_REFRESH_MS),
           Stream.mapEffect(() =>
             statusAt(operation, request.cwd).pipe(
@@ -203,6 +208,8 @@ export const makeVcsHandlers = (input: {
               Effect.orElseSucceed(() => null),
             ),
           ),
+        );
+        const updates = Stream.merge(read, asked.pipe(Stream.map((entry) => entry.local))).pipe(
           Stream.filter((local): local is VcsStatusLocalResult => {
             if (local === null) return false;
             const print = JSON.stringify(local);

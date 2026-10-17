@@ -23,6 +23,11 @@ import type { BearerSession } from "./state.ts";
  * the patch holds whole (added or deleted) from the patch; a changed or renamed one is read whole
  * from the worktree (`GET /api/worktrees/:id/contents`): the old side at the worktree's first
  * checkpoint, where the change starts, and the new side as the worktree stands.
+ *
+ * `GET /api/changes/:id/diff` takes no base and no whitespace option, and Mend has no read of a
+ * worktree's HEAD or index. So a base ref picked in the panel is not read (the source names the
+ * base Mend used), ignoring whitespace drops the hunks that change only whitespace, and there is
+ * no `working-tree` source: "Uncommitted" has no patch rather than an empty one.
  */
 
 const unsupported = (operation: string, detail: string) =>
@@ -161,6 +166,47 @@ const wholeSide = (patch: string, side: "+" | "-"): string => {
   return lines.length === 0 || noNewline ? text : `${text}\n`;
 };
 
+const withoutWhitespace = (line: string): string => line.slice(1).replace(/\s+/g, "");
+
+const changesOnlyWhitespace = (hunk: string): boolean => {
+  const lines = hunk.split("\n").slice(1);
+  const removed = lines.filter((line) => line.startsWith("-")).map(withoutWhitespace);
+  const added = lines.filter((line) => line.startsWith("+")).map(withoutWhitespace);
+  return removed.length === added.length && removed.every((line, index) => line === added[index]);
+};
+
+/**
+ * A unified git diff without the hunks that change only whitespace, close to what `git diff -w`
+ * shows: a hunk that changes whitespace and anything else stays whole, so every line shown is
+ * Mend's. A file left with no hunk goes, unless its header says more than its paths and blobs (a
+ * rename, a new mode), which stays without the `---`/`+++` lines a hunk needs, as git prints it.
+ */
+export const withoutWhitespaceOnlyHunks = (diff: string): string =>
+  splitPatch(diff)
+    .map(({ patch }) => {
+      const [header = "", ...hunks] = patch.split(/^(?=@@)/m);
+      if (hunks.length === 0) return patch;
+      const kept = hunks.filter((hunk) => !changesOnlyWhitespace(hunk));
+      if (kept.length > 0) return [header, ...kept].join("");
+      const lines = header.split("\n").filter((line) => line.length > 0);
+      const facts = lines.filter((line) => !/^(---|\+\+\+) /.test(line));
+      const saysMore = facts.some((line) => !/^(diff --git|index) /.test(line));
+      return saysMore ? `${facts.join("\n")}\n` : "";
+    })
+    .join("");
+
+const countsOf = (patch: string) => {
+  const lines = patch
+    .split(/^(?=@@)/m)
+    .slice(1)
+    .join("")
+    .split("\n");
+  return {
+    additions: lines.filter((line) => line.startsWith("+")).length,
+    deletions: lines.filter((line) => line.startsWith("-")).length,
+  };
+};
+
 const diffHash = (diff: string): string =>
   `sha256:${createHash("sha256").update(diff).digest("hex")}`;
 
@@ -198,11 +244,13 @@ export const makeReviewHandlers = (input: {
     Effect.gen(function* () {
       const operation = "review.getDiffPreview";
       const { change, diff } = yield* changeAt(operation, request.cwd);
+      const shown =
+        request.ignoreWhitespace === true ? withoutWhitespaceOnlyHunks(diff.diff) : diff.diff;
       const files = request.file === undefined ? null : request.file;
       const patch =
         files === null
-          ? diff.diff
-          : splitPatch(diff.diff)
+          ? shown
+          : splitPatch(shown)
               .filter(
                 (file) =>
                   file.newPath === files.path ||
@@ -222,11 +270,11 @@ export const makeReviewHandlers = (input: {
             title:
               diff.observation === undefined ? "Changes" : `Changes · ${diff.observation.label}`,
             baseRef: nonEmptyOr(change.baseRef, diff.change.baseSha),
-            headRef: nonEmptyOr(diff.change.headSha, diff.change.branch),
+            headRef: diff.change.branch.trim().length > 0 ? diff.change.branch.trim() : null,
             diff: patch,
             diffHash: diffHash(patch),
             truncated: false,
-            files: filesOf(diff),
+            files: filesOf(diff, shown),
           },
         ],
       };
@@ -312,10 +360,23 @@ export const makeReviewHandlers = (input: {
   return { getDiffPreview, getDiffFileContents };
 };
 
-const filesOf = (diff: MendChangeDiff) =>
-  diff.files.map((file) => ({
-    path: file.path,
-    previousPath: null,
-    additions: file.additions,
-    deletions: file.deletions,
-  }));
+const sectionOf = (sections: ReadonlyArray<PatchFile>, path: string) =>
+  sections.find((section) => (section.newPath ?? section.oldPath) === path);
+
+const filesOf = (diff: MendChangeDiff, shown: string) => {
+  const before = splitPatch(diff.diff);
+  const after = splitPatch(shown);
+  return diff.files.flatMap((file) => {
+    const stat = {
+      path: file.path,
+      previousPath: null,
+      additions: file.additions,
+      deletions: file.deletions,
+    };
+    const was = sectionOf(before, file.path);
+    if (was === undefined) return [stat];
+    const is = sectionOf(after, file.path);
+    if (is === undefined) return [];
+    return is.patch === was.patch ? [stat] : [{ ...stat, ...countsOf(is.patch) }];
+  });
+};
