@@ -4,17 +4,21 @@ t3code's contracts, for the t3code gateway (ADR 0012, `docs/adr/0012-t3code-gate
 
 ## Attribution
 
-Everything under `src/` and `shared/` is copied verbatim from
+Everything under `src/`, `t3-shared/src/` and `client-runtime/` is copied verbatim from
 [t3code](https://github.com/pingdotgg/t3code), Copyright (c) 2026 T3 Tools Inc., under the MIT
 License in `LICENSE` (t3code's own, copied with the files):
 
 - `src/` is `packages/contracts/src`.
-- `shared/keybindings.ts` is `packages/shared/src/keybindings.ts`, which holds t3code's default
-  keybindings (`DEFAULT_KEYBINDINGS`). It imports `@t3tools/contracts`, which this package links to
-  itself.
-- `shared/threadSettled.ts` is `packages/client-runtime/src/state/threadSettled.ts`: how t3code's
-  clients read a thread's settle and snooze, including when a snooze wakes. The gateway's tests hold
-  its shell to it.
+- `client-runtime/threadSettled.ts` is `packages/client-runtime/src/state/threadSettled.ts`: how
+  t3code's clients read a thread's settle and snooze, including when a snooze wakes. The gateway's
+  tests hold its shell to it. The other files in `client-runtime/` are the client state it takes
+  types from.
+- `t3-shared/src/` holds the files of t3code's `packages/shared/src` that the copied files import,
+  `keybindings.ts` among them (t3code's default keybindings, `DEFAULT_KEYBINDINGS`).
+- The copied files import `@t3tools/contracts` and `@t3tools/shared/<name>` as upstream does. This
+  package links the first to itself and the second to `t3-shared/`, whose `package.json` (Mend's,
+  not copied) maps each name to `src/<name>.ts` as t3code's own package does. When a pin brings a
+  new import, add its file to `scripts/sources.ts`; the typecheck names the missing one.
 
 `t3code.pin.json` records the tag, its commit, and the git blob id and SHA-256 of every copied file.
 
@@ -22,9 +26,9 @@ License in `LICENSE` (t3code's own, copied with the files):
 
 - Never edit the copied files. Mend's lint and format skip them; `tsconfig.json` carries t3code's
   compiler options so they typecheck as upstream does.
-- The package runs on Effect `4.0.2` from the `t3` catalog in `pnpm-workspace.yaml`, apart from the
+- The package runs on Effect `4.0.5` from the `t3` catalog in `pnpm-workspace.yaml`, apart from the
   rest of the monorepo.
-- To move the pin, run the copy script with a nightly tag, never `main`:
+- To move the pin, run the copy script with a nightly or preview tag, never `main`:
 
   ```sh
   pnpm --filter @mend/t3-contracts sync --tag <t3code tag> [--source <t3code checkout>]
@@ -42,10 +46,10 @@ License in `LICENSE` (t3code's own, copied with the files):
   retrying.
 
 - `scripts/drift.ts` says whether t3code moved on: it lists the files under the vendored sources at
-  the newest nightly tag (or `--tag`) by git blob id and compares them with the pin, writing nothing
-  here. Exit 0 is no drift, 1 drift (the report lists what changed, what is new, what is gone), 2
-  that it could not tell. `.github/workflows/t3code-drift.yml` runs it every day and opens one
-  issue, or comments on it for a new tag; moving the pin stays a person's step.
+  the newest nightly or preview tag (or `--tag`) by git blob id and compares them with the pin,
+  writing nothing here. Exit 0 is no drift, 1 drift (the report lists what changed, what is new,
+  what is gone), 2 that it could not tell. `.github/workflows/t3code-drift.yml` runs it every day
+  and opens one issue, or comments on it for a new tag; moving the pin stays a person's step.
 
 ## Tests
 

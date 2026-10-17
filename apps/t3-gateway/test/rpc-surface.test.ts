@@ -101,6 +101,10 @@ const rawRpcSocket = (url: string) =>
 const Frame = Schema.Struct({ _tag: Schema.String, requestId: Schema.optional(Schema.String) });
 const decodeFrame = Schema.decodeUnknownOption(Frame);
 
+const HAND_PAYLOADS: ReadonlyMap<string, unknown> = new Map([
+  ["server.checkOtlpEndpoint", { signal: "traces", url: "https://otel.example.com/v1/traces" }],
+]);
+
 /**
  * A payload generated from the method's own schema that the server will decode: generated values
  * are encoded and decoded back, and one that does not survive (a string the schema trims to
@@ -108,6 +112,8 @@ const decodeFrame = Schema.decodeUnknownOption(Frame);
  */
 const validPayload = (rpc: WsRpc) =>
   Effect.gen(function* () {
+    const hand = HAND_PAYLOADS.get(rpc._tag);
+    if (hand !== undefined) return hand;
     const schema = Schema.make<Schema.Codec<unknown, unknown>>(rpc.payloadSchema.ast);
     const codec = Schema.toCodecJson(schema);
     const samples = yield* Arbitrary.sampleEffect(Arbitrary.schema(schema), {

@@ -1,5 +1,5 @@
 # The t3code gateway's drift job (docs/adr/0012, phase 4). Once a day it compares the contracts
-# packages/t3-contracts vendors with t3code's newest nightly tag, by git blob id. On drift it opens
+# packages/t3-contracts vendors with t3code's newest nightly or preview tag, by git blob id. On drift it opens
 # one issue, or comments on the open one when the tag is new to it; it never moves the pin, which
 # a person does with `pnpm --filter @mend/t3-contracts sync --tag <tag>`.
 name: t3code drift
@@ -26,7 +26,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-      - name: Compare the pinned contracts with t3code's newest nightly
+      - name: Compare the pinned contracts with t3code's newest nightly or preview
         id: drift
         run: |
           set +e
@@ -43,7 +43,7 @@ jobs:
               exit 1
               ;;
           esac
-          tag=$(grep -oE 'v[0-9.]+-nightly\.[0-9]+\.[0-9]+' "$RUNNER_TEMP/drift.txt" | tail -1 || true)
+          tag=$(grep -oE 'v[0-9.]+-(nightly|preview)\.[0-9]+\.[0-9]+' "$RUNNER_TEMP/drift.txt" | tail -1 || true)
           if [ -z "$tag" ] || [ ! -s "$RUNNER_TEMP/drift.md" ]; then
             echo "::error::the drift check ended with status $code but named no tag or wrote no report"
             exit 1

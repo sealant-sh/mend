@@ -6,9 +6,9 @@ them it is a t3code server; to Mend it is an ordinary client of `/api`, calling 
 token of the person who paired. Mend stays the only source of truth and its access rules apply
 unchanged.
 
-It runs on Effect `4.0.2` from the `t3` catalog and speaks t3code's contracts from
-`@mend/t3-contracts`, pinned to one t3code nightly tag. It does not import `@mend/api-contracts`: it
-decodes only the Mend fields it reads.
+It runs on Effect `4.0.5` from the `t3` catalog and speaks t3code's contracts from
+`@mend/t3-contracts`, pinned to one t3code nightly or preview tag. It does not import
+`@mend/api-contracts`: it decodes only the Mend fields it reads.
 
 ## Phase 0: HTTP
 
@@ -26,7 +26,7 @@ Refusals carry t3code's own error bodies (`EnvironmentAuthInvalidError`,
 
 ## Phase 0: the RPC socket
 
-`GET /ws?wsTicket=…&orchestrationProtocol=2` upgrades to Effect RPC in JSON on Effect `4.0.2`,
+`GET /ws?wsTicket=…&orchestrationProtocol=2` upgrades to Effect RPC in JSON on Effect `4.0.5`,
 serving t3code's whole `WsRpcGroup`. Without `orchestrationProtocol=2` it answers 426 with t3code's
 body. A ticket is spent once; a socket without one may use the request's own bearer, as t3code
 allows. Each socket gets its own RPC server, holding the handlers of the person who paired.
@@ -60,6 +60,9 @@ older clients.
 | `scheduledTasks.subscribe`                                   | No tasks, then open: the settings page lists none, and a thread's details show no automations (a failure would say "Could not load automations" on every thread)                                                             |
 | `subscribeDeviceState`                                       | A hub set up and failed, with why, then open: t3code opens its device setup wizard for a hub not set up or off, whose switch Mend can never turn on; for this one its device panel says Mend runs no simulators              |
 | `agentSessions.scan`                                         | No candidates: the gateway has no agent history to scan, and Mend's projects are in the shell already                                                                                                                        |
+| `filesystem.getMetadata`                                     | `null` for every path, t3code's "unsupported": a host path names no thread, so no worktree to read it from. A file chip shows a plain icon and no size                                                                       |
+| `server.getDatabaseStorage`                                  | `null` (no status), then open: the gateway has no database of its own to compact, and t3code shows no notice                                                                                                                 |
+| `GET /api/orchestration/threads/:id/transcript`              | The thread's visible items, as its snapshot holds them, for a thread attached to a message; one larger than a turn's file limit is refused as t3code refuses it                                                              |
 | every other command or read                                  | A typed failure from the method's own contract, never a defect                                                                                                                                                               |
 | feeds of things Mend never has (previews, provider setup, …) | Open, and never emit; one whose scope is withheld is refused before it opens                                                                                                                                                 |
 
@@ -333,11 +336,11 @@ with a reason if it still cannot read the session after thirty seconds.
 Each goes through Mend's own route as the person, so Mend's rules decide: a session that is not
 theirs answers t3code's authorization error.
 
-| t3code                                     | Mend                                                                                               |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `thread.metadata.update` with only `title` | `POST /api/sessions/:id/label`, its owner's to set. A branch, worktree or pull request is refused  |
-| `provider-session.detach`                  | `POST /api/sessions/:id/stop`; what is still queued is held, so nothing relaunches it unasked      |
-| `thread.delete`                            | `DELETE /api/sessions/:id`; when Mend answers that the session is live, a stop and one more delete |
+| t3code                                     | Mend                                                                                                                                 |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `thread.metadata.update` with only `title` | `POST /api/sessions/:id/label`, its owner's to set. Any other field (a branch, worktree, pull request or expected branch) is refused |
+| `provider-session.detach`                  | `POST /api/sessions/:id/stop`; what is still queued is held, so nothing relaunches it unasked                                        |
+| `thread.delete`                            | `DELETE /api/sessions/:id`; when Mend answers that the session is live, a stop and one more delete                                   |
 
 t3code's client sends `provider-session.detach` before it deletes a thread with a live agent. Mend
 keeps the session's worktree and change after a delete, as it does for every session it removes.

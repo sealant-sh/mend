@@ -29,7 +29,7 @@ export interface ShortcutModifierStateLike {
   altKey: boolean;
 }
 
-const EVENT_CODE_SHORTCUT_KEYS: Readonly<Record<string, string>> = {
+export const EVENT_CODE_SHORTCUT_KEYS: Readonly<Record<string, string>> = {
   Backquote: "`",
   Backslash: "\\",
   BracketLeft: "[",
@@ -193,7 +193,7 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   ...THREAD_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
     key: `mod+${index + 1}`,
     command,
-    when: "isDesktop",
+    when: "!modelPickerOpen && isDesktop",
   })),
   ...MODEL_PICKER_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
     key: `mod+${index + 1}`,

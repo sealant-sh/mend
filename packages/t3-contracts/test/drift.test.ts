@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { driftOf, hasDrift, newestNightly, parseLsTree, reportOf } from "../scripts/drift-lib.ts";
+import { driftOf, hasDrift, newestTag, parseLsTree, reportOf } from "../scripts/drift-lib.ts";
 import { localOf } from "../scripts/sources.ts";
 
 /** The drift job (docs/adr/0012, phase 4): what changed upstream since the pin, by blob id. */
 
-describe("the newest nightly", () => {
+describe("the newest tag", () => {
   it("orders by version, then date, then build, and ignores other tags", () => {
     expect(
-      newestNightly([
+      newestTag([
         "v0.0.46-nightly.20261003.2623",
         "v0.0.46-nightly.20261009.2886",
         "v0.0.46-nightly.20261009.2885",
@@ -17,10 +17,13 @@ describe("the newest nightly", () => {
         "nightly-latest",
       ]),
     ).toBe("v0.0.46-nightly.20261009.2886");
-    expect(newestNightly(["v0.0.47-nightly.20261001.1", "v0.0.46-nightly.20261009.2886"])).toBe(
+    expect(newestTag(["v0.0.47-nightly.20261001.1", "v0.0.46-nightly.20261009.2886"])).toBe(
       "v0.0.47-nightly.20261001.1",
     );
-    expect(newestNightly(["v1.0.0"])).toBeNull();
+    expect(
+      newestTag(["v0.1.1-nightly.20261017.3238", "v0.1.1-preview.20261017.3254", "v0.1.1"]),
+    ).toBe("v0.1.1-preview.20261017.3254");
+    expect(newestTag(["v1.0.0"])).toBeNull();
   });
 });
 
@@ -64,7 +67,11 @@ describe("drift", () => {
 
   it("maps upstream files to where sync puts them, and nothing outside the sources", () => {
     expect(localOf("packages/contracts/src/x/y.ts")).toBe("src/x/y.ts");
-    expect(localOf("packages/shared/src/keybindings.ts")).toBe("shared/keybindings.ts");
+    expect(localOf("packages/shared/src/keybindings.ts")).toBe("t3-shared/src/keybindings.ts");
+    expect(localOf("packages/client-runtime/src/state/threadSettled.ts")).toBe(
+      "client-runtime/threadSettled.ts",
+    );
+    expect(localOf("packages/shared/src/unvendored.ts")).toBeNull();
     expect(localOf("packages/contracts/srcish/z.ts")).toBeNull();
     expect(localOf("apps/web/src/main.ts")).toBeNull();
   });

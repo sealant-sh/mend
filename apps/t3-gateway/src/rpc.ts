@@ -16,8 +16,10 @@ import {
   OrchestrationGetTurnDiffError,
   OrchestrationGetWorkflowScriptError,
   OrchestrationSearchThreadsError,
+  OrchestrationV2CommandOutputError,
   OrchestrationV2GetShellSnapshotError,
   OrchestrationV2GetThreadProjectionError,
+  OrchestrationV2StopWorkflowError,
   PersistChatAttachmentsError,
   ProjectMutationError,
   ProviderSetupError,
@@ -101,6 +103,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.subscribeServerConfig,
   WS_METHODS.subscribeServerLifecycle,
   WS_METHODS.serverGetStorageCleanupReport,
+  WS_METHODS.serverGetDatabaseStorage,
+  WS_METHODS.filesystemGetMetadata,
   ORCHESTRATION_V2_WS_METHODS.subscribeShell,
   ORCHESTRATION_V2_WS_METHODS.subscribeThread,
   ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
@@ -173,6 +177,12 @@ const notOffered = (method: WsRpcMethod) =>
 const refuse = (method: WsRpcMethod) => Effect.fail(notOffered(method));
 
 const refuseStream = (method: WsRpcMethod) => Stream.fail(notOffered(method));
+
+/** t3code's "nothing to report" for a status feed: `null`, then open. */
+const noStatus = () => Stream.concat(Stream.make(null), Stream.never);
+
+/** t3code's answer for a path it cannot read metadata for: missing, unreadable or unsupported. */
+const UNSUPPORTED_METADATA = null;
 
 const PROVIDER_SETUP_DETAIL =
   "Mend runs each harness on its person's own login. Sign in and install harnesses in Mend.";
@@ -622,6 +632,22 @@ export const makeGatewayRpcHandlers = ({
           scriptPath: input.scriptPath,
         }),
       ),
+    [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: (input) =>
+      Effect.fail(
+        new OrchestrationV2StopWorkflowError({
+          threadId: input.threadId,
+          subagentId: input.subagentId,
+          reason: "unsupported",
+        }),
+      ),
+    // t3code subscribes only when the descriptor offers `commandOutputStreaming`; it does not.
+    [ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput]: (input) =>
+      Stream.fail(
+        new OrchestrationV2CommandOutputError({
+          threadId: input.threadId,
+          message: notOfferedText(ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput),
+        }),
+      ),
 
     // ── Providers: Mend's harnesses, set up in Mend ─────────────────────────
     // A refresh reads the person's logins and Mend's catalog again (review R650-3); it sets up
@@ -702,9 +728,14 @@ export const makeGatewayRpcHandlers = ({
       refuse(WS_METHODS.serverRetryResourceTelemetry),
     [WS_METHODS.serverGetUsageSummary]: () => refuse(WS_METHODS.serverGetUsageSummary),
     // The gateway keeps nothing a cleanup would free: there is never a report.
-    [WS_METHODS.serverGetStorageCleanupReport]: () =>
-      Stream.concat(Stream.make(null), Stream.never),
+    [WS_METHODS.serverGetStorageCleanupReport]: noStatus,
     [WS_METHODS.serverRunStorageCleanup]: () => refuse(WS_METHODS.serverRunStorageCleanup),
+    [WS_METHODS.serverGetDatabaseStorage]: noStatus,
+    [WS_METHODS.serverCheckOtlpEndpoint]: () => refuse(WS_METHODS.serverCheckOtlpEndpoint),
+    [WS_METHODS.peerLinksList]: () => refuse(WS_METHODS.peerLinksList),
+    [WS_METHODS.peerLinksLink]: () => refuse(WS_METHODS.peerLinksLink),
+    [WS_METHODS.peerLinksUnlink]: () => refuse(WS_METHODS.peerLinksUnlink),
+    [WS_METHODS.peerLinksAnswerRequest]: () => refuse(WS_METHODS.peerLinksAnswerRequest),
     [WS_METHODS.serverRefreshUsageRates]: () => refuse(WS_METHODS.serverRefreshUsageRates),
     [WS_METHODS.serverSignalProcess]: () => refuse(WS_METHODS.serverSignalProcess),
     // Nothing in the gateway waits on a client being active: taken, and nothing done.
@@ -809,6 +840,9 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.pullRequestsSetReaction]: () => pullRequests(WS_METHODS.pullRequestsSetReaction),
     [WS_METHODS.pullRequestsInvalidate]: () => pullRequests(WS_METHODS.pullRequestsInvalidate),
     [WS_METHODS.pullRequestsReportState]: () => pullRequests(WS_METHODS.pullRequestsReportState),
+    [WS_METHODS.pullRequestsReviewGuide]: () => pullRequests(WS_METHODS.pullRequestsReviewGuide),
+    [WS_METHODS.pullRequestsGenerateReviewGuide]: () =>
+      pullRequests(WS_METHODS.pullRequestsGenerateReviewGuide),
     [WS_METHODS.pullRequestsReviewerCandidates]: () =>
       pullRequests(WS_METHODS.pullRequestsReviewerCandidates),
     [WS_METHODS.pullRequestsRequestReviewers]: () =>
@@ -869,6 +903,8 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.shellOpenInEditor]: (input) =>
       Effect.fail(new ExternalLauncherUnsupportedEditorError({ editor: input.editor })),
     [WS_METHODS.filesystemBrowse]: () => refuse(WS_METHODS.filesystemBrowse),
+    [WS_METHODS.filesystemGetMetadata]: (input) =>
+      authorize(session).pipe(Effect.as({ entries: input.paths.map(() => UNSUPPORTED_METADATA) })),
     // Nothing to import: the gateway has no agent history of its own to scan, and Mend's projects
     // are in the shell already. t3code's onboarding then offers none.
     [WS_METHODS.agentSessionsScan]: () =>

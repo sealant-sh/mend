@@ -64,14 +64,19 @@ const gitBlobId = (bytes: Buffer): string =>
 const pin = readPin();
 
 describe("vendored t3code contracts", () => {
-  it("records a nightly tag and its full commit", () => {
+  it("records a nightly or preview tag and its full commit", () => {
     expect(pin.repository).toBe("https://github.com/pingdotgg/t3code.git");
-    expect(pin.tag).toMatch(/^v\d+\.\d+\.\d+-nightly\.\d{8}\.\d+$/);
+    expect(pin.tag).toMatch(/^v\d+\.\d+\.\d+-(nightly|preview)\.\d{8}\.\d+$/);
     expect(pin.commit).toMatch(/^[0-9a-f]{40}$/);
   });
 
   it("holds exactly the pinned files, with nothing added or missing", () => {
-    const onDisk = [...listFiles("src"), ...listFiles("shared"), "LICENSE"].toSorted();
+    const onDisk = [
+      ...listFiles("src"),
+      ...listFiles("t3-shared/src"),
+      ...listFiles("client-runtime"),
+      "LICENSE",
+    ].toSorted();
     expect(onDisk).toEqual(Object.keys(pin.files).toSorted());
   });
 

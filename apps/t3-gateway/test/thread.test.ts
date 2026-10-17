@@ -2,14 +2,19 @@ import {
   ORCHESTRATION_PROTOCOL_HEADER,
   ORCHESTRATION_PROTOCOL_VERSION_TEXT,
   ORCHESTRATION_V2_WS_METHODS,
+  OrchestrationV2ThreadTranscript,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   ThreadId,
+  type EnvironmentId,
   type OrchestrationV2ThreadStreamItem,
   type OrchestrationV2TurnItem,
 } from "@mend/t3-contracts";
+import { threadTranscriptHeader } from "@mend/t3-contracts/thread-transcript";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { NO_LIFECYCLE } from "../src/lifecycle.ts";
 import type { MendItem, MendProcess, MendProject, MendSession } from "../src/mend-workbench.ts";
@@ -41,6 +46,28 @@ const turnItemEvent =
   (accept: (item: OrchestrationV2TurnItem) => boolean) =>
   (item: Item): item is EventItem =>
     item.kind === "event" && item.event.type === "turn-item.updated" && accept(item.event.payload);
+
+const byteLength = (text: string) => Buffer.byteLength(text, "utf8");
+
+/** What the old check measured: the transcript as the HTTP response encodes it. */
+const responseBytes = (transcript: OrchestrationV2ThreadTranscript) =>
+  byteLength(
+    JSON.stringify(
+      Schema.encodeSync(Schema.toCodecJson(OrchestrationV2ThreadTranscript))(transcript),
+    ),
+  );
+
+/** The JSONL file t3code's client attaches (`t3:apps/web/src/lib/threadContextAttachment.ts`). */
+const attachmentBytes = (
+  environmentId: EnvironmentId,
+  transcript: OrchestrationV2ThreadTranscript,
+) =>
+  byteLength(
+    [
+      threadTranscriptHeader(environmentId, transcript),
+      ...transcript.items.map((row) => `${JSON.stringify(row)}\n`),
+    ].join(""),
+  );
 
 describe("a thread", () => {
   it.live("reads a session in full, and follows a turn as it streams", () =>
@@ -104,6 +131,14 @@ describe("a thread", () => {
           "Twelve decisions.",
         );
         assert.strictEqual(bounded.latestLocalTurnOrdinal, answer?.ordinal);
+
+        const transcript = yield* client.orchestration.threadTranscript({
+          headers,
+          params: { threadId: ThreadId.make("session-1") },
+        });
+        assert.strictEqual(transcript.threadId, "session-1");
+        assert.strictEqual(transcript.title, projection.thread.title);
+        assert.deepStrictEqual(transcript.items, projection.visibleTurnItems);
         assert.deepStrictEqual(
           projection.messages.map((message) => [message.role, message.text]),
           [
@@ -264,6 +299,68 @@ describe("a thread", () => {
     ).pipe(withGatewayTimers),
   );
 
+  it.live("refuses a transcript whose attachment, not its response, passes 50 MiB", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const turn = mend.workbench.addTurn("session-1", "Write it all out.", "completed");
+        const answer = mend.workbench.addItem(turn, { kind: "assistant-message", text: "" });
+        const { access, client } = yield* pairAndConnect(mend, "BIGTHREAD");
+        const { environmentId } = yield* client.metadata.descriptor();
+        const request = {
+          headers: {
+            authorization: `Bearer ${access.access_token}`,
+            [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+          },
+          params: { threadId: ThreadId.make("session-1") },
+        } as const;
+        const transcriptOf = Effect.gen(function* () {
+          const { projection } = yield* client.orchestration.threadSnapshot(request);
+          return {
+            threadId: projection.thread.id,
+            title: projection.thread.title,
+            updatedAt: projection.updatedAt,
+            items: projection.visibleTurnItems,
+          };
+        });
+        const answerOf = (bytes: number) => {
+          mend.workbench.updateItem(answer, { text: "a".repeat(bytes) });
+          return transcriptOf;
+        };
+
+        // The answer grows the response and the attachment byte for byte; the attachment's
+        // header and newlines cost more than the response's envelope.
+        const empty = yield* transcriptOf;
+        const atResponseLimit = yield* answerOf(
+          PROVIDER_SEND_TURN_MAX_FILE_BYTES - responseBytes(empty),
+        );
+        assert.strictEqual(responseBytes(atResponseLimit), PROVIDER_SEND_TURN_MAX_FILE_BYTES);
+        const over =
+          attachmentBytes(environmentId, atResponseLimit) - PROVIDER_SEND_TURN_MAX_FILE_BYTES;
+        assert.isAbove(over, 0);
+        const refused = yield* Effect.exit(client.orchestration.threadTranscript(request));
+        const error = Exit.isFailure(refused)
+          ? Option.getOrUndefined(Cause.findErrorOption(refused.cause))
+          : undefined;
+        assert.strictEqual(
+          error?._tag === "EnvironmentRequestInvalidError" ? error.reason : error?._tag,
+          "thread_transcript_too_large",
+        );
+
+        const atAttachmentLimit = yield* answerOf(
+          PROVIDER_SEND_TURN_MAX_FILE_BYTES - responseBytes(empty) - over,
+        );
+        const transcript = yield* client.orchestration.threadTranscript(request);
+        assert.deepStrictEqual(transcript, atAttachmentLimit);
+        assert.strictEqual(
+          attachmentBytes(environmentId, transcript),
+          PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+        );
+      }),
+    ),
+  );
+
   it.live("answers a thread the person does not have with t3code's typed refusals", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
@@ -301,6 +398,21 @@ describe("a thread", () => {
               "EnvironmentResourceNotFoundError",
             );
           }
+          const transcript = yield* Effect.exit(
+            client.orchestration.threadTranscript({
+              headers: {
+                authorization: `Bearer ${access.access_token}`,
+                [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+              },
+              params: { threadId: ThreadId.make(threadId) },
+            }),
+          );
+          assert.strictEqual(
+            Exit.isFailure(transcript)
+              ? Option.getOrUndefined(Cause.findErrorOption(transcript.cause))?._tag
+              : "succeeded",
+            "EnvironmentResourceNotFoundError",
+          );
         }
       }),
     ),

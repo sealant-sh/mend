@@ -19,11 +19,12 @@ It runs in the Mend container on a listener of its own (port 3120, or `--t3-gate
 setup and `mend server status` say whether it answered. `--no-t3-gateway` turns it off. Off, nothing
 of it runs and the gate lists nothing about it.
 
-It speaks t3code `v0.0.46-nightly.20261010.2922` (a client of the previous nightly still pairs) and
-checks every call against the paired client's scopes, as t3code's own server does. Its state file
-holds every paired person's Mend device token and is readable only by the gateway's user (`0600` in
-a `0700` directory). Failed pairing codes count per client, and a client Mend rate-limits gets `429`
-with Mend's `retry-after`. Revoking a `t3code · …` device in Mend signs that client out: t3code
-shows "Connection failed: The environment credential is invalid." and stops reconnecting. While Mend
-cannot be reached, the gateway answers new connections and snapshot reads with a retryable `503`.
-Deleting a thread's worktree from t3code says that Mend keeps it and where to remove it.
+It speaks t3code `v0.1.1-preview.20261017.3254` (a client of `v0.0.46-nightly.20261010.2922` still
+pairs) and checks every call against the paired client's scopes, as t3code's own server does. Its
+state file holds every paired person's Mend device token and is readable only by the gateway's user
+(`0600` in a `0700` directory). Failed pairing codes count per client, and a client Mend rate-limits
+gets `429` with Mend's `retry-after`. Revoking a `t3code · …` device in Mend signs that client out:
+t3code shows "Connection failed: The environment credential is invalid." and stops reconnecting.
+While Mend cannot be reached, the gateway answers new connections and snapshot reads with a
+retryable `503`. Deleting a thread's worktree from t3code says that Mend keeps it and where to
+remove it.

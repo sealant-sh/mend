@@ -5,10 +5,12 @@ import { join } from "node:path";
 import {
   CommandId,
   MessageId,
+  NodeId,
   ORCHESTRATION_V2_WS_METHODS,
   ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
+  RunId,
   ThreadId,
   type OrchestrationV2Run,
   type OrchestrationV2ShellStreamItem,
@@ -558,6 +560,32 @@ describe("rename, stop and delete", () => {
           }),
         );
         assert.strictEqual(errorTag(branch), "OrchestrationV2DispatchCommandError");
+
+        const guardedRename = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.metadata.update",
+            commandId: commandId(),
+            threadId: ThreadId.make("session-1"),
+            title: "Guarded",
+            expectedBranch: "feature/x",
+          }),
+        );
+        assert.strictEqual(errorTag(guardedRename), "OrchestrationV2DispatchCommandError");
+
+        const subagentStop = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "subagent.stop",
+            commandId: commandId(),
+            threadId: ThreadId.make("session-1"),
+            runId: RunId.make("run-1"),
+            subagentId: NodeId.make("subagent-1"),
+          }),
+        );
+        assert.strictEqual(errorTag(subagentStop), "OrchestrationV2DispatchCommandError");
+        assert.deepStrictEqual(
+          calls(mend, "POST", "/sessions/session-1/label").map((call) => call.body),
+          [{ label: "Parser cleanup" }],
+        );
       }),
     ),
   );

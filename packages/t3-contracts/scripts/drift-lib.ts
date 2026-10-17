@@ -2,13 +2,13 @@
 // files differ from the pinned ones.
 import { localOf } from "./sources.ts";
 
-const NIGHTLY = /^v(\d+)\.(\d+)\.(\d+)-nightly\.(\d{8})\.(\d+)$/;
+const CHANNEL_TAG = /^v(\d+)\.(\d+)\.(\d+)-(?:nightly|preview)\.(\d{8})\.(\d+)$/;
 
-/** The newest `v<x.y.z>-nightly.<yyyymmdd>.<n>` tag, by version, then date, then build. */
-export const newestNightly = (tags: ReadonlyArray<string>): string | null => {
+/** The newest `v<x.y.z>-<nightly|preview>.<yyyymmdd>.<n>` tag, by version, then date, then build. */
+export const newestTag = (tags: ReadonlyArray<string>): string | null => {
   let best: { readonly tag: string; readonly key: ReadonlyArray<number> } | null = null;
   for (const tag of tags) {
-    const match = NIGHTLY.exec(tag);
+    const match = CHANNEL_TAG.exec(tag);
     if (match === null) continue;
     const key = match.slice(1).map(Number);
     const newer =

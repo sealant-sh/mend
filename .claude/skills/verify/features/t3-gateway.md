@@ -89,11 +89,10 @@ server image, or someone starts it by hand from a checkout beside a Mend server.
   `http://127.0.0.1:3101`, Mend's API), `MEND_T3_GATEWAY_HOST` (`127.0.0.1`), `MEND_T3_GATEWAY_PORT`
   (`3120`), `MEND_T3_GATEWAY_STATE_PATH` (`$XDG_STATE_HOME/mend/t3-gateway/state.sqlite`),
   `MEND_T3_GATEWAY_LABEL` (`Mend`) (`apps/t3-gateway/src/config.ts`).
-- t3code clients (desktop, mobile, web): a client of the pinned nightly
-  `v0.0.46-nightly.20261010.2922` (`packages/t3-contracts/t3code.pin.json`). Add a remote
-  environment with the gateway's host and a Mend pairing code, or paste
-  `http://<gateway>/pair#token=<code>` into t3code's pairing input. The URL is pairing input for
-  t3code; the gateway serves no `/pair` page.
+- t3code clients (desktop, mobile, web): a client of the pinned tag `v0.1.1-preview.20261017.3254`
+  (`packages/t3-contracts/t3code.pin.json`). Add a remote environment with the gateway's host and a
+  Mend pairing code, or paste `http://<gateway>/pair#token=<code>` into t3code's pairing input. The
+  URL is pairing input for t3code; the gateway serves no `/pair` page.
 - Web: Settings → Devices mints the pairing code, and lists the paired client as
   `t3code · <client label>` with its revoke (see [Pairing devices](./pairing-devices.md)).
 - CLI: `mend pair` mints a pairing code (`✓ pairing code <code>`); the gateway takes that code as

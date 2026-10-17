@@ -66,9 +66,9 @@ uses).
 
 ## Pair a t3code client
 
-The gateway speaks t3code's orchestration protocol 2, built against the t3code nightly
-`v0.0.46-nightly.20261010.2922`. Use a client of that nightly; one of the previous pin,
-`v0.0.46-nightly.20261003.2623`, still pairs and works. A protocol-1 client, such as the stable
+The gateway speaks t3code's orchestration protocol 2, built against the t3code preview
+`v0.1.1-preview.20261017.3254`. Use a client of that preview; one of the previous pin,
+`v0.0.46-nightly.20261010.2922`, still pairs and works. A protocol-1 client, such as the stable
 `v0.0.45`, is refused when it connects. A later nightly that still speaks protocol 2 may have
 changed what it sends: the gateway follows newer clients only when its pinned contracts are moved to
 them, deliberately.

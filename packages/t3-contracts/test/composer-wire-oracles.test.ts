@@ -132,15 +132,23 @@ const goldenRecords = [
     threadId: "thread_1",
     title: "Fix login",
   },
+  {
+    version: 1,
+    contextId: "ctx_environment",
+    kind: "environment",
+    label: "Build box",
+    environmentId: "environment_2",
+  },
 ];
 const codec = Schema.toCodecJson(ComposerContextRecord);
 const decode = Schema.decodeUnknownSync(codec);
 const encode = Schema.encodeSync(codec);
 
 describe("local composer JSON wire oracles", () => {
-  it("has an independent golden for all nine pinned known kinds", () => {
+  it("has an independent golden for all ten pinned known kinds", () => {
     expect(goldenRecords.map((record) => record.kind).toSorted()).toEqual([
       "element",
+      "environment",
       "file",
       "image",
       "mention",

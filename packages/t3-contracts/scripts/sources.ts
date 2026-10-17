@@ -3,17 +3,36 @@
 
 export const REPOSITORY = "https://github.com/pingdotgg/t3code.git";
 
+const T3_SHARED_FILES = [
+  "Array",
+  "changeRequestUrl",
+  "keybindings",
+  "model",
+  "orchestrationV2PendingBackgroundWork",
+  "path",
+  "sourceControl",
+  "threadPullRequests",
+  "threadTranscript",
+];
+
+const CLIENT_RUNTIME_STATE_FILES = [
+  "models",
+  "subagentDisplay",
+  "subagentRuntime",
+  "threadSettled",
+];
+
 /** Upstream directory or file → where it lands in this package. */
 export const SOURCES: ReadonlyArray<{ readonly upstream: string; readonly local: string }> = [
   { upstream: "packages/contracts/src", local: "src" },
-  // The default keybindings live beside the shared helpers that compile them.
-  { upstream: "packages/shared/src/keybindings.ts", local: "shared/keybindings.ts" },
-  // The client's own reading of a thread's settle and snooze, which the gateway's tests hold its
-  // shell to.
-  {
-    upstream: "packages/client-runtime/src/state/threadSettled.ts",
-    local: "shared/threadSettled.ts",
-  },
+  ...T3_SHARED_FILES.map((name) => ({
+    upstream: `packages/shared/src/${name}.ts`,
+    local: `t3-shared/src/${name}.ts`,
+  })),
+  ...CLIENT_RUNTIME_STATE_FILES.map((name) => ({
+    upstream: `packages/client-runtime/src/state/${name}.ts`,
+    local: `client-runtime/${name}.ts`,
+  })),
   { upstream: "LICENSE", local: "LICENSE" },
 ];
 

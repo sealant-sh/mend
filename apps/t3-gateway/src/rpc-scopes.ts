@@ -17,11 +17,13 @@ import {
   AuthTerminalReadScope,
   EnvironmentAuthorizationError,
   ORCHESTRATION_V2_WS_METHODS,
+  ProjectMutation,
   ProviderInstanceMutation,
   RpcScopeAuthorization,
   ServerSettingsPatch,
   WS_METHODS,
   authScopeRequiredResponse,
+  requiredScopesForProjectMutation,
   requiredScopesForServerSettingsPatch,
   type AuthEnvironmentScope,
   type WsRpcGroup,
@@ -48,6 +50,7 @@ export type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 export const RPC_REQUIRED_SCOPES = {
   ...CLIENT_GUARDED_RPC_SCOPES,
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.getTurnDiff]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff]: AuthOrchestrationReadScope,
@@ -212,12 +215,17 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.subscribeServerConfig]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeServerLifecycle]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeAuthAccess]: AuthAccessReadScope,
+  [WS_METHODS.serverGetDatabaseStorage]: AuthOrchestrationReadScope,
+  [WS_METHODS.peerLinksList]: AuthAccessReadScope,
+  [WS_METHODS.pullRequestsReviewGuide]: AuthOrchestrationReadScope,
+  [WS_METHODS.filesystemGetMetadata]: AuthFilesystemReadScope,
   [WS_METHODS.subscribeBackgroundPolicy]: AuthOrchestrationReadScope,
 } as const satisfies Readonly<Record<WsRpcMethod, AuthEnvironmentScope>>;
 
 const isWsRpcMethod = (tag: string): tag is WsRpcMethod => Object.hasOwn(RPC_REQUIRED_SCOPES, tag);
 
 const decodeAssetUrlInput = Schema.decodeUnknownOption(AssetCreateUrlInput);
+const decodeProjectMutation = Schema.decodeUnknownOption(ProjectMutation);
 const decodeSettingsUpdate = Schema.decodeUnknownOption(
   Schema.Struct({
     patch: ServerSettingsPatch,
@@ -254,6 +262,12 @@ const settingsUpdateScopes = (payload: unknown): ReadonlyArray<AuthEnvironmentSc
     },
   });
 
+const projectMutationScopes = (payload: unknown): ReadonlyArray<AuthEnvironmentScope> =>
+  Option.match(decodeProjectMutation(payload), {
+    onNone: () => [AuthOrchestrationOperateScope, AuthSettingsWriteScope],
+    onSome: requiredScopesForProjectMutation,
+  });
+
 /**
  * The scopes one call needs, by t3code's rule at the pin (`requiredScopesForRpcCall`): the
  * methods whose scope depends on their input, then the client-guarded ones, then the map. A tag
@@ -269,6 +283,7 @@ export const requiredScopesFor = (
   }
   if (method === WS_METHODS.assetsCreateUrl) return assetUrlScopes(payload);
   if (method === WS_METHODS.serverUpdateSettings) return settingsUpdateScopes(payload);
+  if (method === WS_METHODS.projectsMutate) return projectMutationScopes(payload);
   const guarded = clientRpcRequiredScopes(method, payload);
   return guarded.length > 0 ? guarded : [RPC_REQUIRED_SCOPES[method]];
 };
