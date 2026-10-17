@@ -40,19 +40,23 @@ export interface LandingStanding {
   readonly pullRequest: RecordedPullRequest | null;
 }
 
+/** The newest pull request any of the change's landings recorded. */
+export const recordedPullRequestOf = (view: MendChangeLandings): RecordedPullRequest | null => {
+  const withPullRequest = view.landings.find((landing) => landing.pullRequest !== null);
+  return withPullRequest?.pullRequest == null
+    ? null
+    : { ...withPullRequest.pullRequest, head: withPullRequest.remoteBranch };
+};
+
 export const standingOf = (view: MendChangeLandings, changeFiles: number): LandingStanding => {
   const lastPush = view.landings.find((landing) => landing.pushedSha !== null);
   const sinceLanding = view.facts.find((fact) => fact._tag === "changed-since-landing")?.files ?? 0;
-  const withPullRequest = view.landings.find((landing) => landing.pullRequest !== null);
   return {
     owner: view.land,
     pushedBranch: lastPush?.remoteBranch ?? null,
     unlanded: lastPush === undefined ? changeFiles > 0 : sinceLanding > 0,
     pullRequestAvailable: view.pullRequest.available,
-    pullRequest:
-      withPullRequest?.pullRequest == null
-        ? null
-        : { ...withPullRequest.pullRequest, head: withPullRequest.remoteBranch },
+    pullRequest: recordedPullRequestOf(view),
   };
 };
 
@@ -67,9 +71,8 @@ const titleOf = (pullRequest: MendLandedPullRequest): string =>
  * does not fetch origin on a status read, so nothing is ever behind; a push origin refuses comes
  * back as the landing's refusal. t3code reads the ahead counts only as more than zero. A count of
  * 1 says a landing has something to push, or a pull request to open for a change pushed without
- * one. A
- * caller who does not own the change sees nothing to push and the pull request as GitHub last
- * reported it, so no write control is live for them.
+ * one. A caller who does not own the change sees nothing to push and the pull request as GitHub
+ * last reported it, so no write control is live for them.
  */
 export const remoteStatusOf = (
   standing: LandingStanding,
@@ -99,8 +102,6 @@ export const remoteStatusOf = (
           },
   };
 };
-
-// ─── git.runStackedAction ────────────────────────────────────────────────────
 
 /** Mend's own words when the caller does not own the change (`LandingNotAllowed`). */
 export const ONLY_THE_OWNER = "only the change's owner lands it";

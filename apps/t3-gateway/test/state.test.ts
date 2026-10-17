@@ -155,7 +155,6 @@ describe("stored grants", () => {
           }
         }),
       );
-      // The rows a gateway at migration 15 left.
       const old = new DatabaseSync(path);
       old.exec("PRAGMA user_version = 15");
       old.close();

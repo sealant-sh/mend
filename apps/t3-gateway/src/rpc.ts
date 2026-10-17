@@ -175,7 +175,7 @@ const TERMINAL_READ = AuthTerminalReadScope;
 
 const notOfferedText = (method: string) => `Mend's t3code gateway does not offer ${method}.`;
 
-/** The refusal every method's contract allows (`refusalOf`). */
+/** The refusal every method's contract allows. */
 const notOffered = (method: WsRpcMethod) => refusalOf(method, notOfferedText(method));
 
 const refuse = (method: WsRpcMethod) => Effect.fail(notOffered(method));
