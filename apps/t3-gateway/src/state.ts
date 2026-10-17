@@ -402,6 +402,8 @@ export class GatewayState extends Context.Service<
  * launch (migration 12), as `next_modes` keeps the mode. `model_preferences` keeps a person's model
  * favorites, hidden models and model order (migration 13), and `next_models` the model a person
  * chose for a session's next launch, as `next_efforts` keeps the effort (migration 14).
+ * `thread_lifecycles` gains a person's pin, pin order, Active order, auto-settle opt-out and last
+ * snooze wake (migration 15).
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
