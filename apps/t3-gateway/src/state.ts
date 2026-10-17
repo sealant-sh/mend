@@ -352,6 +352,16 @@ export class GatewayState extends Context.Service<
       mendUserId: string,
       change: (current: ModelPreferences) => Result.Result<ModelPreferences, E>,
     ) => Effect.Effect<KeptModelPreferences, GatewayStateError | E>;
+    /** The model a person chose for a session's next launch; null clears it. */
+    readonly setNextModel: (
+      mendUserId: string,
+      sessionId: string,
+      model: string | null,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** Every next-launch model a person chose, by session. */
+    readonly listNextModels: (
+      mendUserId: string,
+    ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
     /** Every bearer neither revoked nor expired at `now`: what a start checks with Mend. */
     readonly liveSessions: (
       now: number,
@@ -383,7 +393,9 @@ export class GatewayState extends Context.Service<
  * `thread_lifecycles` keeps the threads a person settled or snoozed in t3code (migration 10), the
  * same way. `thread_visits` keeps when a person last saw each thread (migration 11), what t3code's
  * unread marker reads, and `next_efforts` the reasoning effort a person chose for a session's next
- * launch (migration 12), as `next_modes` keeps the mode.
+ * launch (migration 12), as `next_modes` keeps the mode. `model_preferences` keeps a person's model
+ * favorites, hidden models and model order (migration 13), and `next_models` the model a person
+ * chose for a session's next launch, as `next_efforts` keeps the effort (migration 14).
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -569,6 +581,14 @@ const MIGRATIONS: ReadonlyArray<string> = [
     version INTEGER NOT NULL
   );
   `,
+  `
+  CREATE TABLE next_models (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    PRIMARY KEY (mend_user_id, mend_session_id)
+  );
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -659,6 +679,8 @@ const VisitedRow = Schema.Struct({
 const decodeVisitedRows = Schema.decodeUnknownEffect(Schema.Array(VisitedRow));
 const EffortRow = Schema.Struct({ mend_session_id: Schema.String, effort: Schema.String });
 const decodeEffortRows = Schema.decodeUnknownEffect(Schema.Array(EffortRow));
+const ModelRow = Schema.Struct({ mend_session_id: Schema.String, model: Schema.String });
+const decodeModelRows = Schema.decodeUnknownEffect(Schema.Array(ModelRow));
 const LifecycleRow = Schema.Struct({
   mend_session_id: Schema.String,
   settled_override: Schema.NullOr(Schema.Literals(["settled", "active"])),
@@ -1496,6 +1518,34 @@ export const openGatewayState = (
         ),
       );
 
+    const setNextModel = (mendUserId: string, sessionId: string, model: string | null) =>
+      run("setNextModel", () => {
+        if (model === null) {
+          database
+            .prepare("DELETE FROM next_models WHERE mend_user_id = ? AND mend_session_id = ?")
+            .run(mendUserId, sessionId);
+          return;
+        }
+        database
+          .prepare(
+            "INSERT OR REPLACE INTO next_models (mend_user_id, mend_session_id, model) VALUES (?, ?, ?)",
+          )
+          .run(mendUserId, sessionId, model);
+      });
+
+    const listNextModels = (mendUserId: string) =>
+      run("listNextModels", () =>
+        database
+          .prepare("SELECT mend_session_id, model FROM next_models WHERE mend_user_id = ?")
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap(decoded("listNextModels", decodeModelRows)),
+        Effect.map(
+          (rows): ReadonlyMap<string, string> =>
+            new Map(rows.map((row) => [row.mend_session_id, row.model] as const)),
+        ),
+      );
+
     const liveSessions = (now: number) =>
       run("liveSessions", () =>
         database
@@ -1559,6 +1609,8 @@ export const openGatewayState = (
       listNextEfforts,
       modelPreferences,
       updateModelPreferences,
+      setNextModel,
+      listNextModels,
       liveSessions,
       peopleWithQueuedMessages,
     };

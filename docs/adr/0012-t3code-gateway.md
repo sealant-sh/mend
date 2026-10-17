@@ -140,16 +140,17 @@ vendored group.
   Neither the Slack runner nor the gateway carries the mode itself.
 - **State.** Thread and message id maps, the persisted queue, each person's archive, settle and
   snooze flags, read state and model preferences (favorites, hidden models, model order), and the
-  mode and effort chosen for an agent's next start live in a `node:sqlite` file the gateway owns. No
-  Mend migration. A settings patch of model preferences alone needs `orchestration:operate`, not
-  t3code's `settings:write`: t3code keeps them for the machine, the gateway for one person.
+  mode, model and effort chosen for an agent's next start live in a `node:sqlite` file the gateway
+  owns. No Mend migration. A settings patch of model preferences alone needs `orchestration:operate`,
+  not t3code's `settings:write`: t3code keeps them for the machine, the gateway for one person.
 - **Scopes.** A paired client is granted the scopes of t3code's standard grant the gateway backs:
   `orchestration:*`, `terminal:*` and `filesystem:read`. t3code renders a control whose scope is
   withheld as inert, so a refused feature never looks live. A grant stored before is narrowed when
   it is read.
-- **Effort and tier.** Mend sets both per launch. A reasoning effort changed on a started thread
-  applies from the agent's next start, as the runtime mode does; Mend records no service tier, so a
-  change of one on a started thread is refused.
+- **Model, effort and tier.** Mend sets all three per launch. A model or reasoning effort changed on
+  a started thread applies from the agent's next start, as the runtime mode does; a relaunch on
+  another model resumes the same conversation. Mend records no service tier and a protocol agent
+  takes none, so a change of one on a started thread is refused. So is another provider.
 - **Projection.** One Mend SSE stream per paired person feeds an entity builder. The gateway diffs
   entities, stamps its own sequence, and sends a fresh snapshot after a restart or on removals.
 - **Steering rules are Mend's.** A session the person cannot steer appears read-only: commands are
@@ -278,3 +279,7 @@ its own pull request.
   was refused, so no thread ever showed as unread.
 - 2026-10-11: a reasoning effort changed on a started thread applies from the agent's next start; a
   changed service tier is refused. Mend records the effort with the agent and none of the tier.
+- 2026-10-17: a model picked on a started thread applies from the agent's next start, the way the
+  effort does, and `requiresNewThreadForModelChange` is off. Mend resumes a protocol agent by its
+  provider id whatever the model, so the conversation survives. The service tier stays refused: a
+  protocol launch ignores `speed`, so no tier the gateway names would reach the agent.

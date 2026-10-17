@@ -10,10 +10,10 @@ of T3 Code is coming in 0.36 patch releases, before 0.37.
 environment, pair with a code from `mend pair`, and see this Mend's projects and sessions as their
 projects and threads: start a thread in a new or an existing worktree, from a base branch, send
 messages and images, @-mention project files, queue, edit and reorder what waits, answer approvals,
-choose the permission mode for the agent's next start, rename, stop, archive and delete, read each
-turn's diff, the thread's files and its change, open a terminal, and star models in the model
-picker, kept for that person alone, each as the person who paired and under Mend's own rules. t3code
-shows a provider as connected only when Mend holds that person's login for it.
+choose the model, effort and permission mode for the agent's next start, rename, stop, archive and
+delete, read each turn's diff, the thread's files and its change, open a terminal, and star models
+in the model picker, kept for that person alone, each as the person who paired and under Mend's own
+rules. t3code shows a provider as connected only when Mend holds that person's login for it.
 
 It runs in the Mend container on a listener of its own (port 3120, or `--t3-gateway-port`), and
 setup and `mend server status` say whether it answered. `--no-t3-gateway` turns it off. Off, nothing
