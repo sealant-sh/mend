@@ -9,7 +9,7 @@ import { Schema } from "effect";
  * - `selectedOnly: false` (the default): the session's own agent's login is required, and the
  *   person's other logins (Codex in a Claude session, Claude in a Codex session) are added when
  *   connected, so the agent can run the other CLI on the same person's login.
- * - `selectedOnly: true`: "Give my sessions only the selected agent's login", as before 0.36.1.
+ * - `selectedOnly: true`: "Give my sessions only the selected agent's login", as Mend gave before this setting existed.
  *
  * GitHub is not an agent's login and is given either way. A shell, pi and opencode are open
  * workbenches and receive every login their person has connected either way.

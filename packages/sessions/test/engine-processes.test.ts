@@ -253,7 +253,7 @@ describe("SessionEngine", () => {
       ]);
     });
 
-    it("an owner who chose the selected agent's login only gets a create naming that one and GitHub, as before 0.36.1", async () => {
+    it("an owner who chose the selected agent's login only gets a create naming that one and GitHub only", async () => {
       const claude = await launchOnce("claude", { selectedOnly: new Set(["user-fixture"]) });
       expect(claude.created.map((options) => options.credentials)).toEqual([
         { claude: true, github: true },

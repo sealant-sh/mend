@@ -406,11 +406,11 @@ workspaces.create({ …, credentialsHome })
   one out. In a `shared` executor Mend's ChatGPT-login program still writes the copies at `$HOME`,
   since a create cannot name them.
 
-**Amended 2026-10-10, for 0.36.1: a person's own other agent login.** A Claude session also takes
-its person's Codex login, and a Codex session its person's Claude login, so the agent can run the
-other CLI on the same person's login: pstack's Codex seat or a Codex review from an Opus session,
-`claude` from a Codex one. The rule above stands unchanged, and nothing here reaches another person:
-this only adds the same person's own logins. The pieces:
+**Amended 2026-10-10, for 0.36: a person's own other agent login.** A Claude session also takes its
+person's Codex login, and a Codex session its person's Claude login, so the agent can run the other
+CLI on the same person's login: pstack's Codex seat or a Codex review from an Opus session, `claude`
+from a Codex one. The rule above stands unchanged, and nothing here reaches another person: this
+only adds the same person's own logins. The pieces:
 
 - **What a process needs** (`loginNeedOf`): Claude is
   `{ required: [claude], optional: [codex, github] }`, Codex
@@ -1673,4 +1673,6 @@ benchmark once more, before 0.36 is tagged.
     including both joins, resume, Stop, clean installs, delivery (`person` was faster) and executor
     memory and disk. Records: `/tmp/p1-754-*.json` (benchmark runs `2socl2`, `2v32fr`, `2xifcb`,
     `2xqepp`).
+- 2026-10-17 (owner): the other agent's login (decision 5's amendment, mend#684) moves into 0.36, so
+  pstack runs inside Mend sessions while the rest of 0.36 is built. Its table is migration 0131.
 - Open: gate B's history record.

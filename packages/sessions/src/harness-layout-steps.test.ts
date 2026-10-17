@@ -1537,7 +1537,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
         required: ["codex"],
         optional: ["claude", "github"],
       });
-      // "Give my sessions only the selected agent's login": as before 0.36.1.
+      // "Give my sessions only the selected agent's login": that agent's login and GitHub only.
       expect(loginNeedOf("claude", { selectedOnly: true })).toEqual({
         required: ["claude"],
         optional: ["github"],

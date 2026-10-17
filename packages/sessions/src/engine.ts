@@ -756,7 +756,7 @@ const platformShape = (
   harness: string,
   /**
    * The launcher chose "Give my sessions only the selected agent's login" (`UserAgentLoginsRepo`):
-   * a Claude or Codex session's create names its own agent's login only, as before 0.36.1.
+   * a Claude or Codex session's create names its own agent's login only.
    */
   selectedOnly = false,
 ): {
