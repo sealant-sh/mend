@@ -362,7 +362,11 @@ export class GatewayState extends Context.Service<
  * `thread_lifecycles` keeps the threads a person settled or snoozed in t3code (migration 10), the
  * same way. `thread_visits` keeps when a person last saw each thread (migration 11), what t3code's
  * unread marker reads, and `next_efforts` the reasoning effort a person chose for a session's next
- * launch (migration 12), as `next_modes` keeps the mode.
+ * launch (migration 12), as `next_modes` keeps the mode. Migration 13 adds `source-control:write`
+ * to every stored grant that holds the five scopes the gateway granted while it withheld that one.
+ * Those pairings asked for t3code's standard set or for the default grant, and lost the scope only
+ * because the gateway did not back it yet. A pairing made after migration 13 that asks for exactly
+ * those five keeps them as asked, which a rule applied on every read could not tell apart.
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -539,6 +543,18 @@ const MIGRATIONS: ReadonlyArray<string> = [
     effort TEXT NOT NULL,
     PRIMARY KEY (mend_user_id, mend_session_id)
   );
+  `,
+  `
+  UPDATE bearer_sessions
+  SET scopes = json_insert(scopes, '$[#]', 'source-control:write')
+  WHERE NOT EXISTS (
+      SELECT 1 FROM json_each(bearer_sessions.scopes) WHERE value = 'source-control:write'
+    )
+    AND (
+      SELECT count(DISTINCT value) FROM json_each(bearer_sessions.scopes)
+      WHERE value IN ('orchestration:read', 'orchestration:operate', 'terminal:read',
+                      'terminal:operate', 'filesystem:read')
+    ) = 5;
   `,
 ];
 

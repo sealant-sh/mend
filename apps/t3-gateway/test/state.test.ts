@@ -3,10 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { AuthSessionId, type AuthEnvironmentScope } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
 import { openGatewayState } from "../src/state.ts";
 import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
+import { testBearerSession } from "./support/stubs.ts";
 
 /**
  * Review round 1, finding 8: a message id comes from the client, so the id map is keyed by the
@@ -87,6 +90,110 @@ describe("the id map", () => {
         ["session-a", "kept"],
         ["session-b", "kept"],
       ]);
+    }),
+  );
+});
+
+describe("stored grants", () => {
+  it.effect("gives source-control:write back once to a grant narrowed while it was withheld", () =>
+    Effect.gen(function* () {
+      const path = join(mkdtempSync(join(tmpdir(), "t3-gateway-grants-")), "state.sqlite");
+      const stored: ReadonlyArray<readonly [string, ReadonlyArray<AuthEnvironmentScope>]> = [
+        [
+          "narrowed",
+          [
+            "orchestration:read",
+            "orchestration:operate",
+            "terminal:read",
+            "terminal:operate",
+            "filesystem:read",
+          ],
+        ],
+        [
+          "asked-in-another-order",
+          [
+            "filesystem:read",
+            "terminal:operate",
+            "orchestration:read",
+            "terminal:read",
+            "orchestration:operate",
+          ],
+        ],
+        ["read-only", ["orchestration:read"]],
+        [
+          "already-granted",
+          [
+            "orchestration:read",
+            "orchestration:operate",
+            "terminal:read",
+            "terminal:operate",
+            "filesystem:read",
+            "source-control:write",
+          ],
+        ],
+        [
+          "legacy",
+          [
+            "orchestration:read",
+            "orchestration:operate",
+            "terminal:operate",
+            "review:write",
+            "relay:read",
+          ],
+        ],
+      ];
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const state = yield* openGatewayState(path);
+          for (const [id, scopes] of stored) {
+            yield* state.insertSession({
+              ...testBearerSession,
+              sessionId: AuthSessionId.make(id),
+              tokenHash: `hash-${id}`,
+              scopes,
+            });
+          }
+        }),
+      );
+      // The rows a gateway at migration 12 left.
+      const old = new DatabaseSync(path);
+      old.exec("PRAGMA user_version = 12");
+      old.close();
+
+      const read = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const state = yield* openGatewayState(path);
+          const scopes = new Map<string, ReadonlyArray<AuthEnvironmentScope>>();
+          for (const [id] of stored) {
+            const session = yield* state.findSessionById(AuthSessionId.make(id));
+            scopes.set(id, Option.getOrThrow(session).scopes);
+          }
+          return scopes;
+        }),
+      );
+      assert.deepStrictEqual(read.get("narrowed"), [
+        "orchestration:read",
+        "orchestration:operate",
+        "terminal:read",
+        "terminal:operate",
+        "filesystem:read",
+        "source-control:write",
+      ]);
+      assert.deepStrictEqual(read.get("asked-in-another-order"), [
+        "filesystem:read",
+        "terminal:operate",
+        "orchestration:read",
+        "terminal:read",
+        "orchestration:operate",
+        "source-control:write",
+      ]);
+      for (const id of ["read-only", "already-granted", "legacy"]) {
+        assert.deepStrictEqual(
+          read.get(id),
+          stored.find(([key]) => key === id)?.[1],
+          `${id} stays as stored`,
+        );
+      }
     }),
   );
 });
