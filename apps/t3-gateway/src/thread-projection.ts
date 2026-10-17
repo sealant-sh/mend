@@ -24,6 +24,7 @@ import {
   type OrchestrationV2UserInputQuestion,
   type ProviderApprovalOption,
 } from "@mend/t3-contracts";
+import { derivePendingBackgroundWork } from "@mend/t3-contracts/pending-background-work";
 import type * as DateTime from "effect/DateTime";
 
 import { wordsOf } from "./images.ts";
@@ -989,6 +990,21 @@ export const threadProjectionOf = (
     visibleTurnItems: visibleOf(turnItems, runs),
     updatedAt: latestItem,
   };
+};
+
+/**
+ * The background work a thread's items hold open, as t3code's own server derives it for the
+ * shell (`derivePendingBackgroundWork` over the projection's runs and turn items): a background
+ * agent, a task or a tool the harness still reports in progress.
+ */
+export const backgroundWorkOf = (source: ThreadSource, items: ReadonlyArray<MendItem>) => {
+  const { runs, turnItems } = threadProjectionOf(source, items);
+  return derivePendingBackgroundWork({
+    latestRun: runs.at(-1) ?? null,
+    providerThreads: [],
+    turnItems,
+    runs,
+  });
 };
 
 /** The newest turn ordinal in a projection: what t3code's bounded snapshot calls its watermark. */

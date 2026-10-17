@@ -156,6 +156,8 @@ export class FakeWorkbench {
   private ids = 0;
   /** How long `GET /api/sessions/:id/requests` takes, to hold a read in flight. */
   requestsDelayMs = 0;
+  /** Sessions whose items Mend does not answer for (503). */
+  readonly itemsUnavailable = new Set<string>();
   /** How long `GET /api/sessions/:id/turns` takes to answer what it read when asked. */
   turnsReadDelayMs = 0;
   /** `GET /api/projects` answers 502, as Mend does while it comes back from a restart. */
@@ -856,6 +858,7 @@ export class FakeWorkbench {
         );
       }
       if (method === "GET" && sub === "items") {
+        if (this.itemsUnavailable.has(id)) return json(503, { _tag: "Unavailable" });
         const after = Number(url.searchParams.get("after") ?? "0");
         const limit = Number(url.searchParams.get("limit") ?? "200");
         const changed = (this.items.get(id) ?? [])

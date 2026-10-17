@@ -1,4 +1,4 @@
-import { DEFAULT_SERVER_SETTINGS, type OrchestrationV2ThreadShell } from "@mend/t3-contracts";
+import { DEFAULT_SERVER_SETTINGS } from "@mend/t3-contracts";
 import { backgroundWorkHoldsCompletion } from "@mend/t3-contracts/pending-background-work";
 import * as DateTime from "effect/DateTime";
 
@@ -7,6 +7,7 @@ import {
   isActiveRunStatus,
   latestOf,
   runsOf,
+  type SettlementCandidate,
   threadUpdatedAtOf,
   type PendingRun,
   type ThreadSource,
@@ -33,6 +34,7 @@ export const NO_LIFECYCLE: ThreadLifecycle = {
   unsettledAt: null,
   snoozedUntil: null,
   snoozedAt: null,
+  lastSnoozeWakeAt: null,
   pinnedAt: null,
   pinOrderKey: null,
   activeOrderKey: null,
@@ -144,6 +146,12 @@ export const changeLifecycle = (
     pinOrderKey: null,
     activeOrderKey: null,
   });
+  // A snooze ended by hand restarts the quiet clock, as t3code's own server dates it.
+  const woken = {
+    snoozedUntil: null,
+    snoozedAt: null,
+    lastSnoozeWakeAt: current.snoozedUntil === null ? current.lastSnoozeWakeAt : at,
+  };
   switch (change.kind) {
     case "settle": {
       if (asking) {
@@ -200,13 +208,11 @@ export const changeLifecycle = (
       });
     }
     case "unsnooze":
-      return changed({ ...current, snoozedUntil: null, snoozedAt: null });
+      return changed({ ...current, ...woken });
     case "pin": {
       const tooLong = orderKeyRefusal(change.orderKey);
       if (tooLong !== null) return tooLong;
-      if (current.pinnedAt !== null) {
-        return changed({ ...current, snoozedUntil: null, snoozedAt: null });
-      }
+      if (current.pinnedAt !== null) return changed({ ...current, ...woken });
       const wasSettled = current.settledOverride === "settled";
       return changed({
         ...current,
@@ -215,8 +221,7 @@ export const changeLifecycle = (
         settledOverride: wasSettled ? "active" : current.settledOverride,
         settledAt: wasSettled ? null : current.settledAt,
         unsettledAt: wasSettled ? at : current.unsettledAt,
-        snoozedUntil: null,
-        snoozedAt: null,
+        ...woken,
       });
     }
     case "unpin":
@@ -262,7 +267,7 @@ const latestMillis = (values: ReadonlyArray<number | null>): number | null =>
   );
 
 /** t3code's `threadHasQueuedTurnStart`. */
-const hasQueuedTurnStart = (thread: OrchestrationV2ThreadShell, nowMs: number): boolean => {
+const hasQueuedTurnStart = (thread: SettlementCandidate, nowMs: number): boolean => {
   const messageAtMs = millisOf(thread.latestUserMessageAt);
   if (messageAtMs === null || thread.status === "failed") return false;
   const age = nowMs - messageAtMs;
@@ -276,7 +281,7 @@ const hasQueuedTurnStart = (thread: OrchestrationV2ThreadShell, nowMs: number): 
 };
 
 /** t3code's `isAutoSettlementCandidate`. */
-const isAutoSettlementCandidate = (thread: OrchestrationV2ThreadShell, nowMs: number): boolean => {
+const isAutoSettlementCandidate = (thread: SettlementCandidate, nowMs: number): boolean => {
   if (thread.archivedAt !== null || thread.settledOverride !== null) return false;
   if (thread.pinnedAt != null || thread.autoSettleDisabledAt != null) return false;
   if (thread.pendingRuntimeRequest !== null) return false;
@@ -295,19 +300,24 @@ const isAutoSettlementCandidate = (thread: OrchestrationV2ThreadShell, nowMs: nu
   return wokeOnError || wokeOnCompletion;
 };
 
-/** t3code's `resolveAutoSettlementAt` without a pull request. */
-export const autoSettledAt = (thread: OrchestrationV2ThreadShell, nowMs: number): string | null => {
-  if (AUTO_SETTLE_AFTER_DAYS === null || !isAutoSettlementCandidate(thread, nowMs)) return null;
-  const activityAtMs = latestMillis([
+/** When the thread last saw a message or a turn (epoch ms); null when it never has. */
+export const activityAtOf = (thread: SettlementCandidate): number | null =>
+  latestMillis([
     millisOf(thread.latestUserMessageAt),
     millisOf(thread.latestRunRequestedAt),
     millisOf(thread.latestRunStartedAt),
     millisOf(thread.latestRunCompletedAt),
   ]);
+
+/** t3code's `resolveAutoSettlementAt` without a pull request. */
+export const autoSettledAt = (thread: SettlementCandidate, nowMs: number): string | null => {
+  if (AUTO_SETTLE_AFTER_DAYS === null || !isAutoSettlementCandidate(thread, nowMs)) return null;
+  const activityAtMs = activityAtOf(thread);
   if (activityAtMs === null) return null;
   const snoozedUntilMs = millisOf(thread.snoozedUntil);
   const timerWakeAtMs = snoozedUntilMs !== null && snoozedUntilMs <= nowMs ? snoozedUntilMs : null;
-  const quietSinceMs = latestMillis([activityAtMs, timerWakeAtMs]) ?? activityAtMs;
+  const quietSinceMs =
+    latestMillis([activityAtMs, millisOf(thread.lastSnoozeWakeAt), timerWakeAtMs]) ?? activityAtMs;
   return quietSinceMs < nowMs - AUTO_SETTLE_AFTER_DAYS * DAY_MS
     ? new Date(quietSinceMs).toISOString()
     : null;
