@@ -4,6 +4,7 @@ import {
   T3_PROJECT_FILE_NAME,
   T3ProjectFile,
   ThreadId,
+  type ProjectScript,
   WORKTREE_SETUP_DETAIL_MAX_LENGTH,
   WORKTREE_SETUP_ERROR_MAX_LENGTH,
   WORKTREE_SETUP_STAGE_ORDER,
@@ -35,12 +36,15 @@ import type { TerminalFailure, Terminals } from "./terminals.ts";
  *
  * - `fetch` is `POST /api/projects/:id/refresh` when the launch asks to start from origin, and
  *   `checkout` is `POST /api/projects/:id/sessions`, which makes the worktree.
- * - `setup-script` is the first `runOnWorktreeCreate` script of the new worktree's own t3.json. The
- *   gateway keeps no project scripts (t3code's settings), so the checkout's t3.json stands in for
- *   them. Mend runs no setup of its own when it makes a worktree.
+ * - `setup-script` is the first `runOnWorktreeCreate` project action the person saved for the
+ *   project, as on t3code's own server. The gateway keeps each person's actions (`projectScripts`
+ *   in the hub), saved through t3code's "From t3.json" import or its action editor. A t3.json in
+ *   the worktree never runs by itself: a branch could carry any script. When it offers one the
+ *   person has not saved, the stage is skipped with a reason that names the file. Mend runs no
+ *   setup of its own when it makes a worktree.
  * - The script runs in a Mend shell beside the agent (`terminals.ts`), so the agent's workspace is
  *   started first; the opening message is not sent until the script has started, or, for a script
- *   t3.json marks `async: false`, until it has exited, as on t3code's own server.
+ *   that waits (`async: false`), until it has exited, as on t3code's own server.
  * - `agent` is that hand-off: done once the opening message may go.
  *
  * Snapshots are kept per thread in memory, published as they change, and dropped 30 seconds after
@@ -300,6 +304,8 @@ export interface Preparation {
   /** The opening message's run, or null for a launch with no message. */
   readonly runId: string | null;
   readonly options: ThreadLaunchOptions;
+  /** The shell a cut-short attempt typed the script into: stopped before it is typed again. */
+  readonly staleProcessId: string | null;
 }
 
 /** What a preparation needs of the person's hub. */
@@ -311,11 +317,15 @@ export interface PreparationHost {
   readonly worktreeOf: (
     sessionId: string,
   ) => Effect.Effect<{ readonly worktreeId: string; readonly worktreePath: string } | null>;
+  /** The project action the person saved to run on a new worktree, or null (`projectScripts`). */
+  readonly setupScriptOf: (projectId: string) => Effect.Effect<ProjectScript | null>;
   /** Mend's 422 to a launch read again: the session's `updatedAt` when it is under way. */
   readonly launchUnderWay: (token: string, sessionId: string) => Effect.Effect<string | null>;
   /** Reads the session's project again, so the queue sees its agent. */
   readonly refresh: (projectId: string) => Effect.Effect<void>;
-  /** The opening message's wait ends: it takes its turn (null), or fails as a preparation. */
+  /** The setup script's shell opened in Mend: kept with the session's queue for a retry. */
+  readonly setupProcessOpened: (sessionId: string, processId: string) => Effect.Effect<void>;
+  /** The queue's wait ends: the opening message takes its turn (null), or fails as a preparation. */
   readonly settle: (preparation: Preparation, failure: string | null) => Effect.Effect<void>;
 }
 
@@ -325,16 +335,15 @@ export interface PreparationHost {
  */
 const SETUP_SHELL_RETRY = "1 second";
 const SETUP_SHELL_ATTEMPTS = 600;
-/** Wide enough that the shell does not wrap the typed script, which would hide its echo. */
 const SETUP_TERMINAL_COLUMNS = 400;
 const SETUP_TERMINAL_ROWS = 40;
 
 /**
- * Prepares a launched session's new worktree as t3code does after its checkout: the t3.json setup
- * script runs in a Mend shell beside the agent, its output on the setup card, and the opening
- * message goes once the script has started, or exited for a script marked `async: false`. A
- * failure fails the opening message as t3code's `workspace_preparation_failed`, which its retry
- * takes; a cancel stops the setup's shell.
+ * Prepares a launched session's new worktree as t3code does after its checkout: the person's
+ * setup action runs in a Mend shell beside the agent, its output on the setup card, and the opening
+ * message goes once the script has started, or exited for a script that holds it (`async: false`).
+ * A failure fails the opening message as t3code's `workspace_preparation_failed`, which its retry
+ * takes. A cancel stops the setup's shell, before or after the hand-off.
  */
 export const prepareWorktree = (host: PreparationHost, preparation: Preparation) => {
   const { mend, terminals, setups } = host;
@@ -342,43 +351,62 @@ export const prepareWorktree = (host: PreparationHost, preparation: Preparation)
   const token = session.deviceToken;
   const failure = (reason: string) => new WorkspacePreparationFailed({ reason });
   let setupTerminal: string | null = null;
+  let handedOff = false;
 
-  /** The opening message may go: from here a cancel no longer undoes the setup. */
   const handOff = Effect.gen(function* () {
-    yield* setups.cancellable(threadId, null);
     yield* setups.stageStatus(threadId, "agent", "running");
     yield* host.settle(preparation, null);
+    handedOff = true;
     yield* setups.stageStatus(threadId, "agent", "done");
   }).pipe(Effect.uninterruptible);
 
+  const done = Effect.gen(function* () {
+    yield* setups.cancellable(threadId, null);
+    yield* setups.finish(threadId, "done");
+  });
+
+  const skipReasonOf = (worktreeId: string) =>
+    mend.worktreeContents(token, worktreeId, { path: T3_PROJECT_FILE_NAME, at: null }).pipe(
+      Effect.map((read) =>
+        unimportedReasonOf(read.file === null || read.file.truncated ? null : read.file.contents),
+      ),
+      Effect.orElseSucceed(() => NO_SETUP_ACTION),
+    );
+
   const prepare = Effect.gen(function* () {
     yield* setups.cancellable(threadId, yield* Effect.fiber);
-    yield* setups.stageStatus(threadId, "setup-script", "running", "Reading t3.json");
+    const script = yield* host.setupScriptOf(preparation.projectId);
+    const terminalId = script === null ? null : setupTerminalIdOf(script.name);
+    const stale = preparation.staleProcessId;
+    const typedIntoAgain =
+      terminalId !== null && terminals.processOf(threadId, terminalId) === stale;
+    if (stale !== null && !typedIntoAgain) {
+      yield* mend.stopShell(token, stale).pipe(
+        Effect.catchTag("MendNotFound", () => Effect.void),
+        Effect.mapError((error) =>
+          failure(
+            `The gateway could not stop the last attempt's setup shell, so it did not run the script again: ${error.message}`,
+          ),
+        ),
+      );
+    }
     const where = yield* host.worktreeOf(sessionId);
     if (where === null) return yield* failure("The session is not in this environment any more.");
     yield* setups.update(threadId, (snapshot) => ({
       ...snapshot,
       worktreePath: where.worktreePath,
     }));
-    const contents = yield* mend
-      .worktreeContents(token, where.worktreeId, { path: T3_PROJECT_FILE_NAME, at: null })
-      .pipe(
-        Effect.map((read) =>
-          read.file === null || read.file.truncated ? null : read.file.contents,
-        ),
-        Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
-        Effect.mapError((error) =>
-          failure(`Mend could not read t3.json in the worktree: ${error.message}`),
-        ),
+    if (script === null || terminalId === null) {
+      yield* setups.stageStatus(threadId, "setup-script", "running", "Reading t3.json");
+      yield* setups.stageStatus(
+        threadId,
+        "setup-script",
+        "skipped",
+        yield* skipReasonOf(where.worktreeId),
       );
-    const source = setupSourceOf(contents);
-    if (source._tag === "None") {
-      yield* setups.stageStatus(threadId, "setup-script", "skipped", source.reason);
       yield* handOff;
-      yield* setups.finish(threadId, "done");
-      return;
+      return yield* done;
     }
-    const terminalId = setupTerminalIdOf(source.name);
     yield* setups.stageStatus(threadId, "setup-script", "running", "Starting the workspace");
     const launched = yield* mend.launchProtocol(token, sessionId, "", preparation.options).pipe(
       Effect.as(true),
@@ -419,53 +447,58 @@ export const prepareWorktree = (host: PreparationHost, preparation: Preparation)
           ),
         ),
       );
+    const processId = terminals.processOf(threadId, terminalId);
+    if (processId !== null) yield* host.setupProcessOpened(sessionId, processId);
     yield* setups.update(threadId, (snapshot) => ({
       ...snapshot,
-      setupScript: { name: source.name, command: source.command, terminalId },
+      setupScript: { name: script.name, command: script.command, terminalId },
     }));
     yield* setups.stageStatus(threadId, "setup-script", "running", null);
-    const run = runSetupScript({
-      terminals,
-      threadId,
-      terminalId,
-      command: source.command,
-      onLine: (line) => setups.appendTail(threadId, "setup-script", line),
-    }).pipe(
-      Effect.mapError(() =>
-        failure("The gateway lost the setup script's terminal before it ended."),
-      ),
-    );
-    const exited = (exitCode: number | null) =>
+    yield* Effect.scoped(
       Effect.gen(function* () {
-        yield* setups.stageStatus(
+        const exit = yield* startSetupScript({
+          terminals,
           threadId,
-          "setup-script",
-          exitCode === 0 ? "done" : "failed",
-          `exited with ${exitCode ?? "no exit code"}`,
+          terminalId,
+          command: script.command,
+          onLine: (line) => setups.appendTail(threadId, "setup-script", line),
+        }).pipe(Effect.mapError(() => failure("The gateway could not type the setup script.")));
+        const exited = exit.pipe(
+          Effect.mapError(() =>
+            failure("The gateway lost the setup script's terminal before it ended."),
+          ),
         );
-        if (exitCode === 0) yield* terminals.close(session, { threadId, terminalId });
-      });
-    if (source.async) {
-      const running = yield* Effect.forkChild(run);
-      yield* handOff;
-      const exitCode = yield* Fiber.join(running).pipe(
-        Effect.catch((error) =>
-          setups
-            .stageStatus(threadId, "setup-script", "failed", error.reason)
-            .pipe(Effect.as(undefined)),
-        ),
-      );
-      if (exitCode !== undefined) yield* exited(exitCode);
-      yield* setups.finish(threadId, "done");
-      return;
-    }
-    const exitCode = yield* run;
-    yield* exited(exitCode);
-    if (exitCode !== 0) {
-      return yield* failure(`Setup script exited with ${exitCode ?? "no exit code"}.`);
-    }
-    yield* handOff;
-    yield* setups.finish(threadId, "done");
+        const ended = (exitCode: number | null) =>
+          Effect.gen(function* () {
+            yield* setups.stageStatus(
+              threadId,
+              "setup-script",
+              exitCode === 0 ? "done" : "failed",
+              `exited with ${exitCode ?? "no exit code"}`,
+            );
+            if (exitCode === 0) yield* terminals.close(session, { threadId, terminalId });
+          });
+        if (script.async !== false) {
+          yield* handOff;
+          const exitCode = yield* exited.pipe(
+            Effect.catch((error) =>
+              setups
+                .stageStatus(threadId, "setup-script", "failed", error.reason)
+                .pipe(Effect.as(undefined)),
+            ),
+          );
+          if (exitCode !== undefined) yield* ended(exitCode);
+          return yield* done;
+        }
+        const exitCode = yield* exited;
+        yield* ended(exitCode);
+        if (exitCode !== 0) {
+          return yield* failure(`Setup script exited with ${exitCode ?? "no exit code"}.`);
+        }
+        yield* handOff;
+        yield* done;
+      }),
+    );
   });
 
   return prepare.pipe(
@@ -486,7 +519,7 @@ export const prepareWorktree = (host: PreparationHost, preparation: Preparation)
             deleteHistory: true,
           });
         }
-        yield* host.settle(preparation, reason);
+        if (!handedOff) yield* host.settle(preparation, reason);
       }),
     ),
     Effect.ignore,
@@ -505,34 +538,29 @@ export class WorkspacePreparationFailed extends Schema.TaggedError<WorkspacePrep
 
 // ─── The setup script ────────────────────────────────────────────────────────
 
-/** The script a new worktree's t3.json runs on creation, or why there is none. */
-export type SetupSource =
-  | {
-      readonly _tag: "Script";
-      readonly name: string;
-      readonly command: string;
-      /** False holds the opening message until the script exits (t3.json's `async`). */
-      readonly async: boolean;
-    }
-  | { readonly _tag: "None"; readonly reason: string };
+/** The project action that runs on a new worktree: the first one marked so, as t3code picks it. */
+export const setupScriptOf = (scripts: ReadonlyArray<ProjectScript>): ProjectScript | null =>
+  scripts.find((script) => script.runOnWorktreeCreate) ?? null;
+
+const NO_SETUP_ACTION = "None of your actions runs on a new worktree.";
 
 const decodeProjectFile = Schema.decodeUnknownOption(Schema.fromJsonString(T3ProjectFile));
 
-/** The setup script t3.json's contents name; null contents is a worktree with no t3.json. */
-export const setupSourceOf = (contents: string | null): SetupSource => {
-  if (contents === null) return { _tag: "None", reason: "No t3.json in this worktree." };
-  const file = decodeProjectFile(contents);
-  if (file._tag === "None") {
-    return { _tag: "None", reason: "t3.json is invalid, so it names no setup script." };
-  }
-  const script = file.value.scripts?.find((candidate) => candidate.runOnWorktreeCreate === true);
-  if (script === undefined) return { _tag: "None", reason: "t3.json names no setup script." };
-  return {
-    _tag: "Script",
-    name: script.name,
-    command: script.command,
-    async: script.async !== false,
-  };
+/**
+ * Why a worktree whose t3.json offers a setup script did not run it: the gateway runs only what the
+ * person saved as a project action (t3code's "From t3.json" import), never a file a branch carries.
+ */
+export const unimportedReasonOf = (contents: string | null): string => {
+  const file = contents === null ? null : decodeProjectFile(contents);
+  const offered =
+    file === null || file._tag === "None"
+      ? undefined
+      : file.value.scripts?.find((candidate) => candidate.runOnWorktreeCreate === true);
+  if (offered === undefined) return NO_SETUP_ACTION;
+  return clamp(
+    `t3.json's "${offered.name}" did not run: import it from Actions › From t3.json to run it on new worktrees.`,
+    WORKTREE_SETUP_DETAIL_MAX_LENGTH,
+  );
 };
 
 /** The terminal a setup script runs in, as t3code names it (`setup-<script>`). */
@@ -553,15 +581,31 @@ export const setupTerminalIdOf = (name: string): string => {
 const SCRIPT_ENV =
   'export T3CODE_PROJECT_ROOT="$PWD" T3CODE_WORKTREE_PATH="$PWD" COLORTERM= NO_COLOR=1 FORCE_COLOR=0';
 
+/** The line the script's output starts after, with a token of its own. */
+export const setupStartOf = (token: string): string => `__T3_SETUP_START__${token}`;
 /** The line that ends a script, with a token of its own so its output cannot fake it. */
 export const setupSentinelOf = (token: string): string => `__T3_SETUP_DONE__${token}:`;
 
 /**
- * The script as typed into a POSIX shell, as t3code wraps it: in a subshell closed on its own line,
- * so a trailing comment or heredoc in the script cannot swallow the line that reports its exit.
+ * The script as typed into whatever shell the workspace runs: one `sh -c` line, which POSIX shells
+ * and fish read alike, since its single-quoted body holds no quote and no double backslash. The
+ * script travels in base64 and runs under the workspace's `$SHELL`, as typing it there would. Each
+ * mark is printed with its first `_` as the octal escape `\137`, so the shell's echo of the typed
+ * line never reads as a mark.
  */
-export const setupCommandLineOf = (command: string, sentinel: string): string =>
-  `( ${SCRIPT_ENV}\r${command.replace(/\r?\n/g, "\r")}\r); printf '\\n${sentinel}%s\\n' "$?"\r`;
+export const setupCommandLineOf = (command: string, token: string): string => {
+  const encoded = Buffer.from(command, "utf8").toString("base64");
+  const start = setupStartOf(token).slice(1);
+  const sentinel = setupSentinelOf(token).slice(1);
+  const body = [
+    `if s=$(printf %s ${encoded} | base64 -d); then`,
+    `printf "\\n\\137${start}\\n";`,
+    `(${SCRIPT_ENV}; exec "\${SHELL:-sh}" -c "$s"); c=$?;`,
+    `else c=127; fi;`,
+    `printf "\\n\\137${sentinel}%s\\n" "$c"`,
+  ].join(" ");
+  return `sh -c '${body}'\r`;
+};
 
 const stripTerminalControl = (text: string): string =>
   text
@@ -574,19 +618,22 @@ const stripTerminalControl = (text: string): string =>
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 
 export interface SetupOutput {
-  /** The script's own lines, without the shell's echo of what was typed. */
+  /** The script's own lines, after its start mark. */
   readonly lines: ReadonlyArray<string>;
   /** How the script exited, once its line arrived; undefined until then. */
   readonly exitCode: number | undefined;
 }
 
-/** Reads a terminal's output chunk by chunk into the script's lines and its exit. */
-export const setupOutputReader = (sentinel: string, commandLine: string) => {
-  const done = new RegExp(`${sentinel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(-?\\d+)`);
-  const echoed = commandLine
-    .split("\r")
-    .map((line) => line.trimEnd())
-    .filter((line) => line.length > 0);
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Reads a terminal's output chunk by chunk into the script's lines and its exit. Everything before
+ * the start mark is the shell's echo of the typed line and its prompt, so it is dropped.
+ */
+export const setupOutputReader = (token: string) => {
+  const start = setupStartOf(token);
+  const done = new RegExp(`${escapeRegExp(setupSentinelOf(token))}(-?\\d+)`);
+  let started = false;
   let pending = "";
   return (chunk: string): SetupOutput => {
     const parts = `${pending}${chunk}`.split(/\r\n|\r|\n/);
@@ -600,13 +647,11 @@ export const setupOutputReader = (sentinel: string, commandLine: string) => {
         continue;
       }
       const line = stripTerminalControl(raw).trimEnd();
-      if (
-        line.length === 0 ||
-        line.includes(sentinel) ||
-        echoed.some((typed) => line.endsWith(typed))
-      ) {
+      if (!started) {
+        started = line.includes(start);
         continue;
       }
+      if (line.length === 0) continue;
       lines.push(line.slice(0, WORKTREE_SETUP_TAIL_LINE_MAX_LENGTH));
     }
     return { lines, exitCode };
@@ -614,47 +659,47 @@ export const setupOutputReader = (sentinel: string, commandLine: string) => {
 };
 
 /**
- * Types the script into the thread's open terminal and waits for it: its exit code, or null when
- * the terminal ended first. Each line it prints goes to `onLine`.
+ * Types the script into the thread's open terminal, once the terminal took it, and answers how to
+ * wait for it: its exit code, or null when the terminal ended first. Each line it prints goes to
+ * `onLine`. The output is read for as long as `scope` lasts.
  */
-export const runSetupScript = (input: {
+export const startSetupScript = (input: {
   readonly terminals: Terminals;
   readonly threadId: string;
   readonly terminalId: string;
   readonly command: string;
   readonly onLine: (line: string) => Effect.Effect<void>;
-}): Effect.Effect<number | null, TerminalFailure | SubscriberFellBehind> =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const sentinel = setupSentinelOf(randomUUID().replaceAll("-", ""));
-      const commandLine = setupCommandLineOf(input.command, sentinel);
-      const read = setupOutputReader(sentinel, commandLine);
-      const exited = yield* Deferred.make<number | null, SubscriberFellBehind>();
-      // Subscribed before the script is typed, so its exit cannot pass unseen.
-      const events = yield* input.terminals.observe(input.threadId, input.terminalId);
-      yield* events.pipe(
-        Stream.runForEach((event) => {
-          if (event.type === "exited" || event.type === "closed") {
-            return Deferred.succeed(exited, null);
-          }
-          if (event.type !== "output") return Effect.void;
-          const output = read(event.data);
-          return Effect.forEach(output.lines, input.onLine, { discard: true }).pipe(
-            Effect.andThen(
-              output.exitCode === undefined
-                ? Effect.void
-                : Deferred.succeed(exited, output.exitCode),
-            ),
-          );
-        }),
-        Effect.catch((error) => Deferred.fail(exited, error)),
-        Effect.forkScoped,
-      );
-      yield* input.terminals.write({
-        threadId: input.threadId,
-        terminalId: input.terminalId,
-        data: commandLine,
-      });
-      return yield* Deferred.await(exited);
-    }),
-  );
+}): Effect.Effect<
+  Effect.Effect<number | null, SubscriberFellBehind>,
+  TerminalFailure,
+  Scope.Scope
+> =>
+  Effect.gen(function* () {
+    const token = randomUUID().replaceAll("-", "");
+    const read = setupOutputReader(token);
+    const exited = yield* Deferred.make<number | null, SubscriberFellBehind>();
+    // Subscribed before the script is typed, so its exit cannot pass unseen.
+    const events = yield* input.terminals.observe(input.threadId, input.terminalId);
+    yield* events.pipe(
+      Stream.runForEach((event) => {
+        if (event.type === "exited" || event.type === "closed") {
+          return Deferred.succeed(exited, null);
+        }
+        if (event.type !== "output") return Effect.void;
+        const output = read(event.data);
+        return Effect.forEach(output.lines, input.onLine, { discard: true }).pipe(
+          Effect.andThen(
+            output.exitCode === undefined ? Effect.void : Deferred.succeed(exited, output.exitCode),
+          ),
+        );
+      }),
+      Effect.catch((error) => Deferred.fail(exited, error)),
+      Effect.forkScoped,
+    );
+    yield* input.terminals.write({
+      threadId: input.threadId,
+      terminalId: input.terminalId,
+      data: setupCommandLineOf(input.command, token),
+    });
+    return Deferred.await(exited);
+  });

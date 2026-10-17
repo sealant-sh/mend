@@ -13,6 +13,7 @@ import {
   ThreadId,
   type ModelSelection,
   type OrchestrationProjectShell,
+  type ProjectScript,
   type OrchestrationV2AppThread,
   type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2PendingRuntimeRequestSummary,
@@ -324,7 +325,11 @@ export const threadModelOptionsOf = (source: ThreadSource): ThreadModelOptions =
   tier: source.tier,
 });
 
-export const projectShellOf = (project: MendProject): OrchestrationProjectShell => ({
+/** A project as t3code's shell shows it, with the actions the person saved for it. */
+export const projectShellOf = (
+  project: MendProject,
+  scripts: ReadonlyArray<ProjectScript>,
+): OrchestrationProjectShell => ({
   id: ProjectId.make(project.id),
   title: project.name.trim().length > 0 ? project.name : project.id,
   workspaceRoot: project.storePath,
@@ -333,7 +338,7 @@ export const projectShellOf = (project: MendProject): OrchestrationProjectShell 
   // Every Mend session works in a worktree of its own: a new thread starts in a new worktree, as
   // a launch into the project's root is refused (`launch.ts`).
   defaultThreadEnvMode: "worktree",
-  scripts: [],
+  scripts: [...scripts],
   createdAt: project.createdAt,
   updatedAt: project.updatedAt,
 });

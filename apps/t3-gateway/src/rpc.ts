@@ -30,6 +30,7 @@ import {
   ServerConfig,
   ServerProviderUpdateError,
   ServerSelfUpdateError,
+  DEFAULT_SERVER_SETTINGS,
   ServerSettingsError,
   type OrchestrationV2ShellStreamItem,
   UsageLimitSourceError,
@@ -58,7 +59,7 @@ import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
 import { makeReviewHandlers } from "./review.ts";
-import { RPC_REQUIRED_SCOPES } from "./rpc-scopes.ts";
+import { projectActionsPatchOf, RPC_REQUIRED_SCOPES } from "./rpc-scopes.ts";
 import {
   loginsOf,
   makeServerConfig,
@@ -716,7 +717,32 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.serverUpsertKeybinding]: () => refuse(WS_METHODS.serverUpsertKeybinding),
     [WS_METHODS.serverRemoveKeybinding]: () => refuse(WS_METHODS.serverRemoveKeybinding),
     [WS_METHODS.serverGetSettings]: () => refuse(WS_METHODS.serverGetSettings),
-    [WS_METHODS.serverUpdateSettings]: () => refuse(WS_METHODS.serverUpdateSettings),
+    // The answer is the settings the gateway serves, which name no override: t3code then reads the
+    // project's own scripts.
+    [WS_METHODS.serverUpdateSettings]: (input) => {
+      const actions = projectActionsPatchOf(input);
+      if (actions === null) return refuse(WS_METHODS.serverUpdateSettings);
+      return authorize(session).pipe(
+        Effect.andThen(
+          Effect.forEach(
+            Object.entries(actions),
+            ([projectId, scripts]) =>
+              hub.saveProjectScripts(projectId, scripts).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerSettingsError({
+                      settingsPath: `projectScriptOverrides.${projectId}`,
+                      operation: "write-file",
+                      cause,
+                    }),
+                ),
+              ),
+            { discard: true },
+          ),
+        ),
+        Effect.as(DEFAULT_SERVER_SETTINGS),
+      );
+    },
     [WS_METHODS.serverDiscoverSourceControl]: () => refuse(WS_METHODS.serverDiscoverSourceControl),
     [WS_METHODS.serverGetTraceDiagnostics]: () => refuse(WS_METHODS.serverGetTraceDiagnostics),
     [WS_METHODS.serverGetProcessDiagnostics]: () => refuse(WS_METHODS.serverGetProcessDiagnostics),

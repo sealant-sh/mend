@@ -21,6 +21,7 @@ import {
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ShellStreamItem,
   type OrchestrationV2ThreadProjection,
+  type ProjectScript,
 } from "@mend/t3-contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -128,6 +129,7 @@ import { markedUnread, visitedAfter } from "./visits.ts";
 import {
   makeWorktreeSetups,
   prepareWorktree,
+  setupScriptOf,
   type Preparation,
   type WorktreeSetups,
 } from "./worktree-setup.ts";
@@ -281,6 +283,14 @@ export interface PersonHub {
   readonly terminals: Terminals;
   /** How each new worktree's preparation goes, by t3code thread id (`worktree-setup.ts`). */
   readonly worktreeSetups: Pick<WorktreeSetups, "stream" | "cancel">;
+  /**
+   * Keeps the project actions the person saved for one of their projects (t3code's
+   * `projectScriptOverrides`), or lets go of them for null, and shows them as the project's scripts.
+   */
+  readonly saveProjectScripts: (
+    projectId: string,
+    scripts: ReadonlyArray<ProjectScript> | null,
+  ) => Effect.Effect<void, ThreadCommandFailure>;
   /** One of the person's images, or null when it is not theirs. */
   readonly imageOf: (imageId: string) => MessageImage | null;
   /**
@@ -1102,6 +1112,17 @@ export const makePersonHub = (input: {
             ),
           ),
     );
+    const projectScripts = new Map<string, ReadonlyArray<ProjectScript>>(
+      keeper === null
+        ? []
+        : yield* state.listProjectScripts(keeper.id).pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not read its project actions", {
+                cause: error.message,
+              }).pipe(Effect.as(new Map<string, ReadonlyArray<ProjectScript>>())),
+            ),
+          ),
+    );
     /**
      * Keeps each settle and snooze as it stands now: one a later turn or message ended is let go of
      * in the state file too, so it never comes back when that message leaves the queue's history.
@@ -1456,7 +1477,7 @@ export const makePersonHub = (input: {
       const sizes: Array<number> = [];
       const nextProjects = new Map<string, Printed<OrchestrationProjectShell>>();
       for (const entry of projects.values()) {
-        const value = projectShellOf(entry.project);
+        const value = projectShellOf(entry.project, projectScripts.get(entry.project.id) ?? []);
         const print = printProject(value);
         if (print instanceof Error) {
           yield* Effect.logError("t3 gateway could not encode a project", {
@@ -2299,7 +2320,11 @@ export const makePersonHub = (input: {
           ),
         );
         if (!recorded && keeper !== null) {
-          const [stored] = Queueing.storedOf({ held: false, entries: [entry] }).entries;
+          const [stored] = Queueing.storedOf({
+            held: false,
+            preparation: null,
+            entries: [entry],
+          }).entries;
           if (stored !== undefined) {
             const waiting = unrecorded.get(sessionId) ?? [];
             waiting.push({ stored: { ...stored, state: "sending" }, ids });
@@ -2592,11 +2617,13 @@ export const makePersonHub = (input: {
       Effect.gen(function* () {
         const queue = queueOf(sessionId);
         const held = queue.held;
+        const preparation = queue.preparation === null ? null : { ...queue.preparation };
         const entries = [...queue.entries];
         const fields = queue.entries.map((entry) => [entry, { ...entry }] as const);
         if (!change(queue)) return false;
         if (yield* keepQueue(sessionId, queue)) return true;
         queue.held = held;
+        queue.preparation = preparation;
         queue.entries = entries;
         for (const [entry, before] of fields) Object.assign(entry, before);
         return yield* refused(QUEUE_NOT_KEPT);
@@ -2888,17 +2915,14 @@ export const makePersonHub = (input: {
         Effect.orElseSucceed(() => null),
       );
 
-    /** Ends a preparation for the opening message: it takes its turn, or fails as a retry takes. */
     const settlePreparation = (preparation: Preparation, failure: string | null) =>
       Effect.gen(function* () {
         const { runId, sessionId } = preparation;
         yield* locked(
           Effect.gen(function* () {
             const queue = queueOf(sessionId);
-            const entry = queue.entries.find((candidate) => candidate.runId === runId);
-            if (entry === undefined) return;
-            if (failure === null) Queueing.prepared(entry);
-            else Queueing.preparationFailed(queue, entry, failure);
+            if (failure === null) Queueing.prepared(queue, runId);
+            else Queueing.preparationFailed(queue, runId, failure);
             yield* keepQueue(sessionId, queue);
             yield* publishAll;
           }),
@@ -2924,8 +2948,18 @@ export const makePersonHub = (input: {
                     };
               }),
             ),
+          setupScriptOf: (projectId) =>
+            locked(Effect.sync(() => setupScriptOf(projectScripts.get(projectId) ?? []))),
           launchUnderWay,
           refresh: (projectId) => requestRefresh(`project:${projectId}`),
+          setupProcessOpened: (sessionId, processId) =>
+            locked(
+              Effect.gen(function* () {
+                const queue = queueOf(sessionId);
+                Queueing.setupProcessOpened(queue, processId);
+                yield* keepQueue(sessionId, queue);
+              }),
+            ),
           settle: settlePreparation,
         },
         preparation,
@@ -3050,24 +3084,26 @@ export const makePersonHub = (input: {
         const { message } = request;
         const openingRunId = message === null ? null : `t3-run:${randomUUID()}`;
         // The opening message is queued like any other: the queue launches the session on what
-        // the launch named and sends the message as an exact turn once the agent runs. Into a new
-        // worktree, it waits for the worktree's preparation first.
+        // the launch named and sends the message as an exact turn once the agent runs.
         const queueOpening = (requestedAt: string) => {
-          if (message === null || openingRunId === null) return;
           const queue = queueOf(created.id);
-          if (queue.entries.some((entry) => entry.messageId === message.messageId)) return;
-          queue.entries.push(
-            Queueing.newEntry({
-              runId: openingRunId,
-              messageId: message.messageId,
-              text: message.text,
-              requestedAt,
-              token,
-              sender: request.session.sessionId,
-              imageIds: message.imageIds,
-              workspacePreparation: strategy,
-            }),
-          );
+          const entry =
+            message === null ||
+            openingRunId === null ||
+            queue.entries.some((queued) => queued.messageId === message.messageId)
+              ? null
+              : Queueing.newEntry({
+                  runId: openingRunId,
+                  messageId: message.messageId,
+                  text: message.text,
+                  requestedAt,
+                  token,
+                  sender: request.session.sessionId,
+                  imageIds: message.imageIds,
+                  workspacePreparation: strategy,
+                });
+          if (entry !== null) queue.entries.push(entry);
+          if (strategy !== null) Queueing.beginPreparation(queue, entry);
         };
         const preparation: Preparation | null =
           strategy === null
@@ -3079,6 +3115,7 @@ export const makePersonHub = (input: {
                 projectId: request.projectId,
                 runId: openingRunId,
                 options: request.options,
+                staleProcessId: null,
               };
         // The message is queued at once, whatever the reads below find: it is never dropped.
         // Until a project read shows the session, it stays hidden and its queue waits.
@@ -3120,8 +3157,7 @@ export const makePersonHub = (input: {
                     if (!opening.has(created.id)) return true;
                     opening.delete(created.id);
                     const queue = queueOf(created.id);
-                    const held = Queueing.preparing(queue);
-                    if (held !== undefined) Queueing.preparationFailed(queue, held, unread);
+                    Queueing.preparationFailed(queue, openingRunId, unread);
                     Queueing.failAll(queue, unread);
                     yield* publishAll;
                     return false;
@@ -3190,10 +3226,12 @@ export const makePersonHub = (input: {
             if (archived.has(sessionId)) {
               return yield* refused("The thread is archived. Unarchive it, then retry.");
             }
-            const retried = yield* changeKept(
-              sessionId,
-              (queue) => Queueing.retryPreparation(queue, command.runId) !== null,
-            );
+            let staleProcessId: string | null = null;
+            const retried = yield* changeKept(sessionId, (queue) => {
+              const retry = Queueing.retryPreparation(queue, command.runId);
+              staleProcessId = retry?.staleProcessId ?? null;
+              return retry !== null;
+            });
             if (!retried) {
               return yield* refused(
                 `Run ${command.runId} has no failed worktree preparation to retry.`,
@@ -3201,6 +3239,7 @@ export const makePersonHub = (input: {
             }
             yield* publishAll;
             return {
+              staleProcessId,
               baseRef:
                 queueOf(sessionId).entries.find((candidate) => candidate.runId === command.runId)
                   ?.workspacePreparation?.baseRef ?? null,
@@ -3222,8 +3261,37 @@ export const makePersonHub = (input: {
           projectId,
           runId: command.runId,
           options: launchOptionsOf(sessionId),
+          staleProcessId: entry.staleProcessId,
         });
         return yield* locked(Effect.sync(() => sequence));
+      });
+
+    const saveProjectScripts: PersonHub["saveProjectScripts"] = (projectId, scripts) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        if (keeper === null) {
+          return yield* refused("Project actions need a paired person to keep them for.");
+        }
+        if (!(yield* locked(Effect.sync(() => projects.has(projectId))))) {
+          return yield* refused(`No project ${projectId} in this environment.`);
+        }
+        yield* state.setProjectScripts(keeper.id, projectId, scripts).pipe(
+          Effect.tapError((error) =>
+            Effect.logError("t3 gateway could not keep project actions", {
+              cause: error.message,
+            }),
+          ),
+          Effect.catch(() =>
+            refused("The gateway could not keep these project actions. Try again."),
+          ),
+        );
+        yield* locked(
+          Effect.gen(function* () {
+            if (scripts === null) projectScripts.delete(projectId);
+            else projectScripts.set(projectId, scripts);
+            yield* publishAll;
+          }),
+        );
       });
 
     /** The project of a thread the person has, or a refusal naming the thread. */
@@ -3937,6 +4005,7 @@ export const makePersonHub = (input: {
       subscribeArchivedShell,
       terminals,
       worktreeSetups: setups,
+      saveProjectScripts,
       turnDiff,
       locationOf,
       shellSnapshot,

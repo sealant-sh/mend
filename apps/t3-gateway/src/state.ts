@@ -9,6 +9,7 @@ import {
   AuthSessionId,
   EnvironmentId,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
+  ProjectScript,
 } from "@mend/t3-contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -332,6 +333,16 @@ export class GatewayState extends Context.Service<
     readonly listNextEfforts: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
+    /** Keeps the project actions a person saved for a project, or, for null, lets go of them. */
+    readonly setProjectScripts: (
+      mendUserId: string,
+      projectId: string,
+      scripts: ReadonlyArray<ProjectScript> | null,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** Project id → the project actions the person saved for it. */
+    readonly listProjectScripts: (
+      mendUserId: string,
+    ) => Effect.Effect<ReadonlyMap<string, ReadonlyArray<ProjectScript>>, GatewayStateError>;
     /** Every bearer neither revoked nor expired at `now`: what a start checks with Mend. */
     readonly liveSessions: (
       now: number,
@@ -364,8 +375,10 @@ export class GatewayState extends Context.Service<
  * same way. `thread_visits` keeps when a person last saw each thread (migration 11), what t3code's
  * unread marker reads, and `next_efforts` the reasoning effort a person chose for a session's next
  * launch (migration 12), as `next_modes` keeps the mode. A kept launch's opening message names the
- * new worktree it waits for and whether preparing that worktree failed (migration 13), so a restart
- * keeps t3code's retry.
+ * new worktree it waits for and whether preparing that worktree failed, and `queue_preparations`
+ * keeps a session's worktree preparation with the shell its setup script runs in (migration 13),
+ * so a restart keeps t3code's retry and the retry can stop that shell. `project_scripts` keeps the
+ * project actions a person saved in t3code (migration 13): the only setup scripts the gateway runs.
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -546,6 +559,19 @@ const MIGRATIONS: ReadonlyArray<string> = [
   `
   ALTER TABLE queued_messages ADD COLUMN workspace_preparation TEXT;
   ALTER TABLE queued_messages ADD COLUMN preparation_failed INTEGER NOT NULL DEFAULT 0;
+  CREATE TABLE queue_preparations (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    setup_process_id TEXT,
+    PRIMARY KEY (mend_user_id, mend_session_id)
+  );
+  CREATE TABLE project_scripts (
+    mend_user_id TEXT NOT NULL,
+    mend_project_id TEXT NOT NULL,
+    scripts TEXT NOT NULL,
+    PRIMARY KEY (mend_user_id, mend_project_id)
+  );
   `,
 ];
 
@@ -612,6 +638,20 @@ const QueuedRow = Schema.Struct({
 const decodeQueuedRows = Schema.decodeUnknownEffect(Schema.Array(QueuedRow));
 const HoldRow = Schema.Struct({ mend_session_id: Schema.String });
 const decodeHoldRows = Schema.decodeUnknownEffect(Schema.Array(HoldRow));
+const PreparationRow = Schema.Struct({
+  mend_session_id: Schema.String,
+  status: Schema.Literals(["running", "failed"]),
+  setup_process_id: Schema.NullOr(Schema.String),
+});
+const decodePreparationRows = Schema.decodeUnknownEffect(Schema.Array(PreparationRow));
+const ProjectScriptsRow = Schema.Struct({
+  mend_project_id: Schema.String,
+  scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
+});
+const decodeProjectScriptsRows = Schema.decodeUnknownEffect(Schema.Array(ProjectScriptsRow));
+const encodeProjectScripts = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Array(ProjectScript)),
+);
 const decodeSessionRows = Schema.decodeUnknownEffect(Schema.Array(SessionRow));
 const encodeImageIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 const encodeWorkspacePreparation = Schema.encodeSync(
@@ -985,6 +1025,9 @@ export const openGatewayState = (
         database
           .prepare("DELETE FROM queue_holds WHERE mend_user_id = ? AND mend_session_id = ?")
           .run(mendUserId, sessionId);
+        database
+          .prepare("DELETE FROM queue_preparations WHERE mend_user_id = ? AND mend_session_id = ?")
+          .run(mendUserId, sessionId);
         const insert = database.prepare(
           `INSERT INTO queued_messages (
              mend_user_id, mend_session_id, position, run_id, message_id, text, requested_at,
@@ -1017,6 +1060,14 @@ export const openGatewayState = (
             .prepare("INSERT INTO queue_holds (mend_user_id, mend_session_id) VALUES (?, ?)")
             .run(mendUserId, sessionId);
         }
+        if (queue.preparation !== null) {
+          database
+            .prepare(
+              `INSERT INTO queue_preparations (mend_user_id, mend_session_id, status, setup_process_id)
+               VALUES (?, ?, ?, ?)`,
+            )
+            .run(mendUserId, sessionId, queue.preparation.status, queue.preparation.setupProcessId);
+        }
       });
 
     const decoded =
@@ -1046,6 +1097,22 @@ export const openGatewayState = (
             .all(mendUserId),
         ).pipe(Effect.flatMap(decoded("loadQueues", decodeHoldRows)));
         const held = new Set(holds.map((row) => row.mend_session_id));
+        const preparationRows = yield* run("loadQueues", () =>
+          database
+            .prepare(
+              "SELECT mend_session_id, status, setup_process_id FROM queue_preparations WHERE mend_user_id = ?",
+            )
+            .all(mendUserId),
+        ).pipe(Effect.flatMap(decoded("loadQueues", decodePreparationRows)));
+        const preparations = new Map(
+          preparationRows.map(
+            (row) =>
+              [
+                row.mend_session_id,
+                { status: row.status, setupProcessId: row.setup_process_id },
+              ] as const,
+          ),
+        );
         const bySession = new Map<
           string,
           { entries: Array<StoredEntry>; senders: Map<string, string> }
@@ -1074,13 +1141,17 @@ export const openGatewayState = (
           if (row.device_token !== null) kept.senders.set(row.sender_session_id, row.device_token);
           bySession.set(row.mend_session_id, kept);
         }
-        for (const sessionId of held) {
+        for (const sessionId of [...held, ...preparations.keys()]) {
           if (!bySession.has(sessionId))
             bySession.set(sessionId, { entries: [], senders: new Map() });
         }
         return Array.from(bySession, ([sessionId, kept]) => ({
           sessionId,
-          queue: { held: held.has(sessionId), entries: kept.entries },
+          queue: {
+            held: held.has(sessionId),
+            preparation: preparations.get(sessionId) ?? null,
+            entries: kept.entries,
+          },
           senders: kept.senders,
         }));
       });
@@ -1406,6 +1477,46 @@ export const openGatewayState = (
           .run(mendUserId, sessionId, effort);
       });
 
+    const setProjectScripts = (
+      mendUserId: string,
+      projectId: string,
+      scripts: ReadonlyArray<ProjectScript> | null,
+    ) =>
+      Effect.gen(function* () {
+        if (scripts === null) {
+          return yield* run("setProjectScripts", () => {
+            database
+              .prepare("DELETE FROM project_scripts WHERE mend_user_id = ? AND mend_project_id = ?")
+              .run(mendUserId, projectId);
+          });
+        }
+        const encoded = yield* encodeProjectScripts(scripts).pipe(
+          Effect.mapError(
+            (cause) => new GatewayStateError({ operation: "setProjectScripts", cause }),
+          ),
+        );
+        yield* run("setProjectScripts", () => {
+          database
+            .prepare(
+              "INSERT OR REPLACE INTO project_scripts (mend_user_id, mend_project_id, scripts) VALUES (?, ?, ?)",
+            )
+            .run(mendUserId, projectId, encoded);
+        });
+      });
+
+    const listProjectScripts = (mendUserId: string) =>
+      run("listProjectScripts", () =>
+        database
+          .prepare("SELECT mend_project_id, scripts FROM project_scripts WHERE mend_user_id = ?")
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap(decoded("listProjectScripts", decodeProjectScriptsRows)),
+        Effect.map(
+          (rows): ReadonlyMap<string, ReadonlyArray<ProjectScript>> =>
+            new Map(rows.map((row) => [row.mend_project_id, row.scripts] as const)),
+        ),
+      );
+
     const listNextEfforts = (mendUserId: string) =>
       run("listNextEfforts", () =>
         database
@@ -1480,6 +1591,8 @@ export const openGatewayState = (
       listVisited,
       setNextEffort,
       listNextEfforts,
+      setProjectScripts,
+      listProjectScripts,
       liveSessions,
       peopleWithQueuedMessages,
     };

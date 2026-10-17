@@ -95,6 +95,7 @@ export const emptyHub: PersonHub = {
     stream: () => Stream.make(null).pipe(Stream.concat(Stream.never)),
     cancel: () => Effect.succeed(false),
   },
+  saveProjectScripts: () => refused,
   persistImages: () => refused,
   imageOf: () => null,
   refusal: () => Effect.never,
