@@ -204,7 +204,9 @@ const SELF_UPDATE_REASON = "The gateway updates with Mend, never from a t3code c
 
 /**
  * Why deleting a thread's worktree from t3code is refused, as its toast shows it ("Could not
- * remove <path>. …"): the worktree and its change are Mend's, removed only in Mend.
+ * remove <path>. …"). t3code asks to delete the worktree too when the thread being deleted is the
+ * only one on it. The thread delete goes through, and the worktree and its change stay Mend's,
+ * removed only in Mend.
  */
 export const WORKTREE_KEPT =
   "Mend keeps the worktree and its change. Remove it in Mend, with mend worktrees rm or from the project's page.";
