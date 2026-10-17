@@ -4,8 +4,9 @@
 
 The t3code gateway (docs/adr/0012): T3 Code works as a Mend client for its core workflow: threads,
 messages and images, the queue, approvals, diffs, files, the terminal, settle and snooze, and pins.
-A thread with no activity for three days settles on its own, as t3code's own server settles it. More
-of T3 Code is coming in 0.36 patch releases, before 0.37.
+A thread with no activity for three days settles on its own, as t3code's own server settles it; on
+the first read after the upgrade, that includes every thread already quiet that long. More of T3
+Code is coming in 0.36 patch releases, before 0.37.
 
 `mend server setup --t3-gateway` turns it on. t3code's desktop, mobile and web clients add it as an
 environment, pair with a code from `mend pair`, and see this Mend's projects and sessions as their

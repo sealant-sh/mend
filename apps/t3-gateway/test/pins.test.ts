@@ -37,7 +37,7 @@ type Rpc = Effect.Success<ReturnType<typeof pairAndConnect>>["rpc"];
 
 type ThreadCommand =
   | { readonly type: "thread.pin"; readonly orderKey?: string }
-  | { readonly type: "thread.unpin" | "thread.settle" }
+  | { readonly type: "thread.unpin" | "thread.settle" | "thread.unsnooze" }
   | { readonly type: "thread.pin.reorder" | "thread.active.reorder"; readonly orderKey: string }
   | { readonly type: "thread.auto-settle.set"; readonly enabled: boolean }
   | { readonly type: "thread.snooze"; readonly snoozedUntil: string };
@@ -52,6 +52,8 @@ const commandOf = (threadId: string, command: ThreadCommand): OrchestrationV2Com
     case "thread.unpin":
     case "thread.settle":
       return { type: command.type, ...ids };
+    case "thread.unsnooze":
+      return { type: command.type, ...ids, reason: "user" };
     case "thread.pin.reorder":
     case "thread.active.reorder":
       return { type: command.type, ...ids, orderKey: command.orderKey };
@@ -74,7 +76,8 @@ const refusal = (rpc: Rpc, threadId: string, command: ThreadCommand) =>
     ),
   );
 
-const watchShell = (rpc: Rpc) =>
+/** The shell as last streamed; `pause` is a live sleep under the TestClock. */
+const watchShell = (rpc: Rpc, pause: Effect.Effect<void> = Effect.sleep("50 millis")) =>
   Effect.gen(function* () {
     const threads = new Map<string, OrchestrationV2ThreadShell>();
     yield* rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}).pipe(
@@ -100,7 +103,7 @@ const watchShell = (rpc: Rpc) =>
         for (let attempt = 0; attempt < 100; attempt++) {
           const thread = threads.get(threadId);
           if (thread !== undefined && accept(thread)) return thread;
-          yield* Effect.sleep("50 millis");
+          yield* pause;
         }
         return yield* Effect.die(new Error(`Timed out waiting for ${what}.`));
       });
@@ -353,7 +356,7 @@ describe("automatic settlement", () => {
       }),
   );
 
-  it.effect("a quiet thread settles on the sweep's timer, with nothing read from Mend", () =>
+  it.effect("a quiet thread settles on the sweep's timer, with no read of the person's", () =>
     Effect.gen(function* () {
       const mend = yield* startFakeMend;
       const timers = yield* GatewayTimers;
@@ -384,5 +387,132 @@ describe("automatic settlement", () => {
         assert.strictEqual(iso(settled.thread.settledAt), quietSince);
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
     }).pipe(withGatewayTimers),
+  );
+
+  it.effect(
+    "a quiet thread stays out of Settled while a background agent runs, or while its work cannot be read",
+    () =>
+      Effect.gen(function* () {
+        const mend = yield* startFakeMend;
+        const timers = yield* GatewayTimers;
+        withSessions(mend, ["session-1", "session-2", "session-3"]);
+        const now = yield* Clock.currentTimeMillis;
+        const quietSince = new Date(now - (AUTO_SETTLE_AFTER_DAYS ?? 0) * DAY - HOUR).toISOString();
+        for (const id of ["session-1", "session-2", "session-3"]) ageTurns(mend, id, quietSince);
+        const turn = mend.workbench.turns.get("session-1")?.[0];
+        assert.isDefined(turn);
+        if (turn === undefined) return;
+        const agent = mend.workbench.addItem(turn, {
+          kind: "task",
+          status: "in-progress",
+          title: "Background agent",
+          data: { taskId: "agent-1", taskType: "local_agent", description: "Review the change" },
+        });
+        mend.workbench.itemsUnavailable.add("session-3");
+        yield* Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "AUTO-WORK");
+          const shell = yield* watchShell(rpc, TestClock.withLive(Effect.sleep("50 millis")));
+          yield* shell.until(
+            "session-2",
+            (thread) => thread.settledOverride === "settled",
+            "the thread with no work settled",
+          );
+          const unsettled = () =>
+            ["session-1", "session-3"].map((id) => shell.threads.get(id)?.settledOverride ?? null);
+          assert.deepStrictEqual(unsettled(), [null, null]);
+
+          yield* timers.runOut("1 minute", "the sweep with the agent still running");
+          yield* timers.parked("1 minute", "the sweep done");
+          assert.deepStrictEqual(unsettled(), [null, null]);
+
+          mend.workbench.updateItem(agent, { status: "completed" });
+          mend.workbench.itemsUnavailable.delete("session-3");
+          yield* timers.runOut("1 minute", "the sweep once the agent ended");
+          for (const id of ["session-1", "session-3"]) {
+            const settled = yield* shell.until(
+              id,
+              (thread) => thread.settledOverride === "settled",
+              `${id} settled`,
+            );
+            assert.strictEqual(iso(settled.settledAt), quietSince);
+          }
+        }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+      }).pipe(withGatewayTimers),
+  );
+
+  it.live(
+    "a snooze ended by hand or by a pin starts the quiet clock again, across a restart",
+    () => {
+      const statePath = statePathOf();
+      const ids = ["session-1", "session-2", "session-3", "session-4"];
+      const wokeAt = (rpc: Rpc, id: string) =>
+        rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: ThreadId.make(id) }).pipe(
+          Effect.map((projection) => iso(projection.thread.lastSnoozeWakeAt)),
+        );
+      return Effect.gen(function* () {
+        const mend = yield* startFakeMend;
+        withSessions(mend, ids);
+        const quietSince = new Date(
+          Date.now() - (AUTO_SETTLE_AFTER_DAYS ?? 0) * DAY - HOUR,
+        ).toISOString();
+
+        const woken = yield* Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "WAKE");
+          const shell = yield* watchShell(rpc);
+          yield* shell.until("session-4", (thread) => thread.latestRunId !== null, "the threads");
+          const snoozedUntil = new Date(Date.now() + HOUR).toISOString();
+          for (const id of ["session-1", "session-3"]) {
+            yield* dispatch(rpc, id, { type: "thread.snooze", snoozedUntil });
+          }
+          for (const id of ["session-2", "session-4"]) {
+            yield* dispatch(rpc, id, { type: "thread.pin", orderKey: id });
+          }
+          for (const id of ids) ageTurns(mend, id, quietSince);
+          yield* shell.until(
+            "session-4",
+            (thread) => iso(thread.latestRunCompletedAt) === quietSince,
+            "the aged threads read",
+          );
+
+          yield* dispatch(rpc, "session-1", { type: "thread.unsnooze" });
+          yield* dispatch(rpc, "session-3", { type: "thread.pin" });
+          yield* dispatch(rpc, "session-3", { type: "thread.unpin" });
+          // The control: unpinned, it goes quiet in the same sweep the woken threads would.
+          yield* dispatch(rpc, "session-2", { type: "thread.unpin" });
+          yield* shell.until(
+            "session-2",
+            (thread) => thread.settledOverride === "settled",
+            "the control settled",
+          );
+          assert.deepStrictEqual(
+            ["session-1", "session-3"].map((id) => shell.threads.get(id)?.settledOverride ?? null),
+            [null, null],
+          );
+          assert.isNull(yield* wokeAt(rpc, "session-2"));
+          return [yield* wokeAt(rpc, "session-1"), yield* wokeAt(rpc, "session-3")];
+        }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+        for (const at of woken)
+          assert.isTrue(at !== null && Date.parse(at) > Date.parse(quietSince));
+
+        yield* Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "WAKE-AFTER");
+          const shell = yield* watchShell(rpc);
+          yield* dispatch(rpc, "session-4", { type: "thread.unpin" });
+          yield* shell.until(
+            "session-4",
+            (thread) => thread.settledOverride === "settled",
+            "the control settled after the restart",
+          );
+          assert.deepStrictEqual(
+            ["session-1", "session-3"].map((id) => shell.threads.get(id)?.settledOverride ?? null),
+            [null, null],
+          );
+          assert.deepStrictEqual(
+            [yield* wokeAt(rpc, "session-1"), yield* wokeAt(rpc, "session-3")],
+            woken,
+          );
+        }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+      });
+    },
   );
 });

@@ -132,6 +132,8 @@ export interface ThreadLifecycle {
   /** When the snooze ends; null while the thread is not snoozed. */
   readonly snoozedUntil: string | null;
   readonly snoozedAt: string | null;
+  /** When the person last ended a snooze by hand, or by pinning: the quiet clock starts again. */
+  readonly lastSnoozeWakeAt: string | null;
   readonly pinnedAt: string | null;
   readonly pinOrderKey: string | null;
   readonly activeOrderKey: string | null;
@@ -577,6 +579,7 @@ const MIGRATIONS: ReadonlyArray<string> = [
   ALTER TABLE thread_lifecycles ADD COLUMN pin_order_key TEXT;
   ALTER TABLE thread_lifecycles ADD COLUMN active_order_key TEXT;
   ALTER TABLE thread_lifecycles ADD COLUMN auto_settle_disabled_at TEXT;
+  ALTER TABLE thread_lifecycles ADD COLUMN last_snooze_wake_at TEXT;
   `,
 ];
 
@@ -679,6 +682,7 @@ const LifecycleRow = Schema.Struct({
   pin_order_key: Schema.NullOr(Schema.String),
   active_order_key: Schema.NullOr(Schema.String),
   auto_settle_disabled_at: Schema.NullOr(Schema.String),
+  last_snooze_wake_at: Schema.NullOr(Schema.String),
 });
 const decodeLifecycleRows = Schema.decodeUnknownEffect(Schema.Array(LifecycleRow));
 const ModelPreferencesRow = Schema.Struct({
@@ -1360,8 +1364,9 @@ export const openGatewayState = (
           .prepare(
             `INSERT OR REPLACE INTO thread_lifecycles
               (mend_user_id, mend_session_id, settled_override, settled_at, unsettled_at, snoozed_until,
-                snoozed_at, pinned_at, pin_order_key, active_order_key, auto_settle_disabled_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                snoozed_at, pinned_at, pin_order_key, active_order_key, auto_settle_disabled_at,
+                last_snooze_wake_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             mendUserId,
@@ -1375,6 +1380,7 @@ export const openGatewayState = (
             lifecycle.pinOrderKey,
             lifecycle.activeOrderKey,
             lifecycle.autoSettleDisabledAt,
+            lifecycle.lastSnoozeWakeAt,
           );
       });
 
@@ -1383,7 +1389,7 @@ export const openGatewayState = (
         database
           .prepare(
             `SELECT mend_session_id, settled_override, settled_at, unsettled_at, snoozed_until, snoozed_at,
-                pinned_at, pin_order_key, active_order_key, auto_settle_disabled_at
+                pinned_at, pin_order_key, active_order_key, auto_settle_disabled_at, last_snooze_wake_at
               FROM thread_lifecycles WHERE mend_user_id = ?`,
           )
           .all(mendUserId),
@@ -1406,6 +1412,7 @@ export const openGatewayState = (
                       pinOrderKey: row.pin_order_key,
                       activeOrderKey: row.active_order_key,
                       autoSettleDisabledAt: row.auto_settle_disabled_at,
+                      lastSnoozeWakeAt: row.last_snooze_wake_at,
                     },
                   ] as const,
               ),

@@ -396,6 +396,7 @@ export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
     unsettledAt: utcOrNull(lifecycle.unsettledAt),
     snoozedUntil: utcOrNull(lifecycle.snoozedUntil),
     snoozedAt: utcOrNull(lifecycle.snoozedAt),
+    lastSnoozeWakeAt: utcOrNull(lifecycle.lastSnoozeWakeAt),
     pinnedAt: utcOrNull(lifecycle.pinnedAt),
     pinOrderKey: lifecycle.pinOrderKey,
     activeOrderKey: lifecycle.activeOrderKey,
@@ -663,3 +664,14 @@ export const threadShellOf = (
     deletedAt: null,
   };
 };
+
+/**
+ * The thread as t3code's settlement sweep reads it (`ProjectionSettlementCandidate`): the shell
+ * row, and when the person last ended a snooze by hand.
+ */
+export const settlementCandidateOf = (source: ThreadSource) => ({
+  ...threadShellOf(source, { itemCount: 0, visibleItemCount: 0 }),
+  lastSnoozeWakeAt: utcOrNull(source.lifecycle.lastSnoozeWakeAt),
+});
+
+export type SettlementCandidate = ReturnType<typeof settlementCandidateOf>;
