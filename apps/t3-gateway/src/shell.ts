@@ -33,7 +33,7 @@ import type {
   MendSession,
   MendTurn,
 } from "./mend-workbench.ts";
-import { modelOptionsOf, type ThreadModelOptions } from "./model-options.ts";
+import { modelOptionsOf, shownModelOf, type ThreadModelOptions } from "./model-options.ts";
 import type { ThreadNotices } from "./notices.ts";
 import { harnessOwnModelOf, harnessProvider } from "./server-config.ts";
 import type { StoredImage, ThreadLifecycle } from "./state.ts";
@@ -109,12 +109,15 @@ export interface ThreadSource {
   /** When the person last saw the thread (`visits.ts`); null when they never have. */
   readonly lastVisitedAt: string | null;
   /**
+   * The model the person chose for the agent's next start, when it differs from the one the
+   * session runs on (`model-options.ts`); null otherwise.
+   */
+  readonly nextModel: string | null;
+  /**
    * The reasoning effort the person chose for the agent's next start, when it differs from the one
    * it runs with (`model-options.ts`); null otherwise.
    */
   readonly nextEffort: string | null;
-  /** `fast` when a t3code client launched the thread on the Fast tier; Mend records no tier. */
-  readonly tier: "fast" | null;
   /**
    * The images a message the gateway sent carried when Mend took its turn, by the message's
    * t3code id (`images.ts`), each with the path its turn named.
@@ -297,26 +300,25 @@ export const isActiveRunStatus = (status: OrchestrationV2RunStatus): boolean =>
 
 export const modelSelectionOf = (source: ThreadSource): ModelSelection => {
   const provider = harnessProvider(source.session.harness);
-  // The effort the agent runs on, or the one chosen for its next start, and the tier: what the
-  // picker shows, so a message carries them back unchanged unless the person changes them.
-  const options = modelOptionsOf(threadModelOptionsOf(source));
+  const thread = threadModelOptionsOf(source);
+  const options = modelOptionsOf(thread);
   return {
     // Only sessions of a harness with a provider are threads (`isProjectable`).
     instanceId: provider?.instanceId ?? ProviderInstanceId.make(source.session.harness),
-    model:
-      source.session.model ??
-      source.agent.protocolOptions?.model ??
-      harnessOwnModelOf(source.session.harness),
+    model: shownModelOf(thread),
     ...(options === undefined ? {} : { options }),
   };
 };
 
-/** The thread's effort and tier, as `model-options.ts` weighs a message's against them. */
 export const threadModelOptionsOf = (source: ThreadSource): ThreadModelOptions => ({
   harness: source.session.harness,
+  runningModel:
+    source.agent.protocolOptions?.model ??
+    source.session.model ??
+    harnessOwnModelOf(source.session.harness),
+  nextModel: source.nextModel,
   runningEffort: source.agent.protocolOptions?.effort ?? null,
   nextEffort: source.nextEffort,
-  tier: source.tier,
 });
 
 export const projectShellOf = (project: MendProject): OrchestrationProjectShell => ({

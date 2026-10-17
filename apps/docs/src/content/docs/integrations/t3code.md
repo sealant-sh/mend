@@ -127,14 +127,15 @@ by an older gateway no longer reads files, which now need a permission of their 
 
 | In t3code                          | What happens in Mend                                                                                                                                                                                                                                                                                                                                                                  |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| New thread in a new worktree       | A session in a new worktree from the base you chose, named from the branch's last segment and six random characters (`health-check-k3x9qa`), so two launches never share one, labelled with the thread's title or its first message's first line. It launches on the model, reasoning effort, service tier and runtime mode you chose                                                 |
+| New thread in a new worktree       | A session in a new worktree from the base you chose, named from the branch's last segment and six random characters (`health-check-k3x9qa`), so two launches never share one, labelled with the thread's title or its first message's first line. It launches on the model, reasoning effort and runtime mode you chose, on the standard service tier                                 |
 | New thread in an existing worktree | A session that joins the worktree of the project's session at that path                                                                                                                                                                                                                                                                                                               |
 | Send a message, with images        | A turn, sent as you once no turn is open. When the agent has stopped (the 15-minute idle stop, or a stop), the gateway launches it again on the permission mode it recorded, so a session that asks still asks, and sends the message once it runs. Images (PNG, JPEG, GIF or WebP, at most 8 MiB each and ten a message) are placed in the session's workspace and named in the turn |
 | Queue, edit, reorder, resume       | The gateway's queue, kept across a restart of the gateway; a message is never sent twice. One that was being sent when the gateway stopped comes back failed, saying so. A message already on its way to Mend is not edited or moved                                                                                                                                                  |
 | Interrupt                          | The turn is interrupted and what waits is held until you resume                                                                                                                                                                                                                                                                                                                       |
 | Approvals and questions            | The agent's requests, answered in Mend. Mend has no "always": allowing always allows for this session. Dismissing a question answers it with cancel                                                                                                                                                                                                                                   |
-| Runtime mode                       | Applies from the agent's next start: Mend sets the mode per launch. The thread says so until then                                                                                                                                                                                                                                                                                     |
-| Reasoning effort                   | Shown as the agent runs on it. A change on a started thread applies from the agent's next start, as the runtime mode does, and the thread says so until then                                                                                                                                                                                                                          |
+| Runtime mode                       | Applies from your next message after the agent stops: Mend sets the mode per launch. The thread says so until then                                                                                                                                                                                                                                                                    |
+| Model                              | Another model of the thread's provider, picked on a started thread, applies from your next message after the agent stops, in the same conversation, and the thread says so until then. An effort the model does not take becomes the highest it does. A thread on the harness's own default cannot go back to it once it names a model                                                |
+| Reasoning effort                   | Shown as the agent runs on it. A change on a started thread applies from your next message after the agent stops, as the runtime mode does, and the thread says so until then                                                                                                                                                                                                         |
 | Read state                         | Your own, kept by the gateway: opening a thread marks it seen, so one that finished while you were away shows as done, and Mark unread brings that back. Every device you pair sees the same                                                                                                                                                                                          |
 | Rename, stop, delete               | Mend's own routes. A delete keeps the worktree and its change, as Mend always does, and t3code does not offer to delete the worktree                                                                                                                                                                                                                                                  |
 | Archive                            | Your own view, kept by the gateway: Mend has no archive. What was queued is held, not lost                                                                                                                                                                                                                                                                                            |
@@ -150,10 +151,9 @@ t3code shows those controls inert with its own wording, or it refuses them with 
 
 - **In a thread:** steering a running turn (Ctrl/⌘+Enter, or the steer follow-up setting; send the
   message to run after it instead), holding a message back to send later, runtime modes between
-  asking and full access, switching the model or provider, changing the service tier once the thread
-  has started (start a new thread on the other tier), plan mode, rollback and forks, and attachments
-  other than images. Provider slash commands and skills are absent: `/` lists t3code's own commands
-  only. `/feedback` is refused.
+  asking and full access, switching the provider, the Fast service tier, plan mode, rollback and
+  forks, and attachments other than images. Provider slash commands and skills are absent: `/` lists
+  t3code's own commands only. `/feedback` is refused.
 - **Projects and git:** adding, creating, cloning, importing, renaming and removing projects (adopt
   and edit them in Mend), a thread in the project's root (every Mend session has a worktree), open
   in editor, editing files, project actions, pull request views, publishing a repository, and git
@@ -191,9 +191,12 @@ t3code shows those controls inert with its own wording, or it refuses them with 
   Mend's web app, the CLI and other people's t3code clients do not show them. A message sent to a
   settled or snoozed thread brings it back, as on t3code's own server. A thread you never opened in
   t3code shows no unread mark until you do.
-- **Service tier.** Mend takes a tier when an agent launches and records none. A thread started from
-  t3code keeps the tier it asked for on every relaunch; one started elsewhere shows Standard, since
-  Mend does not say which tier it started on.
+- **Service tier.** Mend's agents in a T3 Code thread take no tier, so every thread runs on the
+  standard tier and t3code offers no Fast.
+- **Next-start choices and shared control.** A model, effort or runtime mode chosen on a started
+  thread waits for the launch your message makes when the agent has stopped. When Mend restarts the
+  agent itself, as it does to hand a shared session to your login, the agent keeps what it ran on,
+  and the thread still says the choice waits.
 
 ## Where it is reached
 
