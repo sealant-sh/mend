@@ -18,6 +18,8 @@ import {
   imageNames,
   innerOrigins,
   insideCaptureRoot,
+  dockerHubTag,
+  heldVerdict,
   imageRecord,
   isolationFindings,
   mendBuildArgs,
@@ -430,8 +432,64 @@ test("a recording window records what appeared and has the stack's shape, by ide
   });
   assert.deepEqual(
     mergeLedgers([madeSince(before, after, SHAPES.session), { containers: ["c3", "c9"] }]),
-    { containers: ["c2", "c3", "c9"], networks: ["n2"], volumes: [] },
+    { containers: ["c2", "c3", "c9"], networks: ["n2"], volumes: [], ran: [] },
   );
+  // What each recorded container ran, the later window's word for a container both name.
+  const ran = (container, id) => ({
+    service: container,
+    container,
+    image: "i",
+    id,
+    repoDigests: [],
+  });
+  assert.deepEqual(
+    mergeLedgers([
+      { containers: ["c2"], ran: [ran("mend-mend-1", "sha256:old")] },
+      {
+        containers: ["c3"],
+        ran: [ran("mend-mend-1", "sha256:new"), ran("mend-postgres-1", "sha256:p")],
+      },
+    ]).ran,
+    [ran("mend-mend-1", "sha256:new"), ran("mend-postgres-1", "sha256:p")],
+  );
+});
+
+test("dockerHubTag finds Docker Hub's repository for a tag, and nothing for a digest or another registry", () => {
+  assert.deepEqual(dockerHubTag("node:26-bookworm"), {
+    repository: "library/node",
+    tag: "26-bookworm",
+  });
+  assert.deepEqual(dockerHubTag("dxflrs/garage:v2.4.1"), {
+    repository: "dxflrs/garage",
+    tag: "v2.4.1",
+  });
+  assert.deepEqual(dockerHubTag("docker.io/library/postgres:17-alpine"), {
+    repository: "library/postgres",
+    tag: "17-alpine",
+  });
+  assert.equal(dockerHubTag("busybox:1.37@sha256:bdf5"), null);
+  assert.equal(dockerHubTag("ghcr.io/sealant-sh/mend:0.36.0"), null);
+  assert.equal(dockerHubTag("localhost:5000/cache:1"), null);
+});
+
+test("heldVerdict is quiet only for a held copy Docker Hub names now, and says what it reused", () => {
+  const pulled = (digest) => ({ Id: "sha256:id", RepoDigests: [`node@${digest}`] });
+  assert.equal(heldVerdict("node:26-bookworm", pulled("sha256:a"), "sha256:a"), null);
+  assert.deepEqual(heldVerdict("node:26-bookworm", pulled("sha256:b"), "sha256:a"), {
+    stale: true,
+    line: "held node:26-bookworm sha256:b · Hub has sha256:a",
+  });
+  assert.deepEqual(
+    heldVerdict("node:26-bookworm", { Id: "sha256:id", RepoDigests: [] }, "sha256:a"),
+    {
+      stale: false,
+      line: "held node:26-bookworm sha256:id (loaded, no repo digest) · Hub has sha256:a",
+    },
+  );
+  assert.deepEqual(heldVerdict("node:26-bookworm", pulled("sha256:b"), null), {
+    stale: false,
+    line: "held node:26-bookworm sha256:b · Docker Hub did not answer",
+  });
 });
 
 test("a teardown removes what was recorded and has the stack's shape, and follows nothing (R7-1, R7-2)", () => {

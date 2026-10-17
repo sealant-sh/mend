@@ -222,11 +222,12 @@ else if (verb === "pull") {
     const made = JSON.parse(readFileSync(script, "utf8"));
     await locked((state) => {
       for (const made1 of made.containers ?? []) {
-        const [name, labels = {}, mounts = []] = Array.isArray(made1) ? made1 : [made1];
+        const [name, labels = {}, mounts = [], image] = Array.isArray(made1) ? made1 : [made1];
         state.containers.push({
           Id: newId(state, "a"),
           Name: `/${name}`,
-          Config: { Labels: labels },
+          Config: { Labels: labels, ...(image ? { Image: image } : {}) },
+          ...(image ? { Image: `sha256:${createHash("sha256").update(image).digest("hex")}` } : {}),
           Mounts: mounts.map((volume) => ({ Type: "volume", Name: volume })),
         });
       }
@@ -410,6 +411,7 @@ else if (verb === "volume" && sub === "inspect") {
   if (item === undefined) fail(`Error: no such image ${tag}`);
   const format = formatOf();
   if (format === "{{.Id}}") console.log(item.Id);
+  else if (format === "{{json .}}") console.log(JSON.stringify(item));
   else if (format === '{{index .Config.Labels "dev.sealant.mend.network-guard-image"}}')
     console.log(item.Labels["dev.sealant.mend.network-guard-image"] ?? "");
   else fail("unexpected orchestration image format", 2);

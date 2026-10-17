@@ -28,6 +28,7 @@ const ran = [
     image: "postgres:17-alpine",
     id: "sha256:p",
     repoDigests: ["postgres@sha256:pulled"],
+    hub: "sha256:new",
   },
   {
     service: "garage",
@@ -35,6 +36,7 @@ const ran = [
     image: "dxflrs/garage:v2.4.1",
     id: "sha256:g",
     repoDigests: [],
+    hub: null,
   },
   {
     service: "sealantd",
@@ -69,6 +71,7 @@ test("doctor writes images.json naming every service the report names, with its 
     images: { version: "1.2.3-verify.tabc" },
     check: { status: "completed" },
     ran,
+    held: ["held node:26-bookworm sha256:old · Hub has sha256:new"],
   };
   writeFileSync(join(dir, "report.json"), JSON.stringify(report));
   writeFileSync(
@@ -108,12 +111,13 @@ test("doctor writes images.json naming every service the report names, with its 
       );
     assert.match(
       doctor,
-      /image · postgres · postgres:17-alpine · sha256:p · postgres@sha256:pulled/,
+      /image · postgres · postgres:17-alpine · sha256:p · postgres@sha256:pulled · Hub has sha256:new/,
     );
     assert.match(
       doctor,
-      /image · garage · dxflrs\/garage:v2\.4\.1 · sha256:g · no repo digest \(loaded\)/,
+      /image · garage · dxflrs\/garage:v2\.4\.1 · sha256:g · no repo digest \(loaded\) · Docker Hub did not answer/,
     );
+    assert.match(doctor, /held node:26-bookworm sha256:old · Hub has sha256:new/);
   } finally {
     web.close();
     rmSync(dir, { recursive: true, force: true });

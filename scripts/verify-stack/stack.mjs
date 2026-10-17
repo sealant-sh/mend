@@ -77,6 +77,8 @@ import {
   manualRemoval,
   mergeLedgers,
   planTeardown,
+  dockerHubTag,
+  heldVerdict,
   imageNames,
   imageRecord,
   innerOrigins,
@@ -351,13 +353,67 @@ const imageId = (tag) =>
   dockerOut(["image", "inspect", "--format", "{{.Id}}", tag]).catch(() => null);
 
 /**
- * Pull an image this daemon lacks, as setup does (`pull-missing`). A session's Docker service
- * starts empty, so a held image is one this session pulled before or one `local-outer.sh seed`
- * loaded after checking its digest with Docker Hub. Pulling a held tag still asks Docker Hub, which
- * refuses even that once this address has spent its anonymous limit.
+ * The digest Docker Hub names for a tagged reference now, or null: another registry, a digest
+ * reference, or no answer (its limit spent, no network, or MEND_VERIFY_DOCKER_HUB=off). A HEAD on
+ * the manifest, which Docker Hub does not count as a pull. MEND_VERIFY_DOCKER_HUB, a URL, stands in
+ * for both Docker Hub's registry and its token service.
+ */
+async function hubDigest(ref) {
+  const where = dockerHubTag(ref);
+  const base = process.env.MEND_VERIFY_DOCKER_HUB;
+  if (where === null || base === "off") return null;
+  const auth = base ?? "https://auth.docker.io";
+  const registry = base ?? "https://registry-1.docker.io";
+  try {
+    const signal = AbortSignal.timeout(10_000);
+    const { token } = await (
+      await fetch(
+        `${auth}/token?service=registry.docker.io&scope=repository:${where.repository}:pull`,
+        { signal },
+      )
+    ).json();
+    const response = await fetch(`${registry}/v2/${where.repository}/manifests/${where.tag}`, {
+      method: "HEAD",
+      signal,
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: [
+          "application/vnd.oci.image.index.v1+json",
+          "application/vnd.docker.distribution.manifest.list.v2+json",
+          "application/vnd.docker.distribution.manifest.v2+json",
+          "application/vnd.oci.image.manifest.v1+json",
+        ].join(", "),
+      },
+    });
+    return response.ok ? response.headers.get("docker-content-digest") : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Every reuse of a held image that Docker Hub does not confirm, as `heldVerdict` words it. */
+const heldNotes = [];
+
+/**
+ * Pull an image this daemon lacks, as setup does (`pull-missing`): pulling a held tag still asks
+ * Docker Hub, which refuses even that once this address has spent its anonymous limit. A held one
+ * is reused, and reported (said, and kept in the state's `held`) unless its repo digest is the one
+ * Docker Hub names now. MEND_VERIFY_REFRESH_IMAGES=1 pulls a copy whose repo digest is provably
+ * another instead.
  */
 const pullMissing = async (image) => {
-  if (await imageId(image)) return;
+  const held = await dockerOut(["image", "inspect", "--format", "{{json .}}", image])
+    .then((text) => JSON.parse(text))
+    .catch(() => null);
+  if (held !== null) {
+    const verdict = heldVerdict(image, held, await hubDigest(image));
+    if (verdict === null) return;
+    const refresh = verdict.stale && process.env.MEND_VERIFY_REFRESH_IMAGES === "1";
+    const line = refresh ? `${verdict.line} · pulled (MEND_VERIFY_REFRESH_IMAGES=1)` : verdict.line;
+    say(`  ${line}`);
+    heldNotes.push(line);
+    if (!refresh) return;
+  }
   await docker(["pull", "--quiet", image], { timeout: 15 * 60_000 });
 };
 
@@ -1069,6 +1125,8 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
       ]),
     ),
     images,
+    // Each reuse of a held image Docker Hub did not confirm (`pullMissing`).
+    held: heldNotes,
     builds: outcomes,
     packages,
     relay,
@@ -1539,7 +1597,14 @@ async function recording(work, { state = null, shape = SHAPES.session } = {}) {
   const file = join(dir, `${window.window}.json`);
   const before = await snapshot();
   let made = madeSince(before, before, shape);
-  const save = (closed) => writeAtomically(file, { ...window, closed, ...made });
+  // What each container the window made ran, read again only when the set changes.
+  let ran = { ids: "", record: [] };
+  const save = async (closed) => {
+    const ids = made.containers.join(",");
+    if (ids !== ran.ids)
+      ran = { ids, record: await ranBy(made.containers).catch(() => ran.record) };
+    await writeAtomically(file, { ...window, closed, ...made, ran: ran.record });
+  };
   await save(false);
   const ticker = { open: true, wake: () => undefined };
   const ticks = (async () => {
@@ -1751,7 +1816,28 @@ async function ranImages(state, containers) {
     ...Object.values(named).filter((ref) => typeof ref === "string"),
   ]);
   const images = (await Promise.all([...refs].map(inspect))).flat();
-  return imageRecord(containers, images, named);
+  const built = new Set(Object.values(state.images ?? {}));
+  return Promise.all(
+    imageRecord(containers, images, named).map(async (item) =>
+      item.image === null || built.has(item.image) || dockerHubTag(item.image) === null
+        ? item
+        : { ...item, hub: await hubDigest(item.image) },
+    ),
+  );
+}
+
+/** What the stack's containers `ids` ran, for the ledger: `imageRecord` of them alone. */
+async function ranBy(ids) {
+  if (ids.length === 0) return [];
+  const containers = await inspectAll(ids);
+  const images = await dockerOut([
+    "image",
+    "inspect",
+    ...new Set(containers.map((container) => container.Image).filter(Boolean)),
+  ])
+    .then((text) => JSON.parse(text))
+    .catch(() => []);
+  return imageRecord(containers, images, {});
 }
 
 // ─── down ───────────────────────────────────────────────────────────────────

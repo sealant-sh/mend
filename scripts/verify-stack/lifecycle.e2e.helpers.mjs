@@ -88,6 +88,7 @@ function daemon({
   build = "fail",
   orchestration = null,
   images = {},
+  env: extraEnv = {},
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "verify-stack-e2e-"));
   roots.push(root);
@@ -139,9 +140,12 @@ function daemon({
     PATH: `${bin}:${process.env.PATH}`,
     HOME: file("home"),
     MEND_VERIFY_STACK_CACHE: cache ?? file("cache"),
+    // No test asks the real Docker Hub what a tag names.
+    MEND_VERIFY_DOCKER_HUB: "off",
     ...(clock
       ? { NODE_OPTIONS: `--import=${watchdogClock}`, MEND_VERIFY_STACK_TEST_CLOCK: root }
       : {}),
+    ...extraEnv,
   };
   let sequence = 0;
   let clockTime = 0;

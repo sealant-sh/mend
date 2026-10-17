@@ -163,10 +163,22 @@ if (report !== null) {
   const ran = report.ran ?? [];
   writeFileSync(join(out, "images.json"), `${JSON.stringify(ran, null, 2)}\n`);
   if (ran.length === 0) say("images · the report named none (a stack.mjs from before images.json)");
-  for (const item of ran)
+  for (const item of ran) {
+    const digests =
+      item.repoDigests.length > 0 ? item.repoDigests.join(" ") : "no repo digest (loaded)";
+    const hub = !("hub" in item)
+      ? ""
+      : item.hub === null
+        ? " · Docker Hub did not answer"
+        : item.repoDigests.some((digest) => digest.endsWith(`@${item.hub}`))
+          ? " · Hub's current"
+          : ` · Hub has ${item.hub}`;
     say(
-      `image · ${item.service} · ${item.image ?? "?"} · ${item.id ?? "not on the daemon"}${item.repoDigests.length > 0 ? ` · ${item.repoDigests.join(" ")}` : " · no repo digest (loaded)"}`,
+      `image · ${item.service} · ${item.image ?? "?"} · ${item.id ?? "not on the daemon"} · ${digests}${hub}`,
     );
+  }
+  // The held images the stack reused without Docker Hub confirming them, as it said at `up`.
+  for (const line of report.held ?? []) say(line);
   if (report.memory)
     say(
       `memory · ${(report.memory.totalKb / 1024 / 1024).toFixed(1)} GiB · ${report.memory.method}`,
