@@ -608,3 +608,106 @@ export function withOverrides(yaml, overrides) {
   if (block.test(yaml)) return yaml.replace(block, (head) => `${head}\n${lines.join("\n")}`);
   return `${yaml.replace(/\n*$/, "\n")}\noverrides:\n${lines.join("\n")}\n`;
 }
+
+/**
+ * A step of `stack.mjs steps`: one command in the inner CLI's world, in `cwd` under the inner
+ * account's home (`""` is the home itself). Its name names its evidence files, so it is a file name.
+ */
+const STEP_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+export const isStepName = (name) => typeof name === "string" && STEP_NAME.test(name);
+
+/** The step list as JSON text, checked: every name a unique file name, every `run` a non-empty argv. */
+export function parseSteps(text) {
+  let steps;
+  try {
+    steps = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`steps are not JSON: ${error.message}`);
+  }
+  if (!Array.isArray(steps) || steps.length === 0)
+    throw new Error("steps must be a non-empty JSON array");
+  const names = new Set();
+  return steps.map((step, index) => {
+    const where = `step ${index + 1}`;
+    if (step === null || typeof step !== "object" || Array.isArray(step))
+      throw new Error(`${where} is not an object`);
+    const unknown = Object.keys(step).filter((key) => !["name", "cwd", "run"].includes(key));
+    if (unknown.length > 0) throw new Error(`${where} has unknown keys: ${unknown.join(", ")}`);
+    const { name, cwd = "", run } = step;
+    if (!isStepName(name)) throw new Error(`${where}: name must match ${STEP_NAME}`);
+    if (names.has(name)) throw new Error(`${where}: name ${name} is used twice`);
+    names.add(name);
+    if (!Array.isArray(run) || !run.every((word) => typeof word === "string") || !run[0])
+      throw new Error(`${name}: run must be an array of strings that names a program`);
+    if (typeof cwd !== "string" || cwd.startsWith("/") || cwd.split("/").includes(".."))
+      throw new Error(`${name}: cwd must be a path under the inner home, with no ..`);
+    const segments = cwd.split("/").filter((segment) => segment !== "" && segment !== ".");
+    return { name, cwd: segments.join("/"), run };
+  });
+}
+
+/**
+ * How `stack.mjs steps` hands each step's result through the session's terminal: lines of
+ * `verify-step <index> out|err <base64>`, then `verify-step <index> exit <code> <out bytes> <err
+ * bytes>`, and once every step ran, `verify-step done <count>`. Base64, in short lines, so the terminal's CRLF, colour and
+ * line handling cannot change a byte, and the stdout and stderr the terminal would fold together
+ * stay apart.
+ */
+const STEP_FRAME = "verify-step";
+const FRAME_CHUNK = 3072;
+
+export function stepFrames(index, { stdout, stderr, exit }) {
+  const lines = [];
+  for (const [part, text] of [
+    ["out", stdout],
+    ["err", stderr],
+  ]) {
+    const bytes = Buffer.from(text);
+    for (let at = 0; at < bytes.length; at += FRAME_CHUNK)
+      lines.push(
+        `${STEP_FRAME} ${index} ${part} ${bytes.subarray(at, at + FRAME_CHUNK).toString("base64")}`,
+      );
+  }
+  const size = (text) => Buffer.byteLength(text);
+  lines.push(`${STEP_FRAME} ${index} exit ${exit} ${size(stdout)} ${size(stderr)}`);
+  return lines;
+}
+
+export const doneFrame = (count) => `${STEP_FRAME} done ${count}`;
+
+/**
+ * The frames of a session's output, read back: each step's stdout, stderr and exit, whether the run
+ * reached its end, every line that is not a frame (the session's own words) as `rest`, and how many
+ * frame lines did not fit (`stray`: malformed, out of order, repeated). A frame line is never in
+ * `rest`, since its base64 would carry a step's output past redaction. A step is `null` unless its
+ * exit arrived with byte counts that match what arrived before it: its output was cut short.
+ */
+export function readStepFrames(text, count) {
+  const parts = Array.from({ length: count }, () => ({ out: [], err: [], exit: null }));
+  const rest = [];
+  let done = false;
+  let stray = 0;
+  const frame = new RegExp(
+    `^${STEP_FRAME} (?:(\\d+) (?:(out|err) ([A-Za-z0-9+/]+={0,2})|exit (\\d+) (\\d+) (\\d+))|done (\\d+))$`,
+  );
+  for (const line of text.replaceAll("\r", "").split("\n")) {
+    if (!line.startsWith(`${STEP_FRAME} `)) {
+      rest.push(line);
+      continue;
+    }
+    const match = frame.exec(line);
+    const part = match?.[1] === undefined ? undefined : parts[Number(match[1])];
+    if (match?.[7] !== undefined && Number(match[7]) === count && !done) done = true;
+    else if (part === undefined || part.exit !== null || done) stray += 1;
+    else if (match[2] !== undefined && match[3].length % 4 === 0)
+      part[match[2]].push(Buffer.from(match[3], "base64"));
+    else if (match[4] !== undefined) {
+      const out = Buffer.concat(part.out);
+      const err = Buffer.concat(part.err);
+      if (out.length === Number(match[5]) && err.length === Number(match[6]))
+        part.exit = { stdout: out.toString(), stderr: err.toString(), exit: Number(match[4]) };
+      else stray += 1;
+    } else stray += 1;
+  }
+  return { steps: parts.map((part) => part.exit), done, stray, rest: rest.join("\n") };
+}

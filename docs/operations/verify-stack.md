@@ -173,7 +173,16 @@ pinned source links nothing.
 
 `mend <args…>` runs the inner CLI signed in as the first account, so anything the product does works
 against the stack: `mend adopt https://github.com/sealant-sh/mend.git`, `mend run`,
-`mend sessions --all`, `mend server status`.
+`mend sessions --all`, `mend server status`. It starts in the inner account's home, a directory of
+the state volume that keeps what each command left there until `down`.
+
+`steps '<json>'` runs a list of commands there, one after the other, each its own container:
+`[{"name": "01-push", "cwd": "work", "run": ["mend", "skills", "push", "--project"]}, …]`. `run` is
+any argv the CLI image has (`mend`, `git`, `sh -c '…'`), `cwd` a directory under the home, and stdin
+is closed, so a pipe inside `sh -c` ends as it does in a shell. The fixture's name resolves there,
+so `git clone http://verify-stack-fixture:9080/repo.git work` makes a checkout of `verify-fixture`.
+Each result (stdout, stderr and exit code, apart) is printed as `verify-step` lines of base64 that a
+terminal cannot change; the verify skill's `steps.mjs` turns them back into evidence files.
 
 ## One stack per daemon, and how many per machine
 
