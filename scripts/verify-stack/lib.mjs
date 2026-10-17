@@ -354,12 +354,13 @@ export function heldVerdict(ref, held, hub) {
  */
 export function imageRecord(containers, images, named) {
   const byKey = new Map();
-  for (const image of images) {
-    byKey.set(image.Id, image);
-    for (const tag of image.RepoTags ?? []) byKey.set(tag, image);
-  }
+  for (const image of images)
+    for (const key of [image.Id, ...(image.RepoTags ?? []), ...(image.RepoDigests ?? [])])
+      byKey.set(key, image);
+  // `name:tag@digest` is found by its repo digest, `name@digest`.
+  const find = (key) => byKey.get(key) ?? byKey.get(String(key).replace(/:[^:/@]+@/, "@"));
   const entry = (service, container, ref, id) => {
-    const image = byKey.get(id ?? ref);
+    const image = find(id ?? ref);
     return {
       service,
       container,

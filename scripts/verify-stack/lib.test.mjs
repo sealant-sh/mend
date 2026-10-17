@@ -718,6 +718,7 @@ test("imageRecord names what every container ran, then the named images no conta
     },
     { Id: "sha256:w", RepoTags: ["node:26-bookworm"], RepoDigests: [] },
     { Id: "sha256:d", RepoTags: ["mend-verify/sealantd:abc"], RepoDigests: [] },
+    { Id: "sha256:b", RepoTags: ["busybox:1.37"], RepoDigests: ["busybox@sha256:g"] },
   ];
   const record = imageRecord(containers, images, {
     mend: "ghcr.io/sealant-sh/mend:1.2.3-verify.tabc",
@@ -725,6 +726,7 @@ test("imageRecord names what every container ran, then the named images no conta
     sealantApi: null,
     fixture: "node:26-bookworm",
     guard: "busybox:1.37@sha256:g",
+    absent: "alpine:3.22",
   });
   assert.deepEqual(record, [
     {
@@ -755,13 +757,15 @@ test("imageRecord names what every container ran, then the named images no conta
       id: "sha256:d",
       repoDigests: [],
     },
-    // Named but not on the daemon: recorded so its absence shows.
+    // A reference pinned by digest, found by its repo digest.
     {
       service: "guard",
       container: null,
       image: "busybox:1.37@sha256:g",
-      id: null,
-      repoDigests: [],
+      id: "sha256:b",
+      repoDigests: ["busybox@sha256:g"],
     },
+    // Named but not on the daemon: recorded so its absence shows.
+    { service: "absent", container: null, image: "alpine:3.22", id: null, repoDigests: [] },
   ]);
 });
