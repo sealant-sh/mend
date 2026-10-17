@@ -37,6 +37,7 @@ import { makeGatewayRpcHandlers } from "../src/rpc.ts";
 import { openGatewayState } from "../src/state.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend } from "./support/fake-mend.ts";
+import { inlineFindParser } from "./support/find-parser.ts";
 import { gatewayTestLayer, PERSON } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 import { emptyHub, testBearerSession, unreachableMend } from "./support/stubs.ts";
@@ -401,6 +402,7 @@ const configStreamOverSmallFeed = Effect.gen(function* () {
     },
     session: testBearerSession,
     hub,
+    clientAppVersion: undefined,
   });
   const heard: Array<ServerConfigStreamEvent> = [];
   yield* handlers[WS_METHODS.subscribeServerConfig]().pipe(
@@ -536,6 +538,7 @@ describe("a person hub's settings feed", () => {
         viewer: null,
         state,
         tokens: noTokens,
+        parser: inlineFindParser,
       });
       yield* hub.updateModelPreferences(testBearerSession, star("opus").patch);
 
