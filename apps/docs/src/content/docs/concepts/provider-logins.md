@@ -82,7 +82,9 @@ mend agent-logins selected
 yours alone. It applies the next time your logins are written into a workspace: a running workspace
 that already holds your other login keeps it, for new sessions of yours there too, until your last
 process there stops (or, if you started that workspace, until it ends). GitHub is given either way,
-and a shell, pi or opencode session gets every login you connected either way. While it is on, a
+and a shell, pi or opencode session gets every login you connected either way. So does a shell you
+open on a Claude or Codex session (`mend shell`): in a per-person workspace it writes them into your
+home, which that session's agent shares, so the agent can read them from then on. While it is on, a
 Claude or Codex session of yours does not start in a ready standby workspace, since those are made
 with every login: it starts in a new one.
 

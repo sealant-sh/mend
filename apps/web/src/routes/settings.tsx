@@ -1045,9 +1045,10 @@ function AgentLoginsSwitch() {
             <span className="font-mono text-xs">claude</span> on your own login. Only ever yours: in
             a per-person workspace no session gets anyone else&apos;s. In a workspace that shares
             one home, whoever joins or steers there runs on the logins of the person who started it,
-            these included. Shells, pi and opencode get every login you connected either way. A
-            change applies the next time your logins are written into a workspace: one that already
-            holds them keeps them while it runs, for new sessions of yours there too.
+            these included. Shells, pi and opencode get every login you connected either way, and so
+            does a shell you open on a session, into the home its agent shares. A change applies the
+            next time your logins are written into a workspace: one that already holds them keeps
+            them while it runs, for new sessions of yours there too.
           </p>
         </div>
         <div className="flex shrink-0 gap-2">
