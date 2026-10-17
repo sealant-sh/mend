@@ -867,14 +867,22 @@ const matrixRows = (strategy) => {
   const include = matrix.include ?? [];
   return keys.length > 0 ? [...rows, ...include] : include;
 };
-/** Every (event, inputs) a workflow can run with: each dispatch choice, every other trigger with none. */
+/**
+ * Every (event, inputs) a workflow can run with: each dispatch choice and boolean value, every other
+ * trigger with none.
+ */
 const runsOf = (on) => {
   const events = typeof on === "string" ? [on] : Array.isArray(on) ? on : Object.keys(on);
   return events.flatMap((event) => {
     if (event !== "workflow_dispatch") return [{ event, inputs: {} }];
     let choices = [{}];
     for (const [name, input] of Object.entries(on.workflow_dispatch?.inputs ?? {})) {
-      const options = input.type === "choice" ? input.options : [input.default ?? ""];
+      const options =
+        input.type === "choice"
+          ? input.options
+          : input.type === "boolean"
+            ? [false, true]
+            : [input.default ?? ""];
       choices = choices.flatMap((chosen) =>
         options.map((option) => ({ ...chosen, [name]: option })),
       );
