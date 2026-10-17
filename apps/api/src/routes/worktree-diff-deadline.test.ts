@@ -82,6 +82,7 @@ describe("the actual range-diff route's shared deadline", () => {
                           expect(options).toEqual({
                             maxBytes: 8 * 1024 * 1024,
                             deadlineMs: 10_000,
+                            minFiles: 200,
                           });
                           yield* Deferred.succeed(entered, undefined);
                           return yield* Effect.never;
@@ -158,6 +159,7 @@ describe("the actual range-diff route's shared deadline", () => {
                           expect(options).toEqual({
                             maxBytes: 8 * 1024 * 1024,
                             deadlineMs: 10_000,
+                            minFiles: 200,
                           });
                           yield* Deferred.succeed(listingEntered, undefined);
                           yield* Deferred.await(listingRelease);

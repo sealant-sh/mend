@@ -242,17 +242,18 @@ describe("a slice too wide to list whole (601-R2-1)", () => {
     { timeout: 120_000 },
     async () => {
       // The outer guard prevents a hung integration fixture; route deadline semantics are controlled
-      // separately and hardware speed is measured only by the explicit performance lane. Listing
-      // these files takes 2-4 s on a fast machine and ~10 s on the self-hosted CI VMs, so the
-      // listing deadline here is one no runner reaches; the byte cap still cuts the listing.
-      const fixture = await createWideWorktreeDiff({ listingDeadlineMs: 100_000 });
+      // separately and hardware speed is measured only by the explicit performance lane. Under the
+      // route's own budgets either cut lists the first files: the byte cap, on a machine that
+      // walks these files within the listing deadline, or the deadline, which lists at least the
+      // page rendered whole. A deadline cut lists exactly that page.
+      const fixture = await createWideWorktreeDiff();
       try {
         const response = await fixture.request();
         expect(response.status).toBe(200);
         const body = await response.json();
         expect(body.listingCut).toBe(true);
         expect(body.truncated).toBe(true);
-        expect(body.files.length).toBeGreaterThan(200);
+        expect(body.files.length).toBeGreaterThanOrEqual(200);
         expect(body.files.length).toBeLessThan(400_000);
         expect(body.files[0].newPath).toBe(`d0000/${wideLeafName(0)}`);
         expect(body.diff.match(/^diff --git /gm)?.length).toBe(200);

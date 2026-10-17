@@ -215,7 +215,7 @@ it("measures real Git worktree routes on a serial, explicitly described performa
       wideListed = answer.files.length;
       expect(answer.listingCut).toBe(true);
       expect(answer.truncated).toBe(true);
-      expect(wideListed).toBeGreaterThan(200);
+      expect(wideListed).toBeGreaterThanOrEqual(200);
       expect(wideListed).toBeLessThan(400_000);
       expect(answer.diff.match(/^diff --git /gm)?.length).toBe(200);
     } finally {
