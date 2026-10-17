@@ -857,6 +857,68 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
   );
 
   it.effect(
+    "two people's agents in one executor each get their own person's other agent login, into their own home only; a person's choice of their selected agent's login only narrows theirs",
+    () =>
+      Effect.gen(function* () {
+        const runWith = (selectedOnly: ReadonlySet<string>) =>
+          Effect.gen(function* () {
+            const posts: Array<{
+              readonly onBehalfOf: string;
+              readonly home: string;
+              readonly logins: HomeLogins;
+            }> = [];
+            const launched = yield* launchAndJoinEffect({
+              holderHarness: "claude",
+              join: "codex",
+              layers: { selectedOnly },
+              platform: (calls) =>
+                Layer.effect(
+                  PersonLayoutPlatform,
+                  Effect.map(PersonLayoutPlatform, (inner) => ({
+                    ...inner,
+                    postCredentials: (
+                      workspace: Workspace,
+                      input: Parameters<typeof inner.postCredentials>[1],
+                    ) => {
+                      posts.push({
+                        onBehalfOf: input.onBehalfOf,
+                        home: input.home,
+                        logins: input.logins,
+                      });
+                      return inner.postCredentials(workspace, input);
+                    },
+                  })),
+                ).pipe(Layer.provide(personPlatform(calls, { person: true }))),
+            });
+            return { posts, created: launched.created };
+          });
+
+        const everyone = yield* runWith(new Set());
+        // Alice's create, made as her: her Claude, her own Codex and GitHub, into her home.
+        expect(everyone.created.map((options) => options.credentials)).toEqual([
+          { claude: true, codex: true, github: true },
+        ]);
+        // Maria's one call: her Codex, her own Claude and GitHub, into her home, as her. Nothing of
+        // Alice's is written for her, and nothing of hers into Alice's home.
+        expect(everyone.posts).toEqual([
+          {
+            onBehalfOf: MARIA,
+            home: `/home/${JOINER}`,
+            logins: { codex: true, claude: true, github: true },
+          },
+        ]);
+
+        const narrowed = yield* runWith(new Set([MARIA]));
+        expect(narrowed.created.map((options) => options.credentials)).toEqual([
+          { claude: true, codex: true, github: true },
+        ]);
+        expect(narrowed.posts).toEqual([
+          { onBehalfOf: MARIA, home: `/home/${JOINER}`, logins: { codex: true, github: true } },
+        ]);
+      }),
+  );
+
+  it.effect(
     "a joiner's dotfiles Core refuses are recorded not applied in Mend's words, and their agent starts (sealant#334)",
     () =>
       Effect.gen(function* () {
