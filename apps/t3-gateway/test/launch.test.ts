@@ -851,6 +851,7 @@ describe("planLaunch", () => {
       ],
       "2026-10-12T00:00:00.000Z",
       null,
+      [],
     );
     assert.deepStrictEqual(
       providers.map((provider) =>

@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { posix } from "node:path";
 
 import {
   EventId,
@@ -44,6 +45,7 @@ import { gateDeviceCalls, type GatedMend } from "./device-gate.ts";
 import { makeFanout, type SubscriberFellBehind } from "./fanout.ts";
 import {
   detectImageType,
+  MAX_IMAGE_BYTES_PER_MESSAGE,
   MAX_IMAGES_PER_MESSAGE,
   MEND_IMAGE_MAX_BYTES,
   type MessageImage,
@@ -124,6 +126,12 @@ import {
   type TurnCheckpoint,
   worktreePathOf,
 } from "./shell.ts";
+import {
+  deliveredSkills,
+  mentionsSkill,
+  skillInvocationOf,
+  type WorkspaceSkills,
+} from "./skills.ts";
 import {
   GatewayState,
   type GatewayStateError,
@@ -228,15 +236,26 @@ export interface PersonHub {
     afterSequence: number | undefined,
   ) => Effect.Effect<ShellSubscription, HubReadError, Scope.Scope>;
   /**
-   * A signal each time the person's connected accounts may have changed: Mend's `accounts`
-   * pointer on their event stream, or the stream reconnecting (it may have missed one). What
-   * t3code shows of their logins is read again then (review R650-3).
+   * A signal each time what t3code shows of the person's providers may have changed: Mend's
+   * `accounts` pointer on their event stream, or the stream reconnecting (it may have missed one),
+   * so their logins are read again (review R650-3); or a workspace's skills read again (`skills`).
    */
-  readonly accountChanges: Effect.Effect<
-    Stream.Stream<"accounts", SubscriberFellBehind>,
+  readonly providerChanges: Effect.Effect<
+    Stream.Stream<"accounts" | "skills", SubscriberFellBehind>,
     never,
     Scope.Scope
   >;
+  /**
+   * Reads again the skills Mend delivers to a session at `cwd` (a thread's worktree or a project's
+   * root) and keeps them for the providers t3code is shown; null when the cwd is none of the
+   * person's.
+   */
+  readonly refreshSkillsAt: (
+    deviceToken: string,
+    cwd: string,
+  ) => Effect.Effect<WorkspaceSkills | null, HubReadError>;
+  /** Every workspace's skills as last read, for the providers t3code is shown. */
+  readonly workspaceSkills: () => ReadonlyArray<WorkspaceSkills>;
   /**
    * The person's t3code server settings: t3code's defaults with the model preferences the gateway
    * keeps for them (`model-preferences.ts`).
@@ -326,6 +345,22 @@ export interface PersonHub {
    * (the project alone, read at its default branch). Null when it is neither of the person's.
    */
   readonly locationOf: (cwd: string) => Effect.Effect<CwdLocation | null, HubReadError>;
+  /**
+   * Where an absolute path is in one of the person's threads' worktrees, or null when it is in
+   * none of them.
+   */
+  readonly worktreeFileOf: (path: string) => Effect.Effect<WorktreeFile | null, HubReadError>;
+}
+
+export interface WorktreeFile {
+  readonly projectId: string;
+  /** A thread working in the worktree, to list its files by. */
+  readonly sessionId: string;
+  readonly worktreeId: string;
+  /** From the worktree's top, `""` for the top itself. */
+  readonly relativePath: string;
+  /** As on `CwdLocation`: what was read of the worktree's files before it moved is stale. */
+  readonly workspaceMutation: string | null;
 }
 
 export interface CwdLocation {
@@ -1342,7 +1377,7 @@ export const makePersonHub = (input: {
     let shellThreads = new Map<string, Printed<OrchestrationV2ThreadShell>>();
     let shellArchived = new Map<string, Printed<OrchestrationV2ThreadShell>>();
     const archivedChanges = makeFanout<ArchivedShellDelta>();
-    const accountSignals = makeFanout<"accounts">();
+    const providerSignals = makeFanout<"accounts" | "skills">();
     const settingsChanges = makeFanout<KeptSettings>();
     const shellChanges = makeFanout<ShellDelta>();
     const watches = new Map<string, Watch>();
@@ -2424,7 +2459,7 @@ export const makePersonHub = (input: {
 
     const onPointer = (pointer: MendEventPointer) => {
       if (pointer.type === "user" && pointer.facet === "accounts") {
-        return accountSignals.publish(["accounts"]);
+        return providerSignals.publish(["accounts"]);
       }
       const key = refreshKeyOf(pointer);
       return key === null ? Effect.void : requestRefresh(key);
@@ -2436,7 +2471,7 @@ export const makePersonHub = (input: {
         // A reconnect may have missed pointers: read everything again, the logins too.
         if (attempt > 0) {
           yield* requestRefresh("all");
-          yield* accountSignals.publish(["accounts"]);
+          yield* providerSignals.publish(["accounts"]);
         }
         const startedAt = yield* Clock.currentTimeMillis;
         const outcome = yield* asPerson((token) =>
@@ -2561,6 +2596,33 @@ export const makePersonHub = (input: {
         }
       });
 
+    const workspaceSkills = new Map<string, WorkspaceSkills>();
+
+    const deliveredSkillsOf = (deviceToken: string, project: MendProject) =>
+      Effect.all(
+        [
+          project.inheritUserSkills === false ? Effect.succeed([]) : mend.listSkills(deviceToken),
+          mend.projectSkills(deviceToken, project.id),
+        ],
+        { concurrency: "unbounded" },
+      ).pipe(Effect.map(([user, ofProject]) => deliveredSkills(user, ofProject)));
+
+    const invocationOf = (sessionId: string, entry: Queueing.QueueEntry) =>
+      Effect.gen(function* () {
+        const source = sourceOf(sessionId);
+        if (source === null || !mentionsSkill(entry.text)) return entry.text;
+        const harness = source.session.harness;
+        if (harness !== "claude") return skillInvocationOf(harness, entry.text, new Set());
+        const skills = yield* deliveredSkillsOf(entry.token, source.project).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("t3 gateway could not read the skills a message names", {
+              cause: error.message,
+            }).pipe(Effect.as([])),
+          ),
+        );
+        return skillInvocationOf(harness, entry.text, new Set(skills.map((skill) => skill.name)));
+      });
+
     /**
      * The message's images placed in the session's workspace (`POST /api/sessions/:id/images`).
      * A placement holds for the session and the agent it was made for: a retry after "not live"
@@ -2568,45 +2630,50 @@ export const makePersonHub = (input: {
      * each image placed again.
      */
     const placeImages = (sessionId: string, entry: Queueing.QueueEntry) =>
-      Effect.forEach(entry.imageIds, (imageId) =>
-        Effect.gen(function* () {
-          const processId = sourceOf(sessionId)?.agent.id ?? null;
-          const known = images.get(imageId);
-          const placement = known?.placement ?? null;
-          if (
-            known !== undefined &&
-            placement !== null &&
-            placement.sessionId === sessionId &&
-            placement.processId === processId
-          ) {
-            return { imageId, name: known.name, path: placement.path };
-          }
-          const kept =
-            keeper === null
-              ? null
-              : yield* state.imageBytes(keeper.id, imageId).pipe(Effect.orElseSucceed(() => null));
-          if (kept === null || keeper === null) {
-            return yield* new MendCommandRefused({
-              operation: "POST /api/sessions/:id/images",
-              status: 410,
-              tag: "ImageGone",
-              detail: "An image of this message is no longer kept by the gateway.",
-            });
-          }
-          const placed = yield* mend.pasteImage(entry.token, sessionId, kept.bytes);
-          if (processId !== null) {
-            const next: ImagePlacement = { sessionId, processId, path: placed.path };
-            images.set(imageId, { ...kept.image, placement: next });
-            yield* state.recordImagePlacement(keeper.id, imageId, next).pipe(
-              Effect.catch((error) =>
-                Effect.logWarning("t3 gateway could not record where Mend placed an image", {
-                  cause: error.message,
-                }),
-              ),
-            );
-          }
-          return { imageId, name: kept.image.name, path: placed.path };
-        }),
+      Effect.forEach(
+        entry.imageIds,
+        (imageId) =>
+          Effect.gen(function* () {
+            const processId = sourceOf(sessionId)?.agent.id ?? null;
+            const known = images.get(imageId);
+            const placement = known?.placement ?? null;
+            if (
+              known !== undefined &&
+              placement !== null &&
+              placement.sessionId === sessionId &&
+              placement.processId === processId
+            ) {
+              return { imageId, name: known.name, path: placement.path };
+            }
+            const kept =
+              keeper === null
+                ? null
+                : yield* state
+                    .imageBytes(keeper.id, imageId)
+                    .pipe(Effect.orElseSucceed(() => null));
+            if (kept === null || keeper === null) {
+              return yield* new MendCommandRefused({
+                operation: "POST /api/sessions/:id/images",
+                status: 410,
+                tag: "ImageGone",
+                detail: "An image of this message is no longer kept by the gateway.",
+              });
+            }
+            const placed = yield* mend.pasteImage(entry.token, sessionId, kept.bytes);
+            if (processId !== null) {
+              const next: ImagePlacement = { sessionId, processId, path: placed.path };
+              images.set(imageId, { ...kept.image, placement: next });
+              yield* state.recordImagePlacement(keeper.id, imageId, next).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("t3 gateway could not record where Mend placed an image", {
+                    cause: error.message,
+                  }),
+                ),
+              );
+            }
+            return { imageId, name: kept.image.name, path: placed.path };
+          }),
+        { concurrency: PLACEMENTS_AT_ONCE },
       );
 
     /** `POST /turns` with the message: Mend answers its turn. */
@@ -2630,10 +2697,11 @@ export const makePersonHub = (input: {
 
     const sendTurn = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
       Effect.gen(function* () {
+        const text = yield* invocationOf(sessionId, entry);
         const sent = yield* placeImages(sessionId, entry).pipe(
           Effect.flatMap((placed) =>
             mend
-              .submitTurn(entry.token, sessionId, turnInputOf(entry.text, placed))
+              .submitTurn(entry.token, sessionId, turnInputOf(text, placed))
               .pipe(Effect.map((turn) => ({ turn, placed }))),
           ),
           Effect.result,
@@ -3434,6 +3502,12 @@ export const makePersonHub = (input: {
         if (request.uploads.length > MAX_IMAGES_PER_MESSAGE) {
           return yield* refused(`A message carries at most ${MAX_IMAGES_PER_MESSAGE} images.`);
         }
+        if (
+          request.uploads.reduce((bytes, upload) => bytes + upload.sizeBytes, 0) >
+          MAX_IMAGE_BYTES_PER_MESSAGE
+        ) {
+          return yield* refused(TOO_MANY_IMAGE_BYTES);
+        }
         const kept: Array<StoredImage & { readonly bytes: Uint8Array }> = [];
         for (const [position, upload] of request.uploads.entries()) {
           const parsed = parseDataUrl(upload.dataUrl);
@@ -3476,11 +3550,6 @@ export const makePersonHub = (input: {
         return kept.map(messageImageOf);
       });
 
-    /**
-     * Why a message may not carry these images, or null when it may: each is one of the person's,
-     * attached in this thread, named once, and a message carries at most ten (each at most Mend's
-     * 8 MiB, so at most 80 MiB), however many uploads they came in.
-     */
     const selectionRefusal = (
       imageIds: ReadonlyArray<string>,
       inThread: (image: StoredImage) => boolean,
@@ -3496,9 +3565,7 @@ export const makePersonHub = (input: {
         if (!inThread(image)) return `Image ${imageId} was attached in another thread.`;
         bytes += image.sizeBytes;
       }
-      if (bytes > MAX_IMAGES_PER_MESSAGE * MEND_IMAGE_MAX_BYTES) {
-        return "The images of a message are larger than Mend takes for one message.";
-      }
+      if (bytes > MAX_IMAGE_BYTES_PER_MESSAGE) return TOO_MANY_IMAGE_BYTES;
       return null;
     };
 
@@ -4043,6 +4110,47 @@ export const makePersonHub = (input: {
     // A hub that goes ends its terminals' sockets.
     yield* Effect.addFinalizer(() => terminals.closeAll);
 
+    const worktreeFileOf = (path: string) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const normalized = posix.normalize(path).replace(/(?<=.)\/+$/, "");
+        return yield* locked(
+          Effect.sync((): WorktreeFile | null => {
+            for (const thread of threadSources()) {
+              const top = worktreePathOf(thread.project, thread.session);
+              if (normalized !== top && !normalized.startsWith(`${top}/`)) continue;
+              return {
+                projectId: thread.project.id,
+                sessionId: thread.session.id,
+                worktreeId: thread.session.worktreeId,
+                relativePath: normalized.slice(top.length + 1),
+                workspaceMutation: workspaceMutationOf(thread.session.worktreeId),
+              };
+            }
+            return null;
+          }),
+        );
+      });
+
+    const refreshSkillsAt: PersonHub["refreshSkillsAt"] = (deviceToken, cwd) =>
+      Effect.gen(function* () {
+        const location = yield* locationOf(cwd);
+        const project = location === null ? undefined : projects.get(location.projectId)?.project;
+        if (project === undefined) return null;
+        const skills = yield* deliveredSkillsOf(deviceToken, project).pipe(
+          Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
+        );
+        if (skills === null) return null;
+        const workspace: WorkspaceSkills = {
+          cwd,
+          checkedAt: DateTime.formatIso(yield* DateTime.now),
+          skills,
+        };
+        workspaceSkills.set(cwd, workspace);
+        yield* providerSignals.publish(["skills"]);
+        return workspace;
+      });
+
     const archivedShell = ensureLoaded.pipe(
       Effect.andThen(locked(Effect.sync(currentArchivedShell))),
     );
@@ -4073,7 +4181,9 @@ export const makePersonHub = (input: {
       });
 
     return {
-      accountChanges: accountSignals.subscribe(() => true),
+      providerChanges: providerSignals.subscribe(() => true),
+      refreshSkillsAt,
+      workspaceSkills: () => Array.from(workspaceSkills.values()),
       settings,
       updateModelPreferences,
       subscribeSettings,
@@ -4082,6 +4192,7 @@ export const makePersonHub = (input: {
       terminals,
       turnDiff,
       locationOf,
+      worktreeFileOf,
       shellSnapshot,
       subscribeShell,
       threadSnapshot: (threadId: string) => threadSnapshot(sessionIdOf(threadId)),
@@ -4173,6 +4284,11 @@ const messageImageOf = (image: StoredImage): MessageImage => ({
   mimeType: image.mimeType,
   sizeBytes: image.sizeBytes,
 });
+
+const PLACEMENTS_AT_ONCE = 4;
+
+const TOO_MANY_IMAGE_BYTES =
+  "Images can total up to 80 MiB per message. Use smaller images or send fewer at once.";
 
 /** How often a hub looks for images attached to a message never sent. */
 const IMAGE_PRUNE_INTERVAL = "1 hour";

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@mend/t3-contracts";
+
 /**
  * Images on a t3code message (ADR 0012, "The surface", phase 2). t3code's client hands the gateway
  * each image as a data URL (`assets.persistChatAttachments`, its path for a server without upload
@@ -12,8 +14,13 @@ import { randomUUID } from "node:crypto";
 /** Mend's limit for one image (`PASTED_IMAGE_MAX_BYTES` in @mend/sessions). */
 export const MEND_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 
-/** How many images one message may carry. */
-export const MAX_IMAGES_PER_MESSAGE = 10;
+/**
+ * How many images one message may carry, and their bytes together: t3code's own limits
+ * (`PROVIDER_SEND_TURN_MAX_ATTACHMENTS` and its 80 MiB for a message's images), so its composer
+ * refuses what the gateway would. Mend takes one image per `POST /api/sessions/:id/images`.
+ */
+export const MAX_IMAGES_PER_MESSAGE = PROVIDER_SEND_TURN_MAX_ATTACHMENTS;
+export const MAX_IMAGE_BYTES_PER_MESSAGE = 80 * 1024 * 1024;
 
 /** The formats Mend takes, by their bytes (`detectImageType` in @mend/sessions). */
 export type MendImageType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";

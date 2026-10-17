@@ -16,6 +16,7 @@ import {
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@mend/t3-contracts/keybindings";
 
 import type { MendConnectedAccount, MendHarnessCatalog } from "./mend-client.ts";
+import { workspaceSnapshotOf, type WorkspaceSkills } from "./skills.ts";
 
 /**
  * t3code's server config for one paired person, built from Mend's model catalog
@@ -279,6 +280,7 @@ export const providersFromMend = (
   catalogs: ReadonlyArray<MendHarnessCatalog>,
   checkedAt: string,
   logins: PersonLogins,
+  workspaces: ReadonlyArray<WorkspaceSkills>,
 ): ReadonlyArray<ServerProvider> => {
   const providers: Array<ServerProvider> = [];
   for (const catalog of catalogs) {
@@ -321,6 +323,13 @@ export const providersFromMend = (
       models: modelsFor(catalog, driver),
       slashCommands: [],
       skills: [],
+      ...(workspaces.length === 0
+        ? {}
+        : {
+            workspaceSnapshots: workspaces.map((workspace) =>
+              workspaceSnapshotOf(catalog.harness, workspace),
+            ),
+          }),
     });
   }
   return providers;
