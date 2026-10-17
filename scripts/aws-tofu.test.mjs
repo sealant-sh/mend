@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -136,6 +137,38 @@ const sharedAddresses = [
   "aws_budgets_budget.poc",
 ];
 
+// The root bundles Go's crypto/x509 looks for on Linux, in its order; it reads the first that exists.
+const systemRoots = [
+  "/etc/ssl/certs/ca-certificates.crt",
+  "/etc/pki/tls/certs/ca-bundle.crt",
+  "/etc/ssl/ca-bundle.pem",
+  "/etc/pki/tls/cacert.pem",
+  "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+  "/etc/ssl/cert.pem",
+];
+
+/**
+ * The system roots plus the provider mirror's CA, written into `directory` for tofu's
+ * SSL_CERT_FILE, or null (with a diagnostic) when either is missing. The mirror's CA is not in the
+ * system trust store, so only the tofu processes given this bundle trust it.
+ */
+const mirrorRoots = (t, mirror, directory) => {
+  const ca = process.env.CI_TOFU_PROVIDER_MIRROR_CA;
+  const roots = systemRoots.find((file) => existsSync(file));
+  const missing = !roots
+    ? "no system root bundle"
+    : !ca || !existsSync(ca)
+      ? `no CA file at CI_TOFU_PROVIDER_MIRROR_CA (${ca ?? "unset"})`
+      : null;
+  if (missing) {
+    t.diagnostic(`provider mirror ${mirror} not used: ${missing}; downloading from the registry`);
+    return null;
+  }
+  const bundle = path.join(directory, "roots.pem");
+  writeFileSync(bundle, `${readFileSync(roots, "utf8")}\n${readFileSync(ca, "utf8")}`);
+  return bundle;
+};
+
 test(
   "OpenTofu plans the exact independent resource inventory for all four control-plane settings",
   { timeout: 300_000 },
@@ -232,16 +265,20 @@ test(
       const init = ["init", "-input=false", "-backend=false", "-lockfile=readonly"];
       // Box runners name the host's read-only provider mirror here, so init does not download the
       // AWS provider (816 MB unpacked) on every run. The test writes its own CLI config for it,
-      // never an inherited one. OpenTofu checks a mirrored package against this lock file's hashes
-      // as it does a download, so a planted package fails init. A mirror that cannot answer for
-      // this lock falls back to the registry.
+      // never an inherited one, and trusts the mirror's CA only in its own tofu processes, through
+      // SSL_CERT_FILE. OpenTofu checks a mirrored package against this lock file's hashes as it
+      // does a download, so a planted package fails init. A mirror that cannot answer for this
+      // lock falls back to the registry, through the same bundle's system roots.
       const mirror = process.env.CI_TOFU_PROVIDER_MIRROR;
-      if (mirror) {
+      if (mirror)
         assert.match(
           mirror,
           /^https:\/\/[\w.:-]+\/$/,
           "CI_TOFU_PROVIDER_MIRROR must be https://host[:port]/",
         );
+      const roots = mirror && mirrorRoots(t, mirror, scratch);
+      if (roots) {
+        env.SSL_CERT_FILE = roots;
         writeFileSync(
           cliConfig,
           [
