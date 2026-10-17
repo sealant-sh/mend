@@ -573,15 +573,75 @@
       "blob": "dea902cfc47e04d07290f2c96973bb922aa9ac40",
       "sha256": "0363179ee901a401b1164e61aac4b2253a57e0f929fe86816f0aa4e457d4ce3e"
     },
+    "t3-shared/src/assistantCitations.ts": {
+      "upstream": "packages/shared/src/assistantCitations.ts",
+      "blob": "9af6a297067244c518676af39d09c56d8fd20ce7",
+      "sha256": "f71185c0071fb323aa38690138b6ce2ede992a1715de74a83d5079e3a596a299"
+    },
     "t3-shared/src/changeRequestUrl.ts": {
       "upstream": "packages/shared/src/changeRequestUrl.ts",
       "blob": "3c24ed75019563ee754ac8168e402cbf20678614",
       "sha256": "d8f96175f6e85043a8f15b749571743e39cdf51714adf5c27b590834e7722661"
     },
+    "t3-shared/src/codexArtifactTemplates.ts": {
+      "upstream": "packages/shared/src/codexArtifactTemplates.ts",
+      "blob": "08fa5a28e3e58a94910f0562f682b8e3ecb3f1d9",
+      "sha256": "f46a8b9de70349dea06ea6734c0591962bae56365db496d8cf0e55cbb1020703"
+    },
+    "t3-shared/src/codexFileCitations.ts": {
+      "upstream": "packages/shared/src/codexFileCitations.ts",
+      "blob": "d29996501ea6800d7b052c1d00e0e855e666c3f7",
+      "sha256": "b5dad2213864c5ab75be98165e84ed7a5ed86a7d3f430888f6a5c85ac4e3e479"
+    },
+    "t3-shared/src/codexMarkdownDirectives.ts": {
+      "upstream": "packages/shared/src/codexMarkdownDirectives.ts",
+      "blob": "6ff396eddb12acb9be6ee76633d447285a5cb15c",
+      "sha256": "adb26759635c4e727db1e8fbdc5dc2c7fc11f18c28d79974aed83a50a8950636"
+    },
+    "t3-shared/src/composerContextLegacy.ts": {
+      "upstream": "packages/shared/src/composerContextLegacy.ts",
+      "blob": "8bea672a06be2e481a0822548e404284cbfbe40b",
+      "sha256": "e7d60a0afb745270b9b65f4f8379dc5b783e8da8718f0aec61cffa52bd7998d5"
+    },
+    "t3-shared/src/composerContextReferences.ts": {
+      "upstream": "packages/shared/src/composerContextReferences.ts",
+      "blob": "16e812724fa2dbedeba8cefaf0edfd52fd3be0bd",
+      "sha256": "4f0e4653b2a9b9d5327b139dc7eda1fef5c19588024b2693f0e62da67db4cc77"
+    },
+    "t3-shared/src/fileLinks.ts": {
+      "upstream": "packages/shared/src/fileLinks.ts",
+      "blob": "65328be0ae6a1abca586951c186ae3cb14935a9e",
+      "sha256": "5f5dfedb74f64a5bb1c5c1a4090eb408c40802747b95aef4360e73dd2cc7c000"
+    },
+    "t3-shared/src/inlineSkills.ts": {
+      "upstream": "packages/shared/src/inlineSkills.ts",
+      "blob": "b5f4437b7a3d20adbfaff1f624370c0558edb269",
+      "sha256": "e20524db9b74a5d6b0a0d5a871fd1d0dae2a04f663e81c6eb192303f65372c10"
+    },
     "t3-shared/src/keybindings.ts": {
       "upstream": "packages/shared/src/keybindings.ts",
       "blob": "afadd35b6a1af21724499ad4e9027fb583116746",
       "sha256": "61eb77bc01d8ce52eeadeebadb4d38816744efd958e62580976b7f82118334f5"
+    },
+    "t3-shared/src/markdownGithubAlerts.ts": {
+      "upstream": "packages/shared/src/markdownGithubAlerts.ts",
+      "blob": "ccd37a70c4cab2988e42e40b5425d8c06327fb46",
+      "sha256": "183d9cc49d89bceb58a4fe9d4658925bc3b82bf7102bf4264e621a35339175bf"
+    },
+    "t3-shared/src/markdownLinks.ts": {
+      "upstream": "packages/shared/src/markdownLinks.ts",
+      "blob": "941f26f55c44bd66b382a026265e864f06789a06",
+      "sha256": "a87be473d8af87c642bb6fba89f8aebb5c2813aa3f123a4c4bffb0f2227199a2"
+    },
+    "t3-shared/src/markdownListIndentation.ts": {
+      "upstream": "packages/shared/src/markdownListIndentation.ts",
+      "blob": "cbf2090547edc1eb6825f82d436c0cc62b0275b4",
+      "sha256": "15ffc19cfdfdc9f22309d35bce03646e46bd6b9af8317d46ca56c19c542969d1"
+    },
+    "t3-shared/src/markdownPipeline.ts": {
+      "upstream": "packages/shared/src/markdownPipeline.ts",
+      "blob": "ac1850499f340a762c2a73f90257144a8d2285ce",
+      "sha256": "55348a18460f4bcbfa2f91555bd8706bd74eeb231ca2338f3233f28a50c2a46f"
     },
     "t3-shared/src/model.ts": {
       "upstream": "packages/shared/src/model.ts",
@@ -598,15 +658,35 @@
       "blob": "d887262c08ba15e80de7d5d1dfd2487982d0edda",
       "sha256": "b995ad0ff71ac10e54f4bb3d102f8a8a2b74e6ecd5c4803244dbb10a10a57f86"
     },
+    "t3-shared/src/proposedPlanText.ts": {
+      "upstream": "packages/shared/src/proposedPlanText.ts",
+      "blob": "52d568898ed6b2148240e16a97fdb2af32817c7c",
+      "sha256": "497b78b4130ed270b1211df719f30b56e0460dc43fd27213a6cb61d23d74dcf8"
+    },
     "t3-shared/src/sourceControl.ts": {
       "upstream": "packages/shared/src/sourceControl.ts",
       "blob": "fcda71b64f8fcd85bbfc37739187c3100ecd4609",
       "sha256": "12f9d932de9cdfe9ce9f2385292009909bc00ab599dc6e86343c24e37494af96"
     },
+    "t3-shared/src/threadFindText.ts": {
+      "upstream": "packages/shared/src/threadFindText.ts",
+      "blob": "a2e5b4dbb982d560a7741cc5ecc317bb4d9b7145",
+      "sha256": "578724ea8eb46fe7400ae38444d0a47d13a578ce3f28956400614abdaed56a81"
+    },
+    "t3-shared/src/threadLinks.ts": {
+      "upstream": "packages/shared/src/threadLinks.ts",
+      "blob": "0b17846db1477b697c4fea0d0392feb40b51d69e",
+      "sha256": "778719205a4fbb0db6afca9ce2c81da585ce6b2eff874eabd389c077e8b372fa"
+    },
     "t3-shared/src/threadPullRequests.ts": {
       "upstream": "packages/shared/src/threadPullRequests.ts",
       "blob": "9b0c1a7457d3f8d6cdcd56af64f2e0983e0bac0d",
       "sha256": "51f784eb7c620309acbf7a2d93fbedadf555509eb88623f78d3f5d3c0b26ebb9"
+    },
+    "t3-shared/src/threadSearch.ts": {
+      "upstream": "packages/shared/src/threadSearch.ts",
+      "blob": "df86c3b94b2c99343d187252731700f960bc5b05",
+      "sha256": "dbb7ba0a5da121336b4704d8546533faffae63caae2f98477249a10a85f0845f"
     },
     "t3-shared/src/threadTranscript.ts": {
       "upstream": "packages/shared/src/threadTranscript.ts",

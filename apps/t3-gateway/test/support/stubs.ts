@@ -9,6 +9,8 @@ import { MendUnavailable, type MendClient } from "../../src/mend-client.ts";
 import { EMPTY_SHELL_SNAPSHOT } from "../../src/shell.ts";
 import type { BearerSession } from "../../src/state.ts";
 import { makeTerminals } from "../../src/terminals.ts";
+import { makeThreadFinder } from "../../src/thread-find.ts";
+import { inlineFindParser } from "./find-parser.ts";
 import { PERSON } from "./gateway.ts";
 
 /** Stand-ins for handler tests that never reach Mend. */
@@ -95,6 +97,7 @@ export const emptyHub: PersonHub = {
   refusal: () => Effect.never,
   mend: gateDeviceCalls(unreachableMend, () => Effect.void),
   threadSnapshot: () => Effect.succeed(null),
+  threadFinder: makeThreadFinder(inlineFindParser),
   subscribeThread: () => Effect.succeed(null),
   changeOfWorktree: () => Effect.succeed(null),
   locationOf: () => Effect.succeed(null),

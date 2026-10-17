@@ -47,6 +47,7 @@ describe("the RPC surface", () => {
       },
       session: testBearerSession,
       hub: emptyHub,
+      clientAppVersion: undefined,
     });
     assert.deepStrictEqual(Object.keys(handlers).toSorted(), groupMethods());
   });
