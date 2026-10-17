@@ -145,6 +145,7 @@ import {
   type TurnIds,
 } from "./state.ts";
 import { makeTerminals, type Terminals } from "./terminals.ts";
+import { makeThreadFinder, type ThreadFinder } from "./thread-find.ts";
 import { backgroundWorkOf, threadProjectionOf } from "./thread-projection.ts";
 import {
   checkpointFileOf,
@@ -293,6 +294,7 @@ export interface PersonHub {
   readonly mend: GatedMend;
   /** One thread in full, or null when the person has no such thread. */
   readonly threadSnapshot: (threadId: string) => Effect.Effect<ThreadSnapshot | null, HubReadError>;
+  readonly threadFinder: ThreadFinder;
   /**
    * One thread in full and its changes from here; the hub keeps its items current while any
    * subscription lasts. Null when the person has no such thread.
@@ -4196,6 +4198,7 @@ export const makePersonHub = (input: {
       shellSnapshot,
       subscribeShell,
       threadSnapshot: (threadId: string) => threadSnapshot(sessionIdOf(threadId)),
+      threadFinder: makeThreadFinder(),
       subscribeThread: (threadId: string, afterSequence?: number) =>
         subscribeThread(sessionIdOf(threadId), afterSequence),
       isRefused: tokens.isRefused,

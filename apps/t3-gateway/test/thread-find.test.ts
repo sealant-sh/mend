@@ -1,19 +1,39 @@
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
+
 import {
+  EnvironmentId,
   ORCHESTRATION_V2_WS_METHODS,
   ThreadId,
   WS_METHODS,
+  WsRpcGroup,
   type OrchestrationV2SearchThreadInput,
 } from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as RpcTest from "effect/rpc/RpcTest";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 
+import { AssetUrls } from "../src/assets.ts";
+import { GRANTED_SCOPES } from "../src/auth.ts";
+import { GatewayConfig } from "../src/config.ts";
+import { GatewayEnvironment, makeGatewayEnvironment } from "../src/environment.ts";
+import { Projections, ProjectionsLive, type PersonHub, type ThreadSnapshot } from "../src/hub.ts";
+import { rpcScopeAuthorizationLayer } from "../src/rpc-scopes.ts";
+import { gatewayRpcHandlersLayer } from "../src/rpc.ts";
+import { MendClientFetchLive } from "../src/server.ts";
+import { GatewayStateLive, type BearerSession } from "../src/state.ts";
+import { FIND_CACHE_LIMITS, makeThreadFinder } from "../src/thread-find.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
-import { gatewayTestLayer } from "./support/gateway.ts";
+import { gatewayTestLayer, PERSON } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { testBearerSession } from "./support/stubs.ts";
 
 const withGateway = <A, E, R>(test: (mend: FakeMend) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
@@ -229,6 +249,276 @@ describe("find in a thread", () => {
           ? Option.getOrUndefined(Cause.findErrorOption(exit.cause))
           : undefined;
         assert.strictEqual(failure?._tag, "OrchestrationV2SearchThreadError");
+      }),
+    ),
+  );
+});
+
+const completeFlags = (streamed: ReadonlyArray<{ readonly complete?: boolean }>) =>
+  streamed.map((frame) => frame.complete);
+
+const snapshotOf = (mend: FakeMend, code: string) =>
+  Effect.gen(function* () {
+    const { rpc } = yield* pairAndConnect(mend, code);
+    const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+      threadId: THREAD,
+    });
+    const snapshot: ThreadSnapshot = { snapshotSequence: 1, projection };
+    return snapshot;
+  });
+
+const longMessage = (i: number) =>
+  [
+    `## Step ${i}: parse the **quoted** fields`,
+    ...Array.from(
+      { length: 6 },
+      (_, line) =>
+        `- Line ${line} reads \`row[${line}]\`, splits on [commas](https://example.com/${i}/${line}) and keeps _quoted_ text.`,
+    ),
+    "```ts",
+    `const row${i} = parse(input, { quote: '"' });`,
+    "```",
+  ].join("\n");
+
+const repeatedNeedles = (i: number) => `needle ${i} `.repeat(800);
+
+const retainedHeap = (() => {
+  setFlagsFromString("--expose_gc");
+  const gc: unknown = runInNewContext("gc");
+  return () => {
+    if (typeof gc === "function") gc();
+    return process.memoryUsage().heapUsed;
+  };
+})();
+
+describe("find in a thread, as a shared gateway runs it", () => {
+  it.live("answers a query asked again of an unchanged thread with the count alone", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        seed(mend, [["needle here", "needle there, needle again"]]);
+        const { rpc, frames } = yield* connect(mend, "FINDAGAIN");
+        assert.deepStrictEqual(completeFlags(yield* frames({ query: "needle" })), [
+          false,
+          undefined,
+        ]);
+        const again = yield* frames({ query: "needle" });
+        assert.deepStrictEqual(completeFlags(again), [undefined]);
+        assert.strictEqual(again[0]?.totalMatches, 3);
+
+        const turn = mend.workbench.addTurn("session-1", "one more needle", "completed");
+        mend.workbench.addItem(turn, { kind: "assistant-message", text: "noted" });
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: THREAD }).pipe(
+          Effect.filterOrFail(({ visibleTurnItems }) => visibleTurnItems.length > 2),
+          Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }),
+        );
+        const changed = yield* frames({ query: "needle" });
+        assert.deepStrictEqual(completeFlags(changed), [false, undefined]);
+        assert.strictEqual(changed.at(-1)?.totalMatches, 4);
+      }),
+    ),
+  );
+
+  it.live("lets other work run while it scans a long thread, and stops when interrupted", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        seed(
+          mend,
+          Array.from({ length: 750 }, (_, i) => [longMessage(2 * i), longMessage(2 * i + 1)]),
+        );
+        const snapshot = yield* snapshotOf(mend, "FINDLONG");
+        const search = { threadId: THREAD, query: "absent" };
+
+        const gaps: Array<number> = [];
+        const ticker = yield* Effect.gen(function* () {
+          let last = performance.now();
+          for (;;) {
+            yield* Effect.sleep("2 millis");
+            const now = performance.now();
+            gaps.push(now - last);
+            last = now;
+          }
+        }).pipe(Effect.forkChild);
+        const started = performance.now();
+        const counted = yield* makeThreadFinder().searchThread(snapshot, search);
+        const scanned = performance.now() - started;
+        yield* Fiber.interrupt(ticker);
+        assert.strictEqual(counted.totalMatches, 0);
+        const longestGap = Math.max(...gaps);
+        assert.isAbove(scanned, 4 * longestGap, `scan ${scanned} ms, longest gap ${longestGap} ms`);
+        assert.isBelow(longestGap, 150);
+
+        const interrupted = yield* makeThreadFinder()
+          .searchThreadStream(snapshot, search)
+          .pipe(Stream.runCollect, Effect.forkChild);
+        yield* Effect.sleep("10 millis");
+        const asked = performance.now();
+        const exit = yield* Fiber.interrupt(interrupted).pipe(
+          Effect.andThen(Fiber.await(interrupted)),
+        );
+        const stopped = performance.now() - asked;
+        assert.isTrue(Exit.hasInterrupts(exit));
+        assert.isBelow(stopped, 150);
+        assert.isAbove(scanned, 4 * stopped, `scan ${scanned} ms, interrupt ${stopped} ms`);
+      }),
+    ),
+  );
+
+  it.live("keeps the person's parses within a byte budget, whatever skill lists they send", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        seed(mend, [
+          ["Use $skill-1 for the needle", "Then $skill-2 finds the needle"],
+          ["Read **the needle** docs", "[needle](https://example.com/needle)"],
+        ]);
+        const snapshot = yield* snapshotOf(mend, "FINDBYTES");
+        // As large a skill list as the contract allows: 1,000 skills, 200-character names.
+        const longest = "s".repeat(190);
+        const skillsFor = (request: number) =>
+          Array.from({ length: 1_000 }, (_, i) => ({
+            name: `${request}-${i}-${longest}`.slice(0, 200),
+            displayName: longest,
+          }));
+        const finder = makeThreadFinder();
+        const before = retainedHeap();
+        for (let request = 0; request < 520; request++) {
+          const found = yield* finder.searchThread(snapshot, {
+            threadId: THREAD,
+            query: "needle",
+            skills: skillsFor(request),
+          });
+          assert.strictEqual(found.totalMatches, 4);
+        }
+        const grown = retainedHeap() - before;
+        const budget = FIND_CACHE_LIMITS.parses.bytes + FIND_CACHE_LIMITS.scans.bytes;
+        assert.isAtMost(finder.retainedBytes(), budget);
+        assert.isBelow(grown, budget + 8 * 1024 * 1024, `heap grew ${grown} bytes`);
+      }),
+    ),
+  );
+
+  it.live("evicts the oldest parses past its byte budget and still counts right", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        seed(
+          mend,
+          Array.from({ length: 10 }, (_, i) => [
+            repeatedNeedles(2 * i),
+            repeatedNeedles(2 * i + 1),
+          ]),
+        );
+        const snapshot = yield* snapshotOf(mend, "FINDEVICT");
+        const limits = {
+          parses: { entries: 512, bytes: 96 * 1024 },
+          scans: { entries: 8, bytes: 16 * 1024 },
+        };
+        const finder = makeThreadFinder(limits);
+        for (const query of ["needle", "needle 1", "needle"]) {
+          const found = yield* finder.searchThread(snapshot, { threadId: THREAD, query });
+          assert.strictEqual(found.totalMatches, query === "needle" ? 16_000 : 800 * 11);
+          assert.isAtMost(finder.retainedBytes(), limits.parses.bytes + limits.scans.bytes);
+          assert.isAbove(finder.retainedBytes(), 0);
+        }
+      }),
+    ),
+  );
+});
+
+const environment = makeGatewayEnvironment({
+  environmentId: EnvironmentId.make("environment-1"),
+  label: "Mend",
+  host: "127.0.0.1",
+  statePath: ":memory:",
+});
+
+const assetUrls: AssetUrls["Service"] = {
+  issue: () => Effect.succeed({ relativeUrl: "/api/assets/x/y", expiresAt: 0 }),
+  resolve: () => Effect.succeedNone,
+};
+
+const projectionsOver = (mendUrl: URL) =>
+  ProjectionsLive.pipe(
+    Layer.provideMerge(Layer.mergeAll(MendClientFetchLive, GatewayStateLive)),
+    Layer.provideMerge(
+      Layer.succeed(GatewayConfig)({
+        mendUrl,
+        host: "127.0.0.1",
+        port: 0,
+        statePath: ":memory:",
+        label: "Mend under test",
+      }),
+    ),
+  );
+
+const deviceClient = (session: BearerSession, hub: PersonHub) =>
+  RpcTest.makeClient(WsRpcGroup).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        gatewayRpcHandlersLayer(session, hub),
+        rpcScopeAuthorizationLayer(GRANTED_SCOPES),
+      ).pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(GatewayEnvironment)(environment),
+            Layer.succeed(AssetUrls)(assetUrls),
+          ),
+        ),
+      ),
+    ),
+  );
+
+const failureOf = <A, E>(effect: Effect.Effect<A, E>) =>
+  Effect.exit(effect).pipe(
+    Effect.map((exit) =>
+      Exit.isFailure(exit) ? Option.getOrUndefined(Cause.findErrorOption(exit.cause)) : undefined,
+    ),
+  );
+
+const sessionOf = (claim: FakeMend["claims"][number]): BearerSession => ({
+  ...testBearerSession,
+  deviceToken: claim.token,
+  mendDeviceId: claim.deviceId,
+});
+
+describe("find in a thread, for a device Mend revoked", () => {
+  it.live("is refused from the person's warm hub, for both methods", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        seed(mend, [["the secret needle", "needle"]]);
+        yield* pairAndConnect(mend, "LAPTOP");
+        yield* pairAndConnect(mend, "TABLET");
+        const [laptopClaim, tabletClaim] = mend.claims;
+        if (laptopClaim === undefined || tabletClaim === undefined) {
+          return assert.fail("both devices paired");
+        }
+        const laptop = sessionOf(laptopClaim);
+        const tablet = sessionOf(tabletClaim);
+        yield* Effect.gen(function* () {
+          const projections = yield* Projections;
+          const hub = yield* projections.hub(laptop);
+          const warmThread = yield* hub.subscribeThread(THREAD);
+          assert.isNotNull(warmThread);
+          const tabletClient = yield* deviceClient(tablet, yield* projections.hub(tablet));
+          const laptopClient = yield* deviceClient(laptop, hub);
+          const search = { threadId: THREAD, query: "needle" };
+          const served = yield* tabletClient[ORCHESTRATION_V2_WS_METHODS.searchThread](search);
+          assert.strictEqual(served.totalMatches, 2);
+
+          yield* projections.refuseDevice(PERSON.id, tablet.deviceToken);
+          const refused = yield* failureOf(
+            tabletClient[ORCHESTRATION_V2_WS_METHODS.searchThread](search),
+          );
+          assert.strictEqual(refused?._tag, "EnvironmentAuthorizationError");
+          const streamed = yield* failureOf(
+            tabletClient[ORCHESTRATION_V2_WS_METHODS.searchThreadStream](search).pipe(
+              Stream.runCollect,
+            ),
+          );
+          assert.strictEqual(streamed?._tag, "EnvironmentAuthorizationError");
+          const stillPaired = yield* laptopClient[ORCHESTRATION_V2_WS_METHODS.searchThreadStream](
+            search,
+          ).pipe(Stream.runCollect);
+          assert.strictEqual(stillPaired.at(-1)?.totalMatches, 2);
+        }).pipe(Effect.provide(projectionsOver(mend.url)));
       }),
     ),
   );

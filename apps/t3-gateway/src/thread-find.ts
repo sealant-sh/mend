@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type {
   OrchestrationV2ProjectedTurnItem,
   OrchestrationV2SearchThreadInput,
@@ -11,6 +13,8 @@ import {
   searchablePlanSegments,
 } from "@mend/t3-contracts/thread-find-text";
 import { countThreadSearchOccurrences } from "@mend/t3-contracts/thread-search";
+import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
 
 import type { ThreadSnapshot } from "./hub.ts";
 
@@ -72,40 +76,81 @@ const parseSegments = (
         skills,
       ) ?? []);
 
-const leastRecentlyUsed = <A>(capacity: number) => {
-  const entries = new Map<string, A>();
-  return (key: string, compute: () => A): A => {
-    const cached = entries.get(key);
-    entries.delete(key);
-    const value = cached ?? compute();
-    entries.set(key, value);
-    const oldest = entries.keys().next();
-    if (entries.size > capacity && oldest.done !== true) entries.delete(oldest.value);
-    return value;
+export interface CacheLimits {
+  readonly entries: number;
+  readonly bytes: number;
+}
+
+export interface FindCacheLimits {
+  readonly parses: CacheLimits;
+  readonly scans: CacheLimits;
+}
+
+export const FIND_CACHE_LIMITS: FindCacheLimits = {
+  parses: { entries: 512, bytes: 16 * 1024 * 1024 },
+  scans: { entries: 8, bytes: 2 * 1024 * 1024 },
+};
+
+const V8_STRING_HEADER_BYTES = 32;
+const UTF16_BYTES_PER_CHARACTER = 2;
+const SHA256_HEX_LENGTH = 64;
+const MAP_ENTRY_BYTES = 64;
+const DOCUMENT_BYTES = 48;
+const stringBytes = (length: number) => V8_STRING_HEADER_BYTES + UTF16_BYTES_PER_CHARACTER * length;
+const KEY_BYTES = stringBytes(SHA256_HEX_LENGTH) + MAP_ENTRY_BYTES;
+
+const leastRecentlyUsed = <A>(limits: CacheLimits, bytesOf: (value: A) => number) => {
+  const entries = new Map<string, { readonly value: A; readonly bytes: number }>();
+  let held = 0;
+  return {
+    get: (key: string): A | undefined => {
+      const entry = entries.get(key);
+      if (entry === undefined) return undefined;
+      entries.delete(key);
+      entries.set(key, entry);
+      return entry.value;
+    },
+    set: (key: string, value: A): void => {
+      const previous = entries.get(key);
+      if (previous !== undefined) {
+        entries.delete(key);
+        held -= previous.bytes;
+      }
+      const bytes = KEY_BYTES + bytesOf(value);
+      if (bytes > limits.bytes) return;
+      entries.set(key, { value, bytes });
+      held += bytes;
+      for (const [oldest, entry] of entries) {
+        if (entries.size <= limits.entries && held <= limits.bytes) break;
+        entries.delete(oldest);
+        held -= entry.bytes;
+      }
+    },
+    bytes: () => held,
   };
 };
 
-const LARGE_TEXT = 32_768;
-const shortTextSegments = leastRecentlyUsed<ReadonlyArray<string>>(512);
-const longTextSegments = leastRecentlyUsed<ReadonlyArray<string>>(32);
-
-const segmentsOf = (
-  item: OrchestrationV2TurnItem,
-  cwd: string | undefined,
-  skills: Skills,
-): ReadonlyArray<string> => {
-  const searchable = searchableTextOf(item);
-  const remembered = searchable.text.length <= LARGE_TEXT ? shortTextSegments : longTextSegments;
-  const key = JSON.stringify([
-    searchable.role,
-    searchable.streaming,
-    searchable.hasContext,
-    cwd ?? null,
-    skills,
-    searchable.text,
-  ]);
-  return remembered(key, () => parseSegments(searchable, cwd, skills));
+const lengthPrefixedDigest = (parts: Iterable<string>): string => {
+  const hash = createHash("sha256");
+  for (const part of parts) hash.update(`${part.length}:`).update(part);
+  return hash.digest("hex");
 };
+
+interface Parse {
+  readonly segments: ReadonlyArray<string>;
+  /** The message's length: a segment may be a slice that keeps the whole message alive. */
+  readonly sourceLength: number;
+}
+
+const parseBytes = ({ segments, sourceLength }: Parse) =>
+  segments.reduce((sum, segment) => sum + stringBytes(segment.length), stringBytes(sourceLength));
+
+const scanBytes = (documents: ReadonlyArray<FindDocument>) =>
+  documents.reduce(
+    (sum, { entryId, runId }) =>
+      sum + DOCUMENT_BYTES + stringBytes(entryId.length + (runId?.length ?? 0)),
+    0,
+  );
 
 const SEARCHABLE_TYPES: ReadonlySet<OrchestrationV2TurnItem["type"]> = new Set([
   "user_message",
@@ -132,20 +177,6 @@ const searchableRows = (items: ReadonlyArray<OrchestrationV2ProjectedTurnItem>) 
 
 const entryIdOf = (item: OrchestrationV2TurnItem) =>
   item.type === "user_message" || item.type === "assistant_message" ? item.messageId : item.id;
-
-const documentOf = (
-  { item }: OrchestrationV2ProjectedTurnItem,
-  query: string,
-  cwd: string | undefined,
-  skills: Skills,
-): FindDocument => ({
-  entryId: entryIdOf(item),
-  runId: item.runId,
-  count: segmentsOf(item, cwd, skills).reduce(
-    (sum, text) => sum + countThreadSearchOccurrences(text, query),
-    0,
-  ),
-});
 
 const selectMatch = (
   documents: ReadonlyArray<FindDocument>,
@@ -217,51 +248,143 @@ const resultOf = (
   };
 };
 
-const worktreeOf = ({ projection }: ThreadSnapshot) => projection.thread.worktreePath ?? undefined;
-
-export const findInThread = (
-  snapshot: ThreadSnapshot,
-  search: OrchestrationV2SearchThreadInput,
-): OrchestrationV2SearchThreadResult => {
-  const skills = search.skills ?? [];
-  const cwd = worktreeOf(snapshot);
-  const documents = searchableRows(snapshot.projection.visibleTurnItems).map((row) =>
-    documentOf(row, search.query, cwd, skills),
-  );
-  return resultOf(selectMatch(documents, search), documents, snapshot.snapshotSequence);
-};
-
 const stepsFromSelection = (search: OrchestrationV2SearchThreadInput) =>
   search.index !== undefined || (search.offset ?? 0) !== 0;
 
-export const firstMatchInThread = (
-  snapshot: ThreadSnapshot,
-  search: OrchestrationV2SearchThreadInput,
-): OrchestrationV2SearchThreadResult | null => {
-  if (stepsFromSelection(search)) return null;
-  const skills = search.skills ?? [];
-  const cwd = worktreeOf(snapshot);
-  const rows = searchableRows(snapshot.projection.visibleTurnItems);
-  const anchor = Math.max(
-    0,
-    rows.findIndex(({ item }) => entryIdOf(item) === search.start?.entryId),
-  );
-  for (let step = 0; step <= rows.length; step++) {
-    const row = rows[(anchor + step) % rows.length];
-    if (row === undefined) break;
-    const document = documentOf(row, search.query, cwd, skills);
-    const occurrence =
-      step === 0 && document.entryId === search.start?.entryId
-        ? Math.min(search.start.occurrence, document.count)
-        : 0;
-    if (occurrence >= document.count) continue;
-    return {
-      complete: false,
-      snapshotSequence: snapshot.snapshotSequence,
-      totalMatches: 1,
-      activeIndex: 0,
-      match: { entryId: document.entryId, runId: document.runId, occurrence },
-    };
-  }
-  return null;
+interface FindRow {
+  readonly entryId: string;
+  readonly runId: OrchestrationV2TurnItem["runId"];
+  readonly searchable: SearchableText;
+  readonly parseKey: string;
+}
+
+export interface ThreadFinder {
+  /**
+   * `orchestration.searchThreadStream`: the match at the reading position first (`complete:
+   * false`), then the thread's count. A query asked again of an unchanged thread answers with the
+   * count alone, as t3code's does.
+   */
+  readonly searchThreadStream: (
+    snapshot: ThreadSnapshot,
+    search: OrchestrationV2SearchThreadInput,
+  ) => Stream.Stream<OrchestrationV2SearchThreadResult>;
+  readonly searchThread: (
+    snapshot: ThreadSnapshot,
+    search: OrchestrationV2SearchThreadInput,
+  ) => Effect.Effect<OrchestrationV2SearchThreadResult>;
+  readonly retainedBytes: () => number;
+}
+
+export const makeThreadFinder = (limits: FindCacheLimits = FIND_CACHE_LIMITS): ThreadFinder => {
+  const parses = leastRecentlyUsed<Parse>(limits.parses, parseBytes);
+  const scans = leastRecentlyUsed<ReadonlyArray<FindDocument>>(limits.scans, scanBytes);
+
+  const scanOf = (snapshot: ThreadSnapshot, search: OrchestrationV2SearchThreadInput) =>
+    Effect.gen(function* () {
+      const skills = search.skills ?? [];
+      const cwd = snapshot.projection.thread.worktreePath ?? undefined;
+      const context = lengthPrefixedDigest([JSON.stringify([cwd ?? null, skills])]);
+      const rows: Array<FindRow> = [];
+      for (const { item } of searchableRows(snapshot.projection.visibleTurnItems)) {
+        const searchable = searchableTextOf(item);
+        const { role, streaming, hasContext, text } = searchable;
+        rows.push({
+          entryId: entryIdOf(item),
+          runId: item.runId,
+          searchable,
+          parseKey: lengthPrefixedDigest([
+            context,
+            role,
+            String(streaming),
+            String(hasContext),
+            text,
+          ]),
+        });
+        yield* Effect.yieldNow;
+      }
+      const scanKey = lengthPrefixedDigest([
+        search.query,
+        ...rows.flatMap(({ entryId, runId, parseKey }) => [entryId, runId ?? "", parseKey]),
+      ]);
+      const answer = (documents: ReadonlyArray<FindDocument>) =>
+        resultOf(selectMatch(documents, search), documents, snapshot.snapshotSequence);
+      const scanned = scans.get(scanKey);
+      if (scanned !== undefined) return { kind: "answered" as const, result: answer(scanned) };
+
+      const counted = new Map<number, FindDocument>();
+      const count = Effect.fnUntraced(function* (index: number, row: FindRow) {
+        const known = counted.get(index);
+        if (known !== undefined) return known;
+        let parse = parses.get(row.parseKey);
+        if (parse === undefined) {
+          parse = {
+            segments: parseSegments(row.searchable, cwd, skills),
+            sourceLength: row.searchable.text.length,
+          };
+          parses.set(row.parseKey, parse);
+        }
+        const document: FindDocument = {
+          entryId: row.entryId,
+          runId: row.runId,
+          count: parse.segments.reduce(
+            (sum, text) => sum + countThreadSearchOccurrences(text, search.query),
+            0,
+          ),
+        };
+        counted.set(index, document);
+        yield* Effect.yieldNow;
+        return document;
+      });
+      const counts = Effect.gen(function* () {
+        const documents: Array<FindDocument> = [];
+        for (const [index, row] of rows.entries()) documents.push(yield* count(index, row));
+        scans.set(scanKey, documents);
+        return answer(documents);
+      });
+      return { kind: "counting" as const, rows, count, counts };
+    });
+
+  return {
+    searchThreadStream: (snapshot, search) =>
+      Stream.unwrap(
+        Effect.gen(function* () {
+          const scan = yield* scanOf(snapshot, search);
+          if (scan.kind === "answered") return Stream.succeed(scan.result);
+          const { rows, count, counts } = scan;
+          if (stepsFromSelection(search)) return Stream.fromEffect(counts);
+          const anchor = Math.max(
+            0,
+            rows.findIndex((row) => row.entryId === search.start?.entryId),
+          );
+          const stepsBackToTheAnchor = rows.length + 1;
+          for (let step = 0; step < stepsBackToTheAnchor; step++) {
+            const index = (anchor + step) % rows.length;
+            const row = rows[index];
+            if (row === undefined) break;
+            const document = yield* count(index, row);
+            const occurrence =
+              step === 0 && row.entryId === search.start?.entryId
+                ? Math.min(search.start.occurrence, document.count)
+                : 0;
+            if (occurrence >= document.count) continue;
+            const first: OrchestrationV2SearchThreadResult = {
+              complete: false,
+              snapshotSequence: snapshot.snapshotSequence,
+              totalMatches: 1,
+              activeIndex: 0,
+              match: { entryId: document.entryId, runId: document.runId, occurrence },
+            };
+            return Stream.concat(Stream.succeed(first), Stream.fromEffect(counts));
+          }
+          return Stream.fromEffect(counts);
+        }),
+      ),
+    searchThread: (snapshot, search) =>
+      scanOf(snapshot, search).pipe(
+        Effect.flatMap((scan) =>
+          scan.kind === "answered" ? Effect.succeed(scan.result) : scan.counts,
+        ),
+      ),
+    retainedBytes: () => parses.bytes() + scans.bytes(),
+  };
 };
