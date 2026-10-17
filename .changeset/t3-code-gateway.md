@@ -14,7 +14,7 @@ projects and threads: start a thread in a new or an existing worktree, from a ba
 messages and up to 100 images, pick with `$` the skills Mend gives the session, @-mention project
 files, queue, edit and reorder what waits, answer approvals, choose the model, effort and permission
 mode for the agent's next start, rename, stop, archive and delete, read each turn's diff, the
-thread's files and its change, open a terminal, pin threads and order the sidebar, and star models
+thread's files and its change, find text in a thread, open a terminal, pin threads and order the sidebar, and star models
 in the model picker, kept for that person alone, each as the person who paired and under Mend's own
 rules. t3code shows a provider as connected only when Mend holds that person's login for it.
 

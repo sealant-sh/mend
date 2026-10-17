@@ -372,6 +372,8 @@ export const makeServerConfig = (input: {
   // (`rpc.ts`), as t3code's own server does, so a resuming client knows when it has caught up.
   shellResumeCompletionMarker: true,
   threadResumeCompletionMarker: true,
+  threadFind: true,
+  threadFindProgressive: true,
 });
 
 /** The `welcome` lifecycle event: nothing to bootstrap, so the bootstrap is complete. */
