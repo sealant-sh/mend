@@ -35,6 +35,8 @@ export const unreachableMend: MendClient["Service"] = {
   projectBranches: () => unavailable("GET /api/projects/:id/branches"),
   worktreeNames: () => unavailable("GET /api/projects/:id/worktrees"),
   projectFiles: () => unavailable("GET /api/projects/:id/files"),
+  listSkills: () => unavailable("GET /api/skills"),
+  projectSkills: () => unavailable("GET /api/projects/:id/skills"),
   changeStats: () => unavailable("GET /api/changes/:id/stats"),
   worktreeCheckpoints: () => unavailable("GET /api/worktrees/:id"),
   worktreeDiff: () => unavailable("GET /api/worktrees/:id/diff"),
@@ -75,7 +77,10 @@ export const emptyHub: PersonHub = {
     projects: [],
     threads: [],
   }),
-  accountChanges: Effect.succeed(Stream.never),
+  providerChanges: Effect.succeed(Stream.never),
+  refreshSkillsAt: () => Effect.succeed(null),
+  workspaceSkills: () => [],
+  worktreeFileOf: () => Effect.succeed(null),
   subscribeArchivedShell: Effect.succeed({
     snapshot: {
       schemaVersion: EMPTY_SHELL_SNAPSHOT.schemaVersion,

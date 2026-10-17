@@ -316,7 +316,7 @@ describe("methods the 2026-10-10 pin added", () => {
     ),
   );
 
-  it.live("answers file metadata as unsupported, and database storage as no status", () =>
+  it.live("answers metadata outside the person's worktrees as null, and storage as no status", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         setup(mend);

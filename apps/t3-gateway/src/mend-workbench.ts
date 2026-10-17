@@ -15,6 +15,8 @@ export const MendProject = Schema.Struct({
   /** Where the project was adopted from; null for one adopted from a local path. */
   originUrl: Schema.optional(Schema.NullOr(Schema.String)),
   defaultBranch: Schema.String,
+  /** Whether its sessions receive their launcher's own skills beside the project's. */
+  inheritUserSkills: Schema.optional(Schema.Boolean),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 });
@@ -247,6 +249,18 @@ export const MendFileListing = Schema.Struct({
   truncated: Schema.Boolean,
 });
 export type MendFileListing = typeof MendFileListing.Type;
+
+/**
+ * `Skill` in @mend/domain/workbench, from `GET /api/skills` (the person's library) and
+ * `GET /api/projects/:id/skills` (the project's).
+ */
+export const MendSkill = Schema.Struct({
+  scope: Schema.Literals(["user", "project"]),
+  /** Also the bundle's directory in each harness's skills directory. */
+  name: Schema.String,
+  description: Schema.String,
+});
+export type MendSkill = typeof MendSkill.Type;
 
 /** `ChangeStats` in @mend/api-contracts, from `GET /api/changes/:id/stats`: the change's totals. */
 export const MendChangeStats = Schema.Struct({

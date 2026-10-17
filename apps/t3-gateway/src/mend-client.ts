@@ -23,6 +23,7 @@ import {
   MendWorktreeContents,
   MendWorktreeDetail,
   MendFileListing,
+  MendSkill,
   MendPastedImage,
   MendProjectDetail,
   MendRemovalReport,
@@ -313,6 +314,13 @@ export class MendClient extends Context.Service<
       projectId: string,
       sessionId: string | null,
     ) => MendRead<MendFileListing>;
+    /** `GET /api/skills`: the person's own skill library. */
+    readonly listSkills: (deviceToken: string) => MendRead<ReadonlyArray<MendSkill>>;
+    /** `GET /api/projects/:id/skills`: the project's skill library. */
+    readonly projectSkills: (
+      deviceToken: string,
+      projectId: string,
+    ) => MendRead<ReadonlyArray<MendSkill>>;
     /** The worktree's checkpoint chain, oldest first (`GET /api/worktrees/:id`). */
     readonly worktreeCheckpoints: (
       deviceToken: string,
@@ -463,6 +471,7 @@ const decodePastedImage = Schema.decodeUnknownEffect(MendPastedImage);
 const decodeShell = Schema.decodeUnknownEffect(MendShell);
 const decodeUpgradeTicket = Schema.decodeUnknownEffect(MendUpgradeTicket);
 const decodeFileListing = Schema.decodeUnknownEffect(MendFileListing);
+const decodeSkills = Schema.decodeUnknownEffect(Schema.Array(MendSkill));
 const decodeChangeStats = Schema.decodeUnknownEffect(MendChangeStats);
 const decodeWorktreeDetail = Schema.decodeUnknownEffect(MendWorktreeDetail);
 const decodeRangeDiff = Schema.decodeUnknownEffect(MendRangeDiff);
@@ -769,6 +778,17 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           }`,
           deviceToken,
           decodeFileListing,
+        );
+
+      const listSkills = (deviceToken: string) =>
+        read("GET /api/skills", "/api/skills", deviceToken, decodeSkills);
+
+      const projectSkills = (deviceToken: string, projectId: string) =>
+        read(
+          "GET /api/projects/:id/skills",
+          `/api/projects/${encodeURIComponent(projectId)}/skills`,
+          deviceToken,
+          decodeSkills,
         );
 
       const worktreeCheckpoints = (deviceToken: string, worktreeId: string) =>
@@ -1128,6 +1148,8 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         worktreeDiff,
         worktreeContents,
         projectFiles,
+        listSkills,
+        projectSkills,
         createSession,
         joinWorktree,
         labelSession,

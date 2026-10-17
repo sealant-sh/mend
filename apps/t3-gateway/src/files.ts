@@ -1,4 +1,7 @@
 import {
+  type FilesystemEntryMetadata,
+  type FilesystemGetMetadataInput,
+  type FilesystemGetMetadataResult,
   ProjectListEntriesError,
   ProjectReadFileError,
   ProjectSearchContentsError,
@@ -19,6 +22,7 @@ import * as Effect from "effect/Effect";
 import type { GatedMend } from "./device-gate.ts";
 import { highlightLines } from "./highlight.ts";
 import type { CwdLocation, PersonHub } from "./hub.ts";
+import type { MendRead } from "./mend-client.ts";
 import type { MendFileListing } from "./mend-workbench.ts";
 import type { BearerSession } from "./state.ts";
 
@@ -146,39 +150,52 @@ export const listEntries = (
   });
 };
 
+interface Listing {
+  readonly listing: MendFileListing;
+  readonly entries: ReadonlyArray<ProjectEntry>;
+  readonly kinds: ReadonlyMap<string, ProjectEntry["kind"]>;
+}
+
 export const makeFileHandlers = (input: {
   readonly hub: PersonHub;
   readonly mend: GatedMend;
   readonly session: BearerSession;
 }) => {
   const { hub, mend, session } = input;
-  /** `projectId:sessionId` → a listing and when it was read; one socket's composer. */
-  const listings = new Map<
-    string,
-    {
-      readonly readAt: number;
-      readonly listing: MendFileListing;
-      readonly entries: ReadonlyArray<ProjectEntry>;
-    }
-  >();
+  const listings = new Map<string, { readonly readAt: number; readonly read: MendRead<Listing> }>();
 
-  /** The files at `cwd`, from the kept listing while it is fresh. */
+  const listingOf = (projectId: string, sessionId: string | null) =>
+    Effect.gen(function* () {
+      const key = `${projectId}:${sessionId ?? ""}`;
+      const kept = listings.get(key);
+      const now = yield* Clock.currentTimeMillis;
+      if (kept !== undefined && now - kept.readAt < LISTING_TTL_MS) return yield* kept.read;
+      const read: MendRead<Listing> = yield* Effect.cached(
+        mend.projectFiles(session.deviceToken, projectId, sessionId).pipe(
+          Effect.map((listing) => {
+            const entries = entriesOf(listing.files);
+            return {
+              listing,
+              entries,
+              kinds: new Map(entries.map((entry) => [entry.path, entry.kind])),
+            };
+          }),
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              if (listings.get(key)?.read === read) listings.delete(key);
+            }),
+          ),
+        ),
+      );
+      listings.set(key, { readAt: now, read });
+      return yield* read;
+    });
+
   const filesAt = (cwd: string) =>
     Effect.gen(function* () {
       const location: CwdLocation | null = yield* hub.locationOf(cwd);
       if (location === null) return null;
-      const key = `${location.projectId}:${location.sessionId ?? ""}`;
-      const kept = listings.get(key);
-      const now = yield* Clock.currentTimeMillis;
-      if (kept !== undefined && now - kept.readAt < LISTING_TTL_MS) return kept;
-      const listing = yield* mend.projectFiles(
-        session.deviceToken,
-        location.projectId,
-        location.sessionId,
-      );
-      const fresh = { readAt: now, listing, entries: entriesOf(listing.files) };
-      listings.set(key, fresh);
-      return fresh;
+      return yield* listingOf(location.projectId, location.sessionId);
     });
 
   const searchEntriesAt = (request: ProjectSearchEntriesInput) => {
@@ -331,7 +348,35 @@ export const makeFileHandlers = (input: {
     });
   };
 
+  const metadataOf = (path: string) =>
+    Effect.gen(function* () {
+      const file = yield* hub.worktreeFileOf(path);
+      if (file === null) return null;
+      if (file.relativePath === "") return { kind: "directory" } as const;
+      const kept = yield* listingOf(file.projectId, file.sessionId);
+      const kind = kept.kinds.get(file.relativePath);
+      if (kind === "directory") return { kind } as const;
+      if (kind === undefined && !kept.listing.truncated) return null;
+      const answer = yield* mend.worktreeContents(session.deviceToken, file.worktreeId, {
+        path: file.relativePath,
+        at: null,
+      });
+      return answer.file === null ? null : { kind: "file" as const, byteLength: answer.file.size };
+    }).pipe(Effect.catch(() => Effect.succeed<FilesystemEntryMetadata | null>(null)));
+
+  const getMetadata = (request: FilesystemGetMetadataInput) =>
+    Effect.gen(function* () {
+      const paths = [...new Set(request.paths)];
+      const entries = yield* Effect.forEach(paths, metadataOf, { concurrency: 8 });
+      const byPath = new Map(paths.map((path, index) => [path, entries[index] ?? null]));
+      const result: FilesystemGetMetadataResult = {
+        entries: request.paths.map((path) => byPath.get(path) ?? null),
+      };
+      return result;
+    });
+
   return {
+    getMetadata,
     searchEntries: searchEntriesAt,
     listEntries: listEntriesAt,
     readFile: readFileAt,
