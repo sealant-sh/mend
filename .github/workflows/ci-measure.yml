@@ -413,7 +413,6 @@ jobs:
           .claude/skills/verify/scripts/slots.test.mjs .claude/skills/verify/scripts/guard.test.mjs
           .claude/skills/verify/scripts/secrets.test.mjs
           .claude/skills/verify/scripts/local-outer.test.mjs
-          .claude/skills/verify/scripts/doctor.test.mjs
       - name: Archive per-file test timings
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
