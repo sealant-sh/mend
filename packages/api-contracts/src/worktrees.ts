@@ -92,8 +92,9 @@ export class WorktreeRangeDiff extends Schema.Class<WorktreeRangeDiff>("Worktree
   /** The files of `files` with no patch in `diff`, by path (the new path, else the old). */
   omitted: Schema.Array(Schema.String),
   /**
-   * The slice has more files than `files` lists: Mend listed its first files within its listing
-   * budget or deadline. Ask for one by `path` to get it whatever its place.
+   * The slice may have more files than `files` lists: Mend listed its first files within its
+   * listing budget or deadline, the 200 `diff` renders whole when the deadline let it find them.
+   * Ask for one by `path` to get it whatever its place.
    */
   listingCut: Schema.Boolean,
   observation: Schema.optionalKey(ObservationStamp),

@@ -2,10 +2,10 @@
 /**
  * VS Code against a Mend server on another address: the MacBook-and-Mac-mini shape, on one Linux
  * machine. The server runs in its own Docker daemon (Docker-in-Docker), as on a Mac, where Docker
- * Desktop is a Linux VM whose published ports the host forwards. `mend server setup` installs the
- * packaged server there with `--bind 0.0.0.0` and `--url http://<address>:<port>`, and the daemon's
- * ports are forwarded from a NON-loopback address of this machine only (a LAN or tailnet IP). It
- * creates the first account, adopts a repository,
+ * Desktop is a Linux VM. `mend server setup` installs the packaged server there with `--bind
+ * 0.0.0.0` and `--url http://<daemon address>:3105`: clients reach it at the daemon container's own
+ * address, as a laptop reaches another machine, and nothing is published on this machine, so its
+ * loopback reaches nothing. It creates the first account, adopts a repository,
  * then runs apps/vscode/test/e2e/suite.ts inside a real VS Code under Xvfb. The suite signs in
  * through the browser walk, watches live events, starts a Workbench session, writes the
  * Remote-SSH config and connects with `ssh` through it, types in the session's terminal over
@@ -16,13 +16,10 @@
  * change review lists it. Last, a second session in a fresh worktree must run: the image is built
  * by then, so that executor is the first with an owner map.
  *
- *   MEND_TEST_VERSION=0.36.0-next.656 [MEND_E2E_HOST=100.101.141.6] \
- *     node scripts/vscode-remote-acceptance.mjs
+ *   MEND_TEST_VERSION=0.36.0-next.656 node scripts/vscode-remote-acceptance.mjs
  *
  * Inputs:
  *   MEND_TEST_VERSION   a preloaded ghcr.io/sealant-sh/mend:<version> (required)
- *   MEND_E2E_HOST       the address to bind and advertise; default the first non-loopback,
- *                       non-bridge IPv4 of this machine
  *   MEND_E2E_REPO       the Git URL to adopt; default https://github.com/octocat/Hello-World.git
  *   VSCODE_CLI          the `code` command, for installing Remote-SSH; default `code` on PATH
  *   VSCODE_BIN          the VS Code application (Electron) the suite runs in; default VSCODE_CLI.
@@ -38,7 +35,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
-import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,26 +64,6 @@ const sh = (command, args, options = {}) => {
 };
 const docker = (args, options) => sh("docker", args, options).stdout.trim();
 const lines = (text) => text.split("\n").filter((line) => line.trim() !== "");
-
-const hostAddress = () => {
-  if (process.env.MEND_E2E_HOST) return process.env.MEND_E2E_HOST;
-  for (const [name, addresses] of Object.entries(os.networkInterfaces())) {
-    if (/^(lo|docker|br-|veth|virbr|kind|cni|flannel)/.test(name)) continue;
-    const found = addresses?.find((address) => address.family === "IPv4" && !address.internal);
-    if (found) return found.address;
-  }
-  throw new Error("no non-loopback IPv4 address; set MEND_E2E_HOST");
-};
-
-const freePort = (host) =>
-  new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once("error", reject);
-    server.listen(0, host, () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -153,12 +129,9 @@ const cleanup = () => {
 };
 
 const main = async () => {
-  const host = hostAddress();
-  const port = await freePort(host);
-  const sshPort = await freePort(host);
-  const origin = `http://${host}:${port}`;
+  const port = 3105;
+  const sshPort = 2222;
 
-  // The server's own daemon. Its published ports are forwarded from `host` alone.
   const socketDir = path.join(scratch, "dind-run");
   fs.mkdirSync(socketDir);
   dind = docker([
@@ -169,10 +142,6 @@ const main = async () => {
     `${runId}-dind`,
     "-e",
     "DOCKER_TLS_CERTDIR=",
-    "-p",
-    `${host}:${port}:${port}`,
-    "-p",
-    `${host}:${sshPort}:${sshPort}`,
     "-v",
     `${socketDir}:/var/run`,
     // The generation's files are bind-mounted by host path (postgres-init.sh), so the daemon must
@@ -183,6 +152,13 @@ const main = async () => {
     "dockerd",
     "--host=unix:///var/run/docker.sock",
   ]);
+  const host = docker([
+    "inspect",
+    dind,
+    "--format",
+    "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+  ]);
+  const origin = `http://${host}:${port}`;
   const socket = path.join(socketDir, "docker.sock");
   for (let attempt = 0; attempt < 60 && !fs.existsSync(socket); attempt += 1) await sleep(500);
   docker(["exec", dind, "chmod", "666", "/var/run/docker.sock"]);
@@ -207,6 +183,29 @@ const main = async () => {
   });
   inner(["load", "-i", saved], { timeout: 900_000 });
   fs.rmSync(saved);
+  // Setup needs the network guard image this label names. It is pinned by digest, and `docker load`
+  // into this daemon's classic image store drops repo digests, so it is pulled.
+  const guardImage = inner([
+    "image",
+    "inspect",
+    image,
+    "--format",
+    '{{index .Config.Labels "dev.sealant.mend.network-guard-image"}}',
+  ]);
+  if (guardImage !== "") inner(["pull", "-q", guardImage], { timeout: 300_000 });
+  // With sudo and ACL tools the image can take a person per Linux user (ADR 0016, the 0.36
+  // default): the terminal then runs as the person, and the run records what Remote-SSH runs as.
+  // Built before the first request: a blocking call between two fetches that outlasts the server's
+  // 5 s keep-alive makes fetch reuse a socket the server closed ("other side closed"), and under
+  // load this build does.
+  const workspaceBase = `${runId}-base:latest`;
+  const baseContext = path.join(scratch, "base");
+  fs.mkdirSync(baseContext);
+  fs.writeFileSync(
+    path.join(baseContext, "Dockerfile"),
+    "FROM node:26-bookworm\nRUN apt-get update && apt-get install -y --no-install-recommends sudo acl && rm -rf /var/lib/apt/lists/*\n",
+  );
+  inner(["build", "-q", "-t", workspaceBase, baseContext], { timeout: 900_000 });
   const cli = (args, options = {}) =>
     sh(process.execPath, [path.join(repo, "apps/cli/src/main.ts"), ...args], {
       env: clientEnv,
@@ -240,8 +239,7 @@ const main = async () => {
   ]);
   for (const line of lines(setup.stdout)) log(`setup: ${line}`);
 
-  // Inside the daemon, 3105 and 2222 are published on every interface (what --bind 0.0.0.0 asks);
-  // outside, only `host` forwards to them.
+  // Inside the daemon, 3105 and 2222 are published on every interface (what --bind 0.0.0.0 asks).
   const mendId = inner([
     "ps",
     "-q",
@@ -266,9 +264,7 @@ const main = async () => {
       throw new Error(`${inside} is published as ${JSON.stringify(bound)}, not 0.0.0.0:${outside}`);
     }
   }
-  log(
-    `PASS 3105 and 2222 reach ${host}:${port} and ${host}:${sshPort} through the daemon's forward`,
-  );
+  log(`PASS 3105 and 2222 are published on every interface of the daemon at ${host}`);
 
   const signup = await fetch(`${origin}/api/auth/sign-up/email`, {
     method: "POST",
@@ -305,16 +301,6 @@ const main = async () => {
     method: "POST",
     body: JSON.stringify({ name: projectName, source: sourceUrl }),
   });
-  // With sudo and ACL tools the image can take a person per Linux user (ADR 0016, the 0.36
-  // default): the terminal then runs as the person, and the run records what Remote-SSH runs as.
-  const workspaceBase = `${runId}-base:latest`;
-  const baseContext = path.join(scratch, "base");
-  fs.mkdirSync(baseContext);
-  fs.writeFileSync(
-    path.join(baseContext, "Dockerfile"),
-    "FROM node:26-bookworm\nRUN apt-get update && apt-get install -y --no-install-recommends sudo acl && rm -rf /var/lib/apt/lists/*\n",
-  );
-  inner(["build", "-q", "-t", workspaceBase, baseContext], { timeout: 900_000 });
   await api(`/projects/${project.id}/workspace-image`, {
     method: "PUT",
     body: JSON.stringify({
@@ -454,6 +440,14 @@ const main = async () => {
   });
   const result = fs.existsSync(resultFile) ? JSON.parse(fs.readFileSync(resultFile, "utf8")) : {};
   console.log(JSON.stringify(result, null, 2));
+  // The suite's last step stops the workbench session; VS Code can exit before that stop lands.
+  let workbenchStatus = null;
+  const workbench = result.startSession?.sessionId;
+  for (const deadline = Date.now() + 120_000; workbench && Date.now() < deadline; ) {
+    workbenchStatus = (await api(`/sessions/${workbench}`).catch(() => null))?.session?.status;
+    if (workbenchStatus === "stopped" || workbenchStatus === "completed") break;
+    await sleep(2_000);
+  }
   // Whatever the suite left running.
   const detail = await api(`/projects/${project.id}`).catch(() => null);
   for (const session of detail?.sessions ?? []) {
@@ -463,6 +457,9 @@ const main = async () => {
   }
   if (exit !== 0) throw new Error(`the editor suite exited ${exit}`);
   assertEditorEvidence(result, { runId, remoteSsh });
+  if (workbenchStatus !== "stopped" && workbenchStatus !== "completed") {
+    throw new Error(`the workbench session the suite stopped is ${workbenchStatus}, not stopped`);
+  }
   log("PASS the editor suite against the non-loopback server");
 
   // A second session in a fresh worktree. The suite's first launch came before the custom image
