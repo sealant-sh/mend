@@ -183,6 +183,14 @@ appendFileSync(process.env.FAKE_LOG, JSON.stringify(args) + "\\n");
 const host = JSON.parse(process.env.FAKE_HOST);
 const target = JSON.parse(process.env.FAKE_TARGET);
 const inner = args[0] === "exec" ? args.slice(args.indexOf("docker") + 1) : null;
+const world = JSON.parse(process.env.FAKE_INSPECT ?? "null");
+if (world) {
+  const where = inner ? world.inner : world.host;
+  const verb = inner ?? args;
+  if (verb[0] === "ps") { process.stdout.write(where.containers.map((c) => c.Id).join("\\n") + "\\n"); process.exit(0); }
+  if (verb[0] === "inspect") { process.stdout.write(JSON.stringify(where.containers.filter((c) => verb.includes(c.Id) || verb.includes(c.Name.slice(1))))); process.exit(0); }
+  if (verb[0] === "image" && verb[1] === "inspect") { process.stdout.write(JSON.stringify(where.images.filter((i) => verb.includes(i.Id)))); process.exit(0); }
+}
 if (inner && inner[0] === "image" && inner[1] === "inspect") process.exit(target.includes(inner.at(-1)) ? 0 : 1);
 if (inner && inner[0] === "load") { readFileSync(0); process.exit(0); }
 if (inner && inner[0] === "info") process.exit(0);
@@ -318,4 +326,66 @@ test("up asks the hub-cache first only when told to, on the cache's network", as
     `--registry-mirror=${mirror}`,
     "--insecure-registry=st-verify-hub-cache:5000",
   ]);
+});
+
+test("images names the image each container ran: the outer, and every container in it", async () => {
+  const compose = (service, image, id) => ({
+    Id: `c-${service}`,
+    Name: `/mend-${service}-1`,
+    Image: id,
+    Config: { Image: image, Labels: { "com.docker.compose.service": service } },
+  });
+  const world = {
+    host: {
+      containers: [
+        {
+          Id: "c-outer",
+          Name: "/st-verify-outer-test",
+          Image: "sha256:dind",
+          Config: { Image: "docker:27.5.1-dind", Labels: {} },
+        },
+      ],
+      images: [{ Id: "sha256:dind", RepoDigests: ["docker@sha256:dind"] }],
+    },
+    inner: {
+      containers: [
+        compose("mend", "ghcr.io/sealant-sh/mend:0.36.0-next.658", "sha256:m"),
+        compose("postgres", "postgres:17-alpine", "sha256:p"),
+        compose("garage", "dxflrs/garage:v2.4.1", "sha256:g"),
+        {
+          Id: "c-fixture",
+          Name: "/outer-fixture",
+          Image: "sha256:m",
+          Config: { Image: "ghcr.io/sealant-sh/mend:0.36.0-next.658", Labels: {} },
+        },
+      ],
+      images: [
+        { Id: "sha256:m", RepoDigests: ["ghcr.io/sealant-sh/mend@sha256:m"] },
+        { Id: "sha256:p", RepoDigests: [] },
+        { Id: "sha256:g", RepoDigests: [] },
+      ],
+    },
+  };
+  const { status, out } = await seeding({ FAKE_INSPECT: JSON.stringify(world) }, ["images"]);
+  assert.equal(status, 0, out);
+  assert.deepEqual(
+    JSON.parse(out).map((item) => [item.service, item.image, item.id, item.repoDigests]),
+    [
+      ["outer", "docker:27.5.1-dind", "sha256:dind", ["docker@sha256:dind"]],
+      [
+        "mend",
+        "ghcr.io/sealant-sh/mend:0.36.0-next.658",
+        "sha256:m",
+        ["ghcr.io/sealant-sh/mend@sha256:m"],
+      ],
+      ["postgres", "postgres:17-alpine", "sha256:p", []],
+      ["garage", "dxflrs/garage:v2.4.1", "sha256:g", []],
+      [
+        "outer-fixture",
+        "ghcr.io/sealant-sh/mend:0.36.0-next.658",
+        "sha256:m",
+        ["ghcr.io/sealant-sh/mend@sha256:m"],
+      ],
+    ],
+  );
 });

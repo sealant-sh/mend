@@ -309,6 +309,41 @@ export function isolationFindings(containers, secrets) {
 }
 
 /**
+ * What each service ran, so a stale tag can be caught after the run: one entry per container
+ * (named by its Compose service, else by its container name), then one per image the stack named
+ * that no container shows (Core's and sealantd's builds, which the bundle and the workspace images
+ * carry, the fixture's base and the network guard). `containers` is `docker inspect` of the
+ * containers, `images` of the images (by id or reference, as found), `named` a role → reference
+ * map. `id` is the image's id; `repoDigests` is empty for an image loaded rather than pulled.
+ */
+export function imageRecord(containers, images, named) {
+  const byKey = new Map();
+  for (const image of images) {
+    byKey.set(image.Id, image);
+    for (const tag of image.RepoTags ?? []) byKey.set(tag, image);
+  }
+  const entry = (service, container, ref, id) => {
+    const image = byKey.get(id ?? ref);
+    return {
+      service,
+      container,
+      image: ref,
+      id: id ?? image?.Id ?? null,
+      repoDigests: image?.RepoDigests ?? [],
+    };
+  };
+  const record = containers.map((container) => {
+    const name = String(container.Name ?? container.Id).replace(/^\//, "");
+    const service = container.Config?.Labels?.["com.docker.compose.service"] ?? name;
+    return entry(service, name, container.Config?.Image ?? null, container.Image ?? null);
+  });
+  const shown = new Set(record.map((item) => item.image));
+  for (const [role, ref] of Object.entries(named))
+    if (typeof ref === "string" && !shown.has(ref)) record.push(entry(role, null, ref, null));
+  return record;
+}
+
+/**
  * Proportional set size per process, from `<pss kB> <command>` lines, largest first, with the sum.
  * PSS charges each shared page to its sharers once, so the sum is what the processes hold together.
  */

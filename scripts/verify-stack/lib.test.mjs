@@ -18,6 +18,7 @@ import {
   imageNames,
   innerOrigins,
   insideCaptureRoot,
+  imageRecord,
   isolationFindings,
   mendBuildArgs,
   parseMemory,
@@ -637,4 +638,72 @@ test("stack.mjs preloads the guard image after the Mend image is built and befor
   const built = source.indexOf("await Promise.all([cliBuild, bundleBuild]);");
   const setup = source.indexOf('"--offline",');
   assert.ok(built !== -1 && preload > built && setup > preload, "build → preload → offline setup");
+});
+
+test("imageRecord names what every container ran, then the named images no container shows", () => {
+  const compose = (service, image, id) => ({
+    Name: `/mend-${service}-1`,
+    Image: id,
+    Config: { Image: image, Labels: { "com.docker.compose.service": service } },
+  });
+  const containers = [
+    compose("mend", "ghcr.io/sealant-sh/mend:1.2.3-verify.tabc", "sha256:m"),
+    compose("postgres", "postgres:17-alpine", "sha256:p"),
+    { Name: "/sealant-ws", Image: "sha256:w", Config: { Image: "node:26-bookworm", Labels: {} } },
+  ];
+  const images = [
+    { Id: "sha256:m", RepoTags: ["ghcr.io/sealant-sh/mend:1.2.3-verify.tabc"], RepoDigests: [] },
+    {
+      Id: "sha256:p",
+      RepoTags: ["postgres:17-alpine"],
+      RepoDigests: ["postgres@sha256:pulled"],
+    },
+    { Id: "sha256:w", RepoTags: ["node:26-bookworm"], RepoDigests: [] },
+    { Id: "sha256:d", RepoTags: ["mend-verify/sealantd:abc"], RepoDigests: [] },
+  ];
+  const record = imageRecord(containers, images, {
+    mend: "ghcr.io/sealant-sh/mend:1.2.3-verify.tabc",
+    sealantd: "mend-verify/sealantd:abc",
+    sealantApi: null,
+    fixture: "node:26-bookworm",
+    guard: "busybox:1.37@sha256:g",
+  });
+  assert.deepEqual(record, [
+    {
+      service: "mend",
+      container: "mend-mend-1",
+      image: "ghcr.io/sealant-sh/mend:1.2.3-verify.tabc",
+      id: "sha256:m",
+      repoDigests: [],
+    },
+    {
+      service: "postgres",
+      container: "mend-postgres-1",
+      image: "postgres:17-alpine",
+      id: "sha256:p",
+      repoDigests: ["postgres@sha256:pulled"],
+    },
+    {
+      service: "sealant-ws",
+      container: "sealant-ws",
+      image: "node:26-bookworm",
+      id: "sha256:w",
+      repoDigests: [],
+    },
+    {
+      service: "sealantd",
+      container: null,
+      image: "mend-verify/sealantd:abc",
+      id: "sha256:d",
+      repoDigests: [],
+    },
+    // Named but not on the daemon: recorded so its absence shows.
+    {
+      service: "guard",
+      container: null,
+      image: "busybox:1.37@sha256:g",
+      id: null,
+      repoDigests: [],
+    },
+  ]);
 });
