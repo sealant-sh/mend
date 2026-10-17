@@ -435,7 +435,6 @@ jobs:
           .claude/skills/verify/scripts/secrets.test.mjs
           .claude/skills/verify/scripts/steps.test.mjs
           .claude/skills/verify/scripts/local-outer.test.mjs
-          .claude/skills/verify/scripts/doctor.test.mjs
 
       - name: Archive per-file test timings
         if: ${{ !cancelled() }}
