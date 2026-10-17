@@ -193,7 +193,9 @@ export const EventsRoutes = HttpRouter.use((router) =>
             // a beat for the event, or a page is refused before it learns why and lands on a plain
             // sign-in (RC 0.36.0-next.754, B-F1).
             Stream.takeUntil(ownAccess),
-            Stream.interruptWhen(Deferred.await(revoked).pipe(Effect.delay(REVOKED_GRACE))),
+            Stream.interruptWhen(
+              Deferred.await(revoked).pipe(Effect.andThen(Effect.sleep(REVOKED_GRACE))),
+            ),
             Stream.mapEffect(frameFor),
             Stream.filter((frame): frame is string => frame !== null),
             Stream.map((chunk) => encoder.encode(chunk)),
