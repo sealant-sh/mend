@@ -105,7 +105,7 @@ describe("GET /ws", () => {
           ],
         );
         for (const provider of providers) {
-          assert.isTrue(provider.requiresNewThreadForModelChange);
+          assert.isFalse(provider.requiresNewThreadForModelChange);
           assert.isFalse(provider.supportsConversationRollback);
           assert.isFalse(provider.showInteractionModeToggle);
           assert.deepStrictEqual(provider.supportedRuntimeModes, [
@@ -140,10 +140,15 @@ describe("GET /ws", () => {
             ["opus", "Opus", false],
           ],
         );
-        assert.isUndefined(
-          claude?.models[0]?.capabilities?.optionDescriptors?.find(
-            (option) => option.id === "serviceTier",
+        assert.deepStrictEqual(
+          providers.flatMap((provider) =>
+            provider.models.flatMap((model) =>
+              (model.capabilities?.optionDescriptors ?? []).filter(
+                (option) => option.id === "serviceTier",
+              ),
+            ),
           ),
+          [],
         );
 
         // The probe a client falls back to without the probe capability.

@@ -121,6 +121,7 @@ export const emptyHub: PersonHub = {
     stop: () => refused,
     remove: () => refused,
     setNextMode: () => refused,
+    setNextSelection: () => refused,
     setArchived: () => refused,
     setLifecycle: () => refused,
     setVisited: () => refused,

@@ -27,7 +27,7 @@ export interface FakeSession {
   readonly projectId: string;
   readonly worktreeId: string;
   readonly harness: string;
-  readonly model: string | null;
+  model: string | null;
   label: string | null;
   readonly worktree: string;
   readonly branch: string;
@@ -376,6 +376,24 @@ export class FakeWorkbench {
     agent.status = "exited";
     agent.exitedAt = tick();
     session.status = "stopped";
+    session.updatedAt = tick();
+    this.emit({ type: "session-process", sessionId, projectId: session.projectId });
+  }
+
+  startAgentOn(sessionId: string, model: string): void {
+    const agent = this.agents.get(sessionId);
+    const session = this.sessions.get(sessionId);
+    if (agent === undefined || session === undefined || agent.protocolOptions === null) return;
+    this.agents.set(sessionId, {
+      ...agent,
+      id: this.nextId("process"),
+      protocolOptions: { ...agent.protocolOptions, model },
+      status: "running",
+      exitedAt: null,
+      createdAt: tick(),
+    });
+    session.model = model;
+    session.status = "running";
     session.updatedAt = tick();
     this.emit({ type: "session-process", sessionId, projectId: session.projectId });
   }
@@ -1074,6 +1092,7 @@ export class FakeWorkbench {
       }, this.launchLiveDelayMs);
       return json(422, { _tag: "StoreFailure", message: refusal });
     }
+    session.model = named("model") ?? session.model;
     session.status = "starting";
     session.updatedAt = tick();
     const prompt =

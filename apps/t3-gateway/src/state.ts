@@ -60,6 +60,11 @@ export interface BearerSession {
   readonly revokedAt: number | null;
 }
 
+export interface NextChoices {
+  readonly model?: string | null;
+  readonly effort?: string | null;
+}
+
 /**
  * The t3code ids a gateway-sent turn carries (ADR 0012, "State"): the run id the gateway minted
  * when it queued the message, and the message id the t3code client sent it with. A client
@@ -81,7 +86,6 @@ export const ThreadLaunchOptions = Schema.Struct({
   model: Schema.optional(Schema.String),
   effort: Schema.optional(Schema.String),
   permissionMode: Schema.optional(Schema.Literals(["bypass", "ask"])),
-  speed: Schema.optional(Schema.Literals(["standard", "fast"])),
 });
 export type ThreadLaunchOptions = typeof ThreadLaunchOptions.Type;
 
@@ -329,11 +333,14 @@ export class GatewayState extends Context.Service<
     readonly listVisited: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
-    /** The reasoning effort a person chose for a session's next launch; null clears it. */
-    readonly setNextEffort: (
+    /**
+     * The model and reasoning effort a person chose for a session's next launch, written together:
+     * an absent field stays as it is, null clears it.
+     */
+    readonly setNextChoices: (
       mendUserId: string,
       sessionId: string,
-      effort: string | null,
+      choices: NextChoices,
     ) => Effect.Effect<void, GatewayStateError>;
     /** Every next-launch effort a person chose, by session. */
     readonly listNextEfforts: (
@@ -352,6 +359,10 @@ export class GatewayState extends Context.Service<
       mendUserId: string,
       change: (current: ModelPreferences) => Result.Result<ModelPreferences, E>,
     ) => Effect.Effect<KeptModelPreferences, GatewayStateError | E>;
+    /** Every next-launch model a person chose, by session. */
+    readonly listNextModels: (
+      mendUserId: string,
+    ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
     /** Every bearer neither revoked nor expired at `now`: what a start checks with Mend. */
     readonly liveSessions: (
       now: number,
@@ -383,7 +394,9 @@ export class GatewayState extends Context.Service<
  * `thread_lifecycles` keeps the threads a person settled or snoozed in t3code (migration 10), the
  * same way. `thread_visits` keeps when a person last saw each thread (migration 11), what t3code's
  * unread marker reads, and `next_efforts` the reasoning effort a person chose for a session's next
- * launch (migration 12), as `next_modes` keeps the mode.
+ * launch (migration 12), as `next_modes` keeps the mode. `model_preferences` keeps a person's model
+ * favorites, hidden models and model order (migration 13), and `next_models` the model a person
+ * chose for a session's next launch, as `next_efforts` keeps the effort (migration 14).
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -569,6 +582,14 @@ const MIGRATIONS: ReadonlyArray<string> = [
     version INTEGER NOT NULL
   );
   `,
+  `
+  CREATE TABLE next_models (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    PRIMARY KEY (mend_user_id, mend_session_id)
+  );
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -659,6 +680,8 @@ const VisitedRow = Schema.Struct({
 const decodeVisitedRows = Schema.decodeUnknownEffect(Schema.Array(VisitedRow));
 const EffortRow = Schema.Struct({ mend_session_id: Schema.String, effort: Schema.String });
 const decodeEffortRows = Schema.decodeUnknownEffect(Schema.Array(EffortRow));
+const ModelRow = Schema.Struct({ mend_session_id: Schema.String, model: Schema.String });
+const decodeModelRows = Schema.decodeUnknownEffect(Schema.Array(ModelRow));
 const LifecycleRow = Schema.Struct({
   mend_session_id: Schema.String,
   settled_override: Schema.NullOr(Schema.Literals(["settled", "active"])),
@@ -1420,19 +1443,25 @@ export const openGatewayState = (
         ),
       );
 
-    const setNextEffort = (mendUserId: string, sessionId: string, effort: string | null) =>
-      run("setNextEffort", () => {
-        if (effort === null) {
+    const setNextChoices = (mendUserId: string, sessionId: string, choices: NextChoices) =>
+      transaction("setNextChoices", () => {
+        const write = (table: "next_models" | "next_efforts", column: "model" | "effort") => {
+          const value = choices[column];
+          if (value === undefined) return;
+          if (value === null) {
+            database
+              .prepare(`DELETE FROM ${table} WHERE mend_user_id = ? AND mend_session_id = ?`)
+              .run(mendUserId, sessionId);
+            return;
+          }
           database
-            .prepare("DELETE FROM next_efforts WHERE mend_user_id = ? AND mend_session_id = ?")
-            .run(mendUserId, sessionId);
-          return;
-        }
-        database
-          .prepare(
-            "INSERT OR REPLACE INTO next_efforts (mend_user_id, mend_session_id, effort) VALUES (?, ?, ?)",
-          )
-          .run(mendUserId, sessionId, effort);
+            .prepare(
+              `INSERT OR REPLACE INTO ${table} (mend_user_id, mend_session_id, ${column}) VALUES (?, ?, ?)`,
+            )
+            .run(mendUserId, sessionId, value);
+        };
+        write("next_models", "model");
+        write("next_efforts", "effort");
       });
 
     const listNextEfforts = (mendUserId: string) =>
@@ -1496,6 +1525,19 @@ export const openGatewayState = (
         ),
       );
 
+    const listNextModels = (mendUserId: string) =>
+      run("listNextModels", () =>
+        database
+          .prepare("SELECT mend_session_id, model FROM next_models WHERE mend_user_id = ?")
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap(decoded("listNextModels", decodeModelRows)),
+        Effect.map(
+          (rows): ReadonlyMap<string, string> =>
+            new Map(rows.map((row) => [row.mend_session_id, row.model] as const)),
+        ),
+      );
+
     const liveSessions = (now: number) =>
       run("liveSessions", () =>
         database
@@ -1555,10 +1597,11 @@ export const openGatewayState = (
       listLifecycles,
       setVisited,
       listVisited,
-      setNextEffort,
+      setNextChoices,
       listNextEfforts,
       modelPreferences,
       updateModelPreferences,
+      listNextModels,
       liveSessions,
       peopleWithQueuedMessages,
     };

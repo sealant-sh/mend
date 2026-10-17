@@ -19,9 +19,9 @@ import type { BearerSession } from "./state.ts";
  * error, naming the command.
  *
  * - `message.dispatch`: queued by the gateway and sent as a turn once nothing is open, or as the
- *   opening turn of a relaunch when the session's agent has stopped. A reasoning effort changed on
- *   the picker applies from the agent's next start; a changed service tier is refused
- *   (`model-options.ts`).
+ *   opening turn of a relaunch when the session's agent has stopped. A model or reasoning effort
+ *   changed on the picker applies from the agent's next start; the Fast tier or another provider
+ *   is refused (`model-options.ts`).
  * - `run.interrupt`, `queued-run.cancel`, `queue.resume`: Mend's interrupt and the gateway's queue.
  * - `queued-run.edit`, `queued-run.reorder`: a message still waiting in the gateway's queue; one on
  *   its way to Mend is never rewritten.
@@ -34,6 +34,8 @@ import type { BearerSession } from "./state.ts";
  *   and its change stay in Mend.
  * - `thread.runtime-mode.set`: the permission mode for the agent's next start; Mend sets it per
  *   launch.
+ * - `thread.model-selection.set`: the model and effort for the agent's next start, weighed as a
+ *   message's are.
  * - `thread.archive`, `thread.unarchive`: the person's archive, kept by the gateway; Mend has none.
  * - `thread.settle`, `thread.unsettle`, `thread.snooze`, `thread.unsnooze`: the person's settle and
  *   snooze, kept by the gateway the same way (`lifecycle.ts`).
@@ -286,6 +288,14 @@ export const dispatchCommand = (
       }
       return answered(hub.commands.setNextMode({ session, threadId: command.threadId, mode }));
     }
+    case "thread.model-selection.set":
+      return answered(
+        hub.commands.setNextSelection({
+          session,
+          threadId: command.threadId,
+          modelSelection: command.modelSelection,
+        }),
+      );
     default:
       return refuse(`Mend's t3code gateway does not accept ${command.type}.`);
   }

@@ -70,7 +70,6 @@ const MendHarnessCatalog = Schema.Struct({
   models: Schema.Array(MendHarnessModel),
   defaultModel: Schema.NullOr(Schema.String),
   efforts: Schema.Array(Schema.String),
-  fastCapable: Schema.Boolean,
 });
 export type MendHarnessCatalog = typeof MendHarnessCatalog.Type;
 const decodeHarnessCatalogs = Schema.decodeUnknownEffect(Schema.Array(MendHarnessCatalog));
@@ -198,7 +197,6 @@ export interface MendLaunchOptions {
   readonly model?: string | undefined;
   readonly effort?: string | undefined;
   readonly permissionMode?: "bypass" | "ask" | undefined;
-  readonly speed?: "standard" | "fast" | undefined;
 }
 
 /** A new session in a new worktree of a project (`NewWorkbenchSession` in @mend/api-contracts). */
