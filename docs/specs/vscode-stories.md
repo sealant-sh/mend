@@ -280,7 +280,7 @@ _She opens VS Code at 9:00. Two sessions ran overnight._
    - The Mend icon has badge `1`. The status bar reads `Mend · 1 needs you · 2 finished`.
 2. **The Mend view shows, in this order:**
    - **Needs you:** `migrate-orders · waiting · approve schema change? · since 02:14`.
-   - **Since yesterday:**
+   - **Since you last looked:**
      - `add-rate-limit · completed · observed · 4 files · not reviewed`;
      - `flaky-auth-test · failed · exit 1 at 03:40`;
      - `docs-typos · landed · pull request #412 · open · observed`.
@@ -291,7 +291,7 @@ _She opens VS Code at 9:00. Two sessions ran overnight._
    - She reviews the finished session (story d).
    - She opens the failed one to read why: selecting it shows its change, and its terminal is the
      record's last output.
-   - Once she has looked at a session, it leaves **Since yesterday**.
+   - Once she has looked at a session, it leaves **Since you last looked**.
 
 **Edge cases**
 
@@ -299,7 +299,7 @@ _She opens VS Code at 9:00. Two sessions ran overnight._
   is guessed.
 - **A session finished and was then landed by Ana.** The row shows the landing as observed
   (`pull request #415 · merged · observed`) and who landed it.
-- **Many sessions.** **Since yesterday** groups by project after 8 rows.
+- **Many sessions.** **Since you last looked** groups by project after 8 rows.
 
 ## g. mend handoff: Dana's local branch becomes a session
 
