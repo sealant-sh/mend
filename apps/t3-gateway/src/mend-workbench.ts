@@ -256,6 +256,70 @@ export const MendChangeStats = Schema.Struct({
 });
 export type MendChangeStats = typeof MendChangeStats.Type;
 
+/** `LandedPullRequest` in @mend/domain/workbench, a landing's pull request as `gh` last saw it. */
+export const MendLandedPullRequest = Schema.Struct({
+  number: Schema.Number,
+  url: Schema.String,
+  state: Schema.Literals(["open", "closed", "merged"]),
+  /** Null when recorded before Mend kept it; older servers omit it. */
+  title: Schema.optional(Schema.NullOr(Schema.String)),
+  observedAt: Schema.String,
+});
+export type MendLandedPullRequest = typeof MendLandedPullRequest.Type;
+
+/** `ChangeLanding` in @mend/domain/workbench, one push of a change to origin (ADR 0007). */
+export const MendLanding = Schema.Struct({
+  /** The branch on origin, `mend/<name>` unless the owner named another. */
+  remoteBranch: Schema.String,
+  /** What origin's branch was moved to; null when nothing was pushed. */
+  pushedSha: Schema.NullOr(Schema.String),
+  /** The commit Mend wrote for work the agent left uncommitted; null when it wrote none. */
+  commitSha: Schema.NullOr(Schema.String),
+  pullRequest: Schema.NullOr(MendLandedPullRequest),
+  /** `pushed`, `pull-request`, `refused`, `failed` or `adopted` (`LandingOutcome`). */
+  outcome: Schema.String,
+  /** The remote's or `gh`'s own words for a refusal or a failure. */
+  message: Schema.NullOr(Schema.String),
+});
+export type MendLanding = typeof MendLanding.Type;
+
+/**
+ * `ChangeLandingsView` in @mend/api-contracts, from `GET /api/changes/:id/landings`. A change's
+ * landings, newest first, and what Mend observed about them. A fact is read by its tag alone, and
+ * `changed-since-landing` by its file count.
+ */
+export const MendChangeLandings = Schema.Struct({
+  /** The session a landing runs as. */
+  sessionId: Schema.NullOr(Schema.String),
+  /** The caller owns the change, so may land it. */
+  land: Schema.Boolean,
+  landings: Schema.Array(MendLanding),
+  facts: Schema.Array(
+    Schema.Struct({ _tag: Schema.String, files: Schema.optional(Schema.Number) }),
+  ),
+  /** Whether Mend can open a pull request for the project (origin on GitHub), and why not. */
+  pullRequest: Schema.Struct({ available: Schema.Boolean, reason: Schema.NullOr(Schema.String) }),
+});
+export type MendChangeLandings = typeof MendChangeLandings.Type;
+
+/** `PullRequestStepView` in @mend/api-contracts, how a landing's pull request step went. */
+export const MendPullRequestStep = Schema.Union([
+  Schema.TaggedStruct("opened", { pullRequest: MendLandedPullRequest }),
+  Schema.TaggedStruct("updated", { pullRequest: MendLandedPullRequest }),
+  Schema.TaggedStruct("off", {}),
+  Schema.TaggedStruct("unavailable", { reason: Schema.String }),
+  Schema.TaggedStruct("failed", { message: Schema.String }),
+  Schema.TaggedStruct("not-reached", {}),
+]);
+export type MendPullRequestStep = typeof MendPullRequestStep.Type;
+
+/** `LandingReportView` in @mend/api-contracts, from `POST /api/sessions/:id/land`. */
+export const MendLandingReport = Schema.Struct({
+  landing: MendLanding,
+  pullRequest: MendPullRequestStep,
+});
+export type MendLandingReport = typeof MendLandingReport.Type;
+
 /** `PastedImage` in @mend/api-contracts, from `POST /api/sessions/:id/images`. */
 export const MendPastedImage = Schema.Struct({
   /** The file as the session's workspace sees it: what the turn names. */
