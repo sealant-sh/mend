@@ -18,6 +18,9 @@ import {
   imageNames,
   innerOrigins,
   insideCaptureRoot,
+  dockerHubTag,
+  heldVerdict,
+  imageRecord,
   isolationFindings,
   mendBuildArgs,
   parseMemory,
@@ -425,8 +428,105 @@ test("a recording window records what appeared and has the stack's shape, by ide
   });
   assert.deepEqual(
     mergeLedgers([madeSince(before, after, SHAPES.session), { containers: ["c3", "c9"] }]),
-    { containers: ["c2", "c3", "c9"], networks: ["n2"], volumes: [] },
+    { containers: ["c2", "c3", "c9"], networks: ["n2"], volumes: [], ran: [] },
   );
+  // What each recorded container ran, by container id: the same container in two windows is one
+  // record, the later window's; a container that reuses a name is a record of its own.
+  const ran = (containerId, container, id) => ({
+    service: container,
+    container,
+    containerId,
+    image: "postgres:17-alpine",
+    id,
+    repoDigests: [],
+  });
+  assert.deepEqual(
+    mergeLedgers([
+      { containers: ["c2"], ran: [ran("c2", "mend-postgres-1", "sha256:old")] },
+      {
+        containers: ["c2", "c3"],
+        ran: [
+          ran("c2", "mend-postgres-1", "sha256:old"),
+          ran("c3", "mend-postgres-1", "sha256:new"),
+        ],
+      },
+    ]).ran,
+    [ran("c2", "mend-postgres-1", "sha256:old"), ran("c3", "mend-postgres-1", "sha256:new")],
+  );
+});
+
+test("a merged ledger keeps both image identities when a named container is recreated", () => {
+  const make = (containerId, id) => ({
+    service: "postgres",
+    container: "mend-postgres-1",
+    containerId,
+    image: "postgres:17-alpine",
+    id,
+    repoDigests: [],
+  });
+  const merged = mergeLedgers([
+    { containers: ["old-container-id"], ran: [make("old-container-id", "sha256:old")] },
+    { containers: ["current-container-id"], ran: [make("current-container-id", "sha256:current")] },
+  ]);
+  assert.deepEqual(
+    merged.ran.map((item) => item.id),
+    ["sha256:old", "sha256:current"],
+  );
+});
+
+test("dockerHubTag finds Docker Hub's repository for a tag, and nothing for a digest or another registry", () => {
+  assert.deepEqual(dockerHubTag("node:26-bookworm"), {
+    repository: "library/node",
+    tag: "26-bookworm",
+  });
+  assert.deepEqual(dockerHubTag("dxflrs/garage:v2.4.1"), {
+    repository: "dxflrs/garage",
+    tag: "v2.4.1",
+  });
+  assert.deepEqual(dockerHubTag("docker.io/library/postgres:17-alpine"), {
+    repository: "library/postgres",
+    tag: "17-alpine",
+  });
+  assert.equal(dockerHubTag("busybox:1.37@sha256:bdf5"), null);
+  assert.equal(dockerHubTag("ghcr.io/sealant-sh/mend:0.36.0"), null);
+  assert.equal(dockerHubTag("localhost:5000/cache:1"), null);
+});
+
+test("heldVerdict reads Docker Hub's spellings of one repository as one", () => {
+  const held = { Id: "sha256:example", RepoDigests: ["postgres@sha256:current"] };
+  assert.equal(heldVerdict("docker.io/library/postgres:17-alpine", held, "sha256:current"), null);
+  assert.deepEqual(heldVerdict("docker.io/library/postgres:17-alpine", held, "sha256:new"), {
+    stale: true,
+    line: "held docker.io/library/postgres:17-alpine sha256:current · Hub has sha256:new",
+  });
+  assert.equal(
+    heldVerdict(
+      "dxflrs/garage:v2.4.1",
+      { Id: "i", RepoDigests: ["docker.io/dxflrs/garage@sha256:g"] },
+      "sha256:g",
+    ),
+    null,
+  );
+});
+
+test("heldVerdict is quiet only for a held copy Docker Hub names now, and says what it reused", () => {
+  const pulled = (digest) => ({ Id: "sha256:id", RepoDigests: [`node@${digest}`] });
+  assert.equal(heldVerdict("node:26-bookworm", pulled("sha256:a"), "sha256:a"), null);
+  assert.deepEqual(heldVerdict("node:26-bookworm", pulled("sha256:b"), "sha256:a"), {
+    stale: true,
+    line: "held node:26-bookworm sha256:b · Hub has sha256:a",
+  });
+  assert.deepEqual(
+    heldVerdict("node:26-bookworm", { Id: "sha256:id", RepoDigests: [] }, "sha256:a"),
+    {
+      stale: false,
+      line: "held node:26-bookworm sha256:id (loaded, no repo digest) · Hub has sha256:a",
+    },
+  );
+  assert.deepEqual(heldVerdict("node:26-bookworm", pulled("sha256:b"), null), {
+    stale: false,
+    line: "held node:26-bookworm sha256:b · Docker Hub did not answer",
+  });
 });
 
 test("a teardown removes what was recorded and has the stack's shape, and follows nothing (R7-1, R7-2)", () => {
@@ -637,4 +737,94 @@ test("stack.mjs preloads the guard image after the Mend image is built and befor
   const built = source.indexOf("await Promise.all([cliBuild, bundleBuild]);");
   const setup = source.indexOf('"--offline",');
   assert.ok(built !== -1 && preload > built && setup > preload, "build → preload → offline setup");
+});
+
+test("imageRecord names what every container ran, then the named images no container shows", () => {
+  const compose = (service, image, id) => ({
+    Id: `c-${service}`,
+    Name: `/mend-${service}-1`,
+    Image: id,
+    Config: { Image: image, Labels: { "com.docker.compose.service": service } },
+  });
+  const containers = [
+    compose("mend", "ghcr.io/sealant-sh/mend:1.2.3-verify.tabc", "sha256:m"),
+    compose("postgres", "postgres:17-alpine", "sha256:p"),
+    {
+      Id: "c-ws",
+      Name: "/sealant-ws",
+      Image: "sha256:w",
+      Config: { Image: "node:26-bookworm", Labels: {} },
+    },
+  ];
+  const images = [
+    { Id: "sha256:m", RepoTags: ["ghcr.io/sealant-sh/mend:1.2.3-verify.tabc"], RepoDigests: [] },
+    {
+      Id: "sha256:p",
+      RepoTags: ["postgres:17-alpine"],
+      RepoDigests: ["postgres@sha256:pulled"],
+    },
+    { Id: "sha256:w", RepoTags: ["node:26-bookworm"], RepoDigests: [] },
+    { Id: "sha256:d", RepoTags: ["mend-verify/sealantd:abc"], RepoDigests: [] },
+    { Id: "sha256:b", RepoTags: ["busybox:1.37"], RepoDigests: ["busybox@sha256:g"] },
+  ];
+  const record = imageRecord(containers, images, {
+    mend: "ghcr.io/sealant-sh/mend:1.2.3-verify.tabc",
+    sealantd: "mend-verify/sealantd:abc",
+    sealantApi: null,
+    fixture: "node:26-bookworm",
+    guard: "busybox:1.37@sha256:g",
+    absent: "alpine:3.22",
+  });
+  assert.deepEqual(record, [
+    {
+      service: "mend",
+      container: "mend-mend-1",
+      containerId: "c-mend",
+      image: "ghcr.io/sealant-sh/mend:1.2.3-verify.tabc",
+      id: "sha256:m",
+      repoDigests: [],
+    },
+    {
+      service: "postgres",
+      container: "mend-postgres-1",
+      containerId: "c-postgres",
+      image: "postgres:17-alpine",
+      id: "sha256:p",
+      repoDigests: ["postgres@sha256:pulled"],
+    },
+    {
+      service: "sealant-ws",
+      container: "sealant-ws",
+      containerId: "c-ws",
+      image: "node:26-bookworm",
+      id: "sha256:w",
+      repoDigests: [],
+    },
+    {
+      service: "sealantd",
+      container: null,
+      containerId: null,
+      image: "mend-verify/sealantd:abc",
+      id: "sha256:d",
+      repoDigests: [],
+    },
+    // A reference pinned by digest, found by its repo digest.
+    {
+      service: "guard",
+      container: null,
+      containerId: null,
+      image: "busybox:1.37@sha256:g",
+      id: "sha256:b",
+      repoDigests: ["busybox@sha256:g"],
+    },
+    // Named but not on the daemon: recorded so its absence shows.
+    {
+      service: "absent",
+      container: null,
+      containerId: null,
+      image: "alpine:3.22",
+      id: null,
+      repoDigests: [],
+    },
+  ]);
 });

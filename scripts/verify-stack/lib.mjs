@@ -309,6 +309,86 @@ export function isolationFindings(containers, secrets) {
 }
 
 /**
+ * Where Docker Hub keeps a tagged reference: `{ repository, tag }` (`library/` for an official
+ * image), or null for another registry or a reference pinned by digest, which cannot go stale.
+ */
+export function dockerHubTag(ref) {
+  const match = /^(?:docker\.io\/)?([^@]+):([\w][\w.-]*)$/.exec(ref);
+  if (!match) return null;
+  const [, path, tag] = match;
+  const first = path.split("/")[0];
+  if (path.includes("/") && (first.includes(".") || first.includes(":") || first === "localhost"))
+    return null;
+  return { repository: path.includes("/") ? path : `library/${path}`, tag };
+}
+
+/**
+ * Whether a held image is the one Docker Hub names for its tag now. `held` is the daemon's
+ * `{ Id, RepoDigests }`, `hub` the digest Docker Hub answered, or null when it did not. Returns
+ * null when a repo digest matches, else the line that reports the reuse; `stale` when the held
+ * copy's repo digest is provably another (a pull would change it). An image loaded rather than
+ * pulled carries no repo digest, so only its id can be named.
+ */
+export function heldVerdict(ref, held, hub) {
+  // Docker Hub's spellings of one repository are one: `docker.io/library/postgres` is `postgres`.
+  const short = (name) => name.replace(/^docker\.io\//, "").replace(/^library\//, "");
+  const repository = short(ref.replace(/:[^:/]*$/, ""));
+  const digests = (held.RepoDigests ?? [])
+    .filter((item) => short(item.slice(0, item.indexOf("@"))) === repository)
+    .map((item) => item.slice(item.indexOf("@") + 1));
+  if (hub !== null && digests.includes(hub)) return null;
+  const what = digests.length > 0 ? digests.join(",") : `${held.Id} (loaded, no repo digest)`;
+  return {
+    stale: hub !== null && digests.length > 0,
+    line: `held ${ref} ${what} · ${hub === null ? "Docker Hub did not answer" : `Hub has ${hub}`}`,
+  };
+}
+
+/**
+ * What each service ran, so a stale tag can be caught after the run: one entry per container
+ * (named by its Compose service, else by its container name), then one per image the stack named
+ * that no container shows (Core's and sealantd's builds, which the bundle and the workspace images
+ * carry, the fixture's base and the network guard). `containers` is `docker inspect` of the
+ * containers, `images` of the images (by id or reference, as found), `named` a role → reference
+ * map. `containerId` is Docker's id for the container (names are reused), `id` the image's;
+ * `repoDigests` is empty for an image loaded rather than pulled.
+ */
+export function imageRecord(containers, images, named) {
+  const byKey = new Map();
+  for (const image of images)
+    for (const key of [image.Id, ...(image.RepoTags ?? []), ...(image.RepoDigests ?? [])])
+      byKey.set(key, image);
+  // `name:tag@digest` is found by its repo digest, `name@digest`.
+  const find = (key) => byKey.get(key) ?? byKey.get(String(key).replace(/:[^:/@]+@/, "@"));
+  const entry = (service, container, containerId, ref, id) => {
+    const image = find(id ?? ref);
+    return {
+      service,
+      container,
+      containerId,
+      image: ref,
+      id: id ?? image?.Id ?? null,
+      repoDigests: image?.RepoDigests ?? [],
+    };
+  };
+  const record = containers.map((container) => {
+    const name = String(container.Name ?? container.Id).replace(/^\//, "");
+    const service = container.Config?.Labels?.["com.docker.compose.service"] ?? name;
+    return entry(
+      service,
+      name,
+      container.Id ?? null,
+      container.Config?.Image ?? null,
+      container.Image ?? null,
+    );
+  });
+  const shown = new Set(record.map((item) => item.image));
+  for (const [role, ref] of Object.entries(named))
+    if (typeof ref === "string" && !shown.has(ref)) record.push(entry(role, null, null, ref, null));
+  return record;
+}
+
+/**
  * Proportional set size per process, from `<pss kB> <command>` lines, largest first, with the sum.
  * PSS charges each shared page to its sharers once, so the sum is what the processes hold together.
  */
@@ -442,12 +522,20 @@ export function mergeLedgers(ledgers) {
   const containers = new Set();
   const networks = new Set();
   const volumes = new Map();
+  const ran = new Map();
   for (const ledger of ledgers) {
     for (const id of ledger.containers ?? []) containers.add(id);
     for (const id of ledger.networks ?? []) networks.add(id);
     for (const volume of ledger.volumes ?? []) volumes.set(volumeIdentity(volume), volume);
+    // By the container's id: a name such as mend-postgres-1 is reused by the next container.
+    for (const item of ledger.ran ?? []) ran.set(item.containerId ?? item.container, item);
   }
-  return { containers: [...containers], networks: [...networks], volumes: [...volumes.values()] };
+  return {
+    containers: [...containers],
+    networks: [...networks],
+    volumes: [...volumes.values()],
+    ran: [...ran.values()],
+  };
 }
 
 const nameOf = (item) => String(item.Name ?? "").replace(/^\//, "");

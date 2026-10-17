@@ -52,6 +52,7 @@ import {
   INNER_ACCOUNT_EMAIL,
   INNER_WEB_PORT,
   MEMORY_PROBE,
+  NETWORK_GUARD_IMAGE_LABEL,
   REPOSITORIES,
   RELAY_CONTAINER,
   SESSION_REPOS,
@@ -74,7 +75,10 @@ import {
   manualRemoval,
   mergeLedgers,
   planTeardown,
+  dockerHubTag,
+  heldVerdict,
   imageNames,
+  imageRecord,
   innerOrigins,
   insideCaptureRoot,
   isolationFindings,
@@ -335,6 +339,71 @@ const imageId = (tag) =>
   dockerOut(["image", "inspect", "--format", "{{.Id}}", tag]).catch(() => null);
 
 /**
+ * The digest Docker Hub names for a tagged reference now, or null: another registry, a digest
+ * reference, or no answer (its limit spent, no network, or MEND_VERIFY_DOCKER_HUB=off). A HEAD on
+ * the manifest, which Docker Hub does not count as a pull. MEND_VERIFY_DOCKER_HUB, a URL, stands in
+ * for both Docker Hub's registry and its token service.
+ */
+async function hubDigest(ref) {
+  const where = dockerHubTag(ref);
+  const base = process.env.MEND_VERIFY_DOCKER_HUB;
+  if (where === null || base === "off") return null;
+  const auth = base ?? "https://auth.docker.io";
+  const registry = base ?? "https://registry-1.docker.io";
+  try {
+    const signal = AbortSignal.timeout(10_000);
+    const { token } = await (
+      await fetch(
+        `${auth}/token?service=registry.docker.io&scope=repository:${where.repository}:pull`,
+        { signal },
+      )
+    ).json();
+    const response = await fetch(`${registry}/v2/${where.repository}/manifests/${where.tag}`, {
+      method: "HEAD",
+      signal,
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: [
+          "application/vnd.oci.image.index.v1+json",
+          "application/vnd.docker.distribution.manifest.list.v2+json",
+          "application/vnd.docker.distribution.manifest.v2+json",
+          "application/vnd.oci.image.manifest.v1+json",
+        ].join(", "),
+      },
+    });
+    return response.ok ? response.headers.get("docker-content-digest") : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Every reuse of a held image that Docker Hub does not confirm, as `heldVerdict` words it. */
+const heldNotes = [];
+
+/**
+ * Pull an image this daemon lacks, as setup does (`pull-missing`): pulling a held tag still asks
+ * Docker Hub, which refuses even that once this address has spent its anonymous limit. A held one
+ * is reused, and reported (said, and kept in the state's `held`) unless its repo digest is the one
+ * Docker Hub names now. MEND_VERIFY_REFRESH_IMAGES=1 pulls a copy whose repo digest is provably
+ * another instead.
+ */
+const pullMissing = async (image) => {
+  const held = await dockerOut(["image", "inspect", "--format", "{{json .}}", image])
+    .then((text) => JSON.parse(text))
+    .catch(() => null);
+  if (held !== null) {
+    const verdict = heldVerdict(image, held, await hubDigest(image));
+    if (verdict === null) return;
+    const refresh = verdict.stale && process.env.MEND_VERIFY_REFRESH_IMAGES === "1";
+    const line = refresh ? `${verdict.line} · pulled (MEND_VERIFY_REFRESH_IMAGES=1)` : verdict.line;
+    say(`  ${line}`);
+    heldNotes.push(line);
+    if (!refresh) return;
+  }
+  await docker(["pull", "--quiet", image], { timeout: 15 * 60_000 });
+};
+
+/**
  * Build one image unless this daemon already holds it under its tag (the same tree was built
  * before). `dockerfile` is a path in the context, or `{ text }` for a Dockerfile the stack owns.
  */
@@ -398,7 +467,7 @@ async function ensureBuildx() {
     return;
   const plugins = join(dockerEnv.DOCKER_CONFIG, "cli-plugins");
   await mkdir(plugins, { recursive: true, mode: 0o700 });
-  await docker(["pull", "--quiet", DOCKER_CLI_IMAGE], { timeout: 15 * 60_000 });
+  await pullMissing(DOCKER_CLI_IMAGE);
   const id = await dockerOut(["create", ...transient("buildx"), DOCKER_CLI_IMAGE]);
   try {
     await docker([
@@ -764,7 +833,7 @@ async function up(args, { claimId = randomUUID(), claimWith = claimDaemon } = {}
   });
   await assertDaemonIsFree();
   // The base of the fixture's sessions, and the image the claim and the socket probe run.
-  await docker(["pull", "--quiet", FIXTURE_BASE_IMAGE], { timeout: 15 * 60_000 });
+  await pullMissing(FIXTURE_BASE_IMAGE);
   // Before the claim, so a trim that trips cannot strand one.
   await trimCaches();
   await mkdir(logs, { recursive: true });
@@ -926,11 +995,7 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
   for (const pending of [sealantdBuild, coreBuilt, cliBuild, mendContext])
     pending.catch(() => undefined);
   const pulls = timed(phases, "pulls", () =>
-    Promise.all(
-      composeImages(composeYaml).map((image) =>
-        docker(["pull", "--quiet", image], { timeout: 15 * 60_000 }),
-      ),
-    ),
+    Promise.all(composeImages(composeYaml).map(pullMissing)),
   );
   await Promise.all([coreBuilt, pulls]);
   const bundleContext = await mendContext;
@@ -997,6 +1062,8 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
       ]),
     ),
     images,
+    // Each reuse of a held image Docker Hub did not confirm (`pullMissing`).
+    held: heldNotes,
     builds: outcomes,
     packages,
     relay,
@@ -1467,7 +1534,15 @@ async function recording(work, { state = null, shape = SHAPES.session } = {}) {
   const file = join(dir, `${window.window}.json`);
   const before = await snapshot();
   let made = madeSince(before, before, shape);
-  const save = (closed) => writeAtomically(file, { ...window, closed, ...made });
+  // What each container the window made ran, by container id, read once when it first shows and
+  // kept after the container is gone: the record outlives the inventory.
+  const ran = new Map();
+  const save = async (closed) => {
+    const fresh = made.containers.filter((id) => !ran.has(id));
+    for (const item of await ranBy(fresh).catch(() => []))
+      if (item.containerId !== null) ran.set(item.containerId, item);
+    await writeAtomically(file, { ...window, closed, ...made, ran: [...ran.values()] });
+  };
   await save(false);
   const ticker = { open: true, wake: () => undefined };
   const ticks = (async () => {
@@ -1606,7 +1681,9 @@ async function report(args) {
   const state = await readState();
   if (!state) throw new Error("no verify stack here: `up` starts one");
   const memory = await measureMemory(state);
-  const isolation = isolationFindings(await inspectAll(await stackContainers()), outerSecrets);
+  const containers = await inspectAll(await stackContainers());
+  const isolation = isolationFindings(containers, outerSecrets);
+  const images = await ranImages(state, containers);
   // Read-only: what it measures is printed with the stack's state, never written back.
   const measured = {
     memory: {
@@ -1616,6 +1693,7 @@ async function report(args) {
       top: memory.processes.slice(0, 12),
     },
     isolation: { checked: outerSecrets.length, findings: isolation },
+    ran: images,
   };
   if (flags.json) return say(JSON.stringify({ ...state, ...measured }, null, 2));
   say(`verify stack · ${state.phase ?? "ready"}`);
@@ -1640,7 +1718,64 @@ async function report(args) {
         ? `  isolation · the session's credential (${outerSecrets.length} value(s)) is in no container's environment, command or labels`
         : `  isolation · FOUND in ${isolation.join(", ")}`,
   );
+  for (const item of images)
+    say(
+      `  image · ${item.service} · ${item.image ?? "?"} · ${item.id ?? "not on this daemon"} · ${item.repoDigests.join(" ") || "no repo digest"}`,
+    );
   if (isolation.length > 0) process.exitCode = 1;
+}
+
+/** The image every stack container ran and every image the stack named, as `imageRecord` says. */
+async function ranImages(state, containers) {
+  const inspect = (ref) =>
+    dockerOut(["image", "inspect", ref])
+      .then((text) => JSON.parse(text))
+      .catch(() => []);
+  const guard = state.images?.mend
+    ? (
+        await dockerOut([
+          "image",
+          "inspect",
+          "--format",
+          `{{index .Config.Labels "${NETWORK_GUARD_IMAGE_LABEL}"}}`,
+          state.images.mend,
+        ]).catch(() => "")
+      ).trim()
+    : "";
+  const named = {
+    ...Object.fromEntries(
+      Object.entries(state.images ?? {}).filter(([role]) => role !== "version"),
+    ),
+    fixture: FIXTURE_BASE_IMAGE,
+    ...(guard === "" || guard === "<no value>" ? {} : { guard }),
+  };
+  const refs = new Set([
+    ...containers.map((container) => container.Image).filter(Boolean),
+    ...Object.values(named).filter((ref) => typeof ref === "string"),
+  ]);
+  const images = (await Promise.all([...refs].map(inspect))).flat();
+  const built = new Set(Object.values(state.images ?? {}));
+  return Promise.all(
+    imageRecord(containers, images, named).map(async (item) =>
+      item.image === null || built.has(item.image) || dockerHubTag(item.image) === null
+        ? item
+        : { ...item, hub: await hubDigest(item.image) },
+    ),
+  );
+}
+
+/** What the stack's containers `ids` ran, for the ledger: `imageRecord` of them alone. */
+async function ranBy(ids) {
+  if (ids.length === 0) return [];
+  const containers = await inspectAll(ids);
+  const images = await dockerOut([
+    "image",
+    "inspect",
+    ...new Set(containers.map((container) => container.Image).filter(Boolean)),
+  ])
+    .then((text) => JSON.parse(text))
+    .catch(() => []);
+  return imageRecord(containers, images, {});
 }
 
 // ─── down ───────────────────────────────────────────────────────────────────
