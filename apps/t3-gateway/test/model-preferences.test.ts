@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { gateDeviceCalls } from "../src/device-gate.ts";
@@ -367,11 +368,13 @@ const configStreamOverSmallFeed = Effect.gen(function* () {
   const feed = makeFanout<KeptSettings>(FEED_ROOM);
   let current = keptStarred(0);
   let open = 0;
+  let subscriptionScope: Scope.Scope | undefined;
   const hub: PersonHub = {
     ...emptyHub,
     settings: () => Effect.sync(() => current),
     subscribeSettings: () =>
       Effect.gen(function* () {
+        subscriptionScope = yield* Scope.Scope;
         yield* Effect.acquireRelease(
           Effect.sync(() => {
             open += 1;
@@ -409,9 +412,32 @@ const configStreamOverSmallFeed = Effect.gen(function* () {
     feed,
     heard,
     openSubscriptions: () => open,
+    retained: () => {
+      let scopes = 0;
+      let finalizers = 0;
+      for (let scope = subscriptionScope; scope !== undefined; scope = scope.parent) {
+        scopes += 1;
+        if (scope.state._tag !== "Open") continue;
+        finalizers += scope.state.finalizer ? 1 : (scope.state.finalizers?.size ?? 0);
+      }
+      return { scopes, finalizers };
+    },
     opensWith: (next: KeptSettings) => {
       current = next;
     },
+    overflow: (round: number) =>
+      Effect.gen(function* () {
+        current = keptStarred(round * 10 + 3, `round-${round}`);
+        yield* feed.publish([
+          keptStarred(round * 10 + 1, "a"),
+          keptStarred(round * 10 + 2, "b"),
+          current,
+        ]);
+        yield* until(
+          () => starredIn(heard.at(-1)) === `round-${round}`,
+          `the change lost in overflow ${round}`,
+        );
+      }),
   };
 });
 
@@ -422,17 +448,7 @@ describe("the config stream after the settings feed falls behind", () => {
       Effect.gen(function* () {
         const rig = yield* configStreamOverSmallFeed;
         for (let round = 1; round <= 50; round++) {
-          const version = round * 10;
-          rig.opensWith(keptStarred(version + 3, `round-${round}`));
-          yield* rig.feed.publish([
-            keptStarred(version + 1, "a"),
-            keptStarred(version + 2, "b"),
-            keptStarred(version + 3, `round-${round}`),
-          ]);
-          yield* until(
-            () => starredIn(rig.heard.at(-1)) === `round-${round}`,
-            `the change lost in overflow ${round}`,
-          );
+          yield* rig.overflow(round);
           assert.strictEqual(
             rig.openSubscriptions(),
             1,
@@ -448,6 +464,16 @@ describe("the config stream after the settings feed falls behind", () => {
         );
         assert.strictEqual(rig.openSubscriptions(), 1);
       }).pipe(Effect.scoped),
+  );
+
+  it.live("holds the same scopes and finalizers however many times it falls behind", () =>
+    Effect.gen(function* () {
+      const rig = yield* configStreamOverSmallFeed;
+      yield* rig.overflow(1);
+      const afterOne = rig.retained();
+      for (let round = 2; round <= 200; round++) yield* rig.overflow(round);
+      assert.deepStrictEqual(rig.retained(), afterOne);
+    }).pipe(Effect.scoped),
   );
 
   it.live("never sends settings older than what it already sent", () =>

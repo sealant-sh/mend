@@ -346,13 +346,15 @@ export const makeGatewayRpcHandlers = ({
    * rather than failed: t3code's config subscription does not retry a typed failure, so failing it
    * would end the client's config updates until it reconnects.
    */
-  const followSettings = (): Stream.Stream<KeptSettings, ServerSettingsError> =>
-    Stream.unwrap(hub.subscribeSettings(session).pipe(Effect.mapError(settingsReadFailure))).pipe(
-      Stream.catchTag("SubscriberFellBehind", () => followSettings()),
-    );
+  const followSettings: Stream.Stream<KeptSettings, ServerSettingsError> = Stream.unwrap(
+    hub.subscribeSettings(session).pipe(Effect.mapError(settingsReadFailure)),
+  ).pipe(
+    Stream.catchTag("SubscriberFellBehind", () => Stream.empty),
+    Stream.forever,
+  );
   const settingsAfter = (version: number) => {
     let last = version;
-    return followSettings().pipe(
+    return followSettings.pipe(
       Stream.filter((kept) => {
         if (kept.version <= last) return false;
         last = kept.version;
