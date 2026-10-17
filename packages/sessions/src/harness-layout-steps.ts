@@ -215,22 +215,35 @@ export type PrepareOutcome =
 
 /**
  * The logins a process needs in its person's home: the harness's own provider, without which it
- * is refused, and the rest, written when connected and left out when not. A shell, a Service, pi
- * and opencode are open workbenches (the create's own ladder for them names every provider), so
- * nothing is required of them. pi and opencode also take the ChatGPT login Core makes for each
- * from the person's Codex account (sealant#336), in place of the copy Mend's seed made.
+ * is refused, and the rest, written when connected and left out when not. A Claude or Codex
+ * session also takes its person's other agent login (Codex, Claude), so its agent can run the
+ * other CLI (a Codex review from a Claude session) on the same person's login, unless that person
+ * chose "Give my sessions only the selected agent's login" (`selectedOnly`, amendment of
+ * 2026-10-10). A shell, a Service, pi and opencode are open workbenches (the create's own ladder
+ * for them names every provider), so nothing is required of them, and the setting does not narrow
+ * them. pi and opencode also take the ChatGPT login Core makes for each from the person's Codex
+ * account (sealant#336), in place of the copy Mend's seed made. Whose logins they are is never a
+ * question here: every write names the person whose process it is (`onBehalfOf`).
  */
 export interface LoginNeed {
   readonly required: ReadonlyArray<LoginProvider>;
   readonly optional: ReadonlyArray<LoginProvider>;
 }
 
-export const loginNeedOf = (harness: string): LoginNeed => {
+/** Whether a harness's sessions are narrowed by `selectedOnly`: Claude and Codex only. */
+export const narrowsToOwnLogin = (harness: string): boolean =>
+  harness === "claude" || harness === "codex";
+
+export const loginNeedOf = (
+  harness: string,
+  options: { readonly selectedOnly?: boolean } = {},
+): LoginNeed => {
+  const selectedOnly = options.selectedOnly === true;
   switch (harness) {
     case "claude":
-      return { required: ["claude"], optional: ["github"] };
+      return { required: ["claude"], optional: selectedOnly ? ["github"] : ["codex", "github"] };
     case "codex":
-      return { required: ["codex"], optional: ["github"] };
+      return { required: ["codex"], optional: selectedOnly ? ["github"] : ["claude", "github"] };
     case "pi":
       return { required: [], optional: ["claude", "codex", "github", "pi"] };
     case "opencode":
@@ -920,6 +933,12 @@ export const makeHarnessLayoutSteps = (deps: {
    * (`write-tokens.ts`). Never fails.
    */
   readonly endWriteToken: (ticket: string) => Effect.Effect<void>;
+  /**
+   * Whether a person chose "Give my sessions only the selected agent's login"
+   * (`UserAgentLoginsRepo`): read for that person's own Claude or Codex process only, never for
+   * anyone else's. False (every login they connected) when absent.
+   */
+  readonly selectedOnly?: (accountId: string) => Effect.Effect<boolean>;
   /** `HarnessLayoutConfig.loginReleaseGrace`; `LOGIN_RELEASE_GRACE` when absent. */
   readonly loginReleaseGrace?: Duration.Duration;
   /** Starts work that nothing waits on (the worktree repair). */
@@ -1772,7 +1791,6 @@ export const makeHarnessLayoutSteps = (deps: {
         .pipe(Effect.mapError((error) => layoutRefused(error.message)));
       const workspaceId = input.workspace.id;
       const key = homeKey(workspaceId, linuxHomeOf(identity));
-      const need = loginNeedOf(input.harness);
       // The start's whole make-and-POST holds the home's lock, so a release or the startup
       // reconciliation never runs between what it reads and what it writes (review of mend#564,
       // P2-1).
@@ -1781,10 +1799,21 @@ export const makeHarnessLayoutSteps = (deps: {
           startedAt.set(key, yield* Clock.currentTimeMillis);
           const made = madeIn.get(workspaceId) ?? new Set<string>();
           const needsHome = !made.has(identity.accountId);
-          const needsLogins = !covers(
-            loginsIn.get(workspaceId)?.people.get(identity.accountId),
-            need,
-          );
+          const holding = loginsIn.get(workspaceId)?.people.get(identity.accountId);
+          // The person's own choice, for their own process: whose setting it is and whose logins
+          // are written are the same person. Read only when their home lacks something the
+          // default asks for: a home that covers it covers the narrower need too, so a later
+          // start reads nothing (Performance).
+          const broad = loginNeedOf(input.harness);
+          const need =
+            covers(holding, broad) ||
+            !narrowsToOwnLogin(input.harness) ||
+            deps.selectedOnly === undefined
+              ? broad
+              : loginNeedOf(input.harness, {
+                  selectedOnly: yield* deps.selectedOnly(input.accountId),
+                });
+          const needsLogins = !covers(holding, need);
           const tellHomeReady = (madeNow: boolean) =>
             input.homeReady === undefined
               ? Effect.void

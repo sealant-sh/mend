@@ -28,6 +28,7 @@ import {
   NotificationSettingsRepo,
   PushDevicesRepo,
   RunsRepo,
+  UserAgentLoginsRepo,
   UserEvents,
   UsersRepo,
 } from "@mend/db";
@@ -238,6 +239,20 @@ export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (hand
       }).pipe(
         Effect.catchTag("SealantPlatformError", (error) => Effect.fail(accountFailure(error))),
       ),
+    )
+    .handle("agentLogins", () =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        return yield* (yield* UserAgentLoginsRepo).forUser(caller.user.id);
+      }),
+    )
+    .handle("setAgentLogins", ({ payload }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        const saved = yield* (yield* UserAgentLoginsRepo).set(caller.user.id, payload);
+        yield* accountsChanged(caller.user.id);
+        return saved;
+      }),
     ),
 );
 

@@ -342,6 +342,7 @@ placeholders to this stack:
 | `<web>`      | `$web`                                                                                                                    |
 | `<repo-url>` | `http://verify-stack-fixture:9080/repo.git`: the stack's one-commit fixture, served on its network, cloned with `ambient` |
 | `<project>`  | `$wt-1`, `$wt-2` …: no project has the name yet. `verify-fixture` is taken, adopted by Launch                             |
+| `<scratch>`  | a directory under the inner home (`cwd` in a step, below), made by a step: `git clone <repo-url> <scratch>/checkout` too  |
 | `mend …`     | the inner CLI, below                                                                                                      |
 
 **One account on both surfaces.** The browser (step 7's handover) and the inner CLI are both the
@@ -385,28 +386,62 @@ under a name joins the first, and the values of a rewritten `account.json` or `b
 value under 6 characters is refused, and the recipe fails: it cannot be redacted by value without
 redacting ordinary text, so keep such a value off every captured page.
 
-**CLI.** The inner `mend` runs in the session, signed in as the stack's first account:
+**CLI.** The inner `mend` runs in the session, signed in as the stack's first account, on a machine
+of its own: the inner account's home, kept in the stack's state volume, with `mend`, `git` and a
+shell. Write a feature's CLI steps as one list, and `steps.mjs` runs them all in one sibling
+session:
 
 ```sh
-$skill/scripts/capture.sh "$E/<feature>/cli" <step> -- \
-  mend run --project mend --worktree "$wt" -- node scripts/verify-stack/stack.mjs mend <args…>
+node $skill/scripts/steps.mjs "$E/<feature>/cli" <batch> --worktree "$wt" <<'STEPS'
+[
+  {"name": "01-clone", "run": ["git", "clone", "-q", "http://verify-stack-fixture:9080/repo.git", "work"]},
+  {"name": "02-skill", "run": ["sh", "-c", "mkdir -p sk/one && printf -- '---\\ndescription: One.\\n---\\nHi.\\n' > sk/one/SKILL.md"]},
+  {"name": "03-push", "cwd": "work", "run": ["mend", "skills", "push", "--dir", "../sk", "--project"]},
+  {"name": "04-pipe", "run": ["sh", "-c", "printf %s <a fakes.mjs value> | mend connect github --from-stdin"]}
+]
+STEPS
 ```
 
-Each call is a sibling session in the same worktree, so it reaches the same workspace and Docker
-daemon. It returns in 6 to 7 s, plus 1 to 2 s at its end. Its stdout is the command's terminal: CRLF
-line ends, ANSI colour, the inner stderr folded in. Mend's own lines go to stderr. Compare text
-after `tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g'`.
+- **`run`** is the step's argv: `mend …`, `git …`, or `sh -c '…'` for a pipe, a redirect or a
+  heredoc, as a person types them. Every step's stdin is closed, so `--from-stdin` reads what the
+  pipe gave it and ends.
+- **`cwd`** is a directory under the inner home (default: the home itself), made if missing. What a
+  step leaves there stays for the next step and the next batch, until the stack's teardown removes
+  the state volume. A clone of `http://verify-stack-fixture:9080/repo.git` has the origin
+  `verify-fixture` was adopted from, so a command that finds its project from the current directory
+  (`mend skills push --project`, `mend pull`, `mend run`) finds `verify-fixture` there.
+- **Evidence.** Each step writes `<name>.cmd` (`cd ~/<cwd> &&` and the argv, quoted as `capture.sh`
+  quotes it), `<name>.stdout` and `<name>.stderr` apart (no terminal folds them: no CRLF, no colour)
+  and `<name>.exit`, the inner command's own code. `<batch>.{cmd,stdout,stderr,exit}` keep the
+  sibling session itself: its `mend run`, its output without the steps' results, and Mend's lines
+  with its `session <id8>`. Every file is redacted as `capture.sh` redacts. It prints
+  `<name> · exit <code>` per step and exits 0 once every step's result arrived in full. A step's
+  failure is its `.exit`, so a refusal the recipe expects does not stop the steps after it. Exit 1
+  names each step whose result never arrived or arrived cut short (its byte counts did not match),
+  and counts frame lines that fit no step. None of those is kept: a step's files from an earlier
+  attempt are removed before the batch runs, so a missing result leaves no file behind.
 
-`stack.mjs mend` holds the stack's lock (shared) while it runs, and records the inner sessions the
-command starts (their `sealant-…` containers and networks, from a snapshot of the daemon before and
+One batch is one sibling session in the same worktree (the same workspace and Docker daemon): 5
+steps took 9 s here, 8 with a `git clone` among them 33 s. Each step gets 30 minutes, then its
+container is removed and its `.exit` reads 137. Step names, and the batch's, are unique file names.
+The whole list travels as one argv word, so it stays under 131,071 bytes as JSON: split a larger one
+into batches. Put a flag that takes an optional value (`--project` of `mend skills push`) last: Mend
+main reads the word after it as its value, even another flag.
+
+`stack.mjs steps` holds the stack's lock (shared) while it runs, and records the inner sessions the
+steps start (their `sealant-…` containers and networks, from a snapshot of the daemon before and
 after), so the stack's teardown removes them. Anything else a step makes on the session's daemon is
 not recorded, and stays until the outer session stops.
 
 - **A command that holds the terminal** (`mend attach`, `mend continue`, `mend service connect`,
-  `mend service logs`, a harness): put its `timeout` inside the sibling,
-  `mend run … -- timeout 30 node scripts/verify-stack/stack.mjs mend attach <id>`. A `timeout`
-  around `mend run` ends only this machine's CLI: the sibling session keeps running the inner
-  command, and while it holds the lock the stack's teardown waits for it (Cleanup stops such
+  `mend service logs`, a harness): a step has no terminal, so run it under `timeout` inside the step
+  (`"run": ["timeout", "30", "mend", "attach", "<id>"]`). To see what it draws on a terminal, run it
+  as one command through `capture.sh`, with its `timeout` inside the sibling:
+  `capture.sh "$E/<feature>/cli" <step> -- mend run --project mend --worktree "$wt" -- timeout 30 node scripts/verify-stack/stack.mjs mend attach <id>`.
+  That stdout is the terminal (CRLF line ends, ANSI colour, the inner stderr folded in): compare it
+  after `tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g'`. `stack.mjs mend` starts in the inner home too. A
+  `timeout` around `mend run` ends only this machine's CLI: the sibling session keeps running the
+  inner command, and while it holds the lock the stack's teardown waits for it (Cleanup stops such
   siblings first).
 - **What a web drive starts is not recorded.** A session started from the inner web (the Now
   composer, a worktree's `New session` menu) runs outside any `stack.mjs mend` or `check`, so the
@@ -528,10 +563,13 @@ The driving conventions, repeated from the map:
 
 What differs from a `mend` on your own machine:
 
-- **No working directory, no stdin.** The inner CLI runs in a container with no checkout and no
-  files of this machine, and its stdin never closes: a command that reads stdin (`--from-stdin`)
-  waits until its `timeout`. Put the input in a file the command reads, from a step inside the
-  session.
+- **The inner home, not this machine's.** A step's files and checkouts are in the inner account's
+  home, never on this machine: make them with a step (`git clone`, `sh -c 'printf … > file'`). Each
+  step is a fresh container, so an `export` or a `cd` in one step is gone in the next. Set `cwd`, or
+  put the commands in one `sh -c`.
+- **Stdin only from a step.** `mend run` sends no keys, so nothing this machine pipes reaches the
+  inner CLI. A step's own pipe does (`sh -c 'printf … | mend … --from-stdin'`). Its text is in the
+  step's argv, which the outer server records, so pipe only `fakes.mjs`'s values.
 - **One address on a local outer.** Every verifier on this machine reaches a `local-outer.sh` server
   from 127.0.0.1, as its one account. The product's budgets (1200 requests per minute per address
   and per credential) are sized for a small team, and five drivers spent them in seconds (429s,
@@ -541,10 +579,9 @@ What differs from a `mend` on your own machine:
   `local-outer.sh budgets` once. The box keeps its operator's budgets: on it, a sibling's watch can
   still end `budget reached · …` (the inner command keeps running), so read the inner record before
   calling such a step's result.
-- **One exit code.** `stack.mjs mend` exits 1 for any inner failure, whatever code the inner CLI
-  returned. Assert on 0 or not-0, and read the message from stdout.
-- **The CLI's world is a container** on the session's Docker. A path names a file inside it, and
-  there is no checkout for `mend adopt` without a URL to read an origin from.
+- **One exit code on the terminal.** A step's `.exit` is the inner command's own code, but
+  `stack.mjs mend` on the session's terminal exits 1 for any inner failure, whatever code the inner
+  CLI returned. There, assert on 0 or not-0, and read the message from stdout.
 - **The platform's argv rules.** At most 64 words. Since sealant#347 (Mend #653) only the program
   must be non-empty and trimmed; an outer server on an older Core refuses any word that is empty or
   starts or ends with whitespace, before it creates anything. Every script this skill passes as one
@@ -562,7 +599,7 @@ Cleanup removes neither. Name each directory for the feature file and the entry 
 | ARIA snapshot            | `capture(name)` in a recipe: `page.locator("body").ariaSnapshot()`, redacted                                                                                                                       | `<dir>/<name>.aria.yml`                                   |
 | screenshot               | the same `capture(name)`, full page, heading in view, every canvas masked; withheld on a page that shows a credential                                                                              | `<dir>/<name>.png` and `.png.checked`, or `.png.withheld` |
 | web steps                | `note(text)`, and every capture and failure                                                                                                                                                        | `<dir>/steps.log`                                         |
-| CLI stdout, stderr, exit | `$skill/scripts/capture.sh <dir> <step> -- <command…>`, redacted                                                                                                                                   | `<dir>/<step>.{cmd,stdout,stderr,exit}`                   |
+| CLI stdout, stderr, exit | `node $skill/scripts/steps.mjs <dir> <batch> …` (inner steps) or `capture.sh <dir> <step> -- <command…>` (one command), redacted                                                                   | `<dir>/<step>.{cmd,stdout,stderr,exit}`                   |
 | the stack                | the doctor, and once more before Cleanup: `doctor.mjs … --out "$E/final"`                                                                                                                          | `report.json`, `doctor.txt`                               |
 | the inner record         | before Cleanup: `stack.mjs mend sessions --all --json` through `capture.sh`, and the inner session page through `capture()`; `stack.mjs mend logs <id>` once the Mend under test has it (mend#610) | `$E/<feature>/cli`, `/web`                                |
 | the outer record         | each `mend run` prints `session <id8>` on stderr; the outer server keeps those records after Cleanup: `mend logs <id8>`                                                                            | `<step>.stderr`                                           |

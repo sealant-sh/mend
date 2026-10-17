@@ -18,7 +18,12 @@ import {
   SealantPlatformError,
 } from "@mend/sealant";
 import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
-import { claudeCode, type Run, type Workspace } from "@sealant/sdk";
+import {
+  claudeCode,
+  type Run,
+  type Workspace,
+  type WorkspaceCredentialsOptions,
+} from "@sealant/sdk";
 import {
   ConfigProvider,
   Deferred,
@@ -272,6 +277,10 @@ const stepsWith = (
     readonly runtimeObstacle?: string;
     /** How long each exec takes; it says `exec-done:` in the log once it has. */
     readonly execTakes?: Duration.Duration;
+    /** The people who chose their selected agent's login only; nobody unless a test says. */
+    readonly selectedOnly?: ReadonlySet<string>;
+    /** Whose choice was read, in order. */
+    readonly selectedOnlyReads?: Array<string>;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -336,6 +345,11 @@ const stepsWith = (
           options.revoked?.push({ accountId, issuedBefore: issuedBefore.getTime() });
         }),
       ...(options.grace === undefined ? {} : { loginReleaseGrace: options.grace }),
+      selectedOnly: (accountId) =>
+        Effect.sync(() => {
+          options.selectedOnlyReads?.push(accountId);
+          return options.selectedOnly?.has(accountId) === true;
+        }),
     });
     return { steps, reads, repo };
   }).pipe(
@@ -371,7 +385,8 @@ const settleInput = (launchId: string, stdout: string, worktree = "wt-1") => ({
   worktreeId: WorktreeId.make(worktree),
   workspace,
   stdout,
-  fallback: { credentials: { claude: true, github: true }, dotfiles: [] },
+  // What a Claude launch's create names first since every login its person connected rides it.
+  fallback: { credentials: { claude: true, codex: true, github: true }, dotfiles: [] },
 });
 
 /** The layout `HarnessLayoutConfigLive` reads from an environment. */
@@ -1227,6 +1242,8 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     readonly revoked: Array<{ readonly accountId: string; readonly issuedBefore: number }>;
     readonly forks: Array<Effect.Effect<void>>;
     readonly state: HarnessLayoutsMemoryState;
+    /** Whose "only the selected agent's login" was read, in order. */
+    readonly selectedOnlyReads: Array<string>;
   }
 
   /**
@@ -1240,6 +1257,10 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       readonly grace?: Duration.Duration;
       readonly prepared?: boolean;
       readonly execTakes?: Duration.Duration;
+      readonly selectedOnly?: ReadonlySet<string>;
+      /** What Alice's create named first, when it named more than it was made with. */
+      readonly createAsked?: WorkspaceCredentialsOptions;
+      readonly createdWith?: WorkspaceCredentialsOptions;
     } = {},
   ) =>
     Effect.gen(function* () {
@@ -1247,6 +1268,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       const log: Array<string> = [];
       const revoked: Array<{ readonly accountId: string; readonly issuedBefore: number }> = [];
       const forks: Array<Effect.Effect<void>> = [];
+      const selectedOnlyReads: Array<string> = [];
       const state = makeHarnessLayoutsMemoryState();
       const first = yield* stepsWith("person", state, {
         platform: platformOf(core),
@@ -1256,15 +1278,23 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
         forks,
         grace: options.grace ?? Duration.zero,
         ...(options.execTakes === undefined ? {} : { execTakes: options.execTakes }),
+        ...(options.selectedOnly === undefined ? {} : { selectedOnly: options.selectedOnly }),
+        selectedOnlyReads,
       });
       const layout = yield* first.steps.decide(decideInput("launch-1"));
       const alice = yield* first.repo.ensureIdentity("user-alice");
+      const settle = settleInput(
+        "launch-1",
+        `mend-layout probed\nmend-layout made ${alice.name}\nmend-layout ready\n`,
+      );
       yield* first.steps.settlePrepare({
         layout,
-        ...settleInput(
-          "launch-1",
-          `mend-layout probed\nmend-layout made ${alice.name}\nmend-layout ready\n`,
-        ),
+        ...settle,
+        fallback: {
+          ...settle.fallback,
+          ...(options.createdWith === undefined ? {} : { credentials: options.createdWith }),
+          ...(options.createAsked === undefined ? {} : { asked: options.createAsked }),
+        },
       });
       // A restart: a new engine over the same store, remembering nothing of the executor.
       const steps =
@@ -1277,9 +1307,20 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
               forks,
               grace: options.grace ?? Duration.zero,
               ...(options.execTakes === undefined ? {} : { execTakes: options.execTakes }),
+              ...(options.selectedOnly === undefined ? {} : { selectedOnly: options.selectedOnly }),
+              selectedOnlyReads,
             })).steps
           : first.steps;
-      return yield* then({ steps, repo: first.repo, execs, log, revoked, forks, state });
+      return yield* then({
+        steps,
+        repo: first.repo,
+        execs,
+        log,
+        revoked,
+        forks,
+        state,
+        selectedOnlyReads,
+      });
     });
 
   const withPersonExecutor = <A, E>(...args: Parameters<typeof withPersonExecutorEffect<A, E>>) =>
@@ -1329,13 +1370,14 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       }),
     );
     expect(result.afterLauncher).toEqual([]);
-    // Exactly one Core call for the join, naming Maria and Maria's home, with her numeric owner.
+    // Exactly one Core call for the join, naming Maria and Maria's home, with her numeric owner,
+    // and her own other agent login beside her Claude one.
     expect(core.posts).toEqual([
       {
         onBehalfOf: "user-maria",
         home: `/home/${result.maria.name}`,
         owner: { uid: result.maria.uid, gid: 40_000 },
-        logins: { claude: true, github: true },
+        logins: { claude: true, codex: true, github: true },
         partial: true,
       },
     ]);
@@ -1440,9 +1482,10 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
         yield* start(steps, "user-maria");
       }),
     );
-    // One partial call: Core wrote Claude and left GitHub out; no second `github: null` call.
+    // One partial call: Core wrote Claude and Codex and left GitHub out; no second
+    // `github: null` call.
     expect(core.posts.map((post) => [post.logins, post.partial])).toEqual([
-      [{ claude: true, github: true }, true],
+      [{ claude: true, codex: true, github: true }, true],
     ]);
   });
 
@@ -1480,8 +1523,150 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       }),
     );
     expect(core.posts.map((post) => [post.onBehalfOf, post.logins])).toEqual([
-      ["user-alice", { codex: true, pi: true }],
+      ["user-alice", { pi: true }],
     ]);
+  });
+
+  describe("the same person's other agent login (amendment of 2026-10-10)", () => {
+    it("a Claude or Codex session asks for its own agent's login, required, and the other one, optional", () => {
+      expect(loginNeedOf("claude")).toEqual({
+        required: ["claude"],
+        optional: ["codex", "github"],
+      });
+      expect(loginNeedOf("codex")).toEqual({
+        required: ["codex"],
+        optional: ["claude", "github"],
+      });
+      // "Give my sessions only the selected agent's login": that agent's login and GitHub only.
+      expect(loginNeedOf("claude", { selectedOnly: true })).toEqual({
+        required: ["claude"],
+        optional: ["github"],
+      });
+      expect(loginNeedOf("codex", { selectedOnly: true })).toEqual({
+        required: ["codex"],
+        optional: ["github"],
+      });
+      // An open workbench is not narrowed: it never had a selected agent.
+      expect(loginNeedOf("shell", { selectedOnly: true })).toEqual(loginNeedOf("shell"));
+      expect(loginNeedOf("pi", { selectedOnly: true })).toEqual(loginNeedOf("pi"));
+    });
+
+    it("a person's Claude session gets their Codex login in their own home, and without Codex connected it starts all the same, quietly", async () => {
+      const withCodex = coreCalls();
+      const connected = await withPersonExecutor(withCodex, ({ steps, repo }) =>
+        Effect.gen(function* () {
+          const started = yield* start(steps, "user-maria", "claude");
+          return { started, maria: yield* repo.ensureIdentity("user-maria") };
+        }),
+      );
+      expect(withCodex.posts).toEqual([
+        {
+          onBehalfOf: "user-maria",
+          home: `/home/${connected.maria.name}`,
+          owner: { uid: connected.maria.uid, gid: 40_000 },
+          logins: { claude: true, codex: true, github: true },
+          partial: true,
+        },
+      ]);
+      // Core writes Codex's file there (`~/.codex/auth.json`), as her: her process runs with
+      // that home.
+      expect(connected.started?.user.home).toBe(`/home/${connected.maria.name}`);
+
+      const withoutCodex = coreCalls();
+      withoutCodex.answer = () => notConnected("codex");
+      const started = await withPersonExecutor(withoutCodex, ({ steps }) =>
+        Effect.gen(function* () {
+          const first = yield* start(steps, "user-maria", "claude");
+          // Her second process: Codex is known not connected, so Core is not asked again.
+          yield* start(steps, "user-maria", "claude");
+          return first;
+        }),
+      );
+      expect(started).not.toBeNull();
+      expect(started?.loginsLeftOut).toEqual([]);
+      expect(withoutCodex.posts).toHaveLength(1);
+    });
+
+    it("two people's sessions in one executor: each home gets its own person's logins only, whichever agent each runs", async () => {
+      const core = coreCalls();
+      const people = await withPersonExecutor(core, ({ steps, repo }) =>
+        Effect.gen(function* () {
+          // Alice launched with Claude; Bob joins with Codex, then a shell; Alice starts Codex.
+          yield* start(steps, "user-alice", "claude");
+          yield* start(steps, "user-bob", "codex");
+          yield* start(steps, "user-bob", "shell");
+          yield* start(steps, "user-alice", "codex");
+          yield* steps.relogin({
+            workspace,
+            launchId: "launch-1",
+            accountId: "user-alice",
+            harness: "claude",
+            live: Effect.succeed(new Set(["user-alice", "user-bob"])),
+          });
+          return {
+            alice: yield* repo.ensureIdentity("user-alice"),
+            bob: yield* repo.ensureIdentity("user-bob"),
+          };
+        }),
+      );
+      const homeOf: Readonly<Record<string, string>> = {
+        "user-alice": `/home/${people.alice.name}`,
+        "user-bob": `/home/${people.bob.name}`,
+      };
+      // Every write into a home names that home's person, and only theirs.
+      expect(core.posts.length).toBeGreaterThan(0);
+      for (const post of core.posts) expect(post.home).toBe(homeOf[post.onBehalfOf]);
+      expect(core.posts.map((post) => [post.onBehalfOf, post.logins])).toEqual([
+        // Bob's join: his Codex, and his own Claude and GitHub.
+        ["user-bob", { codex: true, claude: true, github: true }],
+        // Alice's re-POST after a refused turn: what her home holds, her create's.
+        ["user-alice", { claude: true, codex: true, github: true }],
+      ]);
+      expect(
+        core.posts.some(
+          (post) => post.onBehalfOf === "user-bob" && post.home === homeOf["user-alice"],
+        ),
+      ).toBe(false);
+    });
+
+    it("a person who chose their selected agent's login only gets that one and GitHub; the choice is read for their own process only", async () => {
+      const core = coreCalls();
+      const reads = await withPersonExecutor(
+        core,
+        ({ steps, selectedOnlyReads }) =>
+          Effect.gen(function* () {
+            yield* start(steps, "user-maria", "claude");
+            yield* start(steps, "user-bob", "codex");
+            // A shell is an open workbench: her choice does not narrow it.
+            yield* start(steps, "user-maria", "shell");
+            return selectedOnlyReads;
+          }),
+        { selectedOnly: new Set(["user-maria"]) },
+      );
+      expect(core.posts.map((post) => [post.onBehalfOf, post.logins])).toEqual([
+        ["user-maria", { claude: true, github: true }],
+        ["user-bob", { codex: true, claude: true, github: true }],
+        ["user-maria", { codex: true }],
+      ]);
+      expect(reads).toEqual(["user-maria", "user-bob"]);
+    });
+
+    it("a create that went without the launcher's Codex records it not connected: their first Claude process asks Core for nothing", async () => {
+      const core = coreCalls();
+      await withPersonExecutor(
+        core,
+        ({ steps }) =>
+          Effect.gen(function* () {
+            yield* start(steps, "user-alice", "claude");
+            yield* start(steps, "user-alice", "claude");
+          }),
+        {
+          createAsked: { claude: true, codex: true, github: true },
+          createdWith: { claude: true, github: true },
+        },
+      );
+      expect(core.posts).toEqual([]);
+    });
   });
 
   it("refuses a join whose harness login is not connected or needs reconnecting, by Core's reason, and revokes the token minted for it", async () => {
@@ -1857,8 +2042,9 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
         return steps.holdsReleasable(workspace.id);
       }),
     );
+    // Every login her home holds, her other agent's included: a refusal does not say which.
     expect(core.posts.map((post) => [post.onBehalfOf, post.logins])).toEqual([
-      ["user-alice", { claude: true, github: true }],
+      ["user-alice", { claude: true, codex: true, github: true }],
     ]);
     expect(releasable).toBe(false);
   });
@@ -1894,7 +2080,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
             {
               home: `/home/${maria.name}`,
               onBehalfOf: "su-user-maria",
-              providers: ["claude", "github"],
+              providers: ["claude", "codex", "github"],
             },
             { home: `/home/${bob.name}`, onBehalfOf: "su-user-bob", providers: ["codex"] },
           ];

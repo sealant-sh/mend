@@ -8,6 +8,7 @@
 //   node scripts/verify-stack/stack.mjs up [sources] [--port <n>] [--no-check]
 //   node scripts/verify-stack/stack.mjs serve [sources] [--port <n>]   up, then hold; down on exit
 //   node scripts/verify-stack/stack.mjs mend <args…>                     the inner CLI
+//   node scripts/verify-stack/stack.mjs steps '<json>'                   inner commands, one by one
 //   node scripts/verify-stack/stack.mjs check                           inner mend run -- true
 //   node scripts/verify-stack/stack.mjs report [--json]                 sources, timings, memory
 //   node scripts/verify-stack/stack.mjs down [--purge]                  remove the stack
@@ -37,7 +38,7 @@ import {
   readFileSync,
 } from "node:fs";
 import { cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { constants as osConstants, homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -66,6 +67,7 @@ import {
   describeSource,
   digestOf,
   dockerClientEnvironment,
+  doneFrame,
   fetchRefspec,
   formatKb,
   formatSeconds,
@@ -82,9 +84,11 @@ import {
   packageOverrides,
   parseMemory,
   parseSource,
+  parseSteps,
   preloadNetworkGuardImage,
   relayEndpoint,
   runtimeConsumers,
+  stepFrames,
   withOverrides,
 } from "./lib.mjs";
 import {
@@ -176,10 +180,20 @@ function holdsLock(command, [verb, sub] = []) {
 /**
  * Run a command. Output is captured, or appended to `log` when given (builds); `input` is written
  * to stdin. A failure names the command and its exit; its output is printed only for `log`ged
- * commands, which carry no secret (a build log), as the last lines of that log.
+ * commands, which carry no secret (a build log), as the last lines of that log. With `anyExit`, every
+ * exit resolves, with its code or signal.
  */
 function exec(command, args, options = {}) {
-  const { env = dockerEnv, cwd, input, log, timeout = 30 * 60_000, stdio, reason } = options;
+  const {
+    env = dockerEnv,
+    cwd,
+    input,
+    log,
+    timeout = 30 * 60_000,
+    stdio,
+    reason,
+    anyExit,
+  } = options;
   const lock = holdsLock(command, args);
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, { cwd, env, stdio: stdioFor(stdio, input, lock) });
@@ -198,7 +212,7 @@ function exec(command, args, options = {}) {
       if (sink) await new Promise((done) => sink.end(done));
       const stdout = Buffer.concat(out).toString();
       const stderr = Buffer.concat(err).toString();
-      if (code === 0) return resolvePromise({ stdout, stderr });
+      if (code === 0 || anyExit) return resolvePromise({ stdout, stderr, code, signal });
       let tail = "";
       if (log) {
         const lines = (await readFile(log, "utf8").catch(() => "")).trimEnd().split("\n");
@@ -553,17 +567,30 @@ const stateMount = () =>
  * daemon's host network, where the relay's port answers on loopback (published there, or by a
  * rootless daemon's proxy), so it speaks to the server at the browser's URL and every link it
  * prints (a session, an invitation) opens on the machine that ran `mend service connect`.
+ *
+ * The client side is the inner account's own machine: it starts in its home, or in `cwd` under it
+ * (made if missing), which keeps what a command left there for the next one, until the stack goes
+ * with the state volume; and the fixture's name resolves, so a clone of `verify-fixture` has the
+ * origin its project was adopted from. `program` runs in place of `mend`: git, a shell, `timeout`.
  */
-async function cliRun(state, args, { network = "host", home = "client", ...options } = {}) {
+async function cliRun(
+  state,
+  args,
+  { network = "host", home = "client", cwd = "", program = null, name = null, ...options } = {},
+) {
   const mount = await stateMount();
   const interactive = options.stdio === "inherit" && process.stdin.isTTY ? ["-t"] : [];
+  const client =
+    home === "client"
+      ? ["--workdir", join(mount, home, cwd), ...(await fixtureHost())]
+      : ["--volume", `${state.dockerSocket}:/var/run/docker.sock`, "--env", "NO_COLOR=1"];
   return docker(
     [
       "run",
       "--rm",
       "-i",
       ...interactive,
-      ...transient("cli"),
+      ...(name === null ? transient("cli") : ["--name", name, "--label", `${STACK_LABEL}=1`]),
       "--network",
       network,
       "--volume",
@@ -572,14 +599,50 @@ async function cliRun(state, args, { network = "host", home = "client", ...optio
       `HOME=${mount}/${home}`,
       "--env",
       `XDG_CONFIG_HOME=${mount}/${home}/.config`,
-      ...(home === "server"
-        ? ["--volume", `${state.dockerSocket}:/var/run/docker.sock`, "--env", "NO_COLOR=1"]
-        : []),
+      ...client,
+      ...(program === null ? [] : ["--entrypoint", program]),
       state.images.cli,
       ...args,
     ],
     options,
   );
+}
+
+/** `--add-host` for the fixture's name at its address on the Compose network, once it runs. */
+async function fixtureHost() {
+  const address = await dockerOut([
+    "inspect",
+    "--format",
+    `{{(index .NetworkSettings.Networks "${COMPOSE_NETWORK}").IPAddress}}`,
+    FIXTURE_CONTAINER,
+  ]).catch(() => "");
+  return address === "" ? [] : ["--add-host", `${FIXTURE_CONTAINER}:${address}`];
+}
+
+/**
+ * `steps`: each step its own run of the inner CLI's world, one after the other, with stdin closed
+ * (so a pipe inside a `sh -c` step ends as it does for a person), stdout and stderr apart, and its
+ * own exit code. Every result goes out as frames (lib.mjs `stepFrames`) the moment its step ends. A
+ * step still running at its timeout has its client killed, so its container is removed too, before
+ * the next step or the recording's close.
+ */
+async function runSteps(state, steps) {
+  for (const [index, step] of steps.entries()) {
+    const [program, ...args] = step.run;
+    const name = `${VERIFIER_PREFIX}step-${randomUUID().slice(0, 8)}`;
+    const ended = await cliRun(state, args, {
+      cwd: step.cwd,
+      program,
+      name,
+      input: "",
+      anyExit: true,
+    });
+    if (ended.code === null) await docker(["rm", "--force", name]).catch(() => undefined);
+    const exit = ended.code ?? 128 + (osConstants.signals[ended.signal] ?? 0);
+    for (const line of stepFrames(index, { ...ended, exit })) say(line);
+    say(`verify stack · step ${step.name} · exit ${exit}`);
+  }
+  say(doneFrame(steps.length));
 }
 
 /**
@@ -2076,6 +2139,9 @@ const HELP = `usage: node scripts/verify-stack/stack.mjs <command>
                                            (--keep: leave a failed start for a look)
   serve [sources] [--port <n>]             up, then hold; the stack goes when this stops
   mend <args…>                             the inner mend CLI, signed in as the first account
+  steps '<json>'                           [{"name","cwd","run":[argv]}…]: each run in the inner
+                                           account's home (or cwd under it), stdin closed; results
+                                           as verify-step frames (the verify skill's steps.mjs)
   check                                    inner mend run -- true, until its session settles
   project-image <name>                     give an inner project the fixture's workspace image
                                            (no Docker service), so its sessions can launch
@@ -2113,6 +2179,15 @@ async function main() {
           process.exitCode = 1;
         }),
       );
+      return;
+    }
+    case "steps": {
+      await lockDaemon("shared");
+      const state = await readState();
+      if (!state) throw new Error("no verify stack here: `up` starts one");
+      if (args.length !== 1) throw new Error("steps takes one argument, the steps as JSON");
+      const steps = parseSteps(args[0]);
+      await recording(() => runSteps(state, steps));
       return;
     }
     case "watchdog":
