@@ -24,9 +24,10 @@ const changedPaths = (base, head) =>
     .filter(Boolean);
 
 // A package's tests and their helpers: its test/ directory, or a *.test.* / *.spec.* source
-// file. Nothing the mobile or packaging lane builds, reads or runs names them, nor the `./testing`
-// exports that point into test/ (scripts/test-only-imports.test.mjs fails if anything starts to).
-const testOnly = (path) =>
+// file. The mobile and packaging lanes may skip them because each deletes exactly these files
+// before any lane step (scripts/remove-package-tests.mjs), so a lane that needs one fails;
+// scripts/test-only-imports.test.mjs is an earlier, partial warning.
+export const testOnly = (path) =>
   !path.includes("\n") &&
   !path.endsWith("/package.json") &&
   /^packages\/[^/]+\/(test\/|(.+\/)?[^/]+\.(test|spec)\.[cm]?[jt]sx?$)/.test(path);
