@@ -35,8 +35,10 @@ import type { BearerSession } from "./state.ts";
  * - `thread.runtime-mode.set`: the permission mode for the agent's next start; Mend sets it per
  *   launch.
  * - `thread.archive`, `thread.unarchive`: the person's archive, kept by the gateway; Mend has none.
- * - `thread.settle`, `thread.unsettle`, `thread.snooze`, `thread.unsnooze`: the person's settle and
- *   snooze, kept by the gateway the same way (`lifecycle.ts`).
+ * - `thread.settle`, `thread.unsettle`, `thread.snooze`, `thread.unsnooze`, `thread.pin`,
+ *   `thread.unpin`, `thread.pin.reorder`, `thread.active.reorder`, `thread.auto-settle.set`: the
+ *   person's settle, snooze, pins, order and auto-settle opt-out, kept by the gateway the same way
+ *   (`lifecycle.ts`).
  * - `thread.visit`, `thread.mark-unread`: when the person last saw the thread, kept by the gateway
  *   the same way (`visits.ts`).
  */
@@ -260,6 +262,38 @@ export const dispatchCommand = (
     case "thread.unsnooze":
       return answered(
         hub.commands.setLifecycle({ threadId: command.threadId, change: { kind: "unsnooze" } }),
+      );
+    case "thread.pin":
+      return answered(
+        hub.commands.setLifecycle({
+          threadId: command.threadId,
+          change: { kind: "pin", orderKey: command.orderKey },
+        }),
+      );
+    case "thread.unpin":
+      return answered(
+        hub.commands.setLifecycle({ threadId: command.threadId, change: { kind: "unpin" } }),
+      );
+    case "thread.pin.reorder":
+      return answered(
+        hub.commands.setLifecycle({
+          threadId: command.threadId,
+          change: { kind: "reorder-pinned", orderKey: command.orderKey },
+        }),
+      );
+    case "thread.active.reorder":
+      return answered(
+        hub.commands.setLifecycle({
+          threadId: command.threadId,
+          change: { kind: "reorder-active", orderKey: command.orderKey },
+        }),
+      );
+    case "thread.auto-settle.set":
+      return answered(
+        hub.commands.setLifecycle({
+          threadId: command.threadId,
+          change: { kind: "auto-settle-set", enabled: command.enabled },
+        }),
       );
     case "thread.visit":
       return answered(

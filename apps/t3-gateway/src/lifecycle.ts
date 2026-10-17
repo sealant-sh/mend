@@ -1,3 +1,7 @@
+import { DEFAULT_SERVER_SETTINGS, type OrchestrationV2ThreadShell } from "@mend/t3-contracts";
+import { backgroundWorkHoldsCompletion } from "@mend/t3-contracts/pending-background-work";
+import * as DateTime from "effect/DateTime";
+
 import type { MendTurn } from "./mend-workbench.ts";
 import {
   isActiveRunStatus,
@@ -10,9 +14,12 @@ import {
 import type { ThreadLifecycle } from "./state.ts";
 
 /**
- * Settle and snooze (`thread.settle`, `thread.unsettle`, `thread.snooze`, `thread.unsnooze`): the
- * person's own view of a thread, kept by the gateway as Mend has neither (ADR 0012), with the
- * rules t3code's own server applies (`Orchestrator.ts` at the pinned tag).
+ * Settle, snooze, pin and order (`thread.settle`, `thread.unsettle`, `thread.snooze`,
+ * `thread.unsnooze`, `thread.pin`, `thread.unpin`, `thread.pin.reorder`, `thread.active.reorder`,
+ * `thread.auto-settle.set`): the person's own view of a thread, kept by the gateway as Mend has
+ * none of them (ADR 0012), with the rules t3code's own server applies (`Orchestrator.ts` at the
+ * pinned tag). The order keys are the client's fractional keys (`threadSort.ts` in its client
+ * runtime), kept as sent, as t3code's server keeps them.
  *
  * The gateway keeps a snooze as set and wakes it early in one case only: something asked the
  * thread for work. Every other wake is the t3code client's own, read from the shell
@@ -20,22 +27,27 @@ import type { ThreadLifecycle } from "./state.ts";
  * question, a turn that failed or completed after the snooze. The shell carries what those read.
  */
 
-/** Neither settled nor snoozed. */
 export const NO_LIFECYCLE: ThreadLifecycle = {
   settledOverride: null,
   settledAt: null,
   unsettledAt: null,
   snoozedUntil: null,
   snoozedAt: null,
+  pinnedAt: null,
+  pinOrderKey: null,
+  activeOrderKey: null,
+  autoSettleDisabledAt: null,
 };
+
+export const MAX_ORDER_KEY_LENGTH = 1_024;
 
 const isAfter = (later: string | null, earlier: string | null): boolean =>
   later !== null && earlier !== null && Date.parse(later) > Date.parse(earlier);
 
 /**
- * The person's settle and snooze as they stand now. A turn opened, or a message queued, after
- * either ends it, as a new run does on t3code's own server: the thread is no longer settled (nor
- * kept active by an unsettle) and is awake.
+ * The person's settle, snooze, pin and order as they stand now. A turn opened, or a message
+ * queued, after a settle or a snooze ends it, as a new run does on t3code's own server: the thread
+ * is no longer settled (nor kept active by an unsettle) and is awake.
  */
 export const lifecycleOf = (
   kept: ThreadLifecycle | undefined,
@@ -71,28 +83,30 @@ export const lifecycleOf = (
   const snooze = isAfter(asked, kept.snoozedAt)
     ? { snoozedUntil: null, snoozedAt: null }
     : { snoozedUntil: kept.snoozedUntil, snoozedAt: kept.snoozedAt };
-  return { ...settlement, ...snooze };
+  return { ...kept, ...settlement, ...snooze };
 };
 
-export const isLifecycleEmpty = (lifecycle: ThreadLifecycle): boolean =>
-  lifecycle.settledOverride === null &&
-  lifecycle.settledAt === null &&
-  lifecycle.unsettledAt === null &&
-  lifecycle.snoozedUntil === null &&
-  lifecycle.snoozedAt === null;
+const LIFECYCLE_FIELDS = Object.keys(NO_LIFECYCLE).filter(
+  (key): key is keyof ThreadLifecycle => key in NO_LIFECYCLE,
+);
 
 export const sameLifecycle = (left: ThreadLifecycle, right: ThreadLifecycle): boolean =>
-  left.settledOverride === right.settledOverride &&
-  left.settledAt === right.settledAt &&
-  left.unsettledAt === right.unsettledAt &&
-  left.snoozedUntil === right.snoozedUntil &&
-  left.snoozedAt === right.snoozedAt;
+  LIFECYCLE_FIELDS.every((field) => left[field] === right[field]);
+
+export const isLifecycleEmpty = (lifecycle: ThreadLifecycle): boolean =>
+  sameLifecycle(lifecycle, NO_LIFECYCLE);
 
 export type LifecycleChange =
   | { readonly kind: "settle" }
   | { readonly kind: "unsettle" }
   | { readonly kind: "snooze"; readonly until: string }
-  | { readonly kind: "unsnooze" };
+  | { readonly kind: "unsnooze" }
+  | { readonly kind: "pin"; readonly orderKey: string | undefined }
+  | { readonly kind: "unpin" }
+  | { readonly kind: "reorder-pinned"; readonly orderKey: string }
+  | { readonly kind: "reorder-active"; readonly orderKey: string }
+  | { readonly kind: "auto-settle-set"; readonly enabled: boolean }
+  | { readonly kind: "auto-settle"; readonly settledAt: string };
 
 export type LifecycleChanged =
   | { readonly _tag: "Changed"; readonly lifecycle: ThreadLifecycle }
@@ -104,12 +118,11 @@ const changed = (lifecycle: ThreadLifecycle): LifecycleChanged => ({
   lifecycle,
 });
 
-/**
- * The thread's settle and snooze after `change` at `now`, or why it is refused. Settling waits
- * for the thread's work: nothing running, queued or waiting on an answer. A snooze ends in the
- * future, and never hides a question the agent asked or a message still to be sent. Repeating a
- * settle or a snooze to the same time keeps when it was first set.
- */
+const orderKeyRefusal = (orderKey: string | undefined): LifecycleChanged | null =>
+  orderKey !== undefined && orderKey.length > MAX_ORDER_KEY_LENGTH
+    ? refused(`An order key is at most ${MAX_ORDER_KEY_LENGTH} characters.`)
+    : null;
+
 export const changeLifecycle = (
   source: ThreadSource,
   change: LifecycleChange,
@@ -121,24 +134,36 @@ export const changeLifecycle = (
   const at = latestOf([now.toISOString(), threadUpdatedAtOf(source)]) ?? now.toISOString();
   const runs = runsOf(source);
   const asking = source.requests.some((request) => request.status === "pending");
+  const working = runs.some((run) => run.status === "queued" || isActiveRunStatus(run.status));
+  const settled = (settledAt: string): ThreadLifecycle => ({
+    ...current,
+    settledOverride: "settled",
+    settledAt,
+    unsettledAt: null,
+    pinnedAt: null,
+    pinOrderKey: null,
+    activeOrderKey: null,
+  });
   switch (change.kind) {
     case "settle": {
       if (asking) {
         return refused("The agent is waiting on an answer. Answer it, then settle the thread.");
       }
-      if (runs.some((run) => run.status === "queued" || isActiveRunStatus(run.status))) {
+      if (working) {
         return refused(
           "The thread has a turn running or a message waiting. Settle it once they are done.",
         );
       }
-      const already = current.settledOverride === "settled" && current.settledAt !== null;
-      return changed({
-        ...current,
-        settledOverride: "settled",
-        settledAt: already ? current.settledAt : at,
-        unsettledAt: null,
-      });
+      const already =
+        current.settledOverride === "settled" && current.pinnedAt === null
+          ? current.settledAt
+          : null;
+      return changed(settled(already ?? at));
     }
+    case "auto-settle":
+      return asking || working
+        ? refused("The thread has work in hand, so it does not settle on its own.")
+        : changed(settled(change.settledAt));
     case "unsettle": {
       const already = current.settledOverride === "active";
       return changed({
@@ -176,5 +201,114 @@ export const changeLifecycle = (
     }
     case "unsnooze":
       return changed({ ...current, snoozedUntil: null, snoozedAt: null });
+    case "pin": {
+      const tooLong = orderKeyRefusal(change.orderKey);
+      if (tooLong !== null) return tooLong;
+      if (current.pinnedAt !== null) {
+        return changed({ ...current, snoozedUntil: null, snoozedAt: null });
+      }
+      const wasSettled = current.settledOverride === "settled";
+      return changed({
+        ...current,
+        pinnedAt: at,
+        pinOrderKey: change.orderKey ?? current.pinOrderKey,
+        settledOverride: wasSettled ? "active" : current.settledOverride,
+        settledAt: wasSettled ? null : current.settledAt,
+        unsettledAt: wasSettled ? at : current.unsettledAt,
+        snoozedUntil: null,
+        snoozedAt: null,
+      });
+    }
+    case "unpin":
+      return changed({ ...current, pinnedAt: null, pinOrderKey: null });
+    case "reorder-pinned": {
+      if (current.pinnedAt === null) {
+        return refused("The thread is not pinned, so it has no place among the pins.");
+      }
+      return (
+        orderKeyRefusal(change.orderKey) ?? changed({ ...current, pinOrderKey: change.orderKey })
+      );
+    }
+    case "reorder-active": {
+      if (current.pinnedAt !== null || current.settledOverride === "settled") {
+        return refused("The thread is not in Active, so it has no place there.");
+      }
+      return (
+        orderKeyRefusal(change.orderKey) ?? changed({ ...current, activeOrderKey: change.orderKey })
+      );
+    }
+    case "auto-settle-set":
+      return changed({
+        ...current,
+        autoSettleDisabledAt: change.enabled ? null : (current.autoSettleDisabledAt ?? at),
+      });
   }
+};
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
+/** t3code's `QUEUED_TURN_START_GRACE_MS`. */
+const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
+
+/** t3code's default: the gateway serves t3code's default settings and refuses changes to them. */
+export const AUTO_SETTLE_AFTER_DAYS = DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterDays;
+
+const millisOf = (value: DateTime.Utc | null | undefined): number | null =>
+  value == null ? null : DateTime.toEpochMillis(value);
+
+const latestMillis = (values: ReadonlyArray<number | null>): number | null =>
+  values.reduce<number | null>(
+    (latest, value) => (value !== null && (latest === null || value > latest) ? value : latest),
+    null,
+  );
+
+/** t3code's `threadHasQueuedTurnStart`. */
+const hasQueuedTurnStart = (thread: OrchestrationV2ThreadShell, nowMs: number): boolean => {
+  const messageAtMs = millisOf(thread.latestUserMessageAt);
+  if (messageAtMs === null || thread.status === "failed") return false;
+  const age = nowMs - messageAtMs;
+  if (Math.abs(age) > QUEUED_TURN_START_GRACE_MS) return false;
+  if (thread.latestRunId === null) return true;
+  return [
+    millisOf(thread.latestRunRequestedAt),
+    millisOf(thread.latestRunStartedAt),
+    millisOf(thread.latestRunCompletedAt),
+  ].every((value) => value === null || value < messageAtMs);
+};
+
+/** t3code's `isAutoSettlementCandidate`. */
+const isAutoSettlementCandidate = (thread: OrchestrationV2ThreadShell, nowMs: number): boolean => {
+  if (thread.archivedAt !== null || thread.settledOverride !== null) return false;
+  if (thread.pinnedAt != null || thread.autoSettleDisabledAt != null) return false;
+  if (thread.pendingRuntimeRequest !== null) return false;
+  if (thread.activityRunStatus != null) return false;
+  if (backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])) return false;
+  if (hasQueuedTurnStart(thread, nowMs)) return false;
+  const snoozedUntilMs = millisOf(thread.snoozedUntil);
+  if (snoozedUntilMs === null || snoozedUntilMs <= nowMs) return true;
+  const snoozedAtMs = millisOf(thread.snoozedAt);
+  const completedAtMs = millisOf(thread.latestRunCompletedAt);
+  const wokeOnError =
+    thread.status === "failed" &&
+    (snoozedAtMs === null || (completedAtMs !== null && completedAtMs > snoozedAtMs));
+  const wokeOnCompletion =
+    snoozedAtMs !== null && completedAtMs !== null && completedAtMs > snoozedAtMs;
+  return wokeOnError || wokeOnCompletion;
+};
+
+/** t3code's `resolveAutoSettlementAt` without a pull request. */
+export const autoSettledAt = (thread: OrchestrationV2ThreadShell, nowMs: number): string | null => {
+  if (AUTO_SETTLE_AFTER_DAYS === null || !isAutoSettlementCandidate(thread, nowMs)) return null;
+  const activityAtMs = latestMillis([
+    millisOf(thread.latestUserMessageAt),
+    millisOf(thread.latestRunRequestedAt),
+    millisOf(thread.latestRunStartedAt),
+    millisOf(thread.latestRunCompletedAt),
+  ]);
+  if (activityAtMs === null) return null;
+  const snoozedUntilMs = millisOf(thread.snoozedUntil);
+  const timerWakeAtMs = snoozedUntilMs !== null && snoozedUntilMs <= nowMs ? snoozedUntilMs : null;
+  const quietSinceMs = latestMillis([activityAtMs, timerWakeAtMs]) ?? activityAtMs;
+  return quietSinceMs < nowMs - AUTO_SETTLE_AFTER_DAYS * DAY_MS
+    ? new Date(quietSinceMs).toISOString()
+    : null;
 };
