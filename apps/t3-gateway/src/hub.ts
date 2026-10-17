@@ -332,6 +332,11 @@ export interface CwdLocation {
   readonly hasOrigin: boolean;
   /** The thread's worktree; null for the project's root. */
   readonly worktreeId: string | null;
+  /**
+   * The last command or file change to finish in an open thread of the worktree, as t3code's
+   * `workspaceMutationId` marks it: what was read of the worktree's files before it moved is stale.
+   */
+  readonly workspaceMutation: string | null;
 }
 
 export interface WorktreeChange {
@@ -1449,6 +1454,21 @@ export const makePersonHub = (input: {
 
     const itemsOf = (sessionId: string): ReadonlyArray<MendItem> =>
       Array.from(watches.get(sessionId)?.items.values() ?? []);
+
+    const workspaceMutationOf = (worktreeId: string): string | null => {
+      const marks: Array<string> = [];
+      for (const source of threadSources()) {
+        if (source.session.worktreeId !== worktreeId) continue;
+        let latest: MendItem | null = null;
+        for (const item of itemsOf(source.session.id)) {
+          if (item.kind !== "file-change" && item.kind !== "command-execution") continue;
+          if (item.status === "in-progress") continue;
+          if (latest === null || item.seq > latest.seq) latest = item;
+        }
+        if (latest !== null) marks.push(`${latest.id}@${latest.seq}`);
+      }
+      return marks.length === 0 ? null : marks.join(",");
+    };
 
     // ─── Publishing ────────────────────────────────────────────────────────
 
@@ -3717,6 +3737,7 @@ export const makePersonHub = (input: {
                 baseRef: thread.session.baseRef,
                 hasOrigin: (thread.project.originUrl ?? null) !== null,
                 worktreeId: thread.session.worktreeId,
+                workspaceMutation: workspaceMutationOf(thread.session.worktreeId),
               };
             }
             const project = Array.from(projects.values()).find(
@@ -3733,6 +3754,7 @@ export const makePersonHub = (input: {
                   baseRef: null,
                   hasOrigin: (project.originUrl ?? null) !== null,
                   worktreeId: null,
+                  workspaceMutation: null,
                 };
           }),
         );

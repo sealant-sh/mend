@@ -23,6 +23,11 @@ import type { BearerSession } from "./state.ts";
  * the patch holds whole (added or deleted) from the patch; a changed or renamed one is read whole
  * from the worktree (`GET /api/worktrees/:id/contents`): the old side at the worktree's first
  * checkpoint, where the change starts, and the new side as the worktree stands.
+ *
+ * `GET /api/changes/:id/diff` takes no base and no whitespace option, and Mend has no read of a
+ * worktree's HEAD or index. So a base ref picked in the panel is not read (the source names the
+ * base Mend used), whitespace is shown though the panel hides it, and there is no `working-tree`
+ * source: "Uncommitted" has no patch rather than an empty one.
  */
 
 const unsupported = (operation: string, detail: string) =>
@@ -222,7 +227,7 @@ export const makeReviewHandlers = (input: {
             title:
               diff.observation === undefined ? "Changes" : `Changes · ${diff.observation.label}`,
             baseRef: nonEmptyOr(change.baseRef, diff.change.baseSha),
-            headRef: nonEmptyOr(diff.change.headSha, diff.change.branch),
+            headRef: diff.change.branch.trim().length > 0 ? diff.change.branch.trim() : null,
             diff: patch,
             diffHash: diffHash(patch),
             truncated: false,
