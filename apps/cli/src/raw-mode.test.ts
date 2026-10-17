@@ -26,20 +26,24 @@ const errno = (code: string): NodeJS.ErrnoException =>
 describe("leaveRawMode", () => {
   it("leaves raw mode on a live terminal and listens to nothing afterwards", () => {
     const stdin = new FakeTerminal(null);
-    leaveRawMode(stdin);
+    expect(leaveRawMode(stdin)).toBeNull();
     expect(stdin.raw).toBe(false);
     expect(stdin.listenerCount("error")).toBe(0);
   });
 
-  it("returns when the terminal is gone (EIO), so the attach's outcome is still acted on", () => {
-    const stdin = new FakeTerminal(errno("EIO"));
-    expect(() => leaveRawMode(stdin)).not.toThrow();
-    expect(stdin.listenerCount("error")).toBe(0);
-  });
+  it.each(["EIO", "ENOTTY", "ENXIO", "EBADF"])(
+    "a terminal that is gone (%s) refuses nothing, so the attach's outcome is still acted on",
+    (code) => {
+      const stdin = new FakeTerminal(errno(code));
+      expect(leaveRawMode(stdin)).toBeNull();
+      expect(stdin.listenerCount("error")).toBe(0);
+    },
+  );
 
-  it("does not swallow any other refusal", () => {
-    const stdin = new FakeTerminal(errno("EBADF"));
-    expect(() => leaveRawMode(stdin)).toThrow("setRawMode EBADF");
+  it("returns any other refusal instead of throwing it out of the cleanup", () => {
+    const stdin = new FakeTerminal(errno("EPERM"));
+    const refusal = leaveRawMode(stdin);
+    expect(refusal?.message).toBe("setRawMode EPERM");
     expect(stdin.listenerCount("error")).toBe(0);
   });
 });

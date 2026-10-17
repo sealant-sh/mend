@@ -88,7 +88,7 @@ import {
 } from "./organization.ts";
 import { type ApiCall, pairCommand, qrCommand, type T3GatewayDto } from "./pair.ts";
 import { piAgentDir, piProfileLines, scanPiProfile } from "./pi-profile.ts";
-import { leaveRawMode } from "./raw-mode.ts";
+import { isTerminalGone, leaveRawMode } from "./raw-mode.ts";
 import {
   beforeDeadline,
   type CommandDetail,
@@ -1183,6 +1183,9 @@ const takeTerminal = (): { readonly raw: boolean } => {
 /** How long an attach waits, once connected, for the detail that says whether the caller types. */
 const WATCH_READ_GRACE_MS = 3_000;
 
+/** The last attach's refusal to leave raw mode that a gone terminal does not explain, if any. */
+let rawModeRefusal: Error | null = null;
+
 /**
  * The terminal's size as the PTY should read it. A pty whose size was never set reads 0×0.
  */
@@ -1468,7 +1471,9 @@ const attachTty = async (
     process.stdin.off("data", onKeys);
     process.stdout.off("resize", onWinch);
     ws?.removeEventListener("message", onTtyFrame);
-    if (rawModeEnabled) leaveRawMode(process.stdin);
+    // A refusal the terminal's going away does not explain is kept for `finishAttach`, which says
+    // it before it acts on the outcome: it never costs a foreground session its stop.
+    rawModeRefusal = rawModeEnabled ? leaveRawMode(process.stdin) : null;
     if (interactive && ws !== null && process.stdout.isTTY === true) {
       // The inner TUI's terminal modes leaked onto OUR terminal through the
       // byte bridge — kitty keyboard protocol, bracketed paste, mouse
@@ -1555,6 +1560,10 @@ const finishAttach = async (
   mode: LifecycleMode = "background",
 ): Promise<void> => {
   const id8 = sessionId.slice(0, 8);
+  if (rawModeRefusal !== null) {
+    process.stderr.write(`mend: could not leave raw mode (${rawModeRefusal.message})\n`);
+    rawModeRefusal = null;
+  }
   if (outcome === "unavailable") {
     return fail(`tty attach unavailable: could not connect to ${config.url}`);
   }
@@ -4523,7 +4532,7 @@ const onStreamError =
     // A write after the pipe closed fails again (EPIPE, or the stream is destroyed): already met.
     if (readerGone) return;
     const closedTerminal =
-      stream.isTTY === true && (error.code === "EIO" || error.code === "EPIPE");
+      stream.isTTY === true && (isTerminalGone(error.code) || error.code === "EPIPE");
     if (!closedTerminal && error.code !== "EPIPE") throw error;
     if (recordedOutput) return;
     if (!closedTerminal) {

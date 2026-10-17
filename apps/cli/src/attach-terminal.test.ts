@@ -353,6 +353,44 @@ describe.skipIf(!hasScript)("mend attach in a terminal", () => {
     }
   }, 30_000);
 
+  /**
+   * SIGHUP while the terminal itself stays live, with the native `setRawMode(false)` answering the
+   * named errno: only the refusal to leave raw mode decides what the CLI does next.
+   */
+  const hangUpWithRawModeRefusal = async (errno: string) => {
+    const fake = await startFake("open");
+    const cli = attachInTerminal(
+      fake.url,
+      "claude --name wt --project demo --foreground --no-tunnel",
+      {
+        NODE_OPTIONS: `--import ${fileURLToPath(new URL("./attach-terminal.inject-errno.mjs", import.meta.url))}`,
+        MEND_TEST_RAW_ERRNO: errno,
+      },
+    );
+    try {
+      await waitFor(() => fake.frames().length >= 2);
+      const mend = spawnSync("pgrep", ["-P", String(cli.child.pid)], { encoding: "utf8" });
+      expect(mend.stdout.trim()).toMatch(/^\d+$/);
+      process.kill(Number(mend.stdout.trim()), "SIGHUP");
+      await waitFor(() => fake.requests().includes(`POST /api/sessions/${session.id}/stop`));
+      expect(await cli.exited).toBe(0);
+      return cli.output();
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  };
+
+  it("a foreground session stops when the gone terminal refuses with ENOTTY, as macOS does after revoke() (review of mend#1061)", async () => {
+    const output = await hangUpWithRawModeRefusal("ENOTTY");
+    expect(output).not.toContain("could not leave raw mode");
+  }, 30_000);
+
+  it("a refusal to leave raw mode that no gone terminal explains (EPERM) is said, after the stop went out", async () => {
+    const output = await hangUpWithRawModeRefusal("EPERM");
+    expect(output).toContain("could not leave raw mode (setRawMode EPERM)");
+  }, 30_000);
+
   it("a reattach to an agent that already drew gets its screen and never the starting line", async () => {
     const fake = await startFake("open");
     const cli = attachInTerminal(fake.url);
