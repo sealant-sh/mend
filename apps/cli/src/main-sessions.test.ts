@@ -961,6 +961,73 @@ describe("mend service connect", spawning, () => {
       }
     },
   );
+
+  it("outlives a local peer that resets before its tunnel opens, and still tunnels the next", async () => {
+    const reservation = await serviceConnectPorts(1);
+    const [webPort] = reservation.ports;
+    if (webPort === undefined) throw new Error("Missing service fixture port.");
+    const ticketRequests: Array<() => void> = [];
+    const fake = await startFakeMend(
+      (request, response) => {
+        if (request.url === "/api/services") json(response, [connectServiceView("web", webPort)]);
+        else if (request.url === "/api/upgrade-tickets") {
+          request.resume();
+          // Each ticket waits for the test: the first peer resets while its ticket is pending.
+          ticketRequests.push(() =>
+            json(response, { ticket: `synthetic-service-ticket-${ticketRequests.length}` }),
+          );
+        } else response.writeHead(404).end();
+      },
+      "hold",
+      false,
+    );
+    await reservation.release([webPort]);
+    const cli = startCli(fake.url, ["service", "connect", "web"], {
+      MEND_TOKEN: "synthetic-service-token",
+    });
+    const sockets: net.Socket[] = [];
+    const connectErrors: NodeJS.ErrnoException[] = [];
+    const connect = async () => {
+      const socket = net.createConnection({ host: "127.0.0.1", port: webPort });
+      sockets.push(socket);
+      socket.on("error", (error: NodeJS.ErrnoException) => connectErrors.push(error));
+      await waitFor(
+        () =>
+          socket.readyState === "open" || connectErrors.length > 0 || cli.child.exitCode !== null,
+      );
+      expect(cli.child.exitCode, cli.stderr()).toBeNull();
+      expect(connectErrors).toEqual([]);
+      return socket;
+    };
+    try {
+      await waitFor(() => cli.stdout().includes("Ctrl-C stops") || cli.child.exitCode !== null);
+      expect(cli.child.exitCode, cli.stderr()).toBeNull();
+      const first = await connect();
+      await waitFor(() => ticketRequests.length === 1);
+      first.resetAndDestroy();
+      ticketRequests[0]?.();
+      await connect();
+      await waitFor(() => ticketRequests.length === 2 || cli.child.exitCode !== null);
+      expect(cli.child.exitCode, cli.stderr()).toBeNull();
+      ticketRequests[1]?.();
+      await waitFor(() => fake.upgradeCount() === 1 || cli.child.exitCode !== null);
+      expect(cli.child.exitCode, cli.stderr()).toBeNull();
+      expect(
+        fake.upgradeUrls().map((value) => new URL(value, fake.url).searchParams.get("service")),
+      ).toEqual(["service-web"]);
+    } finally {
+      try {
+        for (const socket of sockets) socket.destroy();
+        if (cli.child.exitCode === null && cli.child.signalCode === null) {
+          const closed = once(cli.child, "close");
+          cli.child.kill("SIGKILL");
+          await closed;
+        }
+      } finally {
+        await fake.close();
+      }
+    }
+  });
 });
 
 describe("mend service connect errors", spawning, () => {
