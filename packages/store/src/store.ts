@@ -451,6 +451,13 @@ export interface DiffFileFactsOptions {
   readonly maxBytes: number;
   /** Past this, git is stopped and what it listed answers, cut. */
   readonly deadlineMs?: number;
+  /**
+   * A cut listing answers at least this many of the range's first files (as many as it has).
+   * Git prints a range's files only once it has walked the whole range, so a deadline that stops
+   * it mid-walk leaves nothing listed: the first files are then found by walking the range's
+   * trees one directory at a time, each a read of one directory, and listed by path.
+   */
+  readonly minFiles?: number;
 }
 
 export interface DiffFileFactsListing {
@@ -632,6 +639,118 @@ const numstatRecords = (raw: string): ReadonlyArray<NumstatRecord> => {
   }
   return records;
 };
+
+/** One entry of a directory as it stands on each side of a range: a tree, a file, or absent. */
+interface TreeLevelEntry {
+  readonly name: string;
+  readonly oldTree: string | null;
+  readonly newTree: string | null;
+  /** The entry is a file (a blob, a symlink or a gitlink) on at least one side. */
+  readonly file: boolean;
+}
+
+const TREE_MODE = "040000";
+const ABSENT_MODE = "000000";
+
+/**
+ * `diff-tree --raw -z` records of one directory compared across a range, without recursing:
+ * `:<old mode> <new mode> <old sha> <new sha> <status>\0<name>\0`. Only records git ended count.
+ */
+const rawDiffEntries = (raw: string): ReadonlyArray<TreeLevelEntry> => {
+  const tokens = raw.split("\0");
+  const ended = tokens.length - 1;
+  const entries: Array<TreeLevelEntry> = [];
+  for (let cursor = 0; cursor + 1 < ended; cursor += 2) {
+    const [oldMode, newMode, oldSha, newSha] = (tokens[cursor] ?? "").slice(1).split(" ");
+    if (oldMode === undefined || newMode === undefined || newSha === undefined) break;
+    if (oldSha === undefined) break;
+    entries.push({
+      name: tokens[cursor + 1] ?? "",
+      oldTree: oldMode === TREE_MODE ? oldSha : null,
+      newTree: newMode === TREE_MODE ? newSha : null,
+      file:
+        (oldMode !== TREE_MODE && oldMode !== ABSENT_MODE) ||
+        (newMode !== TREE_MODE && newMode !== ABSENT_MODE),
+    });
+  }
+  return entries;
+};
+
+/**
+ * `ls-tree -z` records of one directory that is on one side of a range only, so every entry is
+ * added (`side: "new"`) or deleted: `<mode> <type> <sha>\t<name>\0`.
+ */
+const lsTreeEntries = (raw: string, side: "old" | "new"): ReadonlyArray<TreeLevelEntry> => {
+  const tokens = raw.split("\0");
+  const entries: Array<TreeLevelEntry> = [];
+  for (const token of tokens.slice(0, -1)) {
+    const tab = token.indexOf("\t");
+    if (tab < 0) break;
+    const [mode, , sha] = token.slice(0, tab).split(" ");
+    if (mode === undefined || sha === undefined) break;
+    const tree = mode === TREE_MODE ? sha : null;
+    entries.push({
+      name: token.slice(tab + 1),
+      oldTree: side === "old" ? tree : null,
+      newTree: side === "new" ? tree : null,
+      file: tree === null,
+    });
+  }
+  return entries;
+};
+
+/**
+ * The first `limit` paths of the range `a..b`, in git's order (a directory's entries by name,
+ * each directory's files before the next entry), found one directory at a time: a directory on
+ * both sides is compared without recursing (`diff-tree`), one on a single side is read
+ * (`ls-tree`). Each read is one directory, so the first files cost their depth in reads however
+ * wide the range is; a directory read past `maxBytes` answers its first entries. Renames are not
+ * paired: a moved file is its old path and its new one.
+ */
+const firstChangedPaths = (
+  dir: string,
+  a: string,
+  b: string,
+  limit: number,
+  maxBytes: number,
+): Effect.Effect<ReadonlyArray<string>, GitError> =>
+  Effect.gen(function* () {
+    const paths: Array<string> = [];
+    const read = (oldTree: string | null, newTree: string | null) =>
+      oldTree !== null && newTree !== null
+        ? gitCapped(
+            ["diff-tree", "--raw", "-z", "--no-renames", oldTree, newTree],
+            dir,
+            maxBytes,
+          ).pipe(Effect.map((run) => rawDiffEntries(run.stdout)))
+        : newTree !== null
+          ? gitCapped(["ls-tree", "-z", newTree], dir, maxBytes).pipe(
+              Effect.map((run) => lsTreeEntries(run.stdout, "new")),
+            )
+          : oldTree !== null
+            ? gitCapped(["ls-tree", "-z", oldTree], dir, maxBytes).pipe(
+                Effect.map((run) => lsTreeEntries(run.stdout, "old")),
+              )
+            : Effect.succeed([]);
+    const level = (
+      prefix: string,
+      oldTree: string | null,
+      newTree: string | null,
+    ): Effect.Effect<void, GitError> =>
+      Effect.gen(function* () {
+        for (const entry of yield* read(oldTree, newTree)) {
+          if (paths.length >= limit) return;
+          const at = `${prefix}${entry.name}`;
+          // Git orders a file before a directory of the same name, whichever side has which.
+          if (entry.file) paths.push(at);
+          if (entry.oldTree !== null || entry.newTree !== null) {
+            yield* level(`${at}/`, entry.oldTree, entry.newTree);
+          }
+        }
+      });
+    yield* level("", a, b);
+    return paths;
+  });
 
 const sha = (value: string) => Sha.make(value);
 
@@ -1489,39 +1608,58 @@ export class Store extends Context.Service<
         b: string,
         options: DiffFileFactsOptions,
       ) {
-        const listing = (format: string) => {
-          const args = options.paths === undefined ? [] : ["--literal-pathspecs"];
+        const listing = (format: string, paths: ReadonlyArray<string> | undefined) => {
+          const args = paths === undefined ? [] : ["--literal-pathspecs"];
           args.push("diff", format, "-z", "--find-renames");
           if (options.ignoreWhitespace === true) args.push("--ignore-all-space");
           args.push(a, b);
-          if (options.paths !== undefined) args.push("--", ...options.paths);
+          if (paths !== undefined) args.push("--", ...paths);
           return gitCapped(args, dir, options.maxBytes, options.deadlineMs);
         };
-        const [names, counts] = yield* Effect.all(
-          [listing("--name-status"), listing("--numstat")],
-          {
-            concurrency: 2,
-          },
-        );
-        const records = nameStatusRecords(names.stdout);
-        const numbers = numstatRecords(counts.stdout);
-        // Both listings are git's, in the same order: joined record by record while they agree.
-        const facts: Array<DiffFileFact> = [];
-        for (const [index, record] of records.entries()) {
-          const count = numbers[index];
-          if (count === undefined || count.path !== (record.newPath ?? record.oldPath)) break;
-          facts.push({
-            oldPath: record.oldPath,
-            newPath: record.newPath,
-            status: record.status,
-            additions: count.additions,
-            deletions: count.deletions,
-            binary: count.binary,
-          });
+        const list = Effect.fn(function* (paths: ReadonlyArray<string> | undefined) {
+          const [names, counts] = yield* Effect.all(
+            [listing("--name-status", paths), listing("--numstat", paths)],
+            { concurrency: 2 },
+          );
+          const records = nameStatusRecords(names.stdout);
+          const numbers = numstatRecords(counts.stdout);
+          // Both listings are git's, in the same order: joined record by record while they agree.
+          const facts: Array<DiffFileFact> = [];
+          for (const [index, record] of records.entries()) {
+            const count = numbers[index];
+            if (count === undefined || count.path !== (record.newPath ?? record.oldPath)) break;
+            facts.push({
+              oldPath: record.oldPath,
+              newPath: record.newPath,
+              status: record.status,
+              additions: count.additions,
+              deletions: count.deletions,
+              binary: count.binary,
+            });
+          }
+          return {
+            facts,
+            cut: names.cut || counts.cut || facts.length < records.length,
+          } satisfies DiffFileFactsListing;
+        });
+        const whole = yield* list(options.paths);
+        if (
+          !whole.cut ||
+          options.paths !== undefined ||
+          options.minFiles === undefined ||
+          whole.facts.length >= options.minFiles
+        ) {
+          return whole;
         }
+        // Cut before its first files: git prints a range's files only after walking the whole
+        // range, so a deadline mid-walk lists nothing. The first files are found directory by
+        // directory and listed by path, under the same budget.
+        const first = yield* firstChangedPaths(dir, a, b, options.minFiles, options.maxBytes);
+        if (first.length === 0) return whole;
+        const floor = yield* list(first);
         return {
-          facts,
-          cut: names.cut || counts.cut || facts.length < records.length,
+          facts: floor.facts.length > whole.facts.length ? floor.facts : whole.facts,
+          cut: true,
         } satisfies DiffFileFactsListing;
       });
 

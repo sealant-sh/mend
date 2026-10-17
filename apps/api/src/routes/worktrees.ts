@@ -241,13 +241,15 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const options = query.whitespace === "ignore" ? { ignoreWhitespace: true } : {};
         const started = yield* Clock.currentTimeMillis;
         // The files first, within the listing budget: a slice too large or slow to list whole
-        // answers its first files, cut. A path asked for is the only one git lists.
+        // answers its first files, cut, at least the page rendered whole below. A path asked for
+        // is the only one git lists.
         const listed = yield* reads
           .diffFileFactsBounded(worktree.projectId, worktree.id, fromSha, to.sha, {
             ...options,
             ...(query.path === undefined ? {} : { paths: [query.path] }),
             maxBytes: RANGE_LIST_BYTES,
             deadlineMs: RANGE_LIST_DEADLINE_MS,
+            minFiles: RANGE_RENDER_FILES,
           })
           .pipe(
             Effect.mapError(readFailure),

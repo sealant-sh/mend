@@ -93,7 +93,8 @@ export class WorktreeRangeDiff extends Schema.Class<WorktreeRangeDiff>("Worktree
   omitted: Schema.Array(Schema.String),
   /**
    * The slice has more files than `files` lists: Mend listed its first files within its listing
-   * budget or deadline. Ask for one by `path` to get it whatever its place.
+   * budget or deadline, at least the 200 `diff` renders whole. Ask for one by `path` to get it
+   * whatever its place.
    */
   listingCut: Schema.Boolean,
   observation: Schema.optionalKey(ObservationStamp),
