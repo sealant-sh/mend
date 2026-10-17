@@ -28,7 +28,7 @@ import type * as DateTime from "effect/DateTime";
 
 import { wordsOf } from "./images.ts";
 import type { MendItem, MendRequest, MendTurn } from "./mend-workbench.ts";
-import { nextEffortLineOf, nextModelLineOf } from "./model-options.ts";
+import { nextEffortLineOf, nextModeLineOf, nextModelLineOf } from "./model-options.ts";
 import { harnessProvider } from "./server-config.ts";
 import {
   appThreadOf,
@@ -706,16 +706,6 @@ const pendingEntries = (
   }
   return out;
 };
-
-/** Mend's own words for its permission modes, as its session composer shows them. */
-const MODE_WORDS: Readonly<Record<"bypass" | "ask", string>> = {
-  ask: "ask before acting",
-  bypass: "skip permission prompts",
-};
-
-/** What a thread says while the mode chosen for its agent's next start is not yet the running one. */
-export const nextModeLineOf = (next: "bypass" | "ask"): string =>
-  `From the agent's next start: ${MODE_WORDS[next]} · it runs as it started until then`;
 
 /**
  * What Mend says about people sharing the session's workspace (docs/adr/0016, decisions 6, 13 and

@@ -140,10 +140,15 @@ describe("GET /ws", () => {
             ["opus", "Opus", false],
           ],
         );
-        assert.isUndefined(
-          claude?.models[0]?.capabilities?.optionDescriptors?.find(
-            (option) => option.id === "serviceTier",
+        assert.deepStrictEqual(
+          providers.flatMap((provider) =>
+            provider.models.flatMap((model) =>
+              (model.capabilities?.optionDescriptors ?? []).filter(
+                (option) => option.id === "serviceTier",
+              ),
+            ),
           ),
+          [],
         );
 
         // The probe a client falls back to without the probe capability.

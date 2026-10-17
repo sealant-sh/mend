@@ -20,7 +20,7 @@ import type { BearerSession } from "./state.ts";
  *
  * - `message.dispatch`: queued by the gateway and sent as a turn once nothing is open, or as the
  *   opening turn of a relaunch when the session's agent has stopped. A model or reasoning effort
- *   changed on the picker applies from the agent's next start; a changed service tier or provider
+ *   changed on the picker applies from the agent's next start; the Fast tier or another provider
  *   is refused (`model-options.ts`).
  * - `run.interrupt`, `queued-run.cancel`, `queue.resume`: Mend's interrupt and the gateway's queue.
  * - `queued-run.edit`, `queued-run.reorder`: a message still waiting in the gateway's queue; one on

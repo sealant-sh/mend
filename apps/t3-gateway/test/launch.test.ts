@@ -24,7 +24,7 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 
 import { labelOf, MEND_LABEL_LIMIT, planLaunch, worktreeNameOf } from "../src/launch.ts";
-import { providersFromMend } from "../src/server-config.ts";
+import { FAST_TIER_REFUSAL, providersFromMend } from "../src/server-config.ts";
 import { openGatewayState } from "../src/state.ts";
 import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
@@ -841,14 +841,12 @@ describe("planLaunch", () => {
           ],
           defaultModel: null,
           efforts: ["low", "high"],
-          fastCapable: false,
         },
         {
           harness: "codex",
           models: [{ id: "default", label: "Default", isDefault: true, efforts: null }],
           defaultModel: "default",
           efforts: ["low", "high"],
-          fastCapable: true,
         },
       ],
       "2026-10-12T00:00:00.000Z",
@@ -869,7 +867,7 @@ describe("planLaunch", () => {
     );
   });
 
-  it("names fast service and leaves an effort Mend does not take to Mend", () => {
+  it("leaves an effort Mend does not take to Mend", () => {
     const plan = planLaunch(
       launchInput({
         modelSelection: {
@@ -877,7 +875,7 @@ describe("planLaunch", () => {
           model: "gpt-6.1-sol",
           options: [
             { id: "reasoningEffort", value: "enormous" },
-            { id: "serviceTier", value: "fast" },
+            { id: "serviceTier", value: "default" },
           ],
         },
         runtimeMode: "full-access",
@@ -888,7 +886,23 @@ describe("planLaunch", () => {
     assert.deepStrictEqual(plan.launch.options, {
       model: "gpt-6.1-sol",
       permissionMode: "bypass",
-      speed: "fast",
+    });
+  });
+
+  it("refuses the Fast tier, which a protocol agent in Mend never runs on", () => {
+    const plan = planLaunch(
+      launchInput({
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-6.1-sol",
+          options: [{ id: "serviceTier", value: "fast" }],
+        },
+        runtimeMode: "full-access",
+      }),
+    );
+    assert.deepStrictEqual(plan, {
+      kind: "refused",
+      message: FAST_TIER_REFUSAL,
     });
   });
 

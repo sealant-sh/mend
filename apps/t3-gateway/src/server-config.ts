@@ -4,6 +4,7 @@ import {
   type ExecutionEnvironmentDescriptor,
   type ProviderOptionChoice,
   type ProviderOptionDescriptor,
+  type ProviderOptionSelection,
   type RuntimeMode,
   type ServerAuthDescriptor,
   type ServerConfig,
@@ -101,8 +102,14 @@ export const effortOptionIdOf = (harness: string): string | null =>
 
 /** The option id and choice t3code's Codex driver uses for priority processing. */
 export const SERVICE_TIER_OPTION_ID = "serviceTier";
-export const STANDARD_SERVICE_TIER = "default";
 export const FAST_SERVICE_TIER = "fast";
+export const FAST_TIER_REFUSAL =
+  "Mend runs every T3 Code thread on the standard service tier, so it cannot run this one on Fast.";
+
+export const asksForFast = (options: ReadonlyArray<ProviderOptionSelection>): boolean =>
+  options.some(
+    (option) => option.id === SERVICE_TIER_OPTION_ID && option.value === FAST_SERVICE_TIER,
+  );
 
 /**
  * Mend's permission modes as t3code runtime modes: `bypass` is `full-access`, `ask` is
@@ -144,17 +151,6 @@ const effortDescriptor = (
     : { id: optionId, label: "Reasoning", type: "select", options };
 };
 
-const serviceTierDescriptor: ProviderOptionDescriptor = {
-  id: SERVICE_TIER_OPTION_ID,
-  label: "Service Tier",
-  type: "select",
-  options: [
-    { id: STANDARD_SERVICE_TIER, label: "Standard", isDefault: true },
-    { id: FAST_SERVICE_TIER, label: "Fast" },
-  ],
-  currentValue: STANDARD_SERVICE_TIER,
-};
-
 const modelsFor = (
   catalog: MendHarnessCatalog,
   driver: HarnessDriver,
@@ -164,7 +160,6 @@ const modelsFor = (
     const optionDescriptors: Array<ProviderOptionDescriptor> = [];
     const efforts = effortDescriptor(driver.effortOptionId, catalog.efforts);
     if (efforts !== undefined) optionDescriptors.push(efforts);
-    if (catalog.fastCapable) optionDescriptors.push(serviceTierDescriptor);
     models.push({
       slug: harnessOwnModelOf(catalog.harness),
       name: OWN_MODEL_NAMES[catalog.harness] ?? `${driver.displayName}'s own default`,
@@ -180,7 +175,6 @@ const modelsFor = (
     const optionDescriptors: Array<ProviderOptionDescriptor> = [];
     const efforts = effortDescriptor(driver.effortOptionId, model.efforts ?? catalog.efforts);
     if (efforts !== undefined) optionDescriptors.push(efforts);
-    if (catalog.fastCapable) optionDescriptors.push(serviceTierDescriptor);
     models.push({
       slug,
       name: nonEmpty(model.label) ?? slug,

@@ -118,8 +118,6 @@ export interface ThreadSource {
    * it runs with (`model-options.ts`); null otherwise.
    */
   readonly nextEffort: string | null;
-  /** `fast` when a t3code client launched the thread on the Fast tier; Mend records no tier. */
-  readonly tier: "fast" | null;
   /**
    * The images a message the gateway sent carried when Mend took its turn, by the message's
    * t3code id (`images.ts`), each with the path its turn named.
@@ -315,13 +313,12 @@ export const modelSelectionOf = (source: ThreadSource): ModelSelection => {
 export const threadModelOptionsOf = (source: ThreadSource): ThreadModelOptions => ({
   harness: source.session.harness,
   runningModel:
-    source.session.model ??
     source.agent.protocolOptions?.model ??
+    source.session.model ??
     harnessOwnModelOf(source.session.harness),
   nextModel: source.nextModel,
   runningEffort: source.agent.protocolOptions?.effort ?? null,
   nextEffort: source.nextEffort,
-  tier: source.tier,
 });
 
 export const projectShellOf = (project: MendProject): OrchestrationProjectShell => ({
