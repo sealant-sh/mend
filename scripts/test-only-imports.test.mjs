@@ -14,7 +14,12 @@ import { parse } from "yaml";
 // to the file, as adjacent literal pieces, or as an `@mend/<pkg>` specifier whose export lands
 // there. A mention in a comment counts too; a harmless one goes in `allowed` with its reason.
 //
-// Limit: a path assembled from variables (`join(dir, name, "test")`) is invisible to a text scan.
+// The lanes' own files are found from their jobs' shell words and the package scripts those run
+// through pnpm; a package script's words also count as paths relative to its package.
+//
+// Limits: a path assembled from variables (`join(dir, name, "test")`) is invisible to a text scan,
+// and a script reached other than through `pnpm [--filter x] [run] <script>` (npm, `node --run`,
+// a script calling another by path) is not followed to the files it names.
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 
@@ -162,24 +167,45 @@ const mentions = (text, packages, base) => {
       found.add(match[0]);
     }
   }
-  return [...found];
+  // A run that continues past a test path (`"…/fixture.json", "utf8"`) names that path once.
+  return [...found].filter(
+    (path) => ![...found].some((other) => other !== path && path.startsWith(`${other}/`)),
+  );
 };
 
-const pathFields = [
-  "main",
-  "module",
-  "types",
-  "typings",
-  "browser",
-  "bin",
-  "files",
-  "react-native",
-];
+/** Shell words of `command`, quotes removed, split at whitespace and shell operators. */
+const shellWords = (command) =>
+  [...command.matchAll(/(?:"[^"]*"|'[^']*'|[^\s;|&()<>"'])+/g)].map(([word]) =>
+    word.replace(/"([^"]*)"|'([^']*)'/g, (_, double, single) => double ?? single),
+  );
+
+/** The words of `command` that may name a file: each shell word, and a `--flag=value` value. */
+const fileWords = (command) =>
+  shellWords(command).flatMap((word) => {
+    const value = /^[^=/]+=(.+)$/.exec(word)?.[1];
+    return value ? [word, value] : [word];
+  });
+
+// A word that may be a path relative to the directory a command runs in.
+const pathWord = (word) =>
+  !word.startsWith("-") && !word.includes("$") && !word.includes("://") && word !== "";
+
+/** `text` plus every path word of `commands` written relative to their directory. */
+const withRelativeWords = (text, commands) =>
+  [
+    text,
+    ...commands
+      .flatMap(fileWords)
+      .filter(pathWord)
+      .map((word) => (word.startsWith(".") || word.startsWith("/") ? word : `./${word}`)),
+  ].join("\n");
 
 /**
- * A manifest's scanned text: every field but its name, dependency maps and its own exports (an
- * export into test/ is what makes a specifier test-only above), and every test script. Path
- * fields also resolve bare relative entries, as `files: ["test"]` or `main: "test/index.js"`.
+ * A manifest's scanned text, resolved against its directory: every field but its name,
+ * dependency maps and its own exports (an export into test/ is what makes a specifier test-only
+ * above), and every script but `test` and `test:*` (unless a gated job runs it; see below). Each
+ * script word, and each one-word value of any other field (`files`, `main`, `bin`, assets), also
+ * counts as a path relative to the package, so `cat test/fixtures/x` and `files: ["test"]` do.
  */
 const manifestText = (manifest) => {
   const {
@@ -192,13 +218,11 @@ const manifestText = (manifest) => {
     scripts = {},
     ...rest
   } = manifest;
-  const kept = Object.fromEntries(
-    Object.entries(scripts).filter(([key]) => !/^test(:|$)/.test(key)),
-  );
-  const bare = pathFields
-    .flatMap((field) => targets(manifest[field]))
-    .map((path) => (path.startsWith(".") || path.startsWith("/") ? path : `./${path}`));
-  return [...targets(kept), ...targets(rest), ...bare].join("\n");
+  const commands = Object.entries(scripts)
+    .filter(([key]) => !/^test(:|$)/.test(key))
+    .map(([, command]) => command);
+  const values = targets(rest).filter((value) => !/\s/.test(value));
+  return withRelativeWords([...commands, ...targets(rest)].join("\n"), [...commands, ...values]);
 };
 
 /**
@@ -215,9 +239,68 @@ const gatedJobs = (workflow) =>
     ]);
 
 /**
+ * The package scripts `text` runs through pnpm (`pnpm [--filter x] [run] <script>`), and the
+ * scripts those run in turn, as `{ dir, name, command }`. `manifests` includes the root's (dir ".").
+ */
+const reachedScripts = (text, manifests) => {
+  const reached = new Map();
+  const visit = (line, from) => {
+    for (const invocation of line.split(/&&|\|\||[;\n|]/)) {
+      const words = shellWords(invocation).filter((word) => !/^[A-Z_]+=/.test(word));
+      const at = words.indexOf("pnpm");
+      if (at < 0) continue;
+      let target = from;
+      let index = at + 1;
+      for (; index < words.length && words[index].startsWith("-"); index += 1) {
+        const [flag, inline] = words[index].split("=");
+        if (flag !== "--filter" && flag !== "-F") continue;
+        const name = inline ?? words[(index += 1)];
+        target = manifests.find(
+          ({ dir, manifest }) => manifest.name === name || `./${dir}` === name || dir === name,
+        );
+      }
+      if (words[index] === "run" || words[index] === "run-script") index += 1;
+      const script = words[index];
+      const command = target?.manifest.scripts?.[script];
+      const key = `${target?.dir}:${script}`;
+      if (command === undefined || reached.has(key)) continue;
+      reached.set(key, { dir: target.dir, name: script, command });
+      visit(command, target);
+    }
+  };
+  visit(
+    text,
+    manifests.find(({ dir }) => dir === "."),
+  );
+  return [...reached.values()];
+};
+
+/**
+ * Every file the gated jobs run or read by name: each shell word of the jobs (quotes removed,
+ * `--flag=value` split, globs expanded), and each word of the package scripts they run, relative
+ * to that package. `glob(pattern)` lists the repository files a pattern matches.
+ */
+const laneFilesOf = (workflow, manifests, glob) => {
+  const found = new Set();
+  const add = (word, dir) => {
+    if (!pathWord(word) || word.includes("{{")) return;
+    const pattern = posix.normalize(posix.join(dir, word));
+    if (pattern.startsWith("../") || pattern === ".") return;
+    for (const path of glob(pattern)) found.add(path);
+  };
+  for (const [, text] of gatedJobs(workflow)) {
+    for (const word of fileWords(text)) add(word, ".");
+    for (const { dir, command } of reachedScripts(text, manifests)) {
+      for (const word of fileWords(command)) add(word, dir);
+    }
+  }
+  return found;
+};
+
+/**
  * Every place a file the mobile or packaging lane may reach names a package's tests. `files`
- * maps repository paths to contents; `manifests` lists each package's directory and manifest;
- * `workflow` is the parsed ci.yml.
+ * maps repository paths to contents; `manifests` lists each workspace's directory and manifest,
+ * the root's as "."; `workflow` is the parsed ci.yml.
  */
 const findTestReaches = ({ files, manifests, workflow }) => {
   const packages = packageIndex(manifests.filter(({ dir }) => dir.startsWith("packages/")));
@@ -238,6 +321,10 @@ const findTestReaches = ({ files, manifests, workflow }) => {
   }
   for (const [name, text] of gatedJobs(workflow)) {
     report(`.github/workflows/ci.yml job ${name}`, text, ".");
+    // A script the job runs counts even when it is a test script, resolved against its package.
+    for (const { dir, name: script, command } of reachedScripts(text, manifests)) {
+      report(`${dir}/package.json script ${script}`, withRelativeWords(command, [command]), dir);
+    }
   }
   return found;
 };
@@ -249,17 +336,18 @@ const git = (...args) =>
 
 const repository = () => {
   const workflow = parse(readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8"));
-  // The packaging lane's own tests: every file or glob its gated jobs name.
-  const laneFiles = new Set(
-    gatedJobs(workflow).flatMap(([, text]) =>
-      text
-        .split(/\s+/)
-        .filter((token) => /^[\w.][\w./*-]*\.[cm]?[jt]s$/.test(token))
-        .flatMap((token) => globSync(token, { cwd: root })),
-    ),
-  );
   const listed = git("ls-files", "-z", "--cached", "--others", "--exclude-standard").filter(
     (path) => existsSync(resolve(root, path)),
+  );
+  const manifests = listed
+    .filter((path) => /^((packages|apps|tooling)\/[^/]+\/)?package\.json$/.test(path))
+    .map((path) => ({
+      dir: dirname(path),
+      manifest: JSON.parse(readFileSync(resolve(root, path), "utf8")),
+    }));
+  const tracked = new Set(listed);
+  const laneFiles = laneFilesOf(workflow, manifests, (pattern) =>
+    globSync(pattern, { cwd: root }).filter((path) => tracked.has(path)),
   );
   const files = new Map();
   for (const path of listed) {
@@ -268,12 +356,6 @@ const repository = () => {
     if (text.length > 4 << 20 || text.includes(0)) continue;
     files.set(path, text.toString("utf8"));
   }
-  const manifests = listed
-    .filter((path) => /^(packages|apps|tooling)\/[^/]+\/package\.json$/.test(path))
-    .map((path) => ({
-      dir: dirname(path),
-      manifest: JSON.parse(readFileSync(resolve(root, path), "utf8")),
-    }));
   return { files, manifests, workflow, laneFiles };
 };
 
@@ -382,6 +464,21 @@ test("the guard catches every way of naming a package's tests, and exempts tests
     ["scripts/packaging.mjs", 'readFile("../packages/domain/src/../test/data.json")'],
     ["scripts/packaging.mjs", "COPY packages/domain/src/../test/data.json /app/"],
     ["scripts/packaging.mjs", 'const fixture = "packages/" + "db/test/postgres.ts";'],
+    [
+      "packages/sessions/package.json",
+      '{ "scripts": { "audit:fixture": "cat test/fixtures/shell-profile/Dockerfile" } }',
+    ],
+    [
+      "packages/db/package.json",
+      '{ "scripts": { "build": "node gen.mjs --fixture=test/data.json" } }',
+    ],
+    [
+      "packages/domain/package.json",
+      '{ "scripts": { "build": "tsc \\"src/workbench/removal.test.ts\\" && echo ok" } }',
+    ],
+    ["packages/db/package.json", '{ "assets": "test/fixtures" }'],
+    ["packages/db/package.json", '{ "bin": { "db-fixture": "test/bin.mjs" } }'],
+    ["packages/domain/package.json", '{ "module": "src/index.spec.ts" }'],
     ["scripts/packaging.mjs", "// copies packages/db/test/postgres.ts beside the bundle"],
     ["tooling/scripts/bundle-app.mjs", 'require.resolve("@mend/sessions/testing")'],
     ["apps/web/vite.config.ts", 'alias: { x: "../../packages/db/test/postgres.ts" }'],
@@ -416,6 +513,10 @@ test("the guard catches every way of naming a package's tests, and exempts tests
     ["scripts/packaging.mjs", 'readFile("packages/db/test/../src/a.ts", "utf8")'],
     ["packages/domain/src/a.ts", 'const name = "worktree-removal.test.ts";'],
     ["packages/domain/src/a.ts", 'join(root, "packages", name, "test")'],
+    [
+      "packages/db/package.json",
+      '{ "description": "Shared test helpers", "scripts": { "lint": "oxlint .", "test": "vitest run test/" } }',
+    ],
     [
       "packages/t3-contracts/t3code.pin.json",
       '{ "upstream": "packages/contracts/src/rpc.test.ts" }',
@@ -461,6 +562,36 @@ test("the guard catches every way of naming a package's tests, and exempts tests
   const ungated = { if: "!cancelled()", env: { FIXTURE: fixture }, steps: [{ run: fixture }] };
   assert.deepEqual(scan({ jobs: { "test-engines": ungated } }), []);
   assert.deepEqual(scan({ env: { FIXTURE: fixture }, jobs: { "test-engines": ungated } }), []);
+  // A package script a gated job runs counts, even a test script, resolved against its package.
+  const scripted = [
+    {
+      dir: "packages/sessions",
+      manifest: {
+        name: "@mend/sessions",
+        scripts: { test: "vitest run test/", audit: "pnpm run inner", inner: "cat test/x.json" },
+      },
+    },
+    {
+      dir: ".",
+      manifest: { name: "mend", scripts: { fixture: "pnpm --filter @mend/sessions test" } },
+    },
+  ];
+  const runs = (run, gate = packaging) =>
+    findTestReaches({
+      files: new Map(),
+      manifests: scripted,
+      workflow: { jobs: { gated: { if: gate, steps: [{ run }] } } },
+    });
+  for (const run of [
+    "pnpm --filter @mend/sessions test",
+    "pnpm --filter=@mend/sessions run audit",
+    "pnpm -F packages/sessions audit",
+    "CI=1 pnpm run fixture",
+  ]) {
+    assert.equal(runs(run).length, 1, run);
+  }
+  assert.deepEqual(runs("pnpm --filter @mend/sessions test", "!cancelled()"), []);
+  assert.deepEqual(runs("pnpm --filter @mend/sessions exec vitest"), []);
 });
 
 test("the scan reads the packaging lane's own test files and skips other tests", () => {
@@ -486,10 +617,54 @@ test("the scan reads the packaging lane's own test files and skips other tests",
   ]) {
     assert.ok(!skipped(path), path);
   }
+  // Lane files come from shell words: quoted, --flag=value, globbed, and through package scripts.
+  const repo = [
+    "scripts/audit.test.mjs",
+    "scripts/reporter.mjs",
+    "scripts/bench/a.test.mjs",
+    "scripts/bench/b.test.mjs",
+    "scripts/other.test.mjs",
+    "apps/mobile/scripts/check-web.mjs",
+  ];
+  const lanes = laneFilesOf(
+    {
+      jobs: {
+        packaging: {
+          if: "needs.changes.outputs.packaging != 'false'",
+          steps: [
+            {
+              run: `node --test "scripts/audit.test.mjs" --test-reporter=./scripts/reporter.mjs 'scripts/bench/*.test.mjs'`,
+            },
+          ],
+        },
+        "mobile-web": {
+          if: "needs.changes.outputs.mobile != 'false'",
+          steps: [{ run: "pnpm --filter @mend/mobile check:web" }],
+        },
+        "test-engines": {
+          if: "!cancelled()",
+          steps: [{ run: "node --test scripts/other.test.mjs" }],
+        },
+      },
+    },
+    [
+      {
+        dir: "apps/mobile",
+        manifest: { name: "@mend/mobile", scripts: { "check:web": "node scripts/check-web.mjs" } },
+      },
+    ],
+    (pattern) => repo.filter((path) => posix.matchesGlob(path, pattern)),
+  );
+  assert.deepEqual(
+    [...lanes].toSorted(),
+    repo.filter((path) => path !== "scripts/other.test.mjs").toSorted(),
+  );
   const { laneFiles } = repository();
   for (const path of [
     "scripts/bundle-packaging.test.mjs",
     "scripts/verify-stack/lifecycle.e2e.test.mjs",
+    "scripts/ci-test-report.mjs",
+    "apps/mobile/scripts/check-web.mjs",
   ]) {
     assert.ok(laneFiles.has(path), path);
   }
