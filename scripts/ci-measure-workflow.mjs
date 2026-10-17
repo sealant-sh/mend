@@ -2,10 +2,29 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 import { parse, stringify } from "yaml";
 
+const BOX = ["self-hosted", "box", "linux", "x64"];
+export const MEASUREMENT_RUNNERS = [
+  "box",
+  "blacksmith-2vcpu-ubuntu-2404",
+  "blacksmith-4vcpu-ubuntu-2404",
+  "ubuntu-latest",
+];
+
 /** Derive measurement jobs from production CI so setup, evidence and worker limits stay identical. */
 export function measurementWorkflow(ci) {
   const jobs = structuredClone(ci.jobs);
   for (const job of Object.values(jobs)) {
+    // Only box lanes move. Off the box there is no persistent pnpm store, so setup-node restores
+    // GitHub's pnpm cache the way a fresh hosted VM would.
+    if (JSON.stringify(job["runs-on"]) === JSON.stringify(BOX)) {
+      job["runs-on"] =
+        `\${{ inputs.runner == 'box' && fromJSON('${JSON.stringify(BOX)}') || inputs.runner }}`;
+      for (const step of job.steps) {
+        if (step.uses?.startsWith("actions/setup-node@")) {
+          step.with = { ...step.with, cache: "${{ inputs.runner != 'box' && 'pnpm' || '' }}" };
+        }
+      }
+    }
     const checkout = job.steps.find((step) => step.uses?.startsWith("actions/checkout@"));
     // A job without a checkout (the `checks` gate reads only `needs`) has no ref to pin.
     if (checkout) checkout.with = { ...checkout.with, ref: "${{ inputs.head_sha }}" };
@@ -15,7 +34,11 @@ export function measurementWorkflow(ci) {
         step.run === "node scripts/ci-turbo.mjs build typecheck lint" ||
         /^node scripts\/ci-shards\.mjs (engines|clients-a|clients-b)$/.test(step.run ?? "")
       ) {
-        step.env = { ...step.env, CI_MEASUREMENT_CACHE: "${{ inputs.cache }}" };
+        step.env = {
+          ...step.env,
+          CI_MEASUREMENT_CACHE: "${{ inputs.cache }}",
+          CI_MEASUREMENT_RUNNER: "${{ inputs.runner }}",
+        };
       }
     }
   }
@@ -30,7 +53,7 @@ node scripts/ci-scope.mjs "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"`;
   return {
     name: "CI measurement",
     "run-name":
-      "CI measurement · ${{ inputs.scenario }} · ${{ inputs.cache }} · ${{ inputs.head_sha }}",
+      "CI measurement · ${{ inputs.scenario }} · ${{ inputs.runner }} · ${{ inputs.cache }} · ${{ inputs.head_sha }}",
     on: {
       workflow_dispatch: {
         inputs: {
@@ -45,6 +68,12 @@ node scripts/ci-scope.mjs "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"`;
             required: true,
             type: "choice",
             options: ["cold", "warm"],
+          },
+          runner: {
+            description: "Runner for every box lane; only the box reaches its turbo cache",
+            required: true,
+            type: "choice",
+            options: MEASUREMENT_RUNNERS,
           },
           base_sha: {
             description: "Exact 40-character PR base SHA",

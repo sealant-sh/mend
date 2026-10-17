@@ -234,11 +234,18 @@ forced lint and typecheck before pushing each scenario.
 Dispatch once per scenario and mode, using the same base and head for the pair:
 
 ```sh
-gh workflow run ci-measure.yml --ref main \
+gh workflow run ci-measure.yml --ref main -f runner=box \
   -f scenario=web -f cache=cold -f base_sha=<40-character-base> -f head_sha=<40-character-head>
-gh workflow run ci-measure.yml --ref main \
+gh workflow run ci-measure.yml --ref main -f runner=box \
   -f scenario=web -f cache=warm -f base_sha=<same-base> -f head_sha=<same-head>
 ```
+
+`runner` moves every box lane, and only those, to `blacksmith-2vcpu-ubuntu-2404`,
+`blacksmith-4vcpu-ubuntu-2404` or `ubuntu-latest`; the arm64 scope job and the aggregate check stay
+on `ubuntu-24.04-arm`. Off the box a lane has no persistent pnpm store, Docker Hub mirror or tofu
+provider mirror, so setup-node restores GitHub's pnpm cache as on a fresh hosted VM. Those runners
+cannot reach the box's turbo cache, so the wrapper refuses `warm` anywhere but the box. Production
+`ci.yml` names no vendor runner, and the workflow regression suite fails if it does.
 
 Run one observation at a time. Archive the run JSON, all jobs including skipped jobs, job logs, and
 Turbo summary artifacts. Use the jobs API with `filter=all` and pagination; retain run attempts

@@ -465,19 +465,56 @@ test("dispatch measurements preserve the production jobs and cannot run on PRs o
   assert.equal(measured.jobs.checks.name, "measurement checks");
   delete measured.jobs.checks.name;
   assert.equal(measured.env.CI_MEASUREMENT_CACHE, undefined);
+  assert.deepEqual(measured.on.workflow_dispatch.inputs.runner.options, [
+    "box",
+    "blacksmith-2vcpu-ubuntu-2404",
+    "blacksmith-4vcpu-ubuntu-2404",
+    "ubuntu-latest",
+  ]);
+  const box = ["self-hosted", "box", "linux", "x64"];
+  const movable = [];
   const policyCommands = [];
   for (const name of Object.keys(jobs)) {
     assert.equal(measured.jobs[name].env?.CI_MEASUREMENT_CACHE, undefined);
+    if (JSON.stringify(jobs[name]["runs-on"]) === JSON.stringify(box)) {
+      movable.push(name);
+      assert.equal(
+        measured.jobs[name]["runs-on"],
+        `\${{ inputs.runner == 'box' && fromJSON('${JSON.stringify(box)}') || inputs.runner }}`,
+      );
+      measured.jobs[name]["runs-on"] = box;
+      const setup = measured.jobs[name].steps.find((step) =>
+        step.uses?.startsWith("actions/setup-node@"),
+      );
+      assert.equal(setup.with.cache, "${{ inputs.runner != 'box' && 'pnpm' || '' }}");
+      delete setup.with.cache;
+    }
     for (const step of measured.jobs[name].steps) {
       if (step.env?.CI_MEASUREMENT_CACHE !== undefined) {
         assert.equal(step.env.CI_MEASUREMENT_CACHE, "${{ inputs.cache }}");
+        assert.equal(step.env.CI_MEASUREMENT_RUNNER, "${{ inputs.runner }}");
         policyCommands.push(step.run);
         delete step.env.CI_MEASUREMENT_CACHE;
+        delete step.env.CI_MEASUREMENT_RUNNER;
         if (Object.keys(step.env).length === 0) delete step.env;
       }
     }
     assert.deepEqual(normalize(measured.jobs[name]), normalize(jobs[name]), name);
   }
+  // The arm64 scope job and the aggregate gate stay where production runs them.
+  assert.deepEqual(movable.toSorted(), [
+    "mobile-web",
+    "packaging",
+    "static",
+    "test-clients-a",
+    "test-clients-b",
+    "test-engines",
+  ]);
+  assert.doesNotMatch(
+    readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+    /blacksmith|inputs\.runner/,
+    "production CI never selects a vendor runner",
+  );
   assert.deepEqual(policyCommands.toSorted(), [
     "node scripts/ci-shards.mjs clients-a",
     "node scripts/ci-shards.mjs clients-b",

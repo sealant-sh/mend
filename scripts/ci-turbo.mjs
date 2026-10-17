@@ -15,6 +15,13 @@ export const ciTurboOptions = (env, { commitExists = commitResolves } = {}) => {
       message: "CI_MEASUREMENT_CACHE requires a cold or warm workflow_dispatch.",
     };
   }
+  // Warm reads the box's private cache, which runners off the box cannot reach.
+  if (measurement === "warm" && env.CI_MEASUREMENT_RUNNER !== "box") {
+    return {
+      _tag: "error",
+      message: "A warm measurement must run on the box; measure other runners cold.",
+    };
+  }
   const exactBase = /^[a-f0-9]{40}$/i.test(env.TURBO_SCM_BASE ?? "");
   // A merge group runs what its pull requests affect only when the changes job found nothing on
   // the full-graph list (CI_GRAPH, scripts/ci-scope.mjs) and its base commit resolves here. Any
