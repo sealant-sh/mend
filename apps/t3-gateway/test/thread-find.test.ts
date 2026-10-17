@@ -448,7 +448,9 @@ describe("find in a thread, as a shared gateway runs it", () => {
           makeThreadFinder(parser).searchThread(snapshot, { threadId: THREAD, query: "needle" }),
         );
         assert.strictEqual(result.totalMatches, links);
-        assert.isBelow(longestGap, 50, `find ${took} ms, longest gap ${longestGap} ms`);
+        // A parse on the event loop holds it for seconds. The bound leaves room for a garbage
+        // collection on a shared two-core runner, which measured 56 to 77 ms in CI.
+        assert.isBelow(longestGap, 150, `find ${took} ms, longest gap ${longestGap} ms`);
         assert.isAbove(took, 4 * longestGap, `find ${took} ms, longest gap ${longestGap} ms`);
       }).pipe(Effect.provide(findParserLayer())),
     ),
