@@ -24,6 +24,11 @@ export const NO_MODEL_PREFERENCES: ModelPreferences = {
   providerModelPreferences: null,
 };
 
+export interface KeptModelPreferences {
+  readonly version: number;
+  readonly preferences: ModelPreferences;
+}
+
 const MODEL_PREFERENCE_PATCH_KEYS = [
   "setModelFavorites",
   "setModelsHidden",
@@ -60,6 +65,16 @@ export const settingsWith = (preferences: ModelPreferences): ServerSettings => (
   ...DEFAULT_SERVER_SETTINGS,
   favorites: preferences.favorites,
   providerModelPreferences: preferences.providerModelPreferences,
+});
+
+export interface KeptSettings {
+  readonly version: number;
+  readonly settings: ServerSettings;
+}
+
+export const keptSettingsOf = (kept: KeptModelPreferences): KeptSettings => ({
+  version: kept.version,
+  settings: settingsWith(kept.preferences),
 });
 
 export const applyModelPreferencesPatch = (

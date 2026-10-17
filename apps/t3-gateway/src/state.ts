@@ -21,7 +21,11 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
 import { GatewayConfig } from "./config.ts";
-import { NO_MODEL_PREFERENCES, type ModelPreferences } from "./model-preferences.ts";
+import {
+  NO_MODEL_PREFERENCES,
+  type KeptModelPreferences,
+  type ModelPreferences,
+} from "./model-preferences.ts";
 import type { EntryState, StoredEntry, StoredQueue } from "./queue.ts";
 
 /**
@@ -338,15 +342,16 @@ export class GatewayState extends Context.Service<
     /** A person's model favorites, hidden models and model order; unset until a client sets them. */
     readonly modelPreferences: (
       mendUserId: string,
-    ) => Effect.Effect<ModelPreferences, GatewayStateError>;
+    ) => Effect.Effect<KeptModelPreferences, GatewayStateError>;
     /**
-     * Replaces a person's model preferences with `change` of the kept ones, read and written in one
-     * step, so two clients' changes never lose one another. Answers what was kept.
+     * Replaces a person's model preferences with `change` of the kept ones and counts the write,
+     * read and written in one step, so two clients' changes never lose one another. Answers what
+     * was kept.
      */
     readonly updateModelPreferences: <E>(
       mendUserId: string,
       change: (current: ModelPreferences) => Result.Result<ModelPreferences, E>,
-    ) => Effect.Effect<ModelPreferences, GatewayStateError | E>;
+    ) => Effect.Effect<KeptModelPreferences, GatewayStateError | E>;
     /** Every bearer neither revoked nor expired at `now`: what a start checks with Mend. */
     readonly liveSessions: (
       now: number,
@@ -560,7 +565,8 @@ const MIGRATIONS: ReadonlyArray<string> = [
   CREATE TABLE model_preferences (
     mend_user_id TEXT PRIMARY KEY,
     favorites TEXT,
-    provider_model_preferences TEXT
+    provider_model_preferences TEXT,
+    version INTEGER NOT NULL
   );
   `,
 ];
@@ -667,17 +673,24 @@ const ModelPreferencesRow = Schema.Struct({
   provider_model_preferences: Schema.NullOr(Schema.fromJsonString(ProviderModelPreferences)),
 });
 const decodeModelPreferencesRow = Schema.decodeUnknownResult(ModelPreferencesRow);
+const decodeModelPreferencesVersion = Schema.decodeUnknownSync(
+  Schema.Struct({ version: Schema.Number }),
+);
 const encodeModelPreferencesRow = Schema.encodeSync(ModelPreferencesRow);
+interface ModelPreferencesRead {
+  readonly version: number;
+  readonly kept: Result.Result<ModelPreferences, Schema.SchemaError>;
+}
 const keptOrNone = (
   mendUserId: string,
-  kept: Result.Result<ModelPreferences, Schema.SchemaError>,
-) =>
+  { version, kept }: ModelPreferencesRead,
+): Effect.Effect<KeptModelPreferences> =>
   Result.isSuccess(kept)
-    ? Effect.succeed(kept.success)
+    ? Effect.succeed({ version, preferences: kept.success })
     : Effect.logWarning("t3 gateway set aside model preferences it can no longer read", {
         mendUserId,
         cause: kept.failure,
-      }).pipe(Effect.as(NO_MODEL_PREFERENCES));
+      }).pipe(Effect.as({ version, preferences: NO_MODEL_PREFERENCES }));
 const ImageBytesRow = Schema.Struct({ ...ImageRow.fields, bytes: Schema.Uint8Array });
 const decodeImageBytesRow = Schema.decodeUnknownEffect(ImageBytesRow);
 const storedImageOf = (row: typeof ImageRow.Type): StoredImage => ({
@@ -1435,19 +1448,20 @@ export const openGatewayState = (
         ),
       );
 
-    const readModelPreferences = (
-      mendUserId: string,
-    ): Result.Result<ModelPreferences, Schema.SchemaError> => {
+    const readModelPreferences = (mendUserId: string): ModelPreferencesRead => {
       const row = database
         .prepare(
-          "SELECT favorites, provider_model_preferences FROM model_preferences WHERE mend_user_id = ?",
+          "SELECT favorites, provider_model_preferences, version FROM model_preferences WHERE mend_user_id = ?",
         )
         .get(mendUserId);
-      if (row === undefined) return Result.succeed(NO_MODEL_PREFERENCES);
-      return Result.map(decodeModelPreferencesRow(row), (kept) => ({
-        favorites: kept.favorites,
-        providerModelPreferences: kept.provider_model_preferences,
-      }));
+      if (row === undefined) return { version: 0, kept: Result.succeed(NO_MODEL_PREFERENCES) };
+      return {
+        version: decodeModelPreferencesVersion(row).version,
+        kept: Result.map(decodeModelPreferencesRow(row), (kept) => ({
+          favorites: kept.favorites,
+          providerModelPreferences: kept.provider_model_preferences,
+        })),
+      };
     };
 
     const modelPreferences = (mendUserId: string) =>
@@ -1460,8 +1474,9 @@ export const openGatewayState = (
       change: (current: ModelPreferences) => Result.Result<ModelPreferences, E>,
     ) =>
       run("updateModelPreferences", () => {
-        const kept = readModelPreferences(mendUserId);
-        const next = change(Result.getOrElse(kept, () => NO_MODEL_PREFERENCES));
+        const read = readModelPreferences(mendUserId);
+        const version = read.version + 1;
+        const next = change(Result.getOrElse(read.kept, () => NO_MODEL_PREFERENCES));
         if (Result.isSuccess(next)) {
           const row = encodeModelPreferencesRow({
             favorites: next.success.favorites,
@@ -1469,14 +1484,16 @@ export const openGatewayState = (
           });
           database
             .prepare(
-              "INSERT OR REPLACE INTO model_preferences (mend_user_id, favorites, provider_model_preferences) VALUES (?, ?, ?)",
+              "INSERT OR REPLACE INTO model_preferences (mend_user_id, favorites, provider_model_preferences, version) VALUES (?, ?, ?, ?)",
             )
-            .run(mendUserId, row.favorites, row.provider_model_preferences);
+            .run(mendUserId, row.favorites, row.provider_model_preferences, version);
         }
-        return { kept, next };
+        return { read, version, next };
       }).pipe(
-        Effect.tap(({ kept }) => keptOrNone(mendUserId, kept)),
-        Effect.flatMap(({ next }) => Effect.fromResult(next)),
+        Effect.tap(({ read }) => keptOrNone(mendUserId, read)),
+        Effect.flatMap(({ version, next }) =>
+          Effect.map(Effect.fromResult(next), (preferences) => ({ version, preferences })),
+        ),
       );
 
     const liveSessions = (now: number) =>

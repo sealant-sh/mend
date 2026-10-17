@@ -56,11 +56,10 @@ import * as Stream from "effect/Stream";
 import { AssetUrls } from "./assets.ts";
 import { dispatchCommand } from "./commands.ts";
 import { GatewayEnvironment } from "./environment.ts";
-import type { SubscriberFellBehind } from "./fanout.ts";
 import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
-import { modelPreferencesUpdateOf } from "./model-preferences.ts";
+import { modelPreferencesUpdateOf, type KeptSettings } from "./model-preferences.ts";
 import { makeReviewHandlers } from "./review.ts";
 import { RPC_REQUIRED_SCOPES } from "./rpc-scopes.ts";
 import {
@@ -342,26 +341,26 @@ export const makeGatewayRpcHandlers = ({
   const settingsReadFailure = (cause: GatewayStateError) =>
     new ServerSettingsError({ settingsPath: PREFERENCES_SOURCE, operation: "read-file", cause });
   const readSettings = hub.settings(session).pipe(Effect.mapError(settingsReadFailure));
-  const subscribeSettings = hub
-    .subscribeSettings(session)
-    .pipe(Effect.mapError(settingsReadFailure));
   /**
-   * A feed that fell behind is replaced here, with the settings as they are now, rather than failed:
-   * t3code's config subscription does not retry a typed failure, so failing it would end the
-   * client's config updates until it reconnects.
+   * A feed that fell behind is let go and subscribed again, with the settings as they are now,
+   * rather than failed: t3code's config subscription does not retry a typed failure, so failing it
+   * would end the client's config updates until it reconnects.
    */
-  const followSettings = (
-    changes: Stream.Stream<ServerSettings, SubscriberFellBehind>,
-  ): Stream.Stream<ServerSettings, ServerSettingsError> =>
-    changes.pipe(
-      Stream.catchTag("SubscriberFellBehind", () =>
-        Stream.unwrap(
-          Effect.map(subscribeSettings, (next) =>
-            Stream.concat(Stream.make(next.settings), followSettings(next.changes)),
-          ),
-        ),
-      ),
+  const followSettings = (): Stream.Stream<KeptSettings, ServerSettingsError> =>
+    Stream.unwrap(hub.subscribeSettings(session).pipe(Effect.mapError(settingsReadFailure))).pipe(
+      Stream.catchTag("SubscriberFellBehind", () => followSettings()),
     );
+  const settingsAfter = (version: number) => {
+    let last = version;
+    return followSettings().pipe(
+      Stream.filter((kept) => {
+        if (kept.version <= last) return false;
+        last = kept.version;
+        return true;
+      }),
+      Stream.map((kept) => kept.settings),
+    );
+  };
 
   /**
    * What t3code cannot read is a typed failure logged by the gateway, never a defect in the
@@ -446,9 +445,10 @@ export const makeGatewayRpcHandlers = ({
     });
     return readable(encodeServerConfig(config), config);
   };
-  const loadServerConfig = Effect.all([loadProviders, readSettings], {
-    concurrency: "unbounded",
-  }).pipe(Effect.flatMap(([providers, settings]) => configOf(providers, settings)));
+  const loadServerConfig = authorize(session).pipe(
+    Effect.andThen(Effect.all([loadProviders, readSettings], { concurrency: "unbounded" })),
+    Effect.flatMap(([providers, kept]) => configOf(providers, kept.settings)),
+  );
 
   return WsRpcGroup.of({
     // ── Served ──────────────────────────────────────────────────────────────
@@ -460,8 +460,9 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.subscribeServerConfig]: () =>
       Stream.unwrap(
         Effect.gen(function* () {
-          const subscription = yield* subscribeSettings;
-          const config = yield* configOf(yield* loadProviders, subscription.settings);
+          const opening = yield* loadProviders;
+          const kept = yield* readSettings;
+          const config = yield* configOf(opening, kept.settings);
           const changes = yield* hub.accountChanges;
           let last = providersPrint(config.providers);
           const updates = Stream.merge(
@@ -482,7 +483,7 @@ export const makeGatewayRpcHandlers = ({
               payload: { providers },
             })),
           );
-          const settingsUpdates = followSettings(subscription.changes).pipe(
+          const settingsUpdates = settingsAfter(kept.version).pipe(
             Stream.map((settings) => ({
               version: 1 as const,
               type: "settingsUpdated" as const,
@@ -764,7 +765,11 @@ export const makeGatewayRpcHandlers = ({
       Effect.fail(new ServerSelfUpdateError({ reason: SELF_UPDATE_REASON })),
     [WS_METHODS.serverUpsertKeybinding]: () => refuse(WS_METHODS.serverUpsertKeybinding),
     [WS_METHODS.serverRemoveKeybinding]: () => refuse(WS_METHODS.serverRemoveKeybinding),
-    [WS_METHODS.serverGetSettings]: () => authorize(session).pipe(Effect.andThen(readSettings)),
+    [WS_METHODS.serverGetSettings]: () =>
+      authorize(session).pipe(
+        Effect.andThen(readSettings),
+        Effect.map((kept) => kept.settings),
+      ),
     [WS_METHODS.serverUpdateSettings]: (input) =>
       Effect.gen(function* () {
         yield* authorize(session);

@@ -85,7 +85,8 @@ import { optionsChangeOf } from "./model-options.ts";
 import {
   applyModelPreferencesPatch,
   boundedModelPreferences,
-  settingsWith,
+  keptSettingsOf,
+  type KeptSettings,
   type ModelPreferencesPatch,
   type ModelPreferencesTooLarge,
 } from "./model-preferences.ts";
@@ -229,18 +230,17 @@ export interface PersonHub {
    * The person's t3code server settings: t3code's defaults with the model preferences the gateway
    * keeps for them (`model-preferences.ts`).
    */
-  readonly settings: (session: BearerSession) => Effect.Effect<ServerSettings, GatewayStateError>;
+  readonly settings: (session: BearerSession) => Effect.Effect<KeptSettings, GatewayStateError>;
   /** Applies a model preferences patch for the person; their sockets hear the settings after it. */
   readonly updateModelPreferences: (
     session: BearerSession,
     patch: ModelPreferencesPatch,
   ) => Effect.Effect<ServerSettings, GatewayStateError | ModelPreferencesTooLarge>;
-  /** The person's settings now, and again each time one of their clients changes them. */
-  readonly subscribeSettings: (session: BearerSession) => Effect.Effect<
-    {
-      readonly settings: ServerSettings;
-      readonly changes: Stream.Stream<ServerSettings, SubscriberFellBehind>;
-    },
+  /** The person's settings now, then again each time one of their clients changes them. */
+  readonly subscribeSettings: (
+    session: BearerSession,
+  ) => Effect.Effect<
+    Stream.Stream<KeptSettings, SubscriberFellBehind>,
     GatewayStateError,
     Scope.Scope
   >;
@@ -1283,7 +1283,7 @@ export const makePersonHub = (input: {
     let shellArchived = new Map<string, Printed<OrchestrationV2ThreadShell>>();
     const archivedChanges = makeFanout<ArchivedShellDelta>();
     const accountSignals = makeFanout<"accounts">();
-    const settingsChanges = makeFanout<ServerSettings>();
+    const settingsChanges = makeFanout<KeptSettings>();
     const shellChanges = makeFanout<ShellDelta>();
     const watches = new Map<string, Watch>();
     const threadChanges = makeFanout<{
@@ -3763,20 +3763,22 @@ export const makePersonHub = (input: {
     });
 
     const settings = (session: BearerSession) =>
-      state.modelPreferences(session.mendUser.id).pipe(Effect.map(settingsWith));
+      state.modelPreferences(session.mendUser.id).pipe(Effect.map(keptSettingsOf));
     const updateModelPreferences = (session: BearerSession, patch: ModelPreferencesPatch) =>
       state
         .updateModelPreferences(session.mendUser.id, (current) =>
           boundedModelPreferences(applyModelPreferencesPatch(current, patch)),
         )
         .pipe(
-          Effect.map(settingsWith),
+          Effect.map(keptSettingsOf),
           Effect.tap((next) => settingsChanges.publish([next])),
+          Effect.map((next) => next.settings),
         );
     const subscribeSettings = (session: BearerSession) =>
       Effect.gen(function* () {
         const changes = yield* settingsChanges.subscribe(() => true);
-        return { settings: yield* settings(session), changes };
+        const now = yield* settings(session);
+        return Stream.concat(Stream.make(now), changes);
       });
 
     return {
