@@ -32,6 +32,8 @@ const revokedMend: DeviceCalls = {
   projectBranches: () => refused("branches"),
   worktreeNames: () => refused("worktrees"),
   projectFiles: () => refused("files"),
+  listSkills: () => refused("skills"),
+  projectSkills: () => refused("project skills"),
   changeStats: () => refused("stats"),
   worktreeCheckpoints: () => refused("checkpoints"),
   worktreeDiff: () => refused("range"),
@@ -94,6 +96,8 @@ describe("the device gate", () => {
         projectBranches: gated.projectBranches("t-projectBranches", "p"),
         worktreeNames: gated.worktreeNames("t-worktreeNames", "p"),
         projectFiles: gated.projectFiles("t-projectFiles", "p", null),
+        listSkills: gated.listSkills("t-listSkills"),
+        projectSkills: gated.projectSkills("t-projectSkills", "p"),
         changeStats: gated.changeStats("t-changeStats", "c"),
         worktreeCheckpoints: gated.worktreeCheckpoints("t-worktreeCheckpoints", "w"),
         worktreeContents: gated.worktreeContents("t-worktreeContents", "w", {

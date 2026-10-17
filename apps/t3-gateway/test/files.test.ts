@@ -231,6 +231,50 @@ describe("reading and searching a worktree's files", () => {
 const one = (text: string, asked: Parameters<typeof highlightLines>[1]) =>
   highlightLines([text], asked).pipe(Effect.map((lines) => lines[0]));
 
+describe("file metadata for a thread's file chips", () => {
+  it.live("answers each path in a worktree as Mend lists it, with a file's size", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.files.set("session-1", FILES);
+        mend.workbench.fileContents.set(
+          "worktree-session-1",
+          new Map([["src/parser.ts", "export const parse = () => [];\n"]]),
+        );
+        const { rpc } = yield* pairAndConnect(mend, "METADATA");
+        const paths = [
+          `${WORKTREE}/src/parser.ts`,
+          `${WORKTREE}/src`,
+          `${WORKTREE}/src/`,
+          WORKTREE,
+          `${WORKTREE}/src/missing.ts`,
+          `${WORKTREE}/../wt-session-2/src/parser.ts`,
+          `${STORE}/README.md`,
+          "~/notes.md",
+          `${WORKTREE}/src/parser.ts`,
+        ];
+        const metadata = yield* rpc[WS_METHODS.filesystemGetMetadata]({ paths });
+        const parser = { kind: "file", byteLength: 31 } as const;
+        assert.deepStrictEqual(metadata.entries, [
+          parser,
+          { kind: "directory" },
+          { kind: "directory" },
+          { kind: "directory" },
+          null,
+          null,
+          null,
+          null,
+          parser,
+        ]);
+        assert.strictEqual(fileReads(mend).length, 1);
+        const contentReads = mend.workbench.calls.filter((call) => call.path.endsWith("/contents"));
+        assert.strictEqual(contentReads.length, 1);
+      }),
+    ),
+  );
+});
+
 describe("matching", () => {
   it("ranks the name's start, then the name, then the path, then the letters in order", () => {
     assert.strictEqual(matchScore("src/parser.ts", "pars"), 0);

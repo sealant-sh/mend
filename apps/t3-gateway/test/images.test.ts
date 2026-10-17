@@ -213,7 +213,7 @@ const upload = (name: string) => ({
 });
 
 describe("what a message may carry", () => {
-  it.live("at most ten images, each once and of its own thread, however they were uploaded", () =>
+  it.live("t3code's 100 images and 80 MiB, each once and of its own thread, however uploaded", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
@@ -226,15 +226,28 @@ describe("what a message may carry", () => {
             messageId: MessageId.make(messageId),
             attachments: Array.from({ length: count }, (_, index) => upload(`${index}.png`)),
           }).pipe(Effect.map((kept) => kept.attachments));
-        // Two batches, each within the limit, for one message of eleven.
-        const first = yield* persist("session-1", "message-many", 10);
+        const oneTooMany = yield* Effect.exit(persist("session-1", "message-101", 101));
+        assert.strictEqual(errorTag(oneTooMany), "PersistChatAttachmentsError");
+        const first = yield* persist("session-1", "message-many", 100);
         const second = yield* persist("session-1", "message-many", 1);
-        const eleven = yield* Effect.exit(
+        const many = yield* Effect.exit(
           rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
             send("message-many", "All of them", [...first, ...second]),
           ),
         );
-        assert.strictEqual(errorTag(eleven), "OrchestrationV2DispatchCommandError");
+        assert.strictEqual(errorTag(many), "OrchestrationV2DispatchCommandError");
+        const heavy = yield* Effect.exit(
+          rpc[WS_METHODS.assetsPersistChatAttachments]({
+            threadId: THREAD,
+            messageId: MessageId.make("message-heavy"),
+            attachments: Array.from({ length: 11 }, (_, index) => ({
+              ...upload(`${index}.png`),
+              sizeBytes: 8 * 1024 * 1024,
+            })),
+          }),
+        );
+        assert.strictEqual(errorTag(heavy), "PersistChatAttachmentsError");
+        assert.include(String(Exit.isFailure(heavy) ? Cause.pretty(heavy.cause) : ""), "80 MiB");
         const twice = yield* Effect.exit(
           rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
             send("message-twice", "Twice", [...second, ...second]),
@@ -251,6 +264,40 @@ describe("what a message may carry", () => {
         assert.strictEqual(errorTag(crossed), "OrchestrationV2DispatchCommandError");
         assert.strictEqual(posts(mend, "/images").length, 0);
         assert.strictEqual(posts(mend, "/turns").length, 0);
+      }),
+    ),
+  );
+
+  it.live("sends a message of more than ten images, each placed and named in order", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const { rpc } = yield* pairAndConnect(mend, "ELEVEN");
+        const kept = yield* rpc[WS_METHODS.assetsPersistChatAttachments]({
+          threadId: THREAD,
+          messageId: MessageId.make("message-eleven"),
+          attachments: Array.from({ length: 11 }, (_, index) => upload(`${index}.png`)),
+        });
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          send("message-eleven", "All eleven", kept.attachments),
+        );
+        yield* eventually(() => posts(mend, "/turns").length === 1, "the turn");
+        assert.strictEqual(posts(mend, "/images").length, 11);
+        const body = posts(mend, "/turns")[0]?.body;
+        const input =
+          typeof body === "object" && body !== null && "input" in body ? String(body.input) : "";
+        const named = [...input.matchAll(/\[image: (\d+)\.png · /g)].map((match) => match[1]);
+        assert.deepStrictEqual(
+          named,
+          Array.from({ length: 11 }, (_, index) => String(index)),
+        );
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        const message = projection.messages.find((candidate) => candidate.id === "message-eleven");
+        assert.strictEqual(message?.text, "All eleven");
+        assert.strictEqual(message?.attachments.length, 11);
       }),
     ),
   );
