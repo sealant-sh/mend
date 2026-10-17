@@ -165,7 +165,11 @@ if (report !== null) {
   if (ran.length === 0) say("images · the report named none (a stack.mjs from before images.json)");
   for (const item of ran) {
     const digests =
-      item.repoDigests.length > 0 ? item.repoDigests.join(" ") : "no repo digest (loaded)";
+      item.repoDigests.length > 0
+        ? item.repoDigests.join(" ")
+        : item.id === null
+          ? "no image"
+          : "no repo digest (built or loaded here)";
     const hub = !("hub" in item)
       ? ""
       : item.hub === null

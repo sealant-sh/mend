@@ -115,7 +115,7 @@ test("doctor writes images.json naming every service the report names, with its 
     );
     assert.match(
       doctor,
-      /image · garage · dxflrs\/garage:v2\.4\.1 · sha256:g · no repo digest \(loaded\) · Docker Hub did not answer/,
+      /image · garage · dxflrs\/garage:v2\.4\.1 · sha256:g · no repo digest \(built or loaded here\) · Docker Hub did not answer/,
     );
     assert.match(doctor, /held node:26-bookworm sha256:old · Hub has sha256:new/);
   } finally {
