@@ -323,12 +323,17 @@ const metadataNamed = (calls) =>
     }),
   );
 
+// Its /tmp/digests is the fixture's working directory: one directory per build, named for its arch.
 const mergeScript = () =>
   shellStep(
     "../.github/workflows/image.yml",
     "merge",
     "Create and inspect the multi-arch candidate",
-  );
+  ).replaceAll("/tmp/digests", ".");
+const laidOut = (amd64, arm64) => ({
+  [`digests-mend--amd64/${amd64}`]: "",
+  [`digests-mend--arm64/${arm64}`]: "",
+});
 const RUN = { GITHUB_RUN_ID: "38923041738", GITHUB_RUN_ATTEMPT: "2" };
 const createCall = (target, sources) => [
   "buildx",
@@ -350,54 +355,46 @@ test("the actual image merge shell stages a real version under its run's tag, ne
     ["1.2.4-next.1", false],
     ["0.0.0-dryrun.1.1", false],
   ]) {
-    withPublicationFixture(
-      "docker",
-      { imageExists: exists },
-      { [digests[0]]: "", [digests[1]]: "" },
-      (run) => {
-        const result = run(mergeScript(), {
-          REPOSITORY: "ghcr.invalid/fixture/mend",
-          VERSION: version,
-          ...RUN,
-        });
-        assert.equal(result.status, 0, result.stderr);
-        // Whether :<version> exists is finalize-images' question; merge never asks or writes it.
-        assert.deepEqual(metadataNamed(result.calls), [
-          createCall(staging, sources),
-          ["buildx", "imagetools", "inspect", staging],
-        ]);
-        assert.ok(
-          result.calls.flat().every((arg) => !arg.endsWith(`:${version}`)),
-          version,
-        );
-      },
-    );
+    withPublicationFixture("docker", { imageExists: exists }, laidOut(...digests), (run) => {
+      const result = run(mergeScript(), {
+        ID: "mend",
+        REPOSITORY: "ghcr.invalid/fixture/mend",
+        VERSION: version,
+        ...RUN,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      // Whether :<version> exists is finalize-images' question; merge never asks or writes it.
+      assert.deepEqual(metadataNamed(result.calls), [
+        createCall(staging, sources),
+        ["buildx", "imagetools", "inspect", staging],
+      ]);
+      assert.ok(
+        result.calls.flat().every((arg) => !arg.endsWith(`:${version}`)),
+        version,
+      );
+    });
   }
 });
 
 test("the actual image merge shell keeps a dev or acceptance build's own mutable tag", () => {
   const digests = ["a".repeat(64), "b".repeat(64)];
   for (const version of ["0.0.0-dev.sha0123456789ab", "0.0.0-acceptance.601.1"]) {
-    withPublicationFixture(
-      "docker",
-      { imageExists: true },
-      { [digests[0]]: "", [digests[1]]: "" },
-      (run) => {
-        const result = run(mergeScript(), {
-          REPOSITORY: "ghcr.invalid/fixture/mend",
-          VERSION: version,
-          ...RUN,
-        });
-        assert.equal(result.status, 0, result.stderr);
-        const target = `ghcr.invalid/fixture/mend:${version}`;
-        const sources = digests.map((digest) => `ghcr.invalid/fixture/mend@sha256:${digest}`);
-        assert.deepEqual(metadataNamed(result.calls), [
-          createCall(target, sources),
-          ["buildx", "imagetools", "inspect", target],
-        ]);
-        assert.deepEqual(result.state.sources, sources);
-      },
-    );
+    withPublicationFixture("docker", { imageExists: true }, laidOut(...digests), (run) => {
+      const result = run(mergeScript(), {
+        ID: "mend",
+        REPOSITORY: "ghcr.invalid/fixture/mend",
+        VERSION: version,
+        ...RUN,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const target = `ghcr.invalid/fixture/mend:${version}`;
+      const sources = digests.map((digest) => `ghcr.invalid/fixture/mend@sha256:${digest}`);
+      assert.deepEqual(metadataNamed(result.calls), [
+        createCall(target, sources),
+        ["buildx", "imagetools", "inspect", target],
+      ]);
+      assert.deepEqual(result.state.sources, sources);
+    });
   }
 });
 
@@ -410,21 +407,67 @@ test("the actual image merge shell propagates create and final-inspection failur
     withPublicationFixture(
       "docker",
       { imageExists: false, [failure]: true },
-      { ["a".repeat(64)]: "" },
+      laidOut("a".repeat(64), "b".repeat(64)),
       (run) => {
         const result = run(mergeScript(), {
+          ID: "mend",
           REPOSITORY: "ghcr.invalid/fixture/mend",
           VERSION: "1.2.3",
           ...RUN,
         });
         assert.equal(result.status, status);
         assert.deepEqual(metadataNamed(result.calls), [
-          createCall(staging, [`ghcr.invalid/fixture/mend@sha256:${"a".repeat(64)}`]),
+          createCall(
+            staging,
+            ["a", "b"].map((hex) => `ghcr.invalid/fixture/mend@sha256:${hex.repeat(64)}`),
+          ),
           ...(failure === "failInspect" ? [["buildx", "imagetools", "inspect", staging]] : []),
         ]);
       },
     );
   }
+});
+
+test("the actual image merge shell gives create amd64 then arm64, each from its own arch's artifact", () => {
+  const environment = {
+    ID: "mend",
+    REPOSITORY: "ghcr.invalid/fixture/mend",
+    VERSION: "1.2.3",
+    ...RUN,
+  };
+  // The sources go to create amd64 first, whatever their digests sort as.
+  withPublicationFixture("docker", {}, laidOut("f".repeat(64), "0".repeat(64)), (run) => {
+    const result = run(mergeScript(), environment);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.state.sources, [
+      `ghcr.invalid/fixture/mend@sha256:${"f".repeat(64)}`,
+      `ghcr.invalid/fixture/mend@sha256:${"0".repeat(64)}`,
+    ]);
+  });
+  // A stray or missing file in either arch's artifact is refused before anything is pushed.
+  for (const [label, files, problem] of [
+    [
+      "a stray file",
+      { ...laidOut("a".repeat(64), "b".repeat(64)), "digests-mend--arm64/latest": "" },
+      /The mend arm64 digests artifact holds '.*latest.*', not one image digest/,
+    ],
+    [
+      "a missing arch",
+      { [`digests-mend--amd64/${"a".repeat(64)}`]: "" },
+      /The mend arm64 digests artifact holds '\*', not one image digest/,
+    ],
+    [
+      "a name that is not a digest",
+      laidOut("a".repeat(64), "latest"),
+      /The mend arm64 digests artifact holds 'latest', not one image digest/,
+    ],
+  ])
+    withPublicationFixture("docker", {}, files, (run) => {
+      const result = run(mergeScript(), environment);
+      assert.equal(result.status, 1, label);
+      assert.match(result.stdout, problem, label);
+      assert.deepEqual(result.calls, [], label);
+    });
 });
 
 test("npm waits for verified images, this run's passed acceptance and public setup assets", () => {
