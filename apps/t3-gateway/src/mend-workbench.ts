@@ -283,6 +283,7 @@ export type MendLandedPullRequest = typeof MendLandedPullRequest.Type;
 
 /** `ChangeLanding` in @mend/domain/workbench, one push of a change to origin (ADR 0007). */
 export const MendLanding = Schema.Struct({
+  id: Schema.String,
   /** The branch on origin, `mend/<name>` unless the owner named another. */
   remoteBranch: Schema.String,
   /** What origin's branch was moved to; null when nothing was pushed. */
@@ -298,8 +299,7 @@ export type MendLanding = typeof MendLanding.Type;
 
 /**
  * `ChangeLandingsView` in @mend/api-contracts, from `GET /api/changes/:id/landings`. A change's
- * landings, newest first, and what Mend observed about them. A fact is read by its tag alone, and
- * `changed-since-landing` by its file count.
+ * landings, newest first, and whether the caller may land it.
  */
 export const MendChangeLandings = Schema.Struct({
   /** The session a landing runs as. */
@@ -307,11 +307,10 @@ export const MendChangeLandings = Schema.Struct({
   /** The caller owns the change, so may land it. */
   land: Schema.Boolean,
   landings: Schema.Array(MendLanding),
-  facts: Schema.Array(
-    Schema.Struct({ _tag: Schema.String, files: Schema.optional(Schema.Number) }),
-  ),
   /** Whether Mend can open a pull request for the project (origin on GitHub), and why not. */
   pullRequest: Schema.Struct({ available: Schema.Boolean, reason: Schema.NullOr(Schema.String) }),
+  /** The branch the next landing pushes when the owner names none; older servers omit it. */
+  nextBranch: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type MendChangeLandings = typeof MendChangeLandings.Type;
 

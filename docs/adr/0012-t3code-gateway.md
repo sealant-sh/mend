@@ -285,11 +285,14 @@ its own pull request.
   a console warning. Stored grants are narrowed on read.
 - 2026-10-17: the gateway grants `source-control:write`. The git panel's push and create PR land the
   thread's change through `POST /sessions/:id/land`, and the remote half of VCS status reads
-  `GET /changes/:id/landings`. Only the change's owner sees anything to push, and a landing by
-  anyone else is refused with Mend's own words. Commit alone, a new branch, a selection of files,
-  the panel's commit message, branch switch and create, pull and pull request checkout are refused
-  in Mend's words. The grant is stored per pairing, so migration 16 widens only the pairings
-  narrowed while the scope was withheld, never one made later that asked for less.
+  `GET /changes/:id/landings`. Everyone who can see the change reads the same counts. After a push
+  the record cannot say nothing is new, so Push stays offered and Mend answers "nothing new" itself.
+  A landing by anyone but the change's owner is refused with Mend's own words. A refresh the owner
+  asks for has Mend ask GitHub about the pull request, at most once a minute. Commit alone, a new
+  branch, a selection of files, the panel's commit message, branch switch and create, pull and pull
+  request checkout are refused in Mend's words. The grant is stored per pairing, so migration 16
+  widens only the pairings narrowed while the scope was withheld, never one made later that asked
+  for less.
 - 2026-10-11: read state is the gateway's, per person, and `threadVisitedTracking` says so. The
   shell sent `lastVisitedAt: null`, which t3code reads as server-tracked, and every `thread.visit`
   was refused, so no thread ever showed as unread.

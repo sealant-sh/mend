@@ -4,6 +4,7 @@ import {
   WS_METHODS,
   type EnvironmentAuthorizationError,
   type GitActionProgressEvent,
+  type GitActionProgressPhase,
   type GitRunStackedActionInput,
   type VcsListRefsInput,
   type VcsListRefsResult,
@@ -15,9 +16,11 @@ import {
   type VcsStatusStreamEvent,
 } from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as PubSub from "effect/PubSub";
+import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
@@ -33,6 +36,7 @@ import {
   standingOf,
 } from "./landing.ts";
 import { MEND_RESPONSE_DEADLINE, type MendBranch } from "./mend-client.ts";
+import type { MendChangeLandings } from "./mend-workbench.ts";
 import { refusalOf } from "./rpc-scopes.ts";
 import type { BearerSession } from "./state.ts";
 
@@ -47,8 +51,9 @@ import type { BearerSession } from "./state.ts";
  *   is clean" when `hasWorkingTreeChanges` is false: it is true whenever the change has files, and
  *   `workingTree` stays empty.
  * - The remote half comes from the change's landing record (`GET /api/changes/:id/landings`,
- *   `landing.ts`). It says the branch a landing pushed, whether anything is new since, and the
- *   pull request as GitHub last reported it. The project's root has none.
+ *   `landing.ts`). It says the branch a landing pushed, whether anything may be new since, and
+ *   the pull request as GitHub last reported it. A refresh the person asks for has Mend ask
+ *   GitHub about that pull request first. The project's root has none.
  *
  * The stream sends a snapshot, then each half again when it moved: whenever any thread in the
  * worktree changes in the shell (every session there adds to its one change), a thread goes, a git
@@ -70,6 +75,10 @@ import type { BearerSession } from "./state.ts";
 export const VCS_REFRESH_MS = 1_000;
 /** How often a watched status is read with nothing in the shell to say it moved. */
 export const VCS_POLL = "15 seconds";
+/** At most one ask of GitHub about a pull request this often, when the person refreshes. */
+export const PULL_REQUEST_REFRESH_MS = 60_000;
+
+type VcsActionError = GitManagerError | EnvironmentAuthorizationError;
 
 const EMPTY_TREE = { files: [], insertions: 0, deletions: 0 } as const;
 
@@ -167,6 +176,8 @@ interface StatusRead {
 interface Reader {
   readonly lock: Semaphore.Semaphore;
   asked: number;
+  /** Whether an ask the next read covers is the person's refresh, which asks GitHub first. */
+  refresh: boolean;
   /** The last read to finish, failed or not, and the asks up to `seq` it answers. */
   last: { readonly seq: number; readonly outcome: Exit.Exit<StatusRead, GitManagerError> } | null;
 }
@@ -197,8 +208,37 @@ export const makeVcsHandlers = (input: {
   const nudges = Effect.runSync(PubSub.unbounded<string>());
   const nudge = (cwd: string) => PubSub.publish(nudges, cwd).pipe(Effect.asVoid);
 
-  /** Where `cwd` is, and its status now: the local half, and the remote half (null at the root). */
-  const readStatus = (operation: string, cwd: string) =>
+  /** When this socket last asked GitHub about each landing's pull request, by landing id. */
+  const observedAt = new Map<string, number>();
+
+  /**
+   * The change's landing record, its pull request asked of GitHub first when the person refreshed
+   * and the change is theirs. That is at most once a minute per pull request, and never for one
+   * merged, which cannot change. A refresh that fails leaves the last observation standing.
+   */
+  const observe = (view: MendChangeLandings) =>
+    Effect.gen(function* () {
+      const recorded = recordedPullRequestOf(view);
+      if (!view.land || recorded === null || recorded.state === "merged") return view;
+      const now = yield* Clock.currentTimeMillis;
+      const last = observedAt.get(recorded.landingId);
+      if (last !== undefined && now - last < PULL_REQUEST_REFRESH_MS) return view;
+      observedAt.set(recorded.landingId, now);
+      return yield* mend.refreshLanding(session.deviceToken, recorded.landingId).pipe(
+        Effect.map(
+          (refreshed): MendChangeLandings => ({
+            ...view,
+            landings: view.landings.map((landing) =>
+              landing.id === refreshed.id ? refreshed : landing,
+            ),
+          }),
+        ),
+        Effect.orElseSucceed(() => view),
+      );
+    });
+
+  /** Where `cwd` is, and both halves of its status now. The root has no remote half. */
+  const readStatus = (operation: string, cwd: string, refreshed: boolean) =>
     Effect.gen(function* () {
       const fail = failed(operation, cwd);
       const location = yield* hub
@@ -216,7 +256,9 @@ export const makeVcsHandlers = (input: {
       const [stats, landings] = yield* Effect.all(
         [
           mend.changeStats(session.deviceToken, changeId),
-          mend.changeLandings(session.deviceToken, changeId),
+          mend
+            .changeLandings(session.deviceToken, changeId)
+            .pipe(Effect.flatMap((view) => (refreshed ? observe(view) : Effect.succeed(view)))),
         ],
         { concurrency: 2 },
       ).pipe(Effect.mapError((error) => fail(error.message)));
@@ -227,23 +269,30 @@ export const makeVcsHandlers = (input: {
       };
     });
 
-  /** `cwd`'s status from a read that started after this ask, shared with every ask meanwhile. */
-  const statusAt = (operation: string, cwd: string) =>
+  /**
+   * `cwd`'s status from a read that started after this ask, shared with every ask meanwhile. The
+   * read asks GitHub first when any ask it covers is a refresh.
+   */
+  const statusAt = (operation: string, cwd: string, refreshed = false) =>
     Effect.suspend(() => {
       const reader = readers.get(cwd) ?? {
         lock: Semaphore.makeUnsafe(1),
         asked: 0,
+        refresh: false,
         last: null,
       };
       readers.set(cwd, reader);
       const ask = ++reader.asked;
+      if (refreshed) reader.refresh = true;
       return reader.lock.withPermits(1)(
         Effect.gen(function* () {
           if (reader.last !== null && reader.last.seq >= ask) return yield* reader.last.outcome;
           const seq = reader.asked;
+          const refresh = reader.refresh;
+          reader.refresh = false;
           // The lock is held for the whole read, so the whole read is bounded, body included: a
           // Mend that sends its headers and stalls in the body must not hold every ask behind it.
-          const outcome = yield* readStatus(operation, cwd).pipe(
+          const outcome = yield* readStatus(operation, cwd, refresh).pipe(
             Effect.map((status): StatusRead => ({ cwd, seq, ...status })),
             Effect.timeoutOrElse({
               duration: MEND_RESPONSE_DEADLINE,
@@ -256,6 +305,7 @@ export const makeVcsHandlers = (input: {
           );
           // A read its asker cancelled answers no one: the asks it covered read again.
           if (Exit.isFailure(outcome) && Cause.hasInterruptsOnly(outcome.cause)) {
+            if (refresh) reader.refresh = true;
             return yield* outcome;
           }
           reader.last = { seq, outcome };
@@ -266,7 +316,7 @@ export const makeVcsHandlers = (input: {
     });
 
   const refreshStatus = (request: VcsStatusInput) =>
-    statusAt("vcs.refreshStatus", request.cwd).pipe(
+    statusAt("vcs.refreshStatus", request.cwd, true).pipe(
       Effect.map(({ local, remote }): VcsStatusResult => ({ ...local, ...(remote ?? NO_REMOTE) })),
     );
 
@@ -368,7 +418,7 @@ export const makeVcsHandlers = (input: {
    */
   const runStackedAction = (
     request: GitRunStackedActionInput,
-  ): Stream.Stream<GitActionProgressEvent, GitManagerError | EnvironmentAuthorizationError> => {
+  ): Stream.Stream<GitActionProgressEvent, VcsActionError> => {
     const operation = WS_METHODS.gitRunStackedAction;
     const fail = failed(operation, request.cwd);
     const base = { actionId: request.actionId, cwd: request.cwd, action: request.action };
@@ -389,6 +439,19 @@ export const makeVcsHandlers = (input: {
           .pipe(Effect.mapError((error) => fail(error.message)));
         if (!view.land) return yield* refusedByRule(ONLY_THE_OWNER);
         const known = recordedPullRequestOf(view);
+        // As t3code's own server ends a failed action, with its phase and words first.
+        const failedAt = (
+          phase: GitActionProgressPhase,
+          error: VcsActionError,
+        ): Stream.Stream<GitActionProgressEvent, VcsActionError> => {
+          const ended: GitActionProgressEvent = {
+            ...base,
+            kind: "action_failed",
+            phase,
+            message: error.message,
+          };
+          return Stream.make(ended).pipe(Stream.concat(Stream.fail(error)));
+        };
         const landed = mend
           .land(session.deviceToken, view.sessionId ?? location.sessionId, {
             pullRequest: plan.pullRequest,
@@ -399,16 +462,8 @@ export const makeVcsHandlers = (input: {
                 ? refusedByRule(error.message)
                 : fail(error.message),
             ),
-            Effect.flatMap((report) => {
-              const outcome = landingResultOf(request.action, report, location, known);
-              return outcome._tag === "failed"
-                ? Effect.fail(fail(outcome.detail))
-                : Effect.succeed<GitActionProgressEvent>({
-                    ...base,
-                    kind: "action_finished",
-                    result: outcome.result,
-                  });
-            }),
+            Effect.map((report) => landingResultOf(request.action, report, location, known)),
+            Effect.result,
           );
         const started: ReadonlyArray<GitActionProgressEvent> = [
           { ...base, kind: "action_started", phases: plan.phases },
@@ -416,17 +471,20 @@ export const makeVcsHandlers = (input: {
         ];
         return Stream.fromIterable(started).pipe(
           Stream.concat(
-            Stream.fromEffect(landed).pipe(
-              // As t3code's own server ends a failed action, with its phase and words first.
-              Stream.catch((error) => {
-                const ended: GitActionProgressEvent = {
-                  ...base,
-                  kind: "action_failed",
-                  phase: "push",
-                  message: error.message,
-                };
-                return Stream.make(ended).pipe(Stream.concat(Stream.fail(error)));
-              }),
+            Stream.unwrap(
+              landed.pipe(
+                Effect.map((outcome): Stream.Stream<GitActionProgressEvent, VcsActionError> => {
+                  if (Result.isFailure(outcome)) return failedAt("push", outcome.failure);
+                  const result = outcome.success;
+                  if (result._tag === "failed") return failedAt(result.phase, fail(result.detail));
+                  const finished: GitActionProgressEvent = {
+                    ...base,
+                    kind: "action_finished",
+                    result: result.result,
+                  };
+                  return Stream.make(finished);
+                }),
+              ),
             ),
           ),
         );

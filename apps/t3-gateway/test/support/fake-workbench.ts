@@ -582,7 +582,7 @@ export class FakeWorkbench {
       path === "/api/sessions" ||
       path === "/api/events" ||
       path === "/api/skills" ||
-      /^\/api\/(projects|sessions|turns|requests|changes|worktrees)\//.test(path);
+      /^\/api\/(projects|sessions|turns|requests|changes|worktrees|landings)\//.test(path);
     if (!known) return false;
     if (!accepted) return json(401, { _tag: "Unauthorized" });
 
@@ -1006,6 +1006,34 @@ export class FakeWorkbench {
         });
       }
     }
+    if (method === "POST" && collection === "landings" && sub === "refresh") {
+      return body().then((value) => {
+        record(value);
+        for (const [changeId, landings] of this.landings) {
+          const index = landings.findIndex((landing) => landing.id === id);
+          const landing = landings[index];
+          if (landing === undefined) continue;
+          if (this.changeOwnerOf(changeId) !== this.accountOf(request.headers.authorization)) {
+            return json(403, {
+              _tag: "LandingNotAllowed",
+              message: "only the change's owner lands it",
+            });
+          }
+          if (landing.pullRequest === null) return json(404, { _tag: "NotFound" });
+          const refreshed: FakeLanding = {
+            ...landing,
+            pullRequest: {
+              ...landing.pullRequest,
+              state: this.github.get(landing.pullRequest.number) ?? landing.pullRequest.state,
+              observedAt: tick(),
+            },
+          };
+          landings[index] = refreshed;
+          return json(200, refreshed);
+        }
+        return json(404, { _tag: "NotFound" });
+      });
+    }
     if (method === "POST" && collection === "turns" && sub === "interrupt") {
       return body().then((value) => {
         record(value);
@@ -1267,11 +1295,20 @@ export class FakeWorkbench {
   readonly landings = new Map<string, Array<FakeLanding>>();
   /** Change id → files that differ from the last landing (the `changed-since-landing` fact). */
   readonly sinceLanding = new Map<string, number>();
+  /**
+   * Changes whose agent committed since the last landing, which lands even when no file differs
+   * (the agent committed the tree the landing pushed).
+   */
+  readonly agentCommitted = new Set<string>();
+  /** Pull request number → its state on GitHub now, which `POST /api/landings/:id/refresh` reads. */
+  readonly github = new Map<number, "open" | "closed" | "merged">();
   /** Project id → whether Mend can open a pull request for it; unset is available. */
   readonly pullRequestAvailability = new Map<
     string,
     { readonly available: boolean; readonly reason: string | null }
   >();
+  /** The next landing's pull request step fails with `gh`'s words, after its push. */
+  nextPullRequestFailure: string | null = null;
   /** The next `POST /api/sessions/:id/land` answers this instead of landing. */
   nextLandingAnswer: { readonly status: number; readonly body: unknown } | null = null;
   private pullRequestNumbers = 0;
@@ -1343,13 +1380,19 @@ export class FakeWorkbench {
     }
     const history = this.landings.get(changeId) ?? [];
     const lastPush = history.find((landing) => landing.pushedSha !== null);
-    const previous = history.find((landing) => landing.pullRequest !== null)?.pullRequest ?? null;
+    const latest = history[0];
+    const recorded = history.find((landing) => landing.pullRequest !== null)?.pullRequest ?? null;
+    const previous = recorded?.state === "open" ? recorded : null;
     const availability = this.availabilityOf(session.projectId);
     const wantsPullRequest = pullRequest && availability.available;
-    if (
+    const nothingNew =
       lastPush !== undefined &&
       (this.sinceLanding.get(changeId) ?? 0) === 0 &&
-      !(wantsPullRequest && previous === null)
+      !this.agentCommitted.has(changeId);
+    if (
+      nothingNew &&
+      latest !== undefined &&
+      (latest.outcome === "pull-request" || (latest.outcome === "pushed" && !wantsPullRequest))
     ) {
       return {
         status: 409,
@@ -1360,17 +1403,20 @@ export class FakeWorkbench {
       };
     }
     const observedAt = tick();
-    const opened: FakePullRequest | null = !wantsPullRequest
-      ? null
-      : previous === null
-        ? {
-            number: (this.pullRequestNumbers += 1),
-            url: `https://github.com/sealant-sh/mend/pull/${this.pullRequestNumbers}`,
-            state: "open",
-            title: session.label ?? session.id,
-            observedAt,
-          }
-        : { ...previous, observedAt };
+    const stepFailure = wantsPullRequest ? this.nextPullRequestFailure : null;
+    this.nextPullRequestFailure = null;
+    const opened: FakePullRequest | null =
+      !wantsPullRequest || stepFailure !== null
+        ? null
+        : previous === null
+          ? {
+              number: (this.pullRequestNumbers += 1),
+              url: `https://github.com/sealant-sh/mend/pull/${this.pullRequestNumbers}`,
+              state: "open",
+              title: session.label ?? session.id,
+              observedAt,
+            }
+          : { ...previous, observedAt };
     const landing: FakeLanding = {
       id: this.nextId("landing"),
       changeId,
@@ -1386,19 +1432,22 @@ export class FakeWorkbench {
       pullRequest: opened,
       pullRequestCrossRepository: false,
       pullRequestHeadOwner: null,
-      outcome: opened === null ? "pushed" : "pull-request",
-      message: null,
+      outcome: stepFailure !== null ? "failed" : opened === null ? "pushed" : "pull-request",
+      message: stepFailure,
       userId: owner,
       createdAt: observedAt,
     };
     this.landings.set(changeId, [landing, ...history]);
     this.sinceLanding.set(changeId, 0);
+    this.agentCommitted.delete(changeId);
     const step =
-      opened !== null
-        ? { _tag: previous === null ? "opened" : "updated", pullRequest: opened }
-        : !pullRequest
-          ? { _tag: "off" }
-          : { _tag: "unavailable", reason: availability.reason ?? "pull request unavailable" };
+      stepFailure !== null
+        ? { _tag: "failed", message: stepFailure }
+        : opened !== null
+          ? { _tag: previous === null ? "opened" : "updated", pullRequest: opened }
+          : !pullRequest
+            ? { _tag: "off" }
+            : { _tag: "unavailable", reason: availability.reason ?? "pull request unavailable" };
     return { status: 200, body: { landing, pullRequest: step } };
   }
   /** How many images were pasted into workspaces. */

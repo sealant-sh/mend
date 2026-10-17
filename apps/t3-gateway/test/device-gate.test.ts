@@ -37,6 +37,7 @@ const revokedMend: DeviceCalls = {
   changeStats: () => refused("stats"),
   changeLandings: () => refused("landings"),
   land: () => refused("land"),
+  refreshLanding: () => refused("refresh"),
   worktreeCheckpoints: () => refused("checkpoints"),
   worktreeDiff: () => refused("range"),
   worktreeContents: () => refused("contents"),
@@ -103,6 +104,7 @@ describe("the device gate", () => {
         changeStats: gated.changeStats("t-changeStats", "c"),
         changeLandings: gated.changeLandings("t-changeLandings", "c"),
         land: gated.land("t-land", "s", { pullRequest: true }),
+        refreshLanding: gated.refreshLanding("t-refreshLanding", "l"),
         worktreeCheckpoints: gated.worktreeCheckpoints("t-worktreeCheckpoints", "w"),
         worktreeContents: gated.worktreeContents("t-worktreeContents", "w", {
           path: "a.ts",
