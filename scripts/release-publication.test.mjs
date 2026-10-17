@@ -922,7 +922,7 @@ const promote = async (
       GITHUB_API_URL: githubStub.url,
       NPM_CONFIG_REGISTRY: npmStub.url,
       MANIFEST: file,
-      // The step's retries without their production waits; republish.test.mjs holds the default.
+      // Its retries skip production waits; republish.overrides.test.mjs holds the default.
       RELEASE_TEST_RETRY_MS: "1",
     },
   });

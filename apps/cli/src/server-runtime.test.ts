@@ -4,11 +4,18 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
-import { runServerProcess, serverComposeArgs, serverProcessDeadlines } from "./server-runtime.ts";
+import {
+  runServerProcess,
+  serverComposeArgs,
+  serverProcessDeadlines,
+  type ServerProcessOptions,
+  type ServerProcessOutput,
+} from "./server-runtime.ts";
 import { nodeServerSetupRuntime, serverCommand, type ServerSetupRuntime } from "./server-setup.ts";
 import { withServerStore } from "./server-store.ts";
 
@@ -107,15 +114,123 @@ it("a completed command is not subsequently timed out", async () => {
   ).toEqual({ status: 0, stdout: "done\n", stderr: "" });
 });
 
+/** A child that prints its PID, then writes it to `marker`, then runs until it is killed. */
+const pidThenMarker = (marker: string): ReadonlyArray<string> => [
+  "-e",
+  `console.log(process.pid); require("node:fs").writeFileSync(${JSON.stringify(marker)}, String(process.pid)); setInterval(() => {}, 1000)`,
+];
+
+/** How long the children may take to write their markers, on the real clock. */
+const READY_MS = 5000;
+
+interface DeadlineChild {
+  readonly name: string;
+  readonly args: ReadonlyArray<string>;
+  readonly marker: string;
+  readonly options?: ServerProcessOptions;
+}
+
+const markedPid = (marker: string): number | undefined => {
+  const pid = fs.existsSync(marker) ? Number(fs.readFileSync(marker, "utf8")) : Number.NaN;
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+};
+
+/**
+ * Runs two children past the default deadline. The deadline's timer is virtual from before they
+ * spawn; the clock advances only once both have written their markers: to 1 ms short of the
+ * deadline, where neither may settle, then to it. Readiness and every wait after it use the real
+ * clock, and a child that ends before its marker fails the run at once, by name. A failure fires
+ * the virtual deadlines, so runServerProcess kills each process group, and waits for the children
+ * to be reaped. If Vitest times the test out with this body still waiting, `onTestFinished` does
+ * the same and kills the group of every child that has not settled.
+ */
+const runPastDefaultDeadline = async (
+  runtime: ServerSetupRuntime,
+  [first, second]: readonly [DeadlineChild, DeadlineChild],
+): Promise<[ServerProcessOutput, ServerProcessOutput]> => {
+  const children = [first, second];
+  const settled = new Set<string>();
+  // Read as each marker appears: afterEach removes the markers before onTestFinished runs.
+  const pids = new Map<string, number>();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => {
+    if (vi.isFakeTimers()) {
+      vi.runOnlyPendingTimers();
+      vi.useRealTimers();
+    }
+    for (const child of children) {
+      const pid = pids.get(child.name);
+      if (settled.has(child.name) || pid === undefined) continue;
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        /* The group is gone already. */
+      }
+    }
+  });
+  const start = (child: DeadlineChild) =>
+    runtime.run(process.execPath, child.args, child.options).finally(() => {
+      settled.add(child.name);
+    });
+  const runs = Promise.all([start(first), start(second)]);
+  const bound = new AbortController();
+  const realDelay = (ms: number) =>
+    delay(ms, undefined, { signal: bound.signal }).catch(() => undefined);
+  try {
+    const readyBy = performance.now() + READY_MS;
+    for (;;) {
+      for (const child of children) {
+        const pid = markedPid(child.marker);
+        if (pid !== undefined) pids.set(child.name, pid);
+      }
+      const waiting = children.filter((child) => !pids.has(child.name));
+      if (waiting.length === 0) break;
+      const ended = waiting.find((child) => settled.has(child.name));
+      if (ended !== undefined)
+        throw new Error(`the ${ended.name} child ended before writing its marker`);
+      if (performance.now() > readyBy)
+        throw new Error(
+          `${waiting.map((child) => child.name).join(" and ")} wrote no marker within ${READY_MS} ms`,
+        );
+      await delay(10);
+    }
+    vi.advanceTimersByTime(serverProcessDeadlines.ordinary - 1);
+    await delay(50);
+    expect([...settled]).toEqual([]);
+    vi.advanceTimersByTime(1);
+    return await Promise.race([
+      runs,
+      realDelay(10_000).then(() => {
+        throw new Error("the default deadline did not fire at its full length");
+      }),
+    ]);
+  } catch (cause) {
+    vi.runOnlyPendingTimers();
+    await Promise.race([runs.catch(() => undefined), realDelay(10_000)]);
+    throw cause;
+  } finally {
+    bound.abort();
+    vi.useRealTimers();
+  }
+};
+
 it(
   "applies the default deadline with absent options or only a private stdout destination",
   async () => {
-    const runtime = nodeServerSetupRuntime();
-    const file = path.join(temporary(), "default-timeout.partial");
-    const args = ["-e", "console.log(process.pid); setInterval(() => {}, 1000)"];
-    const [captured, streamed] = await Promise.all([
-      runtime.run(process.execPath, args),
-      runtime.run(process.execPath, args, { stdoutFile: file }),
+    const root = temporary();
+    const file = path.join(root, "default-timeout.partial");
+    const [captured, streamed] = await runPastDefaultDeadline(nodeServerSetupRuntime(), [
+      {
+        name: "captured",
+        marker: path.join(root, "captured.ready"),
+        args: pidThenMarker(path.join(root, "captured.ready")),
+      },
+      {
+        name: "streamed",
+        marker: path.join(root, "streamed.ready"),
+        args: pidThenMarker(path.join(root, "streamed.ready")),
+        options: { stdoutFile: file },
+      },
     ]);
     for (const result of [captured, streamed]) {
       expect(result.error).toBe(`Process timed out after ${serverProcessDeadlines.ordinary}ms`);
@@ -128,6 +243,34 @@ it(
   },
   serverProcessDeadlines.ordinary + 5000,
 );
+
+it("fails at once, naming the child, when one ends before its marker, and leaves none running", async () => {
+  const root = temporary();
+  const healthy = path.join(root, "streamed.ready");
+  // The captured child exits once the streamed one is up, before writing its own marker.
+  const exitOnceHealthy = `const wait = () => require("node:fs").existsSync(${JSON.stringify(healthy)}) ? process.exit(3) : setTimeout(wait, 10); wait();`;
+  const started = performance.now();
+  await expect(
+    runPastDefaultDeadline(nodeServerSetupRuntime(), [
+      {
+        name: "captured",
+        marker: path.join(root, "captured.ready"),
+        args: ["-e", exitOnceHealthy],
+      },
+      {
+        name: "streamed",
+        marker: healthy,
+        args: pidThenMarker(healthy),
+        options: { stdoutFile: path.join(root, "streamed.partial") },
+      },
+    ]),
+  ).rejects.toThrow("the captured child ended before writing its marker");
+  expect(performance.now() - started).toBeLessThan(READY_MS);
+  const pid = markedPid(healthy);
+  expect(pid).toBeDefined();
+  expect(() => process.kill(pid ?? 0, 0)).toThrow();
+  expect(() => process.kill(-(pid ?? 0), 0)).toThrow();
+}, 15_000);
 
 it.each(["stalled", "exit"])(
   "terminates the owned POSIX group before releasing the lock (%s leader)",

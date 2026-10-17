@@ -127,7 +127,9 @@ jobs:
           --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
           --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
           scripts/republish.test.mjs scripts/normalize-npm-tarball.test.mjs
-          scripts/ci-node-reporter.test.mjs scripts/ci-test-report.test.mjs
+          scripts/republish.registry.test.mjs scripts/republish.floor.test.mjs
+          scripts/republish.overrides.test.mjs scripts/ci-node-reporter.test.mjs
+          scripts/ci-test-report.test.mjs
       - run: node scripts/ci-shards.mjs --check
       # Every install reads the committed lockfile, so a package published after the commit (a
       # Sealant prerelease included) never drifts in. The brackets keep this step from matching

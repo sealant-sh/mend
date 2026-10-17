@@ -149,7 +149,9 @@ node --test scripts/bundle-packaging.test.mjs scripts/process-supervisor.test.mj
 
 The publisher's inline tarball check and `normalize-npm-tarball.mjs --check` must agree; CI's static
 job runs their parity test on every pull request:
-`node --test scripts/republish.test.mjs scripts/normalize-npm-tarball.test.mjs`.
+`node --test scripts/republish.test.mjs scripts/normalize-npm-tarball.test.mjs`. The same step runs
+the rest of the publish block's tests: `scripts/republish.registry.test.mjs`,
+`scripts/republish.floor.test.mjs` and `scripts/republish.overrides.test.mjs`.
 
 This is the list CI runs. The bundle-contract test needs the Docker Compose plugin, not a running
 daemon. `edge-overlay` and `aws-compose` skip without `docker compose` on PATH, and `helm-chart`

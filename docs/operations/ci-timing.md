@@ -730,6 +730,79 @@ The new files' CI estimates use the CI/local ratio of the file they came from. T
 `server-runtime.test.ts`, at 40.2 seconds on the box. Its default-deadline case waits out the real
 30-second process deadline.
 
+## Merge-group margin after #1039
+
+After #1039, six files still ran above 30 seconds in merge groups `38984051194` (#1039) and
+`38985037090` (#1036). That is under the 60-second cap but less than half of it away. No product
+code, assertion or deadline changed.
+
+- `apps/cli/src/server-runtime.test.ts`: the default-deadline case waited out the real 30-second
+  `serverProcessDeadlines.ordinary`. It now fakes only `setTimeout` and `clearTimeout`, installed
+  before the children spawn, so their deadline timers are virtual. The clock advances only once both
+  children have written their markers, within 5 real seconds: first to 1 ms short of the deadline,
+  where neither may settle, then to it, where both must be killed. A child that ends before its
+  marker fails the case at once, by name. Any failure fires the virtual deadlines and waits for the
+  children to be reaped. If Vitest times the case out with its body still waiting, `onTestFinished`
+  kills the group of every child that has not settled. A new case forces a child to exit before its
+  marker and checks that the other's process group is gone. The production default is still read
+  from the same constant, with no new option or environment variable.
+- `scripts/bench/live-cleanup-refusals.test.mjs`: its three public `cleanup` runs each waited out
+  the CLI's real 10-second reconciliation grace and its 500 ms Stop polls. Their children now
+  preload `scripts/bench/fixtures/virtual-sleeps.mjs`, which records each wait that
+  `scenarios.mjs`'s own `sleep()` asks for and takes it at once; fetch and the state lock keep
+  native timers. Each case now also asserts the waits the CLI asked for: the polls, the 10-second
+  grace, and no retry delay after a client error. `live-cleanup.test.mjs` keeps the native grace and
+  its 9.5-second check.
+- `packages/sessions/test/engine-person-runtime.test.ts` and `engine-launch-recovery.test.ts` have
+  no real sleeps. Each case adopts a fresh origin over the fixture's `git://` daemon, and every
+  `git clone` and `git fetch` over loopback TCP costs about 95 ms and 45 ms of round trips. That is
+  most of the 230 ms a case takes. They are split by area: Deliveries 16 to 18 moved to
+  `engine-person-conversations.test.ts`, Delivery 19 and agents run by hand to
+  `engine-person-executors.test.ts`, the cold-resume cases to `engine-launch-cold-resume.test.ts`,
+  and the install, workspace-note and first-screen cases to `engine-launch-install.test.ts`.
+- `scripts/republish.test.mjs` has no real waits left after #1033; its time is the npm, pacote and
+  Node processes each case runs. It is split by area: the block's publishing and registry reads in
+  `republish.registry.test.mjs`, the stable floor in `republish.floor.test.mjs`, and the retry-delay
+  and override guards in `republish.overrides.test.mjs`. The parity test stays in
+  `republish.test.mjs`. All four run in the static job's parity step, which `ci-workflow.test.mjs`
+  checks.
+- `tooling/test-ci/test/effect-clock.test.ts`: nine cases wait 1.2 real seconds for Effect's
+  1-second unadvanced-clock warning, on top of a Vitest start each. The warning is what they test,
+  so the wait stays. The captured-warning cases moved to `effect-clock.captured.test.ts` and the
+  replacement-clock cases to `effect-clock.replacements.test.ts`.
+
+The shared code of each split is in a helpers module beside it (`republish.helpers.mjs`,
+`effect-clock.helpers.ts`, `engine-person-runtime-fixtures.ts`,
+`engine-launch-recovery-fixtures.ts`). Each split moves its statements unchanged; apart from the
+list of files that name the release overrides and the effect-clock loop split in two, the statements
+compare equal by AST. Test names and counts are the same.
+
+Local times are each file run alone on Node 26.1. For a file whose time was a real wait, the
+estimate takes the wait off the box time and scales the rest. For the others it scales the local
+time by the file's box/local ratio: 2.5 for republish, 2.0 and 2.4 for the sessions files, 1.7 for
+effect-clock.
+
+| File                                   | CI max (s) | Local before | Local after | CI estimate |
+| -------------------------------------- | ---------: | -----------: | ----------: | ----------: |
+| `republish.test.mjs`                   |       41.2 |         16.5 |         5.3 |          13 |
+| `republish.registry.test.mjs`          |          — |            — |         4.5 |          11 |
+| `republish.floor.test.mjs`             |          — |            — |         5.8 |          15 |
+| `republish.overrides.test.mjs`         |          — |            — |         1.7 |           4 |
+| sessions `engine-person-runtime`       |       39.0 |         19.4 |         8.1 |          16 |
+| sessions `engine-person-conversations` |          — |            — |         8.0 |          16 |
+| sessions `engine-person-executors`     |          — |            — |         8.0 |          16 |
+| CLI `server-runtime`                   |       38.6 |         36.5 |         6.5 |           9 |
+| sessions `engine-launch-recovery`      |       36.7 |         15.4 |         8.1 |          19 |
+| sessions `engine-launch-cold-resume`   |          — |            — |         5.7 |          14 |
+| sessions `engine-launch-install`       |          — |            — |         6.3 |          15 |
+| `live-cleanup-refusals.test.mjs`       |       32.3 |         31.7 |         0.2 |           1 |
+| `effect-clock.test.ts`                 |       30.8 |         18.2 |         3.3 |           6 |
+| `effect-clock.captured.test.ts`        |          — |            — |         8.1 |          14 |
+| `effect-clock.replacements.test.ts`    |          — |            — |         6.9 |          12 |
+
+`aws-tofu.test.mjs` (39.8 seconds) is unchanged: its time is the provider download that a runner
+image cache removes.
+
 ## Step 6: Core and sealantd
 
 Step 6 applies the same work to Core (`sealant-sh/sealant`) and sealantd. Both run on the box
