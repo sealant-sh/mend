@@ -335,6 +335,17 @@ const imageId = (tag) =>
   dockerOut(["image", "inspect", "--format", "{{.Id}}", tag]).catch(() => null);
 
 /**
+ * Pull an image this daemon lacks, as setup does (`pull-missing`). A session's Docker service
+ * starts empty, so a held image is one this session pulled before or one `local-outer.sh seed`
+ * loaded after checking its digest with Docker Hub. Pulling a held tag still asks Docker Hub, which
+ * refuses even that once this address has spent its anonymous limit.
+ */
+const pullMissing = async (image) => {
+  if (await imageId(image)) return;
+  await docker(["pull", "--quiet", image], { timeout: 15 * 60_000 });
+};
+
+/**
  * Build one image unless this daemon already holds it under its tag (the same tree was built
  * before). `dockerfile` is a path in the context, or `{ text }` for a Dockerfile the stack owns.
  */
@@ -398,7 +409,7 @@ async function ensureBuildx() {
     return;
   const plugins = join(dockerEnv.DOCKER_CONFIG, "cli-plugins");
   await mkdir(plugins, { recursive: true, mode: 0o700 });
-  await docker(["pull", "--quiet", DOCKER_CLI_IMAGE], { timeout: 15 * 60_000 });
+  await pullMissing(DOCKER_CLI_IMAGE);
   const id = await dockerOut(["create", ...transient("buildx"), DOCKER_CLI_IMAGE]);
   try {
     await docker([
@@ -764,7 +775,7 @@ async function up(args, { claimId = randomUUID(), claimWith = claimDaemon } = {}
   });
   await assertDaemonIsFree();
   // The base of the fixture's sessions, and the image the claim and the socket probe run.
-  await docker(["pull", "--quiet", FIXTURE_BASE_IMAGE], { timeout: 15 * 60_000 });
+  await pullMissing(FIXTURE_BASE_IMAGE);
   // Before the claim, so a trim that trips cannot strand one.
   await trimCaches();
   await mkdir(logs, { recursive: true });
@@ -926,11 +937,7 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
   for (const pending of [sealantdBuild, coreBuilt, cliBuild, mendContext])
     pending.catch(() => undefined);
   const pulls = timed(phases, "pulls", () =>
-    Promise.all(
-      composeImages(composeYaml).map((image) =>
-        docker(["pull", "--quiet", image], { timeout: 15 * 60_000 }),
-      ),
-    ),
+    Promise.all(composeImages(composeYaml).map(pullMissing)),
   );
   await Promise.all([coreBuilt, pulls]);
   const bundleContext = await mendContext;

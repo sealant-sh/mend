@@ -49,6 +49,31 @@ verdicts. They never appear in a report.
   `MEND_VERIFY_OUTER_URL` to match): with the defaults, its `up` meets the first one's container and
   its `serve` writes into the first one's served repository.
 
+  **Docker Hub pulls.** Docker Hub gives this machine's address 100 anonymous pulls an hour, and
+  every outer and every stack would otherwise pull the same images; past the limit a pull fails with
+  `toomanyrequests` and so does the run. Two things keep a run off it; neither logs in to Docker
+  Hub.
+  - **Seeding.** `up` loads the images this machine's Docker already holds into the outer's daemon,
+    and `local-outer.sh seed` does it again for the Docker service of each session running in the
+    outer (Launch, step 2): from this machine, or from the outer's daemon, which pulls an image once
+    for all its sessions. A copy is loaded only while Docker Hub still names its digest for the tag;
+    a stale one is reported and pulled instead. When Docker Hub refuses to say (its limit spent),
+    the copy is loaded and its digest printed `unchecked`: keep that line with the evidence.
+    `stack.mjs` pulls only what its daemon lacks. The network guard's image stays one pull per
+    stack: it is named by digest, and a loaded image carries none.
+  - **One pull-through cache.** `local-outer.sh hub-cache up` starts `st-verify-hub-cache`
+    (registry:2) on a Docker network of its own, published on no address. An outer brought up with
+    `MEND_VERIFY_REGISTRY_MIRROR=http://st-verify-hub-cache:5000` joins that network and asks the
+    cache first, so the cache pulls each image from Docker Hub once for every outer on this machine,
+    and serves its copy while Docker Hub refuses. `hub-cache status` prints what it holds and Docker
+    Hub's remaining pulls. A session's Docker service under Mend 0.36.0-next.658 takes no mirror,
+    which is why `seed` fills it from the outer's daemon.
+
+  ```sh
+  .claude/skills/verify/scripts/local-outer.sh hub-cache up   # once per machine; it restarts with Docker
+  export MEND_VERIFY_REGISTRY_MIRROR=http://st-verify-hub-cache:5000   # before `up`
+  ```
+
   It always serves a complete repository (one parentless commit of the tree, then each serve on
   top), never a shallow clone: Mend refuses to adopt a shallow repository (mend#654), and a worktree
   whose history it cannot walk never finishes its Stop (`final seal · refused · unrestorable`). The
@@ -188,6 +213,13 @@ first. The helpers start `mend` through `PATH`, so they always meet the guard.
    ```
 
    Done when the JSON reads `"status": "running"`. This took 20 to 43 s.
+
+   On a `local-outer.sh` outer, seed the session's Docker service before its stack pulls anything
+   (What you need, Docker Hub pulls). It took about a minute here.
+
+   ```sh
+   .claude/skills/verify/scripts/local-outer.sh seed > "$E/launch/seed.txt"
+   ```
 
 3. **Start the stack** as a Service of that session, named for this run, so `logs`, `connect` and
    `stop` can never pick another verifier's:

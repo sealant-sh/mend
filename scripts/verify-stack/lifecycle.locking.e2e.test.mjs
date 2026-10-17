@@ -243,11 +243,12 @@ test("every removal a teardown runs carries the lock (N16)", async () => {
 // A public up that reaches offline setup. The downstream HTTP refusal is deliberate: this
 // fixture verifies orchestration and command boundaries, not a working inner Mend installation.
 
-async function orchestrationRun(t, guardPullFailure) {
+async function orchestrationRun(t, guardPullFailure, held = []) {
   const guard = "example.invalid/guard:fixture";
   const fakeDaemon = daemon({
     build: "success",
     orchestration: { guard, guardPullFailure },
+    images: Object.fromEntries(held.map((tag) => [tag, { Id: `sha256:held-${tag}`, Labels: {} }])),
     containers: [["ordinary-container", { purpose: "ordinary" }]],
     volumes: [volume("ordinary-volume", { purpose: "ordinary" })],
     networks: [
@@ -348,6 +349,17 @@ async function orchestrationRun(t, guardPullFailure) {
   assert.deepEqual(failures, []);
   return { fakeDaemon, code, output: running.output(), requests, guard, port };
 }
+
+test("an image the daemon holds (seeded by local-outer.sh, or pulled before) is not pulled again", async (t) => {
+  const result = await orchestrationRun(t, false, ["node:26-bookworm", "postgres:17-alpine"]);
+  const pulls = callsOf(result.fakeDaemon)
+    .filter((args) => args[0] === "pull")
+    .map((args) => args.at(-1));
+  assert.deepEqual(
+    pulls.toSorted(),
+    ["dxflrs/garage:v2.4.1", "nginx:1.29-alpine", "registry:3.1", result.guard].toSorted(),
+  );
+});
 
 for (const guardPullFailure of [false, true]) {
   test(`public up accepts builds and ${guardPullFailure ? "refuses offline setup after guard preload failure" : "reaches offline setup before the deliberate downstream HTTP503 boundary"}`, async (t) => {
