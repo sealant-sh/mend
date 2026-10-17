@@ -18,6 +18,8 @@ const run = async (reportDir) => {
       process.execPath,
       [
         "--test",
+        // Both files must run at once. Node's default is one fewer than the CPUs, one on 2 vCPU.
+        "--test-concurrency=2",
         "--test-reporter=./scripts/ci-test-report.mjs",
         "--test-reporter-destination=stdout",
         // Relative, as CI passes them: Node echoes output events with the path as given.
