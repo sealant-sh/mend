@@ -65,12 +65,21 @@ export const connectWsRpc = (url: string) =>
  * Pairs a person with a fresh code and opens a socket for them, as a t3code client does on
  * connect: the bearer, a ticket, then `/ws`.
  */
-export const pairAndConnect = (mend: FakeMend, code: string, person: FakeMendUser = PERSON) =>
+export const pairAndConnect = (
+  mend: FakeMend,
+  code: string,
+  person: FakeMendUser = PERSON,
+  scope?: string,
+) =>
   Effect.gen(function* () {
     mend.addPairingCode(code, person);
     const client = yield* t3Client;
     const access = yield* client.auth.token(
-      tokenRequest(code, { client_label: "Ada's MacBook", client_device_type: "desktop" }),
+      tokenRequest(code, {
+        client_label: "Ada's MacBook",
+        client_device_type: "desktop",
+        ...(scope === undefined ? {} : { scope }),
+      }),
     );
     const ticket = yield* client.auth.webSocketTicket({ headers: bearer(access.access_token) });
     const rpc = yield* connectWsRpc(yield* socketUrl(ticket.ticket));

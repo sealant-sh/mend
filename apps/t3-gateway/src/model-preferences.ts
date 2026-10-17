@@ -4,6 +4,8 @@ import {
   type ServerSettingsPatch,
 } from "@mend/t3-contracts";
 import { applyServerSettingsPatch } from "@mend/t3-contracts/server-settings";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 
 /**
  * A person's model favorites, hidden models and model order (ADR 0012, "State"). Since v0.1.1
@@ -66,4 +68,58 @@ export const applyModelPreferencesPatch = (
 ): ModelPreferences => {
   const next = applyServerSettingsPatch(settingsWith(current), patch);
   return { favorites: next.favorites, providerModelPreferences: next.providerModelPreferences };
+};
+
+export const MODEL_PREFERENCE_LIMITS = {
+  favorites: 1_024,
+  providers: 64,
+  modelsPerProviderList: 2_048,
+  modelIdLength: 512,
+  encodedBytes: 256 * 1024,
+} as const;
+
+export class ModelPreferencesTooLarge extends Schema.TaggedError<ModelPreferencesTooLarge>()(
+  "ModelPreferencesTooLarge",
+  { limit: Schema.String },
+) {
+  override get message(): string {
+    return `The model preferences would exceed the gateway's limit of ${this.limit}.`;
+  }
+}
+
+const firstLimitExceeded = (preferences: ModelPreferences): string | null => {
+  const limits = MODEL_PREFERENCE_LIMITS;
+  const favorites = preferences.favorites ?? [];
+  if (favorites.length > limits.favorites) return `${limits.favorites} favorites`;
+  const providers = Object.values(preferences.providerModelPreferences ?? {});
+  if (providers.length > limits.providers) return `${limits.providers} providers`;
+  if (
+    providers.some(
+      (lists) =>
+        lists.hiddenModels.length > limits.modelsPerProviderList ||
+        lists.modelOrder.length > limits.modelsPerProviderList,
+    )
+  ) {
+    return `${limits.modelsPerProviderList} hidden or ordered models per provider`;
+  }
+  const modelIds = [
+    ...favorites.map((favorite) => favorite.model),
+    ...providers.flatMap((lists) => [...lists.hiddenModels, ...lists.modelOrder]),
+  ];
+  if (modelIds.some((model) => model.length > limits.modelIdLength)) {
+    return `${limits.modelIdLength} characters per model id`;
+  }
+  if (Buffer.byteLength(JSON.stringify(preferences)) > limits.encodedBytes) {
+    return `${limits.encodedBytes} bytes stored`;
+  }
+  return null;
+};
+
+export const boundedModelPreferences = (
+  preferences: ModelPreferences,
+): Result.Result<ModelPreferences, ModelPreferencesTooLarge> => {
+  const limit = firstLimitExceeded(preferences);
+  return limit === null
+    ? Result.succeed(preferences)
+    : Result.fail(new ModelPreferencesTooLarge({ limit }));
 };

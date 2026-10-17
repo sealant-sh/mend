@@ -29,6 +29,7 @@ import {
   type DeviceServiceState,
   ServerConfig,
   ServerProviderUpdateError,
+  ServerProviders,
   ServerSelfUpdateError,
   ServerSettingsError,
   type ServerSettings,
@@ -55,6 +56,7 @@ import * as Stream from "effect/Stream";
 import { AssetUrls } from "./assets.ts";
 import { dispatchCommand } from "./commands.ts";
 import { GatewayEnvironment } from "./environment.ts";
+import type { SubscriberFellBehind } from "./fanout.ts";
 import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
@@ -279,6 +281,7 @@ const providersPrint = (providers: ReadonlyArray<ServerProvider>) =>
 /** How often a subscribed client's logins are looked at again with nothing said to move them. */
 const LOGINS_LOOK = "5 minutes";
 const encodeServerConfig = Schema.encodeEffect(Schema.toCodecJson(ServerConfig));
+const encodeServerProviders = Schema.encodeEffect(Schema.toCodecJson(ServerProviders));
 
 /** A feed whose subscriber fell behind; the only typed failure these feeds declare. */
 const fellBehind = (requiredScope: AuthEnvironmentScope) =>
@@ -339,82 +342,113 @@ export const makeGatewayRpcHandlers = ({
   const settingsReadFailure = (cause: GatewayStateError) =>
     new ServerSettingsError({ settingsPath: PREFERENCES_SOURCE, operation: "read-file", cause });
   const readSettings = hub.settings(session).pipe(Effect.mapError(settingsReadFailure));
-
+  const subscribeSettings = hub
+    .subscribeSettings(session)
+    .pipe(Effect.mapError(settingsReadFailure));
   /**
-   * The person's config. Mend's catalog is read with their device token; a revoked device
-   * answers t3code's authorization error, an unreachable Mend its settings error (the client
-   * retries both differently: blocked, or transient). The config is encoded here first, so a
-   * mapping bug is a typed failure logged by the gateway, never a defect in the client.
+   * A feed that fell behind is replaced here, with the settings as they are now, rather than failed:
+   * t3code's config subscription does not retry a typed failure, so failing it would end the
+   * client's config updates until it reconnects.
    */
-  const loadServerConfigWith = (settingsRead: Effect.Effect<ServerSettings, ServerSettingsError>) =>
-    Effect.gen(function* () {
-      yield* authorize(session);
-      const catalogRead = mend.listHarnessModels(session.deviceToken).pipe(
-        Effect.catchTags({
-          MendDeviceRefused: () =>
-            Effect.fail(
-              new EnvironmentAuthorizationError({
-                message: "Mend no longer accepts this device. Pair again from Mend.",
-                requiredScope: READ,
-              }),
-            ),
-          MendUnavailable: (cause) =>
-            Effect.logWarning("t3 gateway could not read Mend's model catalog", { cause }).pipe(
-              Effect.andThen(
-                Effect.fail(
-                  new ServerSettingsError({
-                    settingsPath: MODELS_SOURCE,
-                    operation: "read-file",
-                    cause,
-                  }),
-                ),
-              ),
-            ),
-        }),
-      );
-      // Beside the catalog, never in front of it: a slow or failed read leaves the logins unknown.
-      const loginsRead = mend.connectedAccounts(session.deviceToken).pipe(
-        Effect.flatMap((accounts) =>
-          Effect.map(Clock.currentTimeMillis, (now): PersonLogins => loginsOf(accounts, now)),
-        ),
-        Effect.timeoutOption(LOGINS_DEADLINE),
-        Effect.map(Option.getOrNull),
-        Effect.catch((cause) =>
-          Effect.logDebug("t3 gateway could not read the person's logins", { cause }).pipe(
-            Effect.as(null),
+  const followSettings = (
+    changes: Stream.Stream<ServerSettings, SubscriberFellBehind>,
+  ): Stream.Stream<ServerSettings, ServerSettingsError> =>
+    changes.pipe(
+      Stream.catchTag("SubscriberFellBehind", () =>
+        Stream.unwrap(
+          Effect.map(subscribeSettings, (next) =>
+            Stream.concat(Stream.make(next.settings), followSettings(next.changes)),
           ),
         ),
-      );
-      const [catalogs, logins, settings] = yield* Effect.all(
-        [catalogRead, loginsRead, settingsRead],
-        { concurrency: "unbounded" },
-      );
-      const checkedAt = DateTime.formatIso(yield* DateTime.now);
-      const config = makeServerConfig({
-        environment: descriptor,
-        auth: environment.auth,
-        paths,
-        providers: providersFromMend(catalogs, checkedAt, logins),
-        settings,
-      });
-      yield* encodeServerConfig(config).pipe(
-        Effect.catch((cause) =>
-          Effect.logError("t3 gateway built a server config t3code cannot read", { cause }).pipe(
+      ),
+    );
+
+  /**
+   * What t3code cannot read is a typed failure logged by the gateway, never a defect in the
+   * client: a config or its providers are encoded before they are sent.
+   */
+  const readable = <A>(encoded: Effect.Effect<unknown, Schema.SchemaError>, value: A) =>
+    encoded.pipe(
+      Effect.catch((cause) =>
+        Effect.logError("t3 gateway built a server config t3code cannot read", { cause }).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new ServerSettingsError({
+                settingsPath: MODELS_SOURCE,
+                operation: "normalize",
+                cause,
+              }),
+            ),
+          ),
+        ),
+      ),
+      Effect.as(value),
+    );
+
+  /**
+   * The person's providers. Mend's catalog is read with their device token; a revoked device
+   * answers t3code's authorization error, an unreachable Mend its settings error (the client
+   * retries both differently: blocked, or transient).
+   */
+  const loadProviders = Effect.gen(function* () {
+    yield* authorize(session);
+    const catalogRead = mend.listHarnessModels(session.deviceToken).pipe(
+      Effect.catchTags({
+        MendDeviceRefused: () =>
+          Effect.fail(
+            new EnvironmentAuthorizationError({
+              message: "Mend no longer accepts this device. Pair again from Mend.",
+              requiredScope: READ,
+            }),
+          ),
+        MendUnavailable: (cause) =>
+          Effect.logWarning("t3 gateway could not read Mend's model catalog", { cause }).pipe(
             Effect.andThen(
               Effect.fail(
                 new ServerSettingsError({
                   settingsPath: MODELS_SOURCE,
-                  operation: "normalize",
+                  operation: "read-file",
                   cause,
                 }),
               ),
             ),
           ),
+      }),
+    );
+    // Beside the catalog, never in front of it: a slow or failed read leaves the logins unknown.
+    const loginsRead = mend.connectedAccounts(session.deviceToken).pipe(
+      Effect.flatMap((accounts) =>
+        Effect.map(Clock.currentTimeMillis, (now): PersonLogins => loginsOf(accounts, now)),
+      ),
+      Effect.timeoutOption(LOGINS_DEADLINE),
+      Effect.map(Option.getOrNull),
+      Effect.catch((cause) =>
+        Effect.logDebug("t3 gateway could not read the person's logins", { cause }).pipe(
+          Effect.as(null),
         ),
-      );
-      return config;
+      ),
+    );
+    const [catalogs, logins] = yield* Effect.all([catalogRead, loginsRead], {
+      concurrency: "unbounded",
     });
-  const loadServerConfig = loadServerConfigWith(readSettings);
+    const checkedAt = DateTime.formatIso(yield* DateTime.now);
+    const providers = providersFromMend(catalogs, checkedAt, logins);
+    return yield* readable(encodeServerProviders(providers), providers);
+  });
+
+  const configOf = (providers: ReadonlyArray<ServerProvider>, settings: ServerSettings) => {
+    const config = makeServerConfig({
+      environment: descriptor,
+      auth: environment.auth,
+      paths,
+      providers,
+      settings,
+    });
+    return readable(encodeServerConfig(config), config);
+  };
+  const loadServerConfig = Effect.all([loadProviders, readSettings], {
+    concurrency: "unbounded",
+  }).pipe(Effect.flatMap(([providers, settings]) => configOf(providers, settings)));
 
   return WsRpcGroup.of({
     // ── Served ──────────────────────────────────────────────────────────────
@@ -426,22 +460,15 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.subscribeServerConfig]: () =>
       Stream.unwrap(
         Effect.gen(function* () {
-          const subscription = yield* hub
-            .subscribeSettings(session)
-            .pipe(Effect.mapError(settingsReadFailure));
-          const config = yield* loadServerConfigWith(Effect.succeed(subscription.settings));
+          const subscription = yield* subscribeSettings;
+          const config = yield* configOf(yield* loadProviders, subscription.settings);
           const changes = yield* hub.accountChanges;
           let last = providersPrint(config.providers);
           const updates = Stream.merge(
             changes.pipe(Stream.orElseSucceed(() => "accounts" as const)),
             Stream.tick(LOGINS_LOOK).pipe(Stream.drop(1)),
           ).pipe(
-            Stream.mapEffect(() =>
-              loadServerConfig.pipe(
-                Effect.map((next) => next.providers),
-                Effect.orElseSucceed(() => null),
-              ),
-            ),
+            Stream.mapEffect(() => loadProviders.pipe(Effect.orElseSucceed(() => null))),
             Stream.filter((providers): providers is ReadonlyArray<ServerProvider> => {
               if (providers === null) return false;
               const print = providersPrint(providers);
@@ -455,8 +482,7 @@ export const makeGatewayRpcHandlers = ({
               payload: { providers },
             })),
           );
-          const settingsUpdates = subscription.changes.pipe(
-            Stream.catchTag("SubscriberFellBehind", () => Stream.fromEffect(readSettings)),
+          const settingsUpdates = followSettings(subscription.changes).pipe(
             Stream.map((settings) => ({
               version: 1 as const,
               type: "settingsUpdated" as const,
@@ -751,7 +777,7 @@ export const makeGatewayRpcHandlers = ({
             (cause) =>
               new ServerSettingsError({
                 settingsPath: PREFERENCES_SOURCE,
-                operation: "write-file",
+                operation: cause._tag === "ModelPreferencesTooLarge" ? "normalize" : "write-file",
                 cause,
               }),
           ),
