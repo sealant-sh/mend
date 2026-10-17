@@ -182,6 +182,11 @@ t3code shows those controls inert with its own wording, or it refuses them with 
 - **Searching threads by their text.** The command palette finds a thread by its title, not by what
   was said in it: Mend has no search over sessions' messages yet. Find in a thread searches all of
   one thread.
+- **Find in a thread on T3 Code older than v0.1.1.** The gateway counts matches as T3 Code v0.1.1
+  renders a message. Older clients show a Codex follow-up suggestion
+  (`:codex-followup[label]{prompt="…"}`) as literal text, so in a message with one the bar's count
+  and the highlights can differ: such a client highlights matches in the directive's syntax and
+  prompt that the gateway does not count. No other construct reads differently between the two.
 - **Uncommitted changes.** Mend reports a branch's change against its base, committed or not, and
   has no read of what is uncommitted. t3code's branch toolbar shows the branch's changes and no
   uncommitted ones.

@@ -69,7 +69,6 @@ import {
   type PersonLogins,
 } from "./server-config.ts";
 import type { BearerSession } from "./state.ts";
-import { findInThread, firstMatchInThread } from "./thread-find.ts";
 import { makeVcsHandlers } from "./vcs.ts";
 
 /**
@@ -617,15 +616,13 @@ export const makeGatewayRpcHandlers = ({
         return { item: item ?? null };
       }),
     [ORCHESTRATION_V2_WS_METHODS.searchThread]: (input) =>
-      threadToFind(input).pipe(Effect.map((snapshot) => findInThread(snapshot, input))),
+      threadToFind(input).pipe(
+        Effect.flatMap((snapshot) => hub.threadFinder.searchThread(snapshot, input)),
+      ),
     [ORCHESTRATION_V2_WS_METHODS.searchThreadStream]: (input) =>
       Stream.unwrap(
         threadToFind(input).pipe(
-          Effect.map((snapshot) => {
-            const counted = Stream.fromEffect(Effect.sync(() => findInThread(snapshot, input)));
-            const first = firstMatchInThread(snapshot, input);
-            return first === null ? counted : Stream.concat(Stream.make(first), counted);
-          }),
+          Effect.map((snapshot) => hub.threadFinder.searchThreadStream(snapshot, input)),
         ),
       ),
     [ORCHESTRATION_V2_WS_METHODS.searchThreads]: () =>
