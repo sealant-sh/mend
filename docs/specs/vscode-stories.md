@@ -1,8 +1,8 @@
 # VS Code extension: user stories
 
 - **Release:** 0.36
-- **Status:** stories for Yiannis's review. No screens exist for them yet; the Figma storyboards
-  follow once these are approved.
+- **Status:** approved by Yiannis on 2026-10-17; his four answers are under
+  [Decided](#decided-yiannis-2026-10-17). The Figma storyboards follow these stories.
 - **Replaces:** the screen-first design in `vscode-extension-redesign.md`. Yiannis rejected it on
   2026-10-17. That spec's as-built map, bug trace and API gap list still hold.
 - **Written:** 2026-10-17, against mend main `637009289`.
@@ -38,8 +38,9 @@ _Dana is fixing a bug in `newsroom-api` and wants an agent to add rate limiting 
    - Behind it, Mend matched the window to the project by its origin URL, so she is not asked which
      project.
 2. **It runs.** She presses Enter.
-   - Mend creates the session (`POST /projects/:id/sessions`) and launches claude on her prompt
-     (`POST /sessions/:id/launch`).
+   - Mend creates the session (`POST /projects/:id/sessions`) and launches claude on her prompt as a
+     **terminal agent**: the claude TUI in the session's terminal (`POST /sessions/:id/launch`, PTY
+     mode). Dana is a TUI person, and this is the agent she would run herself.
    - A row appears at once in the Mend view: `add-rate-limit · starting · building image`. Ten
      seconds later it reads `running · reading src/auth`.
    - No toast. No window opens.
@@ -68,35 +69,46 @@ _Dana is fixing a bug in `newsroom-api` and wants an agent to add rate limiting 
 
 ## b. The agent needs Dana; she answers without leaving VS Code
 
-_The agent asks to run a database migration while Dana is in her own window._
+_The agent, running in its terminal, stops to ask whether it may run a database migration. Dana is
+in her own window, working on her bug._
 
-1. **She is told.** The session started from VS Code, so it runs as a protocol conversation.
-   - The agent's request reaches Mend (`GET /sessions/:id/requests?pending=true`, live through
-     `/api/events`).
-   - The Mend activity-bar icon gets badge `1`. The row moves into **Needs you**:
-     `add-rate-limit · waiting · run pnpm db:migrate?`.
-   - Her window is focused and not showing that session, so one toast appears:
-     `add-rate-limit asks: run pnpm db:migrate?` with [Allow] [Deny] [More…].
-2. **She answers.** She clicks **Allow**.
-   - Mend answers the request (`POST /requests/:id/respond`), and the agent continues.
-   - The toast closes. The badge clears. The row reads `running · pnpm db:migrate`.
-3. **A question with options.** For a question rather than an approval, **More…** (or the row's
-   inline **Answer**) opens a quick pick. It is titled with the question, lists its options, and
-   accepts a typed answer. The answer is sent the same way.
+1. **She is told.** Sessions started from VS Code are terminal agents (story a), so the question is
+   on claude's TUI, not a structured request.
+   - **With G4** (a terminal agent reports that it waits, and why): Mend writes claude's
+     `Notification` hook and codex's `notify` into the session's harness home, and they post to
+     Mend. The row moves into **Needs you**:
+     `add-rate-limit · waiting · claude needs your permission to use Bash`. The Mend icon gets badge
+     `1`. Her window is focused and isn't showing that session, so one toast appears:
+     `add-rate-limit is waiting · claude needs your permission to use Bash` with [Answer].
+   - **Without G4 (today):** Mend can't tell. A session reads `waiting` only for a conversation's
+     pending request (packages/sessions/src/engine.ts `reconcileSession`), so a terminal agent that
+     asks still reads `running`. No **Needs you** row, no badge, no toast: she finds out only by
+     looking at its terminal. **This story needs G4.**
+2. **She answers.** She clicks **Answer** on the toast or on the row.
+   - The agent's terminal attaches in her **current** window's panel, `claude · add-rate-limit`,
+     over `/api/tty`. No workspace window opens; her own files stay where they were.
+   - The TUI shows as it is now, with the question on screen. She presses `1` (yes) and Enter, as
+     she would in her own terminal.
+3. **It continues.** The row reads `running · pnpm db:migrate`, and the badge clears. She closes the
+   terminal tab, which only detaches; the agent keeps running (today's banner says so).
 
 **Edge cases**
 
 - **She is in another VS Code window.** Only the focused window toasts. The others show the badge
-  and nothing else, so one request never makes three toasts. If no VS Code window is focused, there
+  and nothing else, so one question never makes three toasts. If no VS Code window is focused, there
   is no toast; the badge waits.
-- **The session runs as a terminal agent** (started from `mend claude`). There is no structured
-  request and no reason text (G4). The row reads `waiting`, and **Answer** becomes **Open
-  terminal**. That attaches the agent's terminal in her current window's panel (`/api/tty`; no
-  workspace window opens), and she answers in the TUI.
-- **Someone else's session.** She sees it only if it is shared with her. Without shared control she
-  cannot answer, and the row says `waiting · Ana's session`.
-- **The request was answered elsewhere** (her phone). The toast and the row update to the new state;
-  no error.
+- **A conversation** (started from her phone, the web or Slack). Mend has the structured request
+  (`GET /sessions/:id/requests?pending=true`), so the toast carries the answer:
+  `add-rate-limit asks: run pnpm db:migrate?` with [Allow] [Deny] [More…], sent with
+  `POST /requests/:id/respond`. **More…** opens a quick pick with the question's options and a typed
+  answer. No terminal is needed.
+- **Someone else's session.** She sees it only if it is shared with her. Typing in its terminal
+  needs shared control; without it the terminal is read-only (`read-only · Ana's session`), and the
+  row says `waiting · Ana's session`.
+- **Answered elsewhere** (her phone, after picking the session up). The row and badge update, and an
+  open toast closes. No error.
+- **Offline.** Rows keep their last state with `· last seen 2 min ago`; **Answer** is disabled with
+  `Mend is offline`.
 
 ## c. Dana opens a running session to work in its workspace
 
@@ -188,9 +200,16 @@ _The agent says it is done. Dana wants to read the change, comment, and send it 
 6. **Sending it back.** She clicks **Send review (2)** in the section title.
    - An editor opens with the instruction Mend will send: her comments in order, each with its file
      and line. She can edit the text. The editor title has **Send to session**.
-   - She sends it. Mend delivers the follow-up with the slice, checkpoints, comment ids and her text
+   - She sends it. Mend records the follow-up with the slice, checkpoints, comment ids and her text
      (`POST /sessions/:id/follow-up/deliver`, idempotent).
-   - Each thread reads `sent to session`. The row reads `running · addressing review`.
+   - **With G12** (deliver into a live terminal agent): Mend types the instruction into the agent's
+     terminal as the owner and records it as delivered. Each thread reads `sent to session`, and the
+     row reads `running · addressing review`.
+   - **Without G12 (today):** while a terminal agent is live, the follow-up is held `pending` until
+     that agent exits (packages/sessions/src/follow-up-delivery.ts:341-345). A TUI claude stays open
+     between turns, so the review would wait. Until G12 lands, **Send to session** also attaches the
+     agent's terminal in her panel and pastes the instruction there for her to press Enter. The
+     threads read `follow-up pending · in claude's terminal`.
 7. **Watching it address the comments.** When the turn ends, the row reads `completed · observed`.
    The Change section offers **since my last review · 2 files**.
    - She opens it. Each sent comment sits at its anchor over the new diff.
@@ -217,28 +236,26 @@ _The agent says it is done. Dana wants to read the change, comment, and send it 
 
 _"Open" and "take over" were two commands. Yiannis asked what the difference is. From Dana's side
 there is only one thing she wants: **to type to the agent herself, in her editor**. So there is one
-gesture._
+gesture: **Open**._
 
 1. **The gesture.** She clicks **Open** (story c). The window becomes the workspace, and the agent's
-   terminal is already attached in the panel.
-2. **Terminal agent** (started from `mend claude` or from VS Code in terminal mode). She types into
-   it. That is driving by hand: the same agent, the same conversation, her keystrokes (owner only).
-   Nothing ends and nothing restarts.
-3. **Protocol conversation** (started from her phone, the web, Slack, or VS Code's default; story
-   b). There is no terminal to type into yet.
-   - The panel shows the agent's terminal tab with one line:
-     `claude is running as a conversation (from your phone) · Continue here to type to it`, plus a
+   terminal is already attached and focused in the panel.
+2. **She types.** Sessions she starts from VS Code are terminal agents (story a), so this is the
+   default path: she types into claude's TUI. Same agent, same conversation, her keystrokes (the
+   owner's only). Nothing ends and nothing restarts. That is all "driving by hand" means.
+3. **A conversation started elsewhere** (her phone, the web or Slack) has no TUI to type into.
+   - The agent's terminal tab shows one line,
+     `claude is running as a conversation (from your phone) · Continue here to type to it`, with a
      **Continue here** button.
    - Clicking it moves the same conversation into a terminal
-     (`POST /sessions/:id/handoff {to:"pty"}`, the existing mode handoff). One agent process at a
-     time; the conversation is kept.
-   - The terminal attaches, and she types.
+     (`POST /sessions/:id/handoff {to:"pty"}`, Mend's existing mode handoff: one agent process at a
+     time, the conversation kept). The TUI attaches, and she types.
    - Her phone, if open, now shows `continuing in a terminal`.
-4. **Going back.** When she is done, she can close the window. The agent keeps running. Her phone
-   can pick it up again (`handoff {to:"protocol"}`), as it can today.
+4. **Going back.** She closes the window; the agent keeps running in its terminal. Her phone can
+   pick it up as a conversation (`handoff {to:"protocol"}`), as it can today.
 
-So "take over" disappears as a command. Its only real job, moving a conversation off the phone and
-into a terminal, is **Continue here**, and it appears only where it is needed.
+So "take over" disappears as a command. Typing into the attached terminal covers the common case,
+and **Continue here** covers the one case with no terminal yet, appearing only there.
 
 **Edge cases**
 
@@ -246,6 +263,8 @@ into a terminal, is **Continue here**, and it appears only where it is needed.
   `opencode can't continue in a terminal yet · open the terminal to watch`.
 - **Not her session.** She can type only with shared control. Otherwise the terminal tab reads
   `read-only · Ana's session` (today's behaviour).
+- **The terminal dropped.** The tab reattaches (`reattaching (2/5)`, today's behaviour); the agent
+  never notices.
 - **Today's client-side takeover goes.** That is: open a shell, stop the agent, run
   `claude --resume` by hand in a new window. Mend's own mode handoff does the same job without
   stopping the workspace or guessing the resume command.
@@ -363,53 +382,66 @@ _Dana installs the extension for the first time. Her Mend server is the Mac mini
 
 ## Interaction rules (derived from the stories)
 
-**Open**
+### Open
 
 1. **An explicit button never asks.** **Open** follows VS Code's `window.openFoldersInNewWindow`.
    **Open in New Window** always opens a new window. There is no question panel: no story needed
    one, and the old one is removed.
 2. **A row click selects; it never opens a window.** Selecting shows the session's change. Opening
-   is only the button. Double-click and single-click cannot open twice.
+   is only the button, so single and double clicks cannot open twice.
 3. **One open in flight per session.** A second gesture while one is running focuses the first.
-4. **Preconditions are set up once, in first run.** Remote-SSH, the SSH key, the `Host` block and
+4. **Preconditions are set up once, in first run:** Remote-SSH, the SSH key, the `Host` block and
    the platform seed. At open time a missing one is a progress step, never a dialog. The only
    exception is the deferred consent when first-run setup was skipped (story h).
 5. **What can't be opened isn't offered.** For a workspace Ana launched, the **Open** button is
    replaced by what Dana can do: **Review**, and **Watch terminal** when shared control is on. The
-   reason sits in the tooltip.
-6. **A stopped session opens.** Resume as a shell is part of the open's progress. No question.
+   reason is in the tooltip.
+6. **A stopped session opens.** Resuming as a shell is part of the open's progress. No question.
 
-**Open and take over** 7. **One gesture: Open.** Driving by hand means typing into the agent's
-terminal, which is attached when the window opens. A conversation running as a protocol session gets
-**Continue here** (the mode handoff), shown only in that terminal tab. "Take over" is no longer a
-command.
+### Open, take over, answer
 
-**Where Mend lives** 8. **Any window that isn't a session's workspace:**
+7. **One gesture: Open.** Sessions started from VS Code are terminal agents, so driving by hand is
+   typing into the agent's terminal, attached when the window opens. A conversation started on the
+   phone, the web or Slack gets **Continue here** (the mode handoff), shown only in its terminal
+   tab. "Take over" is no longer a command.
+8. **Answer means: attach the agent's terminal here.** **Answer** on a waiting terminal agent opens
+   its terminal in the current window's panel and never opens a workspace window. Only a
+   conversation's structured request is answered in a toast or quick pick.
 
-- the Mend view has **Needs you**, **Since you last looked**, **Running**, then **Projects**;
-- the status bar has one item, `Mend · 1 needs you · 2 finished`.
+### Where Mend lives
 
-9. **A session's workspace window:**
-   - the Mend view shows only that session: status, needs-you, **Change**, and one line for the
-     other sessions;
-   - the status bar shows `● session · status`;
-   - the agent's terminal is attached in the panel.
-   - No project list.
-10. **Review lives where the code is.** The Change section, diff editors, comment threads and the
+9. **Any window that isn't a session's workspace:**
+   - the Mend view: **Needs you**, **Since you last looked**, **Running**, then **Projects**;
+   - the status bar: one item, `Mend · 1 needs you · 2 finished`.
+10. **A session's workspace window:**
+    - the Mend view: that session only (status, needs-you, **Change**) and one line for the other
+      sessions, `2 other sessions · 1 needs you`;
+    - the status bar: `● session · status`;
+    - the panel: the agent's terminal, attached;
+    - no project list.
+11. **Review lives where the code is.** The Change section, diff editors, comment threads and the
     Comments panel work the same from any window. Nothing opens the web app; **Open in Mend (web)**
     stays only in the overflow menu.
 
-**Notifications** 11. **Toast only when Dana is needed and isn't already looking.** A session asks
-for input, or a session she started finishes, and the focused window isn't showing that session.
-Only the focused VS Code window toasts. A toast carries the answer when it can ([Allow] [Deny]). 12.
-**Never toast for something she is watching, or did herself.** No "starting…", no "connected", no
-"copied". Progress shows in the row or the status bar. 13. **Errors toast once, with the one action
-that helps** ([Retry], [Try again], [Set up]). 14. **The badge counts only what needs her** (waiting
-sessions she can answer), not running ones.
+### Notifications
 
-**Words** 15. **Status reads `<word> · <fact>`, as observed:** `waiting · run pnpm db:migrate?`,
-`running · pnpm test`, `completed · observed · 4 files`,
-`landed · pull request #412 · open · observed`. Never a verdict.
+12. **Toast only when Dana is needed and isn't already looking:** a session waits for her, or a
+    session she started finishes, and the focused window isn't showing that session. Only the
+    focused VS Code window toasts.
+    - A terminal agent's toast says what it waits for and offers [Answer]. It needs G4: without G4 a
+      terminal agent's question makes no toast at all.
+    - A conversation's toast carries the answer ([Allow] [Deny]).
+13. **Never toast for something she is watching, or did herself.** No "starting…", no "connected",
+    no "copied". Progress shows in the row or the status bar.
+14. **Errors toast once, with the one action that helps** ([Retry], [Try again], [Set up]).
+15. **The badge counts only what needs her** (waiting sessions she can answer), not running ones.
+
+### Words
+
+16. **Status reads `<word> · <fact>`, as observed:**
+    `waiting · claude needs your permission to use Bash`, `running · pnpm test`,
+    `completed · observed · 4 files`, `landed · pull request #412 · open · observed`. Never a
+    verdict.
 
 ## What it rests on
 
@@ -453,26 +485,26 @@ Exists today:
 
 Gaps, numbered as in `vscode-extension-redesign.md`:
 
-| Gap       | What the story needs                                                                        | Story              | Without it                                                                                           |
-| --------- | ------------------------------------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------- |
-| G1        | Edit or delete a sent comment                                                               | d                  | Pending comments are edited before **Send**; after that, Dismiss and write a new one                 |
-| G4        | The waiting reason for a terminal agent                                                     | b                  | The row reads `waiting`; **Open terminal** shows the question                                        |
-| G6        | Hand off a branch with a git bundle plus uncommitted files                                  | g                  | Story g can't ship                                                                                   |
-| G8        | VS Code extensions and machine settings in workspaces                                       | (separate feature) | —                                                                                                    |
-| G9        | Open the record at a sequence                                                               | d                  | The comment's excerpt shows inline; **Show record** opens the full transcript, not the exact line    |
-| G10 (new) | Open a review slice between any two checkpoints (today `reviews/open` is always base → now) | d                  | "Since my last review", "last turn" and "between two checkpoints" can be viewed but not commented on |
-| G11 (new) | Mend's proposed checks as data (a command to run, with its observed result)                 | d                  | Drafts carry evidence links but no runnable check                                                    |
+| Gap       | What the story needs                                                                                                                      | Story              | Without it                                                                                                                                  |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| G1        | Edit or delete a sent comment                                                                                                             | d                  | Pending comments are edited before **Send**; after that, Dismiss and write a new one                                                        |
+| G4        | A terminal agent reports that it waits, and why (harness `Notification` / `notify` hooks posting to Mend, so the session reads `waiting`) | b, f               | Terminal agents read `running` while they wait: no **Needs you**, no badge, no toast. Story b needs it                                      |
+| G6        | Hand off a branch with a git bundle plus uncommitted files                                                                                | g                  | Story g can't ship                                                                                                                          |
+| G8        | VS Code extensions and machine settings in workspaces                                                                                     | (separate feature) | —                                                                                                                                           |
+| G9        | Open the record at a sequence                                                                                                             | d                  | The comment's excerpt shows inline; **Show record** opens the full transcript, not the exact line                                           |
+| G10 (new) | Open a review slice between any two checkpoints (today `reviews/open` is always base → now)                                               | d                  | "Since my last review", "last turn" and "between two checkpoints" can be viewed but not commented on                                        |
+| G11 (new) | Mend's proposed checks as data (a command to run, with its observed result)                                                               | d                  | Drafts carry evidence links but no runnable check                                                                                           |
+| G12 (new) | Deliver a review follow-up into a live terminal agent (typed as the owner, recorded as delivered)                                         | d                  | The follow-up waits `pending` until the agent exits; the extension pastes the instruction into the attached terminal for her to press Enter |
 
 G5 (a server takeover verb) is no longer needed: the mode handoff covers story e.
 
-## Questions for Yiannis
+## Decided (Yiannis, 2026-10-17)
 
-1. **How sessions launch from VS Code** (story a). A protocol conversation can be answered from a
-   toast, a quick pick or a phone, and gets **Continue here** for typing. A terminal agent can be
-   typed to at once, but its questions carry no text (G4). **Recommendation:** protocol by default.
-2. **Should the session's own window list other sessions at all?** **Recommendation:** one quiet
-   line, `2 other sessions · 1 needs you`, and nothing more.
-3. **What "since you last looked" means** (story f). **Recommendation:** per server, per machine,
-   stored by the extension: the last time this VS Code showed the Mend view focused.
-4. **Handoff's `.env` rule** (story g). **Recommendation:** leave out `.env*` by default, say so in
-   the fact line, and let her include them with a button.
+1. **Sessions started from VS Code launch as terminal agents** ("it's fair to assume they are TUI
+   people"). Stories a, b, d and e follow from it; G4 and G12 are what it costs.
+2. **The workspace window shows one line for the other sessions:** `2 other sessions · 1 needs you`.
+3. **"Since you last looked" means since you last viewed it:** per session, the last time this VS
+   Code showed that session selected or its window focused. The extension stores it per server and
+   per machine.
+4. **Handoff leaves out `.env*` by default.** The fact line says `.env left out`, and a button
+   includes them.
