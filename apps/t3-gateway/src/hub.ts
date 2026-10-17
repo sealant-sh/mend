@@ -84,8 +84,10 @@ import type {
 import { optionsChangeOf } from "./model-options.ts";
 import {
   applyModelPreferencesPatch,
+  boundedModelPreferences,
   settingsWith,
   type ModelPreferencesPatch,
+  type ModelPreferencesTooLarge,
 } from "./model-preferences.ts";
 import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
 import * as Queueing from "./queue.ts";
@@ -232,7 +234,7 @@ export interface PersonHub {
   readonly updateModelPreferences: (
     session: BearerSession,
     patch: ModelPreferencesPatch,
-  ) => Effect.Effect<ServerSettings, GatewayStateError>;
+  ) => Effect.Effect<ServerSettings, GatewayStateError | ModelPreferencesTooLarge>;
   /** The person's settings now, and again each time one of their clients changes them. */
   readonly subscribeSettings: (session: BearerSession) => Effect.Effect<
     {
@@ -3765,7 +3767,7 @@ export const makePersonHub = (input: {
     const updateModelPreferences = (session: BearerSession, patch: ModelPreferencesPatch) =>
       state
         .updateModelPreferences(session.mendUser.id, (current) =>
-          applyModelPreferencesPatch(current, patch),
+          boundedModelPreferences(applyModelPreferencesPatch(current, patch)),
         )
         .pipe(
           Effect.map(settingsWith),

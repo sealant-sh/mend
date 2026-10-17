@@ -16,6 +16,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
@@ -342,10 +343,10 @@ export class GatewayState extends Context.Service<
      * Replaces a person's model preferences with `change` of the kept ones, read and written in one
      * step, so two clients' changes never lose one another. Answers what was kept.
      */
-    readonly updateModelPreferences: (
+    readonly updateModelPreferences: <E>(
       mendUserId: string,
-      change: (current: ModelPreferences) => ModelPreferences,
-    ) => Effect.Effect<ModelPreferences, GatewayStateError>;
+      change: (current: ModelPreferences) => Result.Result<ModelPreferences, E>,
+    ) => Effect.Effect<ModelPreferences, GatewayStateError | E>;
     /** Every bearer neither revoked nor expired at `now`: what a start checks with Mend. */
     readonly liveSessions: (
       now: number,
@@ -665,8 +666,18 @@ const ModelPreferencesRow = Schema.Struct({
   favorites: Schema.NullOr(Schema.fromJsonString(ModelFavorites)),
   provider_model_preferences: Schema.NullOr(Schema.fromJsonString(ProviderModelPreferences)),
 });
-const decodeModelPreferencesRow = Schema.decodeUnknownSync(ModelPreferencesRow);
+const decodeModelPreferencesRow = Schema.decodeUnknownResult(ModelPreferencesRow);
 const encodeModelPreferencesRow = Schema.encodeSync(ModelPreferencesRow);
+const keptOrNone = (
+  mendUserId: string,
+  kept: Result.Result<ModelPreferences, Schema.SchemaError>,
+) =>
+  Result.isSuccess(kept)
+    ? Effect.succeed(kept.success)
+    : Effect.logWarning("t3 gateway set aside model preferences it can no longer read", {
+        mendUserId,
+        cause: kept.failure,
+      }).pipe(Effect.as(NO_MODEL_PREFERENCES));
 const ImageBytesRow = Schema.Struct({ ...ImageRow.fields, bytes: Schema.Uint8Array });
 const decodeImageBytesRow = Schema.decodeUnknownEffect(ImageBytesRow);
 const storedImageOf = (row: typeof ImageRow.Type): StoredImage => ({
@@ -1424,40 +1435,49 @@ export const openGatewayState = (
         ),
       );
 
-    const readModelPreferences = (mendUserId: string): ModelPreferences => {
+    const readModelPreferences = (
+      mendUserId: string,
+    ): Result.Result<ModelPreferences, Schema.SchemaError> => {
       const row = database
         .prepare(
           "SELECT favorites, provider_model_preferences FROM model_preferences WHERE mend_user_id = ?",
         )
         .get(mendUserId);
-      if (row === undefined) return NO_MODEL_PREFERENCES;
-      const decodedRow = decodeModelPreferencesRow(row);
-      return {
-        favorites: decodedRow.favorites,
-        providerModelPreferences: decodedRow.provider_model_preferences,
-      };
+      if (row === undefined) return Result.succeed(NO_MODEL_PREFERENCES);
+      return Result.map(decodeModelPreferencesRow(row), (kept) => ({
+        favorites: kept.favorites,
+        providerModelPreferences: kept.provider_model_preferences,
+      }));
     };
 
     const modelPreferences = (mendUserId: string) =>
-      run("modelPreferences", () => readModelPreferences(mendUserId));
+      run("modelPreferences", () => readModelPreferences(mendUserId)).pipe(
+        Effect.flatMap((kept) => keptOrNone(mendUserId, kept)),
+      );
 
-    const updateModelPreferences = (
+    const updateModelPreferences = <E>(
       mendUserId: string,
-      change: (current: ModelPreferences) => ModelPreferences,
+      change: (current: ModelPreferences) => Result.Result<ModelPreferences, E>,
     ) =>
       run("updateModelPreferences", () => {
-        const next = change(readModelPreferences(mendUserId));
-        const row = encodeModelPreferencesRow({
-          favorites: next.favorites,
-          provider_model_preferences: next.providerModelPreferences,
-        });
-        database
-          .prepare(
-            "INSERT OR REPLACE INTO model_preferences (mend_user_id, favorites, provider_model_preferences) VALUES (?, ?, ?)",
-          )
-          .run(mendUserId, row.favorites, row.provider_model_preferences);
-        return next;
-      });
+        const kept = readModelPreferences(mendUserId);
+        const next = change(Result.getOrElse(kept, () => NO_MODEL_PREFERENCES));
+        if (Result.isSuccess(next)) {
+          const row = encodeModelPreferencesRow({
+            favorites: next.success.favorites,
+            provider_model_preferences: next.success.providerModelPreferences,
+          });
+          database
+            .prepare(
+              "INSERT OR REPLACE INTO model_preferences (mend_user_id, favorites, provider_model_preferences) VALUES (?, ?, ?)",
+            )
+            .run(mendUserId, row.favorites, row.provider_model_preferences);
+        }
+        return { kept, next };
+      }).pipe(
+        Effect.tap(({ kept }) => keptOrNone(mendUserId, kept)),
+        Effect.flatMap(({ next }) => Effect.fromResult(next)),
+      );
 
     const liveSessions = (now: number) =>
       run("liveSessions", () =>

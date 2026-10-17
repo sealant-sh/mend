@@ -1,8 +1,10 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import {
+  EnvironmentId,
   ProviderInstanceId,
   WS_METHODS,
   type ServerConfigStreamEvent,
@@ -12,18 +14,28 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 
+import { makeGatewayEnvironment } from "../src/environment.ts";
+import { makeFanout } from "../src/fanout.ts";
+import type { PersonHub } from "../src/hub.ts";
 import {
   applyModelPreferencesPatch,
+  boundedModelPreferences,
+  MODEL_PREFERENCE_LIMITS,
   modelPreferencesUpdateOf,
   NO_MODEL_PREFERENCES,
+  settingsWith,
+  type ModelPreferences,
 } from "../src/model-preferences.ts";
 import { requiredScopesFor } from "../src/rpc-scopes.ts";
+import { makeGatewayRpcHandlers } from "../src/rpc.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend } from "./support/fake-mend.ts";
-import { gatewayTestLayer } from "./support/gateway.ts";
+import { gatewayTestLayer, PERSON } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { emptyHub, testBearerSession } from "./support/stubs.ts";
 
 const CLAUDE = ProviderInstanceId.make("claude");
 const CODEX = ProviderInstanceId.make("codex");
@@ -185,5 +197,203 @@ describe("model preferences over the wire", () => {
         assert.deepStrictEqual(config.settings.favorites, [{ provider: CLAUDE, model: "opus" }]);
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
     }),
+  );
+});
+
+const limitOf = (preferences: ModelPreferences) => {
+  const bounded = boundedModelPreferences(preferences);
+  return Result.isFailure(bounded) ? bounded.failure.limit : null;
+};
+
+describe("model preferences past the gateway's limits", () => {
+  const limits = MODEL_PREFERENCE_LIMITS;
+  const favorites = (count: number, length: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      provider: CLAUDE,
+      model: `${index}`.padEnd(length, "m"),
+    }));
+
+  it("are named by the first limit they pass", () => {
+    const opus = applyModelPreferencesPatch(NO_MODEL_PREFERENCES, star("opus").patch);
+    assert.isNull(limitOf(opus));
+    assert.strictEqual(
+      limitOf({ ...opus, favorites: favorites(limits.favorites + 1, 8) }),
+      `${limits.favorites} favorites`,
+    );
+    assert.strictEqual(
+      limitOf({ ...opus, favorites: favorites(1, limits.modelIdLength + 1) }),
+      `${limits.modelIdLength} characters per model id`,
+    );
+    assert.strictEqual(
+      limitOf({ ...opus, favorites: favorites(limits.favorites, limits.modelIdLength) }),
+      `${limits.encodedBytes} bytes stored`,
+    );
+    const lists = { hiddenModels: [], modelOrder: [] };
+    const providers = Object.fromEntries(
+      Array.from({ length: limits.providers + 1 }, (_, index) => [
+        ProviderInstanceId.make(`provider-${index}`),
+        lists,
+      ]),
+    );
+    assert.strictEqual(
+      limitOf({ ...opus, providerModelPreferences: providers }),
+      `${limits.providers} providers`,
+    );
+    const order = Array.from(
+      { length: limits.modelsPerProviderList + 1 },
+      (_, index) => `${index}`,
+    );
+    assert.strictEqual(
+      limitOf({
+        ...opus,
+        providerModelPreferences: { [CLAUDE]: { hiddenModels: [], modelOrder: order } },
+      }),
+      `${limits.modelsPerProviderList} hidden or ordered models per provider`,
+    );
+  });
+
+  it.live("are refused with t3code's settings error, and what was kept stays", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      yield* Effect.gen(function* () {
+        const ada = yield* pairAndConnect(mend, "PREFS-LIMIT-1");
+        yield* ada.rpc[WS_METHODS.serverUpdateSettings](star("opus"));
+
+        const hideTooMany = Array.from(
+          { length: limits.modelsPerProviderList + 1 },
+          (_, index) => ({
+            provider: CLAUDE,
+            model: `model-${index}`,
+            hidden: true,
+          }),
+        );
+        const starTooLong = favorites(1, limits.modelIdLength + 1).map((favorite) => ({
+          ...favorite,
+          favorite: true,
+        }));
+        const starTooMuch = favorites(limits.favorites, limits.modelIdLength).map((favorite) => ({
+          ...favorite,
+          favorite: true,
+        }));
+        for (const patch of [
+          { setModelsHidden: hideTooMany },
+          { setModelFavorites: starTooLong },
+          { setModelFavorites: starTooMuch },
+        ]) {
+          const refusal = failureOf(
+            yield* Effect.exit(ada.rpc[WS_METHODS.serverUpdateSettings]({ patch })),
+          );
+          assert.strictEqual(refusal?._tag, "ServerSettingsError");
+          assert.strictEqual(
+            refusal?._tag === "ServerSettingsError" ? refusal.operation : null,
+            "normalize",
+          );
+        }
+        const after: ServerSettings = yield* ada.rpc[WS_METHODS.serverGetSettings]({});
+        assert.deepStrictEqual(after.favorites, [{ provider: CLAUDE, model: "opus" }]);
+        assert.isNull(after.providerModelPreferences);
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePathOf())));
+    }),
+  );
+});
+
+describe("model preferences and the bearer's grant", () => {
+  it.live("refuse a read-only bearer's write over the socket, and nothing is kept", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      yield* Effect.gen(function* () {
+        const reader = yield* pairAndConnect(mend, "PREFS-READ-1", PERSON, "orchestration:read");
+        const refusal = failureOf(
+          yield* Effect.exit(reader.rpc[WS_METHODS.serverUpdateSettings](star("opus"))),
+        );
+        assert.strictEqual(refusal?._tag, "EnvironmentAuthorizationError");
+        assert.strictEqual(
+          refusal?._tag === "EnvironmentAuthorizationError" ? refusal.requiredScope : null,
+          "orchestration:operate",
+        );
+        const ada = yield* pairAndConnect(mend, "PREFS-READ-2");
+        const settings: ServerSettings = yield* ada.rpc[WS_METHODS.serverGetSettings]({});
+        assert.isNull(settings.favorites);
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePathOf())));
+    }),
+  );
+});
+
+describe("kept model preferences that no longer decode", () => {
+  it.live("are set aside: the person's config loads without them and a new star is kept", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      const statePath = statePathOf();
+      yield* Effect.gen(function* () {
+        const ada = yield* pairAndConnect(mend, "PREFS-STALE-1");
+        yield* ada.rpc[WS_METHODS.serverUpdateSettings](star("opus"));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+
+      const database = new DatabaseSync(statePath);
+      database.prepare("UPDATE model_preferences SET favorites = ?").run('[{"provider":"claude"}]');
+      database.close();
+
+      yield* Effect.gen(function* () {
+        const ada = yield* pairAndConnect(mend, "PREFS-STALE-2");
+        const config = yield* ada.rpc[WS_METHODS.serverGetConfig]({});
+        assert.isNull(config.settings.favorites);
+        const saved = yield* ada.rpc[WS_METHODS.serverUpdateSettings](star("sonnet"));
+        assert.deepStrictEqual(saved.favorites, [{ provider: CLAUDE, model: "sonnet" }]);
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+    }),
+  );
+});
+
+describe("the config stream after the settings feed falls behind", () => {
+  it.live("subscribes again in place, so a later change still reaches the client", () =>
+    Effect.gen(function* () {
+      const feed = makeFanout<ServerSettings>(2);
+      const starred = (...models: ReadonlyArray<string>) =>
+        settingsWith({
+          favorites: models.map((model) => ({ provider: CLAUDE, model })),
+          providerModelPreferences: null,
+        });
+      let current = settingsWith(NO_MODEL_PREFERENCES);
+      const hub: PersonHub = {
+        ...emptyHub,
+        settings: () => Effect.sync(() => current),
+        subscribeSettings: () =>
+          Effect.map(
+            feed.subscribe(() => true),
+            (changes) => ({ settings: current, changes }),
+          ),
+      };
+      const handlers = makeGatewayRpcHandlers({
+        environment: makeGatewayEnvironment({
+          environmentId: EnvironmentId.make("environment-1"),
+          label: "Mend",
+          host: "127.0.0.1",
+          statePath: ":memory:",
+        }),
+        assetUrls: {
+          issue: () => Effect.succeed({ relativeUrl: "/api/assets/x/y", expiresAt: 0 }),
+          resolve: () => Effect.succeedNone,
+        },
+        session: testBearerSession,
+        hub,
+      });
+      const heard: Array<ServerConfigStreamEvent> = [];
+      yield* handlers[WS_METHODS.subscribeServerConfig]().pipe(
+        Stream.runForEach((event) => Effect.sync(() => heard.push(event))),
+        Effect.forkScoped,
+      );
+      yield* until(() => heard.length === 1 && feed.size() === 1, "the snapshot");
+
+      current = starred("opus");
+      yield* feed.publish([starred("a"), starred("b"), current]);
+      yield* until(() => feed.size() === 1, "a fresh subscription");
+
+      current = starred("opus", "sonnet");
+      yield* feed.publish([current]);
+      yield* until(() => {
+        const last = heard.at(-1);
+        return last?.type === "settingsUpdated" && last.payload.settings.favorites?.length === 2;
+      }, "the change after the overflow");
+    }).pipe(Effect.scoped),
   );
 });
