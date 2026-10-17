@@ -19,6 +19,8 @@ import {
   OrchestrationV2CommandOutputError,
   OrchestrationV2GetShellSnapshotError,
   OrchestrationV2GetThreadProjectionError,
+  OrchestrationV2SearchThreadError,
+  type OrchestrationV2SearchThreadInput,
   OrchestrationV2StopWorkflowError,
   PersistChatAttachmentsError,
   ProjectMutationError,
@@ -64,6 +66,7 @@ import { makeReviewHandlers } from "./review.ts";
 import { RPC_REQUIRED_SCOPES } from "./rpc-scopes.ts";
 import {
   loginsOf,
+  findsInThread,
   makeServerConfig,
   makeWelcome,
   providersFromMend,
@@ -115,6 +118,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   ORCHESTRATION_V2_WS_METHODS.subscribeThread,
   ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
   ORCHESTRATION_V2_WS_METHODS.getTurnItem,
+  ORCHESTRATION_V2_WS_METHODS.searchThread,
+  ORCHESTRATION_V2_WS_METHODS.searchThreadStream,
   ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
   ORCHESTRATION_V2_WS_METHODS.launchThread,
   ORCHESTRATION_V2_WS_METHODS.getTurnDiff,
@@ -266,6 +271,7 @@ export interface GatewayRpcInput {
   readonly session: BearerSession;
   /** The person's projection of Mend, shared with their other sockets. */
   readonly hub: PersonHub;
+  readonly clientAppVersion: string | undefined;
 }
 
 const MODELS_SOURCE = "Mend GET /api/harnesses/models";
@@ -321,6 +327,7 @@ export const makeGatewayRpcHandlers = ({
   assetUrls,
   session,
   hub,
+  clientAppVersion,
 }: GatewayRpcInput) => {
   // Mend only through the person's gate: a 401 on any call refuses this socket's token.
   const { mend } = hub;
@@ -335,6 +342,26 @@ export const makeGatewayRpcHandlers = ({
    */
   const authorize = (bearer: BearerSession) =>
     hub.isRefused(bearer.deviceToken) ? Effect.fail(deviceRefused(READ)) : Effect.void;
+
+  const threadToFind = (search: OrchestrationV2SearchThreadInput) =>
+    Effect.gen(function* () {
+      yield* authorize(session);
+      const snapshot = yield* hub
+        .threadSnapshot(search.threadId)
+        .pipe(
+          Effect.mapError((error) =>
+            error._tag === "MendDeviceRefused"
+              ? deviceRefused(READ)
+              : new OrchestrationV2SearchThreadError({ cause: error }),
+          ),
+        );
+      if (snapshot === null) {
+        return yield* new OrchestrationV2SearchThreadError({
+          cause: unknownThread(search.threadId),
+        });
+      }
+      return snapshot;
+    });
 
   const settingsReadFailure = (cause: GatewayStateError) =>
     new ServerSettingsError({ settingsPath: PREFERENCES_SOURCE, operation: "read-file", cause });
@@ -448,6 +475,7 @@ export const makeGatewayRpcHandlers = ({
       paths,
       providers,
       settings,
+      findInThread: findsInThread(clientAppVersion),
     });
     return readable(encodeServerConfig(config), config);
   };
@@ -652,10 +680,16 @@ export const makeGatewayRpcHandlers = ({
         const item = snapshot.projection.turnItems.find((turnItem) => turnItem.id === input.itemId);
         return { item: item ?? null };
       }),
-    [ORCHESTRATION_V2_WS_METHODS.searchThread]: () =>
-      refuse(ORCHESTRATION_V2_WS_METHODS.searchThread),
-    [ORCHESTRATION_V2_WS_METHODS.searchThreadStream]: () =>
-      refuseStream(ORCHESTRATION_V2_WS_METHODS.searchThreadStream),
+    [ORCHESTRATION_V2_WS_METHODS.searchThread]: (input) =>
+      threadToFind(input).pipe(
+        Effect.flatMap((snapshot) => hub.threadFinder.searchThread(snapshot, input)),
+      ),
+    [ORCHESTRATION_V2_WS_METHODS.searchThreadStream]: (input) =>
+      Stream.unwrap(
+        threadToFind(input).pipe(
+          Effect.map((snapshot) => hub.threadFinder.searchThreadStream(snapshot, input)),
+        ),
+      ),
     [ORCHESTRATION_V2_WS_METHODS.searchThreads]: () =>
       Effect.fail(
         new OrchestrationSearchThreadsError({
@@ -1173,11 +1207,12 @@ export type GatewayRpcHandlers = ReturnType<typeof makeGatewayRpcHandlers>;
 export const gatewayRpcHandlersLayer = (
   session: BearerSession,
   hub: PersonHub,
+  clientAppVersion: string | undefined,
 ): Layer.Layer<Rpc.ToHandler<WsRpc>, never, GatewayEnvironment | AssetUrls> =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const environment = yield* GatewayEnvironment;
       const assetUrls = yield* AssetUrls;
-      return makeGatewayRpcHandlers({ environment, assetUrls, session, hub });
+      return makeGatewayRpcHandlers({ environment, assetUrls, session, hub, clientAppVersion });
     }),
   );

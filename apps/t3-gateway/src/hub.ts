@@ -43,6 +43,7 @@ import * as Stream from "effect/Stream";
 import { GatewayConfig } from "./config.ts";
 import { gateDeviceCalls, type GatedMend } from "./device-gate.ts";
 import { makeFanout, type SubscriberFellBehind } from "./fanout.ts";
+import { FindParser } from "./find-parser.ts";
 import {
   detectImageType,
   MAX_IMAGE_BYTES_PER_MESSAGE,
@@ -145,6 +146,7 @@ import {
   type TurnIds,
 } from "./state.ts";
 import { makeTerminals, type Terminals } from "./terminals.ts";
+import { makeThreadFinder, type ThreadFinder } from "./thread-find.ts";
 import { backgroundWorkOf, threadProjectionOf } from "./thread-projection.ts";
 import {
   checkpointFileOf,
@@ -293,6 +295,7 @@ export interface PersonHub {
   readonly mend: GatedMend;
   /** One thread in full, or null when the person has no such thread. */
   readonly threadSnapshot: (threadId: string) => Effect.Effect<ThreadSnapshot | null, HubReadError>;
+  readonly threadFinder: ThreadFinder;
   /**
    * One thread in full and its changes from here; the hub keeps its items current while any
    * subscription lasts. Null when the person has no such thread.
@@ -915,6 +918,7 @@ export const makePersonHub = (input: {
   readonly viewer: { readonly id: string; readonly name: string } | null;
   readonly state: GatewayState["Service"];
   readonly tokens: PersonTokens;
+  readonly parser: FindParser["Service"];
   /** Lets go of the hub in the registry, once it has torn itself down. */
   readonly dispose?: Effect.Effect<void>;
   /**
@@ -4196,6 +4200,7 @@ export const makePersonHub = (input: {
       shellSnapshot,
       subscribeShell,
       threadSnapshot: (threadId: string) => threadSnapshot(sessionIdOf(threadId)),
+      threadFinder: makeThreadFinder(input.parser),
       subscribeThread: (threadId: string, afterSequence?: number) =>
         subscribeThread(sessionIdOf(threadId), afterSequence),
       isRefused: tokens.isRefused,
@@ -4349,13 +4354,14 @@ export const HUB_IDLE_TTL = "2 minutes";
 export const ProjectionsLive: Layer.Layer<
   Projections,
   never,
-  MendClient | GatewayState | GatewayConfig
+  MendClient | GatewayState | GatewayConfig | FindParser
 > = Layer.effect(
   Projections,
   Effect.gen(function* () {
     const mend = yield* MendClient;
     const state = yield* GatewayState;
     const config = yield* GatewayConfig;
+    const parser = yield* FindParser;
     /** Mend user id → the device tokens of theirs the gateway holds, in pairing order. */
     const known = new Map<string, Set<string>>();
     /** Mend user id → who they are, as their pairing recorded it: whom a hub reads for. */
@@ -4456,6 +4462,7 @@ export const ProjectionsLive: Layer.Layer<
           viewer: viewers.get(userId) ?? null,
           state,
           tokens,
+          parser,
           retain: retainFor(userId),
           queueTimings: { ...Queueing.DEFAULT_QUEUE_TIMINGS, ...config.queueTimings },
           mendUrl: config.mendUrl,

@@ -8,7 +8,7 @@
   },
   "type": "module",
   "scripts": {
-    "build": "BUNDLE_ENTRIES=src/bin.ts BUNDLE_EXTERNAL=bufferutil,utf-8-validate node ../../tooling/scripts/bundle-app.mjs",
+    "build": "BUNDLE_ENTRIES=src/bin.ts,src/find-parse-worker.ts BUNDLE_EXTERNAL=bufferutil,utf-8-validate node ../../tooling/scripts/bundle-app.mjs",
     "lint": "oxlint .",
     "start": "node src/bin.ts",
     "test": "vitest run",

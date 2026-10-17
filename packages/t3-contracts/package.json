@@ -14,6 +14,8 @@
     "./relay": "./src/relay.ts",
     "./server-settings": "./t3-shared/src/serverSettings.ts",
     "./settings": "./src/settings.ts",
+    "./thread-find-text": "./t3-shared/src/threadFindText.ts",
+    "./thread-search": "./t3-shared/src/threadSearch.ts",
     "./thread-settled": "./client-runtime/threadSettled.ts",
     "./thread-transcript": "./t3-shared/src/threadTranscript.ts"
   },
@@ -26,7 +28,18 @@
   "dependencies": {
     "@t3tools/contracts": "link:.",
     "@t3tools/shared": "link:./t3-shared",
-    "effect": "catalog:t3"
+    "effect": "catalog:t3",
+    "mdast-util-directive": "catalog:t3",
+    "micromark-extension-directive": "catalog:t3",
+    "micromark-util-character": "catalog:t3",
+    "micromark-util-types": "catalog:t3",
+    "rehype-raw": "catalog:t3",
+    "rehype-sanitize": "catalog:t3",
+    "remark-breaks": "catalog:t3",
+    "remark-gfm": "catalog:t3",
+    "remark-parse": "catalog:t3",
+    "remark-rehype": "catalog:t3",
+    "unified": "catalog:t3"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:t3",

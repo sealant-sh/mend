@@ -83,6 +83,17 @@ catalogs:
     effect: 4.0.5
     vitest: 5.0.1
     vitest-v5: npm:vitest@5.0.1
+    mdast-util-directive: 3.1.0
+    micromark-extension-directive: 4.0.0
+    micromark-util-character: 2.1.1
+    micromark-util-types: 2.0.2
+    rehype-raw: 7.0.0
+    rehype-sanitize: 6.0.0
+    remark-breaks: 4.0.0
+    remark-gfm: 4.0.1
+    remark-parse: 11.0.0
+    remark-rehype: 11.1.2
+    unified: 11.0.5
 
 # @effect/platform-node 4.0.5 asks for @effect/platform-node-shared ^4.0.5, which would resolve to
 # the newest 4.0.x and its own effect peer. t3code pins it to 4.0.5 in its catalog; so does this.

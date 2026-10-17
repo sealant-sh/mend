@@ -61,12 +61,13 @@ COPY --from=sealant-worker /usr/local/libexec/docker/cli-plugins/docker-buildx /
 WORKDIR /app
 COPY --from=mend-build /app/apps/api/dist ./apps/api/dist
 COPY --from=mend-build /app/apps/web/.output ./apps/web/.output
-# The t3code gateway, one bundled file, in a root of its own it is confined to (ADR 0012; review
-# 643-1; scripts/t3-gateway-root.sh). It runs only when the operator turned it on, and
-# scripts/bundle-supervisor.mjs starts it there as its own uid with no capabilities.
+# The t3code gateway, bundled with the worker that parses messages for find in a thread, in a root
+# of its own it is confined to (ADR 0012; review 643-1; scripts/t3-gateway-root.sh). It runs only
+# when the operator turned it on, and scripts/bundle-supervisor.mjs starts it there as its own uid
+# with no capabilities.
 COPY scripts/t3-gateway-root.sh /tmp/t3-gateway-root.sh
 RUN /tmp/t3-gateway-root.sh /opt/mend-t3-gateway && rm /tmp/t3-gateway-root.sh
-COPY --from=mend-build /app/apps/t3-gateway/dist/bin.js /opt/mend-t3-gateway/app/bin.js
+COPY --from=mend-build /app/apps/t3-gateway/dist/bin.js /app/apps/t3-gateway/dist/find-parse-worker.js /opt/mend-t3-gateway/app/
 COPY scripts/process-supervisor.mjs scripts/process-supervisor.mjs
 COPY scripts/bundle-supervisor.mjs scripts/bundle-supervisor.mjs
 COPY scripts/bundle-health.mjs scripts/bundle-health.mjs
