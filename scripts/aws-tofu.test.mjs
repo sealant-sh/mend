@@ -139,7 +139,7 @@ const sharedAddresses = [
 test(
   "OpenTofu plans the exact independent resource inventory for all four control-plane settings",
   { timeout: 300_000 },
-  () => {
+  (t) => {
     const moduleFiles = [
       "application.tf",
       "budget.tf",
@@ -164,7 +164,7 @@ test(
       const module = path.join(scratch, "module");
       mkdirSync(path.join(module, "tests"), { recursive: true });
       mkdirSync(path.join(scratch, "home"));
-      const cliConfig = path.join(scratch, "empty.tfrc");
+      const cliConfig = path.join(scratch, "cli.tfrc");
       writeFileSync(cliConfig, "");
       // Never copy ignored tfvars, state, provider credentials or an operator's local CLI config.
       for (const name of [...moduleFiles, ".terraform.lock.hcl", "instance-user-data.sh"])
@@ -194,7 +194,7 @@ test(
         AWS_EC2_METADATA_DISABLED: "true",
       };
       const tool = process.env.MEND_TEST_TOFU_BINARY ?? "tofu";
-      const execute = (args) => {
+      const run = (args) => {
         const result = spawnSync(tool, [`-chdir=${module}`, ...args], {
           env,
           encoding: "utf8",
@@ -218,6 +218,10 @@ test(
         }
         assert.ifError(result.error);
         assert.equal(result.signal, null);
+        return result;
+      };
+      const execute = (args) => {
+        const result = run(args);
         assert.equal(
           result.status,
           0,
@@ -225,7 +229,50 @@ test(
         );
         return result.stdout;
       };
-      execute(["init", "-input=false", "-backend=false", "-lockfile=readonly"]);
+      const init = ["init", "-input=false", "-backend=false", "-lockfile=readonly"];
+      // Box runners name the host's read-only provider mirror here, so init does not download the
+      // AWS provider (816 MB unpacked) on every run. The test writes its own CLI config for it,
+      // never an inherited one. OpenTofu checks a mirrored package against this lock file's hashes
+      // as it does a download, so a planted package fails init. A mirror that cannot answer for
+      // this lock falls back to the registry.
+      const mirror = process.env.CI_TOFU_PROVIDER_MIRROR;
+      if (mirror) {
+        assert.match(
+          mirror,
+          /^https:\/\/[\w.:-]+\/$/,
+          "CI_TOFU_PROVIDER_MIRROR must be https://host[:port]/",
+        );
+        writeFileSync(
+          cliConfig,
+          [
+            "provider_installation {",
+            "  network_mirror {",
+            `    url     = "${mirror}"`,
+            '    include = ["registry.opentofu.org/hashicorp/aws"]',
+            "  }",
+            '  direct { exclude = ["registry.opentofu.org/hashicorp/aws"] }',
+            "}",
+            "",
+          ].join("\n"),
+        );
+        const mirrored = run(init);
+        // Down or unreachable: "failed to query provider mirror". Without this lock's version:
+        // "the previously-selected version … is no longer available". A checksum mismatch fails.
+        const unanswered =
+          /failed to query provider mirror|previously-selected version \S+ is no longer available/;
+        // The diagnostic wraps inside a box: compare its words, not its lines.
+        const words = mirrored.stderr.replace(/\x1b\[[\d;]*m/g, "").replace(/[\s│╷╵]+/g, " ");
+        if (mirrored.status !== 0 && unanswered.test(words)) {
+          t.diagnostic(`provider mirror ${mirror} did not answer; downloading from the registry`);
+          writeFileSync(cliConfig, "");
+          execute(init);
+        } else
+          assert.equal(
+            mirrored.status,
+            0,
+            `OpenTofu init must succeed: ${mirrored.stderr}\n${mirrored.stdout}`,
+          );
+      } else execute(init);
       assert.equal(
         readFileSync(path.join(module, ".terraform.lock.hcl"), "utf8"),
         readFileSync(path.join(directory, ".terraform.lock.hcl"), "utf8"),
