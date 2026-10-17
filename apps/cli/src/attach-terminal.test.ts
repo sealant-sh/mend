@@ -99,14 +99,24 @@ const project = {
   autoLand: "off",
 };
 
-const startFake = async (mode: "stall-ticket" | "open") => {
+/**
+ * The fake Mend server. With `holdStop`, a session stop gets no answer until `releaseStops()`: what
+ * the CLI does while a stop is in flight is then observable.
+ */
+const startFake = async (
+  mode: "stall-ticket" | "open",
+  options: { readonly holdStop?: boolean } = {},
+) => {
+  const heldStops: Array<ServerResponse> = [];
   let clientBytes = Buffer.alloc(0);
   const requests: Array<string> = [];
   const images: Array<unknown> = [];
   const server = createServer((request, response) => {
     requests.push(`${request.method} ${request.url}`);
-    if (request.url === "/api/sessions") json(response, [session]);
-    else if (request.url === "/api/projects") json(response, [project]);
+    // `mend attach` lists live sessions; `mend shell` asks for the retained ones too.
+    if (request.url === "/api/sessions" || request.url === "/api/sessions?retained=1") {
+      json(response, [session]);
+    } else if (request.url === "/api/projects") json(response, [project]);
     else if (request.url === `/api/projects/${project.id}`) {
       json(response, { project, worktrees: [], sessions: [] });
     } else if (
@@ -117,7 +127,10 @@ const startFake = async (mode: "stall-ticket" | "open") => {
     } else if (request.method === "POST" && request.url === `/api/sessions/${session.id}/launch`) {
       json(response, session);
     } else if (request.method === "POST" && request.url === `/api/sessions/${session.id}/stop`) {
-      json(response, { ...session, status: "stopped" });
+      if (options.holdStop === true) heldStops.push(response);
+      else json(response, { ...session, status: "stopped" });
+    } else if (request.method === "POST" && request.url === `/api/sessions/${session.id}/shell`) {
+      json(response, { id: "shell-1" });
     } else if (request.method === "POST" && request.url === `/api/sessions/${session.id}/images`) {
       let body = "";
       request.on("data", (chunk: Buffer) => {
@@ -160,6 +173,10 @@ const startFake = async (mode: "stall-ticket" | "open") => {
       ),
     images: () => images,
     requests: () => requests,
+    /** Answer every stop held so far: the session reads as stopped. */
+    releaseStops: () => {
+      for (const held of heldStops.splice(0)) json(held, { ...session, status: "stopped" });
+    },
     /** Send PTY bytes to every attached terminal. */
     output: (text: string) => {
       for (const socket of sockets) socket.write(serverBinaryFrame(Buffer.from(text)));
@@ -174,9 +191,20 @@ const startFake = async (mode: "stall-ticket" | "open") => {
 };
 
 /** `mend <args>` inside a 100×30 pty (`mend attach session-` by default); `write` types into it. */
-const attachInTerminal = (url: string, args = "attach session-", env: NodeJS.ProcessEnv = {}) => {
+const attachInTerminal = (
+  url: string,
+  args = "attach session-",
+  env: NodeJS.ProcessEnv = {},
+  options: { readonly stderr?: "closed-pipe" } = {},
+) => {
   const entrypoint = fileURLToPath(new URL("./main.ts", import.meta.url));
-  const command = `stty rows 30 cols 100; exec ${process.execPath} --experimental-strip-types ${entrypoint} ${args}`;
+  const mend = `${process.execPath} --experimental-strip-types ${entrypoint} ${args}`;
+  // A stderr whose reader is gone while the terminal itself lives: bash's `>(true)` is a pipe whose
+  // reader exits at once, so the CLI's first line on stderr fails with EPIPE.
+  const command =
+    options.stderr === "closed-pipe"
+      ? `stty rows 30 cols 100; exec bash -c 'exec ${mend} 2> >(true)'`
+      : `stty rows 30 cols 100; exec ${mend}`;
   const child = spawn("script", ["-qfec", command, "/dev/null"], {
     env: { ...process.env, ...env, MEND_URL: url, MEND_TOKEN: "token", TERM: "xterm-256color" },
     stdio: ["pipe", "pipe", "pipe"],
@@ -205,6 +233,25 @@ const waitFor = async (predicate: () => boolean, timeoutMs = 15_000): Promise<vo
     if (Date.now() > deadline) throw new Error("waitFor: condition never became true");
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
   }
+};
+
+const FOREGROUND = "claude --name wt --project demo --foreground --no-tunnel";
+const STOP = `POST /api/sessions/${session.id}/stop`;
+const REFUSAL_LINE = "could not leave raw mode (setRawMode EPERM)";
+/** The CLI's native `setRawMode(false)` answers `errno`; entering raw mode is left alone. */
+const rawModeRefusing = (errno: string): NodeJS.ProcessEnv => ({
+  NODE_OPTIONS: `--import ${fileURLToPath(new URL("./attach-terminal.inject-errno.mjs", import.meta.url))}`,
+  MEND_TEST_RAW_ERRNO: errno,
+});
+/** SIGHUP to the attached CLI while its terminal stays live: only the raw-mode refusal decides. */
+const hangUp = async (
+  fake: Awaited<ReturnType<typeof startFake>>,
+  cli: ReturnType<typeof attachInTerminal>,
+) => {
+  await waitFor(() => fake.frames().length >= 2);
+  const mend = spawnSync("pgrep", ["-P", String(cli.child.pid)], { encoding: "utf8" });
+  expect(mend.stdout.trim()).toMatch(/^\d+$/);
+  process.kill(Number(mend.stdout.trim()), "SIGHUP");
 };
 
 describe.skipIf(!hasScript)("mend attach in a terminal", () => {
@@ -325,6 +372,92 @@ describe.skipIf(!hasScript)("mend attach in a terminal", () => {
       // and every write to the terminal fails with EIO.
       cli.child.kill("SIGKILL");
       await waitFor(() => fake.requests().includes(`POST /api/sessions/${session.id}/stop`));
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  }, 30_000);
+
+  it("a foreground session stops when SIGHUP is handled before the terminal's EOF, as tmux kill-session sends them (mend#1048)", async () => {
+    const fake = await startFake("open");
+    const cli = attachInTerminal(
+      fake.url,
+      "claude --name wt --project demo --foreground --no-tunnel",
+    );
+    try {
+      await waitFor(() => fake.frames().length >= 2);
+      // tmux signals the pane's process first and closes its pty after: the CLI handles SIGHUP on
+      // a terminal that is already gone, before the terminal's EOF reaches stdin. Leaving raw mode
+      // then fails with EIO, which must not cost the session its stop.
+      const mend = spawnSync("pgrep", ["-P", String(cli.child.pid)], { encoding: "utf8" });
+      expect(mend.stdout.trim()).toMatch(/^\d+$/);
+      process.kill(Number(mend.stdout.trim()), "SIGHUP");
+      cli.child.kill("SIGKILL");
+      await waitFor(() => fake.requests().includes(`POST /api/sessions/${session.id}/stop`));
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  }, 30_000);
+
+  it("a foreground session stops when the gone terminal refuses with ENOTTY, as macOS does after revoke() (review of mend#1061)", async () => {
+    const fake = await startFake("open");
+    const cli = attachInTerminal(fake.url, FOREGROUND, rawModeRefusing("ENOTTY"));
+    try {
+      await hangUp(fake, cli);
+      await waitFor(() => fake.requests().includes(STOP));
+      expect(await cli.exited).toBe(0);
+      expect(cli.output()).not.toContain("could not leave raw mode");
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  }, 30_000);
+
+  it("a refusal to leave raw mode that no gone terminal explains (EPERM) is said once the stop has its answer, never before", async () => {
+    const fake = await startFake("open", { holdStop: true });
+    const cli = attachInTerminal(fake.url, FOREGROUND, rawModeRefusing("EPERM"));
+    try {
+      await hangUp(fake, cli);
+      await waitFor(() => fake.requests().includes(STOP));
+      // The server holds the stop's answer, so the CLI is waiting on it: whatever it has said by now
+      // it said before the stop. A line written before the stop reaches this reader within the grace.
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
+      expect(cli.output()).not.toContain("could not leave raw mode");
+      fake.releaseStops();
+      await waitFor(() => cli.output().includes(REFUSAL_LINE));
+      expect(await cli.exited).toBe(0);
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  }, 30_000);
+
+  it("a stderr whose reader is gone never costs the foreground session its stop (review 2 of mend#1061)", async () => {
+    const fake = await startFake("open");
+    const cli = attachInTerminal(fake.url, FOREGROUND, rawModeRefusing("EPERM"), {
+      stderr: "closed-pipe",
+    });
+    try {
+      await hangUp(fake, cli);
+      // The refusal's line meets EPIPE on stderr; the stop went out first, and once.
+      expect(await cli.exited).toBe(0);
+      expect(fake.requests().filter((request) => request === STOP)).toHaveLength(1);
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  }, 30_000);
+
+  it("mend shell says a refusal to leave raw mode too, on its way out (review 2 of mend#1061)", async () => {
+    const fake = await startFake("open");
+    const cli = attachInTerminal(fake.url, "shell session-", rawModeRefusing("EPERM"));
+    try {
+      await waitFor(() => fake.frames().length >= 2);
+      cli.write("\x1d");
+      expect(await cli.exited).toBe(0);
+      expect(cli.output()).toContain(REFUSAL_LINE);
+      expect(cli.output()).toContain("detached");
     } finally {
       cli.child.kill("SIGKILL");
       await fake.close();
