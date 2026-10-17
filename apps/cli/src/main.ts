@@ -88,6 +88,7 @@ import {
 } from "./organization.ts";
 import { type ApiCall, pairCommand, qrCommand, type T3GatewayDto } from "./pair.ts";
 import { piAgentDir, piProfileLines, scanPiProfile } from "./pi-profile.ts";
+import { leaveRawMode } from "./raw-mode.ts";
 import {
   beforeDeadline,
   type CommandDetail,
@@ -1467,7 +1468,7 @@ const attachTty = async (
     process.stdin.off("data", onKeys);
     process.stdout.off("resize", onWinch);
     ws?.removeEventListener("message", onTtyFrame);
-    if (rawModeEnabled) process.stdin.setRawMode(false);
+    if (rawModeEnabled) leaveRawMode(process.stdin);
     if (interactive && ws !== null && process.stdout.isTTY === true) {
       // The inner TUI's terminal modes leaked onto OUR terminal through the
       // byte bridge — kitty keyboard protocol, bracketed paste, mouse
