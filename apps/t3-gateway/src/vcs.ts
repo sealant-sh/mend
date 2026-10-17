@@ -9,14 +9,16 @@ import {
   type VcsStatusResult,
   type VcsStatusStreamEvent,
 } from "@mend/t3-contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import type { GatedMend } from "./device-gate.ts";
 import { makeFanout } from "./fanout.ts";
 import type { CwdLocation, PersonHub } from "./hub.ts";
-import type { MendBranch } from "./mend-client.ts";
+import { MEND_RESPONSE_DEADLINE, type MendBranch } from "./mend-client.ts";
 import type { BearerSession } from "./state.ts";
 
 /**
@@ -42,7 +44,8 @@ import type { BearerSession } from "./state.ts";
  *
  * A socket reads one `cwd`'s status one read at a time, and every ask joins the next read to start
  * after it: a burst of refreshes is at most two reads, and a stream never shows an older read after
- * a newer one.
+ * a newer one. A read that fails, or has no complete answer within Mend's deadline, fails every ask
+ * it covers; an ask made after it reads again.
  */
 
 /** At most one read of a worktree's status this often while it keeps changing. */
@@ -144,7 +147,8 @@ interface StatusRead {
 interface Reader {
   readonly lock: Semaphore.Semaphore;
   asked: number;
-  last: StatusRead | null;
+  /** The last read to finish, failed or not, and the asks up to `seq` it answers. */
+  last: { readonly seq: number; readonly outcome: Exit.Exit<StatusRead, GitManagerError> } | null;
 }
 
 export const makeVcsHandlers = (input: {
@@ -186,12 +190,28 @@ export const makeVcsHandlers = (input: {
       const ask = ++reader.asked;
       return reader.lock.withPermits(1)(
         Effect.gen(function* () {
-          if (reader.last !== null && reader.last.seq >= ask) return reader.last;
+          if (reader.last !== null && reader.last.seq >= ask) return yield* reader.last.outcome;
           const seq = reader.asked;
-          const read: StatusRead = { cwd, seq, ...(yield* readStatus(operation, cwd)) };
-          reader.last = read;
-          yield* reads.publish([read]);
-          return read;
+          // The lock is held for the whole read, so the whole read is bounded, body included: a
+          // Mend that sends its headers and stalls in the body must not hold every ask behind it.
+          const outcome = yield* readStatus(operation, cwd).pipe(
+            Effect.map((status): StatusRead => ({ cwd, seq, ...status })),
+            Effect.timeoutOrElse({
+              duration: MEND_RESPONSE_DEADLINE,
+              orElse: () =>
+                Effect.fail(
+                  failed(operation, cwd)(`Mend did not answer within ${MEND_RESPONSE_DEADLINE}.`),
+                ),
+            }),
+            Effect.exit,
+          );
+          // A read its asker cancelled answers no one: the asks it covered read again.
+          if (Exit.isFailure(outcome) && Cause.hasInterruptsOnly(outcome.cause)) {
+            return yield* outcome;
+          }
+          reader.last = { seq, outcome };
+          if (Exit.isSuccess(outcome)) yield* reads.publish([outcome.value]);
+          return yield* outcome;
         }),
       );
     });

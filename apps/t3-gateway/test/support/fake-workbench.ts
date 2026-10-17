@@ -109,6 +109,9 @@ export const advanceClock = (at: number): void => {
   clock = Math.max(clock, at);
 };
 
+/** Where a held stats answer stops until it is released. */
+export type StatsStall = "before-headers" | "mid-body";
+
 export class FakeWorkbench {
   readonly projects = new Map<string, { id: string; name: string; storePath: string }>();
   /** Explicit access fixtures; unconfigured projects retain the older unrestricted fake. */
@@ -185,6 +188,7 @@ export class FakeWorkbench {
     readonly answer: Promise<void>;
   } | null = null;
   private nextStatsRead: {
+    readonly stall: StatsStall;
     readonly entered: () => void;
     readonly answer: Promise<void>;
   } | null = null;
@@ -211,11 +215,17 @@ export class FakeWorkbench {
     };
   }
 
-  /** Holds the next `GET /api/changes/:id/stats` answer, read when it arrived, until `release`. */
-  holdNextStatsRead(): { readonly entered: Promise<void>; readonly release: () => void } {
+  /**
+   * Holds the next `GET /api/changes/:id/stats` answer, read when it arrived, until `release`:
+   * before its headers, or with its 200 sent and its body begun.
+   */
+  holdNextStatsRead(stall: StatsStall = "before-headers"): {
+    readonly entered: Promise<void>;
+    readonly release: () => void;
+  } {
     const entered = Promise.withResolvers<void>();
     const answer = Promise.withResolvers<void>();
-    this.nextStatsRead = { entered: () => entered.resolve(), answer: answer.promise };
+    this.nextStatsRead = { stall, entered: () => entered.resolve(), answer: answer.promise };
     return { entered: entered.promise, release: () => answer.resolve() };
   }
 
@@ -955,6 +965,15 @@ export class FakeWorkbench {
       // As Mend reads them when the request arrives; the held answer is that read, late.
       this.nextStatsRead = null;
       held.entered();
+      if (held.stall === "mid-body" && stats !== undefined) {
+        const text = JSON.stringify(stats);
+        response.writeHead(200, { "content-type": "application/json" });
+        response.write(text.slice(0, 1));
+        return held.answer.then((): true => {
+          response.end(text.slice(1));
+          return true;
+        });
+      }
       return held.answer.then(answer);
     }
     if (method === "GET" && collection === "changes" && sub === "diff") {
