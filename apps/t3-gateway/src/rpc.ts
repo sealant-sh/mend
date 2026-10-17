@@ -19,6 +19,8 @@ import {
   OrchestrationV2CommandOutputError,
   OrchestrationV2GetShellSnapshotError,
   OrchestrationV2GetThreadProjectionError,
+  OrchestrationV2SearchThreadError,
+  type OrchestrationV2SearchThreadInput,
   OrchestrationV2StopWorkflowError,
   PersistChatAttachmentsError,
   ProjectMutationError,
@@ -67,6 +69,7 @@ import {
   type PersonLogins,
 } from "./server-config.ts";
 import type { BearerSession } from "./state.ts";
+import { findInThread, firstMatchInThread } from "./thread-find.ts";
 import { makeVcsHandlers } from "./vcs.ts";
 
 /**
@@ -109,6 +112,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   ORCHESTRATION_V2_WS_METHODS.subscribeThread,
   ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
   ORCHESTRATION_V2_WS_METHODS.getTurnItem,
+  ORCHESTRATION_V2_WS_METHODS.searchThread,
+  ORCHESTRATION_V2_WS_METHODS.searchThreadStream,
   ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
   ORCHESTRATION_V2_WS_METHODS.launchThread,
   ORCHESTRATION_V2_WS_METHODS.getTurnDiff,
@@ -330,6 +335,26 @@ export const makeGatewayRpcHandlers = ({
    */
   const authorize = (bearer: BearerSession) =>
     hub.isRefused(bearer.deviceToken) ? Effect.fail(deviceRefused(READ)) : Effect.void;
+
+  const threadToFind = (search: OrchestrationV2SearchThreadInput) =>
+    Effect.gen(function* () {
+      yield* authorize(session);
+      const snapshot = yield* hub
+        .threadSnapshot(search.threadId)
+        .pipe(
+          Effect.mapError((error) =>
+            error._tag === "MendDeviceRefused"
+              ? deviceRefused(READ)
+              : new OrchestrationV2SearchThreadError({ cause: error }),
+          ),
+        );
+      if (snapshot === null) {
+        return yield* new OrchestrationV2SearchThreadError({
+          cause: unknownThread(search.threadId),
+        });
+      }
+      return snapshot;
+    });
 
   /**
    * The person's config. Mend's catalog is read with their device token; a revoked device
@@ -591,10 +616,18 @@ export const makeGatewayRpcHandlers = ({
         const item = snapshot.projection.turnItems.find((turnItem) => turnItem.id === input.itemId);
         return { item: item ?? null };
       }),
-    [ORCHESTRATION_V2_WS_METHODS.searchThread]: () =>
-      refuse(ORCHESTRATION_V2_WS_METHODS.searchThread),
-    [ORCHESTRATION_V2_WS_METHODS.searchThreadStream]: () =>
-      refuseStream(ORCHESTRATION_V2_WS_METHODS.searchThreadStream),
+    [ORCHESTRATION_V2_WS_METHODS.searchThread]: (input) =>
+      threadToFind(input).pipe(Effect.map((snapshot) => findInThread(snapshot, input))),
+    [ORCHESTRATION_V2_WS_METHODS.searchThreadStream]: (input) =>
+      Stream.unwrap(
+        threadToFind(input).pipe(
+          Effect.map((snapshot) => {
+            const counted = Stream.fromEffect(Effect.sync(() => findInThread(snapshot, input)));
+            const first = firstMatchInThread(snapshot, input);
+            return first === null ? counted : Stream.concat(Stream.make(first), counted);
+          }),
+        ),
+      ),
     [ORCHESTRATION_V2_WS_METHODS.searchThreads]: () =>
       Effect.fail(
         new OrchestrationSearchThreadsError({

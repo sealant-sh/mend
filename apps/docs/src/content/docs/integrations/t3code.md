@@ -142,6 +142,7 @@ by an older gateway no longer reads files, which now need a permission of their 
 | Snooze                             | Your own as well. The thread wakes at the time you chose, or earlier when the agent asks for an approval or an answer, or a turn fails or completes. A snooze ends in the future, and is refused while a question is open or a message waits to be sent, which it would hide                                                                                                          |
 | Diffs                              | Each turn's slice of the worktree's checkpoints, matched to the turn by session and time, and the whole thread's. The changes panel shows the thread's change, the worktree against its base, and a file opened there whole                                                                                                                                                           |
 | Files and `@`-mentions             | The session's worktree as it stands: the file tree, reading a file, searching contents. The Files tab is read-only                                                                                                                                                                                                                                                                    |
+| Find in a thread (Ctrl/⌘+F)        | Every message and plan of the thread, read as t3code renders it: each match is highlighted, and next and previous move between them                                                                                                                                                                                                                                                   |
 | Branch status                      | The session's branch and its change against its base. The branch picker lists the project's branches, any of them a new worktree's base, and the thread's own                                                                                                                                                                                                                         |
 | Terminal                           | Mend's own shell beside the agent, opened with a single-use ticket                                                                                                                                                                                                                                                                                                                    |
 
@@ -178,6 +179,9 @@ t3code shows those controls inert with its own wording, or it refuses them with 
   at most 500 matching lines.
 - **Large trees.** Mend lists at most 20,000 files. In a larger tree a file past that cannot be
   found from the composer, and the search says it was cut.
+- **Searching threads by their text.** The command palette finds a thread by its title, not by what
+  was said in it: Mend has no search over sessions' messages yet. Find in a thread searches all of
+  one thread.
 - **Uncommitted changes.** Mend reports a branch's change against its base, committed or not, and
   has no read of what is uncommitted. t3code's branch toolbar shows the branch's changes and no
   uncommitted ones.
