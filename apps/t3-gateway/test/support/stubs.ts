@@ -77,10 +77,14 @@ export const emptyHub: PersonHub = {
     threads: [],
   }),
   accountChanges: Effect.succeed(Stream.never),
-  settings: () => Effect.succeed(settingsWith(NO_MODEL_PREFERENCES)),
+  settings: () => Effect.succeed({ version: 0, settings: settingsWith(NO_MODEL_PREFERENCES) }),
   updateModelPreferences: () => Effect.succeed(settingsWith(NO_MODEL_PREFERENCES)),
   subscribeSettings: () =>
-    Effect.succeed({ settings: settingsWith(NO_MODEL_PREFERENCES), changes: Stream.never }),
+    Effect.succeed(
+      Stream.make({ version: 0, settings: settingsWith(NO_MODEL_PREFERENCES) }).pipe(
+        Stream.concat(Stream.never),
+      ),
+    ),
   subscribeArchivedShell: Effect.succeed({
     snapshot: {
       schemaVersion: EMPTY_SHELL_SNAPSHOT.schemaVersion,

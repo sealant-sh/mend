@@ -17,9 +17,10 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 
+import { gateDeviceCalls } from "../src/device-gate.ts";
 import { makeGatewayEnvironment } from "../src/environment.ts";
 import { makeFanout } from "../src/fanout.ts";
-import type { PersonHub } from "../src/hub.ts";
+import { makePersonHub, type PersonHub, type PersonTokens } from "../src/hub.ts";
 import {
   applyModelPreferencesPatch,
   boundedModelPreferences,
@@ -27,15 +28,17 @@ import {
   modelPreferencesUpdateOf,
   NO_MODEL_PREFERENCES,
   settingsWith,
+  type KeptSettings,
   type ModelPreferences,
 } from "../src/model-preferences.ts";
 import { requiredScopesFor } from "../src/rpc-scopes.ts";
 import { makeGatewayRpcHandlers } from "../src/rpc.ts";
+import { openGatewayState } from "../src/state.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer, PERSON } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
-import { emptyHub, testBearerSession } from "./support/stubs.ts";
+import { emptyHub, testBearerSession, unreachableMend } from "./support/stubs.ts";
 
 const CLAUDE = ProviderInstanceId.make("claude");
 const CODEX = ProviderInstanceId.make("codex");
@@ -344,56 +347,189 @@ describe("kept model preferences that no longer decode", () => {
   );
 });
 
+const keptStarred = (version: number, ...models: ReadonlyArray<string>): KeptSettings => ({
+  version,
+  settings: settingsWith({
+    favorites: models.map((model) => ({ provider: CLAUDE, model })),
+    providerModelPreferences: null,
+  }),
+});
+
+const starredIn = (event: ServerConfigStreamEvent | undefined) =>
+  event?.type === "settingsUpdated"
+    ? (event.payload.settings.favorites ?? []).map((favorite) => favorite.model).join(",")
+    : null;
+
+/** Three changes published at once overflow a feed with room for two. */
+const FEED_ROOM = 2;
+
+const configStreamOverSmallFeed = Effect.gen(function* () {
+  const feed = makeFanout<KeptSettings>(FEED_ROOM);
+  let current = keptStarred(0);
+  let open = 0;
+  const hub: PersonHub = {
+    ...emptyHub,
+    settings: () => Effect.sync(() => current),
+    subscribeSettings: () =>
+      Effect.gen(function* () {
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            open += 1;
+          }),
+          () =>
+            Effect.sync(() => {
+              open -= 1;
+            }),
+        );
+        const changes = yield* feed.subscribe(() => true);
+        return Stream.concat(Stream.make(current), changes);
+      }),
+  };
+  const handlers = makeGatewayRpcHandlers({
+    environment: makeGatewayEnvironment({
+      environmentId: EnvironmentId.make("environment-1"),
+      label: "Mend",
+      host: "127.0.0.1",
+      statePath: ":memory:",
+    }),
+    assetUrls: {
+      issue: () => Effect.succeed({ relativeUrl: "/api/assets/x/y", expiresAt: 0 }),
+      resolve: () => Effect.succeedNone,
+    },
+    session: testBearerSession,
+    hub,
+  });
+  const heard: Array<ServerConfigStreamEvent> = [];
+  yield* handlers[WS_METHODS.subscribeServerConfig]().pipe(
+    Stream.runForEach((event) => Effect.sync(() => heard.push(event))),
+    Effect.forkScoped,
+  );
+  yield* until(() => heard.length === 1 && feed.size() === 1, "the snapshot");
+  return {
+    feed,
+    heard,
+    openSubscriptions: () => open,
+    opensWith: (next: KeptSettings) => {
+      current = next;
+    },
+  };
+});
+
 describe("the config stream after the settings feed falls behind", () => {
-  it.live("subscribes again in place, so a later change still reaches the client", () =>
+  it.live(
+    "subscribes again with one subscription open, and hears each lost change before the next",
+    () =>
+      Effect.gen(function* () {
+        const rig = yield* configStreamOverSmallFeed;
+        for (let round = 1; round <= 50; round++) {
+          const version = round * 10;
+          rig.opensWith(keptStarred(version + 3, `round-${round}`));
+          yield* rig.feed.publish([
+            keptStarred(version + 1, "a"),
+            keptStarred(version + 2, "b"),
+            keptStarred(version + 3, `round-${round}`),
+          ]);
+          yield* until(
+            () => starredIn(rig.heard.at(-1)) === `round-${round}`,
+            `the change lost in overflow ${round}`,
+          );
+          assert.strictEqual(
+            rig.openSubscriptions(),
+            1,
+            `subscriptions open after overflow ${round}`,
+          );
+          assert.strictEqual(rig.feed.size(), 1);
+        }
+        rig.opensWith(keptStarred(1000, "opus", "sonnet"));
+        yield* rig.feed.publish([keptStarred(1000, "opus", "sonnet")]);
+        yield* until(
+          () => starredIn(rig.heard.at(-1)) === "opus,sonnet",
+          "the change after the overflows",
+        );
+        assert.strictEqual(rig.openSubscriptions(), 1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("never sends settings older than what it already sent", () =>
     Effect.gen(function* () {
-      const feed = makeFanout<ServerSettings>(2);
-      const starred = (...models: ReadonlyArray<string>) =>
-        settingsWith({
-          favorites: models.map((model) => ({ provider: CLAUDE, model })),
-          providerModelPreferences: null,
-        });
-      let current = settingsWith(NO_MODEL_PREFERENCES);
-      const hub: PersonHub = {
-        ...emptyHub,
-        settings: () => Effect.sync(() => current),
-        subscribeSettings: () =>
-          Effect.map(
-            feed.subscribe(() => true),
-            (changes) => ({ settings: current, changes }),
+      const rig = yield* configStreamOverSmallFeed;
+      rig.opensWith(keptStarred(2, "two"));
+      yield* rig.feed.publish([keptStarred(2, "two")]);
+      yield* until(() => starredIn(rig.heard.at(-1)) === "two", "version 2");
+      yield* rig.feed.publish([keptStarred(1, "one, late")]);
+
+      rig.opensWith(keptStarred(5, "five"));
+      yield* rig.feed.publish([keptStarred(3, "c"), keptStarred(4, "d"), keptStarred(5, "five")]);
+      yield* until(() => starredIn(rig.heard.at(-1)) === "five", "the snapshot after overflow");
+      yield* rig.feed.publish([keptStarred(4, "d, late"), keptStarred(5, "five")]);
+      rig.opensWith(keptStarred(6, "six"));
+      yield* rig.feed.publish([keptStarred(6, "six")]);
+      yield* until(() => starredIn(rig.heard.at(-1)) === "six", "version 6");
+
+      const sent = rig.heard.flatMap((event) => {
+        const starred = starredIn(event);
+        return starred === null ? [] : [starred];
+      });
+      assert.deepStrictEqual(
+        sent.filter((starred) => !["c", "d"].includes(starred)),
+        ["two", "five", "six"],
+      );
+    }).pipe(Effect.scoped),
+  );
+});
+
+const noTokens: PersonTokens = {
+  current: () => null,
+  live: () => [],
+  refuse: () => Effect.void,
+  isRefused: () => false,
+  refusal: () => Effect.never,
+  noneLeft: Effect.never,
+};
+
+describe("a person hub's settings feed", () => {
+  it.live("opens with the settings now and hears a change written while it reads them", () =>
+    Effect.gen(function* () {
+      const kept = yield* openGatewayState(":memory:");
+      let hub: PersonHub | undefined;
+      let writeDuringRead = false;
+      const state: typeof kept = {
+        ...kept,
+        modelPreferences: (mendUserId) =>
+          kept.modelPreferences(mendUserId).pipe(
+            Effect.tap(() => {
+              if (!writeDuringRead || hub === undefined) return Effect.void;
+              writeDuringRead = false;
+              return hub.updateModelPreferences(testBearerSession, star("sonnet").patch);
+            }),
+            Effect.orDie,
           ),
       };
-      const handlers = makeGatewayRpcHandlers({
-        environment: makeGatewayEnvironment({
-          environmentId: EnvironmentId.make("environment-1"),
-          label: "Mend",
-          host: "127.0.0.1",
-          statePath: ":memory:",
-        }),
-        assetUrls: {
-          issue: () => Effect.succeed({ relativeUrl: "/api/assets/x/y", expiresAt: 0 }),
-          resolve: () => Effect.succeedNone,
-        },
-        session: testBearerSession,
-        hub,
+      hub = yield* makePersonHub({
+        mend: gateDeviceCalls(unreachableMend, () => Effect.void),
+        viewer: null,
+        state,
+        tokens: noTokens,
       });
-      const heard: Array<ServerConfigStreamEvent> = [];
-      yield* handlers[WS_METHODS.subscribeServerConfig]().pipe(
-        Stream.runForEach((event) => Effect.sync(() => heard.push(event))),
-        Effect.forkScoped,
+      yield* hub.updateModelPreferences(testBearerSession, star("opus").patch);
+
+      writeDuringRead = true;
+      const feed = yield* hub.subscribeSettings(testBearerSession);
+      const opening = yield* feed.pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.timeout("2 seconds"),
       );
-      yield* until(() => heard.length === 1 && feed.size() === 1, "the snapshot");
-
-      current = starred("opus");
-      yield* feed.publish([starred("a"), starred("b"), current]);
-      yield* until(() => feed.size() === 1, "a fresh subscription");
-
-      current = starred("opus", "sonnet");
-      yield* feed.publish([current]);
-      yield* until(() => {
-        const last = heard.at(-1);
-        return last?.type === "settingsUpdated" && last.payload.settings.favorites?.length === 2;
-      }, "the change after the overflow");
+      assert.deepStrictEqual(
+        opening.map((next) => ({
+          version: next.version,
+          favorites: next.settings.favorites?.map((favorite) => favorite.model),
+        })),
+        [
+          { version: 1, favorites: ["opus"] },
+          { version: 2, favorites: ["opus", "sonnet"] },
+        ],
+      );
     }).pipe(Effect.scoped),
   );
 });
