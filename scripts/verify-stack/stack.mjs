@@ -1597,13 +1597,14 @@ async function recording(work, { state = null, shape = SHAPES.session } = {}) {
   const file = join(dir, `${window.window}.json`);
   const before = await snapshot();
   let made = madeSince(before, before, shape);
-  // What each container the window made ran, read again only when the set changes.
-  let ran = { ids: "", record: [] };
+  // What each container the window made ran, by container id, read once when it first shows and
+  // kept after the container is gone: the record outlives the inventory.
+  const ran = new Map();
   const save = async (closed) => {
-    const ids = made.containers.join(",");
-    if (ids !== ran.ids)
-      ran = { ids, record: await ranBy(made.containers).catch(() => ran.record) };
-    await writeAtomically(file, { ...window, closed, ...made, ran: ran.record });
+    const fresh = made.containers.filter((id) => !ran.has(id));
+    for (const item of await ranBy(fresh).catch(() => []))
+      if (item.containerId !== null) ran.set(item.containerId, item);
+    await writeAtomically(file, { ...window, closed, ...made, ran: [...ran.values()] });
   };
   await save(false);
   const ticker = { open: true, wake: () => undefined };

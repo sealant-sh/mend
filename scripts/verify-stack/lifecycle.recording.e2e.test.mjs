@@ -167,6 +167,43 @@ test("fake Docker rm --volumes removes only unused anonymous mounts, preserving 
   assert.ok(volumeNames(fakeDaemon.read()).includes(retained));
 });
 
+test("a window keeps what a container ran after the container is removed", async () => {
+  const fakeDaemon = daemon({ containers: generation("a"), volumes: [STATE_VOLUME] });
+  const cache = fakeDaemon.env.MEND_VERIFY_STACK_CACHE;
+  mkdirSync(cache, { recursive: true });
+  writeFileSync(join(cache, "stack.json"), JSON.stringify({ images: { cli: "c" } }));
+  writeFileSync(
+    fakeDaemon.file("run"),
+    JSON.stringify({ containers: [[...EXECUTOR, "node:26-bookworm"]] }),
+  );
+  writeFileSync(fakeDaemon.file("pause-run"), "1");
+  const running = fakeDaemon.run(["mend", "run", "--", "true"]);
+  try {
+    await until(
+      "the window to record what the session ran",
+      () =>
+        ledgerWindows(fakeDaemon).some((window) =>
+          window.ran?.some((item) => item.image === "node:26-bookworm"),
+        ),
+      10_000,
+    );
+    const before = ledgerWindows(fakeDaemon)[0].ran;
+    assert.equal(fakeDaemon.docker(["rm", "-f", "sealant-5e55"]).status, 0);
+    rmSync(fakeDaemon.file("pause-run"));
+    assert.equal(await running.done, 0, running.output());
+    const [after] = ledgerWindows(fakeDaemon);
+    assert.equal(after.closed, true);
+    assert.deepEqual(after.ran, before, "the image identity outlives the container");
+    assert.match(after.ran[0].id, /^sha256:/);
+  } finally {
+    rmSync(fakeDaemon.file("pause-run"), { force: true });
+    if (running.child.exitCode === null) {
+      running.child.kill("SIGKILL");
+      await running.done;
+    }
+  }
+});
+
 test("a recorded volume still mounted by an unrecorded survivor keeps the ledger for retry", async () => {
   const fakeDaemon = daemon({
     containers: [

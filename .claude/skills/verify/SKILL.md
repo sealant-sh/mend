@@ -370,7 +370,8 @@ when every `ok`/`NOT` line holds:
   or `Docker Hub did not answer`; then each `held` line from `up`. A digest says where a pulled
   image came from; `no repo digest (built or loaded here)` marks one `stack.mjs` built, or
   `local-outer.sh seed` loaded after checking its digest (`$E/launch/seed.txt`). The ledger keeps
-  the same record for each container a recording window made (`ran`), so it survives the stack.
+  the same record for each container a recording window saw (`ran`, by container id, kept after the
+  container is removed), so it survives the stack.
 
 `doctor.txt`, `report.json`, `images.json` and `health.json` land in `--out`. On a `NOT` line, read
 `$E/launch/stack.log`, then go to Cleanup and launch again. Run the doctor after `health answers`:

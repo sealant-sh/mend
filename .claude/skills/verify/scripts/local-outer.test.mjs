@@ -173,38 +173,65 @@ test("budgets falls back to server.env, and refuses a container Compose did not 
 
 /**
  * A `docker` and a `curl` for seeding and `up`. FAKE_HOST maps an image to the digest this machine
- * holds it by, FAKE_HUB an image to the digest Docker Hub names (absent: Docker Hub refuses),
- * FAKE_TARGET maps what the outer's daemon holds to its repo digests (none: loaded), FAKE_KEPT is
- * the file the outer's seed log is appended to, FAKE_NETWORK says whether the cache's network
- * exists. `docker run -d` fails once recorded, which ends `up` there.
+ * holds it by, FAKE_HUB an image to the digest Docker Hub names (absent: Docker Hub refuses).
+ * FAKE_TARGET maps what the outer's daemon holds to its repo digests (none: loaded), FAKE_SESSIONS
+ * each session's Docker service (`sealant-<ws>-docker`) to what it holds, the same way: an
+ * `exec … docker exec … <service> docker …` reaches that service. Any other command an `exec` runs
+ * (the seed log's append and read) runs for real, with the outer's /st-verify under FAKE_ROOT.
+ * FAKE_NETWORK says whether the cache's network exists. `docker run -d` fails once recorded, which
+ * ends `up` there.
  */
 const SEED_DOCKER = `const { appendFileSync, readFileSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_LOG, JSON.stringify(args) + "\\n");
 const host = JSON.parse(process.env.FAKE_HOST);
-const target = JSON.parse(process.env.FAKE_TARGET);
-const inner = args[0] === "exec" ? args.slice(args.indexOf("docker") + 1) : null;
+const sessions = JSON.parse(process.env.FAKE_SESSIONS ?? "{}");
+const held = { outer: JSON.parse(process.env.FAKE_TARGET), ...sessions };
+// \`exec [-i] [-e VAR=value] <container> <command…>\`: the container and its command.
+const execed = (words) => {
+  let at = 1;
+  while (words[at].startsWith("-")) at += words[at] === "-e" ? 2 : 1;
+  return [words[at], words.slice(at + 1)];
+};
+let daemon = "host";
+let words = args;
+if (args[0] === "exec") {
+  const [, command] = execed(args);
+  if (command[0] !== "docker") {
+    const root = process.env.FAKE_ROOT;
+    const run = spawnSync(command[0], command.slice(1).map((word) => word.replaceAll("/st-verify", root)), { stdio: "inherit" });
+    process.exit(run.status ?? 1);
+  }
+  daemon = "outer";
+  words = command.slice(1);
+  if (words[0] === "exec") {
+    const [service, nested] = execed(words);
+    daemon = service;
+    words = nested.slice(1);
+  }
+}
 const world = JSON.parse(process.env.FAKE_INSPECT ?? "null");
 if (world) {
-  const where = inner ? world.inner : world.host;
-  const verb = inner ?? args;
-  if (verb[0] === "ps") { process.stdout.write(where.containers.map((c) => c.Id).join("\\n") + "\\n"); process.exit(0); }
-  if (verb[0] === "inspect") { process.stdout.write(JSON.stringify(where.containers.filter((c) => verb.includes(c.Id) || verb.includes(c.Name.slice(1))))); process.exit(0); }
-  if (verb[0] === "image" && verb[1] === "inspect") { process.stdout.write(JSON.stringify(where.images.filter((i) => verb.includes(i.Id)))); process.exit(0); }
+  const where = daemon === "host" ? world.host : world.inner;
+  if (words[0] === "ps") { process.stdout.write(where.containers.map((c) => c.Id).join("\\n") + "\\n"); process.exit(0); }
+  if (words[0] === "inspect") { process.stdout.write(JSON.stringify(where.containers.filter((c) => words.includes(c.Id) || words.includes(c.Name.slice(1))))); process.exit(0); }
+  if (words[0] === "image" && words[1] === "inspect") { process.stdout.write(JSON.stringify(where.images.filter((i) => words.includes(i.Id)))); process.exit(0); }
 }
-if (args[0] === "exec" && args.includes("sh")) { appendFileSync(process.env.FAKE_KEPT, readFileSync(0)); process.exit(0); }
-if (args[0] === "exec" && args.includes("cat")) process.exit(1);
-if (inner && inner[0] === "image" && inner[1] === "inspect") {
-  const image = inner.at(-1);
-  if (!(image in target)) process.exit(1);
-  if (inner.includes("{{.Id}}")) process.stdout.write("sha256:id-" + image + "\\n");
-  else if (inner.includes("-f")) process.stdout.write(target[image].join(" ") + "\\n");
+if (daemon !== "host") {
+  const store = held[daemon] ?? {};
+  if (words[0] === "image" && words[1] === "inspect") {
+    const image = words.at(-1);
+    if (!(image in store)) process.exit(1);
+    if (words.includes("{{.Id}}")) process.stdout.write("sha256:id-" + image + "\\n");
+    else if (words.includes("-f")) process.stdout.write(store[image].join(" ") + "\\n");
+    process.exit(0);
+  }
+  if (words[0] === "ps") { if (daemon === "outer") process.stdout.write(Object.keys(sessions).join("\\n") + "\\n"); process.exit(0); }
+  if (words[0] === "save") { process.stdout.write("tar of " + words.at(-1)); process.exit(0); }
+  if (words[0] === "load") { readFileSync(0); process.exit(0); }
   process.exit(0);
 }
-if (inner && inner[0] === "pull") process.exit(0);
-if (inner && inner[0] === "load") { readFileSync(0); process.exit(0); }
-if (inner && inner[0] === "info") process.exit(0);
-if (inner && inner[0] === "ps") process.exit(0);
 if (args[0] === "image" && args[1] === "inspect") {
   const image = args.at(-1);
   if (!(image in host)) process.exit(1);
@@ -241,6 +268,8 @@ const seeding = async (env, args) => {
     });
   }
   writeFileSync(log, "");
+  const root = env.FAKE_ROOT ?? join(dir, "outer");
+  mkdirSync(root, { recursive: true });
   try {
     const result = await new Promise((done) => {
       const child = spawn("sh", [join(scripts, "local-outer.sh"), ...args], {
@@ -255,7 +284,7 @@ const seeding = async (env, args) => {
           FAKE_HOST: "{}",
           FAKE_HUB: "{}",
           FAKE_TARGET: "{}",
-          FAKE_KEPT: join(dir, "seed.log"),
+          FAKE_ROOT: root,
           ...env,
         },
       });
@@ -270,7 +299,7 @@ const seeding = async (env, args) => {
       .map((line) => JSON.parse(line));
     const kept = (() => {
       try {
-        return readFileSync(join(dir, "seed.log"), "utf8");
+        return readFileSync(join(root, "seed.log"), "utf8");
       } catch {
         return "";
       }
@@ -354,6 +383,68 @@ test("seed reports a held copy Docker Hub no longer names, and pulls it only whe
   assert.match(refreshed.out, new RegExp(`${stale} · pulled \\(MEND_VERIFY_REFRESH_IMAGES=1\\)`));
   // Only the copy provably another: a loaded one has no repo digest to compare.
   assert.deepEqual(pulls(refreshed.calls), ["nginx:1.29-alpine"]);
+});
+
+test("seed checks what a session holds, and the outer's copy before it copies it in", async () => {
+  const current = "sha256:" + "a".repeat(64);
+  const old = "sha256:" + "c".repeat(64);
+  const service = "sealant-ws-docker";
+  const { status, out, calls } = await seeding(
+    {
+      FAKE_HUB: JSON.stringify({ "nginx:1.29-alpine": current, "alpine:3.22": current }),
+      // alpine is a session image only, so only the copy into the session checks the outer's.
+      FAKE_TARGET: JSON.stringify({ "alpine:3.22": [`alpine@${old}`] }),
+      FAKE_SESSIONS: JSON.stringify({ [service]: { "nginx:1.29-alpine": [`nginx@${old}`] } }),
+    },
+    ["seed"],
+  );
+  assert.equal(status, 0, out);
+  assert.match(
+    out,
+    new RegExp(`${service} · held nginx:1.29-alpine ${old} · Hub has ${current}\\n`),
+  );
+  assert.match(
+    out,
+    new RegExp(`st-verify-outer-test · held alpine:3.22 ${old} · Hub has ${current}\\n`),
+  );
+  assert.match(out, new RegExp(`${service} · alpine:3.22 · loaded from st-verify-outer-test`));
+  const loads = calls.filter((args) => args.includes(service) && args.includes("load"));
+  assert.ok(loads.length > 0, "the session's Docker service is loaded through its own exec");
+  assert.doesNotMatch(
+    out,
+    new RegExp(`${service} · nginx:1.29-alpine · loaded`),
+    "held: not copied",
+  );
+});
+
+test("seed keeps every line in the outer's seed log, and prints the earlier ones first", async () => {
+  const root = mkdtempSync(join(tmpdir(), "verify-local-outer-root-"));
+  try {
+    const first = await seeding({ FAKE_ROOT: root }, ["seed"]);
+    assert.equal(first.status, 0, first.out);
+    assert.match(first.out, /node:26-bookworm · not on this machine/);
+    assert.doesNotMatch(first.out, /before this seed/);
+    const kept = readFileSync(join(root, "seed.log"), "utf8");
+    assert.match(
+      kept,
+      /^\d{4}-\d\d-\d\dT[\d:]+Z st-verify-outer-test · node:26-bookworm · not on this machine$/m,
+    );
+
+    const second = await seeding({ FAKE_ROOT: root }, ["seed"]);
+    const earlier = second.out.slice(0, second.out.indexOf("local-outer · seed · "));
+    assert.equal(
+      earlier,
+      `local-outer · seed log of st-verify-outer-test before this seed:\n${kept}`,
+      "the earlier lines come first, as kept",
+    );
+    assert.equal(
+      readFileSync(join(root, "seed.log"), "utf8").split("\n").filter(Boolean).length,
+      2 * kept.split("\n").filter(Boolean).length,
+      "the second seed appends to the log; it does not replace it",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("up asks the hub-cache first only when told to, on the cache's network", async () => {
