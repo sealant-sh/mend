@@ -14,7 +14,7 @@
 
 /*
   Evidence Review type split: Inter for human language, JetBrains Mono for
-  machine facts. Tokens are owned by @mend/ui/styles/globals.css.
+  machine facts. Shared tokens are owned by @mend/ui/styles/globals.css.
 */
 @theme inline {
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
