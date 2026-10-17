@@ -450,12 +450,20 @@ only adds the same person's own logins. The pieces:
   for anyone else, and a standby (made before its harness is known, with every login) never serves a
   Claude or Codex session of a person who turned it on: that launch goes cold. It does not narrow a
   shell, pi or opencode, and it does not take back a login their home already holds in an executor
-  (their own shell started there first): a release at their last process does.
+  (their own earlier session there, before the change): a release at their last process does, except
+  the launcher's, whose home is held for the executor's life. A later start in that executor reuses
+  what the home holds, so it does not read the setting (review of mend#684, round 1). A standby
+  claimed before the setting changed goes at launch, and the launch goes cold, as for a layout that
+  no longer serves it.
 - **Unchanged protections.** Every login file is Core's, 0600 and owned by its home's user; none is
   ever captured (the paths in `HARNESS_CREDENTIALS`, and person homes outside every capture root);
   copies cannot refresh (ADR 0008). The re-POST after an authentication failure names every provider
-  the home holds, the other agent's included, so it heals whichever login failed. The session line
-  says nothing of a left-out optional agent login, as for GitHub.
+  the person's own home holds, the other agent's included, for the person the failed process runs as
+  (a steered turn's sender, not the session's owner; review of mend#684, round 1). It does not write
+  a conversation home: the next hand-over writes that one. Disconnecting a provider archives the
+  account, so nothing refreshes it again; a copy already in a running home works until its access
+  token expires or the home is released. The session line says nothing of a left-out optional agent
+  login, as for GitHub.
 
 ### 6. Steering: one shared conversation, each turn on its sender's login
 

@@ -1042,9 +1042,12 @@ function AgentLoginsSwitch() {
           <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
             Off: a Claude session also gets your Codex login and a Codex session your Claude login,
             when connected, so the agent can run <span className="font-mono text-xs">codex</span> or{" "}
-            <span className="font-mono text-xs">claude</span> on your own login. Only ever yours: no
-            session gets anyone else&apos;s. Shells, pi and opencode get every login you connected
-            either way. Applies to sessions started from now on.
+            <span className="font-mono text-xs">claude</span> on your own login. Only ever yours: in
+            a per-person workspace no session gets anyone else&apos;s. In a workspace that shares
+            one home, whoever joins or steers there runs on the logins of the person who started it,
+            these included. Shells, pi and opencode get every login you connected either way. A
+            change applies the next time your logins are written into a workspace: one that already
+            holds them keeps them while it runs, for new sessions of yours there too.
           </p>
         </div>
         <div className="flex shrink-0 gap-2">

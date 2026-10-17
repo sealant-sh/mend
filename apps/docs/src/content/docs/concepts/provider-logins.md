@@ -79,10 +79,12 @@ mend agent-logins selected
 ```
 
 `mend agent-logins all` goes back to the default, and `mend agent-logins` prints the setting. It is
-yours alone and applies to sessions started from then on. GitHub is given either way, and a shell,
-pi or opencode session gets every login you connected either way. While it is on, a Claude or Codex
-session of yours does not start in a ready standby workspace, since those are made with every login:
-it starts in a new one.
+yours alone. It applies the next time your logins are written into a workspace: a running workspace
+that already holds your other login keeps it, for new sessions of yours there too, until your last
+process there stops (or, if you started that workspace, until it ends). GitHub is given either way,
+and a shell, pi or opencode session gets every login you connected either way. While it is on, a
+Claude or Codex session of yours does not start in a ready standby workspace, since those are made
+with every login: it starts in a new one.
 
 ## Where copies go, and why they cannot break your login
 

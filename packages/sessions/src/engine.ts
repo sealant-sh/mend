@@ -16443,7 +16443,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A bash launch (shell session, shell resume) is an open workbench:
         // shape by what actually launches, not the session's harness identity.
         const shapedAs = argv[0] === "bash" ? "shell" : session.harness;
-        const shape = platformShape(shapedAs, yield* selectedOnlyOf(session.ownerUserId, shapedAs));
+        const selectedOnly = yield* selectedOnlyOf(session.ownerUserId, shapedAs);
+        const shape = platformShape(shapedAs, selectedOnly);
         // An explicit null skips both the read and the restore (a shell
         // resume tolerates a session that never harvested state).
         const located =
@@ -16630,14 +16631,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // between the claim and now) would restore someone's saved directory under a map that
         // does not name them (review of mend#596, N1). Either way nothing has run in it yet: it
         // goes, and the launch goes on cold.
+        // A standby holds every login its owner connected (`platformShape("shell")`). An owner
+        // who chose their selected agent's login only after the claim, before this launch, gets
+        // the narrower create: the standby goes the same way (review of mend#684, round 1).
         const standbyMismatch =
           standbyLayout !== null &&
           claimedEntry !== null &&
           (standbyLayout.layout !== claimedEntry.harnessLayout ||
-            (standbyLayout.layout === "person" && standbyLayout.source !== "flag"));
+            (standbyLayout.layout === "person" && standbyLayout.source !== "flag") ||
+            selectedOnly);
         if (standbyMismatch && claimedEntry !== null) {
           yield* Effect.logInfo(
-            "session engine: claimed standby's layout does not serve this launch · cold launch",
+            selectedOnly
+              ? "session engine: claimed standby holds more logins than its owner now gives · cold launch"
+              : "session engine: claimed standby's layout does not serve this launch · cold launch",
           ).pipe(
             Effect.annotateLogs({
               sessionId,
@@ -17990,7 +17997,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const reloginAfterFailure = (agentProcess: SessionProcess): Effect.Effect<void> =>
         Effect.gen(function* () {
           const session = yield* sessions.byId(agentProcess.sessionId);
-          if (session.ownerUserId === null) return;
+          // The person the process runs as: a steered turn's sender, not the session's owner
+          // (review of mend#684, round 1). Their own logins, into their own home.
+          const person = agentProcess.runsAs ?? session.ownerUserId;
+          if (person === null) return;
           const launchId = yield* executorLaunchIdOf(session, agentProcess.sealantWorkspaceId);
           if ((yield* layoutSteps.layoutOfLaunch(launchId)) !== "person") return;
           const workspace = yield* owned(agentProcess.sessionId)(
@@ -17999,7 +18009,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* layoutSteps.relogin({
             workspace,
             launchId,
-            accountId: session.ownerUserId,
+            accountId: person,
             harness: agentProcess.harness ?? session.harness,
             live: peopleLiveIn(agentProcess.sealantWorkspaceId),
           });

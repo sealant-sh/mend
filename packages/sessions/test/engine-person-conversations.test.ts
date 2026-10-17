@@ -1086,6 +1086,29 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
           ]);
           // One live process: Maria's holds the conversation now.
           expect(state.conversationHolders.get(session.id)?.processId).toBe(maria?.process.id);
+          if (maria === undefined) return yield* Effect.die("no process attached for Maria");
+
+          // Maria's turn refused for her login: her own home is written again, as her, never the
+          // owner's (review of mend#684, round 1).
+          const postsBefore = posts.length;
+          yield* maria.hooks.onTurnCompleted(
+            new AgentTurn({
+              ...turnBy(MARIA, maria.process.id, session.id),
+              status: "failed",
+              error: "API Error: 401 Unauthorized",
+              endedAt: now(),
+            }),
+          );
+          for (let wait = 0; wait < 200 && posts.length === postsBefore; wait++) {
+            yield* Effect.sleep("10 millis");
+          }
+          expect(posts.slice(postsBefore)).toEqual([
+            {
+              onBehalfOf: MARIA,
+              home: `/home/${linuxLoginNameOf(MARIA)}`,
+              logins: { claude: true, codex: true, github: true },
+            },
+          ]);
 
           // And back to Alice: the hand-over's budget, with both people already made here.
           const steeringOfMaria = maria?.hooks.steering;
@@ -1160,7 +1183,13 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       { onBehalfOf: MARIA, home, logins: { claude: true } },
       { onBehalfOf: "user-fixture", home, logins: { claude: true } },
     ]);
+    // Her start's write, then the one after her refused turn.
     expect(posts.filter((post) => post.home !== home)).toEqual([
+      {
+        onBehalfOf: MARIA,
+        home: `/home/${linuxLoginNameOf(MARIA)}`,
+        logins: { claude: true, codex: true, github: true },
+      },
       {
         onBehalfOf: MARIA,
         home: `/home/${linuxLoginNameOf(MARIA)}`,

@@ -133,6 +133,10 @@ mend connect codex --remove
 Use `claude`, `codex`, or `github` as the provider. The command fails rather than pretending to
 remove an account that is not connected.
 
+Removing an account stops Mend refreshing it and giving it to new workspaces. A copy already in a
+running workspace (your own session's, or your other agent's login in it) works until its access
+token expires or that workspace lets go of your logins; stop those sessions to remove it sooner.
+
 ## Where the account is used
 
 Connected accounts belong to your Mend user, not the machine-wide settings document. Other users
@@ -174,10 +178,11 @@ next scheduled refresh, so restart it if it is failing on the old one.
 ## Your other agent's login
 
 A Claude session also gets your Codex login, and a Codex session your Claude login, when you have
-connected it, so the agent can run `codex` or `claude` on your own login. Only your own logins are
-ever given: a session never gets anyone else's, whoever's workspace it runs in. To give each session
-its own agent's login only, turn on **Give my sessions only the selected agent's login** in Settings
-→ Connected accounts, or run `mend agent-logins selected`. Read
+connected it, so the agent can run `codex` or `claude` on your own login. In a per-person workspace
+only your own logins are ever given: a session never gets anyone else's. In a workspace that shares
+one home, a join or a steered turn runs on the logins of whoever started it, these included. To give
+each session its own agent's login only, turn on **Give my sessions only the selected agent's
+login** in Settings → Connected accounts, or run `mend agent-logins selected`. Read
 [Only the selected agent's login](../../concepts/provider-logins/#only-the-selected-agents-login).
 
 ## When an account is missing
