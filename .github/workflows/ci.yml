@@ -110,8 +110,9 @@ jobs:
           node --test --test-reporter=spec --test-reporter-destination=stdout
           --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
           --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
-          scripts/ci-scope.test.mjs scripts/ci-workflow.test.mjs scripts/ci-turbo.test.mjs
-          scripts/ci-cache.test.mjs
+          scripts/ci-scope.test.mjs scripts/test-only-imports.test.mjs
+          scripts/remove-package-tests.test.mjs scripts/ci-workflow.test.mjs
+          scripts/ci-turbo.test.mjs scripts/ci-cache.test.mjs
       - name: Verify timing analysis against source budgets
         run:
           node --test --test-reporter=spec --test-reporter-destination=stdout
@@ -345,6 +346,8 @@ jobs:
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
+      # The tree no longer matches the commit once package tests are removed: never write a cache.
+      TURBO_CACHE: local:r,remote:r
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
@@ -352,6 +355,10 @@ jobs:
         with:
           node-version-file: .node-version
       - run: pnpm install --frozen-lockfile
+      # The scope skips this lane for a change confined to package tests, so the lane must not
+      # read them: delete them before any lane step (scripts/remove-package-tests.mjs).
+      - name: Remove package tests this lane may not read
+        run: node scripts/remove-package-tests.mjs
       - name: Install OpenTofu for evaluated offline AWS gate tests
         uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
         with:
@@ -418,6 +425,9 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.mobile != 'false' }}
     runs-on: [self-hosted, box, linux, x64]
+    env:
+      # The tree no longer matches the commit once package tests are removed: never write a cache.
+      TURBO_CACHE: local:r,remote:r
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
@@ -425,6 +435,10 @@ jobs:
         with:
           node-version-file: .node-version
       - run: pnpm install --frozen-lockfile
+      # The scope skips this lane for a change confined to package tests, so the lane must not
+      # read them: delete them before any lane step (scripts/remove-package-tests.mjs).
+      - name: Remove package tests this lane may not read
+        run: node scripts/remove-package-tests.mjs
       - run:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
       - run: pnpm --filter @mend/mobile check:web

@@ -213,15 +213,37 @@ disabled so deleting or moving an input cannot hide its original path.
 | Changed paths                                                                          | mobile-web | Packaging and verify |
 | -------------------------------------------------------------------------------------- | ---------- | -------------------- |
 | Only `docs/` files, excluding package manifests                                        | Skip       | Skip                 |
+| A package's `test/` files or `*.test.*` / `*.spec.*` files, excluding manifests        | Skip       | Skip                 |
 | Other known apps or `deploy/`                                                          | Skip       | Run                  |
 | Mobile, any shared package, tooling, scripts, workflows or agent configuration         | Run        | Run                  |
 | Root files, any package manifest, unknown paths, empty diff or unavailable Git history | Run        | Run                  |
 
 Mixed changes take the union. Including every shared package deliberately favors extra execution
-when dependencies change. The selection job tests both CI helper scripts before publishing outputs.
-Missing outputs run both extras, and the required checks job runs even if selection fails. Turbo,
-required PostgreSQL tests, S3 contracts and existing forced execution remain enabled for every PR.
-Helm and AWS shell checks also remain unconditional.
+when dependencies change. A package's tests are the one exception, for `packages/` only: a change
+confined to a package's `test/` directory or its `*.test.*` / `*.spec.*` source files runs neither
+extra job.
+
+The two jobs enforce that at run time. Right after checkout and install, each runs
+`scripts/remove-package-tests.mjs`, which deletes every file that `testOnly` in
+`scripts/ci-scope.mjs` lets them skip. So a lane that reads a package test fails rather than
+depending on a file a skipped change could alter. It prints what it deleted per package and fails if
+it deleted nothing, so a moved test layout cannot make it a silent no-op. Neither job runs Turbo,
+and both set `TURBO_CACHE=local:r,remote:r`: a tree without its tests no longer matches its commit
+and must not write a cache. `scripts/ci-workflow.test.mjs` pins the step's place and the read-only
+cache.
+
+`scripts/test-only-imports.test.mjs` is an early warning in the static job, not the enforcement. It
+flags an import of a test-only package export (found from every package's `exports` map) and a
+literal `packages/<pkg>/test/…` or test or spec path in non-test code, the lanes' own test files,
+package manifests and the lane jobs. It misses paths assembled from variables or from separate
+literals, paths relative to another directory (a package script's `cat test/x`, a step's
+`working-directory`) and files a lane reaches indirectly, through a package script or a script that
+calls another. The deletion step catches all of those.
+
+The selection job tests both CI helper scripts before publishing outputs. Missing outputs run both
+extras, and the required checks job runs even if selection fails. Turbo, required PostgreSQL tests,
+S3 contracts and existing forced execution remain enabled for every PR. Helm and AWS shell checks
+also remain unconditional.
 
 Validation includes real Git fixtures for deletion, renaming, independently advancing main,
 malformed references and filenames with newlines. The nine CI-helper tests passed 20 consecutive

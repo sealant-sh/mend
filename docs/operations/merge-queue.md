@@ -16,8 +16,9 @@ then packaged acceptance.
   pull requests is scoped by all five (`scripts/ci-scope.mjs --merge-group`). Its `graph` output is
   `affected` only when every changed path lies in an `apps/`, `packages/` or `tooling/` workspace
   package and none is a `turbo.json`; a changeset (`.changeset/**`) is allowed, since only
-  versioning reads it. A root file, the lockfile, the workflows, `scripts/`, `deploy/`, root `docs/`
-  or any `turbo.json` makes it `full`.
+  versioning reads it, and so is root `docs/**`: no Turbo task reads it (`apps/docs` builds from its
+  own `src/`), and `format:check`, its one reader, runs on every event. A root file, the lockfile,
+  the workflows, `scripts/`, `deploy/` or any `turbo.json` makes it `full`.
 - It fails closed. An invalid or missing SHA, a failed or empty diff, or a base commit that does not
   resolve on the runner (`scripts/ci-turbo.mjs`) runs the full graph rather than failing the queue.
 - Turbo's `--affected` follows the package graph, so a changed package also runs every package that

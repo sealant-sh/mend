@@ -713,3 +713,78 @@ test("the runner guard catches a box label wherever a runner is named", () => {
   );
   assert.ok(!caught(job({ "runs-on": "ubuntu-24.04-arm" })), "a hosted runner passes");
 });
+
+// The mobile-web and packaging lanes are skipped for a change confined to package tests
+// (scripts/ci-scope.mjs), so each deletes those tests before any lane step and can write no cache
+// from the tree that no longer matches its commit.
+const removal = "node scripts/remove-package-tests.mjs";
+const setup = [
+  (step) => step.uses?.startsWith("actions/checkout@"),
+  (step) => step.uses?.startsWith("pnpm/action-setup@"),
+  (step) => step.uses?.startsWith("actions/setup-node@"),
+  (step) => step.run === "pnpm install --frozen-lockfile",
+];
+const scopedJobs = (ci) =>
+  Object.entries(ci.jobs).filter(([, job]) =>
+    /needs\.changes\.outputs\.(mobile|packaging)\b/.test(String(job.if ?? "")),
+  );
+const laneProblems = (ci) =>
+  scopedJobs(ci).flatMap(([name, job]) => {
+    const problems = [];
+    const at = job.steps.findIndex((step) => step.run === removal);
+    if (at < 0) problems.push(`${name}: never removes package tests`);
+    else if (at !== setup.length || !setup.every((matches, index) => matches(job.steps[index]))) {
+      problems.push(`${name}: removes package tests other than right after checkout and install`);
+    }
+    if (job.env?.TURBO_CACHE !== "local:r,remote:r") {
+      problems.push(`${name}: Turbo cache is not read-only`);
+    }
+    const credentials = Object.keys({ ...ci.env, ...job.env }).filter((key) =>
+      /^TURBO_(API|TOKEN|TEAM)$/.test(key),
+    );
+    if (credentials.length > 0) problems.push(`${name}: sets ${credentials.join(", ")}`);
+    for (const step of job.steps) {
+      if (/\bturbo\b|ci-turbo\.mjs|TURBO_CACHE/.test(step.run ?? "")) {
+        problems.push(`${name}: runs Turbo or changes its cache in "${step.run}"`);
+      }
+    }
+    return problems;
+  });
+
+test("both scoped lanes delete package tests before any lane step and write no Turbo cache", () => {
+  assert.deepEqual(
+    scopedJobs(workflow).map(([name]) => name),
+    ["packaging", "mobile-web"],
+  );
+  assert.deepEqual(laneProblems(workflow), []);
+  const mutated = (job, change) => {
+    const copy = structuredClone(workflow);
+    change(copy.jobs[job], copy);
+    return laneProblems(copy);
+  };
+  const removalAt = (job) => job.steps.findIndex((step) => step.run === removal);
+  for (const job of ["packaging", "mobile-web"]) {
+    for (const [description, change] of [
+      ["the removal is gone", (lane) => lane.steps.splice(removalAt(lane), 1)],
+      [
+        "the removal runs after a lane step",
+        (lane) => lane.steps.push(...lane.steps.splice(removalAt(lane), 1)),
+      ],
+      [
+        "the removal runs before install",
+        (lane) => lane.steps.splice(3, 0, ...lane.steps.splice(removalAt(lane), 1)),
+      ],
+      ["the cache can be written", (lane) => (lane.env.TURBO_CACHE = "local:rw,remote:rw")],
+      ["the cache setting is gone", (lane) => delete lane.env.TURBO_CACHE],
+      [
+        "the job configures the box cache",
+        (lane) => lane.steps.push({ run: 'node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"' }),
+      ],
+      ["the job runs Turbo", (lane) => lane.steps.push({ run: "pnpm exec turbo run build" })],
+      ["the job holds a cache token", (lane) => (lane.env.TURBO_TOKEN = "box")],
+      ["the workflow holds a cache token", (_, copy) => (copy.env.TURBO_API = "http://cache")],
+    ]) {
+      assert.notDeepEqual(mutated(job, change), [], `${job}: ${description}`);
+    }
+  }
+});

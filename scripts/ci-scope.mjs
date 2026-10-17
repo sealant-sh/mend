@@ -23,10 +23,20 @@ const changedPaths = (base, head) =>
     .split("\0")
     .filter(Boolean);
 
+// A package's tests and their helpers: its test/ directory, or a *.test.* / *.spec.* source
+// file. The mobile and packaging lanes may skip them because each deletes exactly these files
+// before any lane step (scripts/remove-package-tests.mjs), so a lane that needs one fails;
+// scripts/test-only-imports.test.mjs is an earlier, partial warning.
+export const testOnly = (path) =>
+  !path.includes("\n") &&
+  !path.endsWith("/package.json") &&
+  /^packages\/[^/]+\/(test\/|(.+\/)?[^/]+\.(test|spec)\.[cm]?[jt]sx?$)/.test(path);
+
 const extras = (paths) => {
   if (paths.length === 0) return full;
   const scope = { mobile: false, packaging: false };
   for (const path of paths) {
+    if (testOnly(path)) continue;
     // All package changes are deliberately included, including future transitive dependencies.
     // Manifest changes can alter that graph or shared tooling even in otherwise unrelated apps.
     if (
@@ -59,13 +69,15 @@ const extras = (paths) => {
  * Whether a merge group may run only what its pull requests affect. Turbo follows the package
  * graph from changed files; anything it cannot attribute to one workspace package runs the full
  * graph: a root file, any turbo.json, the workflows, and every path outside apps|packages|tooling
- * except changesets, which only versioning reads (docs/operations/merge-queue.md).
+ * except changesets, which only versioning reads, and root docs/, which no Turbo task reads
+ * (format:check, its one reader, runs on every event) (docs/operations/merge-queue.md).
  */
 export const queueGraph = (paths) =>
   paths.length > 0 &&
   paths.every(
     (path) =>
       path.startsWith(".changeset/") ||
+      path.startsWith("docs/") ||
       (/^(apps|packages|tooling)\/[^/]+\//.test(path) && !path.endsWith("turbo.json")),
   )
     ? "affected"
