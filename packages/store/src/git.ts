@@ -1,4 +1,5 @@
-import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { type ChildProcess, type ChildProcessByStdio, execFile, spawn } from "node:child_process";
+import type { Readable } from "node:stream";
 
 import { redactRepositoryUrl, redactUrlCredentials } from "@mend/domain/workbench";
 import { Context, Effect, Scheduler, Schema } from "effect";
@@ -358,12 +359,31 @@ export const gitCappedBytes = (
       let cut = false;
       let stderr = Buffer.alloc(0);
       let settled = false;
-      const child = spawn("git", [...args], {
-        cwd,
-        env: gitProcessEnv(undefined),
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
-      });
+      // Node throws for a refusal it meets at once (E2BIG, a command line past the host's limit)
+      // and emits the rest (ENOENT) as an error: both answer as git failing to run.
+      let child: ChildProcessByStdio<null, Readable, Readable>;
+      try {
+        child = spawn("git", [...args], {
+          cwd,
+          env: gitProcessEnv(undefined),
+          stdio: ["ignore", "pipe", "pipe"],
+          detached: true,
+        });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        resume(
+          Effect.fail(
+            new GitError({
+              args: [...args],
+              cwd,
+              exitCode: null,
+              stderr: error instanceof Error ? error.message : String(error),
+              ...(typeof code === "string" ? { code } : {}),
+            }),
+          ),
+        );
+        return;
+      }
       // Armed now, on this fiber's Clock, in a fiber that never yields before its sleep registers.
       // A forked deadline arms only once the scheduler starts it: git could finish past the bound
       // and answer whole.

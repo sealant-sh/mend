@@ -11,7 +11,16 @@ import { type DiffFileFactsListing, Store, StoreConfig } from "../src/store.ts";
 const MAX_BYTES = 8 * 1024 * 1024;
 const DEADLINE_MS = 10_000;
 
-type Scenario = "wide" | "renames" | "move" | "special" | "bytes" | "long" | "flat" | "directory";
+type Scenario =
+  | "wide"
+  | "renames"
+  | "move"
+  | "special"
+  | "bytes"
+  | "long"
+  | "flat"
+  | "collision"
+  | "directory";
 
 /** Which git calls the shim holds on a FIFO, beside the whole listings it always holds. */
 type Held = "none" | "ls-tree" | "by-path";
@@ -58,16 +67,11 @@ const repository = (scenario: Scenario, held: Held = "none") =>
       if (scenario === "renames") {
         for (let file = 0; file < 100; file++) write(`a-old-${pad(file)}`, `unique ${file}\n`);
       }
-      if (scenario === "long") {
-        for (let file = 0; file < 100; file++) {
-          write(`a/${long}/f${pad(file)}`, `unique ${file}\n`);
-        }
-      }
       if (scenario === "move") write("z-source.txt", "one\ntwo\nthree\n");
       if (scenario === "special") write("a deleted\nfile.txt", "old\n");
       git("add", "--all");
       git("commit", "-qm", "base");
-      const base = git("rev-parse", "HEAD");
+      const baseSha = git("rev-parse", "HEAD");
       switch (scenario) {
         case "wide":
           for (const directory of ["a", "b", "c"]) {
@@ -107,24 +111,23 @@ const repository = (scenario: Scenario, held: Held = "none") =>
           write("b*.txt", "star\n");
           break;
         case "long":
-          // 100 moves and 200 additions under paths of about 730 bytes: 400 paths, far past
-          // what one command line holds one by one.
-          for (let file = 0; file < 100; file++) {
-            fs.mkdirSync(path.join(root, "b", long), { recursive: true });
-            fs.renameSync(
-              path.join(root, "a", long, `f${pad(file)}`),
-              path.join(root, "b", long, `f${pad(file)}`),
-            );
-          }
-          for (let file = 0; file < 200; file++)
-            write(`c/${long}/f${pad(file)}`, `added ${file}\n`);
-          break;
         case "flat":
-          // 2,000 files of 200-byte names in one directory: selected one by one, they pass the
-          // command line's bound.
-          for (let file = 0; file < 2_000; file++) {
-            write(`flat/f${String(file).padStart(4, "0")}${"x".repeat(190)}`, `flat ${file}\n`);
-          }
+          // Imported below: too many files to write and add within a loaded runner's guard.
+          break;
+        case "collision":
+          // Three names that spell the same once decoded; the glob of the first matches the third.
+          write(
+            Buffer.concat([Buffer.from("a-"), Buffer.from([0x80]), Buffer.from(".txt")]),
+            "one\n",
+          );
+          write(
+            Buffer.concat([Buffer.from("a-"), Buffer.from([0x80]), Buffer.from(".z.txt")]),
+            "one\ntwo\n",
+          );
+          write(
+            Buffer.concat([Buffer.from("a-"), Buffer.from([0x81]), Buffer.from(".txt")]),
+            "one\ntwo\nthree\n",
+          );
           break;
         case "directory":
           write("0-first.txt", "first\n");
@@ -133,9 +136,40 @@ const repository = (scenario: Scenario, held: Held = "none") =>
       }
       git("add", "--all");
       if (scenario === "special") {
-        git("update-index", "--add", "--cacheinfo", `160000,${base},d-submodule`);
+        git("update-index", "--add", "--cacheinfo", `160000,${baseSha},d-submodule`);
       }
-      git("commit", "-qm", "top");
+      git("commit", "-qm", "top", "--allow-empty");
+      if (scenario === "long") {
+        // 100 moves and 200 additions under paths of about 730 bytes: 400 paths, far past what
+        // one command line holds one by one.
+        const moved = Array.from({ length: 100 }, (_, file) => ({
+          from: `a/${long}/f${pad(file)}`,
+          to: `b/${long}/f${pad(file)}`,
+          body: `unique ${file}\n`,
+        }));
+        fastImport(realGit, root, [
+          moved.map(({ from, body }) => ({ path: from, body })),
+          [
+            ...moved.map(({ to, body }) => ({ path: to, body })),
+            ...Array.from({ length: 200 }, (_, file) => ({
+              path: `c/${long}/f${pad(file)}`,
+              body: `added ${file}\n`,
+            })),
+          ],
+        ]);
+      }
+      if (scenario === "flat") {
+        // 2,000 files of 200-byte names in one directory: selected one by one, they pass the
+        // command line's bound.
+        fastImport(realGit, root, [
+          [],
+          Array.from({ length: 2_000 }, (_, file) => ({
+            path: `flat/f${String(file).padStart(4, "0")}${"x".repeat(190)}`,
+            body: "flat\n",
+          })),
+        ]);
+      }
+      const base = git("rev-parse", "HEAD~1");
       const top = git("rev-parse", "HEAD");
       // Whole listing: `git diff …` with no pathspec. Floor listing: `git --no-literal-pathspecs
       // diff … -- <pathspecs>`. A held call keeps the output pipe open from a child of its shell.
@@ -174,6 +208,60 @@ const repository = (scenario: Scenario, held: Held = "none") =>
   );
 
 const pad = (index: number) => String(index).padStart(3, "0");
+
+/**
+ * Two more commits on `main`, each the files given and nothing else, through one
+ * `git fast-import`: a range of thousands of files in one process, with no working tree to
+ * write or add.
+ */
+/** A fast-import `data` command: the byte count, then the bytes. */
+const data = (text: string) => `data ${Buffer.byteLength(text)}\n${text}`;
+
+const fastImport = (
+  realGit: string,
+  root: string,
+  commits: ReadonlyArray<ReadonlyArray<{ readonly path: string; readonly body: string }>>,
+) => {
+  let mark = 0;
+  const stream = commits
+    .map((files, index) => {
+      const first = mark + 1;
+      const blobs = files.map((file) => {
+        mark += 1;
+        return `blob\nmark :${mark}\n${data(file.body)}\n`;
+      });
+      return [
+        ...blobs,
+        "commit refs/heads/main\n",
+        "committer t <t@localhost> 0 +0000\n",
+        `${data(`import ${index}`)}\n`,
+        index === 0 ? "from refs/heads/main^0\n" : "",
+        "deleteall\n",
+        ...files.map((file, at) => `M 100644 :${first + at} ${file.path}\n`),
+        "\n",
+      ].join("");
+    })
+    .join("");
+  execFileSync(realGit, ["fast-import", "--quiet", "--force"], { cwd: root, input: stream });
+};
+
+/**
+ * Pads the environment every spawned git inherits to just under the host's argument limit, so
+ * a command line of the selection bound is refused with E2BIG and a shorter one is not. Each
+ * variable stays under the per-string limit (128 KiB).
+ */
+const padEnvironment = () => {
+  const argMax = Number(execFileSync("getconf", ["ARG_MAX"], { encoding: "utf8" }).trim());
+  const names: Array<string> = [];
+  for (let left = argMax - 200 * 1024; left > 0; left -= 100 * 1024) {
+    const name = `MEND_TEST_ARG_PAD_${names.length}`;
+    process.env[name] = "x".repeat(Math.min(100 * 1024, left));
+    names.push(name);
+  }
+  return () => {
+    for (const name of names) delete process.env[name];
+  };
+};
 
 const recordedPids = (file: string): ReadonlyArray<number> =>
   fs.existsSync(file)
@@ -325,6 +413,29 @@ describe("a listing the deadline cuts before git printed a file", () => {
       expect(cut.facts.length).toBeGreaterThan(1_000);
       expect(cut.facts.length).toBeLessThan(1_500);
       expect(cut.facts).toEqual(whole.facts.slice(0, cut.facts.length));
+    }),
+  );
+
+  it.effect("halves a selection the host refuses as too long, until git takes it", () =>
+    Effect.gen(function* () {
+      const restore = padEnvironment();
+      yield* Effect.addFinalizer(() => Effect.sync(restore));
+      const { whole, cut } = yield* wholeThenCut("flat", 1_500);
+      expect(whole.facts).toHaveLength(2_000);
+      expect(cut.cut).toBe(true);
+      // The bound's worth of names is refused with E2BIG; half of it is listed.
+      expect(cut.facts.length).toBeGreaterThan(100);
+      expect(cut.facts.length).toBeLessThan(1_000);
+      expect(cut.facts).toEqual(whole.facts.slice(0, cut.facts.length));
+    }),
+  );
+
+  it.effect("keeps a selected name's bytes apart from a name that spells the same", () =>
+    Effect.gen(function* () {
+      const { whole, cut } = yield* wholeThenCut("collision", 1);
+      expect(whole.facts.map((fact) => fact.additions)).toEqual([1, 2, 3]);
+      // The glob for the first name matches the third too; only the first was asked for.
+      expect(cut).toEqual({ facts: whole.facts.slice(0, 1), cut: true });
     }),
   );
 

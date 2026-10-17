@@ -846,15 +846,41 @@ const pathspecsOf = ({ path: name, whole }: SelectedPath): ReadonlyArray<string>
   return whole ? [`:(glob)${glob}`, `:(glob)${glob}/**`] : [`:(glob)${glob}`];
 };
 
-/** Whether a listed path (as git spells it) is one the selection asked for. */
+/** The paths of each `--name-status -z` record, as git wrote them: bytes, for an exact match. */
+const rawNameStatusPaths = (
+  raw: Buffer,
+): ReadonlyArray<{ readonly oldPath: Buffer | null; readonly newPath: Buffer | null }> => {
+  const fields = nulFields(raw);
+  const records: Array<{ oldPath: Buffer | null; newPath: Buffer | null }> = [];
+  let cursor = 0;
+  while (cursor < fields.length && (fields[cursor]?.length ?? 0) > 0) {
+    const status = statusOf(fields[cursor]?.toString("latin1") ?? "");
+    const width = status === "renamed" || status === "copied" ? 3 : 2;
+    if (cursor + width > fields.length) break;
+    const first = fields[cursor + 1] ?? Buffer.alloc(0);
+    const second = width === 3 ? (fields[cursor + 2] ?? Buffer.alloc(0)) : first;
+    records.push({
+      oldPath: status === "added" ? null : first,
+      newPath: status === "deleted" ? null : second,
+    });
+    cursor += width;
+  }
+  return records;
+};
+
+/** Whether a listed path, as git wrote it, is one the selection asked for: the same bytes. */
 const selectedBy =
   (items: ReadonlyArray<SelectedPath>) =>
-  (listed: string | null): boolean =>
+  (listed: Buffer | null): boolean =>
     listed !== null &&
-    items.some(({ path: name, whole }) => {
-      const text = name.toString("utf8");
-      return listed === text || (whole && listed.startsWith(`${text}/`));
-    });
+    items.some(
+      ({ path: name, whole }) =>
+        listed.equals(name) ||
+        (whole &&
+          listed.length > name.length &&
+          listed.subarray(0, name.length).equals(name) &&
+          listed[name.length] === SLASH[0]),
+    );
 
 const sha = (value: string) => Sha.make(value);
 
@@ -1728,7 +1754,7 @@ export class Store extends Context.Service<
             );
         const listing = (format: string, pathspecs: ReadonlyArray<string> | undefined) =>
           Effect.flatMap(left(options.deadlineMs), (budget) => {
-            if (budget === 0) return Effect.succeed({ stdout: "", cut: true });
+            if (budget === 0) return Effect.succeed({ stdout: Buffer.alloc(0), cut: true });
             // The caller's paths are literal by flag; a floor's carry their own magic.
             const args =
               options.paths === undefined
@@ -1741,17 +1767,30 @@ export class Store extends Context.Service<
             args.push(a, b);
             if (options.paths !== undefined) args.push("--", ...options.paths);
             else if (pathspecs !== undefined) args.push("--", ...pathspecs);
-            return gitCappedBytes(args, dir, options.maxBytes, budget).pipe(
-              Effect.map(({ stdout, cut }) => ({ stdout: stdout.toString("utf8"), cut })),
-            );
+            return gitCappedBytes(args, dir, options.maxBytes, budget);
           });
-        const list = Effect.fn(function* (pathspecs: ReadonlyArray<string> | undefined) {
+        const list = Effect.fn(function* (
+          pathspecs: ReadonlyArray<string> | undefined,
+          keep?: (listed: Buffer | null) => boolean,
+        ) {
           const [names, counts] = yield* Effect.all(
             [listing("--name-status", pathspecs), listing("--numstat", pathspecs)],
             { concurrency: 2 },
           );
-          const records = nameStatusRecords(names.stdout);
-          const numbers = numstatRecords(counts.stdout);
+          // Both listings are git's, record for record: a record kept or dropped in one is in
+          // the other, by its index, before either is read as text.
+          const kept =
+            keep === undefined
+              ? undefined
+              : rawNameStatusPaths(names.stdout).map(
+                  (record) => keep(record.newPath) || keep(record.oldPath),
+                );
+          const records = nameStatusRecords(names.stdout.toString("utf8")).filter(
+            (_, index) => kept === undefined || kept[index] === true,
+          );
+          const numbers = numstatRecords(counts.stdout.toString("utf8")).filter(
+            (_, index) => kept === undefined || kept[index] === true,
+          );
           // Both listings are git's, in the same order: joined record by record while they agree.
           const facts: Array<DiffFileFact> = [];
           for (const [index, record] of records.entries()) {
@@ -1805,12 +1844,26 @@ export class Store extends Context.Service<
               pathspecs.push(...specs);
             }
             if (items.length === 0) return found;
+            // A host whose argument limit is below the bound refuses the command line (E2BIG):
+            // half the selection is listed instead, as many halvings as it takes, the same
+            // selection for both listings. One pathspec refused answers nothing, cut.
+            let listed: DiffFileFactsListing | undefined;
+            while (listed === undefined) {
+              const attempt = yield* list(pathspecs, selectedBy(items)).pipe(
+                Effect.catchIf(
+                  (error) => error.code === "E2BIG",
+                  () => Effect.succeed(undefined),
+                ),
+              );
+              if (attempt !== undefined) listed = attempt;
+              else if (items.length <= 1) listed = { facts: [], cut: true };
+              else {
+                items.splice(Math.ceil(items.length / 2));
+                pathspecs.splice(0, pathspecs.length, ...items.flatMap(pathspecsOf));
+              }
+            }
             const shortened = items.length < selection.items.length;
-            const listed = yield* list(pathspecs);
-            const selected = selectedBy(items);
-            const facts = listed.facts.filter(
-              (fact) => selected(fact.newPath) || selected(fact.oldPath),
-            );
+            const facts = listed.facts;
             const complete = selection.complete && !shortened && !listed.cut;
             if (facts.length >= found.facts.length) found = { facts, cut: !complete };
             // Renames pair two paths into one fact: more paths until the facts reach the floor.
