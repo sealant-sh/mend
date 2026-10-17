@@ -11,12 +11,24 @@ on:
   # Version Packages pull requests need an explicit dispatch because their bot-authored
   # pull_request runs stop for the repository's contributor approval policy before any job starts.
   # The release runs it on the head it will merge (docs/operations/next-channel.md, step 8).
+  # The x86 jobs run on GitHub's ubuntu-24.04, free for this public repository. A dispatch with
+  # `runner: box` sends them back to the box's self-hosted runners; no other event can reach it.
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner for the x86 jobs (box is the fallback; other events use ubuntu-24.04)
+        type: choice
+        default: ubuntu-24.04
+        options:
+          - ubuntu-24.04
+          - box
   schedule:
     - cron: "23 2 * * *"
 
 # Checks read the repository and write nothing.
-# Box runners provide a persistent pnpm store; setup-node must not restore a remote copy.
+# Box runners provide a persistent pnpm store, so setup-node restores GitHub's pnpm cache only off
+# the box. Turbo's box cache (scripts/ci-turbo.mjs) is reachable only from the box, so hosted runs
+# start cold.
 permissions:
   contents: read
 
@@ -34,9 +46,8 @@ concurrency:
 
 jobs:
   # `changes` and `checks` are seconds of work on GitHub's arm64 runners, free for this public
-  # repository, so neither waits for a box slot. The box serves Core and sealantd too, and an
-  # aggregate job queues only when its last lane finishes: on the box, merge group 38746126993's
-  # 10-second `checks` waited 13.4 minutes behind their runs (docs/operations/merge-queue.md).
+  # repository, so neither waits for an x86 slot. On the box, merge group 38746126993's 10-second
+  # `checks` waited 13.4 minutes behind Core and sealantd runs (docs/operations/merge-queue.md).
   changes:
     runs-on: ubuntu-24.04-arm
     env:
@@ -87,7 +98,9 @@ jobs:
   static:
     needs: changes
     if: ${{ !cancelled() }}
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
+      'ubuntu-24.04' }}
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       # A merge group's graph from the changes job: affected or full (scripts/ci-scope.mjs).
@@ -100,6 +113,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
+          cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
       - run: pnpm install --frozen-lockfile
       - name: Configure Turbo cache and runtime identity
         run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
@@ -171,7 +185,9 @@ jobs:
   test-engines:
     needs: changes
     if: ${{ !cancelled() }}
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
+      'ubuntu-24.04' }}
     services:
       postgres:
         image: postgres:17
@@ -202,6 +218,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
+          cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
       - run: pnpm install --frozen-lockfile
       - name: Configure Turbo cache and runtime identity
         run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
@@ -235,7 +252,9 @@ jobs:
   test-clients-a:
     needs: changes
     if: ${{ !cancelled() }}
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
+      'ubuntu-24.04' }}
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       # A merge group's graph from the changes job: affected or full (scripts/ci-scope.mjs).
@@ -251,6 +270,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
+          cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
       - run: pnpm install --frozen-lockfile
       - name: Configure Turbo cache and runtime identity
         run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
@@ -297,7 +317,9 @@ jobs:
   test-clients-b:
     needs: changes
     if: ${{ !cancelled() }}
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
+      'ubuntu-24.04' }}
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       # A merge group's graph from the changes job: affected or full (scripts/ci-scope.mjs).
@@ -313,6 +335,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
+          cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
       - run: pnpm install --frozen-lockfile
       - name: Configure Turbo cache and runtime identity
         run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
@@ -342,7 +365,9 @@ jobs:
   packaging:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.packaging != 'false' }}
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
+      'ubuntu-24.04' }}
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
@@ -354,6 +379,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
+          cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
       - run: pnpm install --frozen-lockfile
       # The scope skips this lane for a change confined to package tests, so the lane must not
       # read them: delete them before any lane step (scripts/remove-package-tests.mjs).
@@ -407,6 +433,7 @@ jobs:
           .claude/skills/verify/scripts/leaks.frames.test.mjs
           .claude/skills/verify/scripts/slots.test.mjs .claude/skills/verify/scripts/guard.test.mjs
           .claude/skills/verify/scripts/secrets.test.mjs
+          .claude/skills/verify/scripts/steps.test.mjs
           .claude/skills/verify/scripts/local-outer.test.mjs
 
       - name: Archive per-file test timings
@@ -424,7 +451,9 @@ jobs:
   mobile-web:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.mobile != 'false' }}
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
+      'ubuntu-24.04' }}
     env:
       # The tree no longer matches the commit once package tests are removed: never write a cache.
       TURBO_CACHE: local:r,remote:r
@@ -434,6 +463,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
+          cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
       - run: pnpm install --frozen-lockfile
       # The scope skips this lane for a change confined to package tests, so the lane must not
       # read them: delete them before any lane step (scripts/remove-package-tests.mjs).

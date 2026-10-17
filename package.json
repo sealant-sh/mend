@@ -27,6 +27,7 @@
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@actions/expressions": "0.3.61",
     "@changesets/cli": "^2.31.0",
     "@types/node": "^24.0.0",
     "@typescript/native-preview": "7.0.0-dev.20260315.1",

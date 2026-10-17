@@ -20,11 +20,11 @@ import {
   WorktreeId,
 } from "@mend/domain";
 import { AgentRequest, AgentTurn, Session, SessionProcess } from "@mend/domain/workbench";
-import { type PersonSessionOptions } from "@mend/sealant";
+import { type HomeLogins, PersonLayoutPlatform, type PersonSessionOptions } from "@mend/sealant";
 import { ProtocolHost, type ProtocolHostHooks, SessionEngine } from "@mend/sessions";
 import { processStatePathOf } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
-import type { CreateOptions, SessionOptions } from "@sealant/sdk";
+import type { CreateOptions, SessionOptions, Workspace } from "@sealant/sdk";
 import { Deferred, Effect, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
@@ -42,7 +42,7 @@ import {
   seedStoppedBeforeRestart,
   shipCapturedHarnessHome,
 } from "./engine/capture-fixture.ts";
-import { signalWrites, signalled } from "./engine/clock-fixture.ts";
+import { signalWrites, signalled, watched } from "./engine/clock-fixture.ts";
 import {
   agentConversationStub,
   agentMemoryLayerOf,
@@ -991,6 +991,13 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       readonly resumePath: string | null;
     }> = [];
     const stops: Array<string> = [];
+    // Every write of logins wakes `posted`: the re-login below is forked off the turn's path.
+    const posted = Effect.runSync(Queue.sliding<void>(1));
+    const posts = watched<{
+      readonly onBehalfOf: string;
+      readonly home: string;
+      readonly logins: HomeLogins;
+    }>(posted);
     const state = makeHarnessLayoutsMemoryState();
     const provider = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
     let sessionId: SessionId | null = null;
@@ -1081,6 +1088,27 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
           ]);
           // One live process: Maria's holds the conversation now.
           expect(state.conversationHolders.get(session.id)?.processId).toBe(maria?.process.id);
+          if (maria === undefined) return yield* Effect.die("no process attached for Maria");
+
+          // Maria's turn refused for her login: her own home is written again, as her, never the
+          // owner's (review of mend#684, round 1).
+          const postsBefore = posts.length;
+          yield* maria.hooks.onTurnCompleted(
+            new AgentTurn({
+              ...turnBy(MARIA, maria.process.id, session.id),
+              status: "failed",
+              error: "API Error: 401 Unauthorized",
+              endedAt: now(),
+            }),
+          );
+          yield* signalled(posted)(() => posts.length > postsBefore, "Maria's re-login");
+          expect(posts.slice(postsBefore)).toEqual([
+            {
+              onBehalfOf: MARIA,
+              home: `/home/${linuxLoginNameOf(MARIA)}`,
+              logins: { claude: true, codex: true, github: true },
+            },
+          ]);
 
           // And back to Alice: the hand-over's budget, with both people already made here.
           const steeringOfMaria = maria?.hooks.steering;
@@ -1123,9 +1151,51 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
           { exec },
         ),
         protocolHostLayer: steeringHost(attached, stops),
-        harnessLayout: { flag: "person", state, platform: personPlatform(calls, { person: true }) },
+        harnessLayout: {
+          flag: "person",
+          state,
+          platform: Layer.effect(
+            PersonLayoutPlatform,
+            Effect.map(PersonLayoutPlatform, (inner) => ({
+              ...inner,
+              postCredentials: (
+                workspace: Workspace,
+                input: Parameters<typeof inner.postCredentials>[1],
+              ) => {
+                posts.push({
+                  onBehalfOf: input.onBehalfOf,
+                  home: input.home,
+                  logins: input.logins,
+                });
+                return inner.postCredentials(workspace, input);
+              },
+            })),
+          ).pipe(Layer.provide(personPlatform(calls, { person: true }))),
+        },
       },
     );
+    // Shared steering spends each sender's own logins only (amendment of 2026-10-10): Maria's
+    // other agent login goes into her own home, which her turn's tools run with, and the
+    // conversation's home holds the conversation's agent's login of whoever sends.
+    const home = `/run/mend/conv/${sessionId ?? ""}`;
+    expect(posts.filter((post) => post.home === home)).toEqual([
+      { onBehalfOf: "user-fixture", home, logins: { claude: true } },
+      { onBehalfOf: MARIA, home, logins: { claude: true } },
+      { onBehalfOf: "user-fixture", home, logins: { claude: true } },
+    ]);
+    // Her start's write, then the one after her refused turn.
+    expect(posts.filter((post) => post.home !== home)).toEqual([
+      {
+        onBehalfOf: MARIA,
+        home: `/home/${linuxLoginNameOf(MARIA)}`,
+        logins: { claude: true, codex: true, github: true },
+      },
+      {
+        onBehalfOf: MARIA,
+        home: `/home/${linuxLoginNameOf(MARIA)}`,
+        logins: { claude: true, codex: true, github: true },
+      },
+    ]);
   }, 30_000);
 
   /**

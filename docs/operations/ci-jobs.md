@@ -183,6 +183,9 @@ uniform file-cap enforcement, with no cache or affected-selection change in that
 
 ## Persistent pnpm store on box runners
 
+Since 2026-10-17 the six lanes run on GitHub's `ubuntu-24.04` and restore setup-node's pnpm cache.
+This section applies only to a run dispatched with `runner: box`.
+
 Box runner administrators provide `npm_config_store_dir=/opt/pnpm-store`. The workflow leaves that
 setting intact and uses `pnpm install --frozen-lockfile`. The store survives jobs and is cleared by
 the weekly VM snapshot reset. The first job after a reset fills it; later jobs link from local disk.

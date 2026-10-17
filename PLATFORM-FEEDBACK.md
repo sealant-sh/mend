@@ -1911,6 +1911,33 @@ mounted workspaces.
 - **Suggested:** let profiles (or a generic `accounts: { [provider: string]: true | string }`) carry
   arbitrary named connected accounts with a declared injection shape (env var / file), so new
   harness kinds don't each require an SDK field.
+- **2026-10-17 · 0.39.0-next.726 · API keys as a credential kind:** Mend wants a person to connect
+  an Anthropic or OpenAI API key instead of a subscription login. The research is in
+  `docs/specs/api-key-logins.md`; it is proposed for after 0.36 and not decided.
+  - **Today:**
+    - A Codex `auth.json` holding only `OPENAI_API_KEY` is accepted, copied as is, placed in a
+      person's home and skipped by the refresher (`packages/credentials/src/payloads.ts:303-332`,
+      `copies.ts:75-76`). Nothing reports that the account is a key.
+    - pi and opencode refuse it (`connected-account-unsupported`).
+    - There is no Claude API-key kind: the setup-token prefix check refuses a Console key.
+    - The `secretEnv` lane accepts the provider key names. In a shared-home executor a project
+      secret with one of those names changes which login a turn spends.
+  - **Asked:**
+    1. A connected-account kind `api-key` under the existing `claude` and `codex` providers, with:
+       - a declared per-home placement: a 0600 file outside every capture root, written over stdin,
+         never `docker run -e`;
+       - for Claude, a file read by an `apiKeyHelper`;
+       - pi and opencode key entries instead of a refusal;
+       - no refresh, and the account marked `invalid` on a provider 401.
+    2. A `SealantFeatures` flag (for example `connectedAccountApiKeys`), so Mend can detect support
+       before it offers the field.
+    3. Claude inference on an `api-key` account. The Claude engine takes only `oauth-token` or a
+       config directory today, and the key must be scrubbed from engine errors.
+    4. Connected-account values fed to capture masking. Today masking is seeded from `secretEnv`
+       only, and API log redaction matches names, not values; add value patterns for provider keys.
+    5. `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY` and `CODEX_API_KEY` reserved in
+       `secretEnv`, like `CLAUDE_CODE_OAUTH_TOKEN` already is, so only a person's own connected
+       account decides which login pays.
 
 ## 2026-07-15 · 0.5.2 · Release artifact: compose.selfhost.yaml omits `SEALANT_CREDENTIALS_KEY`
 

@@ -48,3 +48,9 @@ New specs start from [TEMPLATE.md](TEMPLATE.md).
 
 Status is as of 2026-10-05. Each spec's header carries the detail. The per-person homes spec follows
 with ADR 0016 (mend#534).
+
+## After 0.36
+
+| File                                   | Feature                                                          | Status                              |
+| -------------------------------------- | ---------------------------------------------------------------- | ----------------------------------- |
+| [api-key-logins.md](api-key-logins.md) | API-key logins (Claude and Codex) instead of subscription logins | Proposed · after 0.36 · not decided |

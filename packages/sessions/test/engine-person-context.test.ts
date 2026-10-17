@@ -689,8 +689,11 @@ describe("per-person harness homes (docs/adr/0016)", () => {
       "launch refused · Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
     );
     // The ladder never stepped below Claude: no create without it, so no agent started signed out.
+    // Her own Codex rode every try that could hold it.
     expect(created.map((options) => options.credentials)).toEqual([
+      { claude: true, codex: true, github: true },
       { claude: true, github: true },
+      { claude: true, codex: true },
       { claude: true },
     ]);
     expect(opened).toEqual([]);
