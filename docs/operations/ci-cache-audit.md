@@ -240,12 +240,14 @@ gh workflow run ci-measure.yml --ref main -f runner=box \
   -f scenario=web -f cache=warm -f base_sha=<same-base> -f head_sha=<same-head>
 ```
 
-`runner` moves every box lane, and only those, to `blacksmith-2vcpu-ubuntu-2404`,
-`blacksmith-4vcpu-ubuntu-2404` or `ubuntu-latest`; the arm64 scope job and the aggregate check stay
-on `ubuntu-24.04-arm`. Off the box a lane has no persistent pnpm store, Docker Hub mirror or tofu
-provider mirror, so setup-node restores GitHub's pnpm cache as on a fresh hosted VM. Those runners
-cannot reach the box's turbo cache, so the wrapper refuses `warm` anywhere but the box. Production
-`ci.yml` names no vendor runner, and the workflow regression suite fails if it does.
+`runner` runs every x86 lane, and only those, on the box or on `ubuntu-latest`; the arm64 scope job
+and the aggregate check stay on `ubuntu-24.04-arm`. Off the box a lane has no persistent pnpm store,
+Docker Hub mirror or tofu provider mirror, so setup-node restores GitHub's pnpm cache as on a fresh
+hosted VM. Those runners cannot reach the box's turbo cache, so the wrapper refuses `warm` anywhere
+but the box. Since 2026-10-17 production `ci.yml` runs those lanes on `ubuntu-24.04` too, and on the
+box only when dispatched with `runner: box`. The workflow regression suite evaluates every job's
+`runs-on` per event and fails if any other event reaches the box or any event names a Blacksmith
+runner.
 
 Run one observation at a time. Archive the run JSON, all jobs including skipped jobs, job logs, and
 Turbo summary artifacts. Use the jobs API with `filter=all` and pagination; retain run attempts
