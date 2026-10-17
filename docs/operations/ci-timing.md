@@ -737,10 +737,15 @@ After #1039, six files still ran above 30 seconds in merge groups `38984051194` 
 code, assertion or deadline changed.
 
 - `apps/cli/src/server-runtime.test.ts`: the default-deadline case waited out the real 30-second
-  `serverProcessDeadlines.ordinary`. It now fakes only `setTimeout` and `clearTimeout` once both
-  children have printed their PIDs, and advances the clock by the deadline. Nothing may settle at 1
-  ms short of it, and both children must be killed at it. The production default is still read from
-  the same constant, with no new option or environment variable.
+  `serverProcessDeadlines.ordinary`. It now fakes only `setTimeout` and `clearTimeout`, installed
+  before the children spawn, so their deadline timers are virtual. The clock advances only once both
+  children have written their markers, within 5 real seconds: first to 1 ms short of the deadline,
+  where neither may settle, then to it, where both must be killed. A child that ends before its
+  marker fails the case at once, by name. Any failure fires the virtual deadlines and waits for the
+  children to be reaped. If Vitest times the case out with its body still waiting, `onTestFinished`
+  kills the group of every child that has not settled. A new case forces a child to exit before its
+  marker and checks that the other's process group is gone. The production default is still read
+  from the same constant, with no new option or environment variable.
 - `scripts/bench/live-cleanup-refusals.test.mjs`: its three public `cleanup` runs each waited out
   the CLI's real 10-second reconciliation grace and its 500 ms Stop polls. Their children now
   preload `scripts/bench/fixtures/virtual-sleeps.mjs`, which records each wait that
