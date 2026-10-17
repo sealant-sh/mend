@@ -22,6 +22,26 @@ export interface FakeProcess {
   exitedAt: string | null;
 }
 
+export interface FakeSkill {
+  readonly scope: "user" | "project";
+  readonly name: string;
+  readonly description: string;
+}
+
+const skillView = (skill: FakeSkill) => ({
+  id: `skill-${skill.scope}-${skill.name}`,
+  scope: skill.scope,
+  ownerUserId: skill.scope === "user" ? "user-1" : null,
+  projectId: skill.scope === "project" ? "project-1" : null,
+  name: skill.name,
+  description: skill.description,
+  fileCount: 1,
+  bytes: 64,
+  revision: 1,
+  createdAt: "2026-10-01T00:00:00.000Z",
+  updatedAt: "2026-10-01T00:00:00.000Z",
+});
+
 export interface FakeSession {
   readonly id: string;
   readonly projectId: string;
@@ -528,6 +548,7 @@ export class FakeWorkbench {
       path === "/api/projects" ||
       path === "/api/sessions" ||
       path === "/api/events" ||
+      path === "/api/skills" ||
       /^\/api\/(projects|sessions|turns|requests|changes|worktrees)\//.test(path);
     if (!known) return false;
     if (!accepted) return json(401, { _tag: "Unauthorized" });
@@ -584,6 +605,13 @@ export class FakeWorkbench {
             sharedControlEnabledAt: this.sharedControl.get(session.id) ?? null,
             workspaceRetirement: this.retirements.get(session.id)?.state ?? null,
           })),
+      );
+    }
+    if (method === "GET" && path === "/api/skills") {
+      const account = this.accountOf(request.headers.authorization);
+      return json(
+        200,
+        (account === null ? [] : (this.userSkills.get(account) ?? [])).map(skillView),
       );
     }
     const segments = path.split("/").slice(2);
@@ -714,6 +742,11 @@ export class FakeWorkbench {
     ) {
       this.projectDetailFailures -= 1;
       return json(502, { _tag: "BadGateway" });
+    }
+    if (method === "GET" && collection === "projects" && sub === "skills") {
+      if (!canReadProject(id) || this.projectView(id) === null)
+        return json(404, { _tag: "NotFound" });
+      return json(200, (this.projectSkills.get(id) ?? []).map(skillView));
     }
     if (method === "GET" && collection === "projects" && sub === "files") {
       if (this.projectView(id) === null) return json(404, { _tag: "NotFound" });
@@ -1177,6 +1210,9 @@ export class FakeWorkbench {
   readonly stats = new Map<string, { files: number; additions: number; deletions: number }>();
   /** How many images were pasted into workspaces. */
   pastedImages = 0;
+  readonly userSkills = new Map<string, ReadonlyArray<FakeSkill>>();
+  readonly projectSkills = new Map<string, ReadonlyArray<FakeSkill>>();
+  readonly skillsNotInherited = new Set<string>();
   /** The Mend account a request's bearer belongs to (set by the fake Mend that pairs devices). */
   accountOf: (authorization: string | undefined) => string | null = () => null;
   /** The session's executor is shared (ADR 0016's shared layout), not per person. */
@@ -1267,6 +1303,7 @@ export class FakeWorkbench {
       originUrl: "https://github.com/sealant-sh/mend.git",
       storePath: project.storePath,
       defaultBranch: "main",
+      inheritUserSkills: !this.skillsNotInherited.has(id),
       adoptedSha: null,
       createdAt: "2026-10-01T00:00:00.000Z",
       updatedAt: "2026-10-01T00:00:00.000Z",

@@ -1,4 +1,7 @@
 import {
+  type FilesystemEntryMetadata,
+  type FilesystemGetMetadataInput,
+  type FilesystemGetMetadataResult,
   ProjectListEntriesError,
   ProjectReadFileError,
   ProjectSearchContentsError,
@@ -149,6 +152,7 @@ export const listEntries = (
 interface Listed {
   readonly listing: MendFileListing;
   readonly entries: ReadonlyArray<ProjectEntry>;
+  readonly kinds: ReadonlyMap<string, ProjectEntry["kind"]>;
 }
 
 /** One read of a listing, and what it has answered. */
@@ -168,13 +172,19 @@ export const makeFileHandlers = (input: {
   const listings = new Map<string, Kept>();
 
   /**
-   * The files at `cwd`. A listing is read again after a second, after a command or file change
-   * finishes in the worktree, and when the tree asks for a directory it already listed.
+   * The files of a project, or of a thread's worktree. A listing is read again after a second,
+   * after a command or file change finishes in the worktree, and when the tree asks for a directory
+   * it already listed. Lookups made at once share one read, and a failed read is not kept.
    */
-  const filesAt = (cwd: string, directory?: string | null) =>
+  const listingOf = (
+    location: {
+      readonly projectId: string;
+      readonly sessionId: string | null;
+      readonly workspaceMutation: string | null;
+    },
+    directory?: string | null,
+  ) =>
     Effect.gen(function* () {
-      const location: CwdLocation | null = yield* hub.locationOf(cwd);
-      if (location === null) return null;
       const key = `${location.projectId}:${location.sessionId ?? ""}`;
       const kept = listings.get(key);
       const current =
@@ -186,7 +196,14 @@ export const makeFileHandlers = (input: {
               read: yield* mend
                 .projectFiles(session.deviceToken, location.projectId, location.sessionId)
                 .pipe(
-                  Effect.map((listing): Listed => ({ listing, entries: entriesOf(listing.files) })),
+                  Effect.map((listing): Listed => {
+                    const entries = entriesOf(listing.files);
+                    return {
+                      listing,
+                      entries,
+                      kinds: new Map(entries.map((entry) => [entry.path, entry.kind])),
+                    };
+                  }),
                   Effect.cachedWithTTL((exit) =>
                     Exit.isSuccess(exit) ? LISTING_TTL : Duration.zero,
                   ),
@@ -197,6 +214,13 @@ export const makeFileHandlers = (input: {
       listings.set(key, current);
       if (directory !== undefined) current.listed.add(directory);
       return yield* current.read;
+    });
+
+  const filesAt = (cwd: string, directory?: string | null) =>
+    Effect.gen(function* () {
+      const location: CwdLocation | null = yield* hub.locationOf(cwd);
+      if (location === null) return null;
+      return yield* listingOf(location, directory);
     });
 
   const searchEntriesAt = (request: ProjectSearchEntriesInput) => {
@@ -352,7 +376,35 @@ export const makeFileHandlers = (input: {
     });
   };
 
+  const metadataOf = (path: string) =>
+    Effect.gen(function* () {
+      const file = yield* hub.worktreeFileOf(path);
+      if (file === null) return null;
+      if (file.relativePath === "") return { kind: "directory" } as const;
+      const kept = yield* listingOf(file);
+      const kind = kept.kinds.get(file.relativePath);
+      if (kind === "directory") return { kind } as const;
+      if (kind === undefined && !kept.listing.truncated) return null;
+      const answer = yield* mend.worktreeContents(session.deviceToken, file.worktreeId, {
+        path: file.relativePath,
+        at: null,
+      });
+      return answer.file === null ? null : { kind: "file" as const, byteLength: answer.file.size };
+    }).pipe(Effect.catch(() => Effect.succeed<FilesystemEntryMetadata | null>(null)));
+
+  const getMetadata = (request: FilesystemGetMetadataInput) =>
+    Effect.gen(function* () {
+      const paths = [...new Set(request.paths)];
+      const entries = yield* Effect.forEach(paths, metadataOf, { concurrency: 8 });
+      const byPath = new Map(paths.map((path, index) => [path, entries[index] ?? null]));
+      const result: FilesystemGetMetadataResult = {
+        entries: request.paths.map((path) => byPath.get(path) ?? null),
+      };
+      return result;
+    });
+
   return {
+    getMetadata,
     searchEntries: searchEntriesAt,
     listEntries: listEntriesAt,
     readFile: readFileAt,

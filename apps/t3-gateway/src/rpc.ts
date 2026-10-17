@@ -69,6 +69,7 @@ import {
   providersFromMend,
   type PersonLogins,
 } from "./server-config.ts";
+import type { WorkspaceSkills } from "./skills.ts";
 import type { BearerSession, GatewayStateError } from "./state.ts";
 import { makeVcsHandlers } from "./vcs.ts";
 
@@ -185,9 +186,6 @@ const refuseStream = (method: WsRpcMethod) => Stream.fail(notOffered(method));
 
 /** t3code's "nothing to report" for a status feed: `null`, then open. */
 const noStatus = () => Stream.concat(Stream.make(null), Stream.never);
-
-/** t3code's answer for a path it cannot read metadata for: missing, unreadable or unsupported. */
-const UNSUPPORTED_METADATA = null;
 
 const PROVIDER_SETUP_DETAIL =
   "Mend runs each harness on its person's own login. Sign in and install harnesses in Mend.";
@@ -389,53 +387,59 @@ export const makeGatewayRpcHandlers = ({
   /**
    * The person's providers. Mend's catalog is read with their device token; a revoked device
    * answers t3code's authorization error, an unreachable Mend its settings error (the client
-   * retries both differently: blocked, or transient).
+   * retries both differently: blocked, or transient). Each provider carries the skills last read
+   * for every workspace, and `asked`: a composer's cwd read just now.
    */
-  const loadProviders = Effect.gen(function* () {
-    yield* authorize(session);
-    const catalogRead = mend.listHarnessModels(session.deviceToken).pipe(
-      Effect.catchTags({
-        MendDeviceRefused: () =>
-          Effect.fail(
-            new EnvironmentAuthorizationError({
-              message: "Mend no longer accepts this device. Pair again from Mend.",
-              requiredScope: READ,
-            }),
-          ),
-        MendUnavailable: (cause) =>
-          Effect.logWarning("t3 gateway could not read Mend's model catalog", { cause }).pipe(
-            Effect.andThen(
-              Effect.fail(
-                new ServerSettingsError({
-                  settingsPath: MODELS_SOURCE,
-                  operation: "read-file",
-                  cause,
-                }),
+  const providersWith = (asked: ReadonlyArray<WorkspaceSkills>) =>
+    Effect.gen(function* () {
+      yield* authorize(session);
+      const catalogRead = mend.listHarnessModels(session.deviceToken).pipe(
+        Effect.catchTags({
+          MendDeviceRefused: () =>
+            Effect.fail(
+              new EnvironmentAuthorizationError({
+                message: "Mend no longer accepts this device. Pair again from Mend.",
+                requiredScope: READ,
+              }),
+            ),
+          MendUnavailable: (cause) =>
+            Effect.logWarning("t3 gateway could not read Mend's model catalog", { cause }).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new ServerSettingsError({
+                    settingsPath: MODELS_SOURCE,
+                    operation: "read-file",
+                    cause,
+                  }),
+                ),
               ),
             ),
-          ),
-      }),
-    );
-    // Beside the catalog, never in front of it: a slow or failed read leaves the logins unknown.
-    const loginsRead = mend.connectedAccounts(session.deviceToken).pipe(
-      Effect.flatMap((accounts) =>
-        Effect.map(Clock.currentTimeMillis, (now): PersonLogins => loginsOf(accounts, now)),
-      ),
-      Effect.timeoutOption(LOGINS_DEADLINE),
-      Effect.map(Option.getOrNull),
-      Effect.catch((cause) =>
-        Effect.logDebug("t3 gateway could not read the person's logins", { cause }).pipe(
-          Effect.as(null),
+        }),
+      );
+      // Beside the catalog, never in front of it: a slow or failed read leaves the logins unknown.
+      const loginsRead = mend.connectedAccounts(session.deviceToken).pipe(
+        Effect.flatMap((accounts) =>
+          Effect.map(Clock.currentTimeMillis, (now): PersonLogins => loginsOf(accounts, now)),
         ),
-      ),
-    );
-    const [catalogs, logins] = yield* Effect.all([catalogRead, loginsRead], {
-      concurrency: "unbounded",
+        Effect.timeoutOption(LOGINS_DEADLINE),
+        Effect.map(Option.getOrNull),
+        Effect.catch((cause) =>
+          Effect.logDebug("t3 gateway could not read the person's logins", { cause }).pipe(
+            Effect.as(null),
+          ),
+        ),
+      );
+      const [catalogs, logins] = yield* Effect.all([catalogRead, loginsRead], {
+        concurrency: "unbounded",
+      });
+      const checkedAt = DateTime.formatIso(yield* DateTime.now);
+      const providers = providersFromMend(catalogs, checkedAt, logins, [
+        ...hub.workspaceSkills(),
+        ...asked,
+      ]);
+      return yield* readable(encodeServerProviders(providers), providers);
     });
-    const checkedAt = DateTime.formatIso(yield* DateTime.now);
-    const providers = providersFromMend(catalogs, checkedAt, logins);
-    return yield* readable(encodeServerProviders(providers), providers);
-  });
+  const loadProviders = providersWith([]);
 
   const configOf = (providers: ReadonlyArray<ServerProvider>, settings: ServerSettings) => {
     const config = makeServerConfig({
@@ -447,10 +451,14 @@ export const makeGatewayRpcHandlers = ({
     });
     return readable(encodeServerConfig(config), config);
   };
-  const loadServerConfig = authorize(session).pipe(
-    Effect.andThen(Effect.all([loadProviders, readSettings], { concurrency: "unbounded" })),
-    Effect.flatMap(([providers, kept]) => configOf(providers, kept.settings)),
-  );
+  const configWith = (asked: ReadonlyArray<WorkspaceSkills>) =>
+    authorize(session).pipe(
+      Effect.andThen(
+        Effect.all([providersWith(asked), readSettings], { concurrency: "unbounded" }),
+      ),
+      Effect.flatMap(([providers, kept]) => configOf(providers, kept.settings)),
+    );
+  const loadServerConfig = configWith([]);
 
   return WsRpcGroup.of({
     // ── Served ──────────────────────────────────────────────────────────────
@@ -465,7 +473,7 @@ export const makeGatewayRpcHandlers = ({
           const opening = yield* loadProviders;
           const kept = yield* readSettings;
           const config = yield* configOf(opening, kept.settings);
-          const changes = yield* hub.accountChanges;
+          const changes = yield* hub.providerChanges;
           let last = providersPrint(config.providers);
           const updates = Stream.merge(
             changes.pipe(Stream.orElseSucceed(() => "accounts" as const)),
@@ -704,9 +712,27 @@ export const makeGatewayRpcHandlers = ({
 
     // ── Providers: Mend's harnesses, set up in Mend ─────────────────────────
     // A refresh reads the person's logins and Mend's catalog again (review R650-3); it sets up
-    // nothing, as logins are Mend's.
+    // nothing, as logins are Mend's. For a composer's cwd it reads the skills Mend delivers there
+    // too (`skills.ts`); a cwd that is none of the person's answers an empty snapshot, kept by no
+    // one, so the composer does not ask again every 10 seconds. A failed read answers none, and
+    // the composer asks again after its cooldown.
     [WS_METHODS.serverRefreshProviders]: (input) =>
-      loadServerConfig.pipe(
+      Effect.gen(function* () {
+        const cwd = input.cwd;
+        if (cwd === undefined) return yield* loadServerConfig;
+        yield* authorize(session);
+        const notTheirs = yield* hub.refreshSkillsAt(session.deviceToken, cwd).pipe(
+          Effect.map((workspace) => workspace === null),
+          Effect.catch((cause) =>
+            Effect.logWarning("t3 gateway could not read a workspace's skills", { cause }).pipe(
+              Effect.as(false),
+            ),
+          ),
+        );
+        if (!notTheirs) return yield* loadServerConfig;
+        const checkedAt = DateTime.formatIso(yield* DateTime.now);
+        return yield* configWith([{ cwd, checkedAt, skills: [] }]);
+      }).pipe(
         Effect.map((config) => ({ providers: config.providers })),
         Effect.catchTag("ServerSettingsError", (error) =>
           Effect.fail(
@@ -978,7 +1004,7 @@ export const makeGatewayRpcHandlers = ({
       Effect.fail(new ExternalLauncherUnsupportedEditorError({ editor: input.editor })),
     [WS_METHODS.filesystemBrowse]: () => refuse(WS_METHODS.filesystemBrowse),
     [WS_METHODS.filesystemGetMetadata]: (input) =>
-      authorize(session).pipe(Effect.as({ entries: input.paths.map(() => UNSUPPORTED_METADATA) })),
+      authorize(session).pipe(Effect.andThen(files.getMetadata(input))),
     // Nothing to import: the gateway has no agent history of its own to scan, and Mend's projects
     // are in the shell already. t3code's onboarding then offers none.
     [WS_METHODS.agentSessionsScan]: () =>
