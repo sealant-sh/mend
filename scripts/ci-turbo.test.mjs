@@ -278,7 +278,7 @@ test("real Turbo nightly bypasses reads, executes twice and refreshes the remote
   assert.deepEqual(requests, [], "cold measurement makes no remote artifact requests");
   assert.equal(executionCount(), beforeCold + 1, "cold executes the affected task");
   clearLocal();
-  await run({ ...measurement, CI_MEASUREMENT_CACHE: "warm" });
+  await run({ ...measurement, CI_MEASUREMENT_CACHE: "warm", CI_MEASUREMENT_RUNNER: "box" });
   assert.deepEqual(requests, ["GET"], "warm restores main's entry without any writes");
   assert.equal(executionCount(), beforeCold + 1, "warm replay does not execute the task");
   assert.equal(readFileSync(join(root, "packages/probe/dist/result"), "utf8"), "artifact");
@@ -289,6 +289,7 @@ test("measurement dispatches are affected-only, cold disables remote, warm never
   for (const mode of ["cold", "warm"]) {
     const env = {
       CI_MEASUREMENT_CACHE: mode,
+      CI_MEASUREMENT_RUNNER: "box",
       RUNNER_ENVIRONMENT: "self-hosted",
       GITHUB_EVENT_NAME: "workflow_dispatch",
       GITHUB_REF: "refs/heads/main",
@@ -306,6 +307,24 @@ test("measurement dispatches are affected-only, cold disables remote, warm never
       assert.equal(run(["lint"], { ...env, GITHUB_EVENT_NAME: event }).status, 1);
     }
     assert.equal(run(["lint"], { ...env, CI_MEASUREMENT_CACHE: "other" }).status, 1);
+  }
+});
+
+test("only the box measures warm; every other runner measures cold without the remote", (t) => {
+  const run = fixture(t);
+  for (const runner of ["blacksmith-2vcpu-ubuntu-2404", "ubuntu-latest", undefined]) {
+    const env = {
+      RUNNER_ENVIRONMENT: "self-hosted",
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      TURBO_SCM_BASE: "a".repeat(40),
+      ...(runner === undefined ? {} : { CI_MEASUREMENT_RUNNER: runner }),
+    };
+    const warm = run(["lint"], { ...env, CI_MEASUREMENT_CACHE: "warm" });
+    assert.equal(warm.status, 1, `${runner} warm`);
+    assert.match(warm.stderr, /must run on the box/);
+    const cold = run(["lint"], { ...env, CI_MEASUREMENT_CACHE: "cold" });
+    assert.equal(cold.status, 0, cold.stderr);
+    assert.ok(cold.args.includes("--cache=local:rw"), `${runner} cold`);
   }
 });
 
