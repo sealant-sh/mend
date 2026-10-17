@@ -31,8 +31,10 @@ import type { PendingRun } from "./shell.ts";
  * Mend or not; it comes back failed, saying so, and is never sent twice (`restoredEntry`).
  *
  * - `preparing`: a launch's opening message while the gateway prepares its new worktree
- *   (`worktree-setup.ts`). Nothing in the thread moves until the preparation releases it to
- *   `queued` or fails it; a failed preparation can be retried.
+ *   (`worktree-setup.ts`). The preparation releases it to `queued` or fails it; a failed
+ *   preparation can be retried. The queue's own `preparation`, not this message, is what holds
+ *   the thread: a launch with no message, or one whose message was taken back, still sends
+ *   nothing until its worktree is ready.
  * - `queued`: waiting behind an open turn, for its turn in the queue, or for a retry.
  * - `launching`: the session is being launched again; sent once the agent is live.
  * - `sending`: `POST /turns` is in flight.
@@ -87,6 +89,21 @@ export interface ThreadQueue {
   entries: Array<QueueEntry>;
   /** An interrupt held the queue: nothing queued is sent until it is resumed. */
   held: boolean;
+  /** The session's new worktree being prepared, or whose preparation failed; null once ready. */
+  preparation: QueuePreparation | null;
+}
+
+/**
+ * A new worktree's preparation (`worktree-setup.ts`), kept with the session's queue. While it runs,
+ * nothing in the queue is sent. Once it failed, what was queued is held until a retry.
+ */
+export interface QueuePreparation {
+  status: "running" | "failed";
+  /**
+   * The Mend shell its setup script was typed into, once opened. Mend keeps that shell when the
+   * gateway stops, so a retry stops it before typing the script again.
+   */
+  setupProcessId: string | null;
 }
 
 /** What the hub knows of the session right now, from Mend. */
@@ -142,7 +159,7 @@ export const MAX_LAUNCHES = 2;
 /** Session statuses that end a launch: provisioning failed or the agent went away. */
 const ENDED: ReadonlySet<string> = new Set(["failed", "stopped", "completed"]);
 
-export const emptyQueue = (): ThreadQueue => ({ entries: [], held: false });
+export const emptyQueue = (): ThreadQueue => ({ entries: [], held: false, preparation: null });
 
 export const newEntry = (input: {
   readonly runId: string;
@@ -157,7 +174,7 @@ export const newEntry = (input: {
   imageIds: [],
   workspacePreparation: null,
   ...input,
-  state: (input.workspacePreparation ?? null) === null ? "queued" : "preparing",
+  state: "queued",
   error: null,
   launches: 0,
   launchAnsweredAt: null,
@@ -178,10 +195,10 @@ export const canProgress = (entry: QueueEntry): boolean =>
   entry.state === "launching" ||
   entry.state === "sending";
 
-/** Whether any message in any queue can still progress. */
+/** Whether any message in any queue can still progress, or any worktree is being prepared. */
 export const anyProgress = (queues: Iterable<ThreadQueue>): boolean => {
   for (const queue of queues) {
-    if (queue.entries.some(canProgress)) return true;
+    if (queue.preparation?.status === "running" || queue.entries.some(canProgress)) return true;
   }
   return false;
 };
@@ -236,46 +253,62 @@ export const resume = (queue: ThreadQueue) => {
   queue.held = false;
 };
 
-/** The message whose workspace is being prepared: at most one, a launch's opening message. */
-export const preparing = (queue: ThreadQueue): QueueEntry | undefined =>
-  queue.entries.find((entry) => entry.state === "preparing");
+/** The session's new worktree is being prepared; its opening message, if any, waits for it. */
+export const beginPreparation = (queue: ThreadQueue, opening: QueueEntry | null) => {
+  queue.preparation = { status: "running", setupProcessId: null };
+  if (opening !== null && opening.state === "queued") opening.state = "preparing";
+};
 
-/** Its workspace is ready: the opening message takes its turn in the queue. */
-export const prepared = (entry: QueueEntry) => {
-  if (entry.state === "preparing") entry.state = "queued";
+/** The setup script's shell opened: kept, so a retry after a restart can stop it. */
+export const setupProcessOpened = (queue: ThreadQueue, processId: string) => {
+  if (queue.preparation !== null) queue.preparation.setupProcessId = processId;
+};
+
+/** The worktree is ready: the opening message takes its turn, and the queue moves again. */
+export const prepared = (queue: ThreadQueue, runId: string | null) => {
+  queue.preparation = null;
+  const entry = queue.entries.find((candidate) => candidate.runId === runId);
+  if (entry?.state === "preparing") entry.state = "queued";
 };
 
 /**
- * Preparing its workspace failed: the message fails, preparing it again is a retry, and what was
- * queued behind it is held, as on t3code's own server, so nothing goes out to an unprepared
- * worktree.
+ * Preparing the worktree failed: the opening message fails, preparing it again is a retry, and
+ * what was queued behind it is held, as on t3code's own server, so nothing goes out to an
+ * unprepared worktree.
  */
-export const preparationFailed = (queue: ThreadQueue, entry: QueueEntry, reason: string) => {
-  if (entry.state !== "preparing") return;
-  entry.state = "failed";
-  entry.error = reason;
-  entry.preparationFailed = true;
+export const preparationFailed = (queue: ThreadQueue, runId: string | null, reason: string) => {
+  if (queue.preparation === null) return;
+  queue.preparation.status = "failed";
+  const entry = queue.entries.find((candidate) => candidate.runId === runId);
+  if (entry?.state === "preparing") {
+    entry.state = "failed";
+    entry.error = reason;
+    entry.preparationFailed = true;
+  }
   holdIfQueued(queue, true);
   tidy(queue);
 };
 
 /**
  * `prepared-run.retry`: a message whose preparation failed is prepared again, and what its failure
- * held follows it again. Null when there is nothing to retry or another message is on its way.
+ * held follows it again. Null when there is nothing to retry or the worktree is being prepared;
+ * else the setup shell of the failed attempt, which the retry stops first.
  */
-export const retryPreparation = (queue: ThreadQueue, runId: string): QueueEntry | null => {
+export const retryPreparation = (
+  queue: ThreadQueue,
+  runId: string,
+): { readonly entry: QueueEntry; readonly staleProcessId: string | null } | null => {
   const entry = queue.entries.find((candidate) => candidate.runId === runId);
   if (entry === undefined || entry.state !== "failed" || !entry.preparationFailed) return null;
-  const onItsWay = queue.entries.some(
-    (candidate) => canProgress(candidate) && candidate.state !== "queued",
-  );
-  if (onItsWay) return null;
+  if (queue.preparation?.status === "running") return null;
+  const staleProcessId = queue.preparation?.setupProcessId ?? null;
   entry.state = "preparing";
   entry.error = null;
   entry.preparationFailed = false;
   entry.launches = 0;
   queue.held = false;
-  return entry;
+  queue.preparation = { status: "running", setupProcessId: null };
+  return { entry, staleProcessId };
 };
 
 /** The message waiting in the queue under `runId`, or undefined once it is on its way or settled. */
@@ -392,7 +425,7 @@ export const nextStep = (
     failAll(queue, "The session is gone from Mend, or is no longer a protocol session.");
     return null;
   }
-  if (preparing(queue) !== undefined) return null;
+  if (queue.preparation?.status === "running") return null;
   const launching = queue.entries.find((entry) => entry.state === "launching");
   if (launching !== undefined) {
     if (launching.launchAnsweredAt !== null && view.agentLive) {
@@ -502,11 +535,13 @@ export interface StoredEntry {
 
 export interface StoredQueue {
   readonly held: boolean;
+  readonly preparation: QueuePreparation | null;
   readonly entries: ReadonlyArray<StoredEntry>;
 }
 
 export const storedOf = (queue: ThreadQueue): StoredQueue => ({
   held: queue.held,
+  preparation: queue.preparation === null ? null : { ...queue.preparation },
   entries: queue.entries.map((entry) => ({
     runId: entry.runId,
     messageId: entry.messageId,
@@ -572,19 +607,26 @@ export const restoredEntry = (stored: StoredEntry, token: string | null): QueueE
   }
 };
 
-/** A stored queue as it comes back; held only while something is still queued. */
+/**
+ * A stored queue as it comes back; held only while something is still queued. A worktree being
+ * prepared when the gateway stopped comes back failed, holding what was queued, with the shell
+ * its setup script ran in kept for the retry to stop.
+ */
 export const restoredQueue = (
   stored: StoredQueue,
   tokenOf: (sender: string) => string | null,
 ): ThreadQueue => {
+  const cutShort =
+    stored.preparation?.status === "running" ||
+    stored.entries.some((entry) => entry.state === "preparing");
   const queue: ThreadQueue = {
     entries: stored.entries.map((entry) => restoredEntry(entry, tokenOf(entry.sender))),
     held: stored.held,
+    preparation: cutShort
+      ? { status: "failed", setupProcessId: stored.preparation?.setupProcessId ?? null }
+      : stored.preparation,
   };
-  holdIfQueued(
-    queue,
-    stored.entries.some((entry) => entry.state === "preparing"),
-  );
+  holdIfQueued(queue, cutShort);
   tidy(queue);
   return queue;
 };

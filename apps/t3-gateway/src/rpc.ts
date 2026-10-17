@@ -62,7 +62,7 @@ import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
 import { modelPreferencesUpdateOf, type KeptSettings } from "./model-preferences.ts";
 import { makeReviewHandlers } from "./review.ts";
-import { refusalOf } from "./rpc-scopes.ts";
+import { projectActionsPatchOf, refusalOf } from "./rpc-scopes.ts";
 import {
   loginsOf,
   findsInThread,
@@ -839,9 +839,31 @@ export const makeGatewayRpcHandlers = ({
         Effect.andThen(readSettings),
         Effect.map((kept) => kept.settings),
       ),
+    // Project actions alone, or model preferences alone; any other patch is refused. Saving project
+    // actions answers the settings the gateway serves, which name no override: t3code then reads
+    // the project's own scripts.
     [WS_METHODS.serverUpdateSettings]: (input) =>
       Effect.gen(function* () {
         yield* authorize(session);
+        const actions = projectActionsPatchOf(input);
+        if (actions !== null) {
+          yield* Effect.forEach(
+            Object.entries(actions),
+            ([projectId, scripts]) =>
+              hub.saveProjectScripts(projectId, scripts).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerSettingsError({
+                      settingsPath: `projectScriptOverrides.${projectId}`,
+                      operation: "write-file",
+                      cause,
+                    }),
+                ),
+              ),
+            { discard: true },
+          );
+          return (yield* readSettings).settings;
+        }
         const patch = modelPreferencesUpdateOf(input);
         if (patch === null) {
           return yield* refuse(WS_METHODS.serverUpdateSettings);
