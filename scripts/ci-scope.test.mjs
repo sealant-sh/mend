@@ -61,6 +61,13 @@ test("selects dependent jobs from committed paths while root, manifests and unkn
     ["pnpm-lock.yaml", full],
     ["unknown/new-input.txt", full],
     ["apps/mobile/src/line\nbreak.ts", full],
+    // A package's tests and their helpers reach neither the mobile web build nor the packaging lane.
+    ["packages/sessions/test/engine-capture-joining.test.ts", "mobile=false\npackaging=false\n"],
+    ["packages/domain/src/id.test.ts", "mobile=false\npackaging=false\n"],
+    ["packages/db/test/postgres.ts", "mobile=false\npackaging=false\n"],
+    ["packages/sessions/test/package.json", full],
+    ["packages/x/test/a\nb.test.ts", full],
+    ["apps/api/src/route.test.ts", "mobile=false\npackaging=true\n"],
   ]) {
     const base = f.git("rev-parse", "HEAD");
     f.write(path);
@@ -68,6 +75,28 @@ test("selects dependent jobs from committed paths while root, manifests and unkn
     const result = f.select(base, head);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, expected, path);
+  }
+});
+
+test("a package's test-only change skips the extras only when every other path does", (t) => {
+  const f = fixture(t);
+  for (const [paths, expected] of [
+    [["packages/sessions/test/engine-capture-joining.test.ts", "packages/domain/src/id.ts"], full],
+    [
+      ["packages/sessions/test/engine-capture-joining.test.ts", "apps/api/src/route.ts"],
+      "mobile=false\npackaging=true\n",
+    ],
+    [
+      ["packages/domain/src/id.test.ts", "docs/operations/notes.md"],
+      "mobile=false\npackaging=false\n",
+    ],
+  ]) {
+    const base = f.git("rev-parse", "HEAD");
+    for (const path of paths) f.write(path, `${paths.join(",")}\n`);
+    const head = f.commit();
+    const result = f.select(base, head);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, expected, paths.join(" + "));
   }
 });
 
@@ -119,7 +148,11 @@ test("a merge group runs only what its packages affect, and anything Turbo canno
     ["pnpm-lock.yaml", "full"],
     [".github/workflows/ci.yml", "full"],
     ["scripts/ci-turbo.mjs", "full"],
-    ["docs/operations/merge-queue.md", "full"],
+    ["docs/operations/merge-queue.md", "affected"],
+    ["docs/adr/0001.md", "affected"],
+    ["docsx/a.md", "full"],
+    ["apps/docs/src/content/docs/x.md", "affected"],
+    ["apps/docs/turbo.json", "full"],
     ["deploy/helm/values.yaml", "full"],
     [".oxlintrc.json", "full"],
   ]) {
@@ -130,6 +163,30 @@ test("a merge group runs only what its packages affect, and anything Turbo canno
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, new RegExp(`\\ngraph=${graph}\\n$`), path);
   }
+});
+
+test("root docs join a merge group's affected graph only beside paths Turbo attributes", (t) => {
+  const f = fixture(t);
+  for (const [paths, graph] of [
+    [["docs/x.md", "packages/domain/src/id.ts"], "affected"],
+    [["docs/x.md", "scripts/ci-turbo.mjs"], "full"],
+    [["docs/x.md", "turbo.json"], "full"],
+  ]) {
+    const base = f.git("rev-parse", "HEAD");
+    for (const path of paths) f.write(path, `${paths.join(",")}\n`);
+    const head = f.commit();
+    const result = f.select("--merge-group", base, head);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`\\ngraph=${graph}\\n$`), paths.join(" + "));
+  }
+});
+
+test("a root file named docs is a root file, not the docs directory", (t) => {
+  const f = fixture(t);
+  const base = f.git("rev-parse", "HEAD");
+  f.write("docs");
+  const head = f.commit();
+  assert.equal(f.select("--merge-group", base, head).stdout, `${full}graph=full\n`);
 });
 
 test("a batched merge group is scoped by every pull request in it", (t) => {

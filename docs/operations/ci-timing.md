@@ -213,15 +213,19 @@ disabled so deleting or moving an input cannot hide its original path.
 | Changed paths                                                                          | mobile-web | Packaging and verify |
 | -------------------------------------------------------------------------------------- | ---------- | -------------------- |
 | Only `docs/` files, excluding package manifests                                        | Skip       | Skip                 |
+| A package's `test/` files or `*.test.*` / `*.spec.*` files, excluding manifests        | Skip       | Skip                 |
 | Other known apps or `deploy/`                                                          | Skip       | Run                  |
 | Mobile, any shared package, tooling, scripts, workflows or agent configuration         | Run        | Run                  |
 | Root files, any package manifest, unknown paths, empty diff or unavailable Git history | Run        | Run                  |
 
 Mixed changes take the union. Including every shared package deliberately favors extra execution
-when dependencies change. The selection job tests both CI helper scripts before publishing outputs.
-Missing outputs run both extras, and the required checks job runs even if selection fails. Turbo,
-required PostgreSQL tests, S3 contracts and existing forced execution remain enabled for every PR.
-Helm and AWS shell checks also remain unconditional.
+when dependencies change. A package's tests are the one exception, for `packages/` only: nothing
+either lane builds or runs imports them, and `scripts/test-only-imports.test.mjs` fails if a
+production source, build or packaging script, bundler config, `tsconfig` path, Dockerfile or gated
+job starts to. The selection job tests both CI helper scripts before publishing outputs. Missing
+outputs run both extras, and the required checks job runs even if selection fails. Turbo, required
+PostgreSQL tests, S3 contracts and existing forced execution remain enabled for every PR. Helm and
+AWS shell checks also remain unconditional.
 
 Validation includes real Git fixtures for deletion, renaming, independently advancing main,
 malformed references and filenames with newlines. The nine CI-helper tests passed 20 consecutive
