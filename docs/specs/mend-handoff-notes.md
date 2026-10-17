@@ -39,7 +39,45 @@ when the hold arrived, so nothing below is checked against the source yet.
   transcripts by cwd and the agent's cwd in Mend is `/workspace/repo`.
 - `mend memory import` is a precedent for the CLI uploading local files to the server.
 
-## Open decisions (each for Yiannis, recommendation still to write)
+## Decided (2026-10-17, Yiannis's review of `docs/specs/vscode-stories.md` story g)
+
+The stories live on branch `vscode/redesign-study`.
+
+- Handoff copies. It never touches the local checkout.
+- `.env*` files are left out by default, and the fact line says so.
+- What travels is the commits ahead, plus the uncommitted and untracked files. Gitignored files
+  are left out. An optional prompt; empty means a workspace held for the person, with no agent.
+- The CLI comes first (from a checkout). The VS Code entry comes with the extension rebuild.
+- Story g's copy: fact line `2 commits ahead of main · 3 uncommitted files · 1 untracked`, the
+  detail line
+  `Copies your branch and uncommitted files into a new session. Your checkout stays as it is.`,
+  the row `idle · handed off from dana-mbp`, and the change's base is the merge base with `main`.
+  Edge cases include not adopted (adopt and hand off), detached HEAD, a foreign origin (refused),
+  files over the size limit (named and left out), and a server without the endpoint.
+
+## Still open, for Yiannis
+
+1. The name. Findings so far:
+   - `mend pull <session>` already exists. It fetches a session's change into a local clone as a
+     git bundle (`packages/api-contracts/src/landing.ts`, `ChangeBundleBytes`, raw body via
+     `HttpApiSchema.asUint8Array`, budget `MEND_BUDGET_BUNDLE_BYTES`). It matches the clone's
+     remotes to the project's origin by host and path, with `--force` to skip. This feature is
+     its reverse, and can reuse the origin match and the bundle budget.
+   - `mend push` would mirror `pull` and `folder push` (which uploads a local directory). But
+     landing reports say "pushed" for origin, so a row reading `pushed from dana-mbp` collides.
+   - `mend send` uses Yiannis's own words ("send current state of things over"): `sent from
+     dana-mbp`, `Sent as fix-login. Your checkout is unchanged.` It only brushes against the
+     review comments' **Send** button. Current leaning.
+   - `mend continue` is taken (resume with the pending review follow-up).
+   - "handoff" also names the mode handoff, `POST /sessions/:id/handoff {to}`, in
+     `packages/sessions/src/engine.ts` and `packages/api-contracts/src/sessions.ts`.
+2. G6, the upload API. Shapes to weigh: one raw-body request carrying a tar (bundle, file
+   contents, a JSON manifest with branch, head, merge base, deleted paths, prompt, machine and cut
+   time), against a two-step content-addressed upload and then a create that names it. File
+   contents rather than a patch: contents always apply, binary included; the index (staged versus
+   unstaged) is not kept, which review does not show anyway.
+
+## Original open list
 
 1. The name and copy, given the collision above. Candidates to weigh: `mend bring`, `mend send`,
    `mend move`, or stretching "handoff". Leaning away from "handoff" and "takeover".
@@ -53,18 +91,19 @@ when the hold arrived, so nothing below is checked against the source yet.
 
 ## Next step
 
-Resume the `how` pass with its four explorer angles. Two were running and were stopped by the
-hold:
+The branch is rebased on origin/main (after #1047). Resume the `how` pass. Three explorers ran on
+the second start and were stopped by the second hold, before they reported:
 
 1. Adoption and the central store. How a store is created, whether the CLI can ship git objects
    to a remote server (a bundle), how cwd maps to a project, and the refusal copy.
 2. Session and worktree provisioning. Whether a worktree can start from an arbitrary sha, how
    pre-existing uncommitted content would show in review, and any hook that writes files into a
-   worktree before launch.
-3. Capture (not started). How a worktree's state, untracked and ignored bulk included, is packed
-   and restored, and whether that path can seed a new worktree from a client-side tarball.
-4. Takeover and resume (not started). `mend attach`, `handoff {to:"pty"}`, the VS Code takeover,
-   and native transcript backfill as a route for a local conversation.
+   worktree before launch, and a no-agent held workspace.
+3. Uploads and capture. Upload precedents (image paste, `mend memory import`, folder push),
+   HttpApi raw and multipart bodies, size limits, and how a worktree's state is packed and
+   restored, so files the server writes reach the workspace in both deployment shapes.
 
-Then draft the decision list with a recommendation for each item and send it to the orchestrator
-(thread ec2e5833, mode queue) before building beyond a spike.
+A local agent conversation does not travel (it is not in the decided list), so the takeover angle
+is dropped. Then send the two open decisions (name, G6) with a recommendation to the orchestrator
+(thread ec2e5833, mode queue) before building beyond a spike. `pnpm install` was interrupted by
+the hold; rerun it first.
