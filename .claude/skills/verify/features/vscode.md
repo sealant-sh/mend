@@ -104,8 +104,10 @@ The commands, from the repository root:
   In place of `--version <v>` (a preloaded `ghcr.io/sealant-sh/mend:<v>`), pass `--image <ref>` (any
   image on this machine's Docker) or `--build` (one built now from the checkout's Dockerfile).
   `--extension <checkout>` runs another checkout's `apps/vscode`. `--signed-out` leaves no CLI
-  connection; `--no-ssh-setup` leaves workspace SSH and Remote-SSH's platform unset; `--no-video`
-  records no video. `up` prints `export MEND_VERIFY_VSCODE_RUN=<run>`; run that line.
+  connection; `--no-ssh-setup` leaves workspace SSH and Remote-SSH's platform unset;
+  `--no-remote-ssh` leaves Microsoft Remote-SSH uninstalled, so the first open installs it from the
+  gallery (the ledger's `remoteSsh` is `false`); `--no-video` records no video. `up` prints
+  `export MEND_VERIFY_VSCODE_RUN=<run>`; run that line.
 - **Run a recipe.**
   `node .claude/skills/verify/scripts/drive-vscode.mjs run <recipe.mjs> --out "$E_vscode/vscode-<letter>"`.
   `--timeout <ms>` sets the wait per gesture (default 30000). It exits `0` when the recipe ends and

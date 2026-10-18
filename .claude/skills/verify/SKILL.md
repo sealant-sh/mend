@@ -580,7 +580,7 @@ outlives one call, like the desktop's app:
 # (`--image <ref>`), or one built now from the checkout's Dockerfile (`--build`, 20 to 40 minutes)
 VSCODE_BIN=$(dirname "$(readlink -f "$(which code)")")/../lib/vscode/code \
   node $skill/scripts/drive-vscode.mjs up --version 0.36.0-next.1033 [--extension <checkout>] \
-    [--signed-out] [--no-ssh-setup] [--no-video] [--repo <url>] [--run <name>]
+    [--signed-out] [--no-ssh-setup] [--no-remote-ssh] [--no-video] [--repo <url>] [--run <name>]
 export MEND_VERIFY_VSCODE_RUN=<the run `up` printed>
 node $skill/scripts/drive-vscode.mjs run <recipe.mjs> --out "$E_vscode/<feature>" [--timeout <ms>]
 node $skill/scripts/drive-vscode.mjs logs            # the editor's logs and the server's, redacted
@@ -605,7 +605,9 @@ private directory goes.
 The editor starts **signed in** (the CLI connection the extension reads, `cli.json` in the scratch
 HOME, written as `mend login` writes it) with **workspace SSH set up** (`mend ssh setup` in that
 HOME, and `remote.SSH.remotePlatform` seeded for the alias, as it is after story h's first run).
-`--signed-out` and `--no-ssh-setup` start the first-run stories instead.
+`--signed-out` and `--no-ssh-setup` start the first-run stories instead; `--no-remote-ssh` leaves
+Remote-SSH uninstalled, so the first open installs it from the gallery (`state.remoteSsh` is
+`false`).
 
 A recipe is a module whose default export is `async (helpers) => {}`. The helpers act like a person;
 each is a gesture on the real workbench DOM:
