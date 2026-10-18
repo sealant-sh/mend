@@ -155,11 +155,17 @@ const background = (program, args, { env, logFile, cwd }) => {
 const VERSION_SHAPE =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
+const downCommand = (run) => `node ${join(here, "drive-vscode.mjs")} down --run ${run}`;
+
+/** The run `up` is making, once it has a name: a failed `up` names it for `down`. */
+let upRun = null;
+
 const up = async () => {
   const run = options.run ?? newRunName();
   const names = runNames(run);
   if (existsSync(names.stateFile))
-    fail(`run ${run} is already up (${names.stateFile}); down it first`);
+    fail(`run ${run} is already up (${names.stateFile}); down it first: ${downCommand(run)}`);
+  upRun = run;
   const extensionCheckout = resolve(options.extension ?? world.repoRoot);
   const extensionDir = join(extensionCheckout, "apps/vscode");
   if (!existsSync(join(extensionDir, "package.json")))
@@ -581,11 +587,16 @@ try {
   if (error instanceof UsageError) fail(error.message, 2);
   const names = (() => {
     try {
-      return runNames(pickRun(options.run));
+      return runNames(upRun ?? pickRun(options.run));
     } catch {
       return null;
     }
   })();
   const secrets = names && existsSync(names.privateDir) ? loadSecrets(names.privateDir) : new Map();
-  fail(redact(redactValues(String(error?.stack ?? error), secrets)));
+  const message = redact(redactValues(String(error?.stack ?? error), secrets));
+  fail(
+    upRun === null
+      ? message
+      : `${message}\nup failed part way; whatever it made is in its ledger: ${downCommand(upRun)}`,
+  );
 }
