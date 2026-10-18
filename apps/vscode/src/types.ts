@@ -129,6 +129,8 @@ export interface SessionProcess {
   /** Wire timestamp kept opaque: only its presence matters here. */
   readonly exitedAt: string | null;
   readonly providerSessionId: string | null;
+  /** The process's human name ("claude", "shell", "web"); null when unnamed and from older servers. */
+  readonly label: string | null;
 }
 
 /** GET /sessions/:id — the session with every process it has held. */

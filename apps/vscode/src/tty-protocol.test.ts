@@ -20,6 +20,7 @@ const process = (overrides: Partial<SessionProcess>): SessionProcess => ({
   status: "running",
   exitedAt: null,
   providerSessionId: null,
+  label: null,
   ...overrides,
 });
 

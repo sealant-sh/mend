@@ -172,6 +172,7 @@ const parseSessionProcess = (value: unknown): SessionProcess => {
     status: stringField(value, "status"),
     exitedAt: exitedAt === null || exitedAt === undefined ? null : String(exitedAt),
     providerSessionId: nullableStringField(value, "providerSessionId"),
+    label: typeof value["label"] === "string" ? value["label"] : null,
   };
 };
 
