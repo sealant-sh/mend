@@ -38,13 +38,18 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   `change` (the reviewable object: the worktree versus its base), `checkpoint` (a hidden git ref
   stamped with the record sequence; any two checkpoints define a reviewable slice), `context pack` /
   `context snapshot` (explicit, versioned selection; every session receives an immutable snapshot),
-  and `handoff` (the editable end-of-session summary promoted into durable context). Interface-side
-  inference deliberately has **no product noun** — write "Mend uses inference"; the machine review
-  pass is phrased "Mend reads the change" (draft comments and proposed checks, never verdicts; every
-  finding links to the record or ships a runnable check). Cardinality: sessions are many per
-  project, each runs in one worktree and a worktree can hold several; one change per worktree (every
-  session in the worktree contributes to it; its owner is the owner of the worktree's first
-  session); landing a change (merge/commit/PR) is publication, optional by definition.
+  `session summary` (the editable end-of-session summary promoted into durable context; planned),
+  and `handoff` (the act of copying a person's local branch, commits and uncommitted files included,
+  into a new session from their checkout; the checkout is never changed; the session row reads
+  `handed off from <machine>`). The shipped switch of a session between terminal and conversation is
+  a `mode switch`, never a handoff, though its released route keeps the path
+  `POST /sessions/:id/handoff`. Interface-side inference deliberately has **no product noun** —
+  write "Mend uses inference"; the machine review pass is phrased "Mend reads the change" (draft
+  comments and proposed checks, never verdicts; every finding links to the record or ships a
+  runnable check). Cardinality: sessions are many per project, each runs in one worktree and a
+  worktree can hold several; one change per worktree (every session in the worktree contributes to
+  it; its owner is the owner of the worktree's first session); landing a change (merge/commit/PR) is
+  publication, optional by definition.
 - Tenancy nouns (`docs/adr/0003-organizations-and-tenancy.md`): `organization` (the tenant; owns its
   members, projects, folders, reference repositories and audit log; an account belongs to exactly
   one), `owner` and `member` (organization roles), `operator` (an instance role that administers the
