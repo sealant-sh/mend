@@ -195,10 +195,11 @@ export const UpgradeTicketsRepoLive: Layer.Layer<UpgradeTicketsRepo, never, Mend
       credential: TicketCredential | null,
     ) {
       if (credential === null) return true;
+      // A typed select, not `db.execute`: on drizzle-orm 1.0.0-rc.4 `execute` over @effect/sql-pg
+      // resolves to pg's raw result object while its type still says an array of rows.
       const rows = yield* db
-        .execute<{ readonly stands: boolean }>(
-          sql`SELECT ${stands(sql`${credential}::text`, yield* DateTime.nowAsDate)} AS stands`,
-        )
+        .select({ stands: stands(sql`${credential}::text`, yield* DateTime.nowAsDate) })
+        .from(sql`(SELECT 1) AS credential`)
         .pipe(Effect.orDie);
       return rows[0]?.stands === true;
     });
