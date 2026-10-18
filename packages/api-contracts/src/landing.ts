@@ -178,9 +178,11 @@ export class BundleTooLarge extends Schema.TaggedError<BundleTooLarge>()(
   { httpApiStatus: 413 },
 ) {}
 
+export const GIT_BUNDLE_CONTENT_TYPE = "application/x-git-bundle";
+
 /** A git bundle: `git fetch <file> refs/heads/<branch>` in a clone that has the session's base. */
 export const ChangeBundleBytes = Schema.Uint8Array.pipe(
-  HttpApiSchema.asUint8Array({ contentType: "application/x-git-bundle" }),
+  HttpApiSchema.asUint8Array({ contentType: GIT_BUNDLE_CONTENT_TYPE }),
 );
 
 /** Response headers the bundle carries, so `mend pull` needs no second request. */

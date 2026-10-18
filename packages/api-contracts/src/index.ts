@@ -15,6 +15,7 @@ export * from "./harness-models.ts";
 export * from "./changes.ts";
 export * from "./worktrees.ts";
 export * from "./landing.ts";
+export * from "./handoffs.ts";
 export * from "./github.ts";
 export * from "./devices.ts";
 export * from "./upgrade-tickets.ts";
