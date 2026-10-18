@@ -296,6 +296,7 @@ interface WorktreeDto {
   readonly baseSha: string;
   readonly baseRef: string | null;
   readonly createdAt: string;
+  readonly handoff?: { readonly machine: string } | null;
 }
 
 interface SessionDto extends SessionCaptureLike {
@@ -5522,6 +5523,7 @@ interface SessionRow {
   readonly session: SessionDto;
   readonly projectName: string;
   readonly annotation: SessionAnnotationDto | undefined;
+  readonly handedOffFrom?: string;
 }
 
 interface SessionJson {
@@ -5579,6 +5581,7 @@ const printSessionRow = (row: SessionRow, workspaceLines: ReadonlyArray<string> 
   // A stop leaves Services running: a held workspace leads the facts, or the row reads as done.
   const hold = rowHold(row);
   if (hold !== null) facts.push(amber(hold));
+  if (row.handedOffFrom !== undefined) facts.push(`handed off from ${row.handedOffFrom}`);
   if (session.label !== null) facts.push(session.label);
   if (annotation !== undefined && annotation.openComments > 0) {
     facts.push(amber(`${annotation.openComments} open`));
@@ -5649,11 +5652,15 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
       ),
     );
     const detailed = details.flatMap((detail) =>
-      detail.sessions.map((session) => ({
-        session,
-        projectName: detail.project.name,
-        annotation: detail.annotations.find((a) => a.sessionId === session.id),
-      })),
+      detail.sessions.map((session) => {
+        const handoff = detail.worktrees?.find((w) => w.id === session.worktreeId)?.handoff ?? null;
+        return {
+          session,
+          projectName: detail.project.name,
+          annotation: detail.annotations.find((a) => a.sessionId === session.id),
+          ...(handoff === null ? {} : { handedOffFrom: handoff.machine }),
+        };
+      }),
     );
     rows =
       all || projectName !== null

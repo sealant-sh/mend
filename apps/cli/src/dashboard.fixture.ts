@@ -59,7 +59,7 @@ const PROJECTS: ReadonlyArray<ProjectDto> = [
 const MEND_WORKTREES: ReadonlyArray<WorktreeDto> = [
   worktree("w-panels", "tui-numbered-panels", 50),
   worktree("w-snake", "tui-snake-countdown", 90),
-  worktree("w-docs", "docs-pass", 600),
+  { ...worktree("w-docs", "docs-pass", 600), handoff: { machine: "dana-mbp" } },
 ];
 
 const MEND_SESSIONS: ReadonlyArray<SessionDto> = [

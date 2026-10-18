@@ -1763,3 +1763,58 @@ describe("gameSwallows", () => {
     expect(gameSwallows(null)).toBe(false);
   });
 });
+
+describe("a handed-off worktree", () => {
+  const detail: ProjectDetailDto = {
+    project,
+    sessions: [
+      session({ id: "held", status: "idle", worktreeId: "fix-login" }),
+      session({ id: "plain", status: "idle", worktreeId: "other" }),
+    ],
+    annotations: [],
+    worktrees: [
+      worktree({ id: "fix-login", handoff: { machine: "dana-mbp" } }),
+      worktree({ id: "other", handoff: null }),
+    ],
+  };
+  const shell: SessionProcessDto = {
+    id: "p1",
+    kind: "shell",
+    harness: null,
+    label: null,
+    status: "running",
+    exitedAt: null,
+  };
+  const data: Workbench = {
+    ...workbench(detail),
+    processesBySession: new Map([
+      ["held", [shell]],
+      ["plain", [shell]],
+    ]),
+  };
+
+  it("says where it came from on the worktree and on every session in it", () => {
+    const groups = deriveWorktrees(data, project.id);
+    const handed = groups.find((group) => group.id === "fix-login");
+    const other = groups.find((group) => group.id === "other");
+    expect(handed?.handedOffFrom).toBe("dana-mbp");
+    expect(other?.handedOffFrom).toBeUndefined();
+    const [held] = handed?.sessions ?? [];
+    const [plain] = other?.sessions ?? [];
+    if (held === undefined || plain === undefined) throw new Error("no sessions grouped");
+    const now = Date.parse("2026-08-31T10:05:00.000Z");
+    expect(sessionRowFacts(held, 80, now)).toBe(
+      "created 5m ago · handed off from dana-mbp · claude · 1 shell",
+    );
+    expect(sessionRowFacts(plain, 80, now)).toBe("created 5m ago · claude · 1 shell");
+  });
+
+  it("reads an older server's worktrees, which carry no handoff field", () => {
+    const old: ProjectDetailDto = {
+      ...detail,
+      worktrees: [worktree({ id: "fix-login" }), worktree({ id: "other" })],
+    };
+    const groups = deriveWorktrees({ ...data, details: new Map([[project.id, old]]) }, project.id);
+    expect(groups.map((group) => group.handedOffFrom)).toEqual([undefined, undefined]);
+  });
+});

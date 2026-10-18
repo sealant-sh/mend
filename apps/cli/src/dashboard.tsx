@@ -388,6 +388,7 @@ const WorktreeRow = ({
   const facts = fitHints(
     [
       fit(`from ${groupBaseLabel(group)}`, Math.max(12, Math.floor(factWidth / 2))),
+      ...(group.handedOffFrom === undefined ? [] : [`handed off from ${group.handedOffFrom}`]),
       ...lastSessionWords(group),
       ...(open > 0 ? [`${open} open`] : []),
       ...(sessions === 0 ? ["empty"] : sessions === 1 ? [] : [`${sessions} sessions`]),

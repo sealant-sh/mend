@@ -88,6 +88,8 @@ export interface WorktreeDto {
   readonly baseSha: string;
   readonly baseRef: string | null;
   readonly createdAt: string;
+  /** Absent on older servers. */
+  readonly handoff?: { readonly machine: string } | null;
 }
 
 export interface SessionAnnotationDto {
@@ -310,6 +312,7 @@ export interface SessionItem {
   readonly services: ReadonlyArray<ServiceDto>;
   /** Live agent + shell processes — what lives in this worktree right now. */
   readonly processes: ReadonlyArray<SessionProcessDto>;
+  readonly handedOffFrom?: string;
 }
 
 /**
@@ -332,6 +335,7 @@ export interface WorktreeGroup {
   readonly live: number;
   /** Change facts — identical on every member, read off any of them. */
   readonly annotation: SessionAnnotationDto | undefined;
+  readonly handedOffFrom?: string;
 }
 
 export interface HarnessItem {
@@ -360,12 +364,16 @@ export const bySessionRecency = (a: SessionDto, b: SessionDto): number => {
 
 export const toSessionItem =
   (data: Workbench, detail: ProjectDetailDto) =>
-  (session: SessionDto): SessionItem => ({
-    session,
-    annotation: detail.annotations.find((a) => a.sessionId === session.id),
-    services: data.servicesBySession.get(session.id) ?? [],
-    processes: data.processesBySession.get(session.id) ?? [],
-  });
+  (session: SessionDto): SessionItem => {
+    const handoff = detail.worktrees?.find((w) => w.id === session.worktreeId)?.handoff ?? null;
+    return {
+      session,
+      annotation: detail.annotations.find((a) => a.sessionId === session.id),
+      services: data.servicesBySession.get(session.id) ?? [],
+      processes: data.processesBySession.get(session.id) ?? [],
+      ...(handoff === null ? {} : { handedOffFrom: handoff.machine }),
+    };
+  };
 
 /**
  * A settled session that never had a conversation — no transcript captured, none in the harness
@@ -410,6 +418,9 @@ export const deriveWorktrees = (
         sessions: members.map(item),
         live: members.filter((session) => LIVE_STATUSES.has(session.status)).length,
         annotation: detail.annotations.find((a) => members.some((m) => m.id === a.sessionId)),
+        ...(worktree.handoff === undefined || worktree.handoff === null
+          ? {}
+          : { handedOffFrom: worktree.handoff.machine }),
       });
     }
     // Optimistic pending rows have no worktree yet — each is its own group.
@@ -894,6 +905,7 @@ export const sessionRowFacts = (
   return fitHints(
     [
       ...(state === null ? [] : [cut(state, stateWidth)]),
+      ...(item.handedOffFrom === undefined ? [] : [`handed off from ${item.handedOffFrom}`]),
       item.session.harness,
       ...(shells > 0 ? [`${shells} shell`] : []),
       ...(agents > 0 ? [`${agents} agent`] : []),

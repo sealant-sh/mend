@@ -148,6 +148,54 @@ describe("Mend CLI session selection", spawning, () => {
     }
   });
 
+  it("says which machine a handed-off worktree's sessions came from", async () => {
+    const worktree = {
+      id: "fixture",
+      name: "fixture",
+      branch: "mend/fixture",
+      baseSha: "abc123",
+      baseRef: "main",
+      createdAt: new Date(0).toISOString(),
+      handoff: null,
+    };
+    const handedOffWorktree = {
+      ...worktree,
+      id: "fix-login",
+      name: "fix-login",
+      branch: "mend/fix-login",
+      handoff: { machine: "dana-mbp" },
+    };
+    const handedOff = { ...session, id: "aaaa1111-handed", worktreeId: "fix-login" };
+    const local = { ...session, id: "bbbb2222-local", worktreeId: "fixture" };
+    const fake = await startFakeMend((request, response) => {
+      const route = `${request.method ?? "GET"} ${request.url ?? ""}`;
+      if (route === "GET /api/projects") json(response, [project]);
+      else if (route === `GET /api/projects/${project.id}?deadEnds=include`) {
+        json(response, {
+          project,
+          sessions: [handedOff, local],
+          annotations: [],
+          worktrees: [handedOffWorktree, worktree],
+        });
+      } else response.writeHead(404).end();
+    });
+    const cli = startCli(fake.url, ["sessions", "--all"]);
+    try {
+      await cli.exited;
+      const rowOf = (id8: string) =>
+        cli
+          .stdout()
+          .split("\n")
+          .find((line) => line.includes(id8)) ?? "";
+      expect(rowOf("aaaa1111"), cli.stderr()).toContain("handed off from dana-mbp");
+      expect(rowOf("bbbb2222")).not.toBe("");
+      expect(rowOf("bbbb2222")).not.toContain("handed off");
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
   it("prints --json with each field intact: a URL label and an @ in a summary stay theirs", async () => {
     // Redacting the printed document as text took the summary's `a@b.test` for the label URL's
     // userinfo and dropped fields (review 3 of mend#640, R3-4); each string is redacted alone now.
