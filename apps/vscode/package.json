@@ -166,6 +166,14 @@
       {
         "command": "mend.showQuickPick",
         "title": "Mend: Show project sessions"
+      },
+      {
+        "command": "mend.bringMyEditor",
+        "title": "Mend: Bring my editor into this workspace"
+      },
+      {
+        "command": "mend.showWorkspaceEditorLog",
+        "title": "Mend: Show workspace editor log"
       }
     ],
     "menus": {
@@ -266,6 +274,22 @@
           "type": "string",
           "default": "",
           "description": "Optional SSH hostname override for the configured Mend server. Leave empty to use the hostname from mend.serverUrl. The server still supplies the published SSH port."
+        },
+        "mend.workspaces.bringMyEditor": {
+          "type": "string",
+          "enum": [
+            "off",
+            "extensions",
+            "extensionsAndSettings"
+          ],
+          "enumDescriptions": [
+            "Leave Mend workspaces as VS Code makes them.",
+            "Install your local extensions that run in a workspace into each Mend workspace you open.",
+            "Extensions, and your remote machine settings. Machine settings are not in this build yet, so this behaves like extensions."
+          ],
+          "default": "extensionsAndSettings",
+          "scope": "application",
+          "description": "Bring your editor into Mend workspaces: when a Mend workspace window opens in your own home, Mend installs the extensions from your local VS Code that run in a workspace, in the background. Machine settings are not in this build yet. Shared and root homes get nothing."
         }
       }
     }

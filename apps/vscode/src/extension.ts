@@ -44,6 +44,11 @@ import type {
   WorkspaceSshView,
   WorktreeJoin,
 } from "./types.js";
+import {
+  startWorkspaceEditor,
+  windowRemoteAuthority,
+  type WorkspaceEditorReport,
+} from "./workspace-editor.js";
 import { runWorkspaceSshSetup, workspaceSshReadiness } from "./workspace-ssh.js";
 
 const liveStatuses: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
@@ -54,14 +59,6 @@ const PENDING_TAKEOVER_KEY = "mend.pendingTakeover";
 /** New session title: the project, plus the worktree when the session joins one. */
 const newSessionTitle = (project: Project, join: WorktreeJoin | null): string =>
   join === null ? `New session · ${project.name}` : `New session · ${project.name} › ${join.name}`;
-
-/**
- * The remote authority this window runs under, read off its remote workspace folder (the
- * public API exposes only the remote NAME). Undefined in a local window.
- */
-const windowRemoteAuthority = (): string | undefined =>
-  (vscode.workspace.workspaceFolders ?? []).find((folder) => folder.uri.scheme === "vscode-remote")
-    ?.uri.authority;
 
 /**
  * The hand-run half of a takeover: a terminal INSIDE the workspace (in a remote window every
@@ -1344,6 +1341,8 @@ class MendCommands {
  */
 export interface MendExtensionApi {
   readonly projects: () => Promise<ReadonlyArray<ProjectDetail>>;
+  /** The latest "bring my editor" pass in this window, once it settles. */
+  readonly workspaceEditor: () => Promise<WorkspaceEditorReport>;
 }
 
 export function activate(context: vscode.ExtensionContext): MendExtensionApi {
@@ -1432,8 +1431,12 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
 
   void scope.refresh();
   void tree.snapshot();
+  const editor = startWorkspaceEditor(context);
   claimPendingTakeover(context);
-  return { projects: async () => [...(await tree.snapshot()).details.values()] };
+  return {
+    projects: async () => [...(await tree.snapshot()).details.values()],
+    workspaceEditor: () => editor.settled(),
+  };
 }
 
 /**

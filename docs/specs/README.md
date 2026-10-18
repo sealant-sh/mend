@@ -45,9 +45,10 @@ New specs start from [TEMPLATE.md](TEMPLATE.md).
 | [start-time.md](0.36/start-time.md)                                               | Start time                                                    | On main; not yet measured end to end on the box                      |
 | [steering.md](0.36/steering.md)                                                   | Per-user steering: whoever sends a turn pays                  | Partly on main; the per-turn login switch designed                   |
 | [t3code-gateway.md](0.36/t3code-gateway.md)                                       | The T3 Code gateway, phases 0 and 1                           | On main; phases 2-4 planned                                          |
+| [vscode-workspace-editor.md](0.36/vscode-workspace-editor.md)                     | Bring my editor into Mend workspaces (SLNT-78)                | In review: extensions (PR 1); machine settings designed              |
 
-Status is as of 2026-10-05. Each spec's header carries the detail. The per-person homes spec follows
-with ADR 0016 (mend#534).
+Status is as of 2026-10-05, and 2026-10-18 for the VS Code workspace editor. Each spec's header
+carries the detail. The per-person homes spec follows with ADR 0016 (mend#534).
 
 ## After 0.36
 

@@ -12,9 +12,11 @@
  * /api/tty, opens review, and (MEND_E2E_REMOTE_SSH=1, the default) opens the workspace with the
  * real Remote-SSH extension: the owner's own story, in that window. It edits a file, runs a command
  * in the workspace's integrated terminal, forwards a port the workspace serves on its loopback and
- * opens it from this machine; then Mend's terminal into the session reads the edited file and the
- * change review lists it. Last, a second session in a fresh worktree must run: the image is built
- * by then, so that executor is the first with an owner map.
+ * opens it from this machine; Mend installs the seeded local extension that runs in a workspace
+ * there and leaves the seeded theme local; then Mend's terminal into the session reads the edited
+ * file and the change review lists it. Before the editor starts, a session in a fresh worktree must
+ * run: it builds the image, so the editor's workbench session boots with an owner map and
+ * Remote-SSH lands as the person.
  *
  *   MEND_TEST_VERSION=0.36.0-next.656 node scripts/vscode-remote-acceptance.mjs
  *
@@ -27,6 +29,8 @@
  *                       the Electron binary itself, e.g. <install>/lib/vscode/code
  *   MEND_E2E_REMOTE_SSH 0 skips the real Remote-SSH window (step 8)
  *   MEND_E2E_KEEP       1 leaves the server and scratch directory up for inspection
+ *   MEND_E2E_EDITOR     off runs with mend.workspaces.bringMyEditor off (the before/after timing)
+ *   MEND_E2E_EVIDENCE   a directory to copy result.json and the remote window's report into
  *
  * Nothing touches this machine's own Docker daemon but the one Docker-in-Docker container, run from
  * a preloaded docker:27.5.1-dind with the images copied in; on exit it is removed with its storage,
@@ -49,6 +53,10 @@ const sourceUrl = process.env.MEND_E2E_REPO || "https://github.com/octocat/Hello
 const projectName = "st-vscode-remote";
 const remoteSsh = process.env.MEND_E2E_REMOTE_SSH !== "0";
 const keep = process.env.MEND_E2E_KEEP === "1";
+const editorOff = process.env.MEND_E2E_EDITOR === "off";
+const evidenceDir = process.env.MEND_E2E_EVIDENCE;
+const seedWorkspace = "editorconfig.editorconfig";
+const seedUi = "dracula-theme.theme-dracula";
 const runId = `st-vscode-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
 
 const log = (line) => console.log(`[acceptance] ${line}`);
@@ -126,6 +134,40 @@ const cleanup = () => {
   );
   fs.rmSync(scratch, { recursive: true, force: true });
   log("removed the Docker-in-Docker daemon and the scratch HOME");
+};
+
+const runFreshWorktreeSession = async (api, projectId) => {
+  const created = await api(`/projects/${projectId}/sessions`, {
+    method: "POST",
+    body: JSON.stringify({
+      harness: "claude",
+      label: "fresh worktree",
+      base: null,
+      name: `st-fresh-${Date.now().toString(36)}`,
+    }),
+  });
+  const startedAt = Date.now();
+  await api(`/sessions/${created.id}/resume`, {
+    method: "POST",
+    body: JSON.stringify({ harness: "shell" }),
+  });
+  for (;;) {
+    const { session } = await api(`/sessions/${created.id}`);
+    if (session.sealantWorkspaceId && ["running", "idle", "waiting"].includes(session.status))
+      break;
+    if (["failed", "stopped", "completed"].includes(session.status)) {
+      throw new Error(`the fresh worktree's session ended ${session.status} before it ran`);
+    }
+    if (Date.now() - startedAt > 5 * 60_000) {
+      throw new Error("the fresh worktree's session did not run within 5 minutes");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  await api(`/sessions/${created.id}/stop`, { method: "POST", body: "{}" }).catch(() => null);
+  log(
+    `PASS a session in a fresh worktree runs (${((Date.now() - startedAt) / 1000).toFixed(1)} s)`,
+  );
+  return created.id;
 };
 
 const main = async () => {
@@ -317,6 +359,8 @@ const main = async () => {
     `PASS adopted ${sourceUrl} as ${projectName} with a node:26-bookworm workspace base carrying sudo and acl`,
   );
 
+  const freshWorktreeSession = await runFreshWorktreeSession(api, project.id);
+
   // The extension and the suite, bundled inside the extension's folder so the suite shares its
   // `vscode` API object (the dialogs it answers are the extension's).
   sh("pnpm", ["--filter", "mend", "build"], { cwd: repo, stdio: "inherit" });
@@ -352,6 +396,7 @@ const main = async () => {
         // Remote-SSH reads ~/.ssh/config by the passwd home too; the run's HOME is elsewhere.
         "remote.SSH.configFile": path.join(sshDir, "config"),
         "remote.SSH.connectTimeout": 60,
+        ...(editorOff ? { "mend.workspaces.bringMyEditor": "off" } : {}),
       },
       null,
       2,
@@ -394,6 +439,39 @@ const main = async () => {
   if (installed.status !== 0) throw new Error(`Remote-SSH install failed: ${installed.stderr}`);
   log(`Remote-SSH installed: ${lines(installed.stdout).at(-1)}`);
 
+  for (const [id, wantsMain] of [
+    [seedWorkspace, true],
+    [seedUi, false],
+  ]) {
+    const seeded = sh(
+      code,
+      ["--user-data-dir", userData, "--extensions-dir", extensions, "--install-extension", id],
+      { env: vscodeEnv, allowFailure: true, timeout: 300_000 },
+    );
+    if (seeded.status !== 0) throw new Error(`seeding ${id} failed: ${seeded.stderr}`);
+    const folder = fs
+      .readdirSync(extensions)
+      .find((name) => name.toLowerCase().startsWith(`${id}-`));
+    const manifest = folder
+      ? JSON.parse(fs.readFileSync(path.join(extensions, folder, "package.json"), "utf8"))
+      : null;
+    if (manifest === null || (typeof manifest.main === "string") !== wantsMain) {
+      throw new Error(`${id} is no longer the ${wantsMain ? "workspace" : "declarative"} fixture`);
+    }
+    log(`seeded ${folder}`);
+  }
+  const listed = JSON.parse(fs.readFileSync(path.join(extensions, "extensions.json"), "utf8"));
+  const seededEntry = listed.find(
+    (entry) => String(entry?.identifier?.id).toLowerCase() === seedWorkspace,
+  );
+  if (
+    seededEntry?.metadata?.source !== "gallery" ||
+    typeof seededEntry.identifier.uuid !== "string"
+  ) {
+    throw new Error(`${seedWorkspace} is not recorded as installed from the gallery`);
+  }
+  log(`${seedWorkspace} is from the gallery (${seededEntry.identifier.uuid})`);
+
   const resultFile = path.join(scratch, "result.json");
   const testEnv = {
     ...vscodeEnv,
@@ -403,6 +481,11 @@ const main = async () => {
     MEND_E2E_RESULT: resultFile,
     MEND_E2E_RUN_ID: runId,
     MEND_E2E_REMOTE_SSH: remoteSsh ? "1" : "0",
+    MEND_E2E_EDITOR: editorOff ? "off" : "on",
+    MEND_E2E_SEED_WORKSPACE: seedWorkspace,
+    MEND_E2E_SEED_UI: seedUi,
+    MEND_E2E_SEED_UUID: seededEntry.identifier.uuid,
+    MEND_E2E_PRIOR_SESSION: freshWorktreeSession,
   };
   log(`VS Code ${lines(sh(code, ["--version"], { env: vscodeEnv }).stdout)[0]} on ${display}`);
   const exit = await new Promise((resolve) => {
@@ -461,43 +544,6 @@ const main = async () => {
     throw new Error(`the workbench session the suite stopped is ${workbenchStatus}, not stopped`);
   }
   log("PASS the editor suite against the non-loopback server");
-
-  // A second session in a fresh worktree. The suite's first launch came before the custom image
-  // existed, so it ran in the shared layout; this one finds the image built, and its probe says it
-  // can run one user per person, so the executor boots with an owner map. A base without git's
-  // `safe.directory = *` failed here: sealantd's own git refused the worktree it had just given to
-  // the person ("capture materialize failed: /workspace/repo is not a git repository", fixed in
-  // sealant#354).
-  const second = await api(`/projects/${project.id}/sessions`, {
-    method: "POST",
-    body: JSON.stringify({
-      harness: "claude",
-      label: "second worktree",
-      base: null,
-      name: `st-second-${Date.now().toString(36)}`,
-    }),
-  });
-  const startedAt = Date.now();
-  await api(`/sessions/${second.id}/resume`, {
-    method: "POST",
-    body: JSON.stringify({ harness: "shell" }),
-  });
-  for (;;) {
-    const { session } = await api(`/sessions/${second.id}`);
-    if (session.sealantWorkspaceId && ["running", "idle", "waiting"].includes(session.status))
-      break;
-    if (["failed", "stopped", "completed"].includes(session.status)) {
-      throw new Error(`the second worktree's session ended ${session.status} before it ran`);
-    }
-    if (Date.now() - startedAt > 5 * 60_000) {
-      throw new Error("the second worktree's session did not run within 5 minutes");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
-  }
-  await api(`/sessions/${second.id}/stop`, { method: "POST", body: "{}" }).catch(() => null);
-  log(
-    `PASS a second session in a fresh worktree runs (${((Date.now() - startedAt) / 1000).toFixed(1)} s)`,
-  );
 };
 
 try {
@@ -506,5 +552,12 @@ try {
   console.error(`[acceptance] FAIL ${cause instanceof Error ? cause.message : String(cause)}`);
   process.exitCode = 1;
 } finally {
+  if (evidenceDir) {
+    fs.mkdirSync(evidenceDir, { recursive: true });
+    for (const name of ["result.json", "result.json.remote.json"]) {
+      const from = path.join(scratch, name);
+      if (fs.existsSync(from)) fs.copyFileSync(from, path.join(evidenceDir, name));
+    }
+  }
   cleanup();
 }

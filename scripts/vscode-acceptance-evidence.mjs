@@ -18,7 +18,7 @@ export function assertEditorEvidence(result, { runId, remoteSsh }) {
     "terminal",
     "review",
     "stopped",
-    ...(remoteSsh ? ["remoteSsh", "sessionSeesEdit"] : []),
+    ...(remoteSsh ? ["remoteSsh", "remoteEditor", "sessionSeesEdit"] : []),
   ]) {
     assert.ok(result[step] && typeof result[step] === "object", `Missing editor step: ${step}`);
   }
