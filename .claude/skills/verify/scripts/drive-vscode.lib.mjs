@@ -208,7 +208,3 @@ export const stepLog = (file, secrets) => {
     },
   };
 };
-
-/** The one-line summary a step prints: what was done, what was seen, how long it took. */
-export const stepSummary = ({ n, name, via, observed, ms, error }) =>
-  `step ${n} · ${name}${via === "dom" ? "" : ` · via ${via}`} · ${error === undefined ? observed : `FAILED · ${error}`} · ${ms} ms`;
