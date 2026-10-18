@@ -68,8 +68,11 @@ pass's results and evidence paths, and its corrections are in these files.
 - Mobile steps run the Expo app on the web (`pnpm --filter @mend/mobile web`) in Playwright at a
   390x844 viewport, and use ARIA roles and names as on the web. Native-only behavior (keychain,
   camera, push) is reported unreachable on the web build.
-- VS Code and Slack steps are `not drivable yet`: their files list entry points and observable end
-  states only, and say why.
+- VS Code steps run in a real VS Code through the skill's `drive-vscode.mjs` (SKILL.md, Drive):
+  gestures on the workbench DOM over CDP, written as its helper calls
+  (`palette("Mend: New Session…")`, `treeItem(label).dblclick()`), with numbered screenshots and a
+  step log as evidence. Slack steps are `not drivable yet`: that file lists entry points and
+  observable end states only, and says why.
 - Web sign-in goes through `/login`: the textbox `Email`, the password field labelled `Password`,
   and the button `Sign in`. Sign-in calls outside a browser must carry an `Origin` header naming the
   instance's own origin: the auth layer rejects requests from origins outside its trusted list
@@ -107,7 +110,8 @@ then uses exactly four H2 sections, in this order.
    desktop, mobile, VS Code and Slack.
 3. `Driving it with verify` starts with `Preconditions:` and uses labelled bullets that pair each
    user action with an exact Playwright call, `mend` command or tmux key and the result a user can
-   observe. VS Code and Slack steps are marked `not drivable yet`, with the reason.
+   observe. VS Code steps are written as `drive-vscode.mjs` helper calls; Slack steps are marked
+   `not drivable yet`, with the reason.
 4. `Gotchas` lists traps that can waste or invalidate a run, and every control the recipe needs that
    has no stable accessible name.
 
@@ -211,7 +215,7 @@ Totals: 58 features, 51 mapped, 7 not mapped.
 | ----------- | -------------------------------- | -------------------- | ------------------------------------------ |
 | desktop-app | [desktop.md](./desktop.md)       | desktop              | mapped                                     |
 | mobile-app  | [mobile.md](./mobile.md)         | mobile               | mapped                                     |
-| vscode      | [vscode.md](./vscode.md)         | VS Code              | mapped; drive steps not drivable yet       |
+| vscode      | [vscode.md](./vscode.md)         | VS Code              | mapped; driven by drive-vscode.mjs         |
 | slack       | [slack.md](./slack.md)           | Slack, web           | mapped; Slack drive steps not drivable yet |
 | t3-gateway  | [t3-gateway.md](./t3-gateway.md) | t3code clients, HTTP | mapped                                     |
 
