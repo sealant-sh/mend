@@ -362,7 +362,8 @@ a capture.
 | `MEND_BUDGET_ACCOUNT_LIVE_SESSIONS`            | `24`       | Unsettled sessions one account holds.                                                                                 |
 | `MEND_BUDGET_ORGANIZATION_LIVE_SESSIONS`       | `120`      | Unsettled sessions one organization holds.                                                                            |
 | `MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT`       | `4`        | Launches one account has starting at once.                                                                            |
-| `MEND_BUDGET_BUNDLE_BYTES`                     | `67108864` | One `mend pull` bundle. A larger one is refused with 413 and its size.                                                |
+| `MEND_BUDGET_BUNDLE_BYTES`                     | `67108864` | One git bundle: a `mend pull` answer, refused with its size, or a `mend handoff` body, refused unread.                |
+| `MEND_BUDGET_HANDOFF_FILE_BYTES`               | `8388608`  | One file `mend handoff` carries. The CLI names a larger file and leaves it in the checkout.                           |
 | `MEND_BUDGET_ACCOUNT_ORIGIN_CHECKS_PER_MINUTE` | `30`       | Fetches of origin's branch one account asks for ("Check origin").                                                     |
 | `MEND_BUDGET_ACCOUNT_EVENT_STREAMS`            | `12`       | Open event streams for one account (one per browser tab or client).                                                   |
 | `MEND_BUDGET_ACCOUNT_TERMINALS`                | `24`       | Open terminal sockets for one account.                                                                                |

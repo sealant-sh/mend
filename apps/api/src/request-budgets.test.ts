@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage } from "node:http";
 
 import { NodeHttpServer } from "@effect/platform-node";
 import { cliAuthGroup, AuthMiddleware, Unauthorized } from "@mend/api-contracts";
@@ -18,9 +18,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_BUDGET_LIMITS, makeBudgets, type BudgetLimits } from "./budgets.ts";
 import { apiMiddleware } from "./http-middleware.ts";
 import {
+  bodyBudgetFor,
   boundedWebRequest,
   isSignInAttempt,
-  isUploadRoute,
   presentedCredentials,
   requestBudgets,
 } from "./request-budgets.ts";
@@ -124,9 +124,10 @@ const serveOverSocket = async (
   const api = serve(limits, trustedProxies);
   const server = createServer();
   const runtime = ManagedRuntime.make(
-    HttpRouter.serve(api.budgeted, { disableLogger: true, disableListenLog: true }).pipe(
-      Layer.provide(NodeHttpServer.layer(() => server, { port: 0, host: "127.0.0.1" })),
-    ),
+    HttpRouter.serve(api.budgeted, {
+      disableLogger: true,
+      disableListenLog: true,
+    }).pipe(Layer.provide(NodeHttpServer.layer(() => server, { port: 0, host: "127.0.0.1" }))),
   );
   await runtime.runPromise(Effect.void);
   disposers.push(() => runtime.dispose());
@@ -136,6 +137,35 @@ const serveOverSocket = async (
     ...api,
     send: (path: string, init: RequestInit = {}) =>
       fetch(`http://127.0.0.1:${address.port}${path}`, init),
+    /**
+     * A POST that declares `length` bytes and sends none of them: what the server answers before
+     * reading a body it will refuse. `fetch` cannot declare a length it does not send.
+     */
+    declare: (path: string, length: number) =>
+      new Promise<{ readonly status: number; readonly body: unknown }>((resolve, reject) => {
+        const outgoing = httpRequest(
+          {
+            host: "127.0.0.1",
+            port: address.port,
+            path,
+            method: "POST",
+            headers: { "content-length": String(length) },
+          },
+          (incoming: IncomingMessage) => {
+            const chunks: Array<Buffer> = [];
+            incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+            incoming.on("end", () => {
+              resolve({
+                status: incoming.statusCode ?? 0,
+                body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+              });
+              outgoing.destroy();
+            });
+          },
+        );
+        outgoing.on("error", reject);
+        outgoing.flushHeaders();
+      }),
   };
 };
 
@@ -154,7 +184,10 @@ const chunked = (body = "x".repeat(64)) =>
 describe("bodies are bounded before they are decoded", () => {
   it("refuses a declared length over the limit with 413, unread", async () => {
     const api = await serveOverSocket({ bodyBytes: 16 });
-    const response = await api.send("/api/projects", { method: "POST", body: "x".repeat(17) });
+    const response = await api.send("/api/projects", {
+      method: "POST",
+      body: "x".repeat(17),
+    });
     expect(response.status).toBe(413);
     expect(await response.json()).toMatchObject({
       _tag: "BudgetExceeded",
@@ -180,7 +213,10 @@ describe("bodies are bounded before they are decoded", () => {
     expect(api.failures).toMatchObject([
       {
         _tag: "HttpServerError",
-        reason: { _tag: "RequestParseError", cause: new Error("maxBytes exceeded") },
+        reason: {
+          _tag: "RequestParseError",
+          cause: new Error("maxBytes exceeded"),
+        },
       },
     ]);
     const small = await api.send("/api/projects", {
@@ -197,7 +233,11 @@ describe("bodies are bounded before they are decoded", () => {
 
   it.each([
     { route: "/api/mounted/read", budget: "bodyBytes", limit: 16 },
-    { route: "/api/sessions/stream/images", budget: "uploadBodyBytes", limit: 32 },
+    {
+      route: "/api/sessions/stream/images",
+      budget: "uploadBodyBytes",
+      limit: 32,
+    },
   ])(
     "cuts streamed $route past its $budget and admits its exact byte boundary",
     async ({ route, limit }) => {
@@ -344,7 +384,10 @@ describe("bodies are bounded before they are decoded", () => {
   });
 
   it("holds a web-Request handler (the sign-in mount) to the same limit", async () => {
-    const api = await serveOverSocket({ bodyBytes: 16, signInAttemptsPerMinute: 0 });
+    const api = await serveOverSocket({
+      bodyBytes: 16,
+      signInAttemptsPerMinute: 0,
+    });
     await expectCut(
       api.send("/api/auth/sign-in/email", {
         method: "POST",
@@ -354,35 +397,104 @@ describe("bodies are bounded before they are decoded", () => {
       }),
     );
     expect(api.bodies).toEqual([]);
-    const small = await api.send("/api/auth/sign-in/email", { method: "POST", body: "{}" });
+    const small = await api.send("/api/auth/sign-in/email", {
+      method: "POST",
+      body: "{}",
+    });
     expect(small.status).toBe(200);
     expect(api.bodies).toEqual([2]);
   });
 
-  it("gives the upload routes their own, larger limit and nothing else", async () => {
-    const api = await serveOverSocket({ bodyBytes: 16, uploadBodyBytes: 64 });
+  it("holds each route to its own body budget: plain, upload, bundle", async () => {
+    const api = await serveOverSocket({
+      bodyBytes: 16,
+      uploadBodyBytes: 64,
+      bundleBytes: 128,
+    });
     const body = "x".repeat(40);
-    const upload = await api.send("/api/sessions/s1/images", { method: "POST", body });
+    const upload = await api.send("/api/sessions/s1/images", {
+      method: "POST",
+      body,
+    });
     expect(upload.status).toBe(200);
-    const plain = await api.send("/api/sessions/s1/turns", { method: "POST", body });
+    const plain = await api.send("/api/sessions/s1/turns", {
+      method: "POST",
+      body,
+    });
     expect(plain.status).toBe(413);
     const tooLarge = await api.send("/api/sessions/s1/images", {
       method: "POST",
       body: "x".repeat(65),
     });
     expect(tooLarge.status).toBe(413);
-    expect(await tooLarge.json()).toMatchObject({ budget: "uploadBodyBytes", limit: 64 });
+    expect(await tooLarge.json()).toMatchObject({
+      budget: "uploadBodyBytes",
+      limit: 64,
+    });
+    const bundle = await api.send("/api/projects/p1/handoffs", {
+      method: "POST",
+      body: "x".repeat(100),
+    });
+    expect(bundle.status).toBe(200);
+    const bundleTooLarge = await api.send("/api/projects/p1/handoffs", {
+      method: "POST",
+      body: "x".repeat(129),
+    });
+    expect(bundleTooLarge.status).toBe(413);
+    expect(await bundleTooLarge.json()).toMatchObject({
+      budget: "bundleBytes",
+      limit: 128,
+    });
   });
 
-  it("names the upload routes exactly", () => {
-    expect(isUploadRoute("POST", "/api/skills/sync")).toBe(true);
-    expect(isUploadRoute("POST", "/api//Skills/sync")).toBe(true);
-    expect(isUploadRoute("POST", "/api/organization/folders/f1/files")).toBe(true);
-    expect(isUploadRoute("POST", "/api/dotfiles/snapshot")).toBe(true);
-    expect(isUploadRoute("PUT", "/api/projects/p1/workspace-image")).toBe(true);
-    expect(isUploadRoute("GET", "/api/skills/sync")).toBe(false);
-    expect(isUploadRoute("POST", "/api/skills/sync/extra")).toBe(false);
-    expect(isUploadRoute("POST", "/api/sessions/s1/images/../turns")).toBe(false);
+  it("at the shipped limits, takes a 30 MiB handoff and refuses 64 MiB + 1 unread, while a file route stops at 24 MiB and a plain route at 1 MiB", async () => {
+    const MiB = 1024 * 1024;
+    const api = await serveOverSocket({});
+    const handoff = await api.send("/api/projects/p1/handoffs", {
+      method: "POST",
+      body: new Uint8Array(30 * MiB),
+    });
+    expect(handoff.status).toBe(200);
+    expect(api.bodies).toEqual([30 * MiB]);
+    expect(await api.declare("/api/projects/p1/handoffs", 64 * MiB + 1)).toEqual({
+      status: 413,
+      body: {
+        _tag: "BudgetExceeded",
+        budget: "bundleBytes",
+        limit: 64 * MiB,
+        retryAfterSeconds: null,
+        message: "budget reached · 67108864 bytes in one git bundle · nothing running was stopped",
+      },
+    });
+    expect(await api.declare("/api/sessions/s1/images", 24 * MiB + 1)).toMatchObject({
+      status: 413,
+      body: { budget: "uploadBodyBytes", limit: 24 * MiB },
+    });
+    const image = await api.send("/api/sessions/s1/images", {
+      method: "POST",
+      body: new Uint8Array(24 * MiB),
+    });
+    expect(image.status).toBe(200);
+    expect(await api.declare("/api/sessions/s1/turns", MiB + 1)).toMatchObject({
+      status: 413,
+      body: { budget: "bodyBytes", limit: MiB },
+    });
+    expect(api.reached).toEqual(["POST /api/projects/p1/handoffs", "POST /api/sessions/s1/images"]);
+    expect(api.bodies).toEqual([30 * MiB, 24 * MiB]);
+  });
+
+  it("names the body routes and their budgets exactly", () => {
+    expect(bodyBudgetFor("POST", "/api/skills/sync")).toBe("uploadBodyBytes");
+    expect(bodyBudgetFor("POST", "/api//Skills/sync")).toBe("uploadBodyBytes");
+    expect(bodyBudgetFor("POST", "/api/organization/folders/f1/files")).toBe("uploadBodyBytes");
+    expect(bodyBudgetFor("POST", "/api/dotfiles/snapshot")).toBe("uploadBodyBytes");
+    expect(bodyBudgetFor("PUT", "/api/projects/p1/workspace-image")).toBe("uploadBodyBytes");
+    expect(bodyBudgetFor("POST", "/api/projects/p1/handoffs")).toBe("bundleBytes");
+    expect(bodyBudgetFor("POST", "/api/projects/p1/Handoffs/")).toBe("bodyBytes");
+    expect(bodyBudgetFor("GET", "/api/projects/p1/handoffs")).toBe("bodyBytes");
+    expect(bodyBudgetFor("GET", "/api/skills/sync")).toBe("bodyBytes");
+    expect(bodyBudgetFor("POST", "/api/skills/sync/extra")).toBe("bodyBytes");
+    expect(bodyBudgetFor("POST", "/api/sessions/s1/images/../turns")).toBe("bodyBytes");
   });
 });
 
@@ -405,9 +517,14 @@ describe("requests are counted per address and per credential", () => {
   });
 
   it("counts a credential by what was presented, valid or not, and never holds it", async () => {
-    const api = serve({ credentialRequestsPerMinute: 1, addressRequestsPerMinute: 100 });
+    const api = serve({
+      credentialRequestsPerMinute: 1,
+      addressRequestsPerMinute: 100,
+    });
     const as = (token: string) =>
-      api.send("/api/projects", { headers: { authorization: `Bearer ${token}` } });
+      api.send("/api/projects", {
+        headers: { authorization: `Bearer ${token}` },
+      });
     expect((await as("mdt_a")).status).toBe(200);
     expect((await as("mdt_a")).status).toBe(429);
     expect((await as("mdt_b")).status).toBe(200);
@@ -417,12 +534,17 @@ describe("requests are counted per address and per credential", () => {
   });
 
   it("gives sign-in attempts a tighter window of their own", async () => {
-    const api = serve({ signInAttemptsPerMinute: 1, addressRequestsPerMinute: 100 });
+    const api = serve({
+      signInAttemptsPerMinute: 1,
+      addressRequestsPerMinute: 100,
+    });
     const signIn = () => api.send("/api/auth/sign-in/email", { method: "POST", body: "{}" });
     expect((await signIn()).status).toBe(200);
     const refused = await signIn();
     expect(refused.status).toBe(429);
-    expect(await refused.json()).toMatchObject({ budget: "signInAttemptsPerMinute" });
+    expect(await refused.json()).toMatchObject({
+      budget: "signInAttemptsPerMinute",
+    });
     // Page loads from the same address are a different allowance.
     expect((await api.send("/api/health")).status).toBe(200);
     expect(isSignInAttempt("POST", "/api/invitations/preview")).toBe(true);
@@ -432,10 +554,16 @@ describe("requests are counted per address and per credential", () => {
   });
 
   it("counts the session cookie's value, not the header a client can pad", async () => {
-    const api = serve({ credentialRequestsPerMinute: 1, addressRequestsPerMinute: 100 });
+    const api = serve({
+      credentialRequestsPerMinute: 1,
+      addressRequestsPerMinute: 100,
+    });
     const withCookie = (cookie: string, authorization?: string) =>
       api.send("/api/projects", {
-        headers: { cookie, ...(authorization === undefined ? {} : { authorization }) },
+        headers: {
+          cookie,
+          ...(authorization === undefined ? {} : { authorization }),
+        },
       });
     expect((await withCookie("__Secure-better-auth.session_token=abc")).status).toBe(200);
     expect((await withCookie("__Secure-better-auth.session_token=abc; pad=1")).status).toBe(429);
@@ -443,7 +571,10 @@ describe("requests are counted per address and per credential", () => {
     expect((await withCookie("better-auth.session_token=abc", "Bearer junk-1")).status).toBe(429);
     expect(presentedCredentials({ cookie: "theme=dark; other=1" })).toEqual([]);
     expect(
-      presentedCredentials({ authorization: "Bearer t", cookie: "a=1; x.session_token=v" }),
+      presentedCredentials({
+        authorization: "Bearer t",
+        cookie: "a=1; x.session_token=v",
+      }),
     ).toEqual(["Bearer t", "v"]);
   });
 
@@ -458,13 +589,21 @@ describe("requests are counted per address and per credential", () => {
     expect(await accepted.text()).toBe("invitation handler");
     expect(api.invitations).toEqual([path]);
     expect(api.reached).toEqual([]);
-    const canonical = await api.send("/api/invitations/abc/accept", { method: "POST" });
+    const canonical = await api.send("/api/invitations/abc/accept", {
+      method: "POST",
+    });
     expect(canonical.status).toBe(429);
-    expect(await canonical.json()).toMatchObject({ budget: "signInAttemptsPerMinute", limit: 1 });
+    expect(await canonical.json()).toMatchObject({
+      budget: "signInAttemptsPerMinute",
+      limit: 1,
+    });
     const refused = await api.send(path, { method: "POST" });
     expect(refused.status).toBe(429);
     expect(refused.headers.get("retry-after")).toBe("60");
-    expect(await refused.json()).toMatchObject({ budget: "signInAttemptsPerMinute", limit: 1 });
+    expect(await refused.json()).toMatchObject({
+      budget: "signInAttemptsPerMinute",
+      limit: 1,
+    });
     expect(api.invitations).toEqual([path]);
     api.advance(60_000);
     expect((await api.send(path, { method: "POST" })).status).toBe(200);

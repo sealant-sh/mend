@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { HANDOFF_FILE_BYTES_DEFAULT } from "@mend/domain/workbench";
 import { makeWindowLimiter, type WindowLimiter } from "@mend/network";
 import { Config, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -29,8 +30,13 @@ export interface BudgetLimits {
   readonly organizationLiveSessions: number;
   /** Launches one account may have starting at once. */
   readonly accountLaunchesInFlight: number;
-  /** Largest `mend pull` bundle a change answers with, refused with its size above it. */
+  /**
+   * Largest git bundle in either direction: a `mend pull` answer, refused with its size above
+   * it, and a `mend handoff` body, refused unread above it.
+   */
   readonly bundleBytes: number;
+  /** Largest file `mend handoff` carries; the CLI names a larger one and leaves it behind. */
+  readonly handoffFileBytes: number;
   /** Fetches of origin's branch one account asks for per minute ("Check origin"). */
   readonly accountOriginChecksPerMinute: number;
   /** Open long-lived connections one account may hold, by kind. */
@@ -54,6 +60,7 @@ export const DEFAULT_BUDGET_LIMITS: BudgetLimits = {
   organizationLiveSessions: 120,
   accountLaunchesInFlight: 4,
   bundleBytes: 64 * 1024 * 1024,
+  handoffFileBytes: HANDOFF_FILE_BYTES_DEFAULT,
   accountOriginChecksPerMinute: 30,
   accountEventStreams: 12,
   accountTerminals: 24,
@@ -72,6 +79,7 @@ const ENV: Readonly<Record<BudgetName, string>> = {
   organizationLiveSessions: "MEND_BUDGET_ORGANIZATION_LIVE_SESSIONS",
   accountLaunchesInFlight: "MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT",
   bundleBytes: "MEND_BUDGET_BUNDLE_BYTES",
+  handoffFileBytes: "MEND_BUDGET_HANDOFF_FILE_BYTES",
   accountOriginChecksPerMinute: "MEND_BUDGET_ACCOUNT_ORIGIN_CHECKS_PER_MINUTE",
   accountEventStreams: "MEND_BUDGET_ACCOUNT_EVENT_STREAMS",
   accountTerminals: "MEND_BUDGET_ACCOUNT_TERMINALS",
@@ -91,7 +99,8 @@ const WORDS: Readonly<Record<BudgetName, string>> = {
   accountLiveSessions: "unsettled sessions for one account",
   organizationLiveSessions: "unsettled sessions for one organization",
   accountLaunchesInFlight: "launches starting at once for one account",
-  bundleBytes: "bytes in one change bundle",
+  bundleBytes: "bytes in one git bundle",
+  handoffFileBytes: "bytes in one handed-off file",
   accountOriginChecksPerMinute: "fetches of origin per minute for one account",
   accountEventStreams: "open event streams for one account",
   accountTerminals: "open terminals for one account",
@@ -176,6 +185,7 @@ export const budgetLimitsConfig = Config.all({
   organizationLiveSessions: limit("organizationLiveSessions"),
   accountLaunchesInFlight: limit("accountLaunchesInFlight"),
   bundleBytes: limit("bundleBytes"),
+  handoffFileBytes: limit("handoffFileBytes"),
   accountOriginChecksPerMinute: limit("accountOriginChecksPerMinute"),
   accountEventStreams: limit("accountEventStreams"),
   accountTerminals: limit("accountTerminals"),
@@ -189,7 +199,9 @@ export const BudgetsLive: Layer.Layer<Budgets, Config.ConfigError> = Layer.effec
     const limits = yield* budgetLimitsConfig;
     const off = budgetsOff(limits);
     yield* Effect.logInfo("budgets").pipe(
-      Effect.annotateLogs({ off: off.length === 0 ? "none" : off.map(budgetEnvName).join(",") }),
+      Effect.annotateLogs({
+        off: off.length === 0 ? "none" : off.map(budgetEnvName).join(","),
+      }),
     );
     return makeBudgets(limits);
   }),
