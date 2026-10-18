@@ -34,6 +34,7 @@ export default defineConfig({
             { label: "How Mend handles your logins", slug: "concepts/provider-logins" },
             { label: "Adopt a project", slug: "getting-started/adopt-project" },
             { label: "Start a session", slug: "getting-started/first-session" },
+            { label: "Hand off local work", slug: "guides/hand-off-local-work" },
           ],
         },
         {

@@ -466,6 +466,51 @@ committed on it, or the server no longer holds the last pull) is left as it is, 
 why; `--branch <name>` fetches into a new local branch instead. A bundle over the server's
 `MEND_BUDGET_BUNDLE_BYTES` limit is refused with its size.
 
+## Handoff command
+
+```text
+mend handoff ["prompt"] [--with <harness>] [--project <name>] [--yes]
+```
+
+`mend handoff` copies the branch in the current checkout into a new session: the commits ahead of
+the merge base with the project's default branch, the staged files, the unstaged files and the
+untracked files. The checkout is not written to. Git runs against copies of `HEAD` and the index,
+and every object it writes goes to a scratch repository, so no file, index, ref or object of the
+checkout changes. With a prompt, the session's agent (`--with`, default `claude`) starts on it and
+the command returns without attaching; when the agent does not start, the CLI says the prompt was
+not sent and names `mend resume`. Without one, Mend holds the workspace with no agent, and the CLI
+prints the session's status as the server answered it.
+
+```text
+✓ project newsroom-api · main · from origin
+✓ fix/login · 2 commits ahead of main · 3 uncommitted files · 1 untracked
+  stays here · gitignored files and .env files: .env.local
+  left out · assets/demo.mov · 212 MiB, over the 8 MiB file limit
+  bundling 2 commits · 4 files → uploading 1.2 MiB → creating worktree
+✓ handed off as fix-login · your checkout is unchanged · as of 10:42:05
+  base main 3e73da3 · session 3f2a1c0d
+✓ running · claude on your prompt
+  attach · mend attach 3f2a1c0d
+  watch · http://localhost:3105/sessions/3f2a1c0d-…
+```
+
+Gitignored files and `.env*` files stay in the checkout, and the CLI names the `.env*` files. Files
+over the server's per-file limit (`MEND_BUDGET_HANDOFF_FILE_BYTES`, 8 MiB by default) and files with
+a git `filter` attribute, such as Git LFS files, stay too, each named. In the session each of them
+is at its `HEAD` version, so review shows no change for it. A `.env*` file that a commit ahead added
+or changed travels in that commit, and the CLI names it with the commit
+(`travels in a commit · .env.local (1a2b3c4)`).
+
+The merge base is taken against `origin/<default branch>` as the checkout last fetched it. The CLI
+never fetches; when that ref is missing it refuses and names `git fetch origin`. The checkout's
+`origin` must be the project's origin, compared by host and path, and `--project` does not skip the
+check. When no adopted project matches, the CLI asks to adopt `origin` first; `--yes` answers yes,
+and without a terminal the command refuses unless `--yes` is given. A bundle over the server's
+`MEND_BUDGET_BUNDLE_BYTES` limit is refused before it is sent, with its size. A connection that ends
+without an answer, or a proxy's 502, 503 or 504, sends the same bundle again, twice at most. A
+server older than handoffs is named with its version, and nothing is created. Read
+[Hand off local work](/guides/hand-off-local-work/).
+
 ## Dashboard keys
 
 The session pane takes three quarters of the screen: a read-only detail of the selected session with
