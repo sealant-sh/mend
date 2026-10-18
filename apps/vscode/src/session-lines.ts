@@ -149,13 +149,21 @@ const LIVE_STATUSES: ReadonlySet<string> = new Set(["starting", "running", "wait
 
 /**
  * Whether rows the extension already holds have anything per-person to say: someone live in an
- * executor, or a retirement under way. Only then is the viewer (`GET /organization`) worth a
- * request; with per-person homes off the server lists nobody and no retirement.
+ * executor, a retirement under way, or who launched the workspace (a row offers Open only to its
+ * launcher). Only then is the viewer (`GET /organization`) worth a request; with per-person homes
+ * off and no executor running the server says none of it.
  */
 export const hasPersonFacts = (
-  sessions: ReadonlyArray<Pick<Session, "livePeople" | "workspaceRetirement">>,
+  sessions: ReadonlyArray<
+    Pick<Session, "livePeople" | "workspaceRetirement" | "workspaceLauncherUserId">
+  >,
 ): boolean =>
-  sessions.some((session) => session.livePeople.length > 0 || session.workspaceRetirement !== null);
+  sessions.some(
+    (session) =>
+      session.livePeople.length > 0 ||
+      session.workspaceRetirement !== null ||
+      session.workspaceLauncherUserId !== null,
+  );
 
 /** Whether any session of the worktree lists someone live: the join line then needs the viewer. */
 export const worktreeListsPeople = (
@@ -262,7 +270,14 @@ export const joinLineOf = async (
  * to name a retirement's launcher. With per-person homes off, no request at all.
  */
 export const liveSessionLines = async (
-  session: Pick<Session, "id" | "livePeople" | "sharedControlEnabledAt" | "workspaceRetirement">,
+  session: Pick<
+    Session,
+    | "id"
+    | "livePeople"
+    | "sharedControlEnabledAt"
+    | "workspaceRetirement"
+    | "workspaceLauncherUserId"
+  >,
   client: WorkspaceLineReads,
 ): Promise<ReadonlyArray<string>> => {
   if (!hasPersonFacts([session])) return [];

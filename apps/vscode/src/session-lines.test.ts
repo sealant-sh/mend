@@ -251,6 +251,12 @@ describe("with per-person homes off, no request beyond the project view", () => 
     expect(retiring.asked).toContain("/organization");
   });
 
+  it("asks who reads them once a row says who launched its workspace", async () => {
+    const launched = reading([session({ workspaceLauncherUserId: "anna" })]);
+    expect((await readProjects(launched)).viewer).toBe("bob");
+    expect(launched.asked).toEqual(["/projects", "/projects/p1", "/organization"]);
+  });
+
   it("says a live session's lines without a request", async () => {
     const client = countingClient();
     expect(await liveSessionLines(session(), client)).toEqual([]);
