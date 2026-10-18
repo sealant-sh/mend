@@ -210,12 +210,16 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     Workbench session (the as-built recipe, 2026-10-18, extension at main `ed9f782aa`, four runs): 0
     windows, 0 modal dialogs, 0 toasts, and one quick pick `<label> is running` left open, offering
     `Open alongside` and `Take over in the editor`. Whether a second open runs is what `opens`
-    answers; the source's trace says the open ran twice and the second run's quick pick replaced the
-    first's (`docs/specs/vscode-extension-redesign.md`, Divergences, items 1 and 2), and the DOM
-    shows one pick, since VS Code reuses the widget. A session with no live agent process opens
-    without a pick; the recipe does not drive that case. The story expects nothing to happen.
+    answers. Run `trunk2` (2026-10-19, extension at `1a7196046`, the #1080 head): the start's window
+    `opens 0 → 1` (the signal's check), then the double-click `opens 1 → 1`, 0 windows, the pick
+    shown once and left open, while `sshTargetLookups 4 → 5` (the start window's teardown, not an
+    open). No open ran before an answer. The source's trace says the open ran twice and the second
+    run's quick pick replaced the first's (`docs/specs/vscode-extension-redesign.md`, Divergences,
+    items 1 and 2); the DOM shows one pick, since VS Code reuses the widget. A session with no live
+    agent process opens without a pick; the recipe does not drive that case. The story expects
+    nothing to happen.
   - The answer. `quickInput.pick("Open alongside")`, then `newWindows(<recorded>)`. Observed: 1
-    window, the quick pick closed. Close it with `closeWindow(page)`.
+    window, the quick pick closed, `opens 1 → 2` (run `trunk2`). Close it with `closeWindow(page)`.
   - The open. Record `windows()`, then `treeItem(<label>).inline("Mend: Open in VS Code")`,
     `quickInput.waitFor()` (the same `<label> is running` pick on a Workbench session),
     `quickInput.pick("Open alongside")` and `newWindows(<recorded>)`. The story follows
