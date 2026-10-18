@@ -27,7 +27,7 @@ no published build: it runs from source.
 - `desktop-conversation` shows a protocol-mode session as a conversation: send, interrupt,
   approvals, questions.
 - `desktop-replay` replays an ended session's record with a checkpoint scrubber and a terminal or
-  conversation toggle; offers resume and the handoff between modes.
+  conversation toggle; offers resume and the switch between modes.
 - `desktop-review` opens the pinned review in the app (`#/review/<change>/<slice>`): files, toolbar,
   comments, follow-up delivery, `New snapshot`.
 - `desktop-land` opens the Land sheet from the session header, the landing strip, or Review.
@@ -252,9 +252,9 @@ Preconditions:
   `Open a shell`) appears in the tree and never in the inbox or the palette.
 - The tree's `delete` button on a settled row is named `delete`; its `title`
   (`Delete session — the worktree remains`) is not its name. It and the header's `delete`, the
-  inbox's `Delete session`, closing a live shell tab with `×`, and a live handoff all ask through
-  `window.confirm`, a native dialog in Electron. Prefer the context menus, whose destructive items
-  confirm in place (`Stop shell` → `Stop the process group?`).
+  inbox's `Delete session`, closing a live shell tab with `×`, and a live mode switch all ask
+  through `window.confirm`, a native dialog in Electron. Prefer the context menus, whose destructive
+  items confirm in place (`Stop shell` → `Stop the process group?`).
 - The shell header's `rename` calls `window.prompt` (`components/terminal-pane.tsx:487`). Electron
   does not implement `window.prompt`; check whether any dialog appears before relying on it, and
   report it as a finding if none does.

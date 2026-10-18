@@ -77,7 +77,7 @@ automated or recorded acceptance check, and a released version. Until all three 
 ### Product language
 
 - Use `project`, `session`, `change`, `checkpoint`, `context pack`, `context snapshot`, and
-  `handoff` as defined by `MEND-AGENT-WORKBENCH-PLAN.md` sections 5 and 16.
+  `session summary` as defined by `MEND-AGENT-WORKBENCH-PLAN.md` sections 5 and 16.
 - Define a session as one supervised conversation and worktree with a durable record. Agent, shell,
   and Service processes belong to that session but are not sessions themselves.
 - Use Sealant's nouns `workspace`, `run`, and `harness` only at the platform boundary.
@@ -193,7 +193,7 @@ because ordering and status-sensitive page names are part of the public route co
 
 - `apps/docs/src/content/docs/concepts/product-model.md` at `/concepts/product-model/` is **[Mixed]
   Product model**, defining shipped projects, sessions, processes, changes, and checkpoints before a
-  labeled planned section for context packs, snapshots, handoffs, and publication.
+  labeled planned section for context packs, snapshots, session summaries, and publication.
 - `apps/docs/src/content/docs/concepts/evidence-and-inference.md` at
   `/concepts/evidence-and-inference/` is **[Mixed] Evidence and inference**, explaining records,
   observed facts, honest attribution, current evidence-linked review output, and the planned full
@@ -401,7 +401,7 @@ because ordering and status-sensitive page names are part of the public route co
 | `apps/docs/src/content/docs/index.md`                         | Rewrite around the verified feature-status table and retain the existing route.          | Every capability is labeled Shipped, Implemented but unreleased, or Planned and links to a task or status page.                                        |
 | `apps/docs/src/content/docs/getting-started/install.md`       | Expand into the tested install procedure and retain the existing route.                  | It includes `git`, running Docker access, Compose 2.23.1 or newer, x64 and arm64, security boundary, health checks, and a non-piped inspection option. |
 | `apps/docs/src/content/docs/getting-started/first-session.md` | Correct explicit adoption and session cardinality, then expand attach, stop, and resume. | A clean machine follows `mend adopt` before launch and completes the documented session path.                                                          |
-| `apps/docs/src/content/docs/concepts/product-model.md`        | Split shipped and planned nouns while retaining the existing route.                      | Context packs, snapshots, handoffs, issue and pull request references, and publication are visibly Planned until their evidence gates pass.            |
+| `apps/docs/src/content/docs/concepts/product-model.md`        | Split shipped and planned nouns while retaining the existing route.                      | Context packs, snapshots, session summaries, issue and pull request references, and publication are visibly Planned until their evidence gates pass.   |
 | `apps/docs/src/content/docs/reference/product-language.md`    | Add availability to each noun and retain the existing route.                             | Current nouns match `MEND-AGENT-WORKBENCH-PLAN.md`, process is not equated with session, and unsupported legacy terms appear only in a prohibition.    |
 
 ## Backlog
@@ -497,9 +497,9 @@ performs these checks:
 4. Reject current product pages containing legacy workflow terms, with allowlists limited to
    `docs/archive/**`, historical decision context, and the prohibition in
    `/reference/product-language/`.
-5. Reject unqualified planned claims for context packs, context snapshots, handoffs, publication,
-   side-by-side review, live-TUI follow-up, published native mobile, account isolation, scoped
-   devices, control auditing, automatic listener discovery, or path-proxy Services.
+5. Reject unqualified planned claims for context packs, context snapshots, session summaries,
+   publication, side-by-side review, live-TUI follow-up, published native mobile, account isolation,
+   scoped devices, control auditing, automatic listener discovery, or path-proxy Services.
 6. Compare `.node-version`, `package.json#packageManager`, installer prerequisites, Compose minimum,
    documented ports, service names, paths, and defaults against generated documentation data.
 7. Regenerate CLI, configuration, Service recipe, API, domain, database, and package references and
@@ -527,7 +527,7 @@ tests, docs checks, installer smoke tests, and the release-set compatibility che
 
 | Claim or page                                                                                                            | Current label                                  | Evidence required before `shipped`                                                                                                                            | Allowed documentation now                                                                                                        |
 | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Context items, context packs, immutable context snapshots, promotion, and handoffs                                       | Planned                                        | User-facing storage, selection, session attachment, inspection, edit and promotion flows plus an M3 acceptance run on a real repository.                      | Describe in `/concepts/product-model/` and `/concepts/roadmap/` under Planned only.                                              |
+| Context items, context packs, immutable context snapshots, promotion, and session summaries                              | Planned                                        | User-facing storage, selection, session attachment, inspection, edit and promotion flows plus an M3 acceptance run on a real repository.                      | Describe in `/concepts/product-model/` and `/concepts/roadmap/` under Planned only.                                              |
 | Optional issue or pull request attachment and commit or pull request publication                                         | Planned                                        | Current workbench routes, persistence, permission handling, failure recovery, and M5 acceptance tests.                                                        | State that publication is optional product direction; provide no task instructions.                                              |
 | Provenance for every arbitrary hunk                                                                                      | Planned                                        | A hunk-level evidence UI and tests covering direct, inferred, unknown, stale, and telemetry-gap cases.                                                        | Describe current evidence-linked tour stops and draft findings only.                                                             |
 | Sending review text into a live TUI                                                                                      | Planned                                        | Exact-process delivery, idempotency, timeout and restart recovery, duplicate prevention, and a live-session acceptance test.                                  | Document settled-session relaunch and pending behavior while an agent is active.                                                 |

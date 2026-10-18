@@ -84,7 +84,7 @@ phone names a model.
    (`agent_sessions.model`, `agent_sessions.effort`) is written once the launch is admitted, never
    for one the account's launch slot refuses: a PTY launch writes it in `session-start.ts` right
    before the engine starts, a protocol launch inside `SessionEngine.launchProtocol` after its own
-   live-agent check, so every protocol path (a handoff to a conversation, a crash relaunch, Slack)
+   live-agent check, so every protocol path (a switch to a conversation, a crash relaunch, Slack)
    records the same way. The composed argv always names the model for a harness that has a catalog,
    and `Session.model` says which. A harness without a catalog (a custom command, a shell) records
    `null`: the harness's own choice. So does opencode when nobody chose a model: its catalog lists
@@ -97,7 +97,7 @@ phone names a model.
    default and Mend does not second-guess it.
 5. **A resume keeps the recorded model.** A native resume passes no model flag by design, so the
    harness continues the conversation on its own model, which is the one recorded at start. The
-   session's `model` is not rewritten on resume, and a handoff to a terminal (a native resume) takes
+   session's `model` is not rewritten on resume, and a switch to a terminal (a native resume) takes
    no model override. A resume on another harness clears the record: the converted launch names no
    model, so the row says `null` rather than the old harness's id. A follow-up delivered to a
    stopped PTY session opens the harness with the recorded model and effort (`promptArgv`), so the

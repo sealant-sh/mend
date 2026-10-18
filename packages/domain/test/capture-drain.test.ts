@@ -96,7 +96,7 @@ describe("captureSaved", () => {
 });
 
 describe("captureHarvestReady", () => {
-  it("holds a handoff on every pending capture until sealantd says which are bulk", () => {
+  it("holds a mode switch on every pending capture until sealantd says which are bulk", () => {
     expect(captureHarvestReady(reading({ pending: 2 }))).toBe(false);
     expect(captureHarvestReady(reading({ pending: 2, pendingBulk: 2 }))).toBe(true);
     expect(captureHarvestReady(reading({ pending: 3, pendingBulk: 2 }))).toBe(false);

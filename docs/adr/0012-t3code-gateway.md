@@ -104,11 +104,11 @@ hand. The first pin was `v0.0.46-nightly.20261003.2623`; the current one is in
 | checkpoint                  | a `turn-boundary` checkpoint, matched to its turn by session and time             |
 | changes panel               | the change (one per worktree)                                                     |
 
-Review comments, handoffs and context packs have no t3code surface and stay in Mend's own clients.
-Landing has one. t3code's git panel pushes a thread's change and opens its pull request through
-Mend's landing, as the change's owner, and its remote status comes from the landing record. Mend
-never moves the thread's branch and never commits it alone (ADR 0007), so the panel's other writes
-are refused in Mend's words.
+Review comments, session summaries and context packs have no t3code surface and stay in Mend's own
+clients. Landing has one. t3code's git panel pushes a thread's change and opens its pull request
+through Mend's landing, as the change's owner, and its remote status comes from the landing record.
+Mend never moves the thread's branch and never commits it alone (ADR 0007), so the panel's other
+writes are refused in Mend's words.
 
 ### The surface
 

@@ -720,7 +720,7 @@ export interface SealantClientShape {
   ) => Effect.Effect<LaunchedRuntime, SealantPlatformError>;
   /**
    * Capture-sourced workspaces (0.31.0, sealantd ADR-0015): ship and register what the executor
-   * holds. `suspend` (a checkpoint, a handoff) forces a small-class capture and ships the queue;
+   * holds. `suspend` (a checkpoint, a mode switch) forces a small-class capture and ships the queue;
    * processes keep running. `final` is for an executor that is ending: sealantd stops admitting
    * processes, ends every managed one, snapshots the small and the bulk class, then ships until
    * nothing is pending, and says `complete: true` only when all of that happened.

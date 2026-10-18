@@ -308,8 +308,8 @@ A future implementation is complete only when the supported configurations meet 
 
 - A fresh Claude and Codex session can build a page, start its server, operate the visible browser,
   and report the observed result in its own conversation without a manual MCP setup step.
-- The same workflow works through resume and protocol/PTY handoff; unavailable capabilities give a
-  concrete explanation instead of hanging or silently starting another agent.
+- The same workflow works through resume and a protocol/PTY mode switch; unavailable capabilities
+  give a concrete explanation instead of hanging or silently starting another agent.
 - Human takeover interrupts ongoing and queued desktop work, accepts input, and leaves the coding
   conversation intact. Release requires an explicit transition back to agent ownership.
 - A competing session/person cannot see, control, or overwrite another desktop or its recordings.

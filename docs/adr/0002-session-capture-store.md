@@ -443,8 +443,8 @@ cadence window.
 - **Dead means dead.** An executor is dead only on a terminal status or a missing workspace. A Core
   error is `unknown`: no pickup, no fence, look again. An executor that answers with its lease
   expired is paused: a resume waits for it and stops nothing.
-- **Handoffs** read the head once the small captures are in; bulk still uploading holds only a stop
-  (once sealantd reports `pending_bulk`).
+- **Mode switches** read the head once the small captures are in; bulk still uploading holds only a
+  stop (once sealantd reports `pending_bulk`).
 - **Landing** checkpoints only once the executor's captures caught up (a flush that registered what
   it holds, or a known absence of any executor that could hold more) and lands exactly that
   checkpoint's capture. Unknown is never caught up: the landing says so and pushes nothing.

@@ -219,9 +219,9 @@ then move it back to `stopping`. Today it reads `completed · ended just now`, t
 - The domain's line, `not saved · executor kept for recovery · <reason> · <pending>`. Never
   `workspace end not confirmed`, and never hidden.
 
-### S26. Handoff, replacement, or an executor ended outside Mend
+### S26. Mode switch, replacement, or an executor ended outside Mend
 
-- The row gives the status. The detail summary keeps the server's words, such as `handed off to …`,
+- The row gives the status. The detail summary keeps the server's words, such as `switched to …`,
   `picked up · executor replaced`, `stopped outside Mend` or `saved at …`.
 
 ### S27. Unsaved work discarded
