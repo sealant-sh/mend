@@ -335,8 +335,8 @@ export class MendClient {
   }
 
   /**
-   * Open a shell in the live workspace. Its process row holds the workspace lease, which is
-   * what lets a takeover stop the agent without the workspace closing under the editor.
+   * Open a shell in the live workspace. Its process row holds the workspace lease, so the
+   * workspace stays up while the shell runs.
    */
   async openShell(sessionId: string): Promise<SessionProcess> {
     return parseSessionProcess(

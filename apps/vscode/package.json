@@ -127,11 +127,6 @@
         "icon": "$(diff)"
       },
       {
-        "command": "mend.takeOverSession",
-        "title": "Mend: Take over session in the editor",
-        "icon": "$(debug-continue)"
-      },
-      {
         "command": "mend.newSessionInWorktree",
         "title": "Mend: New session in this worktree…",
         "icon": "$(add)"
@@ -239,11 +234,6 @@
           "command": "mend.reviewChange",
           "when": "view == mend.sessions && viewItem =~ /^mend\\.session/",
           "group": "1_open@4"
-        },
-        {
-          "command": "mend.takeOverSession",
-          "when": "view == mend.sessions && viewItem == mend.session.live",
-          "group": "1_open@2"
         },
         {
           "command": "mend.newSessionInWorktree",
