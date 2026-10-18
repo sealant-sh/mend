@@ -630,13 +630,14 @@ each is a gesture on the real workbench DOM:
   the step's screenshot, its timing), `note(text)`, `api(route, init)` (the run's Mend client, for
   setting up state and for reading what Mend observed), `serverLogs()` (the server container's log,
   raw, context only: its `/v1/workspaces/<id>/ssh-target` lines also come from a window's SSH
-  teardown, seconds after a close), `state`.
+  teardown, seconds after a close), `opens()` (Remote-SSH window opens so far, below),
+  `remoteSshLogs()` (how many Remote-SSH output logs exist, context only), `state`.
 
 A recipe counts opens on the client: each Remote-SSH window open or reload writes one line
 `SSH Resolver called for "ssh-remote+…", attempt 1` into a `*-Remote - SSH.log` under
-`<userData>/logs` (a reconnect writes `attempt 2` and up). The as-built recipe's `resolves()` reads
-them as `opens`, and shows `opens` +1 for the first window it opens on purpose before any claim
-rests on it.
+`<userData>/logs` (a reconnect writes `attempt 2` and up). `opens()` counts those lines once the
+count has held still for 5 s. A recipe shows `opens()` +1 for the first window it opens on purpose
+before any claim rests on it.
 
 Clicking the real DOM is the rule. A step that calls the server, or any other setup path, says so
 with `via: "api"` or `via: "setup"`, and only ever for setup or for reading what Mend observed,

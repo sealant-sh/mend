@@ -8,35 +8,6 @@
 //
 // Needs a world from `up` that is signed in with workspace SSH set up (the default).
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
-
-/** Every Remote-SSH output log of this user data directory: one per window extension host that loaded it. */
-const remoteSshLogFiles = (userData) => {
-  const found = [];
-  const walk = (dir) => {
-    for (const name of readdirSync(dir)) {
-      const path = join(dir, name);
-      if (statSync(path).isDirectory()) walk(path);
-      else if (/^\d+-Remote - SSH\.log$/.test(name)) found.push(path);
-    }
-  };
-  const root = join(userData, "logs");
-  if (statSync(root, { throwIfNoEntry: false })?.isDirectory()) walk(root);
-  return found;
-};
-
-const remoteSshLogs = (userData) => remoteSshLogFiles(userData).length;
-
-/**
- * Opens of a Remote-SSH window: the resolver's first attempt for an `ssh-remote+` authority, one
- * line per window open or reload, whichever extension asked. A reconnect logs `attempt 2` and up.
- */
-const resolves = (userData) =>
-  remoteSshLogFiles(userData)
-    .flatMap((file) => readFileSync(file, "utf8").split("\n"))
-    .filter((line) => /SSH Resolver called for "ssh-remote\+[^"]*", attempt 1$/.test(line)).length;
-
 /**
  * The server's log lines holding `needle`: context beside `opens`, never the count a claim rests
  * on. A window's SSH teardown also resolves `/v1/workspaces/<id>/ssh-target`, seconds after the
@@ -74,25 +45,11 @@ export default async (h) => {
     api,
     state,
     serverLogs,
+    opens,
+    remoteSshLogs,
     sleep,
   } = h;
   const project = state.project;
-  const openLogs = () => remoteSshLogs(state.userData);
-  /** `resolves()` once it has held still for 5 s: the resolver logs a moment after its window appears. */
-  const opens = async () => {
-    let last = resolves(state.userData);
-    let since = Date.now();
-    const settled = await waitUntil(
-      "the opens count to hold still for 5 s",
-      async () => {
-        const now = resolves(state.userData);
-        if (now !== last) [last, since] = [now, Date.now()];
-        return Date.now() - since >= 5_000 ? { now } : null;
-      },
-      60_000,
-    );
-    return settled.now;
-  };
 
   await step("the Mend view lists the project", async () => {
     await useWindow(await homeWindow());
@@ -202,7 +159,7 @@ export default async (h) => {
     const log = await serverLogs();
     return {
       opens: await opens(),
-      remoteSshLogs: openLogs(),
+      remoteSshLogs: remoteSshLogs(),
       sshTargetLookups: linesMatching(log, `/v1/workspaces/${session.workspaceId}/ssh-target`),
       workspaceReads: linesMatching(log, `/v1/workspaces/${session.workspaceId}'`),
       processes: (await api(`/sessions/${session.id}/processes`)).length,

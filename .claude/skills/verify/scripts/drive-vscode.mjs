@@ -39,12 +39,13 @@
 // never this repository's) over CDP and runs the recipe module's default export with the helpers of
 // drive-vscode.workbench.mjs: `palette`, `quickInput`, `view`, `treeItem`, `notification`,
 // `dialog`, `statusBar`, `terminal`, `windows`/`waitForWindow`/`useWindow`, `waitForText`,
-// `shot`, `step` and `api`. Each step is one redacted line of <out>/steps.jsonl; a failing recipe
-// keeps `failure-<n>.png`, collects the logs, and exits 1. `logs` copies the editor's logs (main,
-// renderer, extension host, the output channels, Remote-SSH's) and the server container's into the
-// evidence, redacted. `down` ends the editor, ffmpeg and Xvfb by pid, removes the daemon, the scratch
-// and the context, scans the evidence against the registry, then removes the private directory.
-// Running it twice, or after a crash, converges.
+// `opens` (Remote-SSH window opens, from the resolver's lines), `shot`, `step` and `api`. Each step
+// is one redacted line of <out>/steps.jsonl; a failing recipe keeps `failure-<n>.png`, collects the
+// logs, and exits 1. `logs` copies the editor's logs (main, renderer, extension host, the output
+// channels, Remote-SSH's) and the server container's into the evidence, redacted. `down` ends the
+// editor, ffmpeg and Xvfb by pid, removes the daemon, the scratch and the context, scans the
+// evidence against the registry, then removes the private directory. Running it twice, or after a
+// crash, converges.
 
 import { spawn } from "node:child_process";
 import {

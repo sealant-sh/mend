@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -163,6 +164,30 @@ export const pickRun = (option, env = process.env, home = homedir()) => {
       : `${found.length} runs are up (${found.join(", ")}): pass --run <name> or set MEND_VERIFY_VSCODE_RUN`,
   );
 };
+
+/** Every Remote-SSH output log under `<userData>/logs`: one per window extension host that loaded it. */
+export const remoteSshLogFiles = (userData) => {
+  const found = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      if (statSync(path).isDirectory()) walk(path);
+      else if (/^\d+-Remote - SSH\.log$/.test(name)) found.push(path);
+    }
+  };
+  const root = join(userData, "logs");
+  if (statSync(root, { throwIfNoEntry: false })?.isDirectory()) walk(root);
+  return found;
+};
+
+/**
+ * Opens of a Remote-SSH window: the resolver's first attempt for an `ssh-remote+` authority, one
+ * line per window open or reload, whichever extension asked. A reconnect logs `attempt 2` and up.
+ */
+export const resolves = (userData) =>
+  remoteSshLogFiles(userData)
+    .flatMap((file) => readFileSync(file, "utf8").split("\n"))
+    .filter((line) => /SSH Resolver called for "ssh-remote\+[^"]*", attempt 1$/.test(line)).length;
 
 /** The state file read, or an empty ledger when none is there. */
 export const readState = (stateFile) =>

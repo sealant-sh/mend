@@ -197,9 +197,9 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     Close what opened with `closeWindow(page)`.
   - The double-click. Record `windows()` and `opens`: the lines
     `SSH Resolver called for "ssh-remote+…", attempt 1` in every `*-Remote - SSH.log` under
-    `<userData>/logs`, one per Remote-SSH window open or reload (the recipe's `resolves()`; a
-    reconnect logs `attempt 2`). The recipe first shows `opens` +1 for the start's one window, and
-    only then relies on it. The Remote-SSH log count, `serverLogs()` (the lines
+    `<userData>/logs`, one per Remote-SSH window open or reload (the helper `opens()`; a reconnect
+    logs `attempt 2`). The recipe first shows `opens` +1 for the start's one window, and only then
+    relies on it. The Remote-SSH log count, `serverLogs()` (the lines
     `/v1/workspaces/<workspace>/ssh-target` and `/v1/workspaces/<workspace>'`) and
     `api("/sessions/<id>/processes")` (`via: "api"`) are recorded beside it as context; no claim
     rests on them, since a window's SSH teardown adds an `ssh-target` line about 4.6 s after its
