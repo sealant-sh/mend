@@ -156,24 +156,20 @@ type Reads =
   | "child argv"
   | "copy";
 
-const ARGV_FILES = [
-  "main.ts",
-  "shared.ts",
-  "organization.ts",
-  "pair.ts",
-  "login.ts",
-  "ssh-setup.ts",
-  "shared-workspace.ts",
-  "workspace-replace.ts",
-  "uninstall.ts",
-  "worktree-remove.ts",
-  "doctor-bundle.ts",
-  "dotfiles.ts",
-  "landing.ts",
-  "run-scripts.ts",
-  "server-setup.ts",
-  "git-author.ts",
-];
+// Every source file of the CLI, so a flag a new file reads is mapped before it ships. The catalog
+// and the gate are what is checked against; tests and their fixtures read no user argv.
+const NOT_ARGV: ReadonlySet<string> = new Set(["help.ts", "flag-gate.ts"]);
+
+const ARGV_FILES = fs
+  .readdirSync(fileURLToPath(new URL(".", import.meta.url)))
+  .filter(
+    (file) =>
+      /\.tsx?$/.test(file) &&
+      !/\.test\.tsx?$/.test(file) &&
+      !/(?:-test-fixtures|\.fixture)\.ts$/.test(file) &&
+      !NOT_ARGV.has(file),
+  )
+  .toSorted();
 
 const SERVER_SETUP = { pages: ["server setup"] };
 const CHILD = "child argv";
@@ -302,6 +298,36 @@ const READS: Readonly<Record<string, Reads>> = {
     childArgv: ["--no-color", "--timeout"],
   },
   "git-author.ts parseGitAuthorArgs": { pages: ["git-author"] },
+  "claude-grant.ts forgetGrant": CHILD,
+  "claude-grant.ts grantStatus": CHILD,
+  "claude-grant.ts readGrant": CHILD,
+  "claude-grant.ts runClaudeLogin": CHILD,
+  "clipboard.ts fromMac": CHILD,
+  "clipboard.ts fromWayland": CHILD,
+  "clipboard.ts fromX11": CHILD,
+  "codex-grant.ts runCodexDeviceLogin": CHILD,
+  "docker-shutdown.ts hostDockerDaemonFacts": CHILD,
+  "docker-shutdown.ts hostDockerEndpoint": CHILD,
+  "docker-shutdown.ts hostFlags": CHILD,
+  "docker-shutdown.ts observeHostDockerStop": CHILD,
+  "doctor-bundle-collectors.ts CONTAINER_FILTERS": CHILD,
+  "doctor-bundle-collectors.ts dockerFactsOnce": CHILD,
+  "doctor-bundle-collectors.ts serverLogsCollector": CHILD,
+  "doctor-bundle-collectors.ts toolsCollector": CHILD,
+  "doctor-bundle-collectors.ts workspaceLogsCollector": CHILD,
+  "doctor.ts readMacLid": CHILD,
+  "doctor.ts readMacPowerSettings": CHILD,
+  "server-docker-volumes.ts docker": CHILD,
+  "server-docker-volumes.ts ensureVolume": CHILD,
+  "server-docker-volumes.ts inspectOwner": CHILD,
+  "server-docker-volumes.ts inspectResource": CHILD,
+  "server-docker-volumes.ts listNames": CHILD,
+  "server-docker-volumes.ts removeServerLeftovers": CHILD,
+  "server-mirrors.ts npmMirrorService": CHILD,
+  "server-runtime.ts serverComposeArgs": CHILD,
+  // The `mend server setup` command a guide prints for the operator to run.
+  "server-setup-guide.ts flagsFor": SERVER_SETUP,
+  "server-setup-guide.ts setupCommandOf": SERVER_SETUP,
 };
 
 const DECLARATION = /^(?:export )?(?:const|let|function|async function) ([A-Za-z_$][\w$]*)/;
