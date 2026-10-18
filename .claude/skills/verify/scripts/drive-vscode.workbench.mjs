@@ -14,7 +14,7 @@
 // written there): the canvas renderer leaves no text to read.
 
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { remoteSshLogFiles, resolves } from "./drive-vscode.lib.mjs";
@@ -28,6 +28,9 @@ const SIDEBAR_ROW = ".part.sidebar .monaco-list-row";
 const TOAST = ".notifications-toasts .notification-list-item";
 const DIALOG = ".monaco-dialog-box";
 const CONTEXT_MENU_ITEM = ".context-view .monaco-menu .action-item:not(.disabled) .action-label";
+const HOVER = ".monaco-hover.workbench-hover";
+const CONTEXT_MENU = ".context-view .monaco-menu";
+const STATUS_ITEM = ".part.statusbar .statusbar-item";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -61,6 +64,72 @@ const deepText = () => {
   };
   walk(document.documentElement);
   return parts.join("\n");
+};
+
+/**
+ * The panel's terminal tabs: their names (the tab list when it shows, the single tab's title when
+ * not), the active one's name (from its xterm's accessible name, `Terminal <n>, <name>`), and
+ * whether the keyboard is in a terminal.
+ */
+const terminalTabs = () => {
+  const listed = [...document.querySelectorAll(".terminal-tabs-entry")].map((entry) =>
+    (entry.textContent ?? "").trim(),
+  );
+  const single = [...document.querySelectorAll(".single-terminal-tab")].map((entry) =>
+    (entry.textContent ?? "").trim(),
+  );
+  const accessible =
+    document
+      .querySelector(".terminal-wrapper.active textarea.xterm-helper-textarea")
+      ?.getAttribute("aria-label") ?? "";
+  const active = /^Terminal \d+, ([^\n]+)/.exec(accessible)?.[1]?.trim() ?? null;
+  return {
+    names: (listed.length > 0 ? listed : single).filter((name) => name !== ""),
+    active,
+    focused: document.activeElement?.closest(".xterm") != null,
+  };
+};
+
+/**
+ * Watches the page from now: every toast, modal dialog, quick input title and status bar text that
+ * appears, in order, each distinct text once. What already shows when the watch starts is not
+ * counted. Kept on `window` for `stop` to collect.
+ */
+const startWatch = ({ toast, dialog, quickInput, status }) => {
+  const seen = { toasts: [], dialogs: [], quickInputs: [], statusBar: [] };
+  const keys = new Set();
+  let baseline = true;
+  const note = (kind, text) => {
+    const clean = (text ?? "").replace(/\s+/g, " ").trim();
+    if (clean === "" || keys.has(`${kind}\u0000${clean}`)) return;
+    keys.add(`${kind}\u0000${clean}`);
+    if (!baseline) seen[kind].push(clean);
+  };
+  const sample = () => {
+    for (const element of document.querySelectorAll(toast)) note("toasts", element.innerText);
+    for (const element of document.querySelectorAll(dialog))
+      if (element.offsetParent !== null) note("dialogs", element.innerText);
+    const widget = document.querySelector(quickInput);
+    if (widget !== null && widget.style.display !== "none" && widget.offsetParent !== null)
+      note(
+        "quickInputs",
+        widget.querySelector(".quick-input-title")?.textContent ||
+          widget.querySelector(".quick-input-box input")?.getAttribute("placeholder") ||
+          "(untitled)",
+      );
+    for (const element of document.querySelectorAll(status))
+      if (element.offsetParent !== null) note("statusBar", element.innerText);
+  };
+  sample();
+  baseline = false;
+  const observer = new MutationObserver(sample);
+  observer.observe(document.body, {
+    attributes: true,
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+  window.mendVerifyWatch = { seen, stop: () => observer.disconnect() };
 };
 
 /** The active terminal's rows as the DOM renderer draws them, blank rows at the end dropped. */
@@ -327,6 +396,11 @@ export const workbenchHelpers = async (context, options) => {
     await page().locator(".part.sidebar .monaco-list").first().waitFor({ timeout });
   };
 
+  /** A context menu left open covers the workbench: Escape closes it. */
+  const closeMenu = async () => {
+    if (await page().locator(CONTEXT_MENU).isVisible()) await page().keyboard.press("Escape");
+  };
+
   /** A row of the sidebar's tree, by a substring or pattern of its text. */
   const treeItem = (label) => {
     const row = () => page().locator(SIDEBAR_ROW, { hasText: label }).first();
@@ -342,19 +416,100 @@ export const workbenchHelpers = async (context, options) => {
       click: () => row().click(),
       dblclick: () => row().dblclick(),
       hover: () => row().hover(),
-      /** The inline action that appears on hover, by its title. */
-      inline: async (title) => {
+      /** Whether the row is selected, as the tree marks it. */
+      selected: () =>
+        row().evaluate(
+          (element) =>
+            element.classList.contains("selected") ||
+            element.getAttribute("aria-selected") === "true",
+        ),
+      /** The titles of the inline actions the row shows on hover. */
+      actions: async () => {
         await row().hover();
-        const action = row().locator(`.actions .action-label[aria-label="${title}"]`);
+        await sleep(400);
+        return row()
+          .locator(".actions .action-label")
+          .evaluateAll((found) => found.map((action) => action.getAttribute("aria-label") ?? ""));
+      },
+      /**
+       * The inline action that appears on hover, by its title, or by a pattern its title matches
+       * (one recipe across two manifests). `clicks: 2` clicks it again at once, the way an
+       * impatient person does; a later click that finds no button is not made. Returns the title
+       * found and the clicks that landed.
+       */
+      inline: async (title, { clicks = 1 } = {}) => {
+        await row().hover();
+        const found =
+          typeof title === "string"
+            ? title
+            : await waitUntil(`an inline action matching ${title}`, async () => {
+                const titles = await row()
+                  .locator(".actions .action-label")
+                  .evaluateAll((labels) => labels.map((item) => item.getAttribute("aria-label")));
+                return titles.find((candidate) => candidate !== null && title.test(candidate));
+              });
+        const action = row().locator(`.actions .action-label[aria-label="${found}"]`);
         await action.first().waitFor({ timeout });
         await action.first().click();
+        let landed = 1;
+        for (; landed < clicks; landed += 1) {
+          const again = await action
+            .first()
+            .click({ timeout: 2_000 })
+            .then(() => true)
+            .catch(() => false);
+          if (!again) break;
+        }
+        return { title: found, landed };
       },
-      /** The row's context menu item, by its label. */
+      /**
+       * The row's context menu item, by its whole label (a pattern matches as given). VS Code's menu
+       * ignores a click that lands right after it opens, so the pointer rests on the item first.
+       */
       contextMenu: async (item) => {
+        await closeMenu();
         await row().click({ button: "right" });
-        const entry = page().locator(CONTEXT_MENU_ITEM, { hasText: item }).first();
+        const hasText = typeof item === "string" ? new RegExp(`^${escapeRegExp(item)}$`) : item;
+        const entry = page().locator(CONTEXT_MENU_ITEM, { hasText }).first();
         await entry.waitFor({ timeout });
+        await entry.hover();
+        await sleep(300);
         await entry.click();
+        await waitUntil(
+          `the context menu to close after "${item}"`,
+          async () => ((await page().locator(CONTEXT_MENU).isVisible()) ? null : true),
+          5_000,
+        );
+      },
+      /** Every enabled item of the row's context menu, then Escape. */
+      menu: async () => {
+        await closeMenu();
+        await row().click({ button: "right" });
+        await page().locator(CONTEXT_MENU_ITEM).first().waitFor({ timeout });
+        const items = await page()
+          .locator(CONTEXT_MENU_ITEM)
+          .evaluateAll((found) =>
+            found.map((entry) => (entry.textContent ?? "").trim()).filter(Boolean),
+          );
+        await page().keyboard.press("Escape");
+        return items;
+      },
+      /**
+       * The row's tooltip: the mouse rests on the row's label (the hover is bound there, not to the
+       * whole row) until VS Code's hover shows; moved away and back when it does not.
+       */
+      tooltip: async () => {
+        const hover = page().locator(HOVER).first();
+        return waitUntil("the row's tooltip", async () => {
+          await page().mouse.move(1, 1);
+          await sleep(300);
+          await row().locator(".label-name").first().hover();
+          const shown = await hover
+            .waitFor({ timeout: 5_000 })
+            .then(() => true)
+            .catch(() => false);
+          return shown ? (await hover.innerText()).trim() : null;
+        });
       },
     };
   };
@@ -403,8 +558,7 @@ export const workbenchHelpers = async (context, options) => {
     );
 
   const statusBar = (pattern) => {
-    const item = () =>
-      page().locator(".part.statusbar .statusbar-item", { hasText: pattern }).first();
+    const item = () => page().locator(STATUS_ITEM, { hasText: pattern }).first();
     return {
       waitFor: (limit = timeout) => item().waitFor({ timeout: limit }),
       text: async () => (await item().innerText()).replace(/\s+/g, " ").trim(),
@@ -422,6 +576,8 @@ export const workbenchHelpers = async (context, options) => {
       await page().keyboard.press("Enter");
     },
     read: async () => (await page().evaluate(terminalRows)) ?? [],
+    /** `{ names, active, focused }`: the panel's terminal tabs and where the keyboard is. */
+    tabs: () => page().evaluate(terminalTabs),
     waitForText: (pattern, limit = timeout) =>
       waitUntil(
         `the terminal to show ${pattern}`,
@@ -523,6 +679,45 @@ export const workbenchHelpers = async (context, options) => {
     }
   };
 
+  /**
+   * Everything transient a gesture shows in the current window, from now until `stop()`: toasts,
+   * modal dialogs, quick input titles and status bar texts, each once, in order. `stop()` returns
+   * null when the window navigated meanwhile (its page was replaced).
+   */
+  const watch = async () => {
+    const target = page();
+    await target.evaluate(startWatch, {
+      toast: TOAST,
+      dialog: DIALOG,
+      quickInput: QUICK_INPUT,
+      status: STATUS_ITEM,
+    });
+    return {
+      stop: () =>
+        target
+          .evaluate(() => {
+            const watching = window.mendVerifyWatch;
+            if (watching === undefined) return null;
+            watching.stop();
+            delete window.mendVerifyWatch;
+            return watching.seen;
+          })
+          .catch(() => null),
+    };
+  };
+
+  /**
+   * The run's user settings changed as a person edits settings.json: `patch` merged in, a key set
+   * to undefined removed. VS Code reloads the file live. Returns the file as written.
+   */
+  const userSettings = (patch) => {
+    const file = join(state.userData, "User", "settings.json");
+    const settings = { ...JSON.parse(readFileSync(file, "utf8")), ...patch };
+    for (const [key, value] of Object.entries(patch)) if (value === undefined) delete settings[key];
+    writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
+    return settings;
+  };
+
   const note = (message) => {
     const line = steps.write({ note: message });
     log(`note · ${line.note}`);
@@ -550,6 +745,8 @@ export const workbenchHelpers = async (context, options) => {
     dialogs,
     statusBar,
     terminal,
+    watch,
+    userSettings,
     waitForText,
     waitUntil,
     text,
