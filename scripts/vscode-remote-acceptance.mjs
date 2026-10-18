@@ -32,20 +32,40 @@
  *   MEND_E2E_EDITOR     off runs with mend.workspaces.bringMyEditor off (the before/after timing)
  *   MEND_E2E_EVIDENCE   a directory to copy result.json and the remote window's report into
  *
- * Nothing touches this machine's own Docker daemon but the one Docker-in-Docker container, run from
- * a preloaded docker:27.5.1-dind with the images copied in; on exit it is removed with its storage,
- * and the scratch HOME and Xvfb go with it.
+ * The world (the daemon, the scratch HOME, the editor's install and display) is
+ * scripts/vscode-remote-world.mjs, shared with the verify skill's drive-vscode.mjs. Nothing touches
+ * this machine's own Docker daemon but the one Docker-in-Docker container; on exit it is removed
+ * with its storage, and the scratch HOME and Xvfb go with it.
  */
-import { spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { assertEditorEvidence } from "./vscode-acceptance-evidence.mjs";
+import {
+  adoptProject,
+  buildExtension,
+  editorEnv,
+  installExtension,
+  installServer,
+  lines,
+  makeApi,
+  makeScratch,
+  prepareDaemon,
+  removeWorld,
+  repoRoot,
+  requireImages,
+  run,
+  runFreshWorktreeSession,
+  runId,
+  signUp,
+  sleep,
+  startDind,
+  startXvfb,
+  writeUserSettings,
+} from "./vscode-remote-world.mjs";
 
-const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repo = repoRoot;
 const version = process.env.MEND_TEST_VERSION;
 if (!version) throw new Error("set MEND_TEST_VERSION to a preloaded ghcr.io/sealant-sh/mend tag");
 const image = `ghcr.io/sealant-sh/mend:${version}`;
@@ -57,316 +77,63 @@ const editorOff = process.env.MEND_E2E_EDITOR === "off";
 const evidenceDir = process.env.MEND_E2E_EVIDENCE;
 const seedWorkspace = "editorconfig.editorconfig";
 const seedUi = "dracula-theme.theme-dracula";
-const runId = `st-vscode-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+const id = runId("st-vscode");
 
 const log = (line) => console.log(`[acceptance] ${line}`);
 
-const sh = (command, args, options = {}) => {
-  const result = spawnSync(command, args, { encoding: "utf8", ...options });
-  if (result.status !== 0 && options.allowFailure !== true) {
-    throw new Error(
-      `${command} ${args.join(" ")} failed (${result.status}): ${result.stderr || result.stdout}`,
-    );
-  }
-  return result;
-};
-const docker = (args, options) => sh("docker", args, options).stdout.trim();
-const lines = (text) => text.split("\n").filter((line) => line.trim() !== "");
+await requireImages(image);
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const dindImage = "docker:27.5.1-dind";
-// Setup's own images: the server, its database and object store, and the package mirrors.
-const serverImages = [
-  image,
-  "postgres:17-alpine",
-  "dxflrs/garage:v2.4.1",
-  "nginx:1.29-alpine",
-  "registry:3.1",
-];
-for (const needed of [...serverImages, dindImage]) {
-  docker(["image", "inspect", needed, "--format", "{{.Id}}"]);
-}
-
-// Not under /tmp: docker:dind mounts its own tmpfs there, which would hide the shared HOME.
-const scratchRoot = path.join(os.homedir(), ".cache");
-fs.mkdirSync(scratchRoot, { recursive: true });
-const scratch = fs.mkdtempSync(path.join(scratchRoot, "mend-vscode-remote-"));
-const home = path.join(scratch, "home");
-fs.mkdirSync(home, { mode: 0o700 });
-const configHome = path.join(home, ".config");
-// The run's own HOME, sign-in and SSH key: never this machine's cli.json, ~/.ssh or agent identities.
-const { MEND_URL: _url, MEND_TOKEN: _token, SSH_AUTH_SOCK: _agent, ...inherited } = process.env;
-const clientEnv = { ...inherited, HOME: home, XDG_CONFIG_HOME: configHome };
-// OpenSSH takes `~` from the passwd entry, not HOME: without this hand-written block every ssh of
-// the run (the suite's and Remote-SSH's) would record gateway keys in this machine's known_hosts.
-// The extension's managed block goes before it, and must leave it as written.
-const sshDir = path.join(home, ".ssh");
-fs.mkdirSync(sshDir, { mode: 0o700 });
-const handWritten = `# The run's own: keep host keys out of this machine's known_hosts.\nHost *\n  UserKnownHostsFile ${path.join(sshDir, "known_hosts")}\n`;
-fs.writeFileSync(path.join(sshDir, "config"), handWritten, { mode: 0o600 });
+const { scratch, home, sshDir, clientEnv } = makeScratch("mend-vscode-remote");
 
 let xvfb = null;
 let dind = null;
+const context = "st-vscode-dind";
 
-const cleanup = () => {
+const cleanup = async () => {
   if (xvfb !== null) xvfb.kill("SIGTERM");
   if (keep) {
     log(`MEND_E2E_KEEP=1: ${dind ?? "no daemon"} and ${scratch} left up`);
     return;
   }
-  if (dind !== null) sh("docker", ["rm", "-fv", dind], { allowFailure: true });
-  // The daemon wrote some of it as root (its socket directory, Postgres's files).
-  sh(
-    "docker",
-    [
-      "run",
-      "--rm",
-      "-v",
-      `${scratch}:/scratch`,
-      "--entrypoint",
-      "sh",
-      dindImage,
-      "-c",
-      "rm -rf /scratch/* /scratch/.[!.]*",
-    ],
-    { allowFailure: true },
-  );
-  fs.rmSync(scratch, { recursive: true, force: true });
+  await removeWorld({ dind, context, scratch, clientEnv });
   log("removed the Docker-in-Docker daemon and the scratch HOME");
-};
-
-const runFreshWorktreeSession = async (api, projectId) => {
-  const created = await api(`/projects/${projectId}/sessions`, {
-    method: "POST",
-    body: JSON.stringify({
-      harness: "claude",
-      label: "fresh worktree",
-      base: null,
-      name: `st-fresh-${Date.now().toString(36)}`,
-    }),
-  });
-  const startedAt = Date.now();
-  await api(`/sessions/${created.id}/resume`, {
-    method: "POST",
-    body: JSON.stringify({ harness: "shell" }),
-  });
-  for (;;) {
-    const { session } = await api(`/sessions/${created.id}`);
-    if (session.sealantWorkspaceId && ["running", "idle", "waiting"].includes(session.status))
-      break;
-    if (["failed", "stopped", "completed"].includes(session.status)) {
-      throw new Error(`the fresh worktree's session ended ${session.status} before it ran`);
-    }
-    if (Date.now() - startedAt > 5 * 60_000) {
-      throw new Error("the fresh worktree's session did not run within 5 minutes");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
-  }
-  await api(`/sessions/${created.id}/stop`, { method: "POST", body: "{}" }).catch(() => null);
-  log(
-    `PASS a session in a fresh worktree runs (${((Date.now() - startedAt) / 1000).toFixed(1)} s)`,
-  );
-  return created.id;
 };
 
 const main = async () => {
   const port = 3105;
   const sshPort = 2222;
 
-  const socketDir = path.join(scratch, "dind-run");
-  fs.mkdirSync(socketDir);
-  dind = docker([
-    "run",
-    "-d",
-    "--privileged",
-    "--name",
-    `${runId}-dind`,
-    "-e",
-    "DOCKER_TLS_CERTDIR=",
-    "-v",
-    `${socketDir}:/var/run`,
-    // The generation's files are bind-mounted by host path (postgres-init.sh), so the daemon must
-    // see this HOME at the same path: Docker Desktop's file sharing, which covers /Users on a Mac.
-    "-v",
-    `${home}:${home}`,
-    dindImage,
-    "dockerd",
-    "--host=unix:///var/run/docker.sock",
-  ]);
-  const host = docker([
-    "inspect",
-    dind,
-    "--format",
-    "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
-  ]);
+  const daemon = await startDind({ name: `${id}-dind`, scratch, home, context, clientEnv });
+  dind = daemon.dind;
+  const { host, inner } = daemon;
   const origin = `http://${host}:${port}`;
-  const socket = path.join(socketDir, "docker.sock");
-  for (let attempt = 0; attempt < 60 && !fs.existsSync(socket); attempt += 1) await sleep(500);
-  docker(["exec", dind, "chmod", "666", "/var/run/docker.sock"]);
-  const context = "st-vscode-dind";
-  sh("docker", ["context", "create", context, "--docker", `host=unix://${socket}`], {
-    env: clientEnv,
-  });
-  const inner = (args, options = {}) =>
-    sh("docker", ["--context", context, ...args], { env: clientEnv, ...options }).stdout.trim();
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    if (
-      sh("docker", ["--context", context, "info"], { env: clientEnv, allowFailure: true })
-        .status === 0
-    )
-      break;
-    await sleep(500);
-  }
-  log("copying the server's images into its daemon");
-  const saved = path.join(scratch, "images.tar");
-  docker(["save", "-o", saved, ...serverImages, "node:26-bookworm"], {
-    timeout: 900_000,
-  });
-  inner(["load", "-i", saved], { timeout: 900_000 });
-  fs.rmSync(saved);
-  // Setup needs the network guard image this label names. It is pinned by digest, and `docker load`
-  // into this daemon's classic image store drops repo digests, so it is pulled.
-  const guardImage = inner([
-    "image",
-    "inspect",
-    image,
-    "--format",
-    '{{index .Config.Labels "dev.sealant.mend.network-guard-image"}}',
-  ]);
-  if (guardImage !== "") inner(["pull", "-q", guardImage], { timeout: 300_000 });
-  // With sudo and ACL tools the image can take a person per Linux user (ADR 0016, the 0.36
-  // default): the terminal then runs as the person, and the run records what Remote-SSH runs as.
-  // Built before the first request: a blocking call between two fetches that outlasts the server's
-  // 5 s keep-alive makes fetch reuse a socket the server closed ("other side closed"), and under
-  // load this build does.
-  const workspaceBase = `${runId}-base:latest`;
-  const baseContext = path.join(scratch, "base");
-  fs.mkdirSync(baseContext);
-  fs.writeFileSync(
-    path.join(baseContext, "Dockerfile"),
-    "FROM node:26-bookworm\nRUN apt-get update && apt-get install -y --no-install-recommends sudo acl && rm -rf /var/lib/apt/lists/*\n",
-  );
-  inner(["build", "-q", "-t", workspaceBase, baseContext], { timeout: 900_000 });
-  const cli = (args, options = {}) =>
-    sh(process.execPath, [path.join(repo, "apps/cli/src/main.ts"), ...args], {
-      env: clientEnv,
-      timeout: 900_000,
-      ...options,
-    });
+  const workspaceBase = `${id}-base:latest`;
+  await prepareDaemon({ inner, scratch, serverImage: image, baseTag: workspaceBase, log });
 
   log(`server setup on ${origin}, workspace SSH on ${host}:${sshPort}`);
-  const setup = cli([
-    "server",
-    "setup",
-    "--offline",
-    "--version",
-    version,
-    "--assets-dir",
-    path.join(repo, "deploy/docker"),
-    "--context",
-    context,
-    // The daemon-side socket, as on Docker Desktop: the client reaches the daemon through a socket
-    // of its own, and the containers mount the daemon's.
-    "--docker-socket",
-    "/var/run/docker.sock",
-    "--bind",
-    "0.0.0.0",
-    "--url",
-    origin,
-    "--port",
-    String(port),
-    "--ssh-port",
-    String(sshPort),
-  ]);
-  for (const line of lines(setup.stdout)) log(`setup: ${line}`);
-
-  // Inside the daemon, 3105 and 2222 are published on every interface (what --bind 0.0.0.0 asks).
-  const mendId = inner([
-    "ps",
-    "-q",
-    "--filter",
-    "label=com.docker.compose.project=mend",
-    "--filter",
-    "label=com.docker.compose.service=mend",
-  ]);
-  const bindings = JSON.parse(
-    inner(["inspect", mendId, "--format", "{{json .HostConfig.PortBindings}}"]),
-  );
-  for (const [inside, outside] of [
-    ["3105/tcp", port],
-    ["2222/tcp", sshPort],
-  ]) {
-    const bound = bindings[inside];
-    if (
-      bound?.length !== 1 ||
-      bound[0].HostIp !== "0.0.0.0" ||
-      bound[0].HostPort !== String(outside)
-    ) {
-      throw new Error(`${inside} is published as ${JSON.stringify(bound)}, not 0.0.0.0:${outside}`);
-    }
-  }
+  await installServer({ version, context, origin, port, sshPort, clientEnv, inner, log });
   log(`PASS 3105 and 2222 are published on every interface of the daemon at ${host}`);
 
-  const signup = await fetch(`${origin}/api/auth/sign-up/email`, {
-    method: "POST",
-    headers: { origin, "content-type": "application/json" },
-    body: JSON.stringify({
-      email: `${runId}@acceptance.invalid`,
-      password: randomBytes(24).toString("hex"),
-      name: "VS Code acceptance",
-    }),
+  const token = await signUp(origin, {
+    email: `${id}@acceptance.invalid`,
+    name: "VS Code acceptance",
   });
-  const token = signup.headers.get("set-auth-token");
-  if (!signup.ok || !token) throw new Error(`signup at ${origin} failed: ${signup.status}`);
-  const api = async (route, init = {}) => {
-    let response;
-    try {
-      response = await fetch(`${origin}/api${route}`, {
-        ...init,
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      });
-    } catch (cause) {
-      // Node says only "fetch failed"; the reason is its cause.
-      throw new Error(
-        `${init.method ?? "GET"} ${route} did not answer: ${cause?.cause?.message ?? cause?.message ?? cause}`,
-      );
-    }
-    const text = await response.text();
-    if (!response.ok)
-      throw new Error(`${init.method ?? "GET"} ${route} → ${response.status} ${text}`);
-    return text === "" ? null : JSON.parse(text);
-  };
+  const api = makeApi(origin, token);
   log("PASS first account at the non-loopback origin");
 
-  const project = await api("/projects", {
-    method: "POST",
-    body: JSON.stringify({ name: projectName, source: sourceUrl }),
-  });
-  await api(`/projects/${project.id}/workspace-image`, {
-    method: "PUT",
-    body: JSON.stringify({
-      workspaceImage: {
-        mode: "custom",
-        baseImage: workspaceBase,
-        packages: [],
-        setupCommands: [],
-        services: { docker: false },
-      },
-    }),
-  });
+  const project = await adoptProject(api, { name: projectName, sourceUrl, baseTag: workspaceBase });
   log(
     `PASS adopted ${sourceUrl} as ${projectName} with a node:26-bookworm workspace base carrying sudo and acl`,
   );
 
-  const freshWorktreeSession = await runFreshWorktreeSession(api, project.id);
+  const freshWorktreeSession = await runFreshWorktreeSession(api, project.id, log);
 
   // The extension and the suite, bundled inside the extension's folder so the suite shares its
   // `vscode` API object (the dialogs it answers are the extension's).
-  sh("pnpm", ["--filter", "mend", "build"], { cwd: repo, stdio: "inherit" });
+  await buildExtension(repo);
   const suiteDir = path.join(repo, "apps/vscode/.e2e");
   fs.mkdirSync(suiteDir, { recursive: true });
-  sh(
+  await run(
     path.join(repo, "apps/vscode/node_modules/.bin/esbuild"),
     [
       path.join(repo, "apps/vscode/test/e2e/suite.ts"),
@@ -381,82 +148,32 @@ const main = async () => {
 
   const userData = path.join(scratch, "user-data");
   const extensions = path.join(scratch, "extensions");
-  fs.mkdirSync(path.join(userData, "User"), { recursive: true });
-  fs.writeFileSync(
-    path.join(userData, "User", "settings.json"),
-    JSON.stringify(
-      {
-        "security.workspace.trust.enabled": false,
-        "telemetry.telemetryLevel": "off",
-        "extensions.autoUpdate": false,
-        "extensions.autoCheckUpdates": false,
-        "update.mode": "none",
-        "workbench.startupEditor": "none",
-        "remote.SSH.showLoginTerminal": true,
-        // Remote-SSH reads ~/.ssh/config by the passwd home too; the run's HOME is elsewhere.
-        "remote.SSH.configFile": path.join(sshDir, "config"),
-        "remote.SSH.connectTimeout": 60,
-        ...(editorOff ? { "mend.workspaces.bringMyEditor": "off" } : {}),
-      },
-      null,
-      2,
-    ),
-  );
+  writeUserSettings(userData, sshDir, editorOff ? { "mend.workspaces.bringMyEditor": "off" } : {});
   const code = process.env.VSCODE_CLI || "code";
   const app = process.env.VSCODE_BIN || code;
-  const vscodeEnv = { ...clientEnv };
-  delete vscodeEnv.WAYLAND_DISPLAY;
-  delete vscodeEnv.NIXOS_OZONE_WL;
-  delete vscodeEnv.ELECTRON_RUN_AS_NODE;
-  // Electron takes Wayland from the session type even with WAYLAND_DISPLAY unset, opens the
-  // default socket and puts the windows on this machine's own desktop instead of Xvfb. Unseen
-  // there, they get no idle time, and VS Code's idle-time startup work (the remote terminal
-  // backend among it) crawls: the first integrated terminal took 30-50 s to answer.
-  delete vscodeEnv.XDG_SESSION_TYPE;
-  // A display no other Xvfb holds: sharing one puts this run's windows beside another's.
-  const free = [90, 91, 92, 93, 94, 95, 96, 97, 98].filter(
-    (n) => !fs.existsSync(`/tmp/.X11-unix/X${n}`) && !fs.existsSync(`/tmp/.X${n}-lock`),
+  const started = await startXvfb();
+  xvfb = started.xvfb;
+  const display = started.display;
+  const vscodeEnv = editorEnv(clientEnv, display);
+  log(
+    `Remote-SSH installed: ${await installExtension(code, { userData, extensions, id: "ms-vscode-remote.remote-ssh", env: vscodeEnv })}`,
   );
-  if (free.length === 0) throw new Error("displays :90 to :98 are all taken");
-  const display = `:${free[Math.floor(Math.random() * free.length)]}`;
-  xvfb = spawn("Xvfb", [display, "-screen", "0", "1440x900x24", "-nolisten", "tcp"], {
-    stdio: "ignore",
-  });
-  vscodeEnv.DISPLAY = display;
-  await sleep(1500);
-  const installed = sh(
-    code,
-    [
-      "--user-data-dir",
-      userData,
-      "--extensions-dir",
-      extensions,
-      "--install-extension",
-      "ms-vscode-remote.remote-ssh",
-    ],
-    { env: vscodeEnv, allowFailure: true, timeout: 300_000 },
-  );
-  if (installed.status !== 0) throw new Error(`Remote-SSH install failed: ${installed.stderr}`);
-  log(`Remote-SSH installed: ${lines(installed.stdout).at(-1)}`);
 
-  for (const [id, wantsMain] of [
+  for (const [seed, wantsMain] of [
     [seedWorkspace, true],
     [seedUi, false],
   ]) {
-    const seeded = sh(
-      code,
-      ["--user-data-dir", userData, "--extensions-dir", extensions, "--install-extension", id],
-      { env: vscodeEnv, allowFailure: true, timeout: 300_000 },
-    );
-    if (seeded.status !== 0) throw new Error(`seeding ${id} failed: ${seeded.stderr}`);
+    await installExtension(code, { userData, extensions, id: seed, env: vscodeEnv });
     const folder = fs
       .readdirSync(extensions)
-      .find((name) => name.toLowerCase().startsWith(`${id}-`));
+      .find((name) => name.toLowerCase().startsWith(`${seed}-`));
     const manifest = folder
       ? JSON.parse(fs.readFileSync(path.join(extensions, folder, "package.json"), "utf8"))
       : null;
     if (manifest === null || (typeof manifest.main === "string") !== wantsMain) {
-      throw new Error(`${id} is no longer the ${wantsMain ? "workspace" : "declarative"} fixture`);
+      throw new Error(
+        `${seed} is no longer the ${wantsMain ? "workspace" : "declarative"} fixture`,
+      );
     }
     log(`seeded ${folder}`);
   }
@@ -479,7 +196,7 @@ const main = async () => {
     MEND_E2E_OWNER_TOKEN: token,
     MEND_E2E_PROJECT: projectName,
     MEND_E2E_RESULT: resultFile,
-    MEND_E2E_RUN_ID: runId,
+    MEND_E2E_RUN_ID: id,
     MEND_E2E_REMOTE_SSH: remoteSsh ? "1" : "0",
     MEND_E2E_EDITOR: editorOff ? "off" : "on",
     MEND_E2E_SEED_WORKSPACE: seedWorkspace,
@@ -487,7 +204,9 @@ const main = async () => {
     MEND_E2E_SEED_UUID: seededEntry.identifier.uuid,
     MEND_E2E_PRIOR_SESSION: freshWorktreeSession,
   };
-  log(`VS Code ${lines(sh(code, ["--version"], { env: vscodeEnv }).stdout)[0]} on ${display}`);
+  log(
+    `VS Code ${lines((await run(code, ["--version"], { env: vscodeEnv })).stdout)[0]} on ${display}`,
+  );
   const exit = await new Promise((resolve) => {
     const child = spawn(
       app,
@@ -539,7 +258,7 @@ const main = async () => {
     }
   }
   if (exit !== 0) throw new Error(`the editor suite exited ${exit}`);
-  assertEditorEvidence(result, { runId, remoteSsh });
+  assertEditorEvidence(result, { runId: id, remoteSsh });
   if (workbenchStatus !== "stopped" && workbenchStatus !== "completed") {
     throw new Error(`the workbench session the suite stopped is ${workbenchStatus}, not stopped`);
   }
@@ -559,5 +278,5 @@ try {
       if (fs.existsSync(from)) fs.copyFileSync(from, path.join(evidenceDir, name));
     }
   }
-  cleanup();
+  await cleanup();
 }
