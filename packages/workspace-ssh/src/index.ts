@@ -67,6 +67,12 @@ const stripIpv6Brackets = (hostname: string): string =>
 const hashIdentity = (identity: string): string =>
   createHash("sha256").update(identity).digest("hex").slice(0, 24);
 
+const ALIAS_PREFIX = "mend-ws-";
+
+export const isWorkspaceSshAlias = (host: string): boolean =>
+  host.startsWith(ALIAS_PREFIX) &&
+  /^[a-z0-9][a-z0-9-]{0,23}-[0-9a-f]{24}$/.test(host.slice(ALIAS_PREFIX.length));
+
 const aliasLabel = (hostname: string): string => {
   const label = hostname
     .toLowerCase()
@@ -144,7 +150,7 @@ export const parseWorkspaceSshTarget = (input: {
   const parsedHostname = override === "" ? success(defaultHostname) : parseHostOverride(override);
   if (parsedHostname.ok === false) return failure(parsedHostname.error);
   return success({
-    alias: `mend-ws-${aliasLabel(defaultHostname)}-${hashIdentity(serverIdentity)}`,
+    alias: `${ALIAS_PREFIX}${aliasLabel(defaultHostname)}-${hashIdentity(serverIdentity)}`,
     hostname: parsedHostname.value,
     port: input.publishedPort,
     serverIdentity,
