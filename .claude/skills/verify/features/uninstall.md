@@ -52,8 +52,9 @@ Preconditions:
   `--server`, `--home` and `--yes`. Exit code `0`.
 - **Usage errors.** Run `mend uninstall --server --home`. Stderr reads
   `mend: usage: mend uninstall [--all | --server | --home] [--yes] · pick one scope`, exit `1`. Run
-  `mend uninstall --everything`. Stderr reads
-  `mend: usage: mend uninstall [--all | --server | --home] [--yes] · "--everything" is not an option`,
+  `mend uninstall --everything`. The flag gate refuses it before anything is read
+  (`apps/cli/src/flag-gate.ts`): stderr reads
+  `mend: unknown flag --everything · usage: mend uninstall [--all | --server | --home] [--yes]`,
   exit `1`.
 - **No terminal, no scope.** Run `mend uninstall < /dev/null; echo "exit $?"`. Stderr reads
   `mend: usage: mend uninstall [--all | --server | --home] [--yes] · no terminal to ask on`, and the

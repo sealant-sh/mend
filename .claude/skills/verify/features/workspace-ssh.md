@@ -105,7 +105,7 @@ Preconditions:
 - Local SSH command failures, including an unknown subcommand, no gateway during setup, or a
   config/key error, print `mend: …` on stdout and set exit `1`. API and authentication failures
   print `mend: …` on stderr and exit `1`. Capture both streams and the exit code.
-- `mend ssh status` also reads `--host`; `help.ts` documents the flag only for `mend ssh setup`.
+- `mend ssh status` also reads `--host`; `mend help ssh` lists it.
 - `ssh-config` and `client key` lines describe this client's files and the server's key list.
   `host trust      not checked` is the honest state: Mend has no host-key fingerprint from the
   platform.

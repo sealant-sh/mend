@@ -70,10 +70,12 @@ Preconditions:
   and `server upgrade`, followed by `see also`.
 - **Refusals before Docker.** Run `mend server`. Stderr reads
   `mend: usage: mend server <setup|status|start|stop|restart|logs|upgrade> [options]`, exit code
-  `1`. Run `mend server setup --bogus`. Stderr contains `Unknown server setup option "--bogus".`,
+  `1`. Run `mend server setup --bogus`. The flag gate refuses it before the server code runs
+  (`apps/cli/src/flag-gate.ts`): stderr starts
+  `mend: unknown flag --bogus · usage: mend server setup` and goes on with the page's usage lines,
   exit code `1`. Run `mend server status`. Stderr contains
   `No Mend server is configured. Run mend server setup explicitly to install one.`, exit code `1`.
-  Both arrive inside the storage wrapper described under Gotchas, for example
+  It arrives inside the storage wrapper described under Gotchas:
   `mend: Server storage operation failed: No Mend server is configured. Run mend server setup explicitly to install one.. Retain the identity and generations; fix the filesystem problem and retry.`
   On a machine with no installation, `logs` (even `--tail 0`), `stop`, `start`, `restart` and every
   `upgrade` refusal print the same `No Mend server is configured` line.
@@ -217,7 +219,7 @@ Preconditions:
   is fit to expose. Report them as written.
 - Every refusal raised while the server's configuration lock is held reaches stderr wrapped as
   `mend: Server storage operation failed: <refusal>.. Retain the identity and generations; fix the filesystem problem and retry.`
-  (`apps/cli/src/server-store.ts:152-158`, `:1023-1024`): an unknown option, no installation, a
-  contradicting flag pair, a fresh install with the edge. Match the refusal inside the line. A
-  product gap: the advice names a filesystem problem that is not there, and the refusal's own period
-  doubles. Only `mend server` with no subcommand prints its usage line unwrapped.
+  (`apps/cli/src/server-store.ts:152-158`, `:1023-1024`): no installation, a contradicting flag
+  pair, a fresh install with the edge. Match the refusal inside the line. A product gap: the advice
+  names a filesystem problem that is not there, and the refusal's own period doubles. Only
+  `mend server` with no subcommand prints its usage line unwrapped.

@@ -181,6 +181,9 @@ Preconditions:
   `--no-connect` in a scripted drive and connect in a separate PTY.
 - `mend service run` needs a live session. A settled `mend run` session no longer has a workspace;
   keep one alive (`-- sleep 1800`) for the length of the recipe and stop it by id afterwards.
+- A local client that resets its connection before the tunnel opens (a browser abort, a closed tab)
+  ends only that connection: `mend service connect`, and the tunnels `mend attach` opens, keep
+  listening, and the next connection tunnels.
 - `mend service connect` refuses a busy local port with
   `127.0.0.1:<port> is already in use here — pick one with: mend service connect <name> --port <n>`.
   Pick a free one rather than killing the holder.

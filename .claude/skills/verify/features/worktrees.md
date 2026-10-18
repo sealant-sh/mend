@@ -191,8 +191,7 @@ Preconditions:
 - A server-side live refusal (a shell or Service of a settled session still holding the workspace)
   carries no message in its body; the CLI then prints `mend: DELETE /worktrees/<id> → 409`. That
   reading is from source, not observed.
-- `mend refresh` takes the project as a positional word; the code also reads `--project`, which
-  `help.ts` does not document for it.
+- `mend refresh` takes the project as a positional word or as `--project <p>`.
 - `New session in <worktree>` carries the worktree name only for screen readers; use the full name.
 - The `Not on origin` list's first row is the total (`<n> files` and `+<a> −<d>`), then one row per
   named file.
