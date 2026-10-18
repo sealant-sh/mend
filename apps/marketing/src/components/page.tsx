@@ -45,8 +45,13 @@ const NAV: ReadonlyArray<{ label: string; href: string }> = [
 
 export function MarketingPage() {
   return (
-    <div className="mend-grain mend-grain-surface min-h-dvh overflow-x-clip text-foreground">
-      <header className="mend-grain-surface sticky top-0 z-40">
+    <div className="mend-grain mend-grain-surface min-h-dvh text-foreground">
+      {/* Nothing between the sticky header and the viewport clips: iOS Safari
+          treats a clipping ancestor as the header's container and, mid-scroll,
+          lets the page paint over it. The horizontal clip lives on <main>
+          instead. On iOS only, will-change gives the header its own layer;
+          desktop keeps its subpixel text. */}
+      <header className="mend-grain-surface sticky top-0 z-40 supports-[-webkit-touch-callout:none]:will-change-transform">
         <div
           className={`${FRAME} flex min-h-16 items-center justify-between gap-4 border-b-2 px-5 sm:px-8`}
         >
@@ -79,7 +84,7 @@ export function MarketingPage() {
         </div>
       </header>
 
-      <main className={FRAME}>
+      <main className={`${FRAME} overflow-x-clip`}>
         {/* Masthead: the wordmark at the width of the page, then the statement and the install line. */}
         <section className="px-5 sm:px-8">
           <div className={`relative border-b-2 ${RULE} pt-4 sm:pt-12`}>
