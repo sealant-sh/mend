@@ -258,6 +258,7 @@ export default async (h) => {
       const opened = await newWindows(known, { settle: 10_000, limit: 60_000 });
       const dialogsSeen = await dialogs();
       const quickInputOpen = await quickInput.isOpen();
+      if (opened.length > 0) await useWindow(opened[0]);
       await shot("after-open-alongside");
       const after = await counts();
       return {
@@ -290,6 +291,7 @@ export default async (h) => {
       await quickInput.pick("Open alongside");
       const opened = await newWindows(known, { settle: 10_000, limit: 90_000 });
       const dialogsSeen = await dialogs();
+      if (opened.length > 0) await useWindow(opened[0]);
       await shot("after-open");
       return {
         observed: `asked "${asked}" · Open alongside picked · ${opened.length} window(s) opened · dialogs ${JSON.stringify(dialogsSeen)}`,
