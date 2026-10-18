@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import type { MendClient } from "./client.js";
+import { rowCapability, rowContextValue, type RowCapability } from "./session-capability.js";
 import { displaySession, readProjects, sessionLines, workspaceReads } from "./session-lines.js";
 import type { Project, ProjectDetail, Session } from "./types.js";
 
@@ -29,6 +30,9 @@ export const sessionTooltip = (
   session: Session,
   lines: ReadonlyArray<string>,
 ): string => [`${project.name} · ${session.branch} · ${session.status}`, ...lines].join("\n");
+
+const whyLine = (capability: RowCapability): ReadonlyArray<string> =>
+  capability.kind === "notYours" ? [capability.why] : [];
 
 const statusIcon = (status: string): vscode.ThemeIcon => {
   switch (status) {
@@ -164,21 +168,19 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
           vscode.TreeItemCollapsibleState.None,
         );
         item.description = element.session.status;
-        item.tooltip = sessionTooltip(
-          element.project,
-          element.session,
-          sessionLines({
+        const capability = this.capabilityOf(element.session);
+        item.tooltip = sessionTooltip(element.project, element.session, [
+          ...sessionLines({
             session: element.session,
             viewer: this.current?.viewer ?? null,
             waitLine: null,
             retirement: null,
             members: [],
           }),
-        );
+          ...whyLine(capability),
+        ]);
         item.iconPath = statusIcon(element.session.status);
-        item.contextValue = LIVE_STATUSES.has(element.session.status)
-          ? "mend.session.live"
-          : "mend.session.settled";
+        item.contextValue = rowContextValue(element.session, capability);
         return item;
       }
       case "message": {
@@ -204,18 +206,22 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
     ]);
     const members =
       retirement === null || retirement.launcher === null ? [] : await this.client.memberNames();
-    item.tooltip = sessionTooltip(
-      element.project,
-      element.session,
-      sessionLines({
+    item.tooltip = sessionTooltip(element.project, element.session, [
+      ...sessionLines({
         session: element.session,
         viewer: this.current?.viewer ?? null,
         waitLine,
         retirement,
         members,
       }),
-    );
+      ...whyLine(this.capabilityOf(element.session)),
+    ]);
     return item;
+  }
+
+  /** What the row offers the viewer the last snapshot read; names fall back through who is live. */
+  private capabilityOf(session: Session): RowCapability {
+    return rowCapability({ session, viewer: this.current?.viewer ?? null, members: [] });
   }
 
   async getChildren(element?: MendNode): Promise<MendNode[]> {

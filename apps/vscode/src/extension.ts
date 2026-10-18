@@ -1020,6 +1020,9 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     vscode.commands.registerCommand("mend.openTerminal", (argument?: unknown) =>
       commands.openTerminal(argument),
     ),
+    vscode.commands.registerCommand("mend.watchTerminal", (argument?: unknown) =>
+      commands.openTerminal(argument),
+    ),
     vscode.commands.registerCommand("mend.reviewChange", (argument?: unknown) =>
       commands.reviewChange(argument),
     ),
