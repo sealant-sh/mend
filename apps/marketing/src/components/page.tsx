@@ -54,7 +54,7 @@ export function MarketingPage() {
           isolates its own. Nothing between the header and the viewport clips;
           the horizontal clip lives on <main>. On iOS only, translateZ(0) gives
           the header its own layer; desktop keeps its subpixel text. */}
-      <header className="mend-grain-surface sticky top-0 z-40 pt-[env(safe-area-inset-top)] supports-[-webkit-touch-callout:none]:[transform:translateZ(0)]">
+      <header className="mend-grain-surface mend-grain-header sticky top-0 z-40 pt-[env(safe-area-inset-top)] supports-[-webkit-touch-callout:none]:[transform:translateZ(0)]">
         <div
           className={`${FRAME} flex min-h-16 items-center justify-between gap-4 border-b-2 px-5 sm:px-8`}
         >
