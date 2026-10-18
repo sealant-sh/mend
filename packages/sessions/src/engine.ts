@@ -308,6 +308,7 @@ import {
   containerTokenRefused,
   pickupOnly,
 } from "./channel-identity.ts";
+import { CLAUDE_AGENT_HOOKS } from "./claude-settings.ts";
 import {
   CARRIED_INCOMING,
   carryConversationsExec,
@@ -327,7 +328,7 @@ import {
   withholdCodexThreadsExec,
 } from "./codex-memory.ts";
 import {
-  claudeSettingsArgOf,
+  claudeSettingsOf,
   type ConversationHarness,
   conversationArgv,
   foreignReasoningLine,
@@ -14524,26 +14525,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * only the worktree's change owner's own Claude processes run with crons on (the
        * `personal` settings, the session-state switch only); anyone else's personal Claude
        * processes get the `no-cron` settings, which a repository's `env` cannot turn back on. The
-       * settings go inline on the command line (`claudeSettingsArgOf`), so no file has to exist in
-       * the executor. A launch that names its own `--settings` is left as it is. Null `runsAs`:
-       * root, as before, nothing added.
+       * settings go inline on the command line, so no file has to exist in the executor. A
+       * terminal Claude also gets Mend's hooks (`CLAUDE_AGENT_HOOKS`), in either layout, so it
+       * reports when it waits for the person. A launch that names its own `--settings` is left as
+       * it is. Null `runsAs`: root, the hooks alone.
        */
       const withClaudeSettings = (
         session: Session,
         argv: ReadonlyArray<string>,
         runsAs: string | null,
+        terminal: boolean,
       ): Effect.Effect<ReadonlyArray<string>> =>
         Effect.gen(function* () {
-          if (runsAs === null || argv[0] !== "claude" || argv.includes("--settings")) return argv;
+          if (argv[0] !== "claude" || argv.includes("--settings")) return argv;
+          if (runsAs === null && !terminal) return argv;
+          const hooks = terminal ? { hooks: CLAUDE_AGENT_HOOKS } : {};
+          if (runsAs === null) return [...argv, "--settings", JSON.stringify(hooks)];
           const first = (yield* sessions.listForWorktree(session.worktreeId))
             .filter((member) => member.ownerUserId !== null)
             .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
           const changeOwner = first?.ownerUserId ?? session.ownerUserId;
-          return [
-            ...argv,
-            "--settings",
-            claudeSettingsArgOf(changeOwner === runsAs ? "personal" : "no-cron"),
-          ];
+          const settings = claudeSettingsOf(changeOwner === runsAs ? "personal" : "no-cron");
+          return [...argv, "--settings", JSON.stringify({ ...settings, ...hooks })];
         });
 
       /**
@@ -17617,6 +17620,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           session,
           codexMemoryOn ? shapedArgv : withCodexMemoryOff(shapedArgv, { join: false }),
           startAs === null ? null : ownerUserId,
+          protocolStart === null,
         );
         // opencode's conversations as they stand before it starts: what it starts afterwards is its
         // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
@@ -19410,6 +19414,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             session,
             codexMemoryOn ? shapedArgv : withCodexMemoryOff(shapedArgv, { join: !ownHome }),
             personStart === null ? null : sender,
+            protocolStart === null,
           );
           // opencode's conversations as they stand before it starts: what it starts afterwards is its
           // own (`opencodeConversationOf`). Read now, before the harness can write a new one.

@@ -28,6 +28,7 @@ import type { CreateOptions, SessionOptions, Workspace } from "@sealant/sdk";
 import { Deferred, Effect, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
+import { CLAUDE_AGENT_HOOKS } from "../src/claude-settings.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import {
   claudeLine,
@@ -1952,16 +1953,21 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     );
     const claudes = spawned.filter((argv) => argv.includes("claude"));
     expect(claudes).toHaveLength(2);
-    // Alice made the worktree: hers keep crons, with only the session-state switch.
+    // Alice made the worktree: hers keep crons, with only the session-state switch. Both are
+    // terminal agents, so both report their waits (G4).
     expect(claudes[0]?.slice(-2)).toEqual([
       "--settings",
-      JSON.stringify({ env: { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" } }),
+      JSON.stringify({
+        env: { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" },
+        hooks: CLAUDE_AGENT_HOOKS,
+      }),
     ]);
     // Maria's personal Claude in Alice's worktree: no scheduled prompts, whatever the repository says.
     expect(claudes[1]?.slice(-2)).toEqual([
       "--settings",
       JSON.stringify({
         env: { CLAUDE_CODE_DISABLE_CRON: "1", CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" },
+        hooks: CLAUDE_AGENT_HOOKS,
       }),
     ]);
   }, 30_000);

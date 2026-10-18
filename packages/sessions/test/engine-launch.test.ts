@@ -2012,6 +2012,7 @@ describe("SessionEngine", () => {
 
   it("launches Claude stream-json with one provider session id", async () => {
     const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
     const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
     const submitted: string[] = [];
     await withEngine(
@@ -2040,9 +2041,11 @@ describe("SessionEngine", () => {
           expect(process?.argv).toContain("stream-json");
           expect(process?.providerSessionId).toBe(process?.argv.at(sessionFlag + 1));
           expect(attached[0]?.mode).toBe("pipe");
+          // A protocol agent's waits are its requests: it gets none of the terminal agent's hooks.
+          expect(spawned.flat().join(" ")).not.toContain("mend hook");
         }),
       {
-        sealantLayer: sealantLaunchLayer(created),
+        sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned),
         protocolHostLayer: recordingProtocolHostLayer(attached, submitted),
       },
     );

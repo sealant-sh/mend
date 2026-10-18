@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { LinuxIdentity, OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
+import { AGENT_HOOKS, LinuxIdentity, OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { personHomeScript } from "./harness-layout.ts";
@@ -13,6 +13,7 @@ import {
   claudeOnboardingSeed,
   CODEX_SYSTEM_CONFIG,
   CODEX_SYSTEM_CONFIG_TEXT,
+  CODEX_SYSTEM_CONFIG_TEXT_V1,
   CODEX_TRUST_SEED,
   codexSystemConfigScript,
   COPY_REFRESH_TOKEN,
@@ -702,17 +703,52 @@ describe("Codex's system default: no sandbox of its own in a workspace", () => {
     runCodexSystemConfig(file);
     expect(fs.readFileSync(file, "utf8")).toBe(CODEX_SYSTEM_CONFIG_TEXT);
     expect(fs.statSync(file).mode & 0o777).toBe(0o644);
-    // One key, top level: no table header before it, so a TOML reader sees it as Codex does.
+    // One key before the first table header, so a TOML reader sees it at the top level.
     const lines = CODEX_SYSTEM_CONFIG_TEXT.split("\n").filter(
       (line) => line !== "" && !line.startsWith("#"),
     );
-    expect(lines).toEqual(['sandbox_mode = "danger-full-access"']);
+    expect(
+      lines.slice(
+        0,
+        lines.findIndex((line) => line.startsWith("[")),
+      ),
+    ).toEqual(['sandbox_mode = "danger-full-access"']);
     expect(CODEX_SYSTEM_CONFIG).toBe("/etc/codex/config.toml");
 
     const operator = 'sandbox_mode = "workspace-write"\n';
     fs.writeFileSync(file, operator);
     runCodexSystemConfig(file);
     expect(fs.readFileSync(file, "utf8")).toBe(operator);
+    expect(fs.readdirSync(path.dirname(file))).toEqual(["config.toml"]);
+  });
+
+  it("wires every Codex event of AGENT_HOOKS to mend hook codex, and nothing else", () => {
+    const tables = CODEX_SYSTEM_CONFIG_TEXT.split("\n").flatMap((line, index, all) => {
+      const event = /^\[\[hooks\.(\w+)\]\]$/.exec(line)?.[1];
+      return event === undefined ? [] : [{ event, handler: all[index + 1] }];
+    });
+    expect(tables.map((table) => table.event)).toEqual(AGENT_HOOKS.codex.map((hook) => hook.event));
+    for (const table of tables) {
+      expect(table.handler).toBe(
+        'hooks = [{ type = "command", command = "mend hook codex", timeout = 5 }]',
+      );
+    }
+  });
+
+  it("replaces Mend's own earlier text with the hooks, and keeps it changed by a byte", () => {
+    const root = makeHome();
+    const file = path.join(root, "etc", "codex", "config.toml");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, CODEX_SYSTEM_CONFIG_TEXT_V1);
+    runCodexSystemConfig(file);
+    expect(fs.readFileSync(file, "utf8")).toBe(CODEX_SYSTEM_CONFIG_TEXT);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o644);
+    expect(fs.readdirSync(path.dirname(file))).toEqual(["config.toml"]);
+
+    const edited = `${CODEX_SYSTEM_CONFIG_TEXT_V1}model = "o4"\n`;
+    fs.writeFileSync(file, edited);
+    runCodexSystemConfig(file);
+    expect(fs.readFileSync(file, "utf8")).toBe(edited);
     expect(fs.readdirSync(path.dirname(file))).toEqual(["config.toml"]);
   });
 

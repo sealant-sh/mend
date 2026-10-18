@@ -7,6 +7,7 @@
  * starts Claude as well (Claude refuses a `--settings` file that is not there; verified
  * 2026-10-07 against 2.1.292, which takes the JSON inline).
  */
+import { AGENT_HOOKS } from "@mend/domain/workbench";
 
 /** Which settings a Claude process gets (`--settings`). */
 export type ClaudeSettingsKind = "neutral" | "no-cron" | "personal";
@@ -42,6 +43,24 @@ export const claudeSettingsOf = (kind: ClaudeSettingsKind): Readonly<Record<stri
       return { env: CLAUDE_PERSONAL_ENV };
   }
 };
+
+/**
+ * The `hooks` a terminal Claude gets, in every layout: each event `AGENT_HOOKS` reads runs
+ * `mend hook claude`, which tells Mend that Claude waits for the person, and why, or goes on.
+ * Claude merges a settings layer's hooks with the others', so a repository's own hooks still run.
+ */
+export const CLAUDE_AGENT_HOOKS: Readonly<Record<string, ReadonlyArray<unknown>>> =
+  Object.fromEntries(
+    AGENT_HOOKS.claude.map((hook) => [
+      hook.event,
+      [
+        {
+          ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
+          hooks: [{ type: "command", command: "mend hook claude", timeout: 5 }],
+        },
+      ],
+    ]),
+  );
 
 /** The `--settings` argument itself: the settings as one line of JSON. */
 export const claudeSettingsArgOf = (kind: ClaudeSettingsKind): string =>

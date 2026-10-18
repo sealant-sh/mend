@@ -17,6 +17,7 @@ import {
   containerTokenRefused,
   pickupOnly,
 } from "../src/channel-identity.ts";
+import { CLAUDE_AGENT_HOOKS } from "../src/claude-settings.ts";
 import {
   sealantLaunchLayer,
   servedSocketApis,
@@ -50,6 +51,7 @@ const statusOf = (world: World, sessionId: SessionId) => world.sessions.get(sess
 /** A session with a live claude TUI, as `mend claude` or the VS Code Open flow starts one. */
 const withClaudeSession = <A, E>(
   work: (world: World, sessionId: SessionId) => Effect.Effect<A, E, SessionEngine>,
+  spawned: Array<ReadonlyArray<string>> = [],
 ) => {
   const created: Array<CreateOptions> = [];
   return withEngine(
@@ -69,11 +71,18 @@ const withClaudeSession = <A, E>(
         expect(agentOf(world, session.id)?.kind).toBe("agent-pty");
         return yield* work(world, session.id);
       }),
-    { sealantLayer: sealantLaunchLayer(created) },
+    { sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned) },
   );
 };
 
 describe("a terminal agent's hooks (G4)", () => {
+  it("starts a terminal claude in the shared layout with Mend's hooks and nothing else", async () => {
+    const spawned: Array<ReadonlyArray<string>> = [];
+    await withClaudeSession(() => Effect.void, spawned);
+    const claude = spawned.find((argv) => argv.includes("claude")) ?? [];
+    expect(claude.slice(-2)).toEqual(["--settings", JSON.stringify({ hooks: CLAUDE_AGENT_HOOKS })]);
+  });
+
   it("reads waiting while claude asks, and running once the tool ran or a prompt arrived", async () => {
     await withClaudeSession((world, sessionId) =>
       Effect.gen(function* () {
