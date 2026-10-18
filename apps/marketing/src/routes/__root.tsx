@@ -10,7 +10,11 @@ export const Route = createRootRoute({
   head: () => ({
     meta: [
       { charSet: "utf-8" },
-      { name: "viewport", content: "width=device-width, initial-scale=1" },
+      // cover: the page pads itself by the safe-area insets (standalone, landscape).
+      { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
+      // Safari 15–18 tint their bars from this; 26 samples the sticky header instead.
+      // The light canvas (--sw-canvas); the theme switcher swaps it for the dark one.
+      { name: "theme-color", content: "#edeae4" },
       { title: TITLE },
       { name: "description", content: DESCRIPTION },
       { property: "og:title", content: TITLE },

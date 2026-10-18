@@ -29,6 +29,7 @@
   }
 
   body {
+    background: var(--sw-canvas);
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
@@ -38,7 +39,7 @@
   }
 
   section[id] {
-    scroll-margin-top: 4.5rem;
+    scroll-margin-top: calc(4.5rem + env(safe-area-inset-top));
   }
 }
 
@@ -114,19 +115,33 @@ html.dark {
   --sw-canvas: oklch(0.1271 0.0074 184.24);
 }
 
-.mend-grain::after {
+/* Safari 26 colours the strip behind the iOS status bar from the fixed or sticky
+   element it hit-tests 4px below the top edge, and a pseudo-element hit-tests as
+   its host. The page-wide grain therefore sits under the header (z 30 < 40), and
+   the header carries its own copy, so the probe lands on the header and takes
+   its canvas instead of showing the scrolled page. */
+.mend-grain::after,
+.mend-grain-header::after {
   content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 60;
   pointer-events: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 600'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 600'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.65' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix color-interpolation-filters='sRGB' values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   background-size: 1200px;
   opacity: 0.07;
-  filter: contrast(0%);
+}
+
+.mend-grain::after {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+}
+
+.mend-grain-header::after {
+  position: absolute;
+  inset: 0;
 }
 
 /* The same grain reads much stronger on the pale canvas, so light runs it lower. */
-.dark .mend-grain::after {
+.dark .mend-grain::after,
+.dark .mend-grain-header::after {
   opacity: 0.12;
 }

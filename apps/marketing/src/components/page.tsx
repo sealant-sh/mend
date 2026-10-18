@@ -45,8 +45,17 @@ const NAV: ReadonlyArray<{ label: string; href: string }> = [
 
 export function MarketingPage() {
   return (
-    <div className="mend-grain mend-grain-surface min-h-dvh overflow-x-clip text-foreground">
-      <header className="mend-grain-surface sticky top-0 z-40">
+    // The viewport is viewport-fit=cover (see __root.tsx), so the page keeps clear
+    // of the safe-area insets, which a standalone or landscape iPhone reports.
+    // Every inset is 0 on a desktop.
+    <div className="mend-grain mend-grain-surface min-h-dvh pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] text-foreground">
+      {/* Safari 26 colours the strip behind the status bar from the sticky or
+          fixed bar it hit-tests 4px below the top: the header, now that the
+          page's grain sits under it (styles.css). The header sits in the root
+          stacking context above <main>, which isolates its own; the horizontal
+          clip lives on <main>, so nothing between the header and the viewport
+          clips. */}
+      <header className="mend-grain-surface mend-grain-header sticky top-0 z-40 pt-[env(safe-area-inset-top)]">
         <div
           className={`${FRAME} flex min-h-16 items-center justify-between gap-4 border-b-2 px-5 sm:px-8`}
         >
@@ -79,7 +88,7 @@ export function MarketingPage() {
         </div>
       </header>
 
-      <main className={FRAME}>
+      <main className={`${FRAME} relative isolate z-0 overflow-x-clip`}>
         {/* Masthead: the wordmark at the width of the page, then the statement and the install line. */}
         <section className="px-5 sm:px-8">
           <div className={`relative border-b-2 ${RULE} pt-4 sm:pt-12`}>
@@ -419,7 +428,12 @@ function SquareThemeSwitcher() {
       aria-label="Toggle color theme"
       title="Toggle theme"
       onClick={() => {
-        document.documentElement.classList.toggle("dark");
+        const root = document.documentElement;
+        root.classList.toggle("dark");
+        // Safari 15–18 tints its bars from theme-color (26 samples the header): keep it on the page's canvas.
+        document
+          .querySelector('meta[name="theme-color"]')
+          ?.setAttribute("content", getComputedStyle(root).getPropertyValue("--sw-canvas").trim());
       }}
     >
       <SunMoon className="size-4" aria-hidden="true" />
