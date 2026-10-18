@@ -28,6 +28,7 @@ import {
   Session,
   SessionProcess,
   SessionRepository,
+  WorktreeName,
 } from "@mend/domain/workbench";
 import { Change as SessionChange } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
@@ -305,21 +306,6 @@ export const projectRecipesGroup = HttpApiGroup.make("projectRecipes")
     }),
   )
   .middleware(AuthMiddleware);
-
-/**
- * A worktree's name: the session's identity in every list, and the tail of
- * its branch (`mend/<name>`). Same charset as project names — it lands in a
- * git branch ref and a directory name.
- */
-export const WorktreeName = Schema.String.pipe(
-  Schema.check(
-    Schema.makeFilter((value: string) =>
-      /^[a-z0-9][a-z0-9._-]{0,63}$/.test(value)
-        ? undefined
-        : "a short lowercase name like `fix-auth` — letters, digits, `.`, `_`, `-`",
-    ),
-  ),
-);
 
 /** Provisioning a session: the worktree exists after this; launching is separate. */
 export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewWorkbenchSession")({

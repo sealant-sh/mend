@@ -6,13 +6,14 @@ import {
   PreReleaseMemory,
   Session,
   Worktree,
+  WorktreeName,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
-import { CheckpointRequest, WorktreeName } from "./project-environment.ts";
+import { CheckpointRequest } from "./project-environment.ts";
 import {
   ObservationStamp,
   RemovalReport,

@@ -3,6 +3,23 @@ import { Schema } from "effect";
 import { ProjectId, Sha, WorktreeId } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
 
+export const WORKTREE_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/**
+ * A worktree's name: the session's identity in every list, and the tail of
+ * its branch (`mend/<name>`).
+ */
+export const WorktreeName = Schema.String.pipe(
+  Schema.check(
+    Schema.makeFilter((value: string) =>
+      WORKTREE_NAME_PATTERN.test(value)
+        ? undefined
+        : "a short lowercase name like `fix-auth` — letters, digits, `.`, `_`, `-`",
+    ),
+  ),
+);
+export type WorktreeName = typeof WorktreeName.Type;
+
 /**
  * The durable container (plan §5.5/§5.6): one named git worktree in the
  * project's central store, owning the change, its checkpoints, and their

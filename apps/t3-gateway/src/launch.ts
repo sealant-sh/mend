@@ -38,7 +38,6 @@ import type { BearerSession, ThreadLaunchOptions } from "./state.ts";
  * - A retry of the same command is the same thread (`resumed`).
  */
 
-/** A name Mend accepts for a worktree (`WorktreeName` in @mend/api-contracts). */
 const WORKTREE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 /**
