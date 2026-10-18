@@ -78,3 +78,6 @@ export const settledGroups = (groups: ReadonlyArray<WorktreeGroup>): ReadonlyArr
 /** The worktree's base as it was named, falling back to the recorded sha. */
 export const baseLabel = (worktree: WorktreeDto): string =>
   worktree.baseRef ?? worktree.baseSha.slice(0, 12);
+
+export const handedOffFrom = (worktree: WorktreeDto): string | null =>
+  worktree.handoff === null ? null : `handed off from ${worktree.handoff.machine}`;

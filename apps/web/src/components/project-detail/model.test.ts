@@ -6,6 +6,7 @@ import {
   Sha,
   WorktreeId,
 } from "@mend/domain";
+import { HandoffBranch, HandoffCutAt, HandoffMachine, HexSha } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import type {
@@ -16,7 +17,7 @@ import type {
   WorktreeDto,
 } from "#/lib/api";
 
-import { settledGroups, worktreeGroups } from "./model";
+import { handedOffFrom, settledGroups, worktreeGroups } from "./model";
 
 const projectId = ProjectId.make("project-detail-test");
 
@@ -28,6 +29,7 @@ const worktree = (name: string, createdAt: string): WorktreeDto => ({
   branch: `mend/${name}`,
   baseSha: Sha.make("0123456789abcdef0123456789abcdef01234567"),
   baseRef: "main",
+  handoff: null,
   createdAt: new Date(createdAt),
   updatedAt: new Date(createdAt),
 });
@@ -127,6 +129,24 @@ describe("Project detail worktree groups", () => {
   it("counts a worktree with no live conversation as settled", () => {
     const groups = worktreeGroups([older, newer, live], sessions, annotations);
     expect(settledGroups(groups).map((group) => group.worktree.name)).toEqual(["newer", "older"]);
+  });
+
+  it("names the machine a handed-off worktree came from, and nothing for one started from a base", () => {
+    const handedOff: WorktreeDto = {
+      ...worktree("fix-login", "2026-10-18T07:42:05Z"),
+      handoff: {
+        machine: HandoffMachine.make("dana-mbp"),
+        localBranch: HandoffBranch.make("fix/login"),
+        cutAt: HandoffCutAt.make("2026-10-18T07:42:05.000Z"),
+        head: HexSha.make("a".repeat(40)),
+        index: HexSha.make("b".repeat(40)),
+        checkpoint: HexSha.make("c".repeat(40)),
+        mergeBase: HexSha.make("d".repeat(40)),
+        deltaPack: "projects/p/packs/" + "e".repeat(64),
+      },
+    };
+    expect(handedOffFrom(handedOff)).toBe("handed off from dana-mbp");
+    expect(handedOffFrom(older)).toBeNull();
   });
 
   it("keeps many sessions under their own worktree and retains empty worktrees", () => {
