@@ -89,15 +89,27 @@ let xvfb = null;
 let dind = null;
 const context = "st-vscode-dind";
 
-const cleanup = async () => {
-  if (xvfb !== null) xvfb.kill("SIGTERM");
-  if (keep) {
-    log(`MEND_E2E_KEEP=1: ${dind ?? "no daemon"} and ${scratch} left up`);
-    return;
-  }
-  await removeWorld({ dind, context, scratch, clientEnv });
-  log("removed the Docker-in-Docker daemon and the scratch HOME");
-};
+let cleaning = null;
+const cleanup = () =>
+  (cleaning ??= (async () => {
+    if (xvfb !== null) xvfb.kill("SIGTERM");
+    if (keep) {
+      log(`MEND_E2E_KEEP=1: ${dind ?? "no daemon"} and ${scratch} left up`);
+      return;
+    }
+    await removeWorld({ dind, context, scratch, clientEnv });
+    log("removed the Docker-in-Docker daemon and the scratch HOME");
+  })());
+
+// Xvfb is detached, so an interrupted run would leave it (and the daemon) behind.
+for (const [signal, code] of [
+  ["SIGINT", 130],
+  ["SIGTERM", 143],
+])
+  process.once(signal, () => {
+    log(`${signal}: cleaning up`);
+    void cleanup().finally(() => process.exit(code));
+  });
 
 const main = async () => {
   const port = 3105;
