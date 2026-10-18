@@ -1,8 +1,8 @@
 import { PgClient } from "@effect/sql-pg";
 import { SessionId, SessionProcessId } from "@mend/domain";
 import { Effect, Layer, Redacted, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import { SqlClient } from "effect/sql";
+import type { SqlError } from "effect/sql/SqlError";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";

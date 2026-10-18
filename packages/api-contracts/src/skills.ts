@@ -1,20 +1,20 @@
 import { ProjectId, SkillId } from "@mend/domain";
 import { Skill, SkillFile, SkillScope, SkillWithFiles } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
 
 /** The bundle failed validation or collided with the library's caps; the message says how. */
-export class SkillRejected extends Schema.TaggedErrorClass<SkillRejected>()(
+export class SkillRejected extends Schema.TaggedError<SkillRejected>()(
   "SkillRejected",
   { message: Schema.String },
   { httpApiStatus: 422 },
 ) {}
 
 /** Someone else saved this skill first; re-read and reapply. */
-export class SkillStaleWrite extends Schema.TaggedErrorClass<SkillStaleWrite>()(
+export class SkillStaleWrite extends Schema.TaggedError<SkillStaleWrite>()(
   "SkillStaleWrite",
   { skillId: Schema.String, currentRevision: Schema.Int },
   { httpApiStatus: 409 },

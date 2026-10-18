@@ -2,7 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import {
   AgentConversationRepo,
   ChangeLandingsRepo,
-  MEND_EVENTS_CHANNEL,
+  listenEvents,
   MendEvent,
   ProjectsRepo,
   SessionsRepo,
@@ -41,6 +41,7 @@ import { NetworkConfig } from "@mend/network";
 import { asSealantUser } from "@mend/sealant";
 import { SessionEngine, WorkspaceGitHooks, WorktreeReads } from "@mend/sessions";
 import { Cause, Clock, Duration, Effect, Layer, Result, Schema, Stream } from "effect";
+import type { SqlError } from "effect/sql/SqlError";
 
 import { OwnerLanding } from "./owner-landing.ts";
 
@@ -476,28 +477,8 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
     return { consider, sweep };
   });
 
-export const AutomaticLandingLive: Layer.Layer<
-  never,
-  never,
-  | PgClient.PgClient
-  | AgentConversationRepo
-  | ChangeLandingsRepo
-  | NetworkConfig
-  | OwnerLanding
-  | ProjectsRepo
-  | RequestIntentReader
-  | SessionEngine
-  | SessionsRepo
-  | SettingsRepo
-  | SlackInstallsRepo
-  | SlackThreadsRepo
-  | WorkspaceGitHooks
-  | WorktreeChangesRepo
-  | WorktreeReads
-  | WorktreesRepo
-> = Layer.effectDiscard(
+export const automaticLanding = (events: Stream.Stream<string, SqlError>) =>
   Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
     const lander = yield* makeAutomaticLanding();
 
     const scope = yield* Effect.scope;
@@ -531,7 +512,7 @@ export const AutomaticLandingLive: Layer.Layer<
       });
     yield* Effect.forkScoped(lander.sweep());
 
-    yield* sql.listen(MEND_EVENTS_CHANNEL).pipe(
+    yield* events.pipe(
       Stream.runForEach((payload) =>
         decodeEvent(payload).pipe(
           Effect.flatMap((event) =>
@@ -551,5 +532,27 @@ export const AutomaticLandingLive: Layer.Layer<
       ),
       Effect.forkScoped,
     );
-  }),
+  });
+
+export const AutomaticLandingLive: Layer.Layer<
+  never,
+  never,
+  | PgClient.PgClient
+  | AgentConversationRepo
+  | ChangeLandingsRepo
+  | NetworkConfig
+  | OwnerLanding
+  | ProjectsRepo
+  | RequestIntentReader
+  | SessionEngine
+  | SessionsRepo
+  | SettingsRepo
+  | SlackInstallsRepo
+  | SlackThreadsRepo
+  | WorkspaceGitHooks
+  | WorktreeChangesRepo
+  | WorktreeReads
+  | WorktreesRepo
+> = Layer.effectDiscard(
+  Effect.flatMap(PgClient.PgClient, (sql) => automaticLanding(listenEvents(sql))),
 );

@@ -183,12 +183,12 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
   Layer.effect(
     Auth,
     Effect.gen(function* () {
-      const databaseUrl = yield* Config.redacted("DATABASE_URL").pipe(
+      const databaseUrl = yield* Config.Redacted("DATABASE_URL").pipe(
         Config.orElse(() =>
           Config.succeed(Redacted.make("postgres://mend:mend@localhost:5434/mend")),
         ),
       );
-      const secret = yield* Config.redacted("BETTER_AUTH_SECRET").pipe(
+      const secret = yield* Config.Redacted("BETTER_AUTH_SECRET").pipe(
         Config.orElse(() => Config.succeed(Redacted.make("mend-dev-secret-do-not-deploy"))),
       );
       // Better Auth otherwise reads this ambient variable in addition to its
@@ -199,7 +199,7 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
       const network = yield* NetworkConfig;
       const registration = yield* RegistrationPolicy;
 
-      const poolMax = yield* Config.int("MEND_AUTH_DATABASE_POOL_MAX").pipe(Config.withDefault(3));
+      const poolMax = yield* Config.Int("MEND_AUTH_DATABASE_POOL_MAX").pipe(Config.withDefault(3));
       const pool = yield* Effect.acquireRelease(
         Effect.sync(() => {
           const created = new Pool({
@@ -236,7 +236,7 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
       // A fixed operator token for dev/device testing: MEND_STATIC_TOKEN=xyz
       // makes `Bearer xyz` authenticate as the FIRST user. Opt-in via env,
       // never set in anything deployed.
-      const staticToken = yield* Config.string("MEND_STATIC_TOKEN").pipe(
+      const staticToken = yield* Config.String("MEND_STATIC_TOKEN").pipe(
         Config.orElse(() => Config.succeed("")),
       );
 

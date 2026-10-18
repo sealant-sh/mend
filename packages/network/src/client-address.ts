@@ -90,7 +90,7 @@ export const trustsEveryAddress = (trustedProxies: ReadonlyArray<string>): boole
   trustedProxies.some((cidr) => cidr.trim().endsWith("/0"));
 
 /** `MEND_TRUSTED_PROXIES`: comma-separated CIDRs of the hops whose forwarded entries are believed. */
-export const trustedProxyCidrs = Config.string("MEND_TRUSTED_PROXIES").pipe(
+export const trustedProxyCidrs = Config.String("MEND_TRUSTED_PROXIES").pipe(
   Config.orElse(() => Config.succeed("")),
   Config.map((raw) =>
     raw

@@ -11,7 +11,7 @@ import {
   ManagedRuntime,
   Redacted,
 } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, describe, expect } from "vitest";
 

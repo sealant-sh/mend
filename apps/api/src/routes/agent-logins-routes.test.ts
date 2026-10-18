@@ -4,8 +4,8 @@ import { UserAgentLoginsRepo, UserEvents } from "@mend/db";
 import { AgentLogins, DEFAULT_AGENT_LOGINS } from "@mend/domain/workbench";
 import { SealantClients } from "@mend/sealant";
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter, HttpServer } from "effect/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { describe, expect, it } from "vitest";
 
 import { AccountsGroupLive, AuthMiddlewareLive } from "./api-live.ts";

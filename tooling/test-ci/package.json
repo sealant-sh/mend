@@ -17,7 +17,6 @@
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
     "effect": "catalog:",
-    "vitest": "catalog:",
-    "vitest-v5": "catalog:t3"
+    "vitest": "catalog:"
   }
 }

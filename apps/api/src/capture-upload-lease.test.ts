@@ -34,7 +34,7 @@ import {
   Schema,
   String as Str,
 } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 const postgres = postgresTestConfig();
@@ -290,10 +290,10 @@ describe.skipIf(postgres.skip)("upload publication with real PostgreSQL leases",
         ))
           yield* migration;
         const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE TABLE upload_commit_fault (id int);
-          CREATE FUNCTION reject_upload_commit() RETURNS trigger LANGUAGE plpgsql AS $$
-          BEGIN RAISE EXCEPTION 'synthetic deferred upload COMMIT failure'; END $$;
-          CREATE CONSTRAINT TRIGGER upload_commit_failure AFTER INSERT ON upload_commit_fault
+        yield* sql.unsafe(`CREATE TABLE upload_commit_fault (id int)`);
+        yield* sql.unsafe(`CREATE FUNCTION reject_upload_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN RAISE EXCEPTION 'synthetic deferred upload COMMIT failure'; END $$`);
+        yield* sql.unsafe(`CREATE CONSTRAINT TRIGGER upload_commit_failure AFTER INSERT ON upload_commit_fault
           DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_upload_commit()`);
         yield* sql`INSERT INTO organizations (id,name) VALUES ('org-upload','Upload fixture')`;
         yield* sql`INSERT INTO projects (id,name,organization_id,store_path,default_branch)

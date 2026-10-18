@@ -28,7 +28,7 @@
   "dependencies": {
     "@t3tools/contracts": "link:.",
     "@t3tools/shared": "link:./t3-shared",
-    "effect": "catalog:t3",
+    "effect": "catalog:",
     "mdast-util-directive": "catalog:t3",
     "micromark-extension-directive": "catalog:t3",
     "micromark-util-character": "catalog:t3",
@@ -42,10 +42,10 @@
     "unified": "catalog:t3"
   },
   "devDependencies": {
-    "@effect/vitest": "catalog:t3",
+    "@effect/vitest": "catalog:",
     "@mend/test-ci": "workspace:*",
     "@types/node": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:t3"
+    "vitest": "catalog:"
   }
 }

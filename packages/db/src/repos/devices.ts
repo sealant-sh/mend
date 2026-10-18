@@ -44,19 +44,19 @@ export class ClaimedPairing extends Schema.Class<ClaimedPairing>("ClaimedPairing
 }) {}
 
 /** No pairing code with that value exists. */
-export class PairingCodeUnknownError extends Schema.TaggedErrorClass<PairingCodeUnknownError>()(
+export class PairingCodeUnknownError extends Schema.TaggedError<PairingCodeUnknownError>()(
   "PairingCodeUnknownError",
   {},
 ) {}
 
 /** The code exists but is spent: past its expiry, or already claimed. */
-export class PairingCodeSpentError extends Schema.TaggedErrorClass<PairingCodeSpentError>()(
+export class PairingCodeSpentError extends Schema.TaggedError<PairingCodeSpentError>()(
   "PairingCodeSpentError",
   {},
 ) {}
 
 /** No such device for this user. */
-export class DeviceNotFoundError extends Schema.TaggedErrorClass<DeviceNotFoundError>()(
+export class DeviceNotFoundError extends Schema.TaggedError<DeviceNotFoundError>()(
   "DeviceNotFoundError",
   { id: Schema.String },
 ) {}
@@ -76,25 +76,25 @@ export class CliAuthRequest extends Schema.Class<CliAuthRequest>("CliAuthRequest
 }) {}
 
 /** No CLI authorize request with that code or device code exists. */
-export class CliAuthUnknownError extends Schema.TaggedErrorClass<CliAuthUnknownError>()(
+export class CliAuthUnknownError extends Schema.TaggedError<CliAuthUnknownError>()(
   "CliAuthUnknownError",
   {},
 ) {}
 
 /** The request exists but is spent: expired, already approved, or already collected. */
-export class CliAuthSpentError extends Schema.TaggedErrorClass<CliAuthSpentError>()(
+export class CliAuthSpentError extends Schema.TaggedError<CliAuthSpentError>()(
   "CliAuthSpentError",
   {},
 ) {}
 
 /** The request exists and nobody has decided yet — the CLI should keep polling. */
-export class CliAuthPendingError extends Schema.TaggedErrorClass<CliAuthPendingError>()(
+export class CliAuthPendingError extends Schema.TaggedError<CliAuthPendingError>()(
   "CliAuthPendingError",
   {},
 ) {}
 
 /** A signed-in user looked at the request and said no. */
-export class CliAuthDeniedError extends Schema.TaggedErrorClass<CliAuthDeniedError>()(
+export class CliAuthDeniedError extends Schema.TaggedError<CliAuthDeniedError>()(
   "CliAuthDeniedError",
   {},
 ) {}

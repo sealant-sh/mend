@@ -63,7 +63,7 @@ const ManagedDigests = Schema.Record(Schema.String, Schema.Record(Schema.String,
 /** Where a directory that is not Mend's to delete goes, relative to the harness home. */
 export const SKILLS_KEPT_DIR = ".mend/skills-kept";
 
-export class SkillMaterializeError extends Schema.TaggedErrorClass<SkillMaterializeError>()(
+export class SkillMaterializeError extends Schema.TaggedError<SkillMaterializeError>()(
   "SkillMaterializeError",
   { message: Schema.String },
 ) {}

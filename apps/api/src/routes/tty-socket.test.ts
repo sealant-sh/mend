@@ -10,7 +10,7 @@ import {
 import { SealantClient, SealantPrincipal } from "@mend/sealant";
 import { WorkspaceCaller } from "@mend/sessions";
 import { Deferred, Effect, Layer, ManagedRuntime } from "effect";
-import { HttpRouter } from "effect/unstable/http";
+import { HttpRouter } from "effect/http";
 import { describe, expect, it } from "vitest";
 
 import {

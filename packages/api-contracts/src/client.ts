@@ -1,7 +1,7 @@
 import { Effect } from "effect";
+import type { HttpClient } from "effect/http";
+import { HttpApi, HttpApiClient } from "effect/http-api";
 import * as SchemaAST from "effect/SchemaAST";
-import type { HttpClient } from "effect/unstable/http";
-import { HttpApi, HttpApiClient } from "effect/unstable/httpapi";
 
 import { MendApi } from "./api.ts";
 

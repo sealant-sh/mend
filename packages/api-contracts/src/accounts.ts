@@ -1,7 +1,7 @@
 import { Issue, Run, Timestamp } from "@mend/domain";
 import { AgentLogins } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { AuthMiddleware } from "./common.ts";
 import { AccountRejected, SealantUnavailable } from "./system.ts";
@@ -84,7 +84,7 @@ export const accountsGroup = HttpApiGroup.make("accounts")
   )
   .middleware(AuthMiddleware);
 
-export class NotFound extends Schema.TaggedErrorClass<NotFound>()(
+export class NotFound extends Schema.TaggedError<NotFound>()(
   "NotFound",
   { id: Schema.String },
   { httpApiStatus: 404 },

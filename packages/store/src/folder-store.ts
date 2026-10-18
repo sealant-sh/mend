@@ -12,10 +12,9 @@ import * as Context from "effect/Context";
 import { StoreConfig } from "./store.ts";
 
 /** A folder operation refused or failed; the message says which rule or what happened. */
-export class FolderStoreError extends Schema.TaggedErrorClass<FolderStoreError>()(
-  "FolderStoreError",
-  { message: Schema.String },
-) {}
+export class FolderStoreError extends Schema.TaggedError<FolderStoreError>()("FolderStoreError", {
+  message: Schema.String,
+}) {}
 
 export interface FolderUpload {
   /** Folder-relative, forward slashes, no `.` or `..` segments. */

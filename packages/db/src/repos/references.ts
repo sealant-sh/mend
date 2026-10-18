@@ -7,7 +7,7 @@ import * as Context from "effect/Context";
 import { MendDB } from "../client.ts";
 import { projectReferences, referenceRepos } from "../schema/workbench.ts";
 
-export class ReferenceNotFoundError extends Schema.TaggedErrorClass<ReferenceNotFoundError>()(
+export class ReferenceNotFoundError extends Schema.TaggedError<ReferenceNotFoundError>()(
   "ReferenceNotFoundError",
   {
     referenceId: Schema.String,

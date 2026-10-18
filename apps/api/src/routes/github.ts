@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { GhFailure, GhRepoView, GhStatusView, MendApi, PullRequestView } from "@mend/api-contracts";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { GithubIdentity } from "../github-identity.ts";
 
@@ -15,7 +15,7 @@ import { GithubIdentity } from "../github-identity.ts";
  */
 
 /** A gh invocation that exited nonzero (or could not run at all). */
-export class GhError extends Schema.TaggedErrorClass<GhError>()("GhError", {
+export class GhError extends Schema.TaggedError<GhError>()("GhError", {
   args: Schema.Array(Schema.String),
   exitCode: Schema.NullOr(Schema.Int),
   stderr: Schema.String,

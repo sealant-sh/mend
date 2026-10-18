@@ -15,7 +15,7 @@ import * as Context from "effect/Context";
 import { MendDB } from "../client.ts";
 import { userPiProfiles } from "../schema/workbench.ts";
 
-export class PiProfileInvalidError extends Schema.TaggedErrorClass<PiProfileInvalidError>()(
+export class PiProfileInvalidError extends Schema.TaggedError<PiProfileInvalidError>()(
   "PiProfileInvalidError",
   { message: Schema.String },
 ) {}

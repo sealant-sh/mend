@@ -129,6 +129,8 @@ describe("the event stream lifecycle", () => {
           currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
           currentTimeMillis: clock.currentTimeMillis,
           currentTimeNanos: clock.currentTimeNanos,
+          monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
+          monotonicTimeNanos: clock.monotonicTimeNanos,
           sleep: (duration) =>
             Duration.toMillis(duration) === 1_000
               ? Deferred.succeed(graceSleeping, undefined).pipe(

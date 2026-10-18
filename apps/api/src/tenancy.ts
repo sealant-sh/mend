@@ -17,7 +17,7 @@ export class TenancyConfig extends Context.Service<
 >()("@mend/api/TenancyConfig") {}
 
 /** The process must not start in the requested tenancy mode; the message says why and what to do. */
-export class TenancyRefused extends Schema.TaggedErrorClass<TenancyRefused>()("TenancyRefused", {
+export class TenancyRefused extends Schema.TaggedError<TenancyRefused>()("TenancyRefused", {
   message: Schema.String,
 }) {}
 
@@ -188,20 +188,20 @@ export const TenancyConfigLive: Layer.Layer<
     const mode = yield* Config.schema(TenancyMode, "MEND_TENANCY").pipe(
       Config.withDefault("single"),
     );
-    const serviceHosts = yield* Config.string("MEND_SERVICE_HOSTS").pipe(
+    const serviceHosts = yield* Config.String("MEND_SERVICE_HOSTS").pipe(
       Config.withDefault("127.0.0.1"),
     );
     const sourcePolicy = yield* Config.schema(
       Schema.Literals(["operator", "tenant"]),
       "MEND_SOURCE_POLICY",
     ).pipe(Config.withDefault("operator" as const));
-    const transportBoundToOrigin = yield* Config.boolean("MEND_GIT_TRANSPORT_BIND_ORIGIN").pipe(
+    const transportBoundToOrigin = yield* Config.Boolean("MEND_GIT_TRANSPORT_BIND_ORIGIN").pipe(
       Config.withDefault(true),
     );
-    const captureRequireSizes = yield* Config.boolean("MEND_CAPTURE_REQUIRE_SIZES").pipe(
+    const captureRequireSizes = yield* Config.Boolean("MEND_CAPTURE_REQUIRE_SIZES").pipe(
       Config.withDefault(false),
     );
-    const blobStore = yield* Config.string("MEND_BLOB_STORE").pipe(Config.withDefault(""));
+    const blobStore = yield* Config.String("MEND_BLOB_STORE").pipe(Config.withDefault(""));
     const sessionStore = yield* Config.schema(
       Schema.Literals(["captured", "colocated"]),
       "MEND_SESSION_STORE",

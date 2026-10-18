@@ -15,7 +15,7 @@ import { MendDB, type MendDatabase } from "../client.ts";
 import { userSecretFiles } from "../schema/workbench.ts";
 
 /** The path or the person's total is not acceptable; the message says which rule. */
-export class SecretFileInvalidError extends Schema.TaggedErrorClass<SecretFileInvalidError>()(
+export class SecretFileInvalidError extends Schema.TaggedError<SecretFileInvalidError>()(
   "SecretFileInvalidError",
   { message: Schema.String },
 ) {}

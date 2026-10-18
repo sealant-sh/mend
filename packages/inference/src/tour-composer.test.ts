@@ -15,7 +15,7 @@ import { Change, ChangeTour, Project, Session } from "@mend/domain/workbench";
 import { SealantClient } from "@mend/sealant";
 import { WORKTREE_STAMP, WorktreeReads } from "@mend/sessions";
 import { Effect, Layer } from "effect";
-import * as FastCheck from "effect/testing/FastCheck";
+import * as FastCheck from "fast-check";
 
 import { callTool, exitedEvent, fixtureFor, makeHarness } from "./change-pass.test-fixtures.ts";
 import { InferenceError, InferenceProvider } from "./provider.ts";

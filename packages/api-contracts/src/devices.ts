@@ -1,7 +1,7 @@
 import { NotificationSettings } from "@mend/domain/workbench";
 import { PublicOrigin } from "@mend/network";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
@@ -88,21 +88,21 @@ export class PairClaimResult extends Schema.Class<PairClaimResult>("PairClaimRes
 }) {}
 
 /** No pairing code with that value. */
-export class PairingCodeNotFound extends Schema.TaggedErrorClass<PairingCodeNotFound>()(
+export class PairingCodeNotFound extends Schema.TaggedError<PairingCodeNotFound>()(
   "PairingCodeNotFound",
   {},
   { httpApiStatus: 404 },
 ) {}
 
 /** The code exists but is spent — past its expiry, or already claimed. */
-export class PairingCodeSpent extends Schema.TaggedErrorClass<PairingCodeSpent>()(
+export class PairingCodeSpent extends Schema.TaggedError<PairingCodeSpent>()(
   "PairingCodeSpent",
   {},
   { httpApiStatus: 410 },
 ) {}
 
 /** Too many failed claims from one address. `/pair` is unauthenticated; this is its floor. */
-export class PairingRateLimited extends Schema.TaggedErrorClass<PairingRateLimited>()(
+export class PairingRateLimited extends Schema.TaggedError<PairingRateLimited>()(
   "PairingRateLimited",
   { retryAfterSeconds: Schema.Int },
   { httpApiStatus: 429 },
@@ -186,21 +186,21 @@ export class CliAuthRequestView extends Schema.Class<CliAuthRequestView>("CliAut
 }) {}
 
 /** No authorize request with that code or device code. */
-export class CliAuthNotFound extends Schema.TaggedErrorClass<CliAuthNotFound>()(
+export class CliAuthNotFound extends Schema.TaggedError<CliAuthNotFound>()(
   "CliAuthNotFound",
   {},
   { httpApiStatus: 404 },
 ) {}
 
 /** The request exists but is spent — expired, already decided, or already collected. */
-export class CliAuthSpent extends Schema.TaggedErrorClass<CliAuthSpent>()(
+export class CliAuthSpent extends Schema.TaggedError<CliAuthSpent>()(
   "CliAuthSpent",
   {},
   { httpApiStatus: 410 },
 ) {}
 
 /** A signed-in user looked at the request and said no. */
-export class CliAuthDenied extends Schema.TaggedErrorClass<CliAuthDenied>()(
+export class CliAuthDenied extends Schema.TaggedError<CliAuthDenied>()(
   "CliAuthDenied",
   {},
   { httpApiStatus: 403 },

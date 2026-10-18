@@ -15,7 +15,7 @@ import {
   worktreeChanges,
 } from "../schema/workbench.ts";
 
-export class SessionChangeNotFoundError extends Schema.TaggedErrorClass<SessionChangeNotFoundError>()(
+export class SessionChangeNotFoundError extends Schema.TaggedError<SessionChangeNotFoundError>()(
   "SessionChangeNotFoundError",
   {
     id: Schema.String,

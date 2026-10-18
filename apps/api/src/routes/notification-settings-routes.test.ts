@@ -3,8 +3,8 @@ import { Auth } from "@mend/auth";
 import { NotificationSettingsRepo, PushDevicesRepo } from "@mend/db";
 import { DEFAULT_NOTIFICATION_SETTINGS, NotificationSettings } from "@mend/domain/workbench";
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter, HttpServer } from "effect/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { describe, expect, it } from "vitest";
 
 import { AuthMiddlewareLive, DevicesGroupLive } from "./api-live.ts";

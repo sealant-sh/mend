@@ -16,7 +16,7 @@ import * as Context from "effect/Context";
 import { MendDB } from "../client.ts";
 import { followUps } from "../schema/workbench.ts";
 
-export class FollowUpNotFoundError extends Schema.TaggedErrorClass<FollowUpNotFoundError>()(
+export class FollowUpNotFoundError extends Schema.TaggedError<FollowUpNotFoundError>()(
   "FollowUpNotFoundError",
   {
     sessionId: Schema.String,

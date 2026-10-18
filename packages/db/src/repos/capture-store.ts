@@ -41,7 +41,7 @@ import {
  */
 
 /** 409 `worktree_leased`: someone holds the worktree and the lease has not expired. */
-export class WorktreeLeasedError extends Schema.TaggedErrorClass<WorktreeLeasedError>()(
+export class WorktreeLeasedError extends Schema.TaggedError<WorktreeLeasedError>()(
   "WorktreeLeasedError",
   { worktreeId: Schema.String },
 ) {}
@@ -59,13 +59,13 @@ export const CaptureConflictReason = Schema.Literals([
 export type CaptureConflictReason = typeof CaptureConflictReason.Type;
 
 /** 409 on register: the CAS did not match; `reason` is the diagnosis after the fact. */
-export class CaptureConflictError extends Schema.TaggedErrorClass<CaptureConflictError>()(
+export class CaptureConflictError extends Schema.TaggedError<CaptureConflictError>()(
   "CaptureConflictError",
   { worktreeId: Schema.String, n: Schema.Int, reason: CaptureConflictReason },
 ) {}
 
 /** 409 on summary: the capture is not the chain head (or never landed). */
-export class SummaryRejectedError extends Schema.TaggedErrorClass<SummaryRejectedError>()(
+export class SummaryRejectedError extends Schema.TaggedError<SummaryRejectedError>()(
   "SummaryRejectedError",
   { worktreeId: Schema.String, captureId: Schema.String },
 ) {}

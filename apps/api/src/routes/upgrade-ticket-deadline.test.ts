@@ -11,9 +11,9 @@ import {
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
 import { Context, Effect, Layer, ManagedRuntime, Redacted } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
-import { SqlClient } from "effect/unstable/sql";
+import { HttpRouter, HttpServer } from "effect/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
+import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, expectTypeOf, it } from "vitest";
 
 import { UpgradeTicketExchangeGroupLive } from "./upgrade-tickets.ts";

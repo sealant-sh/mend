@@ -1,5 +1,5 @@
 import { Cause, Effect, type Layer } from "effect";
-import { HttpRouter, HttpServerError, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerError, HttpServerResponse } from "effect/http";
 
 /**
  * Headers the API sets on its own answers (docs/adr/0004, "Errors and browser headers"; MEND-11).

@@ -14,7 +14,7 @@ import { FOLDER_MAX_LISTED_FILES, type Folder } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import { FolderStore, folderDirectory, StoreConfig } from "@mend/store";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 

@@ -3,7 +3,7 @@ import { createServer, type IncomingHttpHeaders } from "node:http";
 
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { Effect } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { apiClientFor } from "./api/run.ts";

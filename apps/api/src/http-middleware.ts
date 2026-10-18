@@ -1,6 +1,6 @@
 import type { PublicNetwork } from "@mend/network";
 import { Layer } from "effect";
-import type { HttpRouter } from "effect/unstable/http";
+import type { HttpRouter } from "effect/http";
 
 import type { Budgets } from "./budgets.ts";
 import { errorBoundary, type ErrorDetail } from "./error-boundary.ts";

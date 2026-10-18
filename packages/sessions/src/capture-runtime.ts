@@ -168,20 +168,20 @@ export const CaptureDrainPolicyLive: Layer.Layer<CaptureDrainPolicy, Config.Conf
   Layer.effect(
     CaptureDrainPolicy,
     Effect.gen(function* () {
-      const stallSeconds = yield* Config.int("MEND_CAPTURE_DRAIN_STALL_SECONDS").pipe(
+      const stallSeconds = yield* Config.Int("MEND_CAPTURE_DRAIN_STALL_SECONDS").pipe(
         Config.withDefault(DEFAULT_CAPTURE_DRAIN_STALL_SECONDS),
       );
-      const executorMaxSeconds = yield* Config.option(Config.int("MEND_EXECUTOR_MAX_SECONDS"));
-      const deadlineMarginSeconds = yield* Config.int("MEND_EXECUTOR_DEADLINE_MARGIN_SECONDS").pipe(
+      const executorMaxSeconds = yield* Config.option(Config.Int("MEND_EXECUTOR_MAX_SECONDS"));
+      const deadlineMarginSeconds = yield* Config.Int("MEND_EXECUTOR_DEADLINE_MARGIN_SECONDS").pipe(
         Config.withDefault(DEFAULT_EXECUTOR_DEADLINE_MARGIN_SECONDS),
       );
-      const drainEstimateSeconds = yield* Config.int("MEND_CAPTURE_DRAIN_ESTIMATE_SECONDS").pipe(
+      const drainEstimateSeconds = yield* Config.Int("MEND_CAPTURE_DRAIN_ESTIMATE_SECONDS").pipe(
         Config.withDefault(DEFAULT_CAPTURE_DRAIN_ESTIMATE_SECONDS),
       );
-      const statusSeconds = yield* Config.int("MEND_CAPTURE_STATUS_SECONDS").pipe(
+      const statusSeconds = yield* Config.Int("MEND_CAPTURE_STATUS_SECONDS").pipe(
         Config.withDefault(Duration.toSeconds(DEFAULT_DRAIN_POLICY.statusInterval)),
       );
-      const leaseWaitSeconds = yield* Config.int("MEND_LAUNCH_LEASE_WAIT_SECONDS").pipe(
+      const leaseWaitSeconds = yield* Config.Int("MEND_LAUNCH_LEASE_WAIT_SECONDS").pipe(
         Config.withDefault(Duration.toSeconds(DEFAULT_DRAIN_POLICY.leaseWait)),
       );
       return {

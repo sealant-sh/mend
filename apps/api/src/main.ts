@@ -205,7 +205,7 @@ import {
   SourcePolicyLive,
 } from "@mend/store";
 import { Cause, Config, Effect, Layer, Option, Schema } from "effect";
-import { FetchHttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { FetchHttpClient, HttpRouter, HttpServerResponse } from "effect/http";
 
 import { ProjectAccessLive } from "./access.ts";
 import { AutomaticLandingLive } from "./automatic-landing.ts";
@@ -419,7 +419,7 @@ const AuthRoutes = HttpRouter.use((router) =>
 // ─── HTTP: the API contract + auth + data planes on one port ───────────────
 const ServerLive = Layer.unwrap(
   Effect.gen(function* () {
-    const port = yield* Config.int("PORT").pipe(Config.orElse(() => Config.succeed(3101)));
+    const port = yield* Config.Int("PORT").pipe(Config.orElse(() => Config.succeed(3101)));
     const network = yield* NetworkConfig;
     const budgets = yield* Budgets;
     const trustedProxies = yield* trustedProxyCidrs;

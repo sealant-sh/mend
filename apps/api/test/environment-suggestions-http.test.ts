@@ -1,7 +1,7 @@
 import { HostEnvironmentSuggestionsView } from "@mend/api-contracts";
 import { Effect, Layer } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpRouter, HttpServer } from "effect/http";
+import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { describe, expect, it } from "vitest";
 
 import type { HostEnvironmentSuggestions } from "../src/services/host-environment.ts";

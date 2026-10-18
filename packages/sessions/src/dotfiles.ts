@@ -35,7 +35,7 @@ import * as Context from "effect/Context";
  * Resolving one dotfiles source failed; the message is readable. A launch goes on without that
  * source and records the message on the session; saving a repository refuses with it.
  */
-export class DotfilesResolveError extends Schema.TaggedErrorClass<DotfilesResolveError>()(
+export class DotfilesResolveError extends Schema.TaggedError<DotfilesResolveError>()(
   "DotfilesResolveError",
   { message: Schema.String },
 ) {}

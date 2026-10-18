@@ -5,7 +5,7 @@ import { redactRepositoryUrl, redactUrlCredentials } from "@mend/domain/workbenc
 import { Context, Effect, Scheduler, Schema } from "effect";
 
 /** A git invocation that exited nonzero (or could not run at all). */
-export class GitError extends Schema.TaggedErrorClass<GitError>()("GitError", {
+export class GitError extends Schema.TaggedError<GitError>()("GitError", {
   args: Schema.Array(Schema.String),
   cwd: Schema.String,
   exitCode: Schema.NullOr(Schema.Int),

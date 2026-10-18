@@ -7,7 +7,7 @@ import * as Context from "effect/Context";
 import { MendDB } from "../client.ts";
 import { projectMounts } from "../schema/workbench.ts";
 
-export class ProjectMountNotFoundError extends Schema.TaggedErrorClass<ProjectMountNotFoundError>()(
+export class ProjectMountNotFoundError extends Schema.TaggedError<ProjectMountNotFoundError>()(
   "ProjectMountNotFoundError",
   {
     mountId: Schema.String,

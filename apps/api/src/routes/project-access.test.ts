@@ -2,7 +2,7 @@ import { MendApi } from "@mend/api-contracts";
 import { defaultSettings, defaultWorkspaceImage, MendSettings, WorkspaceImage } from "@mend/domain";
 import { AgentTurn, Session, SessionProcess } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
-import { HttpApi } from "effect/unstable/httpapi";
+import { HttpApi } from "effect/http-api";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
@@ -1060,7 +1060,7 @@ describe("every endpoint is classified", () => {
     HttpApi.reflect(MendApi, {
       onGroup: () => {},
       onEndpoint: ({ group, endpoint }) => {
-        const key = `${group.identifier}.${endpoint.name}`;
+        const key = `${group.identifier}.${endpoint.identifier}`;
         if (!covered.has(key) && !UNSCOPED.has(key)) missing.push(key);
       },
     });

@@ -10,7 +10,7 @@ import {
 } from "@mend/domain/workbench";
 import { SecretCipher } from "@mend/store";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 /**
  * The signed-in account's secret files (docs/adr/0010-secret-files.md) over `SecretFilesRepo`.

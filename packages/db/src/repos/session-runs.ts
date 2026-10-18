@@ -15,7 +15,7 @@ const ONE_ACTIVE_INDEX = "session_runs_one_active_idx";
  * The one-active-run index (`session_runs_one_active_idx`) refused the insert: a run of the
  * session is still open. It is the one named here, as it stood when the insert was refused.
  */
-export class SessionRunActiveError extends Schema.TaggedErrorClass<SessionRunActiveError>()(
+export class SessionRunActiveError extends Schema.TaggedError<SessionRunActiveError>()(
   "SessionRunActiveError",
   {
     sessionId: Schema.String,

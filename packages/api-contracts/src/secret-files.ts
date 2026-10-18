@@ -5,12 +5,12 @@ import {
   SecretFilesView,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { AuthMiddleware } from "./common.ts";
 
 /** The path or the content failed validation; the message says which rule. */
-export class SecretFileRejected extends Schema.TaggedErrorClass<SecretFileRejected>()(
+export class SecretFileRejected extends Schema.TaggedError<SecretFileRejected>()(
   "SecretFileRejected",
   { message: Schema.String },
   { httpApiStatus: 422 },

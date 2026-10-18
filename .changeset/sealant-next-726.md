@@ -2,7 +2,7 @@
 "@sealant/mend": patch
 ---
 
-The bundle runs Sealant 0.39.0-next.726. The Setup page saves its own default packages on Arch again
+The bundle runs Sealant 0.39.0-next.751. The Setup page saves its own default packages on Arch again
 (and on Fedora and Ubuntu): Core resolves each id from the catalog its images install from, on amd64
 and arm64 (sealant#364). On an arm64 host, the Arch Linux ARM rootfs download leaves a slow mirror,
 shows its progress and is downloaded once per host (sealant#362), and pacman in the image installs

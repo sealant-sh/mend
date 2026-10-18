@@ -14,7 +14,7 @@ import { AuditEventsRepo, OrganizationsRepo, UsersRepo } from "@mend/db";
 import type { OrganizationId } from "@mend/domain";
 import { organizationNameIssue } from "@mend/domain/workbench";
 import { Clock, Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 import { ExposureConfig } from "../exposure.ts";

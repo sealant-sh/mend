@@ -20,7 +20,7 @@ import { resolveGitRemoteOperation, type GitRemoteOperation } from "./git-remote
  */
 export type SourceProfile = "operator" | "tenant";
 
-export class SourceRefused extends Schema.TaggedErrorClass<SourceRefused>()("SourceRefused", {
+export class SourceRefused extends Schema.TaggedError<SourceRefused>()("SourceRefused", {
   message: Schema.String,
 }) {}
 
@@ -362,7 +362,7 @@ export const SourcePolicyLive: Layer.Layer<SourcePolicy, Config.ConfigError> = L
       Schema.Literals(["operator", "tenant"]),
       "MEND_SOURCE_POLICY",
     ).pipe(Config.withDefault("operator" as const));
-    const allowed = yield* Config.string("MEND_SOURCE_ALLOWED_HOSTS").pipe(Config.withDefault(""));
+    const allowed = yield* Config.String("MEND_SOURCE_ALLOWED_HOSTS").pipe(Config.withDefault(""));
     return makeSourcePolicy({
       profile,
       allowedHosts: allowed

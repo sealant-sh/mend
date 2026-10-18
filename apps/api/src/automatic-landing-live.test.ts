@@ -1,4 +1,3 @@
-import { PgClient } from "@effect/sql-pg";
 import {
   AgentConversationRepo,
   AuditEventsRepo,
@@ -33,12 +32,12 @@ import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { SessionEngine, WorkspaceGitHooks, WorktreeReads, WORKTREE_STAMP } from "@mend/sessions";
 import { AgentBridge, makeSourcePolicy, MendKeys, SourcePolicy } from "@mend/store";
 import { Cause, Deferred, Effect, Exit, Layer, Logger, Queue, Stream } from "effect";
-import { ConnectionError, SqlError } from "effect/unstable/sql/SqlError";
+import { ConnectionError, SqlError } from "effect/sql/SqlError";
 import { describe, expect, it } from "vitest";
 
 import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";
 import { ProjectAccess } from "./access.ts";
-import { AutomaticLandingLive } from "./automatic-landing.ts";
+import { automaticLanding } from "./automatic-landing.ts";
 import { OwnerLandingLive } from "./owner-landing.ts";
 
 const BASE = Sha.make("a".repeat(40));
@@ -124,7 +123,6 @@ const makeEvents = Effect.gen(function* () {
   const records = yield* Queue.unbounded<EventRecord, SqlError>();
   const ready = yield* Deferred.make<void>();
   const closed = yield* Deferred.make<void>();
-  const channels: Array<string> = [];
   const stream = Stream.fromPull(
     Effect.sync(() => {
       let previous: Deferred.Deferred<void> | undefined;
@@ -143,7 +141,7 @@ const makeEvents = Effect.gen(function* () {
       yield* Queue.offer(records, { payload, handled });
       yield* Deferred.await(handled);
     }).pipe(Effect.timeout("2 seconds"));
-  return { records, ready, closed, channels, stream, publish };
+  return { records, ready, closed, stream, publish };
 });
 type Events = Effect.Success<typeof makeEvents>;
 const makeWorld = Effect.fn(function* (events: Events, startup: boolean) {
@@ -173,29 +171,6 @@ const makeWorld = Effect.fn(function* (events: Events, startup: boolean) {
           Deferred.doneUnsafe(listenWarning, Effect.void);
       }),
     ]),
-    Layer.mock(PgClient.PgClient, {
-      [PgClient.TypeId]: PgClient.TypeId,
-      "~effect/sql/SqlClient": "~effect/sql/SqlClient",
-      config: {},
-      listen: (channel) => {
-        events.channels.push(channel);
-        return events.stream;
-      },
-      literal: unused,
-      in: unused,
-      insert: unused,
-      update: unused,
-      updateValues: unused,
-      and: unused,
-      or: unused,
-      csv: unused,
-      join: unused,
-      onDialect: unused,
-      onDialectOrElse: unused,
-      withoutTransforms: unused,
-      reactive: unused,
-      json: unused,
-    }),
     Layer.mock(AgentConversationRepo, {
       listTurns: (id) =>
         Effect.gen(function* () {
@@ -338,7 +313,7 @@ const makeWorld = Effect.fn(function* (events: Events, startup: boolean) {
     Layer.mock(AgentBridge, { socketPath: () => "/unused/agent.sock" }),
     Layer.succeed(NetworkConfig, makePublicNetwork(PublicOrigin.make("https://owned.invalid"), [])),
   );
-  const layer = AutomaticLandingLive.pipe(
+  const layer = Layer.effectDiscard(automaticLanding(events.stream)).pipe(
     Layer.provide(OwnerLandingLive.pipe(Layer.provideMerge(dependencies))),
   );
   return {
@@ -388,7 +363,6 @@ const withWorld = <E>(
           Effect.gen(function* () {
             yield* Layer.build(world.layer);
             yield* Deferred.await(events.ready).pipe(Effect.timeout("2 seconds"));
-            expect(events.channels).toEqual(["mend_events"]);
             yield* work(world, events);
           }),
         );

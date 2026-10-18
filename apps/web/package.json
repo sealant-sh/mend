@@ -59,6 +59,7 @@
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "esbuild": "catalog:",
+    "fast-check": "catalog:",
     "jsdom": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",

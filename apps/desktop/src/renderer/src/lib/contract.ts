@@ -1,6 +1,6 @@
 import type { MendApi } from "@mend/api-contracts";
 import type { Brand } from "effect";
-import type { HttpApi, HttpApiGroup } from "effect/unstable/httpapi";
+import type { HttpApi, HttpApiGroup } from "effect/http-api";
 
 /**
  * The renderer's view of `@mend/api-contracts`, at the type level only: no schema and no Effect

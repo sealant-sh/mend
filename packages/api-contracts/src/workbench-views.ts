@@ -54,14 +54,14 @@ export class PathsOutsideGit extends Schema.Class<PathsOutsideGit>("PathsOutside
 }) {}
 
 /** A store or git operation that could not complete — the observed reason, verbatim. */
-export class StoreFailure extends Schema.TaggedErrorClass<StoreFailure>()(
+export class StoreFailure extends Schema.TaggedError<StoreFailure>()(
   "StoreFailure",
   { message: Schema.String },
   { httpApiStatus: 422 },
 ) {}
 
 /** A settings update that could not be validated or persisted — the observed reason. */
-export class SettingsFailure extends Schema.TaggedErrorClass<SettingsFailure>()(
+export class SettingsFailure extends Schema.TaggedError<SettingsFailure>()(
   "SettingsFailure",
   { message: Schema.String },
   { httpApiStatus: 422 },
@@ -189,14 +189,14 @@ export class RemovalReport extends Schema.Class<RemovalReport>("RemovalReport")(
 }) {}
 
 /** Deleting a live session is refused — stop it first. */
-export class SessionActive extends Schema.TaggedErrorClass<SessionActive>()(
+export class SessionActive extends Schema.TaggedError<SessionActive>()(
   "SessionActive",
   { id: Schema.String },
   { httpApiStatus: 409 },
 ) {}
 
 /** A supporting process needs a current reachable workspace. */
-export class SessionNotLive extends Schema.TaggedErrorClass<SessionNotLive>()(
+export class SessionNotLive extends Schema.TaggedError<SessionNotLive>()(
   "SessionNotLive",
   { id: Schema.String },
   { httpApiStatus: 409 },

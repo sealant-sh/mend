@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import * as FastCheck from "effect/testing/FastCheck";
+import * as FastCheck from "fast-check";
 
 import { exitedEvent, fixtureFor, makeHarness, startedEvent } from "./change-pass.test-fixtures.ts";
 import { makeSessionChangePass } from "./session-tools.ts";

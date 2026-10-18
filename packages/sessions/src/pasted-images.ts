@@ -50,13 +50,10 @@ export const PASTED_IMAGE_TYPES = {
 } as const;
 export type PastedImageMediaType = keyof typeof PASTED_IMAGE_TYPES;
 
-export class PastedImageError extends Schema.TaggedErrorClass<PastedImageError>()(
-  "PastedImageError",
-  {
-    reason: Schema.Literals(["not-an-image", "too-large", "write-failed"]),
-    message: Schema.String,
-  },
-) {}
+export class PastedImageError extends Schema.TaggedError<PastedImageError>()("PastedImageError", {
+  reason: Schema.Literals(["not-an-image", "too-large", "write-failed"]),
+  message: Schema.String,
+}) {}
 
 /** What a paste answers wherever it landed: the path the terminal pastes, the format, the size. */
 export interface PlacedPastedImage {

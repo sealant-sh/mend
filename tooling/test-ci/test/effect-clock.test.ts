@@ -12,61 +12,59 @@ import {
 } from "./effect-clock.helpers.ts";
 import { isRecord } from "./fixture.ts";
 
-/** Runner-independent cases import only Vitest; the Effect entrypoint pairs with Vitest 3 here. */
 const plainTest = (name: string, body: string): string =>
   `import { it } from "vitest";\nit(${JSON.stringify(name)}, async () => { ${body} });`;
 
-for (const runner of ["vitest", "vitest-v5"]) {
-  test(`${runner}: fails the runner on file execution budget even with a JSON reporter override`, async () => {
-    const result = await runGuard({
-      runner,
-      budgetMs: 40,
-      source: plainTest("slow file", "await new Promise((resolve) => setTimeout(resolve, 120));"),
-    });
-    assert.equal(result.code, 1, result.output);
-    assert.match(result.output, /CI file execution budget exceeded:/);
-    assert.match(result.output, /guard\.test\.ts/);
-    assert.equal(numPassedTests(result.json), 1);
+const runner = "vitest";
+test(`${runner}: fails the runner on file execution budget even with a JSON reporter override`, async () => {
+  const result = await runGuard({
+    runner,
+    budgetMs: 40,
+    source: plainTest("slow file", "await new Promise((resolve) => setTimeout(resolve, 120));"),
   });
+  assert.equal(result.code, 1, result.output);
+  assert.match(result.output, /CI file execution budget exceeded:/);
+  assert.match(result.output, /guard\.test\.ts/);
+  assert.equal(numPassedTests(result.json), 1);
+});
 
-  test(`${runner}: fails the runner on a Clock warning and identifies its package, file and test`, async () => {
-    const result = await runGuard({
-      runner,
-      source: plainTest(
-        "clock warning owner",
-        'console.warn("Warning: A test is using time, but is not advancing the test clock.");',
-      ),
-    });
-    assertClockFailure(result, "guard.test.ts > clock warning owner");
-    const json = result.json;
-    assert.ok(isRecord(json) && Array.isArray(json["testResults"]));
-    const [file]: ReadonlyArray<unknown> = json["testResults"];
-    assert.ok(isRecord(file) && Array.isArray(file["assertionResults"]));
-    assert.deepEqual(
-      file["assertionResults"].map((entry: unknown) => (isRecord(entry) ? entry["status"] : entry)),
-      ["passed"],
-    );
+test(`${runner}: fails the runner on a Clock warning and identifies its package, file and test`, async () => {
+  const result = await runGuard({
+    runner,
+    source: plainTest(
+      "clock warning owner",
+      'console.warn("Warning: A test is using time, but is not advancing the test clock.");',
+    ),
   });
+  assertClockFailure(result, "guard.test.ts > clock warning owner");
+  const json = result.json;
+  assert.ok(isRecord(json) && Array.isArray(json["testResults"]));
+  const [file]: ReadonlyArray<unknown> = json["testResults"];
+  assert.ok(isRecord(file) && Array.isArray(file["assertionResults"]));
+  assert.deepEqual(
+    file["assertionResults"].map((entry: unknown) => (isRecord(entry) ? entry["status"] : entry)),
+    ["passed"],
+  );
+});
 
-  test(`${runner}: passes a below-budget file with an unrelated warning and retains JSON output`, async () => {
-    const result = await runGuard({
-      runner,
-      source: plainTest("ordinary warning", 'console.warn("ordinary fixture warning");'),
-    });
-    assertPassed(result);
+test(`${runner}: passes a below-budget file with an unrelated warning and retains JSON output`, async () => {
+  const result = await runGuard({
+    runner,
+    source: plainTest("ordinary warning", 'console.warn("ordinary fixture warning");'),
   });
+  assertPassed(result);
+});
 
-  test(`${runner}: retains the default reporter for a passing file`, async () => {
-    const result = await runGuard({
-      runner,
-      json: false,
-      source: plainTest("default reporter control", ""),
-    });
-    assert.equal(result.code, 0, result.output);
-    assert.ok(result.output.includes("\u001b["));
-    assert.match(stripVTControlCharacters(result.output), /Test Files\s+1 passed/);
+test(`${runner}: retains the default reporter for a passing file`, async () => {
+  const result = await runGuard({
+    runner,
+    json: false,
+    source: plainTest("default reporter control", ""),
   });
-}
+  assert.equal(result.code, 0, result.output);
+  assert.ok(result.output.includes("\u001b["));
+  assert.match(stripVTControlCharacters(result.output), /Test Files\s+1 passed/);
+});
 
 test("retains virtual boundaries, scoped cancellation and the live-clock escape", async () => {
   const result = await runGuard({

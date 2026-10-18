@@ -2,7 +2,7 @@ import type { AgentApprovalDecision, AgentEvent, AgentInputAnswers } from "@mend
 import { type Effect, Schema, type Scope, type Stream } from "effect";
 
 /** A protocol adapter could not parse, send, or correlate a provider message. */
-export class AgentProtocolError extends Schema.TaggedErrorClass<AgentProtocolError>()(
+export class AgentProtocolError extends Schema.TaggedError<AgentProtocolError>()(
   "AgentProtocolError",
   {
     adapter: Schema.Literals(["codex", "claude"]),
@@ -16,7 +16,7 @@ export class AgentProtocolError extends Schema.TaggedErrorClass<AgentProtocolErr
  * The agent is in a turn it started on its own (a background task ended): a turn Mend sends now
  * would land inside it. The turn waits; that turn's end dispatches it.
  */
-export class AgentTurnBusyError extends Schema.TaggedErrorClass<AgentTurnBusyError>()(
+export class AgentTurnBusyError extends Schema.TaggedError<AgentTurnBusyError>()(
   "AgentTurnBusyError",
   { providerTurnId: Schema.String },
 ) {}

@@ -35,7 +35,7 @@ export interface NewCheckpoint {
  * caller can answer with it when it records the same snapshot, or re-read and take the next
  * ordinal. Capture mode (ADR-0002) runs without the advisory lock, so this is the backstop.
  */
-export class CheckpointOrdinalTakenError extends Schema.TaggedErrorClass<CheckpointOrdinalTakenError>()(
+export class CheckpointOrdinalTakenError extends Schema.TaggedError<CheckpointOrdinalTakenError>()(
   "CheckpointOrdinalTakenError",
   { worktreeId: Schema.String, ordinal: Schema.Int, existing: Checkpoint },
 ) {}

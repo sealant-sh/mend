@@ -7,13 +7,13 @@ import {
   AgentMemoryView,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
 
 /** An import Mend refuses whole: it names the same path more than once. */
-export class AgentMemoryImportInvalid extends Schema.TaggedErrorClass<AgentMemoryImportInvalid>()(
+export class AgentMemoryImportInvalid extends Schema.TaggedError<AgentMemoryImportInvalid>()(
   "AgentMemoryImportInvalid",
   { message: Schema.String, paths: Schema.Array(Schema.String) },
   { httpApiStatus: 400 },

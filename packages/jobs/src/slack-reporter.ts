@@ -4,7 +4,7 @@ import {
   ChangeLandingsRepo,
   ChangePassesRepo,
   ChangeToursRepo,
-  MEND_EVENTS_CHANNEL,
+  listenEvents,
   MendEvent,
   ProjectsRepo,
   ReviewCommentsRepo,
@@ -760,7 +760,7 @@ export const SlackReporterLive: Layer.Layer<
       }
     }).pipe(Effect.forkScoped);
 
-    yield* sql.listen(MEND_EVENTS_CHANNEL).pipe(
+    yield* listenEvents(sql).pipe(
       Stream.runForEach((payload) =>
         decodeEvent(payload).pipe(
           Effect.flatMap((event) => {

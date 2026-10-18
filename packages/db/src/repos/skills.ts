@@ -16,26 +16,26 @@ import { notifyEvent } from "../events.ts";
 import { projects, skills } from "../schema/workbench.ts";
 import { ProjectNotFoundError } from "./projects.ts";
 
-export class SkillNotFoundError extends Schema.TaggedErrorClass<SkillNotFoundError>()(
+export class SkillNotFoundError extends Schema.TaggedError<SkillNotFoundError>()(
   "SkillNotFoundError",
   { skillId: Schema.String },
 ) {}
 
-export class SkillInvalidError extends Schema.TaggedErrorClass<SkillInvalidError>()(
+export class SkillInvalidError extends Schema.TaggedError<SkillInvalidError>()(
   "SkillInvalidError",
   { message: Schema.String },
 ) {}
 
-export class SkillDuplicateNameError extends Schema.TaggedErrorClass<SkillDuplicateNameError>()(
+export class SkillDuplicateNameError extends Schema.TaggedError<SkillDuplicateNameError>()(
   "SkillDuplicateNameError",
   { name: Schema.String },
 ) {}
 
-export class SkillLimitError extends Schema.TaggedErrorClass<SkillLimitError>()("SkillLimitError", {
+export class SkillLimitError extends Schema.TaggedError<SkillLimitError>()("SkillLimitError", {
   limit: Schema.Int,
 }) {}
 
-export class SkillStaleWriteError extends Schema.TaggedErrorClass<SkillStaleWriteError>()(
+export class SkillStaleWriteError extends Schema.TaggedError<SkillStaleWriteError>()(
   "SkillStaleWriteError",
   { skillId: Schema.String, currentRevision: Schema.Int },
 ) {}

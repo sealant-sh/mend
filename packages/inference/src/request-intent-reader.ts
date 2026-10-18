@@ -86,10 +86,10 @@ export const RequestIntentReaderLive: Layer.Layer<
   RequestIntentReader,
   Effect.gen(function* () {
     const provider = yield* InferenceProvider;
-    const claudeModel = yield* Config.string("MEND_INFERENCE_INTENT_MODEL_CLAUDE").pipe(
+    const claudeModel = yield* Config.String("MEND_INFERENCE_INTENT_MODEL_CLAUDE").pipe(
       Config.orElse(() => Config.succeed(CLAUDE_MODEL)),
     );
-    const codexModel = yield* Config.string("MEND_INFERENCE_INTENT_MODEL_CODEX").pipe(
+    const codexModel = yield* Config.String("MEND_INFERENCE_INTENT_MODEL_CODEX").pipe(
       Config.orElse(() => Config.succeed(CODEX_MODEL)),
     );
     const outputSchema: Record<string, unknown> = {

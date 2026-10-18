@@ -4,7 +4,7 @@ import { Config, Duration, Effect, Layer, Option, Schedule, Schema } from "effec
 import * as Context from "effect/Context";
 
 /** A routed run could not start — the message is written for the review thread. */
-export class RunStartError extends Schema.TaggedErrorClass<RunStartError>()("RunStartError", {
+export class RunStartError extends Schema.TaggedError<RunStartError>()("RunStartError", {
   message: Schema.String,
 }) {}
 
@@ -52,7 +52,7 @@ export class Dispatcher extends Context.Service<
       const issues = yield* IssuesRepo;
       const settings = yield* SettingsRepo;
       const starter = yield* RunStarter;
-      const interval = yield* Config.duration("MEND_DISPATCH_INTERVAL").pipe(
+      const interval = yield* Config.Duration("MEND_DISPATCH_INTERVAL").pipe(
         Config.orElse(() => Config.succeed(Duration.seconds(5))),
       );
 

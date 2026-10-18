@@ -28,7 +28,7 @@ import {
 import { SessionEngine } from "@mend/sessions";
 import { DeploymentConfig } from "@mend/store";
 import { Clock, Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { MemberRemoval } from "../member-removal.ts";
 import { TenancyConfig } from "../tenancy.ts";

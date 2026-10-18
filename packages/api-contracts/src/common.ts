@@ -2,7 +2,7 @@ import { SealantRunId, SessionProcessId } from "@mend/domain";
 import { TenancyMode } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import * as Context from "effect/Context";
-import { HttpApiMiddleware } from "effect/unstable/httpapi";
+import { HttpApiMiddleware } from "effect/http-api";
 
 /**
  * The Mend API contract — one Effect HttpApi served from the product process,
@@ -11,7 +11,7 @@ import { HttpApiMiddleware } from "effect/unstable/httpapi";
  * ./server.ts, and clients derive themselves from what is declared here.
  */
 
-export class Unauthorized extends Schema.TaggedErrorClass<Unauthorized>()(
+export class Unauthorized extends Schema.TaggedError<Unauthorized>()(
   "Unauthorized",
   {},
   { httpApiStatus: 401 },
@@ -23,7 +23,7 @@ export class Unauthorized extends Schema.TaggedErrorClass<Unauthorized>()(
  * (null for a ceiling, which frees when the account's own work settles). The global request
  * budgets answer the same shape from the router, before any endpoint is reached.
  */
-export class BudgetExceeded extends Schema.TaggedErrorClass<BudgetExceeded>()(
+export class BudgetExceeded extends Schema.TaggedError<BudgetExceeded>()(
   "BudgetExceeded",
   {
     budget: Schema.String,
@@ -39,7 +39,7 @@ export class BudgetExceeded extends Schema.TaggedErrorClass<BudgetExceeded>()(
  * detail stays in the server's log under `reference`; a client shows the reference and nothing
  * else. Answered by the API's error boundary, outside every endpoint, so no endpoint declares it.
  */
-export class InternalError extends Schema.TaggedErrorClass<InternalError>()(
+export class InternalError extends Schema.TaggedError<InternalError>()(
   "InternalError",
   {
     reference: Schema.String,

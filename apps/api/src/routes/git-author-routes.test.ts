@@ -4,8 +4,8 @@ import { UserEvents, UserGitAccessRepo, UserGitAuthorRepo } from "@mend/db";
 import { type GitAuthor, ResolvedGitAuthor } from "@mend/domain/workbench";
 import { AgentBridge, MendKeys } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter, HttpServer } from "effect/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { describe, expect, it } from "vitest";
 
 import { AuthMiddlewareLive } from "./api-live.ts";

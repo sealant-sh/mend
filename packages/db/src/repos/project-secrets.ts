@@ -22,7 +22,7 @@ import {
 } from "./project-environment.ts";
 import { ProjectNotFoundError } from "./projects.ts";
 
-export class ProjectSecretNotFoundError extends Schema.TaggedErrorClass<ProjectSecretNotFoundError>()(
+export class ProjectSecretNotFoundError extends Schema.TaggedError<ProjectSecretNotFoundError>()(
   "ProjectSecretNotFoundError",
   { secretId: Schema.String },
 ) {}

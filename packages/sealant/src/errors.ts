@@ -5,7 +5,7 @@ import { Schema } from "effect";
  * a stable `code`, `SealantApiError` with an HTTP `status`). This wraps them
  * back onto a typed Effect channel at the service boundary.
  */
-export class SealantPlatformError extends Schema.TaggedErrorClass<SealantPlatformError>()(
+export class SealantPlatformError extends Schema.TaggedError<SealantPlatformError>()(
   "SealantPlatformError",
   {
     /** Stable machine-readable code carried by every SDK error. */

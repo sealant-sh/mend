@@ -8,7 +8,7 @@ import {
   Worktree,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
@@ -26,21 +26,21 @@ import {
 // review; sessions are conversations inside it. Removal is its own explicit
 // verb, refused while any conversation is live.
 
-export class WorktreeNotFound extends Schema.TaggedErrorClass<WorktreeNotFound>()(
+export class WorktreeNotFound extends Schema.TaggedError<WorktreeNotFound>()(
   "WorktreeNotFound",
   { id: Schema.String },
   { httpApiStatus: 404 },
 ) {}
 
 /** Removing a worktree with live conversations is refused — stop them first. */
-export class WorktreeActive extends Schema.TaggedErrorClass<WorktreeActive>()(
+export class WorktreeActive extends Schema.TaggedError<WorktreeActive>()(
   "WorktreeActive",
   { id: Schema.String, liveSessions: Schema.Int },
   { httpApiStatus: 409 },
 ) {}
 
 /** The name already names a worktree here. POST /worktrees never joins; joining is the sessions verb. */
-export class WorktreeNameTaken extends Schema.TaggedErrorClass<WorktreeNameTaken>()(
+export class WorktreeNameTaken extends Schema.TaggedError<WorktreeNameTaken>()(
   "WorktreeNameTaken",
   { projectId: Schema.String, name: Schema.String },
   { httpApiStatus: 409 },

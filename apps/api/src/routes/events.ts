@@ -2,7 +2,7 @@ import { Auth } from "@mend/auth";
 import { ProjectsRepo, type MendEvent } from "@mend/db";
 import { ProjectId } from "@mend/domain";
 import { Deferred, Effect, Option, Ref, Schedule, Stream } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerResponse } from "effect/http";
 
 import { ProjectAccess } from "../access.ts";
 import { Budgets } from "../budgets.ts";

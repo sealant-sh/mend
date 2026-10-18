@@ -6,7 +6,7 @@ import * as Context from "effect/Context";
 import { MendDB } from "../client.ts";
 import { changes } from "../schema/workbench.ts";
 
-export class ChangeNotFoundError extends Schema.TaggedErrorClass<ChangeNotFoundError>()(
+export class ChangeNotFoundError extends Schema.TaggedError<ChangeNotFoundError>()(
   "ChangeNotFoundError",
   {
     id: Schema.String,

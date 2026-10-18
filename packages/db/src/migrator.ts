@@ -1,5 +1,5 @@
 import { Layer } from "effect";
-import { Migrator } from "effect/unstable/sql";
+import { Migrator } from "effect/sql";
 
 import { migrations } from "./migrations.ts";
 

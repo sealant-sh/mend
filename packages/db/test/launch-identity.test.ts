@@ -1,8 +1,8 @@
 import { PgClient } from "@effect/sql-pg";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import { DateTime, Effect, Layer, Redacted } from "effect";
+import { SqlClient } from "effect/sql";
 import * as Str from "effect/String";
-import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";

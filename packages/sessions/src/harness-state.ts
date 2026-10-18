@@ -42,7 +42,7 @@ export const HarnessStateManifest = Schema.Struct({
 });
 export type HarnessStateManifest = typeof HarnessStateManifest.Type;
 
-export class HarnessStateNotFoundError extends Schema.TaggedErrorClass<HarnessStateNotFoundError>()(
+export class HarnessStateNotFoundError extends Schema.TaggedError<HarnessStateNotFoundError>()(
   "HarnessStateNotFoundError",
   {
     sessionId: Schema.String,
@@ -51,7 +51,7 @@ export class HarnessStateNotFoundError extends Schema.TaggedErrorClass<HarnessSt
   },
 ) {}
 
-export class HarnessStateIOError extends Schema.TaggedErrorClass<HarnessStateIOError>()(
+export class HarnessStateIOError extends Schema.TaggedError<HarnessStateIOError>()(
   "HarnessStateIOError",
   {
     sessionId: Schema.String,
@@ -72,7 +72,7 @@ export class HarnessStateIOError extends Schema.TaggedErrorClass<HarnessStateIOE
   },
 ) {}
 
-export class HarnessStateInvalidError extends Schema.TaggedErrorClass<HarnessStateInvalidError>()(
+export class HarnessStateInvalidError extends Schema.TaggedError<HarnessStateInvalidError>()(
   "HarnessStateInvalidError",
   {
     sessionId: Schema.String,
@@ -82,7 +82,7 @@ export class HarnessStateInvalidError extends Schema.TaggedErrorClass<HarnessSta
   },
 ) {}
 
-export class HarnessStateCommandError extends Schema.TaggedErrorClass<HarnessStateCommandError>()(
+export class HarnessStateCommandError extends Schema.TaggedError<HarnessStateCommandError>()(
   "HarnessStateCommandError",
   {
     sessionId: Schema.String,

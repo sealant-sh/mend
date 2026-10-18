@@ -1,7 +1,7 @@
 import { Timestamp } from "@mend/domain";
 import { ADDRESS_KINDS } from "@mend/network";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { AuthMiddleware, HealthStatus } from "./common.ts";
 
@@ -111,14 +111,14 @@ export const sealantGroup = HttpApiGroup.make("sealant")
   .middleware(AuthMiddleware);
 
 /** The platform refused the credential (format, a dead token, an unknown account). */
-export class AccountRejected extends Schema.TaggedErrorClass<AccountRejected>()(
+export class AccountRejected extends Schema.TaggedError<AccountRejected>()(
   "AccountRejected",
   { message: Schema.String },
   { httpApiStatus: 400 },
 ) {}
 
 /** The platform could not be reached or answered outside its contract. */
-export class SealantUnavailable extends Schema.TaggedErrorClass<SealantUnavailable>()(
+export class SealantUnavailable extends Schema.TaggedError<SealantUnavailable>()(
   "SealantUnavailable",
   { code: Schema.String, message: Schema.String },
   { httpApiStatus: 502 },
@@ -182,7 +182,7 @@ export class EnsureWorkspaceSshKeyRequest extends Schema.Class<EnsureWorkspaceSs
 }) {}
 
 /** No active key of the signed-in user has this id: another account's key answers the same. */
-export class WorkspaceSshKeyNotFound extends Schema.TaggedErrorClass<WorkspaceSshKeyNotFound>()(
+export class WorkspaceSshKeyNotFound extends Schema.TaggedError<WorkspaceSshKeyNotFound>()(
   "WorkspaceSshKeyNotFound",
   { sshKeyId: Schema.String },
   { httpApiStatus: 404 },

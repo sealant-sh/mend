@@ -2,7 +2,7 @@ import { OrganizationsRepo } from "@mend/db";
 import { Effect, Layer, Stream } from "effect";
 import * as Context from "effect/Context";
 import type * as Scope from "effect/Scope";
-import { Socket } from "effect/unstable/socket";
+import { Socket } from "effect/socket";
 
 import { EventBus, type BusSignal } from "./events-bus.ts";
 

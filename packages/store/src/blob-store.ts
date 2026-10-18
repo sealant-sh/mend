@@ -34,12 +34,12 @@ import { mendHome } from "./paths.ts";
  * place by design — keys are digests, so a second write of a key carries the same bytes.
  */
 
-export class BlobNotFoundError extends Schema.TaggedErrorClass<BlobNotFoundError>()(
+export class BlobNotFoundError extends Schema.TaggedError<BlobNotFoundError>()(
   "BlobNotFoundError",
   { key: Schema.String },
 ) {}
 
-export class BlobStoreError extends Schema.TaggedErrorClass<BlobStoreError>()("BlobStoreError", {
+export class BlobStoreError extends Schema.TaggedError<BlobStoreError>()("BlobStoreError", {
   operation: Schema.String,
   key: Schema.String,
   cause: Schema.Defect(),

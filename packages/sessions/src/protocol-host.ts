@@ -39,7 +39,7 @@ import * as Semaphore from "effect/Semaphore";
 import { HAND_OVER_NOT_NOW } from "./conversation-steps.ts";
 
 /** A live protocol process or provider request cannot be addressed by this Mend process. */
-export class ProtocolHostNotLiveError extends Schema.TaggedErrorClass<ProtocolHostNotLiveError>()(
+export class ProtocolHostNotLiveError extends Schema.TaggedError<ProtocolHostNotLiveError>()(
   "ProtocolHostNotLiveError",
   { processId: Schema.String },
 ) {}

@@ -9,7 +9,7 @@ import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import { agentSessions, worktrees } from "../schema/workbench.ts";
 
-export class WorktreeNotFoundError extends Schema.TaggedErrorClass<WorktreeNotFoundError>()(
+export class WorktreeNotFoundError extends Schema.TaggedError<WorktreeNotFoundError>()(
   "WorktreeNotFoundError",
   {
     id: Schema.String,

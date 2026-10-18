@@ -9,7 +9,7 @@
 // data layer without a row here is a route nobody checks.
 
 import * as contracts from "@mend/api-contracts";
-import { HttpApiSchema } from "effect/unstable/httpapi";
+import { HttpApiSchema } from "effect/http-api";
 import { describe, expect, it } from "vitest";
 
 /** Every route apps/mobile/src/data/*.ts calls, as the phone spells it. */

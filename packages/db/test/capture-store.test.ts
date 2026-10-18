@@ -2,9 +2,9 @@ import { PgClient } from "@effect/sql-pg";
 import { ProjectId, Sha, WorktreeId } from "@mend/domain";
 import { it } from "@mend/test-ci/effect-vitest";
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Redacted } from "effect";
+import { SqlClient } from "effect/sql";
 import * as Str from "effect/String";
-import * as FastCheck from "effect/testing/FastCheck";
-import { SqlClient } from "effect/unstable/sql";
+import * as FastCheck from "fast-check";
 import { afterAll, beforeAll, describe, expect } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";

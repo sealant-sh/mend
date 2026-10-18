@@ -589,32 +589,32 @@ const pathSegmentBytes = (relPath: string): ReadonlyArray<Buffer> | null => {
 
 // ─── Errors ─────────────────────────────────────────────────────────────────
 
-export class CaptureFormatError extends Schema.TaggedErrorClass<CaptureFormatError>()(
+export class CaptureFormatError extends Schema.TaggedError<CaptureFormatError>()(
   "CaptureFormatError",
   { key: Schema.String, reason: Schema.String },
 ) {}
 
 /** Bytes did not hash to what their key or index promised. */
-export class CaptureIntegrityError extends Schema.TaggedErrorClass<CaptureIntegrityError>()(
+export class CaptureIntegrityError extends Schema.TaggedError<CaptureIntegrityError>()(
   "CaptureIntegrityError",
   { key: Schema.String, expected: Schema.String, actual: Schema.String },
 ) {}
 
-export class ChunkNotFoundError extends Schema.TaggedErrorClass<ChunkNotFoundError>()(
+export class ChunkNotFoundError extends Schema.TaggedError<ChunkNotFoundError>()(
   "ChunkNotFoundError",
   { hash: Schema.String },
 ) {}
 
-export class CaptureSectionPendingError extends Schema.TaggedErrorClass<CaptureSectionPendingError>()(
+export class CaptureSectionPendingError extends Schema.TaggedError<CaptureSectionPendingError>()(
   "CaptureSectionPendingError",
   { section: Schema.String },
 ) {}
 
 /** A filesystem write under the target directory failed (permissions, a non-empty target…). */
-export class MaterializeError extends Schema.TaggedErrorClass<MaterializeError>()(
-  "MaterializeError",
-  { at: Schema.String, cause: Schema.Defect() },
-) {}
+export class MaterializeError extends Schema.TaggedError<MaterializeError>()("MaterializeError", {
+  at: Schema.String,
+  cause: Schema.Defect(),
+}) {}
 
 export type CaptureReadError =
   | CaptureFormatError
@@ -770,7 +770,7 @@ const verifyDigest = (key: string, bytes: Uint8Array) =>
  * was killed — rather than one that found them wrong (review 2026-09-28 (13) #1): nothing about
  * the bytes was observed, and the check runs again on the next ask.
  */
-export class CaptureCheckUnfinishedError extends Schema.TaggedErrorClass<CaptureCheckUnfinishedError>()(
+export class CaptureCheckUnfinishedError extends Schema.TaggedError<CaptureCheckUnfinishedError>()(
   "CaptureCheckUnfinishedError",
   { key: Schema.String, reason: Schema.String },
 ) {}
@@ -2356,7 +2356,7 @@ const payloadsInFlight = new Map<string, Promise<boolean>>();
 const packVerifications: Semaphore.Semaphore = Semaphore.makeUnsafe(PACK_VERIFY_WORKERS);
 
 /** The worker pool could not run a check; nothing was observed about the pack. */
-class PackWorkerUnavailable extends Schema.TaggedErrorClass<PackWorkerUnavailable>()(
+class PackWorkerUnavailable extends Schema.TaggedError<PackWorkerUnavailable>()(
   "PackWorkerUnavailable",
   { reason: Schema.String },
 ) {}

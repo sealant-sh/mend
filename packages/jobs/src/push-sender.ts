@@ -11,7 +11,7 @@ export interface PushMessage {
 }
 
 /** Safe transport diagnostics: never carries tokens, message contents or provider bodies. */
-export class PushSendError extends Schema.TaggedErrorClass<PushSendError>()("PushSendError", {
+export class PushSendError extends Schema.TaggedError<PushSendError>()("PushSendError", {
   reason: Schema.Literals(["request", "rejected", "response"]),
   status: Schema.optionalKey(Schema.Number),
 }) {

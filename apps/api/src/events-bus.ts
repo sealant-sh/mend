@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { MEND_EVENTS_CHANNEL, MendEvent } from "@mend/db";
+import { listenEvents, MendEvent } from "@mend/db";
 import { Effect, Layer, PubSub, Ref, Schedule, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
 import type * as Scope from "effect/Scope";
@@ -64,9 +64,10 @@ export const makeEventBus = <E, R>(listen: Stream.Stream<string, E, R>) =>
         yield* PubSub.publish(pubsub, { kind: "resync" });
       }
     });
-    const reconnect = Schedule.exponential("1 second").pipe(
-      Schedule.either(Schedule.spaced("30 seconds")),
-    );
+    const reconnect = Schedule.min([
+      Schedule.exponential("1 second"),
+      Schedule.spaced("30 seconds"),
+    ]);
     yield* Effect.forkScoped(Effect.repeat(attempt, reconnect));
     return { subscribe: PubSub.subscribe(pubsub) };
   });
@@ -75,6 +76,6 @@ export const EventBusLive: Layer.Layer<EventBus, never, PgClient.PgClient> = Lay
   EventBus,
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
-    return yield* makeEventBus(sql.listen(MEND_EVENTS_CHANNEL));
+    return yield* makeEventBus(listenEvents(sql));
   }),
 );

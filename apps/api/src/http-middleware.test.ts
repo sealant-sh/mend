@@ -1,6 +1,6 @@
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { Effect, Layer, Schema } from "effect";
-import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_BUDGET_LIMITS, makeBudgets, type BudgetLimits } from "./budgets.ts";

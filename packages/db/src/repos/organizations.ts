@@ -25,42 +25,42 @@ import {
 } from "../schema/workbench.ts";
 import { isUniqueViolation } from "./unique-violation.ts";
 
-export class OrganizationNotFoundError extends Schema.TaggedErrorClass<OrganizationNotFoundError>()(
+export class OrganizationNotFoundError extends Schema.TaggedError<OrganizationNotFoundError>()(
   "OrganizationNotFoundError",
   { organizationId: Schema.String },
 ) {}
 
 /** Another organization on this instance already has that name. */
-export class OrganizationNameTakenError extends Schema.TaggedErrorClass<OrganizationNameTakenError>()(
+export class OrganizationNameTakenError extends Schema.TaggedError<OrganizationNameTakenError>()(
   "OrganizationNameTakenError",
   { name: Schema.String },
 ) {}
 
 /** The change would leave the organization with no owner. */
-export class LastOwnerError extends Schema.TaggedErrorClass<LastOwnerError>()("LastOwnerError", {
+export class LastOwnerError extends Schema.TaggedError<LastOwnerError>()("LastOwnerError", {
   organizationId: Schema.String,
 }) {}
 
 /** The account is not a member of the organization. */
-export class MemberNotFoundError extends Schema.TaggedErrorClass<MemberNotFoundError>()(
+export class MemberNotFoundError extends Schema.TaggedError<MemberNotFoundError>()(
   "MemberNotFoundError",
   { organizationId: Schema.String, userId: Schema.String },
 ) {}
 
 /** An account belongs to exactly one organization, and this one already belongs to one. */
-export class AlreadyInOrganizationError extends Schema.TaggedErrorClass<AlreadyInOrganizationError>()(
+export class AlreadyInOrganizationError extends Schema.TaggedError<AlreadyInOrganizationError>()(
   "AlreadyInOrganizationError",
   { userId: Schema.String, organizationId: Schema.String },
 ) {}
 
 /** No invitation matches that token (or that id within the organization). */
-export class InvitationUnknownError extends Schema.TaggedErrorClass<InvitationUnknownError>()(
+export class InvitationUnknownError extends Schema.TaggedError<InvitationUnknownError>()(
   "InvitationUnknownError",
   {},
 ) {}
 
 /** The invitation exists but cannot be used any more. */
-export class InvitationSpentError extends Schema.TaggedErrorClass<InvitationSpentError>()(
+export class InvitationSpentError extends Schema.TaggedError<InvitationSpentError>()(
   "InvitationSpentError",
   { state: Schema.Literals(["accepted", "revoked", "expired"]) },
 ) {}
@@ -69,13 +69,13 @@ export class InvitationSpentError extends Schema.TaggedErrorClass<InvitationSpen
  * The invitation is bound to a different email. The bound address is deliberately not carried:
  * whoever holds the link must not learn who it was meant for.
  */
-export class InvitationNotForYouError extends Schema.TaggedErrorClass<InvitationNotForYouError>()(
+export class InvitationNotForYouError extends Schema.TaggedError<InvitationNotForYouError>()(
   "InvitationNotForYouError",
   {},
 ) {}
 
 /** A single-organization operation found zero or several organizations. */
-export class NotSoleOrganizationError extends Schema.TaggedErrorClass<NotSoleOrganizationError>()(
+export class NotSoleOrganizationError extends Schema.TaggedError<NotSoleOrganizationError>()(
   "NotSoleOrganizationError",
   { count: Schema.Number },
 ) {}

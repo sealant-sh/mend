@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { KeysBridgeRoutes } from "./keys-bridge.ts";
 import { ServiceTunnelRoutes } from "./service-tunnel.ts";

@@ -2,7 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import { is, SQL } from "drizzle-orm";
 import { getTableConfig, IndexedColumn, PgDialect, type PgColumn } from "drizzle-orm/pg-core";
 import { Effect, Redacted } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { migrations } from "../src/migrations.ts";

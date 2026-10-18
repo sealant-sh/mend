@@ -2,7 +2,7 @@ import { CurrentUser, MendApi, PiProfileRejected } from "@mend/api-contracts";
 import { PiProfilesRepo } from "@mend/db";
 import { PiProfileRemoved, PiProfileSaved, PiProfileView } from "@mend/domain/workbench";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 /**
  * The signed-in account's pi setup over `PiProfilesRepo`. Only ever the caller's own: there is no

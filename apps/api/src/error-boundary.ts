@@ -7,8 +7,8 @@ import {
 import { redactDetail } from "@mend/network";
 import { Cause, Config, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
-import { HttpApiSchemaError } from "effect/unstable/httpapi/HttpApiError";
+import { HttpRouter, HttpServerResponse } from "effect/http";
+import { HttpApiSchemaError } from "effect/http-api/HttpApiError";
 
 /**
  * The one place error text leaves the API (docs/adr/0004, "Errors and browser headers"; MEND-11).

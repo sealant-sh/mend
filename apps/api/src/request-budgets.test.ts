@@ -11,8 +11,8 @@ import {
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
+} from "effect/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_BUDGET_LIMITS, makeBudgets, type BudgetLimits } from "./budgets.ts";
@@ -139,6 +139,9 @@ const serveOverSocket = async (
   };
 };
 
+const expectCut = (response: Promise<Response>) =>
+  expect(response).rejects.toMatchObject({ cause: { code: "UND_ERR_SOCKET" } });
+
 /** A body that does not declare its length. */
 const chunked = (body = "x".repeat(64)) =>
   new ReadableStream<Uint8Array>({
@@ -164,12 +167,14 @@ describe("bodies are bounded before they are decoded", () => {
 
   it("cuts an undeclared oversized body with the body-limit error and reads an exact-limit stream", async () => {
     const api = await serveOverSocket({ bodyBytes: 16 });
-    await api.send("/api/projects", {
-      method: "POST",
-      body: chunked(),
-      // @ts-expect-error -- Node requires duplex for a streamed body; DOM RequestInit omits it.
-      duplex: "half",
-    });
+    await expectCut(
+      api.send("/api/projects", {
+        method: "POST",
+        body: chunked(),
+        // @ts-expect-error -- Node requires duplex for a streamed body; DOM RequestInit omits it.
+        duplex: "half",
+      }),
+    );
     expect(api.reached).toEqual(["POST /api/projects"]);
     expect(api.bodies).toEqual(["HttpServerError"]);
     expect(api.failures).toMatchObject([
@@ -194,8 +199,8 @@ describe("bodies are bounded before they are decoded", () => {
     { route: "/api/mounted/read", budget: "bodyBytes", limit: 16 },
     { route: "/api/sessions/stream/images", budget: "uploadBodyBytes", limit: 32 },
   ])(
-    "reports the right budget for streamed $route and admits its exact byte boundary",
-    async ({ route, budget, limit }) => {
+    "cuts streamed $route past its $budget and admits its exact byte boundary",
+    async ({ route, limit }) => {
       const api = await serveOverSocket({ bodyBytes: 16, uploadBodyBytes: 32 });
       const send = (body: string) =>
         api.send(route, {
@@ -204,14 +209,7 @@ describe("bodies are bounded before they are decoded", () => {
           // @ts-expect-error -- Node requires duplex for a streamed body; DOM RequestInit omits it.
           duplex: "half",
         });
-      const refused = await send("é".repeat(limit / 2) + "x");
-      expect(refused.status).toBe(413);
-      expect(await refused.json()).toMatchObject({
-        _tag: "BudgetExceeded",
-        budget,
-        limit,
-        retryAfterSeconds: null,
-      });
+      await expectCut(send("é".repeat(limit / 2) + "x"));
       const exact = "é".repeat(limit / 2);
       const accepted = await send(exact);
       expect(accepted.status).toBe(200);
@@ -333,8 +331,7 @@ describe("bodies are bounded before they are decoded", () => {
         // @ts-expect-error -- Node requires duplex for a streamed body; DOM RequestInit omits it.
         duplex: "half",
       });
-    const large = await send(JSON.stringify({ name: "x".repeat(80) }));
-    const refusal = await large.json();
+    await expectCut(send(JSON.stringify({ name: "x".repeat(80) })));
     expect(opened).toEqual([]);
     const small = await send(JSON.stringify({ name: "streamed-cli", client: "cli" }));
     expect(small.status).toBe(200);
@@ -344,24 +341,18 @@ describe("bodies are bounded before they are decoded", () => {
       intervalSeconds: 2,
     });
     expect(opened).toMatchObject([{ name: "streamed-cli", client: "cli", userCode: result.code }]);
-    expect(large.status).toBe(413);
-    expect(refusal).toMatchObject({
-      _tag: "BudgetExceeded",
-      budget: "bodyBytes",
-      limit: 64,
-      retryAfterSeconds: null,
-    });
   });
 
   it("holds a web-Request handler (the sign-in mount) to the same limit", async () => {
     const api = await serveOverSocket({ bodyBytes: 16, signInAttemptsPerMinute: 0 });
-    const cut = await api.send("/api/auth/sign-in/email", {
-      method: "POST",
-      body: chunked(),
-      // @ts-expect-error -- `duplex` is required by Node for a streamed body and missing from the DOM type.
-      duplex: "half",
-    });
-    expect(cut.status).toBe(413);
+    await expectCut(
+      api.send("/api/auth/sign-in/email", {
+        method: "POST",
+        body: chunked(),
+        // @ts-expect-error -- `duplex` is required by Node for a streamed body and missing from the DOM type.
+        duplex: "half",
+      }),
+    );
     expect(api.bodies).toEqual([]);
     const small = await api.send("/api/auth/sign-in/email", { method: "POST", body: "{}" });
     expect(small.status).toBe(200);

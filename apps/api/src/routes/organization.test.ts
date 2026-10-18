@@ -30,8 +30,8 @@ import { SessionEngine } from "@mend/sessions";
 import { DeploymentConfig } from "@mend/store";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import { Clock, Context, Effect, Layer, ManagedRuntime, Option } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter, HttpServer } from "effect/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { afterAll, beforeEach, describe, expect } from "vitest";
 
 import { makeProject } from "../../test/support/tenancy-harness.ts";

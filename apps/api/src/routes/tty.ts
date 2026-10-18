@@ -11,13 +11,13 @@ import { currentAgentProcess } from "@mend/domain/workbench";
 import { asSealantUser, SealantClient, SealantPlatformError } from "@mend/sealant";
 import { WorkspaceCaller } from "@mend/sessions";
 import { Duration, Effect, Option } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
-import { Socket } from "effect/unstable/socket";
+import { HttpRouter, HttpServerResponse } from "effect/http";
+import { Socket } from "effect/socket";
 
 import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry, guardSocket } from "../connections.ts";
 import { SessionSteering } from "../session-steering.ts";
-import { connectionRefusal, makeFrameGuard } from "../socket-budgets.ts";
+import { connectionRefusal, forEachFrame, makeFrameGuard } from "../socket-budgets.ts";
 import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tickets.ts";
 
 /** How long the platform may take to hand over a terminal before the upgrade is answered without one. */
@@ -312,7 +312,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
           Effect.gen(function* () {
             yield* Effect.addFinalizer(() => Effect.sync(() => attachment.close()));
             const socket = yield* request.upgrade;
-            const write = yield* socket.writer;
+            const { write } = yield* socket.writer;
             // Anyone but the owner watches: output streams, their keys and resizes are dropped.
             const typing = resolved.typing;
             yield* controlEvents.record({
@@ -344,17 +344,15 @@ export const TtyRoutes = HttpRouter.use((router) =>
             }).pipe(Effect.ignore);
             yield* Effect.forkScoped(pumpOutput);
 
-            yield* socket
-              .runRaw((data) => {
-                if (guard.revoked()) return Effect.void;
-                const overFrame = frames.refuse(data);
-                if (overFrame !== null) return overFrame;
-                const input = ttyInputOf(data, typing);
-                if (input?.kind === "input") attachment.send(input.data);
-                if (input?.kind === "resize") attachment.resize(input.cols, input.rows);
-                return Effect.void;
-              })
-              .pipe(Effect.ignore);
+            yield* forEachFrame(socket, (data) => {
+              if (guard.revoked()) return Effect.void;
+              const overFrame = frames.refuse(data);
+              if (overFrame !== null) return overFrame;
+              const input = ttyInputOf(data, typing);
+              if (input?.kind === "input") attachment.send(input.data);
+              if (input?.kind === "resize") attachment.resize(input.cols, input.rows);
+              return Effect.void;
+            });
           }),
         );
 

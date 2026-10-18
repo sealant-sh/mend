@@ -7,6 +7,29 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## ✅ 2026-10-18 · 0.39.0-next.726 (and next.748) · The SDK does not load on stable Effect 4.0.5
+
+**Shipped in 0.39.0-next.751** — [sealant#398](https://github.com/sealant-sh/sealant/pull/398): the
+SDK and contracts are built against `effect` 4.0.5, import `effect/http` and `effect/http-api`, and
+peer `effect ^4.0.5`. Mend moved to Effect 4.0.5 on it (SLNT-120).
+
+Mend was moving from Effect 4.0.0-beta.93 to stable 4.0.5 (SLNT-120). Effect 4.0.0 moved every
+`effect/unstable/*` module to `effect/*` (`effect/unstable/httpapi` became `effect/http-api`) and
+removed the old export paths.
+
+- **Today:** `@sealant/sdk-next` and `@sealant/api-contracts-next` declare the peer
+  `effect >=4.0.0-beta.85 <5`, so pnpm installs them beside 4.0.5 without a warning. Their `dist`
+  still imports `effect/unstable/http` and `effect/unstable/httpapi` (3 + 2 imports in the SDK, 30
+  in the contracts, and 1,052 `import("effect/unstable/...")` type references). Under 4.0.5,
+  `import("@sealant/sdk")` fails with
+  `ERR_MODULE_NOT_FOUND .../effect/dist/unstable/httpapi.js imported from .../api-contracts-next/dist/core-api/connected-accounts.js`,
+  and with `skipLibCheck` the missing declarations type the SDK's HttpApi surface as `any`, so a
+  Mend typecheck does not catch it. The newest prerelease, 0.39.0-next.748, has the same imports.
+- **Mend then:** stayed on Effect 4.0.0-beta.93 until an SDK built against 4.0.5 shipped.
+- **Needed:** an SDK and contracts release built against `effect` 4.0.5 that imports from
+  `effect/http` and `effect/http-api`, with the peer range narrowed to what it actually runs on
+  (`^4.0.5`). Until then, the peer range `>=4.0.0-beta.85 <5` should exclude 4.0.0 and later.
+
 ## 2026-10-13 · 0.39.0-next.726 · Workspace exec rejection does not confirm command termination
 
 Landing needs to remove a private pull request description after a failed or interrupted write.

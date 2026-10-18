@@ -31,7 +31,7 @@ import type { GitHubRepository } from "./github.ts";
  */
 
 /** The pull request step did not finish: `gh`'s or the platform's own words. */
-export class PullRequestStepError extends Schema.TaggedErrorClass<PullRequestStepError>()(
+export class PullRequestStepError extends Schema.TaggedError<PullRequestStepError>()(
   "PullRequestStepError",
   { message: Schema.String },
 ) {}

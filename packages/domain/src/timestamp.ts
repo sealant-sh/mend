@@ -11,10 +11,7 @@ import { Schema } from "effect";
  * encodes to the wire form (ISO string), because the string member comes
  * first. Invalid dates are rejected on every path.
  */
-export const Timestamp = Schema.Union([
-  Schema.DateFromString.check(Schema.isDateValid()),
-  Schema.DateValid,
-]);
+export const Timestamp = Schema.Union([Schema.DateFromString, Schema.Date]);
 export type Timestamp = typeof Timestamp.Type;
 
 /**

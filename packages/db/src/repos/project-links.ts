@@ -7,7 +7,7 @@ import * as Context from "effect/Context";
 import { MendDB } from "../client.ts";
 import { projectLinks } from "../schema/workbench.ts";
 
-export class ProjectLinkNotFoundError extends Schema.TaggedErrorClass<ProjectLinkNotFoundError>()(
+export class ProjectLinkNotFoundError extends Schema.TaggedError<ProjectLinkNotFoundError>()(
   "ProjectLinkNotFoundError",
   {
     linkId: Schema.String,

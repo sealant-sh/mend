@@ -46,7 +46,7 @@ export const PROTOCOL_IDLE_SWEEP_INTERVAL = Duration.seconds(60);
 export const IDLE_STOP_CLAIM_RETRY = Duration.minutes(10);
 
 /** Minutes of idleness before the stop; 0 turns it off. */
-export const protocolIdleStopMinutes = Config.int("MEND_PROTOCOL_IDLE_STOP_MINUTES").pipe(
+export const protocolIdleStopMinutes = Config.Int("MEND_PROTOCOL_IDLE_STOP_MINUTES").pipe(
   Config.withDefault(DEFAULT_PROTOCOL_IDLE_STOP_MINUTES),
 );
 

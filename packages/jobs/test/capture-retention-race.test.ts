@@ -19,8 +19,8 @@ import { makeMemoryCaptureStore } from "@mend/sessions/testing";
 import { BlobStore, BlobStoreFsLive, captureKeys, readCaptureFileBytes } from "@mend/store";
 import { buildManifest, sectionOf, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import { Effect, Layer, Redacted } from "effect";
+import { SqlClient } from "effect/sql";
 import * as Str from "effect/String";
-import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { CaptureRetention, CaptureRetentionLive } from "../src/capture-retention.ts";

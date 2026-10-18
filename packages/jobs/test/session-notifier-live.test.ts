@@ -1,4 +1,3 @@
-import { PgClient } from "@effect/sql-pg";
 import {
   AgentConversationRepo,
   NotificationSettingsRepo,
@@ -35,7 +34,7 @@ import { Deferred, Effect, Fiber, Layer, Queue, Redacted, Stream, type Scope } f
 import { describe, expect } from "vitest";
 
 import { PushSender, PushSendError, type PushMessage } from "../src/push-sender.ts";
-import { SessionNotifierLive } from "../src/session-notifier.ts";
+import { sessionNotifier } from "../src/session-notifier.ts";
 const PROJECT = ProjectId.make("review-project");
 const WORKTREE = WorktreeId.make("review-worktree");
 const SESSION = SessionId.make("later-member-session");
@@ -111,7 +110,6 @@ interface EventRecord {
 const makeEvents = Effect.gen(function* () {
   const records = yield* Queue.unbounded<EventRecord>();
   const ready = yield* Deferred.make<void>();
-  const channels: Array<string> = [];
   let closed = false;
   // One record per pull, with no prefetch. The next demand acknowledges the previous callback.
   const stream = Stream.fromPull(
@@ -142,7 +140,6 @@ const makeEvents = Effect.gen(function* () {
     stream,
     publish,
     ready,
-    channels,
     closed: () => closed,
     shutdown: Queue.shutdown(records),
   };
@@ -201,31 +198,6 @@ const makeWorld = (
   const queried: Array<ReadonlyArray<string>> = [];
   let failNext = options.failure ?? false;
   const dependencies = Layer.mergeAll(
-    Layer.mock(PgClient.PgClient, {
-      [PgClient.TypeId]: PgClient.TypeId,
-      // Required marker in the pinned public SqlClient interface; this fixture executes only listen.
-      "~effect/sql/SqlClient": "~effect/sql/SqlClient",
-      config: {},
-      listen: (channel) => {
-        events.channels.push(channel);
-        return events.stream;
-      },
-      literal: unused,
-      in: unused,
-      insert: unused,
-      update: unused,
-      updateValues: unused,
-      and: unused,
-      or: unused,
-      csv: unused,
-      join: unused,
-      onDialect: unused,
-      onDialectOrElse: unused,
-      withoutTransforms: unused,
-      reactive: unused,
-      json: unused,
-    }),
-
     Layer.mock(SessionsRepo, {
       listActive: () => Effect.sync(() => (options.unknown ? [] : [session])),
       byId: (id) =>
@@ -302,7 +274,7 @@ const makeWorld = (
     }),
   );
   return {
-    layer: SessionNotifierLive.pipe(Layer.provide(dependencies)),
+    layer: Layer.effectDiscard(sessionNotifier(events.stream)).pipe(Layer.provide(dependencies)),
     sent,
     removed,
     queried,
@@ -347,7 +319,6 @@ const runWorld = (
         Effect.gen(function* () {
           yield* Layer.build(world.layer);
           yield* Deferred.await(events.ready).pipe(Effect.timeout("2 seconds"));
-          expect(events.channels).toEqual(["mend_events"]);
           yield* scenario(world, events);
         }),
       );

@@ -89,7 +89,7 @@ export const stampLabel = (stamp: ReadStamp): string =>
     : `observed at capture ${stamp.captureN ?? "?"}${stamp.seq === null ? "" : ` · seq ${stamp.seq}`}${stamp.partial ? " · partial" : ""}`;
 
 /** The chain has no head yet (capture 0 never registered) — nothing to read. */
-export class WorktreeNotCapturedError extends Schema.TaggedErrorClass<WorktreeNotCapturedError>()(
+export class WorktreeNotCapturedError extends Schema.TaggedError<WorktreeNotCapturedError>()(
   "WorktreeNotCapturedError",
   { worktreeId: Schema.String, message: Schema.String },
 ) {}

@@ -878,7 +878,7 @@ export const UNKNOWN_LAUNCH_REFUSAL =
   "Mend cannot tell which workspace launch this process belongs to, and this worktree runs each person as their own user, so nothing was started. Start the session again.";
 
 /** DELETE is retried: a release that fails leaves a login where nobody runs any more. */
-const RELEASE_RETRY = Schedule.exponential("200 millis").pipe(Schedule.both(Schedule.recurs(4)));
+const RELEASE_RETRY = Schedule.max([Schedule.exponential("200 millis"), Schedule.recurs(4)]);
 /** A re-POST after an authentication failure, at most this often per person and executor. */
 const RELOGIN_SPACING_MS = 60_000;
 

@@ -15,6 +15,7 @@
   "devDependencies": {
     "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
+    "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { AuthMiddleware } from "./common.ts";
 
@@ -38,14 +38,14 @@ export class UpgradeTicket extends Schema.Class<UpgradeTicket>("UpgradeTicket")(
 }) {}
 
 /** The parameters do not address the target (a tunnel ticket with no `service`). */
-export class UpgradeTicketInvalid extends Schema.TaggedErrorClass<UpgradeTicketInvalid>()(
+export class UpgradeTicketInvalid extends Schema.TaggedError<UpgradeTicketInvalid>()(
   "UpgradeTicketInvalid",
   { message: Schema.String },
   { httpApiStatus: 400 },
 ) {}
 
 /** Unknown, expired, already used, or minted for something else. One answer for all four. */
-export class UpgradeTicketRefused extends Schema.TaggedErrorClass<UpgradeTicketRefused>()(
+export class UpgradeTicketRefused extends Schema.TaggedError<UpgradeTicketRefused>()(
   "UpgradeTicketRefused",
   {},
   { httpApiStatus: 401 },

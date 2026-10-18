@@ -1,7 +1,7 @@
 import { SealantRunId, SessionProcessId } from "@mend/domain";
 import { Change as SessionChange } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApi } from "effect/unstable/httpapi";
+import { HttpApi } from "effect/http-api";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -33,8 +33,8 @@ describe("typed HTTP error contracts", () => {
     HttpApi.reflect(MendApi, {
       onGroup: () => {},
       onEndpoint: ({ endpoint, errors }) => {
-        if (typedEndpointNames.has(endpoint.name)) {
-          statuses.set(endpoint.name, new Set(errors.keys()));
+        if (typedEndpointNames.has(endpoint.identifier)) {
+          statuses.set(endpoint.identifier, new Set(errors.keys()));
         }
       },
     });
@@ -54,8 +54,8 @@ describe("typed HTTP error contracts", () => {
     HttpApi.reflect(MendApi, {
       onGroup: () => {},
       onEndpoint: ({ endpoint, errors }) => {
-        if (conversationEndpointNames.has(endpoint.name)) {
-          statuses.set(endpoint.name, new Set(errors.keys()));
+        if (conversationEndpointNames.has(endpoint.identifier)) {
+          statuses.set(endpoint.identifier, new Set(errors.keys()));
         }
       },
     });
@@ -72,7 +72,7 @@ describe("typed HTTP error contracts", () => {
       onGroup: () => {},
       onEndpoint: ({ group, endpoint, errors }) => {
         if (group.identifier === "worktrees") {
-          statuses.set(endpoint.name, new Set(errors.keys()));
+          statuses.set(endpoint.identifier, new Set(errors.keys()));
         }
       },
     });
@@ -139,7 +139,7 @@ describe("typed HTTP error contracts", () => {
     HttpApi.reflect(MendApi, {
       onGroup: () => {},
       onEndpoint: ({ group, endpoint }) => {
-        if (group.identifier === "projects") endpoints.add(endpoint.name);
+        if (group.identifier === "projects") endpoints.add(endpoint.identifier);
       },
     });
     expect(endpoints.has("inheritUserSkills")).toBe(true);
@@ -155,7 +155,7 @@ describe("typed HTTP error contracts", () => {
     HttpApi.reflect(MendApi, {
       onGroup: () => {},
       onEndpoint: ({ group, endpoint }) => {
-        if (group.identifier === "projects") endpoints.add(endpoint.name);
+        if (group.identifier === "projects") endpoints.add(endpoint.identifier);
       },
     });
     expect(endpoints.has("installEnabled")).toBe(true);
@@ -178,7 +178,7 @@ describe("typed HTTP error contracts", () => {
     HttpApi.reflect(MendApi, {
       onGroup: () => {},
       onEndpoint: ({ group, endpoint }) => {
-        if (group.identifier === "projects") endpoints.add(endpoint.name);
+        if (group.identifier === "projects") endpoints.add(endpoint.identifier);
       },
     });
     expect(endpoints.has("defaultShellProfile")).toBe(true);

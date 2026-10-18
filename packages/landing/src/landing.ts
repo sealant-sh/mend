@@ -69,13 +69,10 @@ import { PullRequests, PullRequestStepError } from "./pull-requests.ts";
 // ─── The git half, per store kind ───────────────────────────────────────────
 
 /** A step of the git half that did not finish, in git's words or the remote's. */
-export class LandingStepError extends Schema.TaggedErrorClass<LandingStepError>()(
-  "LandingStepError",
-  {
-    step: Schema.Literals(["checkpoint", "commit", "push", "files", "probe", "bundle"]),
-    message: Schema.String,
-  },
-) {}
+export class LandingStepError extends Schema.TaggedError<LandingStepError>()("LandingStepError", {
+  step: Schema.Literals(["checkpoint", "commit", "push", "files", "probe", "bundle"]),
+  message: Schema.String,
+}) {}
 
 /** Where a change lives: its project and worktree. */
 export interface LandingPlace {
@@ -218,7 +215,7 @@ export class TourRequests extends Context.Service<
 // ─── The service ────────────────────────────────────────────────────────────
 
 /** Why a landing did not start. Nothing is recorded: no attempt was made. */
-export class LandingNotStartedError extends Schema.TaggedErrorClass<LandingNotStartedError>()(
+export class LandingNotStartedError extends Schema.TaggedError<LandingNotStartedError>()(
   "LandingNotStartedError",
   {
     reason: Schema.Literals([

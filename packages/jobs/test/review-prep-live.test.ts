@@ -1,4 +1,3 @@
-import { PgClient } from "@effect/sql-pg";
 import {
   CaptureStoreRepo,
   ChangePassesRepo,
@@ -36,7 +35,7 @@ import { Deferred, Effect, Fiber, Layer, Queue, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { JobRunner, type JobSpec } from "../src/job-runner.ts";
-import { ReviewPrepLive } from "../src/review-prep.ts";
+import { reviewPrep } from "../src/review-prep.ts";
 
 const PROJECT = ProjectId.make("review-project");
 const WORKTREE = WorktreeId.make("review-worktree");
@@ -150,7 +149,6 @@ interface EventRecord {
 const makeEvents = Effect.gen(function* () {
   const records = yield* Queue.unbounded<EventRecord>();
   const ready = yield* Deferred.make<void>();
-  const channels: Array<string> = [];
   let closed = false;
   // One record per pull, with no prefetch. The next demand acknowledges the previous callback.
   const stream = Stream.fromPull(
@@ -181,7 +179,6 @@ const makeEvents = Effect.gen(function* () {
     stream,
     publish,
     ready,
-    channels,
     closed: () => closed,
     shutdown: Queue.shutdown(records),
   };
@@ -222,30 +219,6 @@ const makeWorld = (events: Events, options: Options) => {
     : CaptureRuntimeOff;
   const dependencies = Layer.mergeAll(
     capture,
-    Layer.mock(PgClient.PgClient, {
-      [PgClient.TypeId]: PgClient.TypeId,
-      // Required marker in the pinned public SqlClient interface; this fixture executes only listen.
-      "~effect/sql/SqlClient": "~effect/sql/SqlClient",
-      config: {},
-      listen: (channel) => {
-        events.channels.push(channel);
-        return events.stream;
-      },
-      literal: unused,
-      in: unused,
-      insert: unused,
-      update: unused,
-      updateValues: unused,
-      and: unused,
-      or: unused,
-      csv: unused,
-      join: unused,
-      onDialect: unused,
-      onDialectOrElse: unused,
-      withoutTransforms: unused,
-      reactive: unused,
-      json: unused,
-    }),
     Layer.mock(SessionsRepo, {
       listActive: () => Effect.sync(() => (options.baseline === "unknown" ? [] : [session])),
       byId: (id) =>
@@ -340,7 +313,7 @@ const makeWorld = (events: Events, options: Options) => {
     queued,
     reads,
     seed,
-    layer: ReviewPrepLive.pipe(Layer.provide(dependencies)),
+    layer: Layer.effectDiscard(reviewPrep(events.stream)).pipe(Layer.provide(dependencies)),
     setSession: (patch: Partial<Session>) => {
       session = new Session({ ...session, ...patch });
     },
@@ -366,7 +339,6 @@ const withWorld = <E>(
         Effect.gen(function* () {
           yield* Layer.build(world.layer);
           yield* Deferred.await(events.ready).pipe(Effect.timeout("2 seconds"));
-          expect(events.channels).toEqual(["mend_events"]);
           yield* work(world, head);
         }),
       );

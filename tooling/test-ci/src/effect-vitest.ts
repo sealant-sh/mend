@@ -76,17 +76,19 @@ const guardEffect = <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E,
   Clock.clockWith((clock) => self.pipe(Effect.provideService(Clock.Clock, guardClock(clock))));
 
 const guardTest =
-  <R>(register: EffectVitest.Vitest.Test<R>): EffectVitest.Vitest.Test<R> =>
+  <R, X>(register: EffectVitest.Vitest.Test<R, X>): EffectVitest.Vitest.Test<R, X> =>
   (name, self, timeout) =>
     register(name, (context) => guardEffect(Effect.suspend(() => self(context))), timeout);
 
-const guardTester = <R>(register: EffectVitest.Vitest.Tester<R>): EffectVitest.Vitest.Tester<R> => {
-  const each: EffectVitest.Vitest.Tester<R>["each"] = (cases) => {
+const guardTester = <R, X>(
+  register: EffectVitest.Vitest.Tester<R, X>,
+): EffectVitest.Vitest.Tester<R, X> => {
+  const each: EffectVitest.Vitest.Tester<R, X>["each"] = (cases) => {
     const registerCases = register.each(cases);
     return (name, self, timeout) =>
       registerCases(name, (...args) => guardEffect(Effect.suspend(() => self(...args))), timeout);
   };
-  const prop: EffectVitest.Vitest.Tester<R>["prop"] = (name, arbitraries, self, timeout) =>
+  const prop: EffectVitest.Vitest.Tester<R, X>["prop"] = (name, arbitraries, self, timeout) =>
     register.prop(
       name,
       arbitraries,
@@ -104,20 +106,20 @@ const guardTester = <R>(register: EffectVitest.Vitest.Tester<R>): EffectVitest.V
   });
 };
 
-type LayerRegistration<R> = {
-  (callback: (it: EffectVitest.Vitest.MethodsNonLive<R>) => void): void;
-  (name: string, callback: (it: EffectVitest.Vitest.MethodsNonLive<R>) => void): void;
+type LayerRegistration<R, X> = {
+  (callback: (it: EffectVitest.Vitest.MethodsNonLive<R, X>) => void): void;
+  (name: string, callback: (it: EffectVitest.Vitest.MethodsNonLive<R, X>) => void): void;
 };
 
-const guardRegistration = <R>(register: LayerRegistration<R>): LayerRegistration<R> => {
-  function guarded(callback: (it: EffectVitest.Vitest.MethodsNonLive<R>) => void): void;
+const guardRegistration = <R, X>(register: LayerRegistration<R, X>): LayerRegistration<R, X> => {
+  function guarded(callback: (it: EffectVitest.Vitest.MethodsNonLive<R, X>) => void): void;
   function guarded(
     name: string,
-    callback: (it: EffectVitest.Vitest.MethodsNonLive<R>) => void,
+    callback: (it: EffectVitest.Vitest.MethodsNonLive<R, X>) => void,
   ): void;
   function guarded(
-    nameOrCallback: string | ((it: EffectVitest.Vitest.MethodsNonLive<R>) => void),
-    callback?: (it: EffectVitest.Vitest.MethodsNonLive<R>) => void,
+    nameOrCallback: string | ((it: EffectVitest.Vitest.MethodsNonLive<R, X>) => void),
+    callback?: (it: EffectVitest.Vitest.MethodsNonLive<R, X>) => void,
   ): void {
     if (typeof nameOrCallback === "function") {
       register((methods) => nameOrCallback(guardNonLiveMethods(methods)));
@@ -130,11 +132,11 @@ const guardRegistration = <R>(register: LayerRegistration<R>): LayerRegistration
   return guarded;
 };
 
-const guardNonLiveMethods = <R>(
-  methods: EffectVitest.Vitest.MethodsNonLive<R>,
-): EffectVitest.Vitest.MethodsNonLive<R> => {
+const guardNonLiveMethods = <R, X>(
+  methods: EffectVitest.Vitest.MethodsNonLive<R, X>,
+): EffectVitest.Vitest.MethodsNonLive<R, X> => {
   const effect = guardTester(methods.effect);
-  const layer: EffectVitest.Vitest.MethodsNonLive<R>["layer"] = (sharedLayer, options) =>
+  const layer: EffectVitest.Vitest.MethodsNonLive<R, X>["layer"] = (sharedLayer, options) =>
     guardRegistration(methods.layer(sharedLayer.pipe(Layer.provide(guardedClockLayer)), options));
   return new Proxy(methods, {
     get(target, property, receiver) {
@@ -145,11 +147,11 @@ const guardNonLiveMethods = <R>(
   });
 };
 
-const guardMethods = <R>(
-  methods: EffectVitest.Vitest.Methods<R>,
-): EffectVitest.Vitest.Methods<R> => {
+const guardMethods = <R, X>(
+  methods: EffectVitest.Vitest.Methods<R, X>,
+): EffectVitest.Vitest.Methods<R, X> => {
   const effect = guardTester(methods.effect);
-  const layer: EffectVitest.Vitest.Methods<R>["layer"] = (sharedLayer, options) =>
+  const layer: EffectVitest.Vitest.Methods<R, X>["layer"] = (sharedLayer, options) =>
     guardRegistration(methods.layer(sharedLayer.pipe(Layer.provide(guardedClockLayer)), options));
   return new Proxy(methods, {
     get(target, property, receiver) {

@@ -15,7 +15,7 @@ import {
   Project,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
@@ -28,14 +28,14 @@ import { SettingsFailure, WorkspacePackageResolutionView } from "./workbench-vie
  */
 
 /** A request the organization rules refuse; the message says which rule. */
-export class OrganizationRejected extends Schema.TaggedErrorClass<OrganizationRejected>()(
+export class OrganizationRejected extends Schema.TaggedError<OrganizationRejected>()(
   "OrganizationRejected",
   { message: Schema.String },
   { httpApiStatus: 422 },
 ) {}
 
 /** The invitation exists but is spent: accepted, revoked, or past its expiry. */
-export class InvitationSpent extends Schema.TaggedErrorClass<InvitationSpent>()(
+export class InvitationSpent extends Schema.TaggedError<InvitationSpent>()(
   "InvitationSpent",
   { state: Schema.Literals(["accepted", "revoked", "expired"]) },
   { httpApiStatus: 409 },

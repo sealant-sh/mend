@@ -19,12 +19,9 @@ import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import { runs } from "../schema/workbench.ts";
 
-export class RunNotFoundError extends Schema.TaggedErrorClass<RunNotFoundError>()(
-  "RunNotFoundError",
-  {
-    runId: Schema.String,
-  },
-) {}
+export class RunNotFoundError extends Schema.TaggedError<RunNotFoundError>()("RunNotFoundError", {
+  runId: Schema.String,
+}) {}
 
 const decodeRun = Schema.decodeUnknownEffect(Run);
 

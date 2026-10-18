@@ -21,7 +21,7 @@ import { notifyEvent } from "../events.ts";
 import { agentSessions, sessionRepositories } from "../schema/workbench.ts";
 import { isUniqueViolation } from "./unique-violation.ts";
 
-export class SessionRepositoryNotFoundError extends Schema.TaggedErrorClass<SessionRepositoryNotFoundError>()(
+export class SessionRepositoryNotFoundError extends Schema.TaggedError<SessionRepositoryNotFoundError>()(
   "SessionRepositoryNotFoundError",
   {
     id: Schema.String,
@@ -29,7 +29,7 @@ export class SessionRepositoryNotFoundError extends Schema.TaggedErrorClass<Sess
 ) {}
 
 /** The session already holds a repository under that name, or that worktree. */
-export class SessionRepositoryTakenError extends Schema.TaggedErrorClass<SessionRepositoryTakenError>()(
+export class SessionRepositoryTakenError extends Schema.TaggedError<SessionRepositoryTakenError>()(
   "SessionRepositoryTakenError",
   {
     sessionId: Schema.String,

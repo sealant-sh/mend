@@ -61,6 +61,7 @@
     "@types/react": "catalog:",
     "effect": "catalog:",
     "esbuild": "catalog:",
+    "fast-check": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

@@ -1,5 +1,5 @@
 import { Result, Schema } from "effect";
-import { FastCheck } from "effect/testing";
+import * as FastCheck from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import {

@@ -3,12 +3,12 @@ import * as Context from "effect/Context";
 import { Pool } from "pg";
 import { PgBoss, type Db } from "pg-boss";
 
-export class JobEnqueueError extends Schema.TaggedErrorClass<JobEnqueueError>()("JobEnqueueError", {
+export class JobEnqueueError extends Schema.TaggedError<JobEnqueueError>()("JobEnqueueError", {
   job: Schema.String,
   cause: Schema.Defect(),
 }) {}
 
-class JobRollbackError extends Schema.TaggedErrorClass<JobRollbackError>()("JobRollbackError", {
+class JobRollbackError extends Schema.TaggedError<JobRollbackError>()("JobRollbackError", {
   cause: Schema.Defect(),
   rollbackCause: Schema.Defect(),
 }) {
@@ -83,13 +83,13 @@ export class JobRunner extends Context.Service<
 export const JobRunnerLive: Layer.Layer<JobRunner, Config.ConfigError> = Layer.effect(
   JobRunner,
   Effect.gen(function* () {
-    const databaseUrl = yield* Config.redacted("DATABASE_URL").pipe(
+    const databaseUrl = yield* Config.Redacted("DATABASE_URL").pipe(
       Config.orElse(() =>
         Config.succeed(Redacted.make("postgres://mend:mend@localhost:5434/mend")),
       ),
     );
 
-    const poolMax = yield* Config.int("MEND_JOBS_POOL_MAX").pipe(Config.withDefault(3));
+    const poolMax = yield* Config.Int("MEND_JOBS_POOL_MAX").pipe(Config.withDefault(3));
 
     const boss = yield* Effect.acquireRelease(
       Effect.promise(async () => {

@@ -28,7 +28,7 @@ export const MEND_TOML = "mend.toml";
 /** Directory-, shell-, and URL-safe recipe names; also the CLI lookup key. */
 export const RECIPE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
-export class RecipeFileError extends Schema.TaggedErrorClass<RecipeFileError>()("RecipeFileError", {
+export class RecipeFileError extends Schema.TaggedError<RecipeFileError>()("RecipeFileError", {
   path: Schema.String,
   message: Schema.String,
 }) {}

@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { migrations } from "../src/migrations.ts";
@@ -121,7 +121,11 @@ describe.skipIf(postgres.skip)("per-person harness homes, in Postgres", () => {
         const again = yield* repo.ensureIdentity("account-3");
         expect(again).toEqual(first[3]);
         const listed = yield* repo.identitiesOf(["account-3", "account-0", "nobody"]);
-        expect(listed.map((identity) => identity.accountId)).toEqual(["account-0", "account-3"]);
+        expect(listed).toEqual(
+          first
+            .filter((identity) => ["account-0", "account-3"].includes(identity.accountId))
+            .toSorted((a, b) => a.uid - b.uid),
+        );
         // By login name, as a home Core lists names its person.
         const named = yield* repo.identitiesNamed([linuxLoginNameOf("account-5"), "mnobody23"]);
         expect(named.map((identity) => identity.accountId)).toEqual(["account-5"]);

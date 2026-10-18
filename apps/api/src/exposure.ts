@@ -89,7 +89,7 @@ export interface T3GatewayFacts {
   readonly published: string | null;
 }
 
-export class ExposureRefused extends Schema.TaggedErrorClass<ExposureRefused>()("ExposureRefused", {
+export class ExposureRefused extends Schema.TaggedError<ExposureRefused>()("ExposureRefused", {
   message: Schema.String,
 }) {}
 
@@ -479,7 +479,7 @@ export const exposureRefusal = (
 
 /** A variable's trimmed value; undefined when unset or empty. */
 const optionalString = (name: string) =>
-  Config.string(name).pipe(
+  Config.String(name).pipe(
     Config.map((value) => value.trim()),
     Config.option,
     Effect.map((value) => Option.getOrUndefined(Option.filter(value, (text) => text !== ""))),
@@ -497,7 +497,7 @@ export const ExposureConfigLive: Layer.Layer<
       // than one reached from its own machine, and the two differ only in what the report says.
       Config.withDefault("private" as const),
     );
-    const declaredRaw = yield* Config.string("MEND_EXPOSURE_DECLARED").pipe(Config.withDefault(""));
+    const declaredRaw = yield* Config.String("MEND_EXPOSURE_DECLARED").pipe(Config.withDefault(""));
     const stated = declaredRaw
       .split(",")
       .map((entry) => entry.trim())
@@ -508,11 +508,11 @@ export const ExposureConfigLive: Layer.Layer<
         message: `MEND_EXPOSURE_DECLARED names ${unknown.join(", ")}: only ${DECLARABLE.join(", ")} can be declared; every other item is observed by this process or not at all.`,
       });
     }
-    const reassessed = yield* Config.string("MEND_EXPOSURE_REASSESSED").pipe(Config.option);
-    const version = yield* Config.string("MEND_VERSION").pipe(Config.withDefault("dev"));
+    const reassessed = yield* Config.String("MEND_EXPOSURE_REASSESSED").pipe(Config.option);
+    const version = yield* Config.String("MEND_VERSION").pipe(Config.withDefault("dev"));
     // The switch the bundle starts the gateway by (scripts/bundle-supervisor.mjs).
     const t3Gateway = ["1", "true"].includes(
-      (yield* Config.string("MEND_T3_GATEWAY_ENABLED").pipe(Config.withDefault("")))
+      (yield* Config.String("MEND_T3_GATEWAY_ENABLED").pipe(Config.withDefault("")))
         .trim()
         .toLowerCase(),
     );
@@ -523,8 +523,8 @@ export const ExposureConfigLive: Layer.Layer<
     const network = yield* NetworkConfig;
     const deployment = yield* DeploymentConfig;
     const mirrorHosts = [
-      yield* Config.string("MEND_NPM_MIRROR_URL").pipe(Config.withDefault("")),
-      ...(yield* Config.string("SEALANT_DOCKER_REGISTRY_MIRRORS").pipe(
+      yield* Config.String("MEND_NPM_MIRROR_URL").pipe(Config.withDefault("")),
+      ...(yield* Config.String("SEALANT_DOCKER_REGISTRY_MIRRORS").pipe(
         Config.withDefault(""),
       )).split(","),
     ].flatMap((value) => {
@@ -547,7 +547,7 @@ export const ExposureConfigLive: Layer.Layer<
       // `source.transport.plaintext`: one variable, read once (`DeploymentConfig`).
       executorNetwork: deployment.executorTransport?.plaintext === true ? "private" : undefined,
       sshPublished: Option.getOrUndefined(
-        yield* Config.string("MEND_SSH_PUBLISHED").pipe(Config.option),
+        yield* Config.String("MEND_SSH_PUBLISHED").pipe(Config.option),
       ),
       declared: DECLARABLE.filter((id) => stated.includes(id)),
       reassessedVersion: reassessed._tag === "Some" ? reassessed.value : undefined,

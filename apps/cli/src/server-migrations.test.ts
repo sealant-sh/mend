@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 
 import { Effect } from "effect";
-import { Migrator } from "effect/unstable/sql";
+import { Migrator } from "effect/sql";
 import { describe, expect, it } from "vitest";
 
 import { migrationProblems } from "./server-setup.ts";

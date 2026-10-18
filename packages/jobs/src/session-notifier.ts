@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import {
   AgentConversationRepo,
-  MEND_EVENTS_CHANNEL,
+  listenEvents,
   MendEvent,
   NotificationSettingsRepo,
   OrganizationsRepo,
@@ -30,6 +30,7 @@ import {
 import { mayRunIn } from "@mend/sessions";
 import { slackThreadReach } from "@mend/slack";
 import { Clock, Effect, Layer, Redacted, Schema, Stream } from "effect";
+import type { SqlError } from "effect/sql/SqlError";
 
 import { notificationRecipients } from "./notification-recipients.ts";
 import { PushSender } from "./push-sender.ts";
@@ -243,9 +244,8 @@ export const latestSenderWhoSees = (
     return (yield* mayRunIn(organizations, project, author)) ? author : null;
   });
 
-export const SessionNotifierLive = Layer.effectDiscard(
+export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
   Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
     const sessions = yield* SessionsRepo;
     const processes = yield* SessionProcessesRepo;
     const projects = yield* ProjectsRepo;
@@ -368,7 +368,7 @@ export const SessionNotifierLive = Layer.effectDiscard(
       lastCaptureAlerts.set(session.id, captureAlertStateOf(session));
     }
 
-    yield* sql.listen(MEND_EVENTS_CHANNEL).pipe(
+    yield* events.pipe(
       Stream.runForEach((payload) =>
         decodeEvent(payload).pipe(
           Effect.flatMap((event) => {
@@ -390,5 +390,8 @@ export const SessionNotifierLive = Layer.effectDiscard(
       ),
       Effect.forkScoped,
     );
-  }),
+  });
+
+export const SessionNotifierLive = Layer.effectDiscard(
+  Effect.flatMap(PgClient.PgClient, (sql) => sessionNotifier(listenEvents(sql))),
 );

@@ -1,6 +1,6 @@
 import { redactRepositoryUrl } from "@mend/domain/workbench";
 import { Effect } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 
 /**
  * The core tables from ARCHITECTURE.md §3. pg-boss owns its own `pgboss`

@@ -30,7 +30,7 @@ import {
 } from "@mend/domain/workbench";
 import { Change as SessionChange } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
@@ -167,14 +167,14 @@ export const projectSecretsGroup = HttpApiGroup.make("projectSecrets")
   .middleware(AuthMiddleware);
 
 /** 422: the object name failed the DNS-1123 grammar, or the binding set is full. */
-export class ClusterBindingRejected extends Schema.TaggedErrorClass<ClusterBindingRejected>()(
+export class ClusterBindingRejected extends Schema.TaggedError<ClusterBindingRejected>()(
   "ClusterBindingRejected",
   { message: Schema.String },
   { httpApiStatus: 422 },
 ) {}
 
 /** 409: this (kind, objectName) pair is already bound on the project. */
-export class ClusterBindingDuplicate extends Schema.TaggedErrorClass<ClusterBindingDuplicate>()(
+export class ClusterBindingDuplicate extends Schema.TaggedError<ClusterBindingDuplicate>()(
   "ClusterBindingDuplicate",
   { kind: Schema.String, objectName: Schema.String },
   { httpApiStatus: 409 },
@@ -493,7 +493,7 @@ export class HandoffRequest extends Schema.Class<HandoffRequest>("HandoffRequest
 }) {}
 
 /** The session's harness cannot continue in the requested mode (claude and codex only). */
-export class HandoffUnsupported extends Schema.TaggedErrorClass<HandoffUnsupported>()(
+export class HandoffUnsupported extends Schema.TaggedError<HandoffUnsupported>()(
   "HandoffUnsupported",
   { sessionId: Schema.String, harness: Schema.String, to: Schema.String },
   { httpApiStatus: 422 },
@@ -507,14 +507,14 @@ export class SubmitAgentTurnRequest extends Schema.Class<SubmitAgentTurnRequest>
 }) {}
 
 /** A live protocol process is required for this operation. */
-export class ProtocolSessionNotLive extends Schema.TaggedErrorClass<ProtocolSessionNotLive>()(
+export class ProtocolSessionNotLive extends Schema.TaggedError<ProtocolSessionNotLive>()(
   "ProtocolSessionNotLive",
   { processId: Schema.String },
   { httpApiStatus: 409 },
 ) {}
 
 /** The request already has an observed answer or cancellation. */
-export class AgentRequestResolved extends Schema.TaggedErrorClass<AgentRequestResolved>()(
+export class AgentRequestResolved extends Schema.TaggedError<AgentRequestResolved>()(
   "AgentRequestResolved",
   { requestId: Schema.String },
   { httpApiStatus: 409 },
@@ -543,7 +543,7 @@ export class PastedImage extends Schema.Class<PastedImage>("PastedImage")({
 }) {}
 
 /** The bytes are not an accepted image, or exceed the size cap. */
-export class PastedImageRejected extends Schema.TaggedErrorClass<PastedImageRejected>()(
+export class PastedImageRejected extends Schema.TaggedError<PastedImageRejected>()(
   "PastedImageRejected",
   { message: Schema.String },
   { httpApiStatus: 422 },

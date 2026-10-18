@@ -11,8 +11,8 @@ import {
   hostUserNamespacesRefusalParts,
 } from "@mend/domain/host-user-namespaces";
 import { Effect, Layer, Schema } from "effect";
-import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
+import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { errorBoundary, redactErrorBody, redactKeepingHostFix } from "./error-boundary.ts";

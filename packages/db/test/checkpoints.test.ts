@@ -2,8 +2,8 @@ import { PgClient } from "@effect/sql-pg";
 import { ProjectId, Sha, WorktreeId } from "@mend/domain";
 import { CheckpointSource } from "@mend/domain/workbench";
 import { Effect, Layer, Redacted } from "effect";
+import { SqlClient } from "effect/sql";
 import * as Str from "effect/String";
-import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";

@@ -131,7 +131,7 @@ export interface ChangeBundle {
 // ─── Errors ─────────────────────────────────────────────────────────────────
 
 /** A branch name git would not accept under `refs/heads/`. */
-export class InvalidBranchError extends Schema.TaggedErrorClass<InvalidBranchError>()(
+export class InvalidBranchError extends Schema.TaggedError<InvalidBranchError>()(
   "InvalidBranchError",
   { branch: Schema.String },
 ) {}
@@ -144,30 +144,28 @@ export class InvalidBranchError extends Schema.TaggedErrorClass<InvalidBranchErr
 export const PushRefusal = Schema.Literals(["diverged", "rejected", "denied"]);
 export type PushRefusal = typeof PushRefusal.Type;
 
-export class PushRefusedError extends Schema.TaggedErrorClass<PushRefusedError>()(
-  "PushRefusedError",
-  {
-    remoteBranch: Schema.String,
-    reason: PushRefusal,
-    /** The remote's own words (its `remote:` lines), then git's status for the ref. */
-    message: Schema.String,
-    /** Origin's tip when the refusal was `diverged` and a probe read it. */
-    remoteSha: Schema.NullOr(Schema.String),
-    /** Commits on origin the pushed commit lacks, when a probe counted them. */
-    unseen: Schema.NullOr(Schema.Int),
-  },
-) {}
+export class PushRefusedError extends Schema.TaggedError<PushRefusedError>()("PushRefusedError", {
+  remoteBranch: Schema.String,
+  reason: PushRefusal,
+  /** The remote's own words (its `remote:` lines), then git's status for the ref. */
+  message: Schema.String,
+  /** Origin's tip when the refusal was `diverged` and a probe read it. */
+  remoteSha: Schema.NullOr(Schema.String),
+  /** Commits on origin the pushed commit lacks, when a probe counted them. */
+  unseen: Schema.NullOr(Schema.Int),
+}) {}
 
-export class BundleTooLargeError extends Schema.TaggedErrorClass<BundleTooLargeError>()(
+export class BundleTooLargeError extends Schema.TaggedError<BundleTooLargeError>()(
   "BundleTooLargeError",
   { branch: Schema.String, size: Schema.Int, limit: Schema.Int },
 ) {}
 
 /** `base..tip` holds no commit, so there is nothing to pull. */
-export class BundleEmptyError extends Schema.TaggedErrorClass<BundleEmptyError>()(
-  "BundleEmptyError",
-  { branch: Schema.String, base: Schema.String, tip: Schema.String },
-) {}
+export class BundleEmptyError extends Schema.TaggedError<BundleEmptyError>()("BundleEmptyError", {
+  branch: Schema.String,
+  base: Schema.String,
+  tip: Schema.String,
+}) {}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

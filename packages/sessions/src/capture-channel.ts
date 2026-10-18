@@ -479,7 +479,7 @@ export const CaptureRefusalReason = Schema.Literals([
 ]);
 export type CaptureRefusalReason = typeof CaptureRefusalReason.Type;
 
-export class CaptureRouteError extends Schema.TaggedErrorClass<CaptureRouteError>()(
+export class CaptureRouteError extends Schema.TaggedError<CaptureRouteError>()(
   "CaptureRouteError",
   {
     status: Schema.Int,
@@ -1101,7 +1101,7 @@ const MINTED_KEYS_REMEMBERED = 200_000;
 const GUARD_ATTEMPTS = 3;
 
 /** Retention condemned something a register names between its read and its CAS: read again. */
-class GuardMovedError extends Schema.TaggedErrorClass<GuardMovedError>()("GuardMovedError", {}) {}
+class GuardMovedError extends Schema.TaggedError<GuardMovedError>()("GuardMovedError", {}) {}
 
 const WorktreeIdOf = (id: string): WorktreeId => WorktreeId.make(id);
 

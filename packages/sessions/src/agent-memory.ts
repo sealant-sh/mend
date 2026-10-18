@@ -112,7 +112,7 @@ export const agentMemoryHandoverKeptDir = (now: Date = new Date()): string =>
     `${now.toISOString().replace(/[:.]/g, "-")}-handover-${randomUUID().slice(0, 8)}`,
   );
 
-export class AgentMemoryDeliveryError extends Schema.TaggedErrorClass<AgentMemoryDeliveryError>()(
+export class AgentMemoryDeliveryError extends Schema.TaggedError<AgentMemoryDeliveryError>()(
   "AgentMemoryDeliveryError",
   { message: Schema.String },
 ) {}

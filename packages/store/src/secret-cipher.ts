@@ -17,7 +17,7 @@ import { MendKeysConfig } from "./git-auth.ts";
 export const SEALED_SECRET_VERSION = "v1";
 const KEY_FILE = "secrets.key";
 
-export class SecretCipherError extends Schema.TaggedErrorClass<SecretCipherError>()(
+export class SecretCipherError extends Schema.TaggedError<SecretCipherError>()(
   "SecretCipherError",
   {
     operation: Schema.Literals(["key", "encrypt", "decrypt"]),

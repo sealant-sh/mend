@@ -16,7 +16,7 @@ import { projectServiceRecipes } from "../schema/workbench.ts";
  * name collisions rather than resolving them — the file wins.
  */
 
-export class RecipeNameTakenError extends Schema.TaggedErrorClass<RecipeNameTakenError>()(
+export class RecipeNameTakenError extends Schema.TaggedError<RecipeNameTakenError>()(
   "RecipeNameTakenError",
   {
     name: Schema.String,

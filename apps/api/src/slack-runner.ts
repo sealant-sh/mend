@@ -2225,11 +2225,11 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
   });
 
 const runnerOptions = Config.all({
-  eventsPerMinute: Config.int("MEND_SLACK_EVENTS_PER_MINUTE").pipe(
+  eventsPerMinute: Config.Int("MEND_SLACK_EVENTS_PER_MINUTE").pipe(
     Config.withDefault(SLACK_EVENTS_PER_MINUTE),
   ),
   linkedRequestMaxAgeMs: Config.succeed(SLACK_LINKED_REQUEST_MAX_AGE_MS),
-  inferencesPerHour: Config.int("MEND_SLACK_INFERENCES_PER_HOUR").pipe(
+  inferencesPerHour: Config.Int("MEND_SLACK_INFERENCES_PER_HOUR").pipe(
     Config.withDefault(SLACK_INFERENCES_PER_HOUR),
   ),
 });

@@ -17,12 +17,12 @@ export class SealantEnv extends Context.Service<
   static readonly layer = Layer.effect(
     SealantEnv,
     Effect.gen(function* () {
-      const baseUrl = yield* Config.string("SEALANT_BASE_URL").pipe(
+      const baseUrl = yield* Config.String("SEALANT_BASE_URL").pipe(
         Config.orElse(() => Config.succeed("http://localhost:8080")),
       );
       const serviceKey = yield* Config.option(
-        Config.redacted("SEALANT_SERVICE_KEY").pipe(
-          Config.orElse(() => Config.redacted("SEALANT_API_KEY")),
+        Config.Redacted("SEALANT_SERVICE_KEY").pipe(
+          Config.orElse(() => Config.Redacted("SEALANT_API_KEY")),
         ),
       );
       return { baseUrl, serviceKey };
