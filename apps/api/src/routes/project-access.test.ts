@@ -545,7 +545,7 @@ const CASES: ReadonlyArray<AccessCase> = [
   session("steer", "POST", "/launch", { argv: ["codex"] })("sessions.launch"),
   session("project-read", "GET", "/transcript")("sessions.transcript"),
   session("steer", "POST", "/resume", { harness: null })("sessions.resume"),
-  session("steer", "POST", "/handoff", { to: "pty" })("sessions.handoff"),
+  session("steer", "POST", "/handoff", { to: "pty" })("sessions.switchMode"),
   session("project-read", "GET", "/follow-up")("sessions.followUpPending"),
   session("steer", "POST", "/follow-up/deliver", {
     reviewSliceId: "slice-1",
@@ -881,7 +881,7 @@ const ADMITTED: Readonly<
   "sessions.launch": { status: 500, calls: ["engine.launch", "engine.detach"] },
   "sessions.transcript": { status: 500, calls: ["engine.transcript"] },
   "sessions.resume": { status: 500, calls: ["engine.resumeSession"] },
-  "sessions.handoff": { status: 500, calls: ["engine.handoff"] },
+  "sessions.switchMode": { status: 500, calls: ["engine.switchMode"] },
   "sessions.followUpPending": { status: 500, calls: ["followUps.activeForSession"] },
   "sessions.followUpDeliver": { status: 500, calls: ["followUpDelivery.deliver"] },
   "worktrees.create": { status: 500, calls: ["engine.ensureWorktree"] },

@@ -581,7 +581,7 @@ export const landingUnderWay: SlackMessage = section(
  * the provider's session by its id and submits the prompt as the opening turn. So such a session
  * resumes with the follow-up. One with no agent to resume starts over as a new session in the
  * thread. One still launching, or whose agent is live where Slack cannot reach it (a terminal
- * after a mode handoff), is left alone.
+ * after a mode switch), is left alone.
  */
 export type NotLiveFollowUp = "resume" | "start-new" | "starting" | "out-of-reach";
 

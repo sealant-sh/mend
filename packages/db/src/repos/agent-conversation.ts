@@ -258,7 +258,7 @@ export class AgentConversationRepo extends Context.Service<
     readonly cancelOpenForTurn: (turnId: AgentTurnId) => Effect.Effect<void>;
     readonly cancelOpenForProcess: (processId: SessionProcessId) => Effect.Effect<void>;
     /**
-     * Mode handoff: land PTY-era turns from the native transcript as completed
+     * Mode switch: land PTY-era turns from the native transcript as completed
      * history. One transaction under the session lock; ordinals append after
      * the existing tail; a turn whose providerTurnId already exists is
      * skipped, so a repeated backfill is a no-op. Returns the turns landed.

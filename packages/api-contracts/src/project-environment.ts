@@ -353,7 +353,7 @@ export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewW
 
 /** What the caller may do with a session (docs/adr/0003), so clients show only real controls. */
 export class SessionControlView extends Schema.Class<SessionControlView>("SessionControlView")({
-  /** Delete, rename or hand off: the owner's alone, even while control is shared. */
+  /** Delete, rename or switch modes: the owner's alone, even while control is shared. */
   own: Schema.Boolean,
   /** Send turns, interrupt, attach a terminal to read it, stop. */
   steer: Schema.Boolean,
@@ -496,9 +496,9 @@ export class LaunchRequest extends Schema.Class<LaunchRequest>("LaunchRequest")(
 }) {}
 
 /**
- * Cross-mode pickup (mode handoff): continue the same provider session in the
- * requested mode. `prompt` rides as the opening turn of a protocol pickup —
- * one round trip performs takeover, history backfill, launch, and first turn.
+ * Mode switch: continue the same provider session in the requested mode. `prompt` rides as the
+ * opening turn of a protocol pickup — one round trip performs takeover, history backfill, launch,
+ * and first turn.
  */
 export class HandoffRequest extends Schema.Class<HandoffRequest>("HandoffRequest")({
   to: Schema.Literals(["protocol", "pty"]),

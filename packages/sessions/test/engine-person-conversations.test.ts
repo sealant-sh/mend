@@ -695,7 +695,7 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
 });
 
 describe("a terminal takeover of a once-shared conversation (review of mend#572, P2-3)", () => {
-  it("a handoff to the terminal opens in the conversation home, on a take, with the transcript under H", async () => {
+  it("a mode switch to the terminal opens in the conversation home, on a take, with the transcript under H", async () => {
     const spawned: Array<ReadonlyArray<string>> = [];
     const opened: Array<SessionOptions | PersonSessionOptions> = [];
     const execCalls: Array<ReadonlyArray<string>> = [];
@@ -763,7 +763,7 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
             }),
           );
           takesAtStart = state.conversationHolders.get(session.id)?.fence ?? 0;
-          yield* engine.handoff(session.id, "pty", { mode: "pty" }, "user-fixture");
+          yield* engine.switchMode(session.id, "pty", { mode: "pty" }, "user-fixture");
         }),
       {
         captured: makeMemoryCaptureStore(),
@@ -972,7 +972,7 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
             takenAt: Date.now(),
           });
           const lost = yield* engine
-            .handoff(session.id, "pty", { mode: "pty" }, "user-fixture")
+            .switchMode(session.id, "pty", { mode: "pty" }, "user-fixture")
             .pipe(Effect.flip);
           lostWith = lost.message;
         }),

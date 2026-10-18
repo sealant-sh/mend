@@ -355,7 +355,7 @@ export class SessionsRepo extends Context.Service<
     /** Settled sessions the boot sweep has not classified yet, oldest first, bounded. */
     readonly listSettledUnclassified: (limit: number) => Effect.Effect<ReadonlyArray<Session>>;
     readonly setProviderSessionId: (id: SessionId, providerId: string) => Effect.Effect<void>;
-    /** Mode-handoff backfill bookkeeping — not part of the Session surface. */
+    /** Mode-switch backfill bookkeeping — not part of the Session surface. */
     readonly nativeIngestCursor: (id: SessionId) => Effect.Effect<NativeIngestCursor | null>;
     readonly setNativeIngestCursor: (
       id: SessionId,
@@ -757,7 +757,7 @@ type ExactKeys<A, B> = [Exclude<keyof A, keyof B> | Exclude<keyof B, keyof A>] e
   : never;
 /**
  * Persistence-only bookkeeping deliberately absent from the Session surface:
- * the mode-handoff ingest cursor and a relaunch's harness are read and written
+ * the mode-switch ingest cursor and a relaunch's harness are read and written
  * through their own repo methods, never carried on the domain object.
  * Everything else stays exact.
  */

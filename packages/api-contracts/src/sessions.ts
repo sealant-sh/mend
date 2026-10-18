@@ -558,9 +558,9 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     }),
   )
   .add(
-    // Cross-mode pickup (mode handoff): continue the same provider session in
-    // the requested mode — PTY ⇄ protocol, one live agent process at a time.
-    HttpApiEndpoint.post("handoff", "/sessions/:id/handoff", {
+    // Mode switch: continue the same provider session in the requested mode — PTY ⇄ protocol, one
+    // live agent process at a time. The path, payload and error keep their released names.
+    HttpApiEndpoint.post("switchMode", "/sessions/:id/handoff", {
       params: { id: SessionId },
       payload: HandoffRequest,
       success: Session,

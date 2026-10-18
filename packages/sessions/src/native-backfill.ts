@@ -3,7 +3,7 @@ import type { BackfillTurnInput } from "@mend/db";
 import type { AgentEventItem, NativeIngestCursor } from "@mend/domain/workbench";
 
 /**
- * Mode handoff, the history half: turn the harness's OWN transcript into
+ * Mode switch, the history half: turn the harness's OWN transcript into
  * durable conversation turns so a PTY-born session picked up in protocol mode
  * shows its past natively — the real content blocks with their real ids, not
  * an inferred rendering. The mapping vocabulary is shared with the live
