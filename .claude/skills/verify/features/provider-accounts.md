@@ -20,6 +20,11 @@ marked as needing a reconnect, and Mend says so in the web app, `mend accounts` 
 - `disconnect` removes one provider (`--remove`, `Disconnect`).
 - `reconnect-state` reports a login the provider refused, with the command that fixes it.
 - `doctor-lines` reports each provider, and Mend's own Claude grant, in `mend doctor`.
+- `agent-logins` picks whether a Claude session also gets the person's Codex login and a Codex
+  session their Claude login (`all`, the default), or only its own agent's (`selected`):
+  `mend agent-logins [all|selected]`, and Settings → Connected accounts →
+  `Give my sessions only the selected agent's login` (`On`, `Off`). Only ever the person's own
+  logins; a change applies the next time the logins are written into a workspace.
 
 ## How to get to it (user POV)
 
@@ -27,7 +32,7 @@ marked as needing a reconnect, and Mend says so in the web app, `mend accounts` 
   `Codex` and `GitHub`. While nothing is adopted, the Now page's first-run row
   `Connect your accounts` reads `none connected` or `<n> connected` and links `Settings → Accounts`.
 - CLI: `mend connect <claude|codex|github> [--use-my-login] [--from-stdin] [--remove]`,
-  `mend accounts`, and the provider lines of `mend doctor`.
+  `mend accounts`, `mend agent-logins [all|selected]`, and the provider lines of `mend doctor`.
 - Desktop: Settings (the title bar's `Settings` link) → `Connected accounts`, shown while signed in:
   the same three rows with `Connect`, `Replace` and `Disconnect`, taking a pasted credential.
 - Session starts: in a per-person workspace a launch without the harness's login is refused with
@@ -102,6 +107,16 @@ Preconditions:
   then run `await page.getByPlaceholder("gho_…").fill("<github-token>")` and press `Enter` (or
   choose the form's `Connect`). The button reads `Connecting…`, the form closes, and the row reads
   `<login> · …<suffix>`. `mend accounts` lists `github   connected …`.
+- **Agent logins.** Run `mend agent-logins`. Stdout reads
+  `all · a Claude session also gets your Codex login, a Codex session your Claude login, when connected`,
+  exit `0`. Run `mend agent-logins selected`: stdout reads
+  `✓ agent logins · selected · a Claude or Codex session gets its own agent's login only` and
+  `  sessions started from now on; a running session keeps what it has`. `mend agent-logins` now
+  reads `selected · …`. `mend agent-logins some` prints
+  `mend: usage: mend agent-logins [all|selected]`, exit `1`. Run `mend agent-logins all` to restore.
+  On the web, in Settings → Connected accounts, choose `On` beside
+  `Give my sessions only the selected agent's login` (see Gotchas for scoping it);
+  `mend agent-logins` then reads `selected · …`. Restore with `mend agent-logins all`.
 - **Disconnect from the web.** Choose that row's `Disconnect`. It reads `…`, then the row reads
   `not connected` and `mend accounts` agrees.
 - **Desktop.** In the desktop app (`app`, over CDP), keep Claude and Codex connected and GitHub
@@ -131,6 +146,11 @@ Preconditions:
 
 ## Gotchas
 
+- The agent-logins setting's `On` and `Off` are two plain buttons, among 11 `On` buttons on the
+  settings page, with no `aria-pressed`: which one is set shows only in styling. Scope them to the
+  setting's own row,
+  `main.locator("div").filter({ has: page.getByText("Give my sessions only the selected agent's login", { exact: true }) }).filter({ has: page.getByRole("button", { name: "On", exact: true }) }).last()`,
+  and read the state from `mend agent-logins`. A finding: the state needs to be exposed.
 - Every row's buttons are named only `Connect`, `Replace` or `Disconnect`, with no provider in the
   name and no row container role, on the web and the desktop alike. With two rows in the same state
   the run cannot tell them apart by role. That is a finding. Until it is fixed, the rows render in

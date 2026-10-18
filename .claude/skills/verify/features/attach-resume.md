@@ -170,8 +170,11 @@ Preconditions:
   while the terminal is still connecting does it cancel. A session launched `--foreground` (or under
   a project that runs in the foreground) is stopped when its launching CLI is hung up (`SIGHUP`, the
   pane printing `✓ stopped · <id8>`), and when the terminal itself is closed (`tmux kill-session`, a
-  closed window): the CLI's write to the gone terminal fails with `EIO`, and it sends the stop
-  before it exits, saying nothing. Within a few seconds the session reads `stopped`.
+  closed window): the CLI's write to the gone terminal fails (`EIO` on Linux), and it sends the stop
+  before it exits, saying nothing. Within a few seconds the session reads `stopped`. When raw mode
+  cannot be left for any other reason, the stop still gets its answer first, then stderr reads
+  `mend: could not leave raw mode (<message>)` (`mend shell` too; the dashboard appends
+  ` · could not leave raw mode (<message>)` to its status line).
 - `MEND_DETACH_KEY=none` turns `Ctrl+]` off (for an outer multiplexer that owns detaching); the
   banner then omits `· detach: Ctrl+]`.
 - The heading's accessible name includes the `rename` button's text, and the rename textbox is named

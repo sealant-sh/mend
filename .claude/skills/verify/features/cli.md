@@ -107,6 +107,15 @@ Preconditions:
   (`mend run -- cmd --help`). `help` itself is the exception: `mend help --help` reaches the flag
   gate (`apps/cli/src/flag-gate.ts`), which refuses it with
   `mend: unknown flag --help · usage: mend help [command...]`, exit `1`.
+- Every command refuses a flag its help page does not list, before it reads the config or sends
+  anything (`apps/cli/src/flag-gate.ts`): `mend: unknown flag <flag> · usage: <the page's usage>`,
+  exit `1`. The same line answers a required value that starts with `-` (`--title -wip`:
+  `--title needs a value`), and `--` anywhere but `mend run` and `mend service run`
+  (`mend land x -- --help`: `unknown flag --`). An unknown flag on a command group names the group's
+  page instead: `mend folder --y add` prints `mend: unknown flag --y · mend help folder lists them`.
+  A flag before a group's verb is refused too: `mend worktrees --project p rm x` prints
+  `mend: put flags after the command words · usage: mend worktrees rm <name> [--force] [--project <p>]`.
+  `folder`, `operator` and `workspace` read their verb after the flags, so those take flags first.
 - `mend <unknown> --help` prints `no command "<unknown>" · mend help lists them`, not the
   `unknown command` line: help runs first.
 - Help pages wrap at the terminal width, capped at 100 columns. Compare pages produced at the same
@@ -121,9 +130,10 @@ Preconditions:
   `worktrees`, `workspace`, `secrets`, `dotfiles`, `env`, `ssh`, `invite`, `members`, `folder`,
   `operator`, `session`, `snake`, `man`, `version` and `completions`, and the server flag lists miss
   `--edge`, `--no-edge`, `--exposure`, `--tenancy` and `--keep-backups`. A product gap.
-- The session list behind TAB is an undocumented internal command, `mend __complete session`
-  (`apps/cli/src/main.ts:3842`), printing `id<TAB>harness · project · branch`. It swallows every
-  error and prints nothing on a dead server; an empty completion is not proof of no sessions.
+- The session list behind TAB is an internal command with a hidden help page,
+  `mend __complete session`: `mend help` does not list it, but the flag gate checks it. It prints
+  `id<TAB>harness · project · branch`. It swallows every error and prints nothing on a dead server;
+  an empty completion is not proof of no sessions.
 - `mend help adopt` prints a cut page: everything between `file://` in the description and
   `github.com:acme/api.git` in the examples is missing (the end of the description, the `--auth`
   paragraph, `options`, the first examples). The help printer passes the page through the
@@ -135,7 +145,5 @@ Preconditions:
   (`apps/cli/src/help.ts:1394-1399`), but no installer in the repository calls it; the host
   installer was retired. Its only caller is the package smoke test
   (`apps/cli/scripts/test-package.mjs:126`). A stale description.
-- `mend snake` reads `--no-tunnel` (`apps/cli/src/main.ts:5035-5036`), but its catalog entry has no
-  options. A gap between the parser and the catalog.
 - `mend version` never fails on a missing server; `server · unreachable` is a printed fact with exit
   code `0`.

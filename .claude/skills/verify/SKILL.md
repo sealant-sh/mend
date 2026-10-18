@@ -252,8 +252,12 @@ first. The helpers start `mend` through `PATH`, so they always meet the guard.
    For refs from open PRs, add sources after `serve`: `--sealant '#345' --sealantd '#152'`, or
    `--mend '#610'`. Each source is a path, `#<pr>`, a branch, tag or commit; Core and sealantd also
    take `pinned`. Without one, Mend builds from the session's checkout, and Core and sealantd build
-   from `main`, or from `/workspace/repos/<name>` after `mend repo add`. From inside a Mend session
-   of `mend`, the same stack is `mend service stack`: the `mend.toml` recipe, port 3305.
+   from `main`, or from `/workspace/repos/<name>` after `mend repo add`. While Core's `main` uses a
+   newer Effect than Mend's (Core main on 4.0.5, Mend main on 4.0.0-beta.93 on 2026-10-18), Mend's
+   image build fails with `Could not resolve "effect/http"` from the packed `@sealant/sdk`: unless
+   the change under test needs Core's `main`, pass `--sealant pinned --sealantd pinned`. From inside
+   a Mend session of `mend`, the same stack is `mend service stack`: the `mend.toml` recipe,
+   port 3305.
 
    Since mend#651, `--wait` waits through the build: it exits 0 once the port answers (a cold stack
    took 123 s here), 2 if the stack's process ended first, 3 if the session's workspace did, and 124
@@ -286,16 +290,19 @@ first. The helpers start `mend` through `PATH`, so they always meet the guard.
 
    ```sh
    deadline=$((SECONDS + 900))
-   until timeout 8 mend service logs "$wt" 2>&1 | tr -d '\r' \
-     | grep -qE '^verify stack( · health answers|: )' || [ $SECONDS -ge $deadline ]; do sleep 2; done
-   timeout 8 mend service logs "$wt" 2>&1 | tr -d '\r' > "$E/launch/stack.log"
+   until { timeout 8 mend service logs "$wt" 2>&1 || :; } | tr -d '\r' > "$E/launch/stack.log"
+     grep -qE '^verify stack( · health answers|: )' "$E/launch/stack.log" \
+       || [ $SECONDS -ge $deadline ]; do sleep 2; done
    grep -q '^verify stack · health answers' "$E/launch/stack.log"   # 0: ready
    ```
 
    Measured on the box (12 CPUs) in #616's runs: **cold 3 min 16 s to 4 min 13 s** to `ready`, then
    the check, 35 to 37 s; **warm 20 to 25 s**, when every image is reused (the same session, after
    the retry under Cleanup). sealantd's cargo build is the longest cold step, about 3 minutes.
-   `mend service logs` follows until it is killed, so always run it under `timeout`.
+   `mend service logs` follows until it is killed, so always run it under `timeout`. `timeout` then
+   always exits 124, so the loop writes the output to `stack.log` and greps the file: a `grep -q` at
+   the end of the pipe would never succeed under `set -o pipefail`, and every launch would wait out
+   the deadline.
 
    Exit 1: the stack failed or never got ready, and `stack.log` says which (in a proof run, an inner
    check whose session stopped `before its agent ran` while its first workspace image built). A
@@ -585,6 +592,39 @@ node $skill/scripts/drive-web.mjs --web http://127.0.0.1:18305 --viewport 390x84
 
 Keep every log and profile **beside** `$P`, never inside it: every file under `$P` joins the secret
 registry, a non-JSON one whole, and its text would then be redacted out of the evidence.
+
+**T3 gateway.** The map's [t3-gateway.md](features/t3-gateway.md) starts the gateway from this
+checkout against `$web` (`MEND_T3_GATEWAY_MEND_URL=$web`, a free port, its state file in a scratch
+directory beside `$P`). `drive-t3.mjs` checks no URL the way the other drivers do: it reaches only
+the gateway it is given, and the gateway reaches the Mend it was started against, so start it
+against the run's tunnel and nothing else. Pair it from this machine, so no code or bearer passes
+through a terminal, recorded or not: mint the code with the account's token and keep each answer in
+`$P`, where the registry reads it.
+
+```sh
+curl -s -X POST "$web/api/me/devices/pairings" -H "authorization: Bearer $(jq -r .token "$P/account.json")" \
+  -H "origin: $web" > "$P/pairing.json"
+curl -s -o "$P/t3-token.json" -X POST "$gw/oauth/token" \
+  --data-urlencode grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+  --data-urlencode subject_token="$(jq -r .code "$P/pairing.json")" \
+  --data-urlencode subject_token_type=urn:t3:params:oauth:token-type:environment-bootstrap \
+  --data-urlencode requested_token_type=urn:ietf:params:oauth:token-type:access_token \
+  --data-urlencode client_label=verify
+jq -r .access_token "$P/t3-token.json" > "$P/t3-bearer.secret"
+node $skill/scripts/drive-t3.mjs --gw "$gw" --bearer-file "$P/t3-bearer.secret" server.getConfig \
+  | jq -c '.exit.value | {threadFind, threadFindProgressive, providers: [.providers[].instanceId]}' \
+  > "$E/t3-gateway/config.json"
+```
+
+Keep the fields a step reads, never a whole answer: `server.getConfig` carries
+`"sessionCookieName":"t3_mend_gateway_session"`, which the evidence scan reads as a credential
+field, and Cleanup then deletes the file and fails the run.
+
+`drive-t3.mjs` makes one call of t3code's RPC per run, as a t3code client does: a fresh socket
+ticket from the bearer, `/ws` with protocol 2 and `clientAppVersion` 0.1.0
+(`--client-app-version none` leaves it out), then one `{"chunk":…}` line per streamed value
+(`--chunks <n>`, default 1, then it interrupts the stream) and one `{"exit":…}` line. Exit 0 on
+success, 1 on a typed failure, 2 on no answer (`--timeout`, default 15 s).
 
 **Steps this skill does not run,** each reported `not run` with its reason:
 

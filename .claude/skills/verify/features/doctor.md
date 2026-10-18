@@ -120,7 +120,8 @@ Preconditions:
 
 - `mend doctor` routes to the bundle only when `--bundle` is present. `mend doctor --out x` or
   `mend doctor --tail 5` prints the checklist and ignores the flags without a word
-  (`apps/cli/src/main.ts:4999-5001`). A product gap: no usage error.
+  (`apps/cli/src/main.ts`, the `doctor` branch; the flag gate passes both, since the page lists
+  them). A product gap: no usage error.
 - The bundle's `doctor.txt` runs the checks without the Docker stop probe, so it has no `docker`
   line even when `mend doctor` prints one (`apps/cli/src/main.ts:2838-2844`). Compare the two
   without that line.
