@@ -660,6 +660,16 @@ const WorkerLive = Layer.mergeAll(
       yield* Effect.forkScoped(dispatcher.run());
     }),
   ),
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const removed = yield* (yield* Store).sweepHandoffQuarantines();
+      if (removed.length > 0) {
+        yield* Effect.logInfo("handoff: stale quarantines removed").pipe(
+          Effect.annotateLogs({ count: removed.length }),
+        );
+      }
+    }),
+  ),
   InferenceWorkersLive,
   // Constructing the engine resumes supervision of unsettled sessions.
   SessionEngineLayer,

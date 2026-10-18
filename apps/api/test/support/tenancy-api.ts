@@ -132,6 +132,12 @@ export interface TenancyApi {
     path: string,
     body?: unknown,
   ) => Promise<Response>;
+  readonly postBytes: (
+    user: HarnessUser | null,
+    path: string,
+    body: Uint8Array,
+    contentType: string,
+  ) => Promise<Response>;
   /** Publish one NOTIFY payload into the in-memory event bus, as Postgres would. */
   readonly notify: (event: MendEvent) => Promise<void>;
   /** Open `/api/events` as `user`; frames are read one at a time, `null` after the timeout. */
@@ -192,6 +198,7 @@ export const createTenancyApi = async (
     readonly dotfiles?: { readonly cloner: DotfilesCloner["Service"] };
     /** `MEND_TENANCY` and the source policy profile it brings; single (operator) unless stated. */
     readonly tenancy?: "single" | "multi";
+    readonly sessionStore?: DeploymentConfig["Service"]["sessionStore"];
     /**
      * What a few services answer, for tests that follow a request past authorization. Each is
      * still recorded; a method left out still fails as unimplemented.
@@ -440,7 +447,7 @@ export const createTenancyApi = async (
       Layer.succeed(DeploymentConfig, {
         mode: "local",
         sessionEndpoint: undefined,
-        sessionStore: "captured",
+        sessionStore: options.sessionStore ?? "captured",
       }),
       Layer.succeed(StoreConfig, { root: world.root }),
       Layer.succeed(TenancyConfig, { mode: options.tenancy ?? "single", gate: Effect.succeed([]) }),
@@ -566,6 +573,18 @@ export const createTenancyApi = async (
           headers,
           ...(options.requestSignal === undefined ? {} : { signal: options.requestSignal }),
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+        context,
+      );
+    },
+    postBytes: (user, path, body, contentType) => {
+      const headers = new Headers({ "content-type": contentType });
+      if (user !== null) headers.set("authorization", `Bearer ${user}`);
+      return handler(
+        new Request(`http://api.internal${path}`, {
+          method: "POST",
+          headers,
+          body: new Uint8Array(body),
         }),
         context,
       );
