@@ -1,18 +1,18 @@
 // Today's extension, as built: a session started the way the extension starts one (the palette's
-// `Mend: New Session…`, Workbench), then the open bug reproduced as a person meets it (a
-// double-click on the session row, counted: dialogs, quick inputs, toasts, windows, Remote-SSH logs,
-// what the server observed), then one clean open driven through to the workspace window: the
-// worktree's files in the Explorer, a command in the window's integrated terminal.
+// `Mend: New Session…`, Workbench), then the open bug as a person meets it (a double-click on the
+// session row: what it shows, and whether an open runs, counted by `opens`), then one clean open
+// driven through to the workspace window: the worktree's files in the Explorer, a command in the
+// window's integrated terminal.
 //
 //   node .claude/skills/verify/scripts/drive-vscode.mjs run .claude/skills/verify/recipes/vscode-open-as-built.mjs --out <dir>
 //
 // Needs a world from `up` that is signed in with workspace SSH set up (the default).
 
-import { readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-/** How many windows of this user data directory have a Remote-SSH output log: opens the client started. */
-const remoteSshLogs = (userData) => {
+/** Every Remote-SSH output log of this user data directory: one per window extension host that loaded it. */
+const remoteSshLogFiles = (userData) => {
   const found = [];
   const walk = (dir) => {
     for (const name of readdirSync(dir)) {
@@ -23,13 +23,24 @@ const remoteSshLogs = (userData) => {
   };
   const root = join(userData, "logs");
   if (statSync(root, { throwIfNoEntry: false })?.isDirectory()) walk(root);
-  return found.length;
+  return found;
 };
 
+const remoteSshLogs = (userData) => remoteSshLogFiles(userData).length;
+
 /**
- * The server's log lines holding `needle`. The SSH gateway resolves `/v1/workspaces/<id>/ssh-target`
- * once per SSH connection it admits, so those lines count the opens the server served; the Mend
- * server reads `/v1/workspaces/<id>` for each session detail the extension asks for.
+ * Opens of a Remote-SSH window: the resolver's first attempt for an `ssh-remote+` authority, one
+ * line per window open or reload, whichever extension asked. A reconnect logs `attempt 2` and up.
+ */
+const resolves = (userData) =>
+  remoteSshLogFiles(userData)
+    .flatMap((file) => readFileSync(file, "utf8").split("\n"))
+    .filter((line) => /SSH Resolver called for "ssh-remote\+[^"]*", attempt 1$/.test(line)).length;
+
+/**
+ * The server's log lines holding `needle`: context beside `opens`, never the count a claim rests
+ * on. A window's SSH teardown also resolves `/v1/workspaces/<id>/ssh-target`, seconds after the
+ * close, and the `/v1/workspaces/<id>` reads land in the log seconds after the extension asks.
  */
 const linesMatching = (log, needle) =>
   log.split("\n").filter((line) => line.includes(needle)).length;
@@ -67,6 +78,21 @@ export default async (h) => {
   } = h;
   const project = state.project;
   const openLogs = () => remoteSshLogs(state.userData);
+  /** `resolves()` once it has held still for 5 s: the resolver logs a moment after its window appears. */
+  const opens = async () => {
+    let last = resolves(state.userData);
+    let since = Date.now();
+    const settled = await waitUntil(
+      "the opens count to hold still for 5 s",
+      async () => {
+        const now = resolves(state.userData);
+        if (now !== last) [last, since] = [now, Date.now()];
+        return Date.now() - since >= 5_000 ? { now } : null;
+      },
+      60_000,
+    );
+    return settled.now;
+  };
 
   await step("the Mend view lists the project", async () => {
     await useWindow(await homeWindow());
@@ -80,6 +106,7 @@ export default async (h) => {
   const listedBefore = await api(`/projects/${project.id}`);
   const beforeIds = new Set(listedBefore.sessions.map((session) => session.id));
   const windowsBeforeStart = await windows();
+  const opensBeforeStart = await opens();
 
   await step("Mend: New Session… from the palette, Workbench picked", async () => {
     await palette("Mend: New Session…");
@@ -143,15 +170,22 @@ export default async (h) => {
   );
   const startWindows = await newWindows(windowsBeforeStart, { settle: 1_000, limit: 2_000 });
 
+  let calibrated = false;
   if (startWindows.length > 0) {
     await step(
-      "the start's window connects over Remote-SSH (the first connect of this workspace)",
+      "the start's window connects over Remote-SSH (the first connect of this workspace), opens +1 per window",
       async () => {
         await useWindow(startWindows[0]);
         await statusBar(/SSH:/).waitFor(600_000);
         await waitForText("README", { timeout: 120_000 });
         await shot("start-window-connected");
-        return `status bar "${await statusBar(/SSH:/).text()}" · the Explorer shows README`;
+        const after = await opens();
+        if (after - opensBeforeStart !== startWindows.length)
+          throw new Error(
+            `opens ${opensBeforeStart} → ${after} for ${startWindows.length} window(s): the signal does not count one per open`,
+          );
+        calibrated = true;
+        return `status bar "${await statusBar(/SSH:/).text()}" · the Explorer shows README · ${startWindows.length} window(s), opens ${opensBeforeStart} → ${after}`;
       },
     );
     await step("the start's window(s) closed, back to the local window", async () => {
@@ -163,10 +197,11 @@ export default async (h) => {
     });
   }
 
-  /** What the server and the client hold of opens: read before and after a gesture. */
+  /** Read before and after a gesture: `opens`, which claims rest on, then the rest as context. */
   const counts = async () => {
     const log = await serverLogs();
     return {
+      opens: await opens(),
       remoteSshLogs: openLogs(),
       sshTargetLookups: linesMatching(log, `/v1/workspaces/${session.workspaceId}/ssh-target`),
       workspaceReads: linesMatching(log, `/v1/workspaces/${session.workspaceId}'`),
@@ -175,40 +210,43 @@ export default async (h) => {
     };
   };
 
-  const doubleClick = await step("double-click the session row, as a person would", async () => {
-    const row = treeItem(session.label);
-    await row.waitFor();
-    const known = await windows();
-    const before = await counts();
-    const watch = await quickInput.watch();
-    await row.dblclick();
-    await sleep(3_000);
-    const dialogsSeen = await dialogs();
-    const quickInputOpen = await quickInput.isOpen();
-    const quickInputTitle = quickInputOpen ? await quickInput.title() : null;
-    const quickInputItems = quickInputOpen
-      ? (await quickInput.items()).map((item) => item.split("\n")[0])
-      : [];
-    const toasts = await notifications();
-    await shot("right-after-double-click");
-    const opened = await newWindows(known, { settle: 10_000, limit: 60_000 });
-    const shown = await watch.stop();
-    await shot("after-double-click");
-    const after = await counts();
-    return {
-      observed:
-        `windows opened before any answer: ${opened.length} · modal dialogs: ${dialogsSeen.length} · toasts: ${toasts.length}` +
-        ` · quick input shown ${shown.length} time(s) (${shown.map((event) => `"${event.title}"`).join(", ")}), ${quickInputOpen ? `left open as "${quickInputTitle}" offering ${quickInputItems.join(" | ")}` : "none left open"}` +
-        ` · ${delta(before, after)}`,
-      windows: opened.length,
-      dialogs: dialogsSeen,
-      quickInputShown: shown,
-      quickInputLeft: quickInputTitle,
-      toasts,
-      before,
-      after,
-    };
-  });
+  const doubleClick = await step(
+    "double-click the session row: what it shows, and whether an open runs (opens)",
+    async () => {
+      const row = treeItem(session.label);
+      await row.waitFor();
+      const known = await windows();
+      const before = await counts();
+      const watch = await quickInput.watch();
+      await row.dblclick();
+      await sleep(3_000);
+      const dialogsSeen = await dialogs();
+      const quickInputOpen = await quickInput.isOpen();
+      const quickInputTitle = quickInputOpen ? await quickInput.title() : null;
+      const quickInputItems = quickInputOpen
+        ? (await quickInput.items()).map((item) => item.split("\n")[0])
+        : [];
+      const toasts = await notifications();
+      await shot("right-after-double-click");
+      const opened = await newWindows(known, { settle: 10_000, limit: 60_000 });
+      const shown = await watch.stop();
+      await shot("after-double-click");
+      const after = await counts();
+      return {
+        observed:
+          `opens ${before.opens} → ${after.opens} · windows opened before any answer: ${opened.length} · modal dialogs: ${dialogsSeen.length} · toasts: ${toasts.length}` +
+          ` · quick input shown ${shown.length} time(s) (${shown.map((event) => `"${event.title}"`).join(", ")}), ${quickInputOpen ? `left open as "${quickInputTitle}" offering ${quickInputItems.join(" | ")}` : "none left open"}` +
+          ` · ${delta(before, after)}`,
+        windows: opened.length,
+        dialogs: dialogsSeen,
+        quickInputShown: shown,
+        quickInputLeft: quickInputTitle,
+        toasts,
+        before,
+        after,
+      };
+    },
+  );
 
   await step(
     "the double-click's question answered once, Open alongside, as a person would",
@@ -218,10 +256,12 @@ export default async (h) => {
       if (doubleClick.quickInputLeft === null) return "no quick input was left to answer";
       await quickInput.pick("Open alongside");
       const opened = await newWindows(known, { settle: 10_000, limit: 60_000 });
+      const dialogsSeen = await dialogs();
+      const quickInputOpen = await quickInput.isOpen();
       await shot("after-open-alongside");
       const after = await counts();
       return {
-        observed: `windows opened: ${opened.length} · dialogs ${JSON.stringify(await dialogs())} · quick input ${(await quickInput.isOpen()) ? "still open" : "closed"} · ${delta(before, after)}`,
+        observed: `opens ${before.opens} → ${after.opens} · windows opened: ${opened.length} · dialogs ${JSON.stringify(dialogsSeen)} · quick input ${quickInputOpen ? "still open" : "closed"} · ${delta(before, after)}`,
         windows: opened.length,
         titles: await Promise.all(opened.map((page) => page.title().catch(() => ""))),
       };
@@ -242,16 +282,19 @@ export default async (h) => {
     "one clean open: the row's inline Mend: Open in VS Code, then Open alongside",
     async () => {
       const known = await windows();
+      const before = await opens();
       await treeItem(session.label).inline("Mend: Open in VS Code");
       await quickInput.waitFor(15_000);
       const asked = await quickInput.title();
       await shot("open-asks");
       await quickInput.pick("Open alongside");
       const opened = await newWindows(known, { settle: 10_000, limit: 90_000 });
+      const dialogsSeen = await dialogs();
       await shot("after-open");
       return {
-        observed: `asked "${asked}" · Open alongside picked · ${opened.length} window(s) opened · dialogs ${JSON.stringify(await dialogs())}`,
+        observed: `asked "${asked}" · Open alongside picked · ${opened.length} window(s) opened · dialogs ${JSON.stringify(dialogsSeen)}`,
         pages: opened,
+        opensBefore: before,
       };
     },
   );
@@ -264,7 +307,12 @@ export default async (h) => {
       await statusBar(/SSH:/).waitFor(600_000);
       await waitForText("README", { timeout: 120_000 });
       await shot("workspace-explorer");
-      return `title "${await clean.pages[0].title()}" · status bar "${await statusBar(/SSH:/).text()}" · Explorer shows README`;
+      const after = await opens();
+      if (!calibrated && after - clean.opensBefore !== clean.pages.length)
+        throw new Error(
+          `opens ${clean.opensBefore} → ${after} for ${clean.pages.length} window(s): the signal does not count one per open`,
+        );
+      return `title "${await clean.pages[0].title()}" · status bar "${await statusBar(/SSH:/).text()}" · Explorer shows README · opens ${clean.opensBefore} → ${after} for ${clean.pages.length} window(s)`;
     },
   );
 

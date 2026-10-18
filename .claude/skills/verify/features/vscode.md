@@ -195,21 +195,25 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     process, that open first asks the quick pick `<label> is running` with `Open alongside` and
     `Take over in the editor`; on a session with no live agent process it opens a window at once.
     Close what opened with `closeWindow(page)`.
-  - The double-click. Record `windows()`, the Remote-SSH logs in the user data directory,
-    `serverLogs()` (the lines `/v1/workspaces/<workspace>/ssh-target`, one per SSH connection the
-    gateway admits, and `/v1/workspaces/<workspace>'`, one per session detail the extension reads)
-    and `api("/sessions/<id>/processes")` (`via: "api"`). `quickInput.watch()`, then
+  - The double-click. Record `windows()` and `opens`: the lines
+    `SSH Resolver called for "ssh-remote+…", attempt 1` in every `*-Remote - SSH.log` under
+    `<userData>/logs`, one per Remote-SSH window open or reload (the recipe's `resolves()`; a
+    reconnect logs `attempt 2`). The recipe first shows `opens` +1 for the start's one window, and
+    only then relies on it. The Remote-SSH log count, `serverLogs()` (the lines
+    `/v1/workspaces/<workspace>/ssh-target` and `/v1/workspaces/<workspace>'`) and
+    `api("/sessions/<id>/processes")` (`via: "api"`) are recorded beside it as context; no claim
+    rests on them, since a window's SSH teardown adds an `ssh-target` line about 4.6 s after its
+    close and the detail reads reach the server's log seconds late. `quickInput.watch()`, then
     `treeItem(<label>).dblclick()`, then `dialogs()`, `quickInput.isOpen()`, `quickInput.title()`,
     `quickInput.items()`, `notifications()`, `shot("right-after-double-click")`,
     `newWindows(<recorded>)` and the watch's `stop()`. Record what each read. Observed on a live
     Workbench session (the as-built recipe, 2026-10-18, extension at main `ed9f782aa`, four runs): 0
-    windows, 0 modal dialogs, 0 toasts, one quick pick `<label> is running` left open, no SSH
-    connection, and one or two session detail reads on the server (`/v1/workspaces/<workspace>'` +1
-    or +2; the server's log lags the read by seconds). The source's trace says the open ran twice
-    and the second run's quick pick replaced the first's, whose answer is dropped
-    (`docs/specs/vscode-extension-redesign.md`, Divergences, items 1 and 2); the DOM shows one pick,
-    since VS Code reuses the widget. The trace's two windows are what a session with no live agent
-    process gets; the recipe does not drive that case. The story expects nothing to happen.
+    windows, 0 modal dialogs, 0 toasts, and one quick pick `<label> is running` left open, offering
+    `Open alongside` and `Take over in the editor`. Whether a second open runs is what `opens`
+    answers; the source's trace says the open ran twice and the second run's quick pick replaced the
+    first's (`docs/specs/vscode-extension-redesign.md`, Divergences, items 1 and 2), and the DOM
+    shows one pick, since VS Code reuses the widget. A session with no live agent process opens
+    without a pick; the recipe does not drive that case. The story expects nothing to happen.
   - The answer. `quickInput.pick("Open alongside")`, then `newWindows(<recorded>)`. Observed: 1
     window, the quick pick closed. Close it with `closeWindow(page)`.
   - The open. Record `windows()`, then `treeItem(<label>).inline("Mend: Open in VS Code")`,

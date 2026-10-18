@@ -629,15 +629,21 @@ each is a gesture on the real workbench DOM:
   `step(name, fn, { via })` (one line per step into `steps.jsonl`: what was done, what was observed,
   the step's screenshot, its timing), `note(text)`, `api(route, init)` (the run's Mend client, for
   setting up state and for reading what Mend observed), `serverLogs()` (the server container's log,
-  raw: its `/v1/workspaces/<id>/ssh-target` lines are one per SSH connection the gateway admitted,
-  which is all the server records of an open), `state`.
+  raw, context only: its `/v1/workspaces/<id>/ssh-target` lines also come from a window's SSH
+  teardown, seconds after a close), `state`.
+
+A recipe counts opens on the client: each Remote-SSH window open or reload writes one line
+`SSH Resolver called for "ssh-remote+…", attempt 1` into a `*-Remote - SSH.log` under
+`<userData>/logs` (a reconnect writes `attempt 2` and up). The as-built recipe's `resolves()` reads
+them as `opens`, and shows `opens` +1 for the first window it opens on purpose before any claim
+rests on it.
 
 Clicking the real DOM is the rule. A step that calls the server, or any other setup path, says so
 with `via: "api"` or `via: "setup"`, and only ever for setup or for reading what Mend observed,
 never for the action under test. The proven recipe is `recipes/vscode-open-as-built.mjs` (a session
-started from the palette, the row double-clicked and counted, one clean open through to the
-workspace window's files and terminal); the map's [vscode.md](features/vscode.md) has the flows by
-story.
+started from the palette, the row double-clicked and its opens counted, one clean open through to
+the workspace window's files and terminal); the map's [vscode.md](features/vscode.md) has the flows
+by story.
 
 What cannot be driven, and why: VS Code draws its modals and context menus as GTK windows outside
 the page unless `window.dialogStyle` and `window.titleBarStyle` are `custom` (the driver writes both
