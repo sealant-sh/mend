@@ -438,6 +438,7 @@ jobs:
           .claude/skills/verify/scripts/local-outer.test.mjs
           .claude/skills/verify/scripts/doctor.test.mjs
           .claude/skills/verify/scripts/drive-vscode.test.mjs
+          .claude/skills/verify/scripts/fingerprint.test.mjs
 
       - name: Archive per-file test timings
         if: ${{ !cancelled() }}

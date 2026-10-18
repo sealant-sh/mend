@@ -126,7 +126,7 @@ review screen, the desktop, mobile and VS Code apps, the T3 gateway, Slack (ADR 
 every page under `apps/docs/src/content/docs`, and the ADRs in `docs/adr/`. A feature that appears
 on several surfaces is one row. `not mapped` rows say why, so a gap is visible rather than silent.
 
-Totals: 58 features, 51 mapped, 7 not mapped.
+Totals: 59 features, 52 mapped, 7 not mapped.
 
 ### The core loop
 
@@ -185,6 +185,7 @@ Totals: 58 features, 51 mapped, 7 not mapped.
 | worktrees               | [worktrees.md](./worktrees.md)                             | web, CLI, TUI, VS Code         | mapped                                                |
 | workspace-replace       | [workspace-replace.md](./workspace-replace.md)             | web, CLI                       | mapped                                                |
 | pull-change             | [pull-change.md](./pull-change.md)                         | CLI                            | mapped                                                |
+| handoff                 | [handoff.md](./handoff.md)                                 | CLI, web, TUI                  | mapped                                                |
 | repositories-in-session | [repositories-in-session.md](./repositories-in-session.md) | CLI (in the workspace), web    | mapped                                                |
 | capture-and-save        | [capture-and-save.md](./capture-and-save.md)               | web, CLI                       | mapped                                                |
 | observed-agents         | [observed-agents.md](./observed-agents.md)                 | CLI (in the workspace), web    | mapped                                                |
