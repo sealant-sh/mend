@@ -23,7 +23,6 @@ import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tic
 /** How long the platform may take to hand over a terminal before the upgrade is answered without one. */
 export const TTY_ATTACH_BOUND = Duration.seconds(20);
 
-/** How often one terminal's keys may clear its agent's wait (`SessionEngine.personTyped`). */
 const TYPED_CLEAR_EVERY_MS = 2_000;
 
 /** What one client frame asks of the PTY. */
@@ -151,8 +150,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
           /** The session the PTY belongs to, and the process when one was named. */
           readonly sessionId: SessionId;
           readonly processId: string | null;
-          /** A terminal agent's PTY: its keys answer a wait (G4). */
-          readonly agentPty: boolean;
+          readonly terminalAgentId: SessionProcessId | null;
         };
         if (processParam !== null) {
           const process = yield* processes.byId(SessionProcessId.make(processParam));
@@ -190,7 +188,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
             ownerUserId: owner.value.ownerUserId,
             sessionId: owner.value.id,
             processId: process.id,
-            agentPty: process.kind === "agent-pty",
+            terminalAgentId: process.kind === "agent-pty" ? process.id : null,
           };
         } else if (sessionParam !== null) {
           const session = yield* sessions.byId(SessionId.make(sessionParam)).pipe(Effect.option);
@@ -223,7 +221,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
                   ownerUserId,
                   sessionId: session.value.id,
                   processId: agent.id,
-                  agentPty: agent.kind === "agent-pty",
+                  terminalAgentId: agent.kind === "agent-pty" ? agent.id : null,
                 }
               : session.value.sealantWorkspaceId !== null && session.value.sealantSessionId !== null
                 ? {
@@ -232,7 +230,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
                     ownerUserId,
                     sessionId: session.value.id,
                     processId: null,
-                    agentPty: false,
+                    terminalAgentId: null,
                   }
                 : null;
           if (resolved === null) {
@@ -340,9 +338,8 @@ export const TtyRoutes = HttpRouter.use((router) =>
               "terminal",
             );
             const frames = makeFrameGuard(budgets.limits.frameBytes, write);
-            // Keys never wait on Postgres: the clear runs beside them, at most once per interval.
             const scope = yield* Effect.scope;
-            const agentProcessId = target.agentPty ? target.processId : null;
+            const agentProcessId = target.terminalAgentId;
             let typedClearAt = Number.NEGATIVE_INFINITY;
             const typed =
               agentProcessId === null
@@ -352,7 +349,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
                     if (now - typedClearAt < TYPED_CLEAR_EVERY_MS) return;
                     typedClearAt = now;
                     yield* Effect.forkIn(
-                      engine.personTyped(SessionProcessId.make(agentProcessId)).pipe(Effect.ignore),
+                      engine.personTyped(agentProcessId).pipe(Effect.ignore),
                       scope,
                     );
                   });

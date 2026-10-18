@@ -67,11 +67,17 @@ export const currentAgentProcess = (
   return agents.findLast(isLiveProcess) ?? agents.at(-1) ?? null;
 };
 
+/** The newest live terminal agent (`agent-pty`): the one whose hooks report its waits. */
+export const liveTerminalAgentOf = (
+  processes: ReadonlyArray<SessionProcess>,
+): SessionProcess | null =>
+  agentProcessesOf(processes).findLast(
+    (process) => process.kind === "agent-pty" && isLiveProcess(process),
+  ) ?? null;
+
 /** The wait a session-level reader means: the newest live terminal agent's. */
 export const agentWaitOf = (processes: ReadonlyArray<SessionProcess>): AgentWait | null =>
-  agentProcessesOf(processes)
-    .filter((process) => process.kind === "agent-pty" && isLiveProcess(process))
-    .at(-1)?.waiting ?? null;
+  liveTerminalAgentOf(processes)?.waiting ?? null;
 
 /** `waiting · claude needs your permission to use Bash`; null unless a live agent waits. */
 export const agentWaitLine = (agent: SessionProcess | null): string | null => {

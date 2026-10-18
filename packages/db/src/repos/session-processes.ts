@@ -131,7 +131,7 @@ const encodeWaiting = Schema.encodeSync(AgentWait);
 const toSessionProcess = (row: typeof sessionProcesses.$inferSelect): SessionProcess =>
   new SessionProcess({
     ...row,
-    waiting: row.waiting === null ? null : Option.getOrNull(decodeWaiting(row.waiting)),
+    waiting: Option.getOrNull(decodeWaiting(row.waiting)),
   });
 
 export const SessionProcessesRepoLive: Layer.Layer<

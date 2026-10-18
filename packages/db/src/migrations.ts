@@ -3532,10 +3532,6 @@ const userAgentLoginsMigration = Effect.gen(function* () {
     )`;
 });
 
-/**
- * Why a terminal agent waits for the person, as its own hooks reported it (packages/domain
- * agent-wait.ts). Only a live agent-pty row carries one; the end of the row clears it.
- */
 const sessionProcessWaitingMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`ALTER TABLE session_processes ADD COLUMN waiting jsonb`;

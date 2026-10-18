@@ -2520,7 +2520,6 @@ const grantOf = (
     return yield* api.channelFor(scope);
   });
 
-/** Claude's turn ended: what `mend hook claude` forwards for a `Stop` hook. */
 const STOP_HOOK = new AgentHookReport({
   harness: "claude",
   event: "Stop",

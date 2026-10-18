@@ -66,7 +66,6 @@ export const SessionChannelRegistryLive: Layer.Layer<SessionChannelRegistry> = L
 /** Largest JSON body either listener accepts; the helper's requests are tiny. */
 export const MAX_BODY_BYTES = 64 * 1024;
 
-/** An agent hook report is four short fields. */
 const MAX_AGENT_HOOK_BODY_BYTES = 4 * 1024;
 const decodeAgentHookReport = Schema.decodeUnknownExit(AgentHookReport);
 

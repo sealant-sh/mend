@@ -225,7 +225,6 @@ const CODEX_SANDBOX_LINES = [
   'sandbox_mode = "danger-full-access"',
 ];
 
-/** What Mend wrote before Codex's hooks: replaced by the current text, and nothing else is. */
 export const CODEX_SYSTEM_CONFIG_TEXT_V1 = [...CODEX_SANDBOX_LINES, ""].join("\n");
 
 /**

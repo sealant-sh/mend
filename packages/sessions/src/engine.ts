@@ -121,6 +121,7 @@ import {
   composeProtocolArgv,
   agentProcessesOf,
   agentSignalOf,
+  liveTerminalAgentOf,
   nextAgentWait,
   currentAgentProcess,
   foldSessionLiveness,
@@ -2714,8 +2715,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         restartService: (reference) => owned(sessionId)(api.restartService(reference)),
         stopSession: () => owned(sessionId)(api.stopSession()),
         land: () => owned(sessionId)(api.land()),
-        // Calls no Sealant API, so there is no owner to run it as.
-        agentHook: api.agentHook,
+        agentHook: (report) => owned(sessionId)(api.agentHook(report)),
         listRepositories: () => owned(sessionId)(api.listRepositories()),
         addableProjects: () => owned(sessionId)(api.addableProjects()),
         addRepository: (input) => owned(sessionId)(api.addRepository(input)),
@@ -14531,9 +14531,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * `personal` settings, the session-state switch only); anyone else's personal Claude
        * processes get the `no-cron` settings, which a repository's `env` cannot turn back on. The
        * settings go inline on the command line, so no file has to exist in the executor. A
-       * terminal Claude also gets Mend's hooks (`CLAUDE_AGENT_HOOKS`), in either layout, so it
-       * reports when it waits for the person. A launch that names its own `--settings` is left as
-       * it is. Null `runsAs`: root, the hooks alone.
+       * launch that names its own `--settings` is left as it is. A terminal Claude, root's
+       * included, also gets `CLAUDE_AGENT_HOOKS`.
        */
       const withClaudeSettings = (
         session: Session,
@@ -21680,33 +21679,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const restartService = (serviceId: ServiceId) =>
         withServiceLifecycle(restartServiceUnlocked(serviceId));
 
-      /**
-       * What a session's in-workspace socket serves — every closure scoped to
-       * that one session; ownership guards make cross-session ids a 404-shaped
-       * error rather than a capability.
-       */
-      /**
-       * The closures, as `actor` asks (docs/adr/0016, decision 4): null is the workspace itself
-       * (its socket, or its launch's own token in a shared executor), which acts as the session's
-       * owner, as before. A person's token makes `actor` that person: git signs as them, a
-       * command runs only if they may run one in the session and then runs as them, and `mend
-       * land` lands only for the change's owner.
-       */
-      /**
-       * A terminal agent's hook (`mend hook`): the wait goes on the session's newest live agent-pty
-       * row, and only when that row is the report's harness (a Codex run by hand in a Claude
-       * session's shell reads Mend's system hooks too). The fold then reads it.
-       */
       const agentHook = Effect.fn("SessionEngine.agentHook")(function* (
         sessionId: SessionId,
         report: AgentHookReport,
       ) {
         const signal = agentSignalOf(report);
         if (signal === null) return "ignored" as const;
-        const agent = agentProcessesOf(yield* processes.listForSession(sessionId))
-          .filter((process) => process.kind === "agent-pty" && isLiveProcess(process))
-          .at(-1);
-        if (agent === undefined || agent.harness !== report.harness) {
+        const agent = liveTerminalAgentOf(yield* processes.listForSession(sessionId));
+        // Codex runs Mend's system hooks in every Codex, a hand-run one in a Claude session's shell too.
+        if (agent === null || agent.harness !== report.harness) {
           return "no-live-agent" as const;
         }
         const next = nextAgentWait(
@@ -21732,6 +21713,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
+      /**
+       * What a session's in-workspace socket serves — every closure scoped to
+       * that one session; ownership guards make cross-session ids a 404-shaped
+       * error rather than a capability.
+       */
+      /**
+       * The closures, as `actor` asks (docs/adr/0016, decision 4): null is the workspace itself
+       * (its socket, or its launch's own token in a shared executor), which acts as the session's
+       * owner, as before. A person's token makes `actor` that person: git signs as them, a
+       * command runs only if they may run one in the session and then runs as them, and `mend
+       * land` lands only for the change's owner.
+       */
       const socketClosures = (sessionId: SessionId, actor: string | null): SessionSocketApi => ({
         // Pickups (`pickup-tickets.ts`): over the socket, the session's own; over the channel, for
         // the launch and the person the token names. A person's grant binds its own person, so

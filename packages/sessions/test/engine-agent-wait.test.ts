@@ -48,7 +48,6 @@ const agentOf = (world: World, sessionId: SessionId) =>
 
 const statusOf = (world: World, sessionId: SessionId) => world.sessions.get(sessionId)?.status;
 
-/** A session with a live claude TUI, as `mend claude` or the VS Code Open flow starts one. */
 const withClaudeSession = <A, E>(
   work: (world: World, sessionId: SessionId) => Effect.Effect<A, E, SessionEngine>,
   spawned: Array<ReadonlyArray<string>> = [],
@@ -94,7 +93,6 @@ describe("a terminal agent's hooks (G4)", () => {
         expect(agentWaitLine(agentOf(world, sessionId))).toBe(
           "waiting · claude needs your permission to use Bash",
         );
-        // The ~6 s notification that follows the ask is the same wait.
         expect(
           yield* hook(
             new AgentHookReport({
@@ -171,7 +169,6 @@ describe("a terminal agent's hooks (G4)", () => {
     await withClaudeSession((world, sessionId) =>
       Effect.gen(function* () {
         const hook = hookOf(sessionId);
-        // A Codex run by hand in this Claude session's shell reads Mend's system hooks too.
         expect(yield* hook(report("PermissionRequest", { harness: "codex", tool: "shell" }))).toBe(
           "no-live-agent",
         );
@@ -195,12 +192,12 @@ describe("a terminal agent's hooks (G4)", () => {
   });
 });
 
-describe("who may report a wait over the session channel", () => {
-  const refusalOf = <A, E>(effect: Effect.Effect<A, E>) => {
-    const exit = Effect.runSync(Effect.exit(effect));
-    return Exit.isFailure(exit) ? String(exit.cause) : "";
-  };
+const refusalOf = <A, E>(effect: Effect.Effect<A, E>) => {
+  const exit = Effect.runSync(Effect.exit(effect));
+  return Exit.isFailure(exit) ? String(exit.cause) : "";
+};
 
+describe("who may report a wait over the session channel", () => {
   it("refuses the workspace's own token in a person executor, and a token whose process has not started", () => {
     const asContainer = containerTokenRefused(undefined, undefined);
     expect(

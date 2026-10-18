@@ -790,8 +790,6 @@ describe("SessionChannelNetworkHost", () => {
             );
           const silent = { code: 0, stdout: "", stderr: "" };
 
-          // Claude's PermissionRequest payload (code.claude.com/docs/en/hooks): only the event,
-          // the notification type and the tool leave the workspace, never the tool's input.
           const asked = yield* hook(
             JSON.stringify({
               session_id: "abc123",
@@ -807,8 +805,6 @@ describe("SessionChannelNetworkHost", () => {
             { harness: "claude", event: "PermissionRequest", notificationType: null, tool: "Bash" },
           ]);
 
-          // No live agent (409), another session's id, a payload that is not JSON, and no
-          // channel at all: still silent, still 0, and nothing reaches the engine.
           outcome = "no-live-agent";
           expect(
             yield* hook(
@@ -826,7 +822,6 @@ describe("SessionChannelNetworkHost", () => {
           ).toEqual(silent);
           expect(seen).toHaveLength(2);
 
-          // The route itself: a body that is not a report is refused before the engine.
           const refused = yield* Effect.promise(() =>
             call(address, "POST", "/session/agent-hook", auth, {
               harness: "opencode",

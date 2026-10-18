@@ -2041,7 +2041,6 @@ describe("SessionEngine", () => {
           expect(process?.argv).toContain("stream-json");
           expect(process?.providerSessionId).toBe(process?.argv.at(sessionFlag + 1));
           expect(attached[0]?.mode).toBe("pipe");
-          // A protocol agent's waits are its requests: it gets none of the terminal agent's hooks.
           expect(spawned.flat().join(" ")).not.toContain("mend hook");
         }),
       {

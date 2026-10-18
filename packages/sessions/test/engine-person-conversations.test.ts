@@ -1953,8 +1953,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     );
     const claudes = spawned.filter((argv) => argv.includes("claude"));
     expect(claudes).toHaveLength(2);
-    // Alice made the worktree: hers keep crons, with only the session-state switch. Both are
-    // terminal agents, so both report their waits (G4).
+    // Alice made the worktree: hers keep crons, with only the session-state switch.
     expect(claudes[0]?.slice(-2)).toEqual([
       "--settings",
       JSON.stringify({

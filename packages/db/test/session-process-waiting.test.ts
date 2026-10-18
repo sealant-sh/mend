@@ -11,7 +11,6 @@ import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
 import { SessionProcessesRepo, SessionProcessesRepoLive } from "../src/repos/session-processes.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
-/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
 const postgres = postgresTestConfig();
 const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_process_waiting_test_${process.pid}_${Date.now()}`;

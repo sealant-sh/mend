@@ -6,7 +6,6 @@ import { Timestamp } from "../timestamp.ts";
 export const AgentWaitKind = Schema.Literals(["permission", "question", "prompt"]);
 export type AgentWaitKind = typeof AgentWaitKind.Type;
 
-/** A short printable field forwarded from a hook payload: an event, a notification type, a tool. */
 const HookField = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(64),
@@ -21,7 +20,6 @@ export class AgentWait extends Schema.Class<AgentWait>("AgentWait")({
   since: Timestamp,
 }) {}
 
-/** The harnesses whose hooks Mend wires. */
 export const HOOKED_HARNESSES = ["claude", "codex"] as const;
 export type HookedHarness = (typeof HOOKED_HARNESSES)[number];
 

@@ -118,7 +118,6 @@ const platformWorkspace = (id: string): Workspace => ({
 const wait = (signal: Deferred.Deferred<void>) =>
   Effect.runPromise(Deferred.await(signal).pipe(Effect.timeout("3 seconds")));
 
-/** Carol's terminal agent in her session: a claude TUI, as VS Code starts one (G4). */
 const CAROL_AGENT_IN_SHARED_A = SessionProcessId.make("process-shared-a-carol-agent");
 const carolAgent = new SessionProcess({
   id: CAROL_AGENT_IN_SHARED_A,
@@ -355,7 +354,6 @@ describe("admitted terminal sockets", () => {
           // finalizes the platform attachment and unregisters the connection before negative assertions.
           await socket.close();
           expect(server.pty.inputs).toEqual(scenario.typing ? [INPUT, "pwd\r"] : []);
-          // Keys in a shell, or in a terminal attached by session, answer no agent's wait.
           expect(server.typed).toEqual([]);
           expect(server.pty.resizes).toEqual(scenario.typing ? [[132, 47]] : []);
           expect(server.pty.closeCount()).toBe(1);
