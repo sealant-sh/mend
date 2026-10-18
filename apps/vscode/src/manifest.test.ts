@@ -40,3 +40,21 @@ describe("the session row", () => {
     expect(groups.some((group) => !group.startsWith("inline"))).toBe(true);
   });
 });
+
+describe("bring my editor", () => {
+  const setting: unknown = Reflect.get(
+    Reflect.get(
+      Reflect.get(Reflect.get(manifest ?? {}, "contributes") ?? {}, "configuration") ?? {},
+      "properties",
+    ) ?? {},
+    "mend.workspaces.bringMyEditor",
+  );
+
+  it("is a person's own setting, which a repository cannot turn on", () => {
+    expect(setting).toMatchObject({
+      enum: ["off", "extensions", "extensionsAndSettings"],
+      default: "extensionsAndSettings",
+      scope: "application",
+    });
+  });
+});
