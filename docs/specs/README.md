@@ -28,24 +28,25 @@ New specs start from [TEMPLATE.md](TEMPLATE.md).
 
 ## 0.36
 
-| File                                                                              | Feature                                                       | Status                                                               |
-| --------------------------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------- |
-| [ad-hoc-repositories.md](0.36/ad-hoc-repositories.md)                             | Any project of the store, ad hoc, from inside a session       | On main (nested clone); the repository-root capture is designed      |
-| [agent-memory.md](0.36/agent-memory.md)                                           | Agent memory per person per project                           | On main; the hand-over is superseded by ADR 0016, designed           |
-| [automatic-install.md](0.36/automatic-install.md)                                 | Automatic install                                             | On main                                                              |
-| [box-and-deploys.md](0.36/box-and-deploys.md)                                     | The box and its deploys                                       | On main; box-side pieces are set up by hand                          |
-| [credential-safety.md](0.36/credential-safety.md)                                 | Harness credential files are never saved or restored          | sealantd side on main; mend#526 in review; per-person homes designed |
-| [model-picker.md](0.36/model-picker.md)                                           | One model picker, the server owns the list                    | On main                                                              |
-| [next-channel.md](0.36/next-channel.md)                                           | The `next` prerelease channel across sealantd, Core and Mend  | On main; docs and the argument-length fix in review                  |
-| [pi-and-opencode.md](0.36/pi-and-opencode.md)                                     | pi and opencode as harnesses                                  | On main                                                              |
-| [planned-stop-wording.md](0.36/planned-stop-wording.md)                           | Mend's words for Core's planned stop before a runtime's limit | Designed                                                             |
-| [pull-requests-in-the-conversation.md](0.36/pull-requests-in-the-conversation.md) | The agent's pull request, recorded when its turn ends         | On main                                                              |
-| [saves-without-the-wait.md](0.36/saves-without-the-wait.md)                       | Saves without the wait                                        | On main                                                              |
-| [secret-files.md](0.36/secret-files.md)                                           | Secret files                                                  | On main; per-person delivery designed (ADR 0016)                     |
-| [start-time.md](0.36/start-time.md)                                               | Start time                                                    | On main; not yet measured end to end on the box                      |
-| [steering.md](0.36/steering.md)                                                   | Per-user steering: whoever sends a turn pays                  | Partly on main; the per-turn login switch designed                   |
-| [t3code-gateway.md](0.36/t3code-gateway.md)                                       | The T3 Code gateway, phases 0 and 1                           | On main; phases 2-4 planned                                          |
-| [vscode-workspace-editor.md](0.36/vscode-workspace-editor.md)                     | Bring my editor into Mend workspaces (SLNT-78)                | In review: extensions (PR 1); machine settings designed              |
+| File                                                                              | Feature                                                                        | Status                                                               |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| [ad-hoc-repositories.md](0.36/ad-hoc-repositories.md)                             | Any project of the store, ad hoc, from inside a session                        | On main (nested clone); the repository-root capture is designed      |
+| [agent-memory.md](0.36/agent-memory.md)                                           | Agent memory per person per project                                            | On main; the hand-over is superseded by ADR 0016, designed           |
+| [automatic-install.md](0.36/automatic-install.md)                                 | Automatic install                                                              | On main                                                              |
+| [box-and-deploys.md](0.36/box-and-deploys.md)                                     | The box and its deploys                                                        | On main; box-side pieces are set up by hand                          |
+| [credential-safety.md](0.36/credential-safety.md)                                 | Harness credential files are never saved or restored                           | sealantd side on main; mend#526 in review; per-person homes designed |
+| [mend-handoff.md](mend-handoff.md)                                                | `mend handoff`: a local branch, uncommitted files included, into a new session | Designed                                                             |
+| [model-picker.md](0.36/model-picker.md)                                           | One model picker, the server owns the list                                     | On main                                                              |
+| [next-channel.md](0.36/next-channel.md)                                           | The `next` prerelease channel across sealantd, Core and Mend                   | On main; docs and the argument-length fix in review                  |
+| [pi-and-opencode.md](0.36/pi-and-opencode.md)                                     | pi and opencode as harnesses                                                   | On main                                                              |
+| [planned-stop-wording.md](0.36/planned-stop-wording.md)                           | Mend's words for Core's planned stop before a runtime's limit                  | Designed                                                             |
+| [pull-requests-in-the-conversation.md](0.36/pull-requests-in-the-conversation.md) | The agent's pull request, recorded when its turn ends                          | On main                                                              |
+| [saves-without-the-wait.md](0.36/saves-without-the-wait.md)                       | Saves without the wait                                                         | On main                                                              |
+| [secret-files.md](0.36/secret-files.md)                                           | Secret files                                                                   | On main; per-person delivery designed (ADR 0016)                     |
+| [start-time.md](0.36/start-time.md)                                               | Start time                                                                     | On main; not yet measured end to end on the box                      |
+| [steering.md](0.36/steering.md)                                                   | Per-user steering: whoever sends a turn pays                                   | Partly on main; the per-turn login switch designed                   |
+| [t3code-gateway.md](0.36/t3code-gateway.md)                                       | The T3 Code gateway, phases 0 and 1                                            | On main; phases 2-4 planned                                          |
+| [vscode-workspace-editor.md](0.36/vscode-workspace-editor.md)                     | Bring my editor into Mend workspaces (SLNT-78)                                 | In review: extensions (PR 1); machine settings designed              |
 
 Status is as of 2026-10-05, and 2026-10-18 for the VS Code workspace editor. Each spec's header
 carries the detail. The per-person homes spec follows with ADR 0016 (mend#534).
