@@ -4,7 +4,7 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import { Effect } from "effect";
 import { nitro } from "nitro/vite";
-import { defineConfig } from "vite";
+import { defineConfig, esmExternalRequirePlugin } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
 
 // Dev runs two processes: this vite server for the app, and the Mend API
@@ -22,6 +22,20 @@ const allowedHosts = [
 const apiTarget = process.env.MEND_API_URL ?? "http://localhost:3101";
 
 const config = defineConfig({
+  environments: {
+    ssr: {
+      build: {
+        rolldownOptions: {
+          // The production image ships .output alone, with no node_modules. Vite 8 bundles
+          // CommonJS dependencies apps/web cannot resolve itself (@base-ui's
+          // use-sync-external-store) into the SSR build, and leaves their require("react") as a
+          // runtime call that nitro cannot follow: every page then fails with "Cannot find module
+          // 'react'". As imports, nitro bundles them with the rest of React.
+          plugins: [esmExternalRequirePlugin({ external: [/^react(-dom)?(\/|$)/] })],
+        },
+      },
+    },
+  },
   server: {
     // The workbench is steered from any device on the operator's network
     // (ARCHITECTURE.md §9), so dev binds every interface, not just loopback.
