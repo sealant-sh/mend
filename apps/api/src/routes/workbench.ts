@@ -157,6 +157,7 @@ import {
   RECIPE_NAME,
   type ReadStamp,
   SessionEngine,
+  startFromBase,
   WorkspaceCaller,
   WorktreeReads,
   type WorktreeReadError,
@@ -1536,7 +1537,7 @@ export const ProjectLinksGroupLive = HttpApiBuilder.group(MendApi, "projectLinks
             ? yield* engine
                 .ensureWorktree(
                   linked.id,
-                  { name: linked.defaultBranch, base: null },
+                  { name: linked.defaultBranch, start: startFromBase(null) },
                   (yield* CurrentUser).user.id,
                 )
                 .pipe(

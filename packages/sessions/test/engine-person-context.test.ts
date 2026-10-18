@@ -197,7 +197,7 @@ const coldJoinResume = (options: {
             label: null,
             name: "shared",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           options.before?.(holder.worktreeId);
           yield* engine.launch(holder.id, ["claude"]);
@@ -360,7 +360,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
             label: null,
             name: "remote-ssh-launcher",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(first.id, ["claude"]);
           yield* engine.stop(first.id);
@@ -589,7 +589,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
             label: null,
             name: "shared",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(holder.id, ["claude"]);
           const before = opened.length;
@@ -655,7 +655,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
             label: null,
             name: "fresh",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           const refused = yield* engine.launch(session.id, ["claude"]).pipe(Effect.flip);
           return {
@@ -779,7 +779,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
               label: null,
               name: "fresh",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             const launched = yield* engine
               .launch(session.id, [harness === "shell" ? "bash" : harness])
@@ -880,7 +880,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
             label: null,
             name: "theirs",
             ownerUserId: MARIA,
-            base: null,
+            start: { kind: "base", base: null },
           });
           const alices = yield* engine.provisionSessionIn(first.worktreeId, {
             harness: "claude",
@@ -935,7 +935,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
             label: null,
             name: "pph",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.result);
           if (launched._tag === "Failure") failure = launched.failure.message;
@@ -1081,7 +1081,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
               label: null,
               name: "pph",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
               ...(options.harnessLayout === undefined
                 ? {}
                 : { harnessLayout: options.harnessLayout }),
@@ -1359,7 +1359,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
                 label: null,
                 name: "op",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               } as const;
               const interrupted = yield* engine
                 .provision({ ...start, harnessLayout: "person" })
@@ -1434,7 +1434,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
             label: null,
             name: "pph",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           state.worktrees.set(first.worktreeId, { layout: "person", requested: null });
           return yield* engine
@@ -1444,7 +1444,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
               label: null,
               name: "pph",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
               harnessLayout: "shared",
             })
             .pipe(Effect.flip);
@@ -1479,7 +1479,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
             label: null,
             name: "pph",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
             harnessLayout: "person",
           });
           const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.exit);
@@ -1528,7 +1528,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
             label: null,
             name: "pph",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["claude"]);
           yield* engine.submitTurn(session.id, "hi", MARIA);
@@ -1582,7 +1582,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
                 label: null,
                 name: "shared",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(session.id, ["claude"]);
               // The capture reaper's first tick runs as the engine starts: it has ended once the
@@ -1666,7 +1666,7 @@ describe("no secret rides an exec's arguments (review of mend#552/#553, P1-1)", 
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           sessionId = session.id;
           yield* engine.launch(session.id, ["pi"]);
@@ -1787,7 +1787,7 @@ describe("no secret rides an exec's arguments (review of mend#552/#553, P1-1)", 
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           sessionId = session.id;
           yield* engine.launch(session.id, ["codex"]);
@@ -1875,7 +1875,7 @@ describe("who may redeem a pickup ticket (review of mend#555, P3-10)", () => {
             label: null,
             name: "shared",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           via = first.id;
           yield* engine.launch(first.id, ["codex"]);
@@ -2010,7 +2010,7 @@ describe("who may redeem a pickup ticket (review of mend#555, P3-10)", () => {
                   label: null,
                   name: null,
                   ownerUserId: "user-fixture",
-                  base: null,
+                  start: { kind: "base", base: null },
                 }),
               );
               executor = session.id;
@@ -2081,7 +2081,7 @@ describe("who may redeem a pickup ticket (review of mend#555, P3-10)", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               }),
             );
             executor = session.id;
@@ -2407,7 +2407,7 @@ const livePersonJoinEffect = <A>(options: LivePersonJoinOptions<A>): Effect.Effe
             label: null,
             name: "shared",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           const launches = Effect.gen(function* () {
             yield* engine.launch(holder.id, ["claude"]);
@@ -2946,7 +2946,7 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
             label: null,
             name: "maria-own",
             ownerUserId: MARIA,
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(own.id, ["claude"]);
           const elsewhere = yield* grantOf(own, { launchId: join.launchId, accountId: MARIA });

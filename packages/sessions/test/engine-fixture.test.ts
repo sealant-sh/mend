@@ -30,7 +30,7 @@ it.effect(
             label: null,
             name: "clock",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           expect(world.sessions.get(session.id)?.createdAt.getTime()).toBe(123_100);
           expect(yield* Clock.currentTimeMillis).toBe(123_100);

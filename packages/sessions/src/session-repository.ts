@@ -1,15 +1,29 @@
 import { ProjectNotFoundError, ProjectsRepo } from "@mend/db";
 import type { ProjectId, Sha, WorktreeId } from "@mend/domain";
 import {
+  type AdmittedHandoff,
+  GitError,
   Store,
   worktreePathOf,
   type CaptureManifest,
   type CheckpointSnapshot,
-  type GitError,
   type GitRemoteEnvironment,
 } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
+
+/**
+ * Where a new worktree starts (docs/specs/mend-handoff.md, "One creation path"). `base`: a
+ * branch or sha the store resolves, the project's default branch when null. `handoff`: a
+ * snapshot the store admitted, whose branch starts at the checkout's HEAD and whose base is
+ * the merge base with the default branch. One creation path serves both; a handoff never joins
+ * an existing worktree.
+ */
+export type WorktreeStart =
+  | { readonly kind: "base"; readonly base: string | null }
+  | { readonly kind: "handoff"; readonly admitted: AdmittedHandoff };
+
+export const startFromBase = (base: string | null): WorktreeStart => ({ kind: "base", base });
 
 /**
  * The session workspace AUTHORITY, keyed by identity — the deployment-strategy port
@@ -47,14 +61,16 @@ export class SessionRepository extends Context.Service<
   SessionRepository,
   {
     /**
-     * Create a worktree on its own branch from `base` (default branch when null). The caller
-     * owns identity (directory + branch). `remoteEnv` freshens the base from origin first
-     * (best-effort); null skips the fetch.
+     * Create a worktree on its own branch from `start`: a base (the default branch when null),
+     * or an admitted handoff, whose branch is created at the checkout's HEAD and whose base is
+     * the merge base with the default branch. The caller owns identity (directory + branch).
+     * `remoteEnv` freshens a base from origin first (best-effort); null skips the fetch. Only
+     * the capture store takes a handoff.
      */
     readonly createWorktree: (
       projectId: ProjectId,
       identity: { readonly directory: string; readonly branch: string },
-      base: string | null,
+      start: WorktreeStart,
       remoteEnv: GitRemoteEnvironment | null,
     ) => Effect.Effect<SessionWorktreeSummary, SessionRepositoryError>;
     /**
@@ -149,10 +165,18 @@ export const SessionRepositoryLocalLive: Layer.Layer<
     const projects = yield* ProjectsRepo;
 
     return {
-      createWorktree: (projectId, identity, base, remoteEnv) =>
+      createWorktree: (projectId, identity, start, remoteEnv) =>
         projects.byId(projectId).pipe(
           Effect.flatMap((project) =>
-            store.createWorktree(project.storePath, identity, base, remoteEnv),
+            start.kind === "base"
+              ? store.createWorktree(project.storePath, identity, start.base, remoteEnv)
+              : new GitError({
+                  args: ["mend", "handoff"],
+                  cwd: project.storePath,
+                  exitCode: null,
+                  stderr:
+                    "this server keeps worktrees in the co-located store, which takes no handoffs",
+                }),
           ),
           Effect.map(({ name, branch, baseSha, baseRef }) => ({ name, branch, baseSha, baseRef })),
         ),

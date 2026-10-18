@@ -295,7 +295,7 @@ describe("custom-image setup commands run only on a worktree laid down fresh (re
                     label: null,
                     name: null,
                     ownerUserId: "user-fixture",
-                    base: null,
+                    start: { kind: "base", base: null },
                   }),
                 );
                 // The session claimed the standby.
@@ -943,7 +943,7 @@ describe("secret files under a directory sessions now save (review 2026-10-04)",
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             const refusal = yield* engine.launch(session.id, ["opencode"]).pipe(Effect.flip);
             expect(String(refusal.message), answer).toContain(

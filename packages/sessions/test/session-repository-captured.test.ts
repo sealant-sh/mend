@@ -68,7 +68,7 @@ describe("SessionRepositoryCapturedLive", () => {
         return yield* repo.createWorktree(
           world.project.id,
           { directory: worktreeId, branch: `mend/wt/${worktreeId}` },
-          null,
+          { kind: "base", base: null },
           null,
         );
       }),
@@ -137,7 +137,7 @@ describe("SessionRepositoryCapturedLive", () => {
           .createWorktree(
             world.project.id,
             { directory: "other", branch: `mend/wt/${worktreeId}` },
-            null,
+            { kind: "base", base: null },
             null,
           )
           .pipe(Effect.flip);
@@ -177,7 +177,7 @@ describe("SessionRepositoryCapturedLive", () => {
           yield* repo.createWorktree(
             world.project.id,
             { directory: worktreeId, branch },
-            null,
+            { kind: "base", base: null },
             null,
           );
           yield* repo.attachWorktree!(world.project.id, worktreeId);
@@ -508,7 +508,12 @@ describe("SessionRepositoryCapturedLive over a SHA-256 project", () => {
     const head = await run(
       Effect.gen(function* () {
         const repo = yield* SessionRepository;
-        yield* repo.createWorktree(world.project.id, { directory: worktreeId, branch }, null, null);
+        yield* repo.createWorktree(
+          world.project.id,
+          { directory: worktreeId, branch },
+          { kind: "base", base: null },
+          null,
+        );
         yield* repo.attachWorktree!(world.project.id, worktreeId);
         return (yield* (yield* CaptureStoreRepo).headOf(worktreeId))?.head ?? null;
       }),

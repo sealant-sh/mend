@@ -586,7 +586,12 @@ import {
   repositoryCloneScript,
   repositoryRelinkScript,
 } from "./session-repositories.ts";
-import { SessionRepository, type SessionRepositoryError } from "./session-repository.ts";
+import {
+  SessionRepository,
+  startFromBase,
+  type SessionRepositoryError,
+  type WorktreeStart,
+} from "./session-repository.ts";
 import {
   SESSION_SOCKET_MOUNT_PATH,
   SessionSocketHost,
@@ -1700,8 +1705,7 @@ export interface ProvisionInput {
    * null derives an anonymous worktree identity.
    */
   readonly name: string | null;
-  /** Branch or sha to base the worktree on; null = the project's default branch. */
-  readonly base: string | null;
+  readonly start: WorktreeStart;
   /** Who is provisioning — whose dotfiles apply at launch. Null when the caller is unknown. */
   readonly ownerUserId: string | null;
   /** Where the session was started from (docs/adr/0006-slack.md); absent is `mend`. */
@@ -2122,7 +2126,7 @@ export class SessionEngine extends Context.Service<
      */
     readonly ensureWorktree: (
       projectId: ProjectId,
-      input: { readonly name: string | null; readonly base: string | null },
+      input: { readonly name: string | null; readonly start: WorktreeStart },
       /** Whose git credential freshens the base (their Mend key, or their bridge). */
       ownerUserId: string | null,
     ) => Effect.Effect<Worktree, ProjectNotFoundError | GitError | WorktreeBaseConflictError>;
@@ -8649,14 +8653,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const ensureWorktreeIn = Effect.fn("SessionEngine.ensureWorktreeIn")(function* (
         project: Project,
-        input: { readonly name: string | null; readonly base: string | null },
+        input: { readonly name: string | null; readonly start: WorktreeStart },
         ownerUserId: string | null,
       ) {
         yield* refuseUnsupportedProject(project);
-        if (input.name !== null) {
+        if (input.name !== null && input.start.kind === "base") {
           const existing = yield* worktreesRepo.byName(project.id, input.name);
           if (existing !== null) {
-            yield* refuseBaseConflict(existing, input.base);
+            yield* refuseBaseConflict(existing, input.start.base);
             return existing;
           }
         }
@@ -8671,7 +8675,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const createWorktreeIn = Effect.fn("SessionEngine.createWorktreeIn")(function* (
         project: Project,
-        input: { readonly name: string | null; readonly base: string | null },
+        input: { readonly name: string | null; readonly start: WorktreeStart },
         ownerUserId: string | null,
       ) {
         const remoteEnv = yield* provisionRemoteEnv(project, ownerUserId);
@@ -8680,7 +8684,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const created = yield* sessionRepo.createWorktree(
           project.id,
           identity,
-          input.base,
+          input.start,
           remoteEnv,
         );
         const row = yield* worktreesRepo.create({
@@ -16457,7 +16461,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* refuseUnsupportedProject(target);
         const worktree = yield* createWorktreeIn(
           target,
-          { name: worktreeName, base: null },
+          { name: worktreeName, start: startFromBase(null) },
           session.ownerUserId,
         );
         const row = yield* sessionRepositories

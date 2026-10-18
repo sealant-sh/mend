@@ -1028,7 +1028,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               expect(yield* engine.removeWhenStopped(never.id)).toBe("removed");
               expect(world.sessions.has(never.id)).toBe(false);

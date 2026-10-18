@@ -78,7 +78,12 @@ describe("summary-observe", () => {
     const epoch = await run(
       Effect.gen(function* () {
         const repo = yield* SessionRepository;
-        yield* repo.createWorktree(world.project.id, { directory: worktreeId, branch }, null, null);
+        yield* repo.createWorktree(
+          world.project.id,
+          { directory: worktreeId, branch },
+          { kind: "base", base: null },
+          null,
+        );
         yield* repo.attachWorktree!(world.project.id, worktreeId);
         const captures = yield* CaptureStoreRepo;
         return (yield* captures.claim(worktreeId, "executor")).epoch;

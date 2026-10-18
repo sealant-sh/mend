@@ -389,7 +389,7 @@ describe("SessionEngine capture mode", () => {
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(session.id, ["codex"]);
           }),
@@ -687,7 +687,7 @@ describe("SessionEngine capture mode", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           // No workspace yet: the file is unobservable, which is a typed refusal, never a defect.
@@ -872,7 +872,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: "fix-login",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               // Nothing to add into before the workspace is live.
               const early = yield* engine
@@ -1021,7 +1021,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: "fix-login",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(session.id, ["codex"]);
               // What `mend repo projects` prints inside the workspace names the origin without it.
@@ -1074,7 +1074,7 @@ describe("SessionEngine capture mode", () => {
           label: null,
           name: "fix-login",
           ownerUserId: "user-fixture",
-          base: null,
+          start: { kind: "base", base: null },
         });
 
         // `fixture` is shared: every member can open this worktree and would receive vault's
@@ -1607,7 +1607,7 @@ describe("SessionEngine capture mode", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* replaceHeadWithRootlessWorkspace(tmp, memory, session.worktreeId);
           const immutableHead = memory.chains.get(session.worktreeId)?.headCapture;

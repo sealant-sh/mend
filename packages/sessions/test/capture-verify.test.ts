@@ -207,7 +207,7 @@ describe("capture git verification", () => {
           yield* repo.createWorktree(
             world.project.id,
             { directory: worktreeId, branch },
-            null,
+            { kind: "base", base: null },
             null,
           );
           yield* repo.attachWorktree!(world.project.id, worktreeId);
@@ -526,7 +526,12 @@ describe("review 13 #1: a git step the Mend host could not finish concludes noth
     await run(
       Effect.gen(function* () {
         const repo = yield* SessionRepository;
-        yield* repo.createWorktree(world.project.id, { directory: worktreeId, branch }, null, null);
+        yield* repo.createWorktree(
+          world.project.id,
+          { directory: worktreeId, branch },
+          { kind: "base", base: null },
+          null,
+        );
         yield* repo.attachWorktree!(world.project.id, worktreeId);
       }),
     );
@@ -934,7 +939,12 @@ describe("a seal rests only on sections Mend observed restore", () => {
     await run(
       Effect.gen(function* () {
         const repo = yield* SessionRepository;
-        yield* repo.createWorktree(world.project.id, { directory: worktreeId, branch }, null, null);
+        yield* repo.createWorktree(
+          world.project.id,
+          { directory: worktreeId, branch },
+          { kind: "base", base: null },
+          null,
+        );
         yield* repo.attachWorktree!(world.project.id, worktreeId);
       }),
     );
@@ -2263,7 +2273,12 @@ describe("git sections that name their trees (git_trees)", () => {
     await run(
       Effect.gen(function* () {
         const repo = yield* SessionRepository;
-        yield* repo.createWorktree(world.project.id, { directory: worktreeId, branch }, null, null);
+        yield* repo.createWorktree(
+          world.project.id,
+          { directory: worktreeId, branch },
+          { kind: "base", base: null },
+          null,
+        );
         yield* repo.attachWorktree!(world.project.id, worktreeId);
       }),
     );
@@ -2432,7 +2447,7 @@ const describeSeals = (
           yield* repo.createWorktree(
             world.project.id,
             { directory: worktreeId, branch },
-            null,
+            { kind: "base", base: null },
             null,
           );
           yield* repo.attachWorktree!(world.project.id, worktreeId);

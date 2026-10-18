@@ -302,7 +302,7 @@ export const provisionIn = (project: Project) =>
       label: null,
       name: null,
       ownerUserId: "user-fixture",
-      base: null,
+      start: { kind: "base", base: null },
     });
     return { engine, session };
   });

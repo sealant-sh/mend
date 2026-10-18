@@ -50,7 +50,7 @@ const provisioned = (tmp: string, world: World) =>
       label: null,
       name: null,
       ownerUserId: "user-fixture",
-      base: null,
+      start: { kind: "base", base: null },
     });
     /**
      * The session's harness state, as a settle harvests it: these worlds run no harness, and a

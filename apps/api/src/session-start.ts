@@ -27,7 +27,14 @@ import {
   type SessionOrigin,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
-import { Expected, NoLiveAgent, Restart, SessionEngine, type LaunchOver } from "@mend/sessions";
+import {
+  Expected,
+  NoLiveAgent,
+  Restart,
+  SessionEngine,
+  startFromBase,
+  type LaunchOver,
+} from "@mend/sessions";
 import { Duration, Effect, Fiber, Layer, Option } from "effect";
 import * as Context from "effect/Context";
 
@@ -193,7 +200,7 @@ export const makeSessionStart = Effect.gen(function* () {
         harness: input.harness,
         label: input.label,
         name: input.name,
-        base: input.base,
+        start: startFromBase(input.base),
         ownerUserId: userId,
         origin: input.origin,
         autoLand: input.autoLand ?? null,

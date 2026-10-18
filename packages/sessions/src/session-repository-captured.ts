@@ -182,12 +182,15 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
     const createWorktree: SessionRepository["Service"]["createWorktree"] = (
       projectId,
       identity,
-      base,
+      start,
       remoteEnv,
     ) =>
       Effect.gen(function* () {
         const project = yield* projects.byId(projectId);
-        const resolved = yield* store.resolveBase(project.storePath, base, remoteEnv);
+        if (start.kind === "handoff") {
+          return yield* gitFailure(project.storePath, "create", "handoffs are not taken yet");
+        }
+        const resolved = yield* store.resolveBase(project.storePath, start.base, remoteEnv);
         // The branch is the worktree's ref, moved only by Mend (`store_refs`); a name already
         // taken is refused the way the co-located adapter refuses an existing branch.
         yield* refs

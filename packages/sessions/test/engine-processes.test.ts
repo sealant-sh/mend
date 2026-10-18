@@ -66,7 +66,7 @@ describe("SessionEngine", () => {
             label: "bench",
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           const error = yield* engine.launch(session.id, ["bash"]).pipe(Effect.flip);
@@ -91,7 +91,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           // The UI's shell harness always requests ["bash"] — the sentinel for
@@ -129,7 +129,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           // Only the bare `["bash"]` sentinel is the login shell; a bash with arguments is the
@@ -166,7 +166,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           yield* engine.launch(session.id, ["codex"]);
@@ -208,7 +208,7 @@ describe("SessionEngine", () => {
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             const launched = yield* engine.launch(session.id, [harness]).pipe(Effect.result);
             return { created, launched, session: world.sessions.get(session.id) };
@@ -286,7 +286,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           yield* engine.launch(session.id, ["bash", "-i"]);
@@ -539,7 +539,7 @@ describe("SessionEngine", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(session.id, ["bash"]);
               const shell = yield* engine.openShell(session.id);
@@ -598,7 +598,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           yield* engine.openShell(session.id);
@@ -777,7 +777,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           yield* engine.openShell(session.id);
@@ -809,7 +809,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
 
@@ -847,7 +847,7 @@ describe("SessionEngine", () => {
           projectId: project.id,
           harness: "codex",
           label: null,
-          base: null,
+          start: { kind: "base", base: null },
         });
 
         const outcome = yield* engine.openShell(session.id).pipe(Effect.flip);
@@ -871,7 +871,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           const launched = yield* engine.launch(session.id, ["codex"]);
@@ -915,7 +915,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const afterSuccess = world.sessions.get(session.id);
@@ -1228,7 +1228,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
 
@@ -1288,7 +1288,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const startId = "5b3f0c1e-8d2a-4f6b-9c7e-1a2b3c4d5e6f";
@@ -1376,7 +1376,7 @@ describe("SessionEngine", () => {
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(alice.id, ["codex"]);
             const hers = yield* engine.runService(
@@ -1397,7 +1397,7 @@ describe("SessionEngine", () => {
               label: null,
               name: null,
               ownerUserId: `user-${who}`,
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(theirs.id, ["codex"]);
             // The same name too: nothing of Alice's Service decides theirs.
@@ -1439,7 +1439,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const worktree = path.join(tmp, "store", "fixture", "worktrees", session.worktree);
@@ -1470,7 +1470,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const worktree = path.join(tmp, "store", "fixture", "worktrees", session.worktree);
@@ -1593,7 +1593,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const before = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
@@ -1632,7 +1632,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           expect(session.status).toBe("starting");
 
