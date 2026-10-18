@@ -658,7 +658,7 @@ const withSpinner = async <T>(label: string | (() => string), work: Promise<T>):
 };
 
 /**
- * Start a session's agent (a launch, a resume, a handoff) and follow the session until the agent
+ * Start a session's agent (a launch, a resume, a mode switch) and follow the session until the agent
  * runs (launch-follow.ts). The spinner carries the server's own words for what it is doing
  * (`starting · building the workspace image`), and a start call that times out or is cut by an
  * edge keeps following instead of calling the server unreachable. Null `start` follows a session
@@ -5205,7 +5205,7 @@ const resumeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
   );
   say(`${cobalt("  watch")} · ${config.url}/sessions/${match.id}`);
   // A formerly-protocol session (a phone pickup) resumed from a terminal must
-  // come back as a TUI — the handoff verb routes it there; a plain resume
+  // come back as a TUI — the mode switch routes it there; a plain resume
   // would re-enter protocol mode with nothing to attach.
   const priorAgent =
     detail.annotations.find((annotation) => annotation.sessionId === match.id)?.currentAgent ??

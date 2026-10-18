@@ -369,8 +369,8 @@ export const toSessionItem =
 
 /**
  * A settled session that never had a conversation — no transcript captured, none in the harness
- * home — cannot be resumed or handed off. The dashboard hides it; `mend sessions --all` still
- * lists it, and removing the worktree takes it along.
+ * home — cannot be resumed or switched to another mode. The dashboard hides it;
+ * `mend sessions --all` still lists it, and removing the worktree takes it along.
  */
 export const isDeadEnd = (session: Pick<SessionDto, "status" | "hasTranscript">): boolean =>
   // A stopping session may still be saving, or kept for recovery: never hidden (story S23).
