@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import {
   ChangePassesRepo,
-  MEND_EVENTS_CHANNEL,
+  listenEvents,
   MendEvent,
   ProjectsRepo,
   WorktreeChangesRepo,
@@ -22,6 +22,7 @@ import {
 import { CaptureRuntime, WorktreeReads } from "@mend/sessions";
 import type { GitError } from "@mend/store";
 import { Cause, Effect, Layer, Schema, Stream } from "effect";
+import type { SqlError } from "effect/sql/SqlError";
 
 import { JobRunner } from "./job-runner.ts";
 import { queueReviewPass } from "./review-passes.ts";
@@ -127,22 +128,8 @@ export const readFailureAnnotations = (
   stderr: error.stderr.trim(),
 });
 
-export const ReviewPrepLive: Layer.Layer<
-  never,
-  never,
-  | PgClient.PgClient
-  | SessionsRepo
-  | SessionProcessesRepo
-  | ChangePassesRepo
-  | WorktreeChangesRepo
-  | ProjectsRepo
-  | SettingsRepo
-  | WorktreeReads
-  | CaptureRuntime
-  | JobRunner
-> = Layer.effectDiscard(
+export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
   Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
     const sessions = yield* SessionsRepo;
     const processes = yield* SessionProcessesRepo;
     const changes = yield* WorktreeChangesRepo;
@@ -249,7 +236,7 @@ export const ReviewPrepLive: Layer.Layer<
     const active = yield* sessions.listActive();
     for (const session of active) lastSettled.set(session.id, yield* settledNow(session));
 
-    yield* sql.listen(MEND_EVENTS_CHANNEL).pipe(
+    yield* events.pipe(
       Stream.runForEach((payload) =>
         decodeEvent(payload).pipe(
           Effect.flatMap((event) =>
@@ -271,5 +258,19 @@ export const ReviewPrepLive: Layer.Layer<
       ),
       Effect.forkScoped,
     );
-  }),
-);
+  });
+
+export const ReviewPrepLive: Layer.Layer<
+  never,
+  never,
+  | PgClient.PgClient
+  | SessionsRepo
+  | SessionProcessesRepo
+  | ChangePassesRepo
+  | WorktreeChangesRepo
+  | ProjectsRepo
+  | SettingsRepo
+  | WorktreeReads
+  | CaptureRuntime
+  | JobRunner
+> = Layer.effectDiscard(Effect.flatMap(PgClient.PgClient, (sql) => reviewPrep(listenEvents(sql))));

@@ -164,7 +164,7 @@ export const CONVERSATION_TAKE_STALE_MS = 2 * 60_000;
 const HolderRow = Schema.Struct({
   launchId: Schema.NullOr(Schema.String),
   processId: Schema.NullOr(Schema.String),
-  fence: Schema.Union([Schema.Number, Schema.String]),
+  fence: Schema.BigInt,
 });
 const decodeHolderRow = Schema.decodeUnknownSync(HolderRow);
 const holderOf = (row: unknown): ConversationHolder => {
@@ -258,7 +258,7 @@ const RetirementRow = Schema.Struct({
 });
 const decodeRetirementRow = Schema.decodeUnknownSync(RetirementRow);
 
-export class LinuxIdentityExhaustedError extends Schema.TaggedErrorClass<LinuxIdentityExhaustedError>()(
+export class LinuxIdentityExhaustedError extends Schema.TaggedError<LinuxIdentityExhaustedError>()(
   "LinuxIdentityExhaustedError",
   { accountId: Schema.String, message: Schema.String },
 ) {}
@@ -657,7 +657,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         replacing: string | null = null,
       ) {
         const staleSeconds = CONVERSATION_TAKE_STALE_MS / 1000;
-        const rows = yield* sql<{ readonly fence: number | string }>`
+        const rows = yield* sql<{ readonly fence: bigint }>`
           INSERT INTO conversation_processes (session_id, launch_id, process_id, fence)
           VALUES (${sessionId}, ${launchId}, NULL, 1)
           ON CONFLICT (session_id) DO UPDATE

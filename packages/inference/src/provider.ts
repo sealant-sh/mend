@@ -2,12 +2,12 @@ import type { InferenceContext, InferenceToolName } from "@mend/domain";
 import { Effect, Schema } from "effect";
 import * as Context from "effect/Context";
 
-export class InferenceError extends Schema.TaggedErrorClass<InferenceError>()("InferenceError", {
+export class InferenceError extends Schema.TaggedError<InferenceError>()("InferenceError", {
   message: Schema.String,
   cause: Schema.Defect(),
 }) {}
 
-export class InferenceToolError extends Schema.TaggedErrorClass<InferenceToolError>()(
+export class InferenceToolError extends Schema.TaggedError<InferenceToolError>()(
   "InferenceToolError",
   {
     tool: Schema.String,

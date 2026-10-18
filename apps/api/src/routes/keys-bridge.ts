@@ -2,11 +2,11 @@ import { Auth } from "@mend/auth";
 import { OrganizationsRepo, UpgradeTicketsRepo } from "@mend/db";
 import { AgentBridge } from "@mend/store";
 import { Effect } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerResponse } from "effect/http";
 
 import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry, guardSocket } from "../connections.ts";
-import { connectionRefusal, makeFrameGuard } from "../socket-budgets.ts";
+import { connectionRefusal, forEachFrame, makeFrameGuard } from "../socket-budgets.ts";
 import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tickets.ts";
 
 /**
@@ -63,7 +63,7 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
         yield* Effect.scoped(
           Effect.gen(function* () {
             const socket = yield* request.upgrade;
-            const write = yield* socket.writer;
+            const { write } = yield* socket.writer;
             // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
             const guard = yield* guardSocket(
               connections,
@@ -87,16 +87,14 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
             });
             yield* Effect.addFinalizer(() => Effect.sync(() => handle.detach()));
 
-            yield* socket
-              .runRaw((data) => {
-                if (guard.revoked()) return Effect.void;
-                const overFrame = frames.refuse(data);
-                if (overFrame !== null) return overFrame;
-                if (typeof data === "string") handle.feed(data);
-                else handle.feed(Buffer.from(data).toString("utf8"));
-                return Effect.void;
-              })
-              .pipe(Effect.ignore);
+            yield* forEachFrame(socket, (data) => {
+              if (guard.revoked()) return Effect.void;
+              const overFrame = frames.refuse(data);
+              if (overFrame !== null) return overFrame;
+              if (typeof data === "string") handle.feed(data);
+              else handle.feed(Buffer.from(data).toString("utf8"));
+              return Effect.void;
+            });
           }),
         );
 

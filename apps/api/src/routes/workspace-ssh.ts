@@ -13,7 +13,7 @@ import {
 import { AuditEventsRepo, OrganizationsRepo, SessionsRepo } from "@mend/db";
 import { type PlatformSshKey, SealantClients } from "@mend/sealant";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 const keyView = (key: PlatformSshKey) =>
   new WorkspaceSshKey({

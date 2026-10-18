@@ -181,7 +181,7 @@ import {
   SourcePolicy,
 } from "@mend/store";
 import { Clock, Context, Duration, Effect, Option, Result, Schema } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 import { Budgets } from "../budgets.ts";

@@ -19,8 +19,8 @@ import {
 import { redactUrl } from "@mend/network";
 import { Config, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
-import { HttpServerResponse } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpServerResponse } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 
 /**
  * Upgrade tickets (docs/adr/0004-access-without-a-private-network.md, "Upgrade tickets"; MEND-08).

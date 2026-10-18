@@ -1,5 +1,6 @@
 import type { PgClient } from "@effect/sql-pg";
-import { Effect, Schema } from "effect";
+import { Effect, Schema, Stream } from "effect";
+import type { SqlError } from "effect/sql/SqlError";
 
 /**
  * One NOTIFY channel carries every domain change; the SSE endpoint and the
@@ -118,3 +119,14 @@ export const notifyEvent = (sql: PgClient.PgClient, event: MendEvent) =>
     const payload = yield* encodeEvent(event).pipe(Effect.orDie);
     yield* sql.notify(MEND_EVENTS_CHANNEL, payload).pipe(Effect.orDie);
   });
+
+/**
+ * The channel's payloads, from the moment PostgreSQL confirms the LISTEN. The stream holds one
+ * connection while it runs and fails with the connection's `SqlError` when it drops.
+ */
+export const listenEvents = (sql: PgClient.PgClient): Stream.Stream<string, SqlError> =>
+  Stream.unwrap(
+    Effect.map(sql.listen(MEND_EVENTS_CHANNEL), (notifications) =>
+      Stream.map(Stream.fromQueue(notifications), (notification) => notification.payload),
+    ),
+  );

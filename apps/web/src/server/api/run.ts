@@ -1,6 +1,6 @@
 import { makeMendApiClient, type MendApiClient } from "@mend/api-contracts";
 import { Cause, Effect, Exit, ManagedRuntime, Option } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 import { toTRPCError } from "./errors.ts";
 

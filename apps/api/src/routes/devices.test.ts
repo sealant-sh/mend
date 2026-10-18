@@ -1,7 +1,7 @@
 import { MendApi, PairClaimRequest } from "@mend/api-contracts";
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { Schema } from "effect";
-import { HttpApi } from "effect/unstable/httpapi";
+import { HttpApi } from "effect/http-api";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -215,7 +215,7 @@ describe("the pairing contract", () => {
     HttpApi.reflect(MendApi, {
       onGroup: () => {},
       onEndpoint: ({ endpoint, errors }) => {
-        statuses.set(endpoint.name, new Set(errors.keys()));
+        statuses.set(endpoint.identifier, new Set(errors.keys()));
       },
     });
     const claim = statuses.get("claim");

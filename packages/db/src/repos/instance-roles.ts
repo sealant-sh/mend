@@ -6,7 +6,7 @@ import { MendDB } from "../client.ts";
 import { instanceRoles } from "../schema/workbench.ts";
 
 /** Revoking would leave the instance with no operator, and nobody could recover it. */
-export class LastOperatorError extends Schema.TaggedErrorClass<LastOperatorError>()(
+export class LastOperatorError extends Schema.TaggedError<LastOperatorError>()(
   "LastOperatorError",
   {},
 ) {}

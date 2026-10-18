@@ -1,7 +1,7 @@
 import { ChangeId, ReviewCommentId, ReviewSliceId } from "@mend/domain";
 import { ChangePass, ChangeTour, ReviewComment } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
@@ -145,7 +145,7 @@ export class GhRepoView extends Schema.Class<GhRepoView>("GhRepoView")({
 }) {}
 
 /** A gh invocation that could not answer — its stderr, verbatim. */
-export class GhFailure extends Schema.TaggedErrorClass<GhFailure>()(
+export class GhFailure extends Schema.TaggedError<GhFailure>()(
   "GhFailure",
   { message: Schema.String },
   { httpApiStatus: 422 },

@@ -3,8 +3,8 @@ import { promisify } from "node:util";
 
 import { ProjectId, SessionId } from "@mend/domain";
 import { Deferred, Effect, Fiber, Layer, Redacted } from "effect";
-import * as FastCheck from "effect/testing/FastCheck";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import * as FastCheck from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { ExpoPushSenderLive } from "../src/expo-push-sender.ts";

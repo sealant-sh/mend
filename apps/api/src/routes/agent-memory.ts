@@ -11,7 +11,7 @@ import {
 } from "@mend/domain/workbench";
 import { codexDatabaseHolds, mergeCodexDatabases, mergeTextUnion } from "@mend/sessions";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 

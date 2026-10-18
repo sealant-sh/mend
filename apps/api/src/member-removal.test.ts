@@ -17,7 +17,7 @@ import { SessionEngine } from "@mend/sessions";
 import { TestClock } from "@mend/test-ci/effect-vitest";
 import { Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
-import { Socket } from "effect/unstable/socket";
+import { Socket } from "effect/socket";
 import { describe, expect, it } from "vitest";
 
 import { makeProject } from "../test/support/tenancy-harness.ts";

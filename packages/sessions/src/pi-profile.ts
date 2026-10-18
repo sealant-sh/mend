@@ -62,7 +62,7 @@ const treeDigest = (
       .join(""),
   );
 
-export class PiProfileDeliveryError extends Schema.TaggedErrorClass<PiProfileDeliveryError>()(
+export class PiProfileDeliveryError extends Schema.TaggedError<PiProfileDeliveryError>()(
   "PiProfileDeliveryError",
   { message: Schema.String },
 ) {}

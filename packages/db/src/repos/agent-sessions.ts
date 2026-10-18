@@ -58,7 +58,7 @@ import {
 } from "../schema/workbench.ts";
 import { agentConversationLockKey } from "./agent-conversation.ts";
 
-export class SessionNotFoundError extends Schema.TaggedErrorClass<SessionNotFoundError>()(
+export class SessionNotFoundError extends Schema.TaggedError<SessionNotFoundError>()(
   "SessionNotFoundError",
   {
     sessionId: Schema.String,

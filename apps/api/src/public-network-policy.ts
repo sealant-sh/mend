@@ -1,6 +1,6 @@
 import { isAllowedOrigin, type PublicNetwork } from "@mend/network";
 import { Effect, type Layer } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { publicNetworkCors } from "./public-network-cors.ts";
 

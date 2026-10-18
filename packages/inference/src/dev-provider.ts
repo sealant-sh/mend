@@ -24,8 +24,8 @@ export const devDirectProviderLayer = Layer.effect(
   InferenceProvider,
   Effect.gen(function* () {
     const audit = yield* InferenceCallsRepo;
-    const apiKey = yield* Config.redacted("ANTHROPIC_API_KEY");
-    const model = yield* Config.string("MEND_DEV_INFERENCE_MODEL").pipe(
+    const apiKey = yield* Config.Redacted("ANTHROPIC_API_KEY");
+    const model = yield* Config.String("MEND_DEV_INFERENCE_MODEL").pipe(
       Config.orElse(() => Config.succeed("claude-opus-4-8")),
     );
     const client = new Anthropic({ apiKey: Redacted.value(apiKey) });

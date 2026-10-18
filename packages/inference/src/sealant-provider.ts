@@ -26,8 +26,8 @@ export const sealantProviderLayer = Layer.effect(
   Effect.gen(function* () {
     const sealant = yield* SealantClient;
     const audit = yield* InferenceCallsRepo;
-    const claudeAccount = yield* Config.option(Config.string("MEND_INFERENCE_CLAUDE_ACCOUNT"));
-    const codexAccount = yield* Config.option(Config.string("MEND_INFERENCE_CODEX_ACCOUNT"));
+    const claudeAccount = yield* Config.option(Config.String("MEND_INFERENCE_CLAUDE_ACCOUNT"));
+    const codexAccount = yield* Config.option(Config.String("MEND_INFERENCE_CODEX_ACCOUNT"));
     const credentialsFor = (provider: "claude" | "codex") =>
       provider === "codex"
         ? { codex: Option.getOrElse(codexAccount, () => true as const) }

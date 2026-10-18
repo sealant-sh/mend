@@ -4,7 +4,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import * as FastCheck from "effect/testing/FastCheck";
+import * as FastCheck from "fast-check";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";

@@ -120,10 +120,10 @@ export const SessionNamerLive: Layer.Layer<SessionNamer, Config.ConfigError, Inf
     SessionNamer,
     Effect.gen(function* () {
       const provider = yield* InferenceProvider;
-      const claudeModel = yield* Config.string("MEND_INFERENCE_NAMING_MODEL_CLAUDE").pipe(
+      const claudeModel = yield* Config.String("MEND_INFERENCE_NAMING_MODEL_CLAUDE").pipe(
         Config.orElse(() => Config.succeed(CLAUDE_NAMING_MODEL)),
       );
-      const codexModel = yield* Config.string("MEND_INFERENCE_NAMING_MODEL_CODEX").pipe(
+      const codexModel = yield* Config.String("MEND_INFERENCE_NAMING_MODEL_CODEX").pipe(
         Config.orElse(() => Config.succeed(CODEX_NAMING_MODEL)),
       );
 

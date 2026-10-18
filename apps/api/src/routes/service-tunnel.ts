@@ -9,13 +9,13 @@ import {
 import { ServiceId } from "@mend/domain";
 import { asSealantUser, SealantClient } from "@mend/sealant";
 import { Effect, Option } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
-import { Socket } from "effect/unstable/socket";
+import { HttpRouter, HttpServerResponse } from "effect/http";
+import { Socket } from "effect/socket";
 
 import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry, guardSocket } from "../connections.ts";
 import { SessionSteering } from "../session-steering.ts";
-import { connectionRefusal, makeFrameGuard } from "../socket-budgets.ts";
+import { connectionRefusal, forEachFrame, makeFrameGuard } from "../socket-budgets.ts";
 import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tickets.ts";
 
 /**
@@ -142,7 +142,7 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
           Effect.gen(function* () {
             yield* Effect.addFinalizer(() => Effect.sync(() => pipe.close()));
             const socket = yield* request.upgrade;
-            const write = yield* socket.writer;
+            const { write } = yield* socket.writer;
             // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
             const guard = yield* guardSocket(
               connections,
@@ -165,24 +165,22 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
             }).pipe(Effect.ignore);
             yield* Effect.forkScoped(pumpOutput);
 
-            yield* socket
-              .runRaw((data) => {
-                if (guard.revoked()) return Effect.void;
-                const overFrame = frames.refuse(data);
-                if (overFrame !== null) return overFrame;
-                if (typeof data !== "string") {
-                  pipe.send(data);
-                  return Effect.void;
-                }
-                try {
-                  const frame = JSON.parse(data) as { readonly t?: string };
-                  if (frame.t === "eof") pipe.eof();
-                } catch {
-                  // Unknown text frame — ignore.
-                }
+            yield* forEachFrame(socket, (data) => {
+              if (guard.revoked()) return Effect.void;
+              const overFrame = frames.refuse(data);
+              if (overFrame !== null) return overFrame;
+              if (typeof data !== "string") {
+                pipe.send(data);
                 return Effect.void;
-              })
-              .pipe(Effect.ignore);
+              }
+              try {
+                const frame = JSON.parse(data) as { readonly t?: string };
+                if (frame.t === "eof") pipe.eof();
+              } catch {
+                // Unknown text frame — ignore.
+              }
+              return Effect.void;
+            });
           }),
         );
 

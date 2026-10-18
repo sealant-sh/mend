@@ -5,10 +5,5 @@ import { defineConfig } from "vitest/config";
 // main.ts re-execs with it for the dashboard, and the rendered dashboard tests need it the same way.
 export default defineConfig({
   plugins: [vitestCiGuard({ packageName: "@sealant/mend" })],
-  test: {
-    poolOptions: {
-      forks: { execArgv: ["--experimental-ffi"] },
-      threads: { execArgv: ["--experimental-ffi"] },
-    },
-  },
+  test: { execArgv: ["--experimental-ffi"] },
 });

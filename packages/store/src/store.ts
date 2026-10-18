@@ -131,14 +131,14 @@ export const refuseUnsupportedRepository = (gitDir: string): Effect.Effect<void,
         ),
   );
 
-export class AdoptError extends Schema.TaggedErrorClass<AdoptError>()("AdoptError", {
+export class AdoptError extends Schema.TaggedError<AdoptError>()("AdoptError", {
   directory: Schema.String,
   source: RepositoryCloneUrl,
   cause: GitError,
 }) {}
 
 /** Named to dodge the JS global `ReferenceError`; same shape as `AdoptError`. */
-export class ReferenceCloneError extends Schema.TaggedErrorClass<ReferenceCloneError>()(
+export class ReferenceCloneError extends Schema.TaggedError<ReferenceCloneError>()(
   "ReferenceCloneError",
   {
     name: Schema.String,

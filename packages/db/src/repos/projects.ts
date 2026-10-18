@@ -16,7 +16,7 @@ import { notifyEvent } from "../events.ts";
 import { projects } from "../schema/workbench.ts";
 import { isUniqueViolation } from "./unique-violation.ts";
 
-export class ProjectNotFoundError extends Schema.TaggedErrorClass<ProjectNotFoundError>()(
+export class ProjectNotFoundError extends Schema.TaggedError<ProjectNotFoundError>()(
   "ProjectNotFoundError",
   {
     projectId: Schema.String,
@@ -24,7 +24,7 @@ export class ProjectNotFoundError extends Schema.TaggedErrorClass<ProjectNotFoun
 ) {}
 
 /** The organization already has a project with that name. */
-export class ProjectNameTakenError extends Schema.TaggedErrorClass<ProjectNameTakenError>()(
+export class ProjectNameTakenError extends Schema.TaggedError<ProjectNameTakenError>()(
   "ProjectNameTakenError",
   { name: Schema.String },
 ) {}

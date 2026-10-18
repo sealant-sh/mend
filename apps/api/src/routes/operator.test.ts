@@ -13,8 +13,8 @@ import { InvitationId, OrganizationId } from "@mend/domain";
 import { Invitation, Organization, OrganizationMember } from "@mend/domain/workbench";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import { Clock, Context, Effect, Layer, ManagedRuntime, Option } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter, HttpServer } from "effect/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { afterAll, beforeEach, describe, expect } from "vitest";
 
 import { ProjectAccess } from "../access.ts";

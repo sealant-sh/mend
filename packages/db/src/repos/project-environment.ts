@@ -20,7 +20,7 @@ import { projectEnvironmentVariables, projects } from "../schema/workbench.ts";
 import { ProjectNotFoundError } from "./projects.ts";
 
 /** Name or value refused by the policy. Field + rule + wording only — never the value. */
-export class ProjectEnvironmentInvalidInputError extends Schema.TaggedErrorClass<ProjectEnvironmentInvalidInputError>()(
+export class ProjectEnvironmentInvalidInputError extends Schema.TaggedError<ProjectEnvironmentInvalidInputError>()(
   "ProjectEnvironmentInvalidInputError",
   {
     issues: Schema.Array(
@@ -33,12 +33,12 @@ export class ProjectEnvironmentInvalidInputError extends Schema.TaggedErrorClass
   },
 ) {}
 
-export class ProjectEnvironmentDuplicateNameError extends Schema.TaggedErrorClass<ProjectEnvironmentDuplicateNameError>()(
+export class ProjectEnvironmentDuplicateNameError extends Schema.TaggedError<ProjectEnvironmentDuplicateNameError>()(
   "ProjectEnvironmentDuplicateNameError",
   { name: Schema.String },
 ) {}
 
-export class ProjectEnvironmentLimitError extends Schema.TaggedErrorClass<ProjectEnvironmentLimitError>()(
+export class ProjectEnvironmentLimitError extends Schema.TaggedError<ProjectEnvironmentLimitError>()(
   "ProjectEnvironmentLimitError",
   {
     kind: Schema.Literals(["entries", "bytes"]),
@@ -46,13 +46,13 @@ export class ProjectEnvironmentLimitError extends Schema.TaggedErrorClass<Projec
   },
 ) {}
 
-export class ProjectEnvironmentVariableNotFoundError extends Schema.TaggedErrorClass<ProjectEnvironmentVariableNotFoundError>()(
+export class ProjectEnvironmentVariableNotFoundError extends Schema.TaggedError<ProjectEnvironmentVariableNotFoundError>()(
   "ProjectEnvironmentVariableNotFoundError",
   { variableId: Schema.String },
 ) {}
 
 /** The row moved since the caller read it; the browser draft survives, the write does not. */
-export class ProjectEnvironmentStaleWriteError extends Schema.TaggedErrorClass<ProjectEnvironmentStaleWriteError>()(
+export class ProjectEnvironmentStaleWriteError extends Schema.TaggedError<ProjectEnvironmentStaleWriteError>()(
   "ProjectEnvironmentStaleWriteError",
   {
     variableId: Schema.String,
@@ -61,7 +61,7 @@ export class ProjectEnvironmentStaleWriteError extends Schema.TaggedErrorClass<P
 ) {}
 
 /** A persisted row no longer parses (rule only — the stored value never enters diagnostics). */
-export class ProjectEnvironmentCorruptRecordError extends Schema.TaggedErrorClass<ProjectEnvironmentCorruptRecordError>()(
+export class ProjectEnvironmentCorruptRecordError extends Schema.TaggedError<ProjectEnvironmentCorruptRecordError>()(
   "ProjectEnvironmentCorruptRecordError",
   {
     variableId: Schema.String,

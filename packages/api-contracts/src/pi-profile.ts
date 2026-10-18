@@ -5,12 +5,12 @@ import {
   PiProfileView,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { AuthMiddleware } from "./common.ts";
 
 /** The profile failed validation; the message says which rule. */
-export class PiProfileRejected extends Schema.TaggedErrorClass<PiProfileRejected>()(
+export class PiProfileRejected extends Schema.TaggedError<PiProfileRejected>()(
   "PiProfileRejected",
   { message: Schema.String },
   { httpApiStatus: 422 },

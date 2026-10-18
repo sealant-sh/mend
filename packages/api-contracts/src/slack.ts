@@ -1,7 +1,7 @@
 import { ProjectId } from "@mend/domain";
 import { SlackInstallSettings } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
@@ -13,14 +13,14 @@ import { AuthMiddleware } from "./common.ts";
  */
 
 /** Slack or Mend refused what was sent; the message says why, in words for the person. */
-export class SlackRejected extends Schema.TaggedErrorClass<SlackRejected>()(
+export class SlackRejected extends Schema.TaggedError<SlackRejected>()(
   "SlackRejected",
   { message: Schema.String },
   { httpApiStatus: 422 },
 ) {}
 
 /** Slack did not answer, so nothing was checked or saved. */
-export class SlackUnavailable extends Schema.TaggedErrorClass<SlackUnavailable>()(
+export class SlackUnavailable extends Schema.TaggedError<SlackUnavailable>()(
   "SlackUnavailable",
   { message: Schema.String },
   { httpApiStatus: 502 },

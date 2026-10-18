@@ -1,6 +1,6 @@
 import { Schema } from "effect";
+import { HttpApi } from "effect/http-api";
 import * as SchemaAST from "effect/SchemaAST";
-import { HttpApi } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
 
 import { MendApi } from "../src/api.ts";

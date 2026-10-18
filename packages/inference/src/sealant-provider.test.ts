@@ -3,7 +3,7 @@ import { InferenceCallsRepo } from "@mend/db";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import type { InferenceResponse } from "@sealant/sdk";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
-import * as FastCheck from "effect/testing/FastCheck";
+import * as FastCheck from "fast-check";
 
 import { InferenceProvider, InferenceToolError, type InferenceTool } from "./provider.ts";
 import { sealantProviderLayer } from "./sealant-provider.ts";

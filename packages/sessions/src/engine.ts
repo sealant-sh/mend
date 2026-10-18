@@ -1470,8 +1470,8 @@ const LANDING_FLUSH_PAUSE = Duration.seconds(2);
 const STANDBY_REPLAN_TIMEOUT = Duration.minutes(3);
 
 const SUPERVISE_RETRY = Schedule.exponential("1 second").pipe(
-  Schedule.modifyDelay((_, delay) =>
-    Effect.succeed(Duration.min(Duration.fromInputUnsafe(delay), Duration.seconds(30))),
+  Schedule.modifyDelay(({ duration }) =>
+    Effect.succeed(Duration.min(duration, Duration.seconds(30))),
   ),
 );
 
@@ -1565,7 +1565,7 @@ const refusalWordsIn = (summary: string | null, processId: string): string | nul
 };
 
 /** A PTY close that failed is tried again twice, a little later each time. */
-const PTY_CLOSE_RETRY = Schedule.exponential("250 millis").pipe(Schedule.both(Schedule.recurs(2)));
+const PTY_CLOSE_RETRY = Schedule.max([Schedule.exponential("250 millis"), Schedule.recurs(2)]);
 
 const workspaceIsLive = (status: string) =>
   status === "queued" || status === "running" || status === "ready";
@@ -1686,7 +1686,7 @@ const worktreeIdentityFor = (worktreeId: WorktreeId, name: string | null) =>
     : { directory: name, branch: `mend/${name}` };
 
 /** A supporting process needs a current reachable workspace. */
-export class SessionNotLiveError extends Schema.TaggedErrorClass<SessionNotLiveError>()(
+export class SessionNotLiveError extends Schema.TaggedError<SessionNotLiveError>()(
   "SessionNotLiveError",
   {
     sessionId: Schema.String,
@@ -1713,7 +1713,7 @@ export interface CaptureDiscardResult {
   readonly discardedAt: Date | null;
 }
 
-export class NothingUnsavedError extends Schema.TaggedErrorClass<NothingUnsavedError>()(
+export class NothingUnsavedError extends Schema.TaggedError<NothingUnsavedError>()(
   "NothingUnsavedError",
   { sessionId: Schema.String },
 ) {}
@@ -1800,7 +1800,7 @@ const readRelaunchPlan = (stored: string): RelaunchPlan =>
  * `stopping`: a Stop was still saving and ending the executor, so nothing was asked of it; the
  * landing can be asked again once the session settles.
  */
-export class CapturesBehindError extends Schema.TaggedErrorClass<CapturesBehindError>()(
+export class CapturesBehindError extends Schema.TaggedError<CapturesBehindError>()(
   "CapturesBehindError",
   { worktreeId: Schema.String, attempts: Schema.Int, stopping: Schema.Boolean },
 ) {}
@@ -1809,7 +1809,7 @@ export class CapturesBehindError extends Schema.TaggedErrorClass<CapturesBehindE
  * Joining an existing worktree with a different base is refused — a durable
  * worktree is never silently re-based. Drop the base to join as it stands.
  */
-export class WorktreeBaseConflictError extends Schema.TaggedErrorClass<WorktreeBaseConflictError>()(
+export class WorktreeBaseConflictError extends Schema.TaggedError<WorktreeBaseConflictError>()(
   "WorktreeBaseConflictError",
   {
     worktreeId: Schema.String,
@@ -1820,7 +1820,7 @@ export class WorktreeBaseConflictError extends Schema.TaggedErrorClass<WorktreeB
 ) {}
 
 /** A retired hidden bench remains reviewable but cannot start more work. */
-export class LegacyBenchReadOnlyError extends Schema.TaggedErrorClass<LegacyBenchReadOnlyError>()(
+export class LegacyBenchReadOnlyError extends Schema.TaggedError<LegacyBenchReadOnlyError>()(
   "LegacyBenchReadOnlyError",
   { sessionId: Schema.String },
 ) {}
@@ -1829,7 +1829,7 @@ export class LegacyBenchReadOnlyError extends Schema.TaggedErrorClass<LegacyBenc
  * The operator's `harnessLayout` cannot apply (docs/adr/0016, decision 14): it is for a start that
  * creates its worktree, and an existing worktree keeps the layout it has.
  */
-export class HarnessLayoutNotAppliedError extends Schema.TaggedErrorClass<HarnessLayoutNotAppliedError>()(
+export class HarnessLayoutNotAppliedError extends Schema.TaggedError<HarnessLayoutNotAppliedError>()(
   "HarnessLayoutNotAppliedError",
   { message: Schema.String },
 ) {}
@@ -1844,24 +1844,24 @@ export class HarnessLayoutNotAppliedError extends Schema.TaggedErrorClass<Harnes
  * replacement waiting, or work in flight that is never stopped. In words a client shows as they
  * are.
  */
-export class WorkspaceReplaceRefusedError extends Schema.TaggedErrorClass<WorkspaceReplaceRefusedError>()(
+export class WorkspaceReplaceRefusedError extends Schema.TaggedError<WorkspaceReplaceRefusedError>()(
   "WorkspaceReplaceRefusedError",
   { sessionId: Schema.String, message: Schema.String },
 ) {}
 
 /** The migration of an old shared home could not read what it needed; nothing was recorded. */
-export class PreReleaseMigrationError extends Schema.TaggedErrorClass<PreReleaseMigrationError>()(
+export class PreReleaseMigrationError extends Schema.TaggedError<PreReleaseMigrationError>()(
   "PreReleaseMigrationError",
   { worktreeId: Schema.String, message: Schema.String },
 ) {}
 
-export class SessionTurnRefusedError extends Schema.TaggedErrorClass<SessionTurnRefusedError>()(
+export class SessionTurnRefusedError extends Schema.TaggedError<SessionTurnRefusedError>()(
   "SessionTurnRefusedError",
   { sessionId: Schema.String, message: Schema.String },
 ) {}
 
 /** The session's harness cannot continue in the requested mode (claude and codex only). */
-export class HandoffUnsupportedError extends Schema.TaggedErrorClass<HandoffUnsupportedError>()(
+export class HandoffUnsupportedError extends Schema.TaggedError<HandoffUnsupportedError>()(
   "HandoffUnsupportedError",
   {
     sessionId: Schema.String,
@@ -1871,7 +1871,7 @@ export class HandoffUnsupportedError extends Schema.TaggedErrorClass<HandoffUnsu
 ) {}
 
 /** The process id is unknown or does not identify a supporting shell. */
-export class ShellProcessNotFoundError extends Schema.TaggedErrorClass<ShellProcessNotFoundError>()(
+export class ShellProcessNotFoundError extends Schema.TaggedError<ShellProcessNotFoundError>()(
   "ShellProcessNotFoundError",
   {
     processId: Schema.String,
@@ -1879,13 +1879,13 @@ export class ShellProcessNotFoundError extends Schema.TaggedErrorClass<ShellProc
 ) {}
 
 /** A supporting shell label is empty, too long, or already used by a live sibling. */
-export class ShellLabelError extends Schema.TaggedErrorClass<ShellLabelError>()("ShellLabelError", {
+export class ShellLabelError extends Schema.TaggedError<ShellLabelError>()("ShellLabelError", {
   processId: Schema.String,
   message: Schema.String,
 }) {}
 
 /** The process id is unknown, ended, or not a Service. */
-export class ServiceNotFoundError extends Schema.TaggedErrorClass<ServiceNotFoundError>()(
+export class ServiceNotFoundError extends Schema.TaggedError<ServiceNotFoundError>()(
   "ServiceNotFoundError",
   {
     processId: Schema.String,
@@ -1893,7 +1893,7 @@ export class ServiceNotFoundError extends Schema.TaggedErrorClass<ServiceNotFoun
 ) {}
 
 /** The supervised command ended before its port ever answered. */
-export class ServiceStartError extends Schema.TaggedErrorClass<ServiceStartError>()(
+export class ServiceStartError extends Schema.TaggedError<ServiceStartError>()(
   "ServiceStartError",
   {
     message: Schema.String,
@@ -1901,7 +1901,7 @@ export class ServiceStartError extends Schema.TaggedErrorClass<ServiceStartError
 ) {}
 
 /** A custom-image setup command exited nonzero — the launch fails rather than run half-prepared. */
-export class SessionLaunchSetupError extends Schema.TaggedErrorClass<SessionLaunchSetupError>()(
+export class SessionLaunchSetupError extends Schema.TaggedError<SessionLaunchSetupError>()(
   "SessionLaunchSetupError",
   {
     sessionId: Schema.String,
@@ -1969,7 +1969,7 @@ export const captureHoldWords = (holds: ReadonlyArray<CaptureHold>): string => {
 };
 
 /** Why a repository was not added; `message` is what the person reads. */
-export class RepositoryAddError extends Schema.TaggedErrorClass<RepositoryAddError>()(
+export class RepositoryAddError extends Schema.TaggedError<RepositoryAddError>()(
   "RepositoryAddError",
   {
     sessionId: SessionId,
@@ -2949,7 +2949,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The server's npm mirror (`mend server setup`): the install goes through it when the
           // project and the person set no registry of their own. Unset or unreadable: no mirror.
           const npmMirror = parseNpmMirrorUrl(
-            yield* Config.string("MEND_NPM_MIRROR_URL").pipe(
+            yield* Config.String("MEND_NPM_MIRROR_URL").pipe(
               Config.withDefault(""),
               Effect.orElseSucceed(() => ""),
             ),
@@ -7920,7 +7920,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // A workspace's git transport signs with its owner's key, so by default it only reaches the
       // project's own remote (docs/adr/0003, "Multi mode gate"). An operator may turn that off on
       // a machine they alone use, for mirrors and forks.
-      const bindTransportToOrigin = yield* Config.boolean("MEND_GIT_TRANSPORT_BIND_ORIGIN").pipe(
+      const bindTransportToOrigin = yield* Config.Boolean("MEND_GIT_TRANSPORT_BIND_ORIGIN").pipe(
         Config.withDefault(true),
         Effect.orElseSucceed(() => true),
       );

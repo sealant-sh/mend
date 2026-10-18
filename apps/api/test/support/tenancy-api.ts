@@ -91,7 +91,7 @@ import {
   Schema,
   Stream,
 } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
+import { HttpRouter, HttpServer } from "effect/http";
 
 import { ProjectAccessLive } from "../../src/access.ts";
 import {

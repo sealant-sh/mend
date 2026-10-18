@@ -1,12 +1,12 @@
 import { addressSubject, clientAddressOf } from "@mend/network";
-import { Cause, Clock, Effect, FileSystem, Option, type Layer } from "effect";
+import { ByteSize, Cause, Clock, Effect, Option, type Layer } from "effect";
 import {
   HttpIncomingMessage,
   HttpRouter,
   HttpServerRequest,
   HttpServerError,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 
 import { budgetMessage, credentialSubject, type BudgetName, type Budgets } from "./budgets.ts";
 
@@ -188,11 +188,13 @@ export const requestBudgets = (
           return budgetRefusal(413, bodyBudget, bodyLimit, null);
         }
         return yield* handler.pipe(
-          Effect.provideService(HttpIncomingMessage.MaxBodySize, FileSystem.Size(bodyLimit)),
+          Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.bytes(bodyLimit)),
           Effect.catchCause((cause) => {
             // The pinned Node adapter has no tagged size-limit cause: it wraps this exact Error
             // in RequestParseError. HttpApi payload decoding promotes that typed error to a defect.
             // Translate only this request's sole limit error; retain interruption and other failures.
+            // Over a socket the adapter has already destroyed the request at the limit, so the
+            // client sees the connection end, not this 413; the handler still never reads past it.
             const reason = cause.reasons.length === 1 ? cause.reasons[0] : undefined;
             const error =
               reason === undefined

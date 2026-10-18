@@ -27,9 +27,9 @@ import {
   Schema,
   String as Str,
 } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
-import { SqlClient } from "effect/unstable/sql";
+import { HttpRouter, HttpServer } from "effect/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
+import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { AuthMiddlewareLive } from "./api-live.ts";

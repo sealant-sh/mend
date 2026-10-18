@@ -1,6 +1,6 @@
 import { MendSettings, WorkspaceImage } from "@mend/domain";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware, BudgetExceeded } from "./common.ts";

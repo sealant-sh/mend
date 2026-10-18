@@ -32,6 +32,7 @@
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
     "@types/pg": "catalog:",
+    "fast-check": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

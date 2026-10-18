@@ -26,7 +26,7 @@ import type { SlackThreadMessage } from "./thread.ts";
  * or `request_failed` when it did not, and `not_slack_host` or `too_large` for a download Mend
  * refused itself. Never carries a token.
  */
-export class SlackApiError extends Schema.TaggedErrorClass<SlackApiError>()("SlackApiError", {
+export class SlackApiError extends Schema.TaggedError<SlackApiError>()("SlackApiError", {
   method: Schema.String,
   code: Schema.String,
   message: Schema.String,

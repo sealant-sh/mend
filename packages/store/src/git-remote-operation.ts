@@ -39,7 +39,7 @@ export type GitRemoteOperation =
     };
 
 /** Git could not establish the destination without transport; no raw config or URL is exposed. */
-export class GitRemoteResolutionError extends Schema.TaggedErrorClass<GitRemoteResolutionError>()(
+export class GitRemoteResolutionError extends Schema.TaggedError<GitRemoteResolutionError>()(
   "GitRemoteResolutionError",
   {
     stage: Schema.Literals([

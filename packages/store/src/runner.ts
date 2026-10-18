@@ -65,23 +65,20 @@ import {
  * bucket at will, and every pack that enters it is sha256- and `index-pack --verify`-checked.
  */
 
-export class RunnerPackError extends Schema.TaggedErrorClass<RunnerPackError>()("RunnerPackError", {
+export class RunnerPackError extends Schema.TaggedError<RunnerPackError>()("RunnerPackError", {
   key: Schema.String,
   reason: Schema.String,
 }) {}
 
-export class RunnerCacheError extends Schema.TaggedErrorClass<RunnerCacheError>()(
-  "RunnerCacheError",
-  {
-    projectId: Schema.String,
-    cause: Schema.Defect(),
-    /**
-     * `index-pack --verify` exited on its own with words neither list explains
-     * (`gitExitUnexplained`, review 2026-09-28 (14) #4): the same words again are git's answer.
-     */
-    unexplained: Schema.optionalKey(Schema.Boolean),
-  },
-) {}
+export class RunnerCacheError extends Schema.TaggedError<RunnerCacheError>()("RunnerCacheError", {
+  projectId: Schema.String,
+  cause: Schema.Defect(),
+  /**
+   * `index-pack --verify` exited on its own with words neither list explains
+   * (`gitExitUnexplained`, review 2026-09-28 (14) #4): the same words again are git's answer.
+   */
+  unexplained: Schema.optionalKey(Schema.Boolean),
+}) {}
 
 export type RunnerError =
   | RunnerPackError

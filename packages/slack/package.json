@@ -26,6 +26,7 @@
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
     "@types/ws": "catalog:",
+    "fast-check": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "ws": "catalog:"

@@ -37,7 +37,7 @@ export interface DeliverFollowUpInput {
   readonly author: string | null;
 }
 
-export class FollowUpDeliveryInputError extends Schema.TaggedErrorClass<FollowUpDeliveryInputError>()(
+export class FollowUpDeliveryInputError extends Schema.TaggedError<FollowUpDeliveryInputError>()(
   "FollowUpDeliveryInputError",
   { message: Schema.String },
 ) {}

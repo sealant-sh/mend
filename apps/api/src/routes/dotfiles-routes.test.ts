@@ -24,8 +24,8 @@ import {
   makeSourcePolicy,
 } from "@mend/store";
 import { Deferred, Effect, Fiber, Layer, ManagedRuntime, Option } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter, HttpServer } from "effect/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { ProjectAccess } from "../access.ts";

@@ -17,7 +17,7 @@ import {
 } from "./git-auth.ts";
 
 /** Bridge mode with nobody sharing an agent — the op would hang, so it refuses instead. */
-export class NoSignerError extends Schema.TaggedErrorClass<NoSignerError>()("NoSignerError", {
+export class NoSignerError extends Schema.TaggedError<NoSignerError>()("NoSignerError", {
   message: Schema.String,
 }) {}
 

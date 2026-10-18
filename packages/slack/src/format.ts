@@ -766,10 +766,9 @@ export interface FileDiff {
   readonly diff: string | null;
 }
 
-class GitPathSyntaxError extends Schema.TaggedErrorClass<GitPathSyntaxError>()(
-  "GitPathSyntaxError",
-  { reason: Schema.String },
-) {
+class GitPathSyntaxError extends Schema.TaggedError<GitPathSyntaxError>()("GitPathSyntaxError", {
+  reason: Schema.String,
+}) {
   override get message(): string {
     return `Git path syntax is unsupported: ${this.reason}`;
   }

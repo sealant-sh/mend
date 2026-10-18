@@ -9,7 +9,7 @@ import {
   RunId,
 } from "@mend/domain";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { IssueDetail, NotFound, RunDetail, RunSourceView, TracePage } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";

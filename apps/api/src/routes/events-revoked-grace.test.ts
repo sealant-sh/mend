@@ -36,6 +36,8 @@ const graceWorld = Effect.gen(function* () {
     currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
     currentTimeMillis: clock.currentTimeMillis,
     currentTimeNanos: clock.currentTimeNanos,
+    monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
+    monotonicTimeNanos: clock.monotonicTimeNanos,
     sleep: (duration) =>
       revoked && Duration.toMillis(duration) === 1_000
         ? Deferred.succeed(graceSleeping, undefined).pipe(Effect.andThen(clock.sleep(duration)))

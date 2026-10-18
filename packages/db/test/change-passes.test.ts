@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { ChangeId, ProjectId, WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";

@@ -26,7 +26,7 @@ export const shellQuote = (value: string): string => `'${value.replaceAll("'", `
 /** Base64 characters per argument: a multiple of 4, so every chunk decodes alone, under ~96 KB. */
 export const WORKSPACE_EXEC_ARG_CHARS = 90_000;
 
-export class WorkspaceFileError extends Schema.TaggedErrorClass<WorkspaceFileError>()(
+export class WorkspaceFileError extends Schema.TaggedError<WorkspaceFileError>()(
   "WorkspaceFileError",
   { path: Schema.String, message: Schema.String },
 ) {}

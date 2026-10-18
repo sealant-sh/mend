@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import type { Socket } from "effect/unstable/socket";
+import type { Socket } from "effect/socket";
 import { describe, expect, it } from "vitest";
 
 import { makeFrameGuard } from "./socket-budgets.ts";

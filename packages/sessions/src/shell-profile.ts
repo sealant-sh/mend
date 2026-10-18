@@ -25,7 +25,7 @@ export const SHELL_PROFILE_FILES: ReadonlyArray<{ readonly home: string; readonl
     { home: ".config/starship.toml", asset: "starship.toml" },
   ];
 
-export class ShellProfileAssetError extends Schema.TaggedErrorClass<ShellProfileAssetError>()(
+export class ShellProfileAssetError extends Schema.TaggedError<ShellProfileAssetError>()(
   "ShellProfileAssetError",
   { asset: Schema.String, message: Schema.String },
 ) {}

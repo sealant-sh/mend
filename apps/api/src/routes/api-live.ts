@@ -45,8 +45,8 @@ import {
 } from "@mend/sealant";
 import { DeploymentConfig, StoreConfig } from "@mend/store";
 import { Config, Effect, Layer, Option, Redacted, Stream } from "effect";
-import { HttpServerRequest } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpServerRequest } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 import { ExposureConfig } from "../exposure.ts";
@@ -107,11 +107,11 @@ export const AuthMiddlewareLive = Layer.effect(AuthMiddleware)(
 export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers) =>
   handlers.handle("status", () =>
     Effect.gen(function* () {
-      const version = yield* Config.string("MEND_VERSION").pipe(
+      const version = yield* Config.String("MEND_VERSION").pipe(
         Config.orElse(() => Config.succeed("dev")),
         Effect.orDie,
       );
-      const authSecret = yield* Config.option(Config.redacted("BETTER_AUTH_SECRET")).pipe(
+      const authSecret = yield* Config.option(Config.Redacted("BETTER_AUTH_SECRET")).pipe(
         Effect.orDie,
       );
       const deployment = yield* DeploymentConfig;

@@ -1,7 +1,7 @@
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { Effect, Layer, Schema } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpRouter, HttpServer } from "effect/http";
+import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { describe, expect, it } from "vitest";
 
 import { publicNetworkCors } from "./public-network-cors.ts";

@@ -32,7 +32,7 @@ import { currentAgentProcess, heldRepositoriesRefusal } from "@mend/domain/workb
 import { captureHoldWords, SessionEngine, WorktreeReads } from "@mend/sessions";
 import { type DiffFileFact, isWorktreeRelativePath, Store } from "@mend/store";
 import { Clock, Duration, Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 import { unlandedWork } from "../landing-state.ts";

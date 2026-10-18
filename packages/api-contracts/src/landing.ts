@@ -6,7 +6,7 @@ import {
   RecordedGitAuthMode,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
@@ -143,7 +143,7 @@ export class SessionGitOpView extends Schema.Class<SessionGitOpView>("SessionGit
 }) {}
 
 /** Only the change's owner lands: it pushes with their key and speaks as them on GitHub. */
-export class LandingNotAllowed extends Schema.TaggedErrorClass<LandingNotAllowed>()(
+export class LandingNotAllowed extends Schema.TaggedError<LandingNotAllowed>()(
   "LandingNotAllowed",
   { message: Schema.String },
   { httpApiStatus: 403 },
@@ -153,21 +153,21 @@ export class LandingNotAllowed extends Schema.TaggedErrorClass<LandingNotAllowed
  * The landing did not start, in its own words: the worktree holds no change, nothing is new since
  * the last landing, or the branch named is the default branch or the pull request's base.
  */
-export class LandingNotStarted extends Schema.TaggedErrorClass<LandingNotStarted>()(
+export class LandingNotStarted extends Schema.TaggedError<LandingNotStarted>()(
   "LandingNotStarted",
   { message: Schema.String },
   { httpApiStatus: 409 },
 ) {}
 
 /** `gh` or the platform could not answer for the pull request, in their words. */
-export class PullRequestStepFailed extends Schema.TaggedErrorClass<PullRequestStepFailed>()(
+export class PullRequestStepFailed extends Schema.TaggedError<PullRequestStepFailed>()(
   "PullRequestStepFailed",
   { message: Schema.String },
   { httpApiStatus: 502 },
 ) {}
 
 /** The change's bundle is over the instance's limit (`MEND_BUDGET_BUNDLE_BYTES`). */
-export class BundleTooLarge extends Schema.TaggedErrorClass<BundleTooLarge>()(
+export class BundleTooLarge extends Schema.TaggedError<BundleTooLarge>()(
   "BundleTooLarge",
   {
     /** The bundle's size in bytes. */

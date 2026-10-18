@@ -49,7 +49,7 @@ export interface PendingSlackLink {
 }
 
 /** The account redeeming a code is not a member of the organization that installed the app. */
-export class SlackLinkNotMemberError extends Schema.TaggedErrorClass<SlackLinkNotMemberError>()(
+export class SlackLinkNotMemberError extends Schema.TaggedError<SlackLinkNotMemberError>()(
   "SlackLinkNotMemberError",
   { teamId: Schema.String, userId: Schema.String },
 ) {}

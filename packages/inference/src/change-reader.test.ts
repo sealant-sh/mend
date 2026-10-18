@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { ReviewCommentId } from "@mend/domain";
 import { Change, ReviewComment, Session } from "@mend/domain/workbench";
 import { Deferred, Effect, Layer } from "effect";
-import * as FastCheck from "effect/testing/FastCheck";
+import * as FastCheck from "fast-check";
 
 import {
   callTool,

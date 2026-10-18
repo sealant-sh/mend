@@ -1,6 +1,6 @@
 import { SealantWorkspaceId, SessionId } from "@mend/domain";
 import { Effect } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { SessionsRepo } from "../src/repos/agent-sessions.ts";

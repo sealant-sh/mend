@@ -1,7 +1,7 @@
 import { FolderId, ProjectId } from "@mend/domain";
 import { Folder, FolderFile } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
@@ -14,7 +14,7 @@ import { AuthMiddleware } from "./common.ts";
  */
 
 /** A folder request the rules refuse; the message says which rule. */
-export class FolderRejected extends Schema.TaggedErrorClass<FolderRejected>()(
+export class FolderRejected extends Schema.TaggedError<FolderRejected>()(
   "FolderRejected",
   { message: Schema.String },
   { httpApiStatus: 422 },

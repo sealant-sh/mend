@@ -7,7 +7,7 @@ import { piProfileDigest } from "@mend/db";
 import { validatePiProfile, type PiProfileFile } from "@mend/domain/workbench";
 import { it } from "@mend/test-ci/effect-vitest";
 import { Effect, Schema } from "effect";
-import * as FastCheck from "effect/testing/FastCheck";
+import * as FastCheck from "fast-check";
 import { expect } from "vitest";
 
 import { PERSON_SAVED_STATE } from "../src/harness-layout.ts";

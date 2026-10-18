@@ -27,7 +27,7 @@ import {
 } from "@mend/domain/workbench";
 import { Change as SessionChange } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware, BudgetExceeded, ProcessLogPage } from "./common.ts";
@@ -104,7 +104,7 @@ export class ResumeRequest extends Schema.Class<ResumeRequest>("ResumeRequest")(
  * A start's `harnessLayout` refused (docs/adr/0016, decision 14): it is the instance operator's,
  * and only for a start that creates its worktree.
  */
-export class HarnessLayoutRefused extends Schema.TaggedErrorClass<HarnessLayoutRefused>()(
+export class HarnessLayoutRefused extends Schema.TaggedError<HarnessLayoutRefused>()(
   "HarnessLayoutRefused",
   {
     /** Why, in words a client can show as they are. */
@@ -113,7 +113,7 @@ export class HarnessLayoutRefused extends Schema.TaggedErrorClass<HarnessLayoutR
   { httpApiStatus: 403 },
 ) {}
 
-export class SessionNotSteerable extends Schema.TaggedErrorClass<SessionNotSteerable>()(
+export class SessionNotSteerable extends Schema.TaggedError<SessionNotSteerable>()(
   "SessionNotSteerable",
   {
     sessionId: SessionId,
@@ -127,7 +127,7 @@ export class SessionNotSteerable extends Schema.TaggedErrorClass<SessionNotSteer
  * "Discard unsaved and stop" asked of a session with no drain under way (docs/adr/0002, "Stop
  * drains, then terminates"): nothing unsaved is holding a workspace up. A plain stop is the verb.
  */
-export class NothingUnsaved extends Schema.TaggedErrorClass<NothingUnsaved>()(
+export class NothingUnsaved extends Schema.TaggedError<NothingUnsaved>()(
   "NothingUnsaved",
   { sessionId: SessionId, message: Schema.String },
   { httpApiStatus: 409 },
@@ -161,7 +161,7 @@ export class EndBackgroundWorkRequest extends Schema.Class<EndBackgroundWorkRequ
  * "Replace this workspace now" refused (docs/adr/0016, decision 14): not the change's owner, no
  * replacement waiting, or an agent's turn in flight, which is never stopped.
  */
-export class WorkspaceReplaceRefused extends Schema.TaggedErrorClass<WorkspaceReplaceRefused>()(
+export class WorkspaceReplaceRefused extends Schema.TaggedError<WorkspaceReplaceRefused>()(
   "WorkspaceReplaceRefused",
   {
     sessionId: SessionId,

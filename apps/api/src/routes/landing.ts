@@ -29,8 +29,8 @@ import type { Change, Session } from "@mend/domain/workbench";
 import { Landing, type LandingNotStartedError, pullRequestAvailability } from "@mend/landing";
 import { NetworkConfig } from "@mend/network";
 import { Clock, Effect } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 import { budgetMessage, Budgets } from "../budgets.ts";

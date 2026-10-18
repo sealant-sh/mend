@@ -28,8 +28,8 @@ import { SealantClient } from "@mend/sealant";
 import { WorkspaceCaller } from "@mend/sessions";
 import { AgentBridge, AgentBridgeLive, MendKeys, MendKeysConfig, MendKeysLive } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
-import { HttpRouter } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter } from "effect/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ProjectAccess } from "./access.ts";

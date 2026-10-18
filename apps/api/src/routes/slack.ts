@@ -40,8 +40,8 @@ import {
 import { SLACK_TOKEN_REFUSALS, SlackApi, type SlackApiError } from "@mend/slack/client";
 import { SecretCipher } from "@mend/store";
 import { Effect } from "effect";
-import { HttpServerRequest } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpServerRequest } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 import { configuredOriginForRequest } from "./devices.ts";

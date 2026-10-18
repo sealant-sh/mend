@@ -21,7 +21,7 @@ import { StoreConfig } from "./store.ts";
  * dedup, and `git archive` packing for free.
  */
 
-export class DotfilesStoreError extends Schema.TaggedErrorClass<DotfilesStoreError>()(
+export class DotfilesStoreError extends Schema.TaggedError<DotfilesStoreError>()(
   "DotfilesStoreError",
   { message: Schema.String },
 ) {}

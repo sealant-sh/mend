@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { FastCheck } from "effect/testing";
+import * as FastCheck from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { diffMessages, splitDiff } from "./format.ts";

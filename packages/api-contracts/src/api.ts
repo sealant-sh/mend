@@ -1,4 +1,4 @@
-import { HttpApi } from "effect/unstable/httpapi";
+import { HttpApi } from "effect/http-api";
 
 import { accountsGroup } from "./accounts.ts";
 import { agentMemoryGroup } from "./agent-memory.ts";

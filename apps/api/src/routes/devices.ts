@@ -37,8 +37,8 @@ import {
   type PublicOrigin,
 } from "@mend/network";
 import { Clock, Effect, Layer, Option } from "effect";
-import { HttpServerRequest } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpServerRequest } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 
 /**
  * Device pairing: the operator mints a code on a machine they are signed in on,

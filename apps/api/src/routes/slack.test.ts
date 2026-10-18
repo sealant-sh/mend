@@ -26,8 +26,8 @@ import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { makeFakeSlack, SlackApiError, type FakeSlackWorkspace } from "@mend/slack/client";
 import { SecretCipher, SecretCipherError } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option, Redacted, Schema } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter, HttpServer } from "effect/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { makeProject } from "../../test/support/tenancy-harness.ts";

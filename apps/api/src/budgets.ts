@@ -163,7 +163,7 @@ export const makeBudgets = (limits: BudgetLimits) => {
 };
 
 const limit = (name: BudgetName) =>
-  Config.int(ENV[name]).pipe(Config.withDefault(DEFAULT_BUDGET_LIMITS[name]));
+  Config.Int(ENV[name]).pipe(Config.withDefault(DEFAULT_BUDGET_LIMITS[name]));
 
 export const budgetLimitsConfig = Config.all({
   bodyBytes: limit("bodyBytes"),

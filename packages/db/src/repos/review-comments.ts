@@ -15,7 +15,7 @@ import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import { reviewComments, worktreeChanges } from "../schema/workbench.ts";
 
-export class ReviewCommentNotFoundError extends Schema.TaggedErrorClass<ReviewCommentNotFoundError>()(
+export class ReviewCommentNotFoundError extends Schema.TaggedError<ReviewCommentNotFoundError>()(
   "ReviewCommentNotFoundError",
   {
     commentId: Schema.String,

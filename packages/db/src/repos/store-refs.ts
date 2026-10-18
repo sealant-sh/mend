@@ -18,7 +18,7 @@ export interface StoreRef {
 }
 
 /** The ref moved (or appeared) since `seenVersion`; re-read and decide again. */
-export class StoreRefConflictError extends Schema.TaggedErrorClass<StoreRefConflictError>()(
+export class StoreRefConflictError extends Schema.TaggedError<StoreRefConflictError>()(
   "StoreRefConflictError",
   { projectId: Schema.String, name: Schema.String, seenVersion: Schema.NullOr(Schema.Int) },
 ) {}

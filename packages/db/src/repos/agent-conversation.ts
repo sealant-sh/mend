@@ -49,7 +49,7 @@ import {
 } from "../schema/workbench.ts";
 
 /** A requested protocol turn does not exist. */
-export class AgentTurnNotFoundError extends Schema.TaggedErrorClass<AgentTurnNotFoundError>()(
+export class AgentTurnNotFoundError extends Schema.TaggedError<AgentTurnNotFoundError>()(
   "AgentTurnNotFoundError",
   { turnId: Schema.String },
 ) {}
@@ -58,7 +58,7 @@ export class AgentTurnNotFoundError extends Schema.TaggedErrorClass<AgentTurnNot
  * A turn asked of a session whose idle stop has begun (`SessionsRepo.claimIdleStop`): the agent is
  * being stopped, so nothing is queued for it. The next message resumes the session instead.
  */
-export class SessionStoppingError extends Schema.TaggedErrorClass<SessionStoppingError>()(
+export class SessionStoppingError extends Schema.TaggedError<SessionStoppingError>()(
   "SessionStoppingError",
   { sessionId: Schema.String },
 ) {}
@@ -72,13 +72,13 @@ export const agentConversationLockKey = (sessionId: SessionId): string =>
   `mend:agent-conversation:${sessionId}`;
 
 /** A requested agent-to-human request does not exist. */
-export class AgentRequestNotFoundError extends Schema.TaggedErrorClass<AgentRequestNotFoundError>()(
+export class AgentRequestNotFoundError extends Schema.TaggedError<AgentRequestNotFoundError>()(
   "AgentRequestNotFoundError",
   { requestId: Schema.String },
 ) {}
 
 /** A request already has a recorded answer or cancellation. */
-export class AgentRequestAlreadyResolvedError extends Schema.TaggedErrorClass<AgentRequestAlreadyResolvedError>()(
+export class AgentRequestAlreadyResolvedError extends Schema.TaggedError<AgentRequestAlreadyResolvedError>()(
   "AgentRequestAlreadyResolvedError",
   { requestId: Schema.String },
 ) {}

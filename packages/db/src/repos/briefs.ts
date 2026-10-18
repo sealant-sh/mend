@@ -15,7 +15,7 @@ import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import { briefVersions, briefs, changes, reviewQuestions } from "../schema/workbench.ts";
 
-export class BriefNotFoundError extends Schema.TaggedErrorClass<BriefNotFoundError>()(
+export class BriefNotFoundError extends Schema.TaggedError<BriefNotFoundError>()(
   "BriefNotFoundError",
   {
     changeId: Schema.String,

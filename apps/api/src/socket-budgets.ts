@@ -1,6 +1,6 @@
-import { Effect } from "effect";
-import type { HttpServerResponse } from "effect/unstable/http";
-import { Socket } from "effect/unstable/socket";
+import { Effect, type Scope } from "effect";
+import type { HttpServerResponse } from "effect/http";
+import { Socket } from "effect/socket";
 
 import type { Budgets, BudgetName } from "./budgets.ts";
 import type { ConnectionKind, ConnectionRegistry } from "./connections.ts";
@@ -59,3 +59,18 @@ export const makeFrameGuard = <E>(
     },
   };
 };
+
+/** Every close, clean or not, fails the pull, and that ends the loop. */
+export const forEachFrame = (
+  socket: Socket.Socket,
+  onFrame: (data: string | Uint8Array) => Effect.Effect<void>,
+): Effect.Effect<void, never, Scope.Scope> =>
+  socket.reader.pipe(
+    Effect.flatMap(({ pull }) =>
+      pull.pipe(
+        Effect.flatMap((frames) => Effect.forEach(frames, onFrame, { discard: true })),
+        Effect.forever,
+      ),
+    ),
+    Effect.ignore,
+  );

@@ -2,13 +2,6 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
-interface RuntimeTask {
-  readonly id: string;
-  readonly type: string;
-  readonly timeout?: number | undefined;
-  readonly tasks?: ReadonlyArray<RuntimeTask> | undefined;
-}
-
 interface RuntimeCase {
   readonly id: string;
   readonly fullName: string;
@@ -57,7 +50,6 @@ interface RuntimeConsoleLog {
   readonly origin?: string | undefined;
 }
 
-/** Append-only plugin shape shared by the installed Vitest 3 and Vitest 5 public APIs. */
 export interface VitestCiPlugin {
   readonly name: string;
   configureVitest(context: { readonly vitest: RuntimeContext }): void;
@@ -92,7 +84,6 @@ const timeoutEvidence = (timeout: number | undefined): TimeoutEvidence => {
 class TimingReporter {
   private context: RuntimeContext | undefined;
   private runId = randomUUID();
-  private readonly timeouts = new Map<string, number | undefined>();
   private readonly collectedFiles = new Set<string>();
   private readonly collectedTests = new Set<string>();
   private files = 0;
@@ -112,21 +103,10 @@ class TimingReporter {
 
   onTestRunStart(): void {
     this.runId = randomUUID();
-    this.timeouts.clear();
     this.collectedFiles.clear();
     this.collectedTests.clear();
     this.files = 0;
     this.tests = 0;
-  }
-
-  // Vitest 3 omits timeout from TestCase.options. Its deprecated but public collection callback
-  // carries the runner's already-resolved deadline, including dynamic and inherited options.
-  onCollected(files: ReadonlyArray<RuntimeTask>): void {
-    const collect = (task: RuntimeTask): void => {
-      if (task.type === "test") this.timeouts.set(task.id, task.timeout);
-      for (const child of task.tasks ?? []) collect(child);
-    };
-    for (const file of files) collect(file);
   }
 
   onTestModuleCollected(module: RuntimeModule): void {
@@ -156,7 +136,7 @@ class TimingReporter {
         : relative(this.context.config.root, module.moduleId).replaceAll("\\", "/");
     for (const test of module.children.allTests()) {
       const diagnostic = test.diagnostic();
-      const timeout = timeoutEvidence(test.options.timeout ?? this.timeouts.get(test.id));
+      const timeout = timeoutEvidence(test.options.timeout);
       const repeated =
         (diagnostic?.retryCount ?? 0) > 0 ||
         (diagnostic?.repeatCount ?? 0) > 0 ||

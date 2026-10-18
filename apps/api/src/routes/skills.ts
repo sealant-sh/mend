@@ -17,7 +17,7 @@ import {
 import type { ProjectId, SkillId } from "@mend/domain";
 import { SessionEngine } from "@mend/sessions";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 

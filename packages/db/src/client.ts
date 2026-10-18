@@ -1,3 +1,7 @@
+// The shim is an ambient declaration, which an import cannot load; it rides with this module into
+// every program that compiles the db package.
+// oxlint-disable-next-line typescript/triple-slash-reference
+/// <reference path="./drizzle-effect-sql-error.d.ts" />
 import { PgClient } from "@effect/sql-pg";
 import * as PgDrizzle from "drizzle-orm/effect-postgres";
 import { Config, Layer, Redacted, String as Str } from "effect";
@@ -12,15 +16,15 @@ import { relations } from "./schema/relations.ts";
  * boundary so rows decode straight into domain schemas.
  */
 export const PgLive = PgClient.layerConfig({
-  url: Config.redacted("DATABASE_URL").pipe(
+  url: Config.Redacted("DATABASE_URL").pipe(
     // The dev-compose default; every real deployment sets DATABASE_URL.
     Config.orElse(() => Config.succeed(Redacted.make("postgres://mend:mend@localhost:5434/mend"))),
   ),
   applicationName: Config.succeed("mend"),
   // Mend shares its database server with Sealant, and a small hosted Postgres allows few
-  // connections (alpha's allows 50 for both). An unset cap is pg's default of 10 per pool, and
-  // Mend holds three pools; say it (docs/SELF-HOSTING.md, "Database connections").
-  maxConnections: Config.int("MEND_DATABASE_POOL_MAX").pipe(Config.withDefault(6)),
+  // connections (alpha's allows 50 for both). An unset cap is the client's default of 10 per pool,
+  // and Mend holds three pools; say it (docs/SELF-HOSTING.md, "Database connections").
+  maxConnections: Config.Int("MEND_DATABASE_POOL_MAX").pipe(Config.withDefault(6)),
   transformResultNames: Config.succeed(Str.snakeToCamel),
   transformQueryNames: Config.succeed(Str.camelToSnake),
 });

@@ -47,14 +47,11 @@ import * as Context from "effect/Context";
  * follows the record.
  */
 
-export class ServiceBindError extends Schema.TaggedErrorClass<ServiceBindError>()(
-  "ServiceBindError",
-  {
-    message: Schema.String,
-  },
-) {}
+export class ServiceBindError extends Schema.TaggedError<ServiceBindError>()("ServiceBindError", {
+  message: Schema.String,
+}) {}
 
-class ServiceHostPortInUse extends Schema.TaggedErrorClass<ServiceHostPortInUse>()(
+class ServiceHostPortInUse extends Schema.TaggedError<ServiceHostPortInUse>()(
   "ServiceHostPortInUse",
   { port: Schema.Int },
 ) {}

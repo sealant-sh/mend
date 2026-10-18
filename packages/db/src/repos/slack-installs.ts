@@ -9,13 +9,13 @@ import { slackInstalls } from "../schema/workbench.ts";
 import { isUniqueViolation } from "./unique-violation.ts";
 
 /** Another organization on this instance has already installed Mend in that Slack workspace. */
-export class SlackTeamTakenError extends Schema.TaggedErrorClass<SlackTeamTakenError>()(
+export class SlackTeamTakenError extends Schema.TaggedError<SlackTeamTakenError>()(
   "SlackTeamTakenError",
   { teamId: Schema.String },
 ) {}
 
 /** The organization has no Slack app installed. */
-export class SlackInstallNotFoundError extends Schema.TaggedErrorClass<SlackInstallNotFoundError>()(
+export class SlackInstallNotFoundError extends Schema.TaggedError<SlackInstallNotFoundError>()(
   "SlackInstallNotFoundError",
   { organizationId: Schema.String },
 ) {}

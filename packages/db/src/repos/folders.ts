@@ -8,22 +8,21 @@ import { MendDB } from "../client.ts";
 import { folders, projectFolders } from "../schema/workbench.ts";
 import { isUniqueViolation } from "./unique-violation.ts";
 
-export class FolderNotFoundError extends Schema.TaggedErrorClass<FolderNotFoundError>()(
+export class FolderNotFoundError extends Schema.TaggedError<FolderNotFoundError>()(
   "FolderNotFoundError",
   { folderId: Schema.String },
 ) {}
 
 /** The organization already has a folder with that name. */
-export class FolderNameTakenError extends Schema.TaggedErrorClass<FolderNameTakenError>()(
+export class FolderNameTakenError extends Schema.TaggedError<FolderNameTakenError>()(
   "FolderNameTakenError",
   { name: Schema.String },
 ) {}
 
 /** Projects still mount the folder; they must deselect it before it can go. */
-export class FolderInUseError extends Schema.TaggedErrorClass<FolderInUseError>()(
-  "FolderInUseError",
-  { projects: Schema.Int },
-) {}
+export class FolderInUseError extends Schema.TaggedError<FolderInUseError>()("FolderInUseError", {
+  projects: Schema.Int,
+}) {}
 
 export interface NewFolder {
   readonly id: FolderId;

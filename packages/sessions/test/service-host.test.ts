@@ -652,6 +652,8 @@ for (const correction of [
         currentTimeMillis: Effect.sync(() => monotonic.currentTimeMillisUnsafe() + epochOffset),
         currentTimeNanosUnsafe: () => monotonic.currentTimeNanosUnsafe(),
         currentTimeNanos: monotonic.currentTimeNanos,
+        monotonicTimeNanosUnsafe: () => monotonic.monotonicTimeNanosUnsafe(),
+        monotonicTimeNanos: monotonic.monotonicTimeNanos,
         sleep: (duration) => monotonic.sleep(duration),
       };
       const probes: bigint[] = [];
@@ -826,6 +828,8 @@ for (const lagMillis of [5_000, 25_000]) {
         currentTimeMillis: monotonic.currentTimeMillis,
         currentTimeNanosUnsafe: () => monotonic.currentTimeNanosUnsafe(),
         currentTimeNanos: monotonic.currentTimeNanos,
+        monotonicTimeNanosUnsafe: () => monotonic.monotonicTimeNanosUnsafe(),
+        monotonicTimeNanos: monotonic.monotonicTimeNanos,
         sleep: (duration) =>
           Effect.suspend(() => {
             // Deliver one timer late, as a stalled event loop could. Ordinary

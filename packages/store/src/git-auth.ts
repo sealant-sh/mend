@@ -18,7 +18,7 @@ import { mendHome } from "./paths.ts";
  */
 
 /** `ssh-keygen` could not run or exited nonzero. */
-export class KeygenError extends Schema.TaggedErrorClass<KeygenError>()("KeygenError", {
+export class KeygenError extends Schema.TaggedError<KeygenError>()("KeygenError", {
   stderr: Schema.String,
 }) {}
 

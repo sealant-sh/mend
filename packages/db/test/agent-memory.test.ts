@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { PgClient } from "@effect/sql-pg";
 import { type ProjectId, WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
-import * as FastCheck from "effect/testing/FastCheck";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
+import * as FastCheck from "fast-check";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";

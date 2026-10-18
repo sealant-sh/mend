@@ -1,7 +1,7 @@
 import { MendApi } from "@mend/api-contracts";
 import { HarnessModelsRepo } from "@mend/db";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 /**
  * The server-owned model catalog (docs/models-audit.md), read by every picker. One list for every

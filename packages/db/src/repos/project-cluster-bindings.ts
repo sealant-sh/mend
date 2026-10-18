@@ -18,18 +18,18 @@ import { projectClusterBindings, projects } from "../schema/workbench.ts";
 import { ProjectNotFoundError } from "./projects.ts";
 
 /** 422 material: the object name failed the DNS-1123 grammar (or the set is full). */
-export class ClusterBindingInvalidInputError extends Schema.TaggedErrorClass<ClusterBindingInvalidInputError>()(
+export class ClusterBindingInvalidInputError extends Schema.TaggedError<ClusterBindingInvalidInputError>()(
   "ClusterBindingInvalidInputError",
   { message: Schema.String },
 ) {}
 
 /** 409 material: the (kind, objectName) pair is already bound on this project. */
-export class ClusterBindingDuplicateError extends Schema.TaggedErrorClass<ClusterBindingDuplicateError>()(
+export class ClusterBindingDuplicateError extends Schema.TaggedError<ClusterBindingDuplicateError>()(
   "ClusterBindingDuplicateError",
   { kind: Schema.String, objectName: Schema.String },
 ) {}
 
-export class ClusterBindingNotFoundError extends Schema.TaggedErrorClass<ClusterBindingNotFoundError>()(
+export class ClusterBindingNotFoundError extends Schema.TaggedError<ClusterBindingNotFoundError>()(
   "ClusterBindingNotFoundError",
   { bindingId: Schema.String },
 ) {}

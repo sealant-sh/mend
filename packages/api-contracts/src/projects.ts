@@ -14,7 +14,7 @@ import {
   Reference,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
@@ -421,7 +421,7 @@ export class ProjectEnvironmentMutationResult extends Schema.Class<ProjectEnviro
  * Duplicates and per-project limits arrive as issues too (`duplicate-name`, `entry-count`,
  * `total-size`, with `field: null` for the aggregate ones). Values never appear.
  */
-export class EnvironmentRejected extends Schema.TaggedErrorClass<EnvironmentRejected>()(
+export class EnvironmentRejected extends Schema.TaggedError<EnvironmentRejected>()(
   "EnvironmentRejected",
   {
     issues: Schema.Array(
@@ -436,7 +436,7 @@ export class EnvironmentRejected extends Schema.TaggedErrorClass<EnvironmentReje
 ) {}
 
 /** The row moved since the caller read it. The browser keeps its draft; nothing was written. */
-export class EnvironmentStaleWrite extends Schema.TaggedErrorClass<EnvironmentStaleWrite>()(
+export class EnvironmentStaleWrite extends Schema.TaggedError<EnvironmentStaleWrite>()(
   "EnvironmentStaleWrite",
   {
     variableId: Schema.String,

@@ -34,7 +34,7 @@ export class DependencyInstallJob extends Schema.Class<DependencyInstallJob>(
   requestedByUserId: Schema.optionalKey(Schema.NullOr(Schema.String)),
 }) {}
 
-export class InstallRunError extends Schema.TaggedErrorClass<InstallRunError>()("InstallRunError", {
+export class InstallRunError extends Schema.TaggedError<InstallRunError>()("InstallRunError", {
   projectId: Schema.String,
   message: Schema.String,
 }) {}

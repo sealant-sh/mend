@@ -1,6 +1,6 @@
 import { errorStatusByTag } from "@mend/api-contracts";
 import { TRPCError } from "@trpc/server";
-import { HttpClientError } from "effect/unstable/http";
+import { HttpClientError } from "effect/http";
 
 import { NOT_DONE, type Refusal, refusalWords } from "./refusal-words.ts";
 
