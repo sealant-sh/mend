@@ -63,12 +63,12 @@ output read-only, with a scrubber whose ticks are the session's checkpoints. A t
 the conversation transcript, and the fact line says how the process ended, for example
 `exited · observed`.
 
-### Resume and handoff
+### Resume and switch modes
 
 A settled session offers **resume**, which rejoins it in the mode its agent last ran in. For a
 `claude` or `codex` session whose agent ran, the session's owner also gets **continue as
 conversation** or **continue in terminal**. That continues the same provider session in the other
-mode. Handing off a live agent asks first, because its process ends.
+mode. Switching a live agent asks first, because its process ends.
 
 ### Review and landing
 

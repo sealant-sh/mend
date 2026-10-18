@@ -76,7 +76,7 @@ flowchart TB
 - The worktree's accumulated Git change, its review, its landings, and the record of what happened
   while the agent worked.
 
-Named context packs, immutable context snapshots, and editable session handoffs are part of the
+Named context packs, immutable context snapshots, and editable session summaries are part of the
 product direction but are not shipped yet. Repository instructions, references, folders, project
 configuration, dotfiles, connected accounts, and previous session state are available now.
 
@@ -198,7 +198,7 @@ workspace, then attaches your terminal to the agent. Read
   process in a workspace runs as.
 - [Slack](/integrations/slack/) covers starting and following sessions from Slack threads.
 - [Context](/concepts/context/) separates the inputs available now from planned context packs and
-  handoffs.
+  session summaries.
 
 ## Project status
 

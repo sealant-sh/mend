@@ -21,10 +21,10 @@ Use these terms in the interface, documentation, and support material.
 | **Service**          | Current      | An explicitly declared development process or forwarded port in a session                     |
 | **Secret file**      | Current      | A file a person keeps in Mend, encrypted, written into every session they own, never captured |
 | **Agent memory**     | Current      | What a person's Claude Code or Codex learned on a project, carried into their next sessions   |
-| **Context item**     | Planned      | A file, document, note, URL, or previous handoff                                              |
+| **Context item**     | Planned      | A file, document, note, URL, or previous session summary                                      |
 | **Context pack**     | Planned      | An editable selection of context items for recurring work                                     |
 | **Context snapshot** | Planned      | The immutable context supplied to one session                                                 |
-| **Handoff**          | Planned      | An editable session summary promoted into durable context                                     |
+| **Session summary**  | Planned      | An editable end-of-session summary promoted into durable context                              |
 | **Workspace**        | Sealant      | The environment where session processes run                                                   |
 | **Run**              | Sealant      | A process execution with a durable platform record                                            |
 | **Harness**          | Sealant      | Claude Code, Codex, opencode, pi, or another agent command that Mend supervises               |

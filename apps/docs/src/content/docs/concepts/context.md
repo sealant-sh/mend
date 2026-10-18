@@ -59,10 +59,10 @@ delivered resources. They are not yet a named, versioned context pack.
 
 The canonical product plan defines four additions:
 
-1. A **context item** is a file, document, note, URL, or previous handoff.
+1. A **context item** is a file, document, note, URL, or previous session summary.
 2. A **context pack** is an editable named selection of those items for recurring work.
 3. A **context snapshot** freezes the exact selection supplied to one session.
-4. A **handoff** turns the end of a session into editable context for later work.
+4. A **session summary** turns the end of a session into editable context for later work.
 
 The schema has a place for a session's context snapshot, but sessions are provisioned without one
 today. A future session will receive an immutable snapshot even when the reusable pack changes

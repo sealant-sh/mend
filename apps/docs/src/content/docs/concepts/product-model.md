@@ -161,10 +161,10 @@ create or attach operational context packs or snapshots.
 
 The product direction defines:
 
-- a **context item**: a file, document, note, URL, or previous handoff;
+- a **context item**: a file, document, note, URL, or previous session summary;
 - a **context pack**: an editable named selection for recurring work;
 - a **context snapshot**: the immutable selection supplied to one session;
-- a **handoff**: an editable end-of-session summary promoted into durable context.
+- a **session summary**: an editable end-of-session summary promoted into durable context.
 
 Read [Context](/concepts/context/) for what sessions can receive today.
 

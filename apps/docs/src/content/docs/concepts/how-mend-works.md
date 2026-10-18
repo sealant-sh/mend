@@ -195,6 +195,6 @@ Read [Configure session environments](/guides/project-environment/) for the full
 
 Repository instructions, references, folders, project configuration, and previous session records
 already live beside the work. Named context items, context packs, immutable session snapshots, and
-editable handoffs are part of the product direction but are not shipped yet.
+editable session summaries are part of the product direction but are not shipped yet.
 
 Read [Context](/concepts/context/) for the current boundary.
