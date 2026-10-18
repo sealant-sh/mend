@@ -1,5 +1,6 @@
 {
-  "$schema": "https://turbo.build/schema.json",
+  "$schema": "https://turborepo.dev/schema.json",
+  "cacheMaxAge": "14d",
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
@@ -32,9 +33,6 @@
         "NITRO_*",
         "NODE_OPTIONS"
       ]
-    },
-    "clean": {
-      "cache": false
     },
     "dev": {
       "cache": false,

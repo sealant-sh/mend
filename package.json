@@ -6,7 +6,6 @@
     "build": "turbo build",
     "changeset": "changeset",
     "clean": "pnpm run clean:workspaces && rm -rf node_modules .turbo",
-    "clean:turbo": "turbo clean",
     "clean:workspaces": "pnpm -r --parallel exec rm -rf node_modules .turbo",
     "dev": "pnpm --filter @mend/web dev",
     "dev:all": "turbo dev --ui=tui",
@@ -35,7 +34,7 @@
     "oxfmt": "^0.40.0",
     "oxlint": "1.76.0",
     "oxlint-tsgolint": "^0.17.0",
-    "turbo": "^2.5.0",
+    "turbo": "2.11.9",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
     "yaml": "2.9.0"
