@@ -1,7 +1,6 @@
 import * as path from "node:path";
 
 import {
-  canSteerSession,
   emptyHarnessModelCatalog,
   modelPicker,
   repositoryCloneUrlIssue,
@@ -9,6 +8,7 @@ import {
 import { parseWorkspaceSshTarget } from "@mend/workspace-ssh";
 import * as vscode from "vscode";
 
+import { attachTerminal, maySteer, memberName, ownsSession } from "./agent-terminal.js";
 import { MendApiError, MendClient, normalizeProjectName } from "./client.js";
 import { ConnectionStore } from "./config.js";
 import { currentBranch, pathContains, repositoryFacts, worktreePath } from "./git.js";
@@ -21,9 +21,7 @@ import {
   type ProjectNode,
   type SessionNode,
 } from "./tree.js";
-import { isRefusal } from "./tty-attachment.js";
 import { attachableProcesses, type TtyAddress } from "./tty-protocol.js";
-import { MendTtyTerminal } from "./tty-terminal.js";
 import type {
   Effort,
   LaunchStart,
@@ -39,6 +37,8 @@ import {
   type WorkspaceEditorReport,
 } from "./workspace-editor.js";
 import { runWorkspaceSshSetup, workspaceSshReadiness } from "./workspace-ssh.js";
+import { WorkspaceWindow } from "./workspace-window.js";
+import { terminalTabName, windowRole } from "./window-role.js";
 
 const liveStatuses: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
 
@@ -52,17 +52,6 @@ const errorMessage = (cause: unknown): string =>
     : cause instanceof MendApiError || cause instanceof Error
       ? cause.message
       : "Mend could not complete that action.";
-
-/** Whether the server lets `viewer` steer, and so attach to the terminal of, `session`. */
-const maySteer = (session: Session, viewer: string): boolean =>
-  canSteerSession(
-    {
-      ownerUserId: session.ownerUserId,
-      sharedControlEnabledAt:
-        session.sharedControlEnabledAt === null ? null : new Date(session.sharedControlEnabledAt),
-    },
-    viewer,
-  );
 
 /** The error, with Connect offered when the server refused the token. */
 const showError = async (cause: unknown): Promise<void> => {
@@ -252,6 +241,7 @@ class MendCommands {
     private readonly client: MendClient,
     private readonly tree: MendTreeProvider,
     private readonly scope: WorkspaceScope,
+    private readonly workspaceWindow: WorkspaceWindow,
   ) {}
 
   async connect(): Promise<boolean> {
@@ -334,14 +324,11 @@ class MendCommands {
       // while shared control is on, and then they watch (`canSteerSession`, apps/api tty route).
       if (viewer !== null && !maySteer(detail.session, viewer)) {
         void vscode.window.showInformationMessage(
-          `${displaySession(detail.session)} is ${await this.nameOf(detail.session.ownerUserId)}'s session. Its terminal opens for others only while its owner has shared control on.`,
+          `${displaySession(detail.session)} is ${await memberName(this.client, detail.session.ownerUserId)}'s session. Its terminal opens for others only while its owner has shared control on.`,
         );
         return;
       }
-      const owns =
-        viewer === null ||
-        detail.session.ownerUserId === null ||
-        viewer === detail.session.ownerUserId;
+      const owns = ownsSession(detail.session, viewer);
       const picks: TerminalPick[] = [
         ...live.map((process) => ({
           // A Workbench's shell is its agent process with the `shell` harness.
@@ -372,34 +359,15 @@ class MendCommands {
         picked.address === "new-shell"
           ? { process: (await this.client.openShell(detail.session.id)).id }
           : picked.address;
-      const processId = "process" in address ? address.process : null;
-      const banner = owns
-        ? `Mend · ${displaySession(detail.session)} · closing this tab detaches; the process keeps running`
-        : `Mend · ${displaySession(detail.session)} · read-only: only the session's owner types here`;
-      const terminal = vscode.window.createTerminal({
-        name: `Mend · ${displaySession(detail.session)}`,
-        pty: new MendTtyTerminal({
-          connection: () => this.client.connection(),
-          address,
-          banner,
-          liveness: async () => {
-            try {
-              const now = await this.client.sessionDetail(detail.session.id);
-              // Admission first: the server refuses the upgrade to whoever may no longer steer
-              // (shared control turned off), however live the process is.
-              if (viewer !== null && !maySteer(now.session, viewer)) return "not-steerable";
-              const running =
-                processId === null
-                  ? now.currentAgent !== null && now.currentAgent.exitedAt === null
-                  : attachableProcesses(now.processes).some((process) => process.id === processId);
-              return running ? "live" : "ended";
-            } catch (cause) {
-              return isRefusal(cause) ? "refused" : "unknown";
-            }
-          },
-        }),
+      await attachTerminal(this.client, {
+        session: detail.session,
+        address,
+        name: terminalTabName(
+          detail.session,
+          live.find((process) => "process" in address && process.id === address.process) ?? null,
+        ),
+        viewer,
       });
-      terminal.show();
     } catch (cause) {
       void showError(cause);
     }
@@ -433,13 +401,6 @@ class MendCommands {
     void vscode.window.showInformationMessage(said);
   }
 
-  /** A member's name as the organization lists it; "another person" when it cannot say. */
-  private async nameOf(userId: string | null): Promise<string> {
-    if (userId === null) return "another person";
-    const names = await this.client.memberNames();
-    return names.find((member) => member.userId === userId)?.name ?? "another person";
-  }
-
   /**
    * Remote-SSH admits only the person who launched the workspace's executor (docs/adr/0016; the
    * gateway authorizes the workspace's creator). That is not always the session's owner: a session
@@ -454,7 +415,7 @@ class MendCommands {
     if (launcher === null || viewer === null || launcher === viewer) return true;
     const terminal = maySteer(location.session, viewer);
     const answer = await vscode.window.showWarningMessage(
-      `${await this.nameOf(launcher)} launched the workspace ${displaySession(location.session)} runs in.`,
+      `${await memberName(this.client, launcher)} launched the workspace ${displaySession(location.session)} runs in.`,
       {
         modal: true,
         detail: `Remote-SSH opens a workspace only for the person who launched it, so VS Code would be refused. A session of yours in this worktree joins the same workspace, so it would be refused too.${terminal ? " The session's terminal needs no SSH." : ""}`,
@@ -966,6 +927,8 @@ class MendCommands {
             worktreePath: worktreePath(found.project, found.session),
           };
     }
+    const here = this.workspaceWindow.session();
+    if (here !== null) return { ...here, worktreePath: worktreePath(here.project, here.session) };
     const current = this.scope.currentLocation();
     if (current !== null) return current;
     const project = this.scope.currentProject();
@@ -1190,7 +1153,15 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const client = new MendClient(connections);
   const tree = new MendTreeProvider(client);
   const scope = new WorkspaceScope(client, (projectId) => tree.setWorkspaceProject(projectId));
-  const commands = new MendCommands(context, connections, client, tree, scope);
+  const workspaceWindow = new WorkspaceWindow(
+    client,
+    windowRole(
+      vscode.env.remoteName,
+      (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.authority),
+    ),
+    (cause) => void showError(cause),
+  );
+  const commands = new MendCommands(context, connections, client, tree, scope, workspaceWindow);
   const view = vscode.window.createTreeView("mend.sessions", {
     treeDataProvider: tree,
     showCollapseAll: true,
@@ -1214,6 +1185,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
 
   context.subscriptions.push(
     view,
+    workspaceWindow,
     view.onDidChangeSelection((event) => {
       const [node] = event.selection;
       if (event.selection.length === 1 && isSessionNode(node)) onSessionSelected(node);
@@ -1272,6 +1244,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
 
   void scope.refresh();
   void tree.snapshot();
+  workspaceWindow.start();
   const editor = startWorkspaceEditor(context);
   return {
     projects: async () => [...(await tree.snapshot()).details.values()],

@@ -391,6 +391,16 @@ export class MendClient {
     );
   }
 
+  /**
+   * Mend's mode handoff: the same conversation continues in a terminal (`pty`) or as a
+   * conversation (`protocol`). A harness that cannot is refused with HTTP 422.
+   */
+  async handoff(sessionId: string, to: "pty" | "protocol"): Promise<Session> {
+    return parseSession(
+      await this.post(`/sessions/${encodeURIComponent(sessionId)}/handoff`, { to }),
+    );
+  }
+
   /** The workspace SSH gateway plus the signed-in user's registered keys. */
   async workspaceSsh(): Promise<WorkspaceSshView> {
     const value = await this.request("/workspace-ssh");

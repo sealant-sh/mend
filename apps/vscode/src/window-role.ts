@@ -53,6 +53,16 @@ export type AgentTab =
 
 const PROCESS_LIVE: ReadonlySet<string> = new Set(["starting", "running"]);
 
+/** A terminal tab's name: what runs in it, then the session. */
+export const terminalTabName = (
+  session: Pick<Session, "harness" | "label" | "id">,
+  process: Pick<SessionProcess, "kind" | "harness"> | null,
+): string => {
+  const runs =
+    process === null || process.kind === "shell" ? "shell" : (process.harness ?? session.harness);
+  return `${runs} · ${displaySession(session)}`;
+};
+
 export const agentTab = (
   session: Pick<Session, "harness" | "label" | "id">,
   processes: ReadonlyArray<SessionProcess>,
@@ -62,10 +72,9 @@ export const agentTab = (
       (process) =>
         process.kind === kind && process.exitedAt === null && PROCESS_LIVE.has(process.status),
     );
-  const name = displaySession(session);
   const pty = newestLive("agent-pty");
   if (pty !== undefined) {
-    return { kind: "pty", processId: pty.id, name: `${pty.harness ?? session.harness} · ${name}` };
+    return { kind: "pty", processId: pty.id, name: terminalTabName(session, pty) };
   }
   const conversation = newestLive("agent-protocol");
   if (conversation !== undefined) {
@@ -76,14 +85,14 @@ export const agentTab = (
         : conversation.label;
     return {
       kind: "conversation",
-      name: `${harness} · ${name}`,
+      name: terminalTabName(session, conversation),
       line: `${harness} is running as a conversation (from ${origin}) · Continue here to type to it`,
     };
   }
   const shell = newestLive("shell");
   return shell === undefined
     ? { kind: "none" }
-    : { kind: "pty", processId: shell.id, name: `shell · ${name}` };
+    : { kind: "pty", processId: shell.id, name: terminalTabName(session, shell) };
 };
 
 /** What a conversation's tab says when Mend's mode handoff refuses its harness. */
