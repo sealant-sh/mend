@@ -253,6 +253,7 @@ const processesLayer = Layer.succeed(SessionProcessesRepo, {
   markFirstOutput: () => Effect.succeed(false),
   setHostPort: () => Effect.void,
   setSealantSessionId: () => Effect.void,
+  setWaiting: () => Effect.die("not in test"),
   markExited: () => Effect.die("not in test"),
   reapLiveForWorkspace: () => Effect.succeed([]),
 });

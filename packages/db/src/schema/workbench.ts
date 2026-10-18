@@ -110,6 +110,7 @@ import type {
   DiffDigest,
   EffortLevel,
   ProtocolLaunchOptions,
+  AgentWait,
   SessionControlKind,
   SessionExtraMount,
   ServiceBrowserScheme,
@@ -1600,6 +1601,8 @@ export const sessionProcesses = pgTable(
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     /** The account whose Linux user the process runs as (docs/adr/0016); null: root (0117). */
     runsAs: text(),
+    /** agent-pty rows: why the agent waits, as its hooks reported it; null otherwise (0132). */
+    waiting: jsonb().$type<typeof AgentWait.Encoded | null>(),
   },
   (table) => [
     index("session_processes_session_idx").on(table.sessionId, table.createdAt),

@@ -1418,6 +1418,7 @@ export const sessionProcessesLayer = (world: World) => {
         exitCode,
         exitedAt: world.clock.now(),
         updatedAt: world.clock.now(),
+        waiting: null,
       }),
     );
   };
@@ -1542,6 +1543,23 @@ export const sessionProcessesLayer = (world: World) => {
       }),
     listRecentServices: () =>
       Effect.succeed([...world.processes.values()].filter((process) => process.kind === "service")),
+    setWaiting: (id, sessionId, waiting) =>
+      Effect.sync(() => {
+        const process = world.processes.get(id);
+        if (
+          process === undefined ||
+          process.sessionId !== sessionId ||
+          process.kind !== "agent-pty" ||
+          process.exitedAt !== null
+        ) {
+          return false;
+        }
+        world.processes.set(
+          id,
+          new SessionProcess({ ...process, waiting, updatedAt: world.clock.now() }),
+        );
+        return true;
+      }),
     markExited: (id, outcome, exitCode) =>
       Effect.sync(() => {
         const process = world.processes.get(id);

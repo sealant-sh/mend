@@ -7,13 +7,14 @@ import {
   type SessionId,
 } from "@mend/domain";
 import {
+  AgentWait,
   SessionProcess,
   type ProtocolLaunchOptions,
   type SessionProcessKind,
   type SessionProcessStatus,
 } from "@mend/domain/workbench";
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
-import { DateTime, Effect, Layer } from "effect";
+import { DateTime, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -102,6 +103,15 @@ export class SessionProcessesRepo extends Context.Service<
       sealantSessionId: string,
       sealantRunId: SealantRunId | null,
     ) => Effect.Effect<void>;
+    /**
+     * Set or clear the wait on a LIVE agent-pty row of `sessionId`; true when a row changed. The
+     * ended-row guard is what keeps a report that arrives after the exit from bringing a wait back.
+     */
+    readonly setWaiting: (
+      id: SessionProcessId,
+      sessionId: SessionId,
+      waiting: AgentWait | null,
+    ) => Effect.Effect<boolean>;
     readonly markExited: (
       id: SessionProcessId,
       outcome: "exited" | "stopped",
@@ -115,8 +125,14 @@ export class SessionProcessesRepo extends Context.Service<
   }
 >()("@mend/db/SessionProcessesRepo") {}
 
+const decodeWaiting = Schema.decodeUnknownOption(AgentWait);
+const encodeWaiting = Schema.encodeSync(AgentWait);
+
 const toSessionProcess = (row: typeof sessionProcesses.$inferSelect): SessionProcess =>
-  new SessionProcess(row);
+  new SessionProcess({
+    ...row,
+    waiting: row.waiting === null ? null : Option.getOrNull(decodeWaiting(row.waiting)),
+  });
 
 export const SessionProcessesRepoLive: Layer.Layer<
   SessionProcessesRepo,
@@ -343,6 +359,32 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
+    const setWaiting = Effect.fn("SessionProcessesRepo.setWaiting")(function* (
+      id: SessionProcessId,
+      sessionId: SessionId,
+      waiting: AgentWait | null,
+    ) {
+      const rows = yield* db
+        .update(sessionProcesses)
+        .set({
+          waiting: waiting === null ? null : encodeWaiting(waiting),
+          updatedAt: yield* DateTime.nowAsDate,
+        })
+        .where(
+          and(
+            eq(sessionProcesses.id, id),
+            eq(sessionProcesses.sessionId, sessionId),
+            eq(sessionProcesses.kind, "agent-pty"),
+            isNull(sessionProcesses.exitedAt),
+          ),
+        )
+        .returning({ sessionId: sessionProcesses.sessionId })
+        .pipe(Effect.orDie);
+      if (rows.length === 0) return false;
+      yield* notify(sessionId);
+      return true;
+    });
+
     const markExited = Effect.fn("SessionProcessesRepo.markExited")(function* (
       id: SessionProcessId,
       outcome: "exited" | "stopped",
@@ -351,7 +393,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       const now = yield* DateTime.nowAsDate;
       const rows = yield* db
         .update(sessionProcesses)
-        .set({ status: outcome, exitCode, exitedAt: now, updatedAt: now })
+        .set({ status: outcome, exitCode, exitedAt: now, updatedAt: now, waiting: null })
         .where(and(eq(sessionProcesses.id, id), isNull(sessionProcesses.exitedAt)))
         .returning({ sessionId: sessionProcesses.sessionId })
         .pipe(Effect.orDie);
@@ -366,7 +408,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       const now = yield* DateTime.nowAsDate;
       const rows = yield* db
         .update(sessionProcesses)
-        .set({ status: "exited", exitedAt: now, updatedAt: now })
+        .set({ status: "exited", exitedAt: now, updatedAt: now, waiting: null })
         .where(
           and(
             eq(sessionProcesses.sealantWorkspaceId, workspaceId),
@@ -397,6 +439,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       markFirstOutput,
       setHostPort,
       setSealantSessionId,
+      setWaiting,
       markExited,
       reapLiveForWorkspace,
     };

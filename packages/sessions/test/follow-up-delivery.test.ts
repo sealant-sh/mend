@@ -473,6 +473,7 @@ const testLayer = (world: TestWorld) => {
     markFirstOutput: () => Effect.die("not in test"),
     setHostPort: () => Effect.die("not in test"),
     setSealantSessionId: () => Effect.die("not in test"),
+    setWaiting: () => Effect.die("not in test"),
     markExited: () => Effect.die("not in test"),
     reapLiveForWorkspace: () => Effect.die("not in test"),
   });
