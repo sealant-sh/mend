@@ -64,6 +64,7 @@ import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
 import { failureWords, noteRefusal } from "./failure-words.ts";
 import { flagRefusal } from "./flag-gate.ts";
 import { gitAuthorLine, parseGitAuthorArgs, type GitAuthorDto } from "./git-author.ts";
+import { handoffCommand, type Launched, type Upload } from "./handoff.ts";
 import {
   findCommand,
   manFileName,
@@ -230,6 +231,7 @@ import { worktreesRmCommand } from "./worktree-remove.ts";
  *   mend sessions [--all]                 sessions with their review facts
  *   mend land <session>                   push the change to origin, open its pull request
  *   mend pull <session>                   fetch the change into this clone as mend/<name>
+ *   mend handoff ["prompt"]               copy this checkout's branch into a new session
  *
  * The CLI talks to the Mend server API; the server owns the store, the
  * engine, and the database. Every launch — including `mend continue` — runs
@@ -567,6 +569,44 @@ const download =
     return { status: response.status, header: (name) => response.headers.get(name), bytes };
   };
 
+const upload =
+  (config: CliConfig): Upload =>
+  async (route, contentType, body) => {
+    const headers: Record<string, string> = { "content-type": contentType };
+    if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
+    const call = `POST ${route}`;
+    const started = Date.now();
+    const noAnswer = (error: unknown) => ({
+      _tag: "no-answer" as const,
+      message: noAnswerError(error, config.url, call, Date.now() - started).message,
+    });
+    let response: Response;
+    try {
+      response = await fetch(`${config.url}/api${route}`, { method: "POST", headers, body });
+    } catch (error) {
+      return noAnswer(error);
+    }
+    if (response.status === 401) {
+      return fail(
+        config.token === null
+          ? `not signed in to ${config.url} — run: mend login`
+          : `unauthorized at ${config.url} — the saved token was rejected; run: mend login`,
+      );
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(await response.arrayBuffer());
+    } catch (error) {
+      return noAnswer(error);
+    }
+    return {
+      _tag: "answered",
+      status: response.status,
+      header: (name) => response.headers.get(name),
+      bytes,
+    };
+  };
+
 /**
  * One upgrade ticket for a WebSocket this process is about to open (upgrade-url.ts). The saved
  * token travels in this call's Authorization header, never in the socket's URL. A server older
@@ -721,6 +761,32 @@ const startedOrExit = (
       return fail(
         `${outcome.message} · the session may still be starting · follow it: mend attach ${id8}`,
       );
+  }
+};
+
+const launchHandoff = async (
+  config: CliConfig,
+  sessionId: string,
+  prompt: string,
+): Promise<Launched> => {
+  const outcome = await followStarting(
+    config,
+    sessionId,
+    "starting the agent",
+    request<SessionDto>(config, "POST", `/sessions/${sessionId}/launch`, { prompt }),
+  );
+  switch (outcome.kind) {
+    case "live":
+      return { _tag: "running" };
+    case "refused":
+      return { _tag: "not-started", words: outcome.message };
+    case "settled":
+      return {
+        _tag: "not-started",
+        words: `session ${sessionId.slice(0, 8)} · ${startingLineOf(outcome.session)} before its agent ran`,
+      };
+    case "unreachable":
+      return { _tag: "no-answer", words: outcome.message };
   }
 };
 
@@ -6134,6 +6200,19 @@ const main = async () => {
       return withAgentShare(config, () => landCommand(boundApi(config), rest));
     case "pull":
       return pullCommand(boundApi(config), download(config), rest);
+    case "handoff":
+      return handoffCommand(
+        {
+          api: boundApi(config),
+          download: download(config),
+          upload: upload(config),
+          serverVersion: async () => (await fetchServerVersion(config.url)).version,
+          launch: (sessionId, prompt) => launchHandoff(config, sessionId, prompt),
+          spin: (label, work) => withSpinner(label, work),
+          serverUrl: config.url,
+        },
+        rest,
+      );
     case "sessions":
     case "status":
       return sessionsCommand(config, rest);

@@ -627,6 +627,35 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     examples: [{ command: "mend pull fix-login", text: "then: git switch mend/fix-login" }],
     see: ["land", "sessions"],
   },
+  {
+    name: "handoff",
+    section: "sessions",
+    summary: "copy this checkout's branch into a new session",
+    synopsis: ['["prompt"] [--with <harness>] [--project <p>] [--yes]'],
+    description: [
+      "Run it inside a checkout. Mend copies the branch as it is into a new session: the commits ahead of the merge base with the project's default branch, the staged files, the unstaged files and the untracked files. Review shows exactly that change, from the merge base. The checkout is not written to: no index, ref or file of it changes, and nothing is stashed.",
+      "With a prompt, the session's agent starts on it and the command returns without attaching; mend attach opens it. Without one, Mend holds the workspace with no agent.",
+      "Gitignored files and .env files stay here, and the command names the .env files. A .env file committed in a commit ahead travels in that commit, and the command names it with the commit. Files over the server's file limit (8 MiB by default, MEND_BUDGET_HANDOFF_FILE_BYTES) and files with a git filter attribute, such as Git LFS files, stay here too, each named. In the session each of them is at its HEAD version, so review shows no change for it.",
+      "The checkout's origin must be the project's origin, compared by host and path, so a fork is refused. When no adopted project matches, Mend offers to adopt origin first. The merge base is taken against origin/<default branch> as this checkout last fetched it: Mend never fetches, and when that ref is missing, git fetch origin brings it.",
+      "A detached HEAD hands off as handoff-<sha>. Handing off the same branch again makes a new worktree, fix-login-2 after fix-login.",
+    ],
+    options: [
+      {
+        flag: "--with <harness>",
+        text: "the agent: claude, codex, opencode or pi. Default: claude",
+      },
+      {
+        flag: "--project <p>",
+        text: "the project by name; this checkout's origin must still be its origin",
+      },
+      { flag: "--yes, -y", text: "adopt origin without asking; required without a terminal" },
+    ],
+    examples: [
+      { command: 'mend handoff "finish the tests"', text: "claude carries on from this checkout" },
+      { command: "mend handoff", text: "a workspace held with no agent; mend attach opens it" },
+    ],
+    see: ["attach", "pull", "adopt"],
+  },
 
   // ── services ───────────────────────────────────────────────────────────
   {
