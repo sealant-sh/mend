@@ -1,0 +1,351 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+import { Sha } from "@mend/domain";
+import {
+  HANDOFF_SNAPSHOT_REF,
+  HexSha,
+  parseHandoffMessage,
+  type HandoffTrailers,
+} from "@mend/domain/workbench";
+import { Effect, Result, Schema } from "effect";
+
+import { git, GitError, gitExitUnexplained, gitOutput, gitRejectsContent } from "./git.ts";
+
+const admitted: unique symbol = Symbol("AdmittedHandoff");
+
+/**
+ * A handoff the store admitted: the facts read out of verified content, and the delta pack the
+ * worktree's capture 0 lists beside the base pack of M. Only `admitHandoff` makes one.
+ */
+export interface AdmittedHandoff {
+  readonly [admitted]: true;
+  readonly trailers: HandoffTrailers;
+  /** H: the checkout's HEAD, where the worktree's branch starts. */
+  readonly head: Sha;
+  /** I: the commit whose tree is the checkout's index. */
+  readonly index: Sha;
+  /** W: the commit whose tree is the checkout's working tree; capture 0's checkpoint. */
+  readonly checkpoint: Sha;
+  /** M: the merge base with the default branch; the change's base. */
+  readonly mergeBase: Sha;
+  readonly worktreeTree: Sha;
+  readonly indexTree: Sha;
+  readonly defaultBranch: string;
+  /** Commits in `M..H`. */
+  readonly commitsAhead: number;
+  /** `pack-objects --revs` of `W ^M`, self-contained: every object the base pack of M lacks. */
+  readonly deltaPack: { readonly pack: Uint8Array; readonly idx: Uint8Array };
+}
+
+export const HANDOFF_ADMISSION_REFUSALS = [
+  "not-a-handoff",
+  "damaged",
+  "base-unknown",
+  "base-off-default-branch",
+] as const;
+
+export class HandoffRefusedError extends Schema.TaggedError<HandoffRefusedError>()(
+  "HandoffRefusedError",
+  { reason: Schema.Literals(HANDOFF_ADMISSION_REFUSALS), message: Schema.String },
+) {}
+
+export interface AdmitHandoffInput {
+  readonly storePath: string;
+  readonly defaultBranch: string;
+  readonly bundle: Uint8Array;
+  readonly quarantineRoot: string;
+  /** The store's own tip of the default branch, as `Store.resolveBaseSha` reads it; null when it has none. */
+  readonly defaultTip: Effect.Effect<string | null>;
+  readonly freshenDefault: Effect.Effect<void>;
+}
+
+export interface BundleHeader {
+  readonly refs: ReadonlyArray<{ readonly sha: string; readonly name: string }>;
+  readonly prerequisites: ReadonlyArray<string>;
+}
+
+const BUNDLE_SIGNATURES = ["# v2 git bundle", "# v3 git bundle"];
+const HEADER_LIMIT = 64 * 1024;
+export const HANDOFF_QUARANTINE_PREFIX = "handoff-q-";
+const QUARANTINE_MAX_AGE_MS = 60 * 60 * 1000;
+
+const isHexSha = Schema.is(HexSha);
+
+/**
+ * The bundle header, read as text up to its blank line: the signature, then `@capability`
+ * lines (v3), `-<sha> <words>` prerequisites and `<sha> <ref>` refs. Null when these bytes are
+ * not a bundle. Pure, so a bundle that is not a handoff is refused before git opens it.
+ */
+export const parseBundleHeader = (bytes: Uint8Array): BundleHeader | null => {
+  const text = Buffer.from(bytes.subarray(0, HEADER_LIMIT)).toString("latin1");
+  const end = text.indexOf("\n\n");
+  if (end === -1) return null;
+  const [signature, ...lines] = text.slice(0, end).split("\n");
+  if (signature === undefined || !BUNDLE_SIGNATURES.includes(signature)) return null;
+  const refs: Array<{ sha: string; name: string }> = [];
+  const prerequisites: Array<string> = [];
+  for (const line of lines) {
+    if (line.startsWith("@")) continue;
+    const prerequisite = line.startsWith("-");
+    const body = prerequisite ? line.slice(1) : line;
+    const space = body.indexOf(" ");
+    const sha = space === -1 ? body : body.slice(0, space);
+    if (!isHexSha(sha)) return null;
+    if (prerequisite) prerequisites.push(sha);
+    else if (space === -1) return null;
+    else refs.push({ sha, name: body.slice(space + 1) });
+  }
+  return { refs, prerequisites };
+};
+
+const refuse = (reason: HandoffRefusedError["reason"], message: string) =>
+  new HandoffRefusedError({ reason, message: `${message} · nothing was created` });
+
+const notAHandoff = (detail: string) =>
+  refuse(
+    "not-a-handoff",
+    `the upload is not a mend handoff · ${detail} · update the mend CLI and hand off again`,
+  );
+
+const firstLine = (words: string): string => words.split("\n").find((line) => line !== "") ?? words;
+
+const damagedOr = (error: GitError) =>
+  gitRejectsContent(error)
+    ? refuse(
+        "damaged",
+        `the upload did not verify · git said: ${firstLine(error.stderr)} · hand off again`,
+      )
+    : error;
+
+const short = (sha: string) => sha.slice(0, 7);
+
+const LACKS_PREREQUISITE = /lacks these prerequisite commits/i;
+
+/** `rev-list --parents -n 1 <commit>`: the commit, then its parents. */
+const parentsOf = (cwd: string, commit: string) =>
+  git(["rev-list", "--parents", "--max-count=1", commit], cwd).pipe(
+    Effect.map((line) => line.split(" ").slice(1)),
+  );
+
+const knows = (cwd: string, commit: string) =>
+  git(["cat-file", "-e", `${commit}^{commit}`], cwd).pipe(
+    Effect.result,
+    Effect.map(Result.isSuccess),
+  );
+
+/** `merge-base --is-ancestor`: exit 0 is yes, 1 is no; anything else is git's own failure. */
+const isAncestor = (cwd: string, ancestor: string, descendant: string) =>
+  gitOutput(["merge-base", "--is-ancestor", ancestor, descendant], cwd).pipe(
+    Effect.flatMap((ran) =>
+      ran.exitCode === 0
+        ? Effect.succeed(true)
+        : ran.exitCode === 1
+          ? Effect.succeed(false)
+          : Effect.fail(
+              new GitError({
+                args: ["merge-base", "--is-ancestor", ancestor, descendant],
+                cwd,
+                exitCode: ran.exitCode,
+                stderr: ran.stderr.trim(),
+              }),
+            ),
+    ),
+  );
+
+/**
+ * Admit a handoff bundle, or refuse it. In order: the header (one ref, one prerequisite),
+ * `bundle verify` (a missing prerequisite earns one freshen of the default branch, then
+ * `base-unknown`), a fetch under `fetch.fsckObjects`, the closure (`rev-list --missing=error`),
+ * the shape (W^ = I, I^ = H, each a single parent), the trailers, the merge base recomputed
+ * against the client's default tip (which must be in the store's `origin/<default>` history),
+ * and the delta pack. Every git call runs in the quarantine; the store is only read.
+ */
+export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHandoffInput) {
+  const header = parseBundleHeader(input.bundle);
+  if (header === null) return yield* notAHandoff("the body is not a git bundle");
+  if (header.refs.length !== 1 || header.refs[0]?.name !== HANDOFF_SNAPSHOT_REF) {
+    return yield* notAHandoff(
+      `the bundle names ${header.refs.length === 0 ? "no ref" : header.refs.map((ref) => ref.name).join(", ")} instead of ${HANDOFF_SNAPSHOT_REF}`,
+    );
+  }
+  if (header.prerequisites.length !== 1 || header.prerequisites[0] === undefined) {
+    return yield* notAHandoff(
+      `the bundle has ${header.prerequisites.length} prerequisites instead of one`,
+    );
+  }
+  const checkpoint = header.refs[0].sha;
+  const mergeBase = header.prerequisites[0];
+
+  yield* Effect.sync(() => fs.mkdirSync(input.quarantineRoot, { recursive: true }));
+  const quarantine = yield* Effect.sync(() =>
+    fs.mkdtempSync(path.join(input.quarantineRoot, HANDOFF_QUARANTINE_PREFIX)),
+  );
+  const inQuarantine = Effect.gen(function* () {
+    const file = path.join(quarantine, "handoff.bundle");
+    yield* Effect.sync(() => fs.writeFileSync(file, input.bundle, { mode: 0o600 }));
+    const repo = path.join(quarantine, "repo.git");
+    yield* git(["init", "-q", "--bare", repo], quarantine);
+    const objects = yield* git(
+      ["rev-parse", "--path-format=absolute", "--git-path", "objects"],
+      input.storePath,
+    );
+    yield* Effect.sync(() =>
+      fs.writeFileSync(path.join(repo, "objects", "info", "alternates"), `${objects}\n`),
+    );
+
+    let freshened = false;
+    const freshenOnce = Effect.suspend(() => {
+      if (freshened) return Effect.void;
+      freshened = true;
+      return input.freshenDefault;
+    });
+
+    const verify = git(["bundle", "verify", file], repo).pipe(Effect.result);
+    let verified = yield* verify;
+    if (Result.isFailure(verified) && LACKS_PREREQUISITE.test(verified.failure.stderr)) {
+      yield* freshenOnce;
+      verified = yield* verify;
+    }
+    if (Result.isFailure(verified)) {
+      if (LACKS_PREREQUISITE.test(verified.failure.stderr)) {
+        return yield* refuse(
+          "base-unknown",
+          `your branch starts at ${short(mergeBase)}, which this server has not seen on origin's ${input.defaultBranch} · push ${input.defaultBranch}, then hand off again`,
+        );
+      }
+      if (gitExitUnexplained(verified.failure)) {
+        return yield* notAHandoff(`git said: ${firstLine(verified.failure.stderr)}`);
+      }
+      return yield* damagedOr(verified.failure);
+    }
+
+    yield* git(
+      [
+        "-c",
+        "fetch.fsckObjects=true",
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--no-write-fetch-head",
+        file,
+        `${HANDOFF_SNAPSHOT_REF}:${HANDOFF_SNAPSHOT_REF}`,
+      ],
+      repo,
+    ).pipe(Effect.mapError(damagedOr));
+    yield* git(
+      ["rev-list", "--objects", "--missing=error", checkpoint, `^${mergeBase}`],
+      repo,
+    ).pipe(Effect.mapError(damagedOr));
+
+    const [index, ...otherParentsOfW] = yield* parentsOf(repo, checkpoint);
+    if (index === undefined || otherParentsOfW.length > 0) {
+      return yield* notAHandoff("the snapshot commit does not have exactly one parent");
+    }
+    const [head, ...otherParentsOfI] = yield* parentsOf(repo, index);
+    if (head === undefined || otherParentsOfI.length > 0) {
+      return yield* notAHandoff("the index commit does not have exactly one parent");
+    }
+
+    const raw = yield* git(["cat-file", "commit", checkpoint], repo);
+    const message = raw.slice(raw.indexOf("\n\n") + 2);
+    const parsed = parseHandoffMessage(message);
+    if (Result.isFailure(parsed)) {
+      return yield* notAHandoff(
+        `the snapshot's message is not a handoff's (${parsed.failure.detail})`,
+      );
+    }
+    const trailers = parsed.success;
+
+    const defaultTipKnown = Effect.gen(function* () {
+      const storeTip = yield* input.defaultTip;
+      if (storeTip === null || !(yield* knows(repo, trailers.defaultTip)))
+        return "unknown" as const;
+      return (yield* isAncestor(repo, trailers.defaultTip, storeTip))
+        ? "on-default"
+        : "off-default";
+    });
+    let tip = yield* defaultTipKnown;
+    if (tip !== "on-default") {
+      yield* freshenOnce;
+      tip = yield* defaultTipKnown;
+    }
+    if (tip === "unknown") {
+      return yield* refuse(
+        "base-unknown",
+        `your origin/${input.defaultBranch} (${short(trailers.defaultTip)}) is not one this server has seen · push ${input.defaultBranch}, then hand off again`,
+      );
+    }
+    if (tip === "off-default") {
+      return yield* refuse(
+        "base-off-default-branch",
+        `your origin/${input.defaultBranch} (${short(trailers.defaultTip)}) is not on this server's origin/${input.defaultBranch} · fetch origin and rebase onto origin/${input.defaultBranch}, then hand off again`,
+      );
+    }
+    const bases = (yield* git(["merge-base", "--all", head, trailers.defaultTip], repo)).split(
+      "\n",
+    );
+    if (!bases.includes(mergeBase)) {
+      return yield* notAHandoff(
+        `the bundle's base ${short(mergeBase)} is not the merge base of its branch with ${input.defaultBranch} ${short(trailers.defaultTip)}`,
+      );
+    }
+
+    const trees = (yield* git(
+      ["rev-parse", `${checkpoint}^{tree}`, `${index}^{tree}`],
+      repo,
+    )).split("\n");
+    const [worktreeTree, indexTree] = trees;
+    if (worktreeTree === undefined || indexTree === undefined) {
+      return yield* notAHandoff("the snapshot's trees could not be read");
+    }
+    const commitsAhead = Number(yield* git(["rev-list", "--count", head, `^${mergeBase}`], repo));
+
+    const name = yield* git(
+      ["pack-objects", "-q", "--revs", path.join(quarantine, "delta")],
+      repo,
+      undefined,
+      undefined,
+      `${checkpoint}\n^${mergeBase}\n`,
+    );
+    const deltaPack = yield* Effect.sync(() => ({
+      pack: new Uint8Array(fs.readFileSync(path.join(quarantine, `delta-${name}.pack`))),
+      idx: new Uint8Array(fs.readFileSync(path.join(quarantine, `delta-${name}.idx`))),
+    }));
+
+    const result: AdmittedHandoff = {
+      [admitted]: true,
+      trailers,
+      head: Sha.make(head),
+      index: Sha.make(index),
+      checkpoint: Sha.make(checkpoint),
+      mergeBase: Sha.make(mergeBase),
+      worktreeTree: Sha.make(worktreeTree),
+      indexTree: Sha.make(indexTree),
+      defaultBranch: input.defaultBranch,
+      commitsAhead,
+      deltaPack,
+    };
+    return result;
+  });
+  return yield* inQuarantine.pipe(
+    Effect.ensuring(Effect.sync(() => fs.rmSync(quarantine, { recursive: true, force: true }))),
+  );
+});
+
+export const sweepHandoffQuarantines = (
+  quarantineRoot: string,
+  now: number,
+): Effect.Effect<ReadonlyArray<string>> =>
+  Effect.sync(() => {
+    if (!fs.existsSync(quarantineRoot)) return [];
+    const removed: Array<string> = [];
+    for (const entry of fs.readdirSync(quarantineRoot)) {
+      if (!entry.startsWith(HANDOFF_QUARANTINE_PREFIX)) continue;
+      const dir = path.join(quarantineRoot, entry);
+      if (now - fs.statSync(dir).mtimeMs < QUARANTINE_MAX_AGE_MS) continue;
+      fs.rmSync(dir, { recursive: true, force: true });
+      removed.push(dir);
+    }
+    return removed;
+  });

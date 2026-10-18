@@ -18,6 +18,12 @@ import {
   gitHead,
 } from "./git.ts";
 import {
+  type AdmittedHandoff,
+  admitHandoff as admitHandoffIn,
+  type HandoffRefusedError,
+  sweepHandoffQuarantines as sweepQuarantinesUnder,
+} from "./handoff.ts";
+import {
   type BundleEmptyError,
   type BundleInput,
   type BundleTooLargeError,
@@ -892,6 +898,18 @@ const selectedBy =
 
 const sha = (value: string) => Sha.make(value);
 
+const commitOf = (storePath: string, ref: string) =>
+  git(["rev-parse", `${ref}^{commit}`], storePath);
+
+/**
+ * The commit a base ref names in the store without fetching: origin's remote-tracking ref,
+ * which moves with every fetch, else the local name (a sha, a tag, a head frozen at adoption).
+ */
+const knownBaseSha = (storePath: string, baseRef: string) =>
+  commitOf(storePath, `refs/remotes/origin/${baseRef}`).pipe(
+    Effect.catch(() => commitOf(storePath, baseRef)),
+  );
+
 /**
  * Every session branch Mend makes (`mend/<name>`, `mend/wt/<id>`, `mend/session/<id>`), and the
  * name a landing pushes one under on origin (docs/adr/0007-landing.md).
@@ -1242,6 +1260,20 @@ export class Store extends Context.Service<
       ChangeBundle,
       GitError | InvalidBranchError | BundleTooLargeError | BundleEmptyError
     >;
+    /**
+     * Admit a `mend handoff` bundle against the project's store (`handoff.ts`): verified in a
+     * quarantine under the store root, never fetched into the store. The one store write
+     * is one freshen of the default branch with `remoteEnv`, spent when the store lacks the
+     * bundle's base or the client's default tip. The only constructor of `AdmittedHandoff`.
+     */
+    readonly admitHandoff: (
+      storePath: string,
+      defaultBranch: string,
+      bundle: Uint8Array,
+      remoteEnv: GitRemoteEnvironment | null,
+    ) => Effect.Effect<AdmittedHandoff, HandoffRefusedError | GitError>;
+    /** Remove handoff quarantines older than an hour (a crash mid-admission); for boot. */
+    readonly sweepHandoffQuarantines: () => Effect.Effect<ReadonlyArray<string>>;
   }
 >()("@mend/store/Store") {
   static readonly layer = Layer.effect(
@@ -1385,9 +1417,7 @@ export class Store extends Context.Service<
         baseRef: string,
         remoteEnv: GitRemoteEnvironment | null,
       ) {
-        const tryResolve = (ref: string) => git(["rev-parse", `${ref}^{commit}`], storePath);
-        return yield* tryResolve(`refs/remotes/origin/${baseRef}`).pipe(
-          Effect.catch(() => tryResolve(baseRef)),
+        return yield* knownBaseSha(storePath, baseRef).pipe(
           Effect.catch(() =>
             Effect.gen(function* () {
               const fetched = yield* refuseRemoteCredentials(storePath).pipe(
@@ -1475,6 +1505,31 @@ export class Store extends Context.Service<
         const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
         return { baseRef, baseSha: sha(baseSha) };
       });
+
+      const quarantineRoot = path.join(config.root, "tmp");
+
+      const admitHandoff: Store["Service"]["admitHandoff"] = (
+        storePath,
+        defaultBranch,
+        bundle,
+        remoteEnv,
+      ) =>
+        admitHandoffIn({
+          storePath,
+          defaultBranch,
+          bundle,
+          quarantineRoot,
+          defaultTip: knownBaseSha(storePath, defaultBranch).pipe(
+            Effect.map((tip): string | null => tip),
+            Effect.catch(() => Effect.succeed<string | null>(null)),
+          ),
+          freshenDefault: freshenBase(storePath, defaultBranch, remoteEnv),
+        });
+
+      const sweepHandoffQuarantines: Store["Service"]["sweepHandoffQuarantines"] = () =>
+        Clock.currentTimeMillis.pipe(
+          Effect.flatMap((now) => sweepQuarantinesUnder(quarantineRoot, now)),
+        );
 
       const renameBranch = Effect.fn("Store.renameBranch")(function* (
         worktreePath: string,
@@ -2141,6 +2196,8 @@ export class Store extends Context.Service<
         adopt,
         createWorktree,
         resolveBase,
+        admitHandoff,
+        sweepHandoffQuarantines,
         renameBranch,
         resetWorktree,
         refreshFromOrigin,

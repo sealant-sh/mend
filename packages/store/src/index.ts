@@ -8,6 +8,7 @@ export * from "./git.ts";
 export * from "./paths.ts";
 export * from "./git-auth.ts";
 export * from "./git-remote-operation.ts";
+export * from "./handoff.ts";
 export * from "./landing.ts";
 export * from "./remote-credentials.ts";
 export * from "./remote-env.ts";
