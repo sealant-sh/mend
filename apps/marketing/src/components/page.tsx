@@ -45,14 +45,16 @@ const NAV: ReadonlyArray<{ label: string; href: string }> = [
 
 export function MarketingPage() {
   return (
-    // The viewport is viewport-fit=cover (see __root.tsx): Safari 26 runs the
-    // page under the status bar, so the header pads itself by the top inset and
-    // its canvas fills that strip, and the page keeps clear of the side and
-    // bottom insets. Every inset is 0 on a desktop.
+    // The viewport is viewport-fit=cover (see __root.tsx), so the page keeps clear
+    // of the safe-area insets, which a standalone or landscape iPhone reports.
+    // Every inset is 0 on a desktop.
     <div className="mend-grain mend-grain-surface min-h-dvh pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] text-foreground">
-      {/* The header sits in the root stacking context above <main>, which
-          isolates its own. Nothing between the header and the viewport clips;
-          the horizontal clip lives on <main>. */}
+      {/* Safari 26 colours the strip behind the status bar from the sticky or
+          fixed bar it hit-tests 4px below the top: the header, now that the
+          page's grain sits under it (styles.css). The header sits in the root
+          stacking context above <main>, which isolates its own; the horizontal
+          clip lives on <main>, so nothing between the header and the viewport
+          clips. */}
       <header className="mend-grain-surface mend-grain-header sticky top-0 z-40 pt-[env(safe-area-inset-top)]">
         <div
           className={`${FRAME} flex min-h-16 items-center justify-between gap-4 border-b-2 px-5 sm:px-8`}
@@ -428,7 +430,7 @@ function SquareThemeSwitcher() {
       onClick={() => {
         const root = document.documentElement;
         root.classList.toggle("dark");
-        // Safari tints its bars from theme-color: keep it on the page's canvas.
+        // Safari 15–18 tints its bars from theme-color (26 samples the header): keep it on the page's canvas.
         document
           .querySelector('meta[name="theme-color"]')
           ?.setAttribute("content", getComputedStyle(root).getPropertyValue("--sw-canvas").trim());
