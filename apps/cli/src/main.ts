@@ -4498,6 +4498,7 @@ _mend() {
     'rejoin:attach if live, otherwise resume'
     'land:push a session change to origin and open its pull request'
     'pull:fetch a session change into this clone'
+    'handoff:copy this checkout branch into a new session'
     'refresh:fetch origin branches into the store' 'projects:adopted projects' 'sessions:sessions with review facts' 'status:active sessions'
     'ui:the dashboard' 'help:help'
   )
@@ -4518,6 +4519,9 @@ _mend() {
         esac
       fi
       ;;
+    handoff)
+      compadd -- --with --project --yes
+      ;;
     shell|attach|stop|continue|resume|rejoin|land|pull|logs|wait)
       local -a sessions
       sessions=(\${(f)"$(command mend __complete session 2>/dev/null | tr '\\t' ':')"})
@@ -4531,7 +4535,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode pi run logs wait attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode pi run logs wait attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull handoff refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -4548,6 +4552,9 @@ const BASH_COMPLETIONS = `_mend() {
         esac
       fi
       COMPREPLY=( $(compgen -W "$options" -- "$cur") )
+      ;;
+    handoff)
+      COMPREPLY=( $(compgen -W "--with --project --yes" -- "$cur") )
       ;;
     shell|attach|stop|continue|resume|rejoin|land|pull|logs|wait)
       COMPREPLY=( $(compgen -W "$(command mend __complete session 2>/dev/null | cut -f1)" -- "$cur") )

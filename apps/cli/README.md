@@ -172,6 +172,10 @@ mend land <session> [--branch b] [--no-pr] [--title t] | --check
                                       push the change to origin, open or update its pull request
 mend pull <session> [--branch b] [--force]
                                       fetch the change into this clone as mend/<name>
+mend handoff ["prompt"] [--with h] [--project p] [--yes]
+                                      copy this checkout's branch, staged, unstaged and
+                                      untracked files into a new session; the checkout
+                                      is not written to
 mend workspace replace <session> [--yes]
                                       replace a workspace that started before Mend 0.36
 
