@@ -6,9 +6,9 @@ import type * as net from "node:net";
 
 import { SessionChannelTokensRepo } from "@mend/db";
 import { SessionId } from "@mend/domain";
-import type { ServiceBrowserScheme } from "@mend/domain/workbench";
+import { AgentHookReport, type ServiceBrowserScheme } from "@mend/domain/workbench";
 import { DeploymentConfig } from "@mend/store";
-import { Effect, Layer } from "effect";
+import { Effect, Exit, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { CAPTURE_ROUTES, dispatchCaptureRoute, MAX_CAPTURE_BODY_BYTES } from "./capture-channel.ts";
@@ -65,6 +65,10 @@ export const SessionChannelRegistryLive: Layer.Layer<SessionChannelRegistry> = L
 
 /** Largest JSON body either listener accepts; the helper's requests are tiny. */
 export const MAX_BODY_BYTES = 64 * 1024;
+
+/** An agent hook report is four short fields. */
+const MAX_AGENT_HOOK_BODY_BYTES = 4 * 1024;
+const decodeAgentHookReport = Schema.decodeUnknownExit(AgentHookReport);
 
 const readBody = (
   request: http.IncomingMessage,
@@ -221,6 +225,19 @@ export const handleSessionRequest = async (
     if (route === "POST /session/land") {
       // The landing answers when it has pushed and its pull request step is done, or refused.
       return respond(200, await Effect.runPromise(api.land()));
+    }
+    if (route === "POST /session/agent-hook") {
+      const report = decodeAgentHookReport(await readBody(request, MAX_AGENT_HOOK_BODY_BYTES));
+      if (Exit.isFailure(report)) return respond(400, { message: "not an agent hook report" });
+      const outcome = await Effect.runPromise(api.agentHook(report.value));
+      if (outcome === "no-live-agent") {
+        return respond(409, {
+          message: "no terminal agent of this harness is live in this session",
+        });
+      }
+      response.writeHead(204);
+      response.end();
+      return;
     }
     if (route === "POST /session/stop") {
       // Answer before acting: the stop closes this workspace's PTYs, so

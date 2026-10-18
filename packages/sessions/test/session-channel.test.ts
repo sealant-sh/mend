@@ -19,6 +19,7 @@ import {
   parseChannelCredentials,
 } from "../src/session-channel.ts";
 import {
+  type AgentHookOutcome,
   SessionSocketHost,
   SessionSocketHostLive,
   type SessionSocketApi,
@@ -102,6 +103,7 @@ const api = (seen: unknown[]): SessionSocketApi => ({
       return {};
     }),
   land: () => Effect.succeed({ landed: false, lines: ["not landed · not in this test"] }),
+  agentHook: () => Effect.succeed("ignored"),
   listRepositories: () => Effect.succeed([]),
   addableProjects: () => Effect.succeed([]),
   addRepository: () => Effect.die("not in this test"),
@@ -743,6 +745,111 @@ describe("SessionChannelNetworkHost", () => {
           // The usage names the verb.
           const usage = yield* helper(["publish"]);
           expect(usage.stderr).toContain("mend land");
+        }).pipe(
+          Effect.provide(
+            layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+          ),
+        ),
+      ),
+    );
+  });
+
+  it("mend hook forwards four fields of the agent's hook, prints nothing and exits 0 on every path", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const network = yield* SessionChannelNetworkHost;
+          const sockets = yield* SessionSocketHost;
+          const tokens = yield* SessionChannelTokensRepo;
+          const address = network.address ?? "";
+          const seen: unknown[] = [];
+          let outcome: AgentHookOutcome = "applied";
+          const dir = yield* sockets.start(SESSION, {
+            ...api(seen),
+            agentHook: (report) =>
+              Effect.sync(() => {
+                seen.push({ ...report });
+                return outcome;
+              }),
+          });
+          const token = yield* tokens.issue(SESSION, SESSION);
+          const auth = { authorization: `Bearer ${token}`, "x-mend-session-id": SESSION };
+          const env = {
+            MEND_SESSION_ENDPOINT: `http://${address}`,
+            MEND_SESSION_ID: SESSION,
+            MEND_SESSION_TOKEN: token,
+          };
+          const hook = (payload: string, over: Record<string, string> = {}) =>
+            Effect.promise(() =>
+              runScript(
+                path.join(dir, "bin", "mend"),
+                ["hook", "claude"],
+                { ...env, ...over },
+                Buffer.from(payload),
+              ),
+            );
+          const silent = { code: 0, stdout: "", stderr: "" };
+
+          // Claude's PermissionRequest payload (code.claude.com/docs/en/hooks): only the event,
+          // the notification type and the tool leave the workspace, never the tool's input.
+          const asked = yield* hook(
+            JSON.stringify({
+              session_id: "abc123",
+              cwd: "/workspace/repo",
+              permission_mode: "default",
+              hook_event_name: "PermissionRequest",
+              tool_name: "Bash",
+              tool_input: { command: "rm -rf node_modules" },
+            }),
+          );
+          expect(asked).toEqual(silent);
+          expect(seen).toEqual([
+            { harness: "claude", event: "PermissionRequest", notificationType: null, tool: "Bash" },
+          ]);
+
+          // No live agent (409), another session's id, a payload that is not JSON, and no
+          // channel at all: still silent, still 0, and nothing reaches the engine.
+          outcome = "no-live-agent";
+          expect(
+            yield* hook(
+              JSON.stringify({ hook_event_name: "Notification", notification_type: "idle_prompt" }),
+            ),
+          ).toEqual(silent);
+          expect(seen).toHaveLength(2);
+          expect(
+            yield* hook(JSON.stringify({ hook_event_name: "Stop" }), { MEND_SESSION_ID: OTHER }),
+          ).toEqual(silent);
+          expect(yield* hook("not json")).toEqual(silent);
+          expect(yield* hook(JSON.stringify({ prompt: "no event" }))).toEqual(silent);
+          expect(
+            yield* hook(JSON.stringify({ hook_event_name: "Stop" }), { MEND_SESSION_ENDPOINT: "" }),
+          ).toEqual(silent);
+          expect(seen).toHaveLength(2);
+
+          // The route itself: a body that is not a report is refused before the engine.
+          const refused = yield* Effect.promise(() =>
+            call(address, "POST", "/session/agent-hook", auth, {
+              harness: "opencode",
+              event: "Stop",
+            }),
+          );
+          expect(refused.status).toBe(400);
+          outcome = "unchanged";
+          const taken = yield* Effect.promise(() =>
+            call(address, "POST", "/session/agent-hook", auth, {
+              harness: "codex",
+              event: "Stop",
+              notificationType: null,
+              tool: null,
+            }),
+          );
+          expect(taken).toEqual({ status: 204, json: null });
+          expect(seen).toHaveLength(3);
+
+          const usage = yield* Effect.promise(() =>
+            runScript(path.join(dir, "bin", "mend"), ["publish"], env),
+          );
+          expect(usage.stderr).toContain("mend hook <claude|codex>");
         }).pipe(
           Effect.provide(
             layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),

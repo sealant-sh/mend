@@ -91,6 +91,7 @@ describe("SessionSocketHost", () => {
                 return {};
               }),
             land: () => Effect.succeed({ landed: false, lines: ["not landed · not in this test"] }),
+            agentHook: () => Effect.succeed("ignored"),
             listRepositories: () => Effect.succeed([]),
             addableProjects: () => Effect.succeed([]),
             addRepository: () => Effect.die("unused"),
@@ -184,6 +185,7 @@ describe("SessionSocketHost", () => {
             restartService: () => Effect.die("unused"),
             stopSession: () => Effect.die("unused"),
             land: () => Effect.succeed({ landed: false, lines: ["not landed · not in this test"] }),
+            agentHook: () => Effect.succeed("ignored"),
             listRepositories: () => Effect.succeed([]),
             addableProjects: () => Effect.succeed([]),
             addRepository: () => Effect.die("unused"),

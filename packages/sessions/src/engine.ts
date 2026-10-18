@@ -70,6 +70,7 @@ import {
   WorktreeId,
 } from "@mend/domain";
 import type {
+  AgentHookReport,
   Checkpoint,
   CheckpointTrigger,
   HotWorkspace,
@@ -119,6 +120,8 @@ import {
   ProtocolHarnessUnsupportedError,
   composeProtocolArgv,
   agentProcessesOf,
+  agentSignalOf,
+  nextAgentWait,
   currentAgentProcess,
   foldSessionLiveness,
   isAgentProcessKind,
@@ -2705,6 +2708,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         restartService: (reference) => owned(sessionId)(api.restartService(reference)),
         stopSession: () => owned(sessionId)(api.stopSession()),
         land: () => owned(sessionId)(api.land()),
+        // Calls no Sealant API, so there is no owner to run it as.
+        agentHook: api.agentHook,
         listRepositories: () => owned(sessionId)(api.listRepositories()),
         addableProjects: () => owned(sessionId)(api.addableProjects()),
         addRepository: (input) => owned(sessionId)(api.addRepository(input)),
@@ -21677,6 +21682,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * command runs only if they may run one in the session and then runs as them, and `mend
        * land` lands only for the change's owner.
        */
+      /**
+       * A terminal agent's hook (`mend hook`): the wait goes on the session's newest live agent-pty
+       * row, and only when that row is the report's harness (a Codex run by hand in a Claude
+       * session's shell reads Mend's system hooks too). The fold then reads it.
+       */
+      const agentHook = Effect.fn("SessionEngine.agentHook")(function* (
+        sessionId: SessionId,
+        report: AgentHookReport,
+      ) {
+        const signal = agentSignalOf(report);
+        if (signal === null) return "ignored" as const;
+        const agent = agentProcessesOf(yield* processes.listForSession(sessionId))
+          .filter((process) => process.kind === "agent-pty" && isLiveProcess(process))
+          .at(-1);
+        if (agent === undefined || agent.harness !== report.harness) {
+          return "no-live-agent" as const;
+        }
+        const next = nextAgentWait(
+          agent.waiting,
+          signal,
+          new Date(clock.currentTimeMillisUnsafe()),
+        );
+        if (next === agent.waiting) return "unchanged" as const;
+        if (!(yield* processes.setWaiting(agent.id, sessionId, next))) {
+          return "no-live-agent" as const;
+        }
+        yield* reconcileSession(sessionId, { sweep: false }).pipe(Effect.orDie);
+        return "applied" as const;
+      });
+
       const socketClosures = (sessionId: SessionId, actor: string | null): SessionSocketApi => ({
         // Pickups (`pickup-tickets.ts`): over the socket, the session's own; over the channel, for
         // the launch and the person the token names. A person's grant binds its own person, so
@@ -21765,6 +21800,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The landing worker answers (`WorkspaceGitHooks`): it depends on the engine, so it
         // cannot be one of the engine's dependencies.
         land: () => gitHooks.landRequested(sessionId, actor),
+        agentHook: (report) => agentHook(sessionId, report),
         // Repositories in a session (docs/adr/0010): the helper's `mend repo` verbs. A refusal
         // reaches the helper as its message.
         listRepositories: () =>

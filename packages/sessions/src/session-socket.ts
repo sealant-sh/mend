@@ -4,7 +4,11 @@ import type * as net from "node:net";
 import * as path from "node:path";
 
 import type { SessionId } from "@mend/domain";
-import type { ServiceBrowserScheme, SessionRepository } from "@mend/domain/workbench";
+import type {
+  AgentHookReport,
+  ServiceBrowserScheme,
+  SessionRepository,
+} from "@mend/domain/workbench";
 import { DeploymentConfig, StoreConfig } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -88,6 +92,12 @@ export interface SessionSocketApi {
    */
   readonly land: () => Effect.Effect<WorkspaceLandOutcome>;
   /**
+   * `mend hook <claude|codex>`: the session's terminal agent's own hook says it waits for the
+   * person, or goes on. The newest live agent-pty of this session takes the fact; nothing else
+   * does.
+   */
+  readonly agentHook: (report: AgentHookReport) => Effect.Effect<AgentHookOutcome>;
+  /**
    * `mend repo` (docs/adr/0011-repositories-in-a-session.md): the repositories this session
    * holds beside its own worktree, the projects it may add, and adding one. `addRepository`
    * answers the row in state `adding`; the files arrive in the engine's lifetime and the row
@@ -159,6 +169,12 @@ export interface SessionSocketApi {
       }) => Effect.Effect<ChannelGrant>)
     | undefined;
 }
+
+/**
+ * `no-live-agent`: this session has no live terminal agent of the report's harness, or it ended
+ * while the report was read.
+ */
+export type AgentHookOutcome = "applied" | "unchanged" | "ignored" | "no-live-agent";
 
 /** What a redeemed pickup answers: each file's path and its bytes in base64. */
 export interface PickupAnswer {
@@ -279,8 +295,45 @@ const printService = (s) =>
       "  " + s.id.slice(0, 8),
   );
 
+// A hook command must never steer the agent: Claude reads a UserPromptSubmit hook's stdout as
+// context, and a Stop hook's failing exit as a reason to go on. So: no output, exit 0 on every
+// path, and five seconds at most.
+const hook = (harness) => {
+  const done = () => process.exit(0);
+  setTimeout(done, 5000);
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("error", done);
+  process.stdin.on("data", (chunk) => {
+    input += chunk;
+    if (input.length > 64 * 1024) done();
+  });
+  process.stdin.on("end", () => {
+    let payload = null;
+    try { payload = JSON.parse(input); } catch {}
+    const field = (name) => {
+      const value = payload === null || typeof payload !== "object" ? undefined : payload[name];
+      return typeof value === "string" && value !== "" ? value.slice(0, 64) : null;
+    };
+    const event = field("hook_event_name");
+    const options = transportOptions("POST", "/session/agent-hook", { "content-type": "application/json" });
+    if (event === null || options === null) done();
+    const req = transportClient().request(options, (res) => {
+      res.on("end", done);
+      res.on("error", done);
+      res.resume();
+    });
+    req.on("error", done);
+    req.end(JSON.stringify({ harness, event, notificationType: field("notification_type"), tool: field("tool_name") }));
+  });
+};
+
 const main = async () => {
   const [group, verb, ...rest] = process.argv.slice(2);
+  if (group === "hook") {
+    hook(verb);
+    return;
+  }
   if (group === "land") {
     // Mend lands the change as its owner: the push, the pull request, or why not.
     let outcome;
@@ -369,7 +422,7 @@ const main = async () => {
     return;
   }
   if (group !== "service") {
-    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend land · mend stop");
+    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend land · mend stop · mend hook <claude|codex>");
   }
   try {
     switch (verb) {
