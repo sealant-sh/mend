@@ -1,6 +1,9 @@
 import type { ReactElement } from "react";
 
-/** Explain incomplete project history without exposing sessions that cannot be resumed or handed off. */
+/**
+ * Explain incomplete project history without exposing sessions that cannot be resumed or switched
+ * to another mode.
+ */
 export function HiddenEndedSessionsNotice({
   count,
 }: {
