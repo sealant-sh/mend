@@ -8,6 +8,7 @@ import {
   SessionProcessId,
 } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
+import { AgentWait } from "./agent-wait.ts";
 import { EFFORT_LEVELS, PERMISSION_MODES } from "./harness-launch.ts";
 
 /**
@@ -147,6 +148,14 @@ export class SessionProcess extends Schema.Class<SessionProcess>("SessionProcess
    * before it was recorded, and where older servers omit it.
    */
   runsAs: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * agent-pty rows: why the agent waits for the person, as its own hooks last reported it. Null
+   * while it works, once it ended, for every other kind, and where older servers omit it.
+   */
+  waiting: Schema.NullOr(AgentWait).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),

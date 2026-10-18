@@ -170,6 +170,7 @@ describe("Project detail worktree groups", () => {
       exitedAt: new Date("2026-09-01T01:00:00Z"),
       updatedAt: new Date("2026-09-01T01:00:00Z"),
       runsAs: null,
+      waiting: null,
     };
     const facts: ReadonlyArray<SessionAnnotationDto> = [
       {
