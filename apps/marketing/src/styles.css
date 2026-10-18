@@ -38,7 +38,7 @@
   }
 
   section[id] {
-    scroll-margin-top: 4.5rem;
+    scroll-margin-top: calc(4.5rem + env(safe-area-inset-top));
   }
 }
 

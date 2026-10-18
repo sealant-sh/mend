@@ -45,13 +45,16 @@ const NAV: ReadonlyArray<{ label: string; href: string }> = [
 
 export function MarketingPage() {
   return (
-    <div className="mend-grain mend-grain-surface min-h-dvh text-foreground">
-      {/* Nothing between the sticky header and the viewport clips: iOS Safari
-          treats a clipping ancestor as the header's container and, mid-scroll,
-          lets the page paint over it. The horizontal clip lives on <main>
-          instead. On iOS only, will-change gives the header its own layer;
-          desktop keeps its subpixel text. */}
-      <header className="mend-grain-surface sticky top-0 z-40 supports-[-webkit-touch-callout:none]:will-change-transform">
+    // The viewport is viewport-fit=cover (see __root.tsx): Safari 26 runs the
+    // page under the status bar, so the header pads itself by the top inset and
+    // its canvas fills that strip, and the page keeps clear of the side and
+    // bottom insets. Every inset is 0 on a desktop.
+    <div className="mend-grain mend-grain-surface min-h-dvh pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] text-foreground">
+      {/* The header sits in the root stacking context above <main>, which
+          isolates its own. Nothing between the header and the viewport clips;
+          the horizontal clip lives on <main>. On iOS only, translateZ(0) gives
+          the header its own layer; desktop keeps its subpixel text. */}
+      <header className="mend-grain-surface sticky top-0 z-40 pt-[env(safe-area-inset-top)] supports-[-webkit-touch-callout:none]:[transform:translateZ(0)]">
         <div
           className={`${FRAME} flex min-h-16 items-center justify-between gap-4 border-b-2 px-5 sm:px-8`}
         >
@@ -84,7 +87,7 @@ export function MarketingPage() {
         </div>
       </header>
 
-      <main className={`${FRAME} overflow-x-clip`}>
+      <main className={`${FRAME} relative isolate z-0 overflow-x-clip`}>
         {/* Masthead: the wordmark at the width of the page, then the statement and the install line. */}
         <section className="px-5 sm:px-8">
           <div className={`relative border-b-2 ${RULE} pt-4 sm:pt-12`}>
@@ -424,7 +427,12 @@ function SquareThemeSwitcher() {
       aria-label="Toggle color theme"
       title="Toggle theme"
       onClick={() => {
-        document.documentElement.classList.toggle("dark");
+        const root = document.documentElement;
+        root.classList.toggle("dark");
+        // Safari tints its bars from theme-color: keep it on the page's canvas.
+        document
+          .querySelector('meta[name="theme-color"]')
+          ?.setAttribute("content", getComputedStyle(root).getPropertyValue("--sw-canvas").trim());
       }}
     >
       <SunMoon className="size-4" aria-hidden="true" />

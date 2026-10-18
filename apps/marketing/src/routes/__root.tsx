@@ -10,7 +10,11 @@ export const Route = createRootRoute({
   head: () => ({
     meta: [
       { charSet: "utf-8" },
-      { name: "viewport", content: "width=device-width, initial-scale=1" },
+      // cover: Safari 26 draws the page under the status bar; the header pads
+      // itself by the safe-area inset so its canvas fills that strip.
+      { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
+      // The light canvas (--sw-canvas); the theme switcher swaps it for the dark one.
+      { name: "theme-color", content: "#edeae4" },
       { title: TITLE },
       { name: "description", content: DESCRIPTION },
       { property: "og:title", content: TITLE },
