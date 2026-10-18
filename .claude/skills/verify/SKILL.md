@@ -566,6 +566,89 @@ The desktop's terminal draws on a canvas (its text is not in the page), so every
 it: read a terminal's output from the session (`drive-tui.sh` on `mend attach`, or the record), not
 from a screenshot.
 
+**VS Code.** `drive-vscode.mjs` drives a real VS Code the way a person clicks through it: the Mend
+extension built from a checkout (`--extensionDevelopmentPath`), Microsoft's Remote-SSH installed, on
+an Xvfb display of its own, with a remote debugging port that Playwright attaches to over CDP and a
+recipe that clicks the workbench DOM. It runs against a world of its own, not the stack: a packaged
+Mend server in Docker-in-Docker (`scripts/vscode-remote-world.mjs`, shared with the Remote-SSH
+acceptance `scripts/vscode-remote-acceptance.mjs`), reached at the daemon's own address, with the
+first account, one adopted project and a local clone of it open in the first window. The world
+outlives one call, like the desktop's app:
+
+```sh
+# boot: a preloaded ghcr.io/sealant-sh/mend tag (`--version`), any image on this machine's Docker
+# (`--image <ref>`), or one built now from the checkout's Dockerfile (`--build`, 20 to 40 minutes)
+VSCODE_BIN=$(dirname "$(readlink -f "$(which code)")")/../lib/vscode/code \
+  node $skill/scripts/drive-vscode.mjs up --version 0.36.0-next.1033 [--extension <checkout>] \
+    [--signed-out] [--no-ssh-setup] [--no-video] [--repo <url>] [--run <name>]
+export MEND_VERIFY_VSCODE_RUN=<the run `up` printed>
+node $skill/scripts/drive-vscode.mjs run <recipe.mjs> --out "$E_vscode/<feature>" [--timeout <ms>]
+node $skill/scripts/drive-vscode.mjs logs            # the editor's logs and the server's, redacted
+node $skill/scripts/drive-vscode.mjs down            # the editor, ffmpeg, Xvfb, the daemon, the scratch
+```
+
+`up` takes about seven minutes from preloaded images (the extension build, the daemon, the images
+copied in, `mend server setup`, one fresh-worktree session run and stopped so the workspace image
+exists, Remote-SSH installed, the clone, then VS Code) and prints
+`export MEND_VERIFY_VSCODE_RUN=<run>`; `run`, `logs` and `down` take `--run`, that variable, or the
+only run that is up. Every name is run-scoped (`st-verify-vscode-<run>`: the daemon, the Docker
+context, the project), so two runs on one machine do not collide and nothing of `local-outer.sh`'s
+is touched. The ledger `~/.cache/mend-verify/vscode/st-verify-vscode-<run>/state.json` holds the
+pids, the display, the CDP port, the server URL and every path, written as each resource appears, so
+`down` converges after a crash too (twice in a row is fine). The private directory beside it holds
+the account's token (`token.secret`, the run's registry); the evidence goes to
+`${XDG_STATE_HOME:-~/.local/state}/mend-verify/st-verify-vscode-<run>/`: `display.mp4` (ffmpeg's
+x11grab of the display, 5 frames a second, when ffmpeg is on PATH; `nix shell nixpkgs#ffmpeg` has
+it), each recipe's `--out`, and `logs/`. `down` scans that evidence against the registry before the
+private directory goes.
+
+The editor starts **signed in** (the CLI connection the extension reads, `cli.json` in the scratch
+HOME, written as `mend login` writes it) with **workspace SSH set up** (`mend ssh setup` in that
+HOME, and `remote.SSH.remotePlatform` seeded for the alias, as it is after story h's first run).
+`--signed-out` and `--no-ssh-setup` start the first-run stories instead.
+
+A recipe is a module whose default export is `async (helpers) => {}`. The helpers act like a person;
+each is a gesture on the real workbench DOM:
+
+- `palette(title)` (F1, the command's title typed, its row clicked), `quickInput.type(text)`,
+  `.pick(label)`, `.accept()`, `.cancel()`, `.title()`, `.items()`, `.isOpen()`, `.watch()` (every
+  time the widget is shown from now, until `stop()`);
+- `view(name)` (the Activity Bar entry), `treeItem(label)` with `.click()`, `.dblclick()`,
+  `.hover()`, `.inline(buttonTitle)` (the row's hover action), `.contextMenu(item)`, `.text()`,
+  `.description()` (a session row's status);
+- `notification(text)` with `.click(button)`, `.text()`, `.dismiss()`; `notifications()`;
+  `dialog(text)` with `.click(button)`; `dialogs()`; `statusBar(text)`;
+- `terminal()` with `.type(line)`, `.read()` (the xterm rows from the DOM), `.waitForText()`;
+- `windows()` (every workbench window), `newWindows(known)` (what one gesture opened, once it has
+  settled), `waitForWindow(known)`, `useWindow(page)`, `homeWindow()` (the local window, not a
+  Remote-SSH one), `closeWindow(page)` (`Close Window` from that window's palette); a Remote-SSH
+  open either reuses a window, which reloads its page, or opens a new one, so re-read `windows()`
+  after it;
+- `waitForText(text)`, `waitUntil(what, read, ms)`, `shot(slug)` (numbered screenshots into `--out`,
+  `.png.checked` beside each; withheld when the window's text shows a credential),
+  `step(name, fn, { via })` (one line per step into `steps.jsonl`: what was done, what was observed,
+  the step's screenshot, its timing), `note(text)`, `api(route, init)` (the run's Mend client, for
+  setting up state and for reading what Mend observed), `serverLogs()` (the server container's log,
+  raw: its `/v1/workspaces/<id>/ssh-target` lines are one per SSH connection the gateway admitted,
+  which is all the server records of an open), `state`.
+
+Clicking the real DOM is the rule. A step that calls the server, or any other setup path, says so
+with `via: "api"` or `via: "setup"`, and only ever for setup or for reading what Mend observed,
+never for the action under test. The proven recipe is `recipes/vscode-open-as-built.mjs` (a session
+started from the palette, the row double-clicked and counted, one clean open through to the
+workspace window's files and terminal); the map's [vscode.md](features/vscode.md) has the flows by
+story.
+
+What cannot be driven, and why: VS Code draws its modals and context menus as GTK windows outside
+the page unless `window.dialogStyle` and `window.titleBarStyle` are `custom` (the driver writes both
+into the run's settings, as a person may set them); the terminal's text is readable only from the
+DOM renderer (`terminal.integrated.gpuAcceleration: off`, written there too); an OS keychain prompt
+or a file chooser would be native too, and none of the mapped flows opens one. A Remote-SSH connect
+installs VS Code's server inside the workspace the first time; in the proof runs the first connect
+took 3 to 8 s and later ones 3 to 4 s, so wait for it with a budget of minutes, not an expectation
+of them. A tree row's accessible name is its tooltip, so `treeItem` matches the row's visible text.
+The video is unredacted pixels: a recipe that puts a credential on screen runs with `--no-video`.
+
 **Mobile web.** `drive-mobile.mjs` serves the Expo app's web build and the stack's API on one local
 origin (the stack trusts only its own origins), and `drive-web.mjs --viewport 390x844` drives it.
 Pair the app with that origin the way the map's pairing recipe says. The server answers a pairing
@@ -636,9 +719,9 @@ success, 1 on a typed failure, 2 on no answer (`--timeout`, default 15 s).
   Docker daemon's loopback, not this machine's, so the map's `curl http://127.0.0.1:<port>/` here
   finds nothing. `not run · the inner tunnel binds the session's Docker daemon`. The tunnel's own
   line (`● <name> → 127.0.0.1:<port>`) is still an observation of the CLI.
-- **VS Code and Slack.** The map's VS Code and Slack entry points have no driver here:
-  `not drivable yet · no VS Code (Slack) driver in the verify skill`. Slack's pages on the web
-  (Settings → Slack, `/slack/link/<code>`) are web steps and run.
+- **Slack.** The map's Slack entry points have no driver here:
+  `not drivable yet · no Slack driver in the verify skill`. Slack's pages on the web (Settings →
+  Slack, `/slack/link/<code>`) are web steps and run. (VS Code has one: **VS Code**, above.)
 - **A step that needs what the stack lacks:** a provider login (Claude, Codex, GitHub), a GitHub
   origin or one that accepts pushes (the fixture serves fetch only and refuses a push with 403), a
   Kubernetes server, an SSH git host, a restart of the inner server with other environment, or a
