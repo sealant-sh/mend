@@ -187,8 +187,8 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     `newWindows(<recorded windows>)` reads 0, the story's rule that answering opens no workspace
     window.
 - **c. Dana opens a running session to work in its workspace.** From the default `up`, with a live
-  Workbench session. `recipes/vscode-open-as-built.mjs` drives the row click, the double-click and
-  the inline open below.
+  Workbench session. `recipes/vscode-open-as-built.mjs` drives the double-click, its answer and the
+  inline open below; no recipe drives the single row click yet.
   - The row click. Record `windows()`, `treeItem(<label>).click()`, then `newWindows(<recorded>)`.
     The story expects 0 (a click selects). Today's source runs the open on a click (the row's
     command is `Mend: Open in VS Code`). On a Workbench session, whose shell is a live `agent-pty`
