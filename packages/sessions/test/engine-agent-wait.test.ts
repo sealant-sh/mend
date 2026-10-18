@@ -130,6 +130,23 @@ describe("a terminal agent's hooks (G4)", () => {
     );
   });
 
+  it("clears the wait when the person types in the agent's terminal, not in a shell beside it", async () => {
+    await withClaudeSession((world, sessionId) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        yield* hookOf(sessionId)(report("PermissionRequest", { tool: "Bash" }));
+        const shell = yield* engine.openShell(sessionId);
+        yield* engine.personTyped(shell.id);
+        expect(statusOf(world, sessionId)).toBe("waiting");
+        const agent = agentOf(world, sessionId);
+        if (agent === null) throw new Error("no agent");
+        yield* engine.personTyped(agent.id);
+        expect(statusOf(world, sessionId)).toBe("running");
+        expect(agentOf(world, sessionId)?.waiting).toBeNull();
+      }),
+    );
+  });
+
   it("brings no wait back from a report that arrives after the agent ended", async () => {
     await withClaudeSession((world, sessionId) =>
       Effect.gen(function* () {

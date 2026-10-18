@@ -2313,6 +2313,11 @@ export class SessionEngine extends Context.Service<
       label: string,
     ) => Effect.Effect<SessionProcess, ShellProcessNotFoundError | ShellLabelError>;
     /**
+     * The person typed into this process's terminal (G4): a terminal agent that waited for them
+     * has its answer, so its wait clears. Keys in a shell of the same session clear nothing.
+     */
+    readonly personTyped: (processId: SessionProcessId) => Effect.Effect<void>;
+    /**
      * Adopt an already-listening workspace port as a Service
      * (docs/SESSION-SERVICES.md): bind a host listener on the private
      * interfaces and pump each accepted connection over a workspace forward.
@@ -21717,6 +21722,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return "applied" as const;
       });
 
+      const personTyped = Effect.fn("SessionEngine.personTyped")(function* (
+        processId: SessionProcessId,
+      ) {
+        const process = yield* processes.byId(processId);
+        if (process === null || process.kind !== "agent-pty" || process.waiting === null) return;
+        if (yield* processes.setWaiting(process.id, process.sessionId, null)) {
+          yield* reconcileSession(process.sessionId, { sweep: false }).pipe(Effect.orDie);
+        }
+      });
+
       const socketClosures = (sessionId: SessionId, actor: string | null): SessionSocketApi => ({
         // Pickups (`pickup-tickets.ts`): over the socket, the session's own; over the channel, for
         // the launch and the person the token names. A person's grant binds its own person, so
@@ -23680,6 +23695,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         openShell: (sessionId, openedBy) => owned(sessionId)(openShell(sessionId, openedBy)),
         stopShell: (processId) => ownedByProcess(processId)(stopShell(processId)),
         renameShell: (processId, label) => ownedByProcess(processId)(renameShell(processId, label)),
+        personTyped,
         addService: (sessionId, ...rest) => owned(sessionId)(addService(sessionId, ...rest)),
         runService: (sessionId, argv, port, name, protocol, browserScheme, startedBy, startId) =>
           owned(sessionId)(
