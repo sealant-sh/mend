@@ -29,12 +29,12 @@ catalog:
   "@slack/socket-mode": ^3.0.1
   "@slack/web-api": ^8.1.1
   "@tailwindcss/vite": ^4.1.18
-  "@tanstack/devtools-vite": 0.8.0
-  "@tanstack/react-query": ^5.101.4
-  "@tanstack/react-router": 1.170.16
-  "@tanstack/react-router-ssr-query": ^1.167.1
-  "@tanstack/react-start": 1.168.26
-  "@tanstack/router-plugin": ^1.132.0
+  "@tanstack/devtools-vite": 0.8.5
+  "@tanstack/react-query": ^5.104.4
+  "@tanstack/react-router": 1.170.45
+  "@tanstack/react-router-ssr-query": 1.167.3
+  "@tanstack/react-start": 1.169.3
+  "@tanstack/router-plugin": 1.168.47
   "@trpc/client": ^11.7.1
   "@trpc/tanstack-react-query": ^11.18.0
   "@trpc/server": ^11.7.1
@@ -94,6 +94,10 @@ catalogs:
     remark-parse: 11.0.0
     remark-rehype: 11.1.2
     unified: 11.0.5
+  # TanStack Start 1.0 (@tanstack/react-start 1.169) requires Vite 8, so apps/web and apps/marketing
+  # build with it. apps/desktop keeps the default catalog's Vite 7: electron-vite 5 supports up to 7.
+  start:
+    vite: ^8.3.4
 
 # @effect/platform-node 4.0.5 asks for @effect/platform-node-shared ^4.0.5, which would resolve to
 # the newest 4.0.x and its own effect peer. t3code pins it to 4.0.5 in its catalog; so does this.

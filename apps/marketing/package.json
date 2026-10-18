@@ -42,7 +42,7 @@
     "@vitejs/plugin-react": "catalog:",
     "jsdom": "catalog:",
     "typescript": "catalog:",
-    "vite": "catalog:",
+    "vite": "catalog:start",
     "vite-tsconfig-paths": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

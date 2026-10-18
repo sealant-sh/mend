@@ -62,7 +62,7 @@
     "jsdom": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
-    "vite": "catalog:",
+    "vite": "catalog:start",
     "vite-tsconfig-paths": "catalog:",
     "vitest": "catalog:"
   }
