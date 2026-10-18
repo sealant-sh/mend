@@ -177,17 +177,18 @@ Totals: 58 features, 51 mapped, 7 not mapped.
 
 ### Sessions
 
-| Feature                 | File                                                       | Surfaces                       | Status |
-| ----------------------- | ---------------------------------------------------------- | ------------------------------ | ------ |
-| now-and-sessions        | [now-and-sessions.md](./now-and-sessions.md)               | web, CLI, mobile, desktop      | mapped |
-| attach-resume           | [attach-resume.md](./attach-resume.md)                     | CLI, web, TUI, desktop, mobile | mapped |
-| session-shell           | [session-shell.md](./session-shell.md)                     | CLI, web, desktop, mobile      | mapped |
-| worktrees               | [worktrees.md](./worktrees.md)                             | web, CLI, TUI, VS Code         | mapped |
-| workspace-replace       | [workspace-replace.md](./workspace-replace.md)             | web, CLI                       | mapped |
-| pull-change             | [pull-change.md](./pull-change.md)                         | CLI                            | mapped |
-| repositories-in-session | [repositories-in-session.md](./repositories-in-session.md) | CLI (in the workspace), web    | mapped |
-| capture-and-save        | [capture-and-save.md](./capture-and-save.md)               | web, CLI                       | mapped |
-| observed-agents         | [observed-agents.md](./observed-agents.md)                 | CLI (in the workspace), web    | mapped |
+| Feature                 | File                                                       | Surfaces                       | Status                                                |
+| ----------------------- | ---------------------------------------------------------- | ------------------------------ | ----------------------------------------------------- |
+| now-and-sessions        | [now-and-sessions.md](./now-and-sessions.md)               | web, CLI, mobile, desktop      | mapped                                                |
+| attach-resume           | [attach-resume.md](./attach-resume.md)                     | CLI, web, TUI, desktop, mobile | mapped                                                |
+| session-shell           | [session-shell.md](./session-shell.md)                     | CLI, web, desktop, mobile      | mapped                                                |
+| worktrees               | [worktrees.md](./worktrees.md)                             | web, CLI, TUI, VS Code         | mapped                                                |
+| workspace-replace       | [workspace-replace.md](./workspace-replace.md)             | web, CLI                       | mapped                                                |
+| pull-change             | [pull-change.md](./pull-change.md)                         | CLI                            | mapped                                                |
+| repositories-in-session | [repositories-in-session.md](./repositories-in-session.md) | CLI (in the workspace), web    | mapped                                                |
+| capture-and-save        | [capture-and-save.md](./capture-and-save.md)               | web, CLI                       | mapped                                                |
+| observed-agents         | [observed-agents.md](./observed-agents.md)                 | CLI (in the workspace), web    | mapped                                                |
+| terminal-agent-waits    | [terminal-agent-waits.md](./terminal-agent-waits.md)       | API, every Needs you surface   | mapped; driven by recipes/g4-terminal-agent-waits.mjs |
 
 ### Organization and sharing
 
