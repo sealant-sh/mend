@@ -182,11 +182,6 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
         item.contextValue = LIVE_STATUSES.has(element.session.status)
           ? "mend.session.live"
           : "mend.session.settled";
-        item.command = {
-          command: "mend.openWorktree",
-          title: "Open in VS Code",
-          arguments: [element],
-        };
         return item;
       }
       case "message": {

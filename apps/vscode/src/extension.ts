@@ -1345,6 +1345,9 @@ export interface MendExtensionApi {
   readonly workspaceEditor: () => Promise<WorkspaceEditorReport>;
 }
 
+/** A session row was selected: the review PR hangs the Change section off this. */
+export const onSessionSelected = (_node: SessionNode): void => {};
+
 export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const connections = new ConnectionStore(context);
   const client = new MendClient(connections);
@@ -1374,6 +1377,10 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
 
   context.subscriptions.push(
     view,
+    view.onDidChangeSelection((event) => {
+      const [node] = event.selection;
+      if (event.selection.length === 1 && isSessionNode(node)) onSessionSelected(node);
+    }),
     scope,
     new vscode.Disposable(() => eventSubscription.dispose()),
     vscode.commands.registerCommand("mend.refresh", refresh),
