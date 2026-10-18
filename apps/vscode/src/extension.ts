@@ -5,7 +5,6 @@ import {
   modelPicker,
   repositoryCloneUrlIssue,
 } from "@mend/domain/workbench";
-import { parseWorkspaceSshTarget } from "@mend/workspace-ssh";
 import * as vscode from "vscode";
 
 import { attachTerminal, maySteer, memberName, ownsSession } from "./agent-terminal.js";
@@ -13,6 +12,9 @@ import { MendApiError, MendClient, normalizeProjectName } from "./client.js";
 import { ConnectionStore } from "./config.js";
 import { currentBranch, pathContains, repositoryFacts, worktreePath } from "./git.js";
 import { modelPickRows } from "./model-picks.js";
+import { openRunner, setUpWorkspaceSsh } from "./open-command.js";
+import type { OpenMode } from "./open-flow.js";
+import type { OpenRunner } from "./open-runner.js";
 import { displaySession, joinLineOf, liveSessionLines } from "./session-lines.js";
 import {
   MendTreeProvider,
@@ -29,16 +31,11 @@ import type {
   ProjectDetail,
   Session,
   SessionLocation,
-  WorkspaceSshView,
   WorktreeJoin,
 } from "./types.js";
-import {
-  startWorkspaceEditor,
-  type WorkspaceEditorReport,
-} from "./workspace-editor.js";
-import { runWorkspaceSshSetup, workspaceSshReadiness } from "./workspace-ssh.js";
-import { WorkspaceWindow } from "./workspace-window.js";
 import { terminalTabName, windowRole } from "./window-role.js";
+import { startWorkspaceEditor, type WorkspaceEditorReport } from "./workspace-editor.js";
+import { WorkspaceWindow } from "./workspace-window.js";
 
 const liveStatuses: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
 
@@ -61,22 +58,6 @@ const showError = async (cause: unknown): Promise<void> => {
       : await vscode.window.showErrorMessage(errorMessage(cause));
   if (action === "Connect to server") await vscode.commands.executeCommand("mend.connect");
 };
-
-/**
- * The Remote-SSH authority of one workspace through the gateway — the authority the
- * workspace folder carries inside that window.
- */
-const remoteAuthority = (
-  destination: { readonly host: string; readonly usernamePrefix: string },
-  workspaceId: string,
-): string => `ssh-remote+${destination.usernamePrefix}-${workspaceId}@${destination.host}`;
-
-const safeFileName = (value: string): string =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "session";
 
 class WorkspaceScope implements vscode.Disposable {
   private readonly status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 30);
@@ -242,6 +223,7 @@ class MendCommands {
     private readonly tree: MendTreeProvider,
     private readonly scope: WorkspaceScope,
     private readonly workspaceWindow: WorkspaceWindow,
+    private readonly runner: OpenRunner,
   ) {}
 
   async connect(): Promise<boolean> {
@@ -294,15 +276,15 @@ class MendCommands {
     }
   }
 
-  /** Open the session's workspace. */
-  async openWorktree(argument?: unknown): Promise<void> {
+  /**
+   * Open the session's workspace in VS Code over Remote-SSH: from the row's button, the palette,
+   * the quick pick or a deep link. It never asks; a missing setup step is part of its progress.
+   */
+  async open(argument: unknown, mode: OpenMode): Promise<void> {
     try {
       const location = await this.sessionLocation(argument);
       if (location === null) return;
-      if (!(await this.mayOpenOverSsh(location))) return;
-      const workspaceUri = await this.workspaceUri(location);
-      if (workspaceUri === "cancelled") return;
-      await this.openNamedWorkspace(location, workspaceUri);
+      await this.runner.open({ project: location.project, session: location.session }, mode);
     } catch (cause) {
       void showError(cause);
     }
@@ -399,38 +381,6 @@ class MendCommands {
     this.tree.refresh();
     await this.scope.refresh();
     void vscode.window.showInformationMessage(said);
-  }
-
-  /**
-   * Remote-SSH admits only the person who launched the workspace's executor (docs/adr/0016; the
-   * gateway authorizes the workspace's creator). That is not always the session's owner: a session
-   * started in a worktree where another person's session already runs joins that person's
-   * executor. Opening it would end in a bare "Permission denied" from Remote-SSH, so say it first
-   * and offer the terminal where the server lets this person in. Every path that opens a
-   * workspace over SSH asks this, the takeover included.
-   */
-  private async mayOpenOverSsh(location: SessionLocation): Promise<boolean> {
-    const launcher = location.session.workspaceLauncherUserId;
-    const viewer = this.tree.knownViewer() ?? (await this.client.viewerId());
-    if (launcher === null || viewer === null || launcher === viewer) return true;
-    const terminal = maySteer(location.session, viewer);
-    const answer = await vscode.window.showWarningMessage(
-      `${await memberName(this.client, launcher)} launched the workspace ${displaySession(location.session)} runs in.`,
-      {
-        modal: true,
-        detail: `Remote-SSH opens a workspace only for the person who launched it, so VS Code would be refused. A session of yours in this worktree joins the same workspace, so it would be refused too.${terminal ? " The session's terminal needs no SSH." : ""}`,
-      },
-      ...(terminal ? ["Open terminal", "Open anyway"] : ["Open anyway"]),
-    );
-    if (answer === "Open terminal") {
-      await this.openTerminal({
-        kind: "session",
-        project: location.project,
-        session: location.session,
-      } satisfies SessionNode);
-      return false;
-    }
-    return answer === "Open anyway";
   }
 
   async openInMend(argument?: unknown): Promise<void> {
@@ -596,7 +546,7 @@ class MendCommands {
       );
       this.tree.refresh();
       await this.scope.refresh();
-      await this.openWorktree(session.id);
+      await this.open(session.id, "new-window");
     } catch (cause) {
       void showError(cause);
     }
@@ -636,7 +586,7 @@ class MendCommands {
       );
       this.tree.refresh();
       await this.scope.refresh();
-      await this.openWorktree(session.id);
+      await this.open(session.id, "new-window");
     } catch (cause) {
       void showError(cause);
     }
@@ -789,7 +739,7 @@ class MendCommands {
       );
       this.tree.refresh();
       await this.scope.refresh();
-      await this.openWorktree({ kind: "session", project, session } satisfies SessionNode);
+      await this.open({ kind: "session", project, session } satisfies SessionNode, "new-window");
     } catch (cause) {
       void showError(cause);
     }
@@ -824,11 +774,14 @@ class MendCommands {
       );
       await this.client.stopSession(session.id);
       this.tree.refresh();
-      await this.openWorktree({
-        kind: "session",
-        project,
-        session: { ...session, status: "stopped" },
-      } satisfies SessionNode);
+      await this.open(
+        {
+          kind: "session",
+          project,
+          session: { ...session, status: "stopped" },
+        } satisfies SessionNode,
+        "new-window",
+      );
     } catch (cause) {
       void showError(cause);
     }
@@ -867,8 +820,10 @@ class MendCommands {
     });
     if (picked === undefined) return;
     if (picked.action === "session") {
-      await this.openWorktree(
-        { kind: "session", project, session: picked.session } satisfies SessionNode);
+      await this.open(
+        { kind: "session", project, session: picked.session } satisfies SessionNode,
+        "follow-setting",
+      );
     } else if (picked.action === "new-session") {
       await this.newSession({ kind: "project", project } satisfies ProjectNode);
     } else if (picked.action === "new-worktree") {
@@ -885,7 +840,7 @@ class MendCommands {
       await vscode.commands.executeCommand("workbench.view.extension.mend");
       return;
     }
-    await this.openWorktree(sessionId);
+    await this.open(sessionId, "follow-setting");
   }
 
   private async pickProject(argument?: unknown): Promise<Project | null> {
@@ -941,196 +896,24 @@ class MendCommands {
         action: "session",
         session,
       })),
-      { title: `Open worktree · ${project.name}`, ignoreFocusOut: true },
+      { title: `Choose a session · ${project.name}`, ignoreFocusOut: true },
     );
     return picked === undefined
       ? null
       : { project, session: picked.session, worktreePath: worktreePath(project, picked.session) };
   }
 
-  /**
-   * Open the session's workspace through the published workspace SSH gateway. Host filesystem
-   * paths are never a fallback: their shell would run outside the supervised workspace.
-   */
-  private async workspaceUri(location: SessionLocation): Promise<vscode.Uri | "cancelled"> {
-    const destination = await this.resolveWorkspaceSsh(false);
-    if (destination === "cancelled") return destination;
-    let workspaceId = liveStatuses.has(location.session.status)
-      ? location.session.sealantWorkspaceId
-      : null;
-    if (workspaceId === null) {
-      workspaceId = await this.resumeForEditor(location);
-      if (workspaceId === null) return "cancelled";
-    }
-    const authority = remoteAuthority(destination, workspaceId);
-    if (!(await this.ensureRemoteSsh(authority, "/workspace/repo"))) return "cancelled";
-    return vscode.Uri.from({
-      scheme: "vscode-remote",
-      authority,
-      path: "/workspace/repo",
-    });
-  }
-
-  /**
-   * Discover the gateway and reconcile this client's exact server alias, host, port, and key.
-   * Discovery and authentication failures stop the open instead of becoming host-path opens.
-   */
-  private async resolveWorkspaceSsh(
-    force: boolean,
-  ): Promise<{ readonly host: string; readonly usernamePrefix: string } | "cancelled"> {
-    let view: WorkspaceSshView;
-    try {
-      view = await this.client.workspaceSsh();
-    } catch (cause) {
-      void showError(cause);
-      return "cancelled";
-    }
-    const gateway = view.gateway;
-    if (gateway === null) {
-      void vscode.window.showErrorMessage("This Mend deployment exposes no workspace SSH gateway.");
-      return "cancelled";
-    }
-    const connection = await this.client.connection();
-    const hostnameOverride =
-      vscode.workspace.getConfiguration("mend").get<string>("workspaceSshHost")?.trim() ?? "";
-    const parsedTarget = parseWorkspaceSshTarget({
-      serverUrl: connection.url,
-      publishedPort: gateway.port,
-      hostnameOverride,
-    });
-    if (!parsedTarget.ok) {
-      void vscode.window.showErrorMessage(parsedTarget.error.message);
-      return "cancelled";
-    }
-    let ready = false;
-    try {
-      ready = !force && workspaceSshReadiness(view, parsedTarget.value).ready;
-    } catch (cause) {
-      void showError(cause);
-      return "cancelled";
-    }
-    if (!ready) {
-      const answer = await vscode.window.showInformationMessage(
-        "Set up workspace SSH?",
-        {
-          modal: true,
-          detail:
-            "Mend registers this machine's SSH key and manages one server-specific Host block in ~/.ssh/config. Existing hand-written config and other Mend servers are preserved. Setup does not test the SSH connection or verify gateway host trust.",
-        },
-        "Set up",
-      );
-      if (answer !== "Set up") return "cancelled";
-      try {
-        await runWorkspaceSshSetup(parsedTarget.value, (publicKey, name) =>
-          this.client.ensureWorkspaceSshKey(publicKey, name),
-        );
-        void vscode.window.setStatusBarMessage(
-          "Mend SSH config saved; client key registered. Host trust not checked.",
-          7_000,
-        );
-      } catch (cause) {
-        void showError(cause);
-        return "cancelled";
-      }
-    }
-    return { host: parsedTarget.value.alias, usernamePrefix: gateway.usernamePrefix };
-  }
-
-  /** Reconcile workspace SSH for this client and its currently configured Mend server. */
+  /** Set up workspace SSH for this client and its configured Mend server, from the palette. */
   async setupWorkspaceSsh(): Promise<void> {
-    await this.resolveWorkspaceSsh(true);
-  }
-
-  /**
-   * A settled session has no live workspace to attach to. Offer a SHELL resume: it provisions
-   * a fresh workspace over the same worktree and the shell holds the lease while the editor
-   * is attached — no agent is launched. Resolves the new workspace id, or null.
-   */
-  private async resumeForEditor(location: SessionLocation): Promise<string | null> {
-    const answer = await vscode.window.showInformationMessage(
-      `${displaySession(location.session)} has no live workspace.`,
-      {
-        modal: true,
-        detail:
-          "Resume it as a workbench shell and open the workspace? The shell keeps the workspace alive while the editor is attached; an agent you run inside is observed by Mend.",
-      },
-      "Resume and open",
-    );
-    if (answer !== "Resume and open") return null;
-    return vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: `Resuming ${displaySession(location.session)}…`,
-      },
-      async () => {
-        await this.client.resumeSession(location.session.id, "shell");
-        for (let attempt = 0; attempt < 60; attempt += 1) {
-          const found = await this.client.findSession(location.session.id);
-          const session = found?.session;
-          if (
-            session !== undefined &&
-            session.sealantWorkspaceId !== null &&
-            liveStatuses.has(session.status)
-          ) {
-            this.tree.refresh();
-            return session.sealantWorkspaceId;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 2_000));
-        }
-        void vscode.window.showErrorMessage(
-          "The resumed session did not report a workspace in time.",
-        );
-        return null;
-      },
-    );
-  }
-
-  /** True when Microsoft Remote SSH is available; otherwise offers the install or the CLI line. */
-  private async ensureRemoteSsh(authority: string, remotePath: string): Promise<boolean> {
-    if (vscode.extensions.getExtension("ms-vscode-remote.remote-ssh") !== undefined) return true;
-    const choice = await vscode.window.showInformationMessage(
-      "Opening a remote Mend worktree requires Microsoft Remote SSH.",
-      "Install Remote SSH",
-      "Copy code command",
-    );
-    if (choice === "Install Remote SSH") {
-      await vscode.commands.executeCommand(
-        "workbench.extensions.installExtension",
-        "ms-vscode-remote.remote-ssh",
+    try {
+      await setUpWorkspaceSsh(this.context, this.client);
+      void vscode.window.setStatusBarMessage(
+        "Mend SSH config saved; client key registered. Host trust not checked.",
+        7_000,
       );
-    } else if (choice === "Copy code command") {
-      await vscode.env.clipboard.writeText(
-        `code --remote ${authority} ${JSON.stringify(remotePath)}`,
-      );
+    } catch (cause) {
+      void showError(cause);
     }
-    return false;
-  }
-
-  private async openNamedWorkspace(location: SessionLocation, folder: vscode.Uri): Promise<void> {
-    // A remote folder opens DIRECTLY: `vscode.openFolder` on the vscode-remote URI is what
-    // reliably attaches Remote-SSH. The .code-workspace wrapper (kept for local opens, where
-    // it names the window) carries a `remoteAuthority` field VS Code does not always honor —
-    // the failure mode is a LOCAL window pointing at a remote URI: an empty-looking folder
-    // and a terminal on the wrong machine.
-    if (folder.scheme === "vscode-remote") {
-      await vscode.commands.executeCommand("vscode.openFolder", folder, { forceNewWindow: true });
-      return;
-    }
-    await vscode.workspace.fs.createDirectory(this.context.globalStorageUri);
-    const title = `${location.project.name} › ${displaySession(location.session)}`;
-    const file = vscode.Uri.joinPath(
-      this.context.globalStorageUri,
-      `${safeFileName(location.project.name)}-${location.session.id.slice(0, 12)}.code-workspace`,
-    );
-    const document = {
-      folders: [{ uri: folder.toString(true) }],
-      settings: { "window.title": title },
-    };
-    await vscode.workspace.fs.writeFile(
-      file,
-      new TextEncoder().encode(`${JSON.stringify(document, null, 2)}\n`),
-    );
-    await vscode.commands.executeCommand("vscode.openFolder", file, { forceNewWindow: true });
   }
 }
 
@@ -1161,7 +944,16 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     ),
     (cause) => void showError(cause),
   );
-  const commands = new MendCommands(context, connections, client, tree, scope, workspaceWindow);
+  const opens = openRunner({ context, client, workspaceWindow });
+  const commands = new MendCommands(
+    context,
+    connections,
+    client,
+    tree,
+    scope,
+    workspaceWindow,
+    opens.runner,
+  );
   const view = vscode.window.createTreeView("mend.sessions", {
     treeDataProvider: tree,
     showCollapseAll: true,
@@ -1186,6 +978,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   context.subscriptions.push(
     view,
     workspaceWindow,
+    opens.disposable,
     view.onDidChangeSelection((event) => {
       const [node] = event.selection;
       if (event.selection.length === 1 && isSessionNode(node)) onSessionSelected(node);
@@ -1198,8 +991,11 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
       if (await commands.connect()) restartEvents();
     }),
     vscode.commands.registerCommand("mend.adoptProject", () => commands.adoptProject()),
-    vscode.commands.registerCommand("mend.openWorktree", (argument?: unknown) =>
-      commands.openWorktree(argument),
+    vscode.commands.registerCommand("mend.open", (argument?: unknown) =>
+      commands.open(argument, "follow-setting"),
+    ),
+    vscode.commands.registerCommand("mend.openInNewWindow", (argument?: unknown) =>
+      commands.open(argument, "new-window"),
     ),
     vscode.commands.registerCommand("mend.newSessionInWorktree", (argument?: unknown) =>
       commands.newSessionInWorktree(argument),

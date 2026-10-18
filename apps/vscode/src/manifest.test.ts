@@ -28,16 +28,29 @@ const sessionContextMenu = (): ReadonlyArray<MenuEntry> => {
   return Array.isArray(entries) ? entries.filter(isMenuEntry) : [];
 };
 
+const entriesOf = (command: string): ReadonlyArray<MenuEntry> =>
+  sessionContextMenu().filter(
+    (entry) => entry.command === command && (entry.when ?? "").includes("mend\\.session"),
+  );
+
 describe("the session row", () => {
-  it("offers Open in VS Code inline and in its right-click menu", () => {
-    const openOnSession = sessionContextMenu().filter(
-      (entry) =>
-        entry.command === "mend.openWorktree" && (entry.when ?? "").includes("mend\\.session"),
-    );
-    const groups = openOnSession.map((entry) => entry.group ?? "");
+  it("offers Open inline and in its right-click menu", () => {
+    const groups = entriesOf("mend.open").map((entry) => entry.group ?? "");
     expect(groups.some((group) => group.startsWith("inline"))).toBe(true);
     // The right-click menu lists every group but `inline`.
     expect(groups.some((group) => !group.startsWith("inline"))).toBe(true);
+  });
+
+  it("offers Open in New Window only in its right-click menu", () => {
+    const groups = entriesOf("mend.openInNewWindow").map((entry) => entry.group ?? "");
+    expect(groups.length).toBeGreaterThan(0);
+    expect(groups.every((group) => !group.startsWith("inline"))).toBe(true);
+  });
+
+  it("has no takeover and no Open in VS Code", () => {
+    const commands = sessionContextMenu().map((entry) => entry.command);
+    expect(commands).not.toContain("mend.takeOverSession");
+    expect(commands).not.toContain("mend.openWorktree");
   });
 });
 
