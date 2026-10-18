@@ -524,22 +524,25 @@ const down = async () => {
   if (pids.vscode) say(`VS Code · ${await end(pids.vscode, "SIGTERM", 15_000)}`);
   if (pids.ffmpeg) say(`ffmpeg · ${await end(pids.ffmpeg, "SIGINT", 15_000)}`);
   if (pids.xvfb) say(`Xvfb · ${await end(pids.xvfb, "SIGTERM", 5_000)}`);
-  const dind = state.dind ?? `${names.world}-dind`;
+  // By the name `up` gives it (the ledger keeps its id): `docker ps` exits 0 with no id when the
+  // daemon is already gone.
+  const dind = `${names.world}-dind`;
   const found = await world.run("docker", ["ps", "-aq", "--filter", `name=^${dind}$`], {
     allowFailure: true,
   });
+  const present = found.status === 0 && found.stdout.trim() !== "";
   const clientEnv = {
     ...process.env,
     HOME: state.home ?? names.root,
     XDG_CONFIG_HOME: state.configHome ?? join(names.root, "none"),
   };
   await world.removeWorld({
-    dind: found.status === 0 ? dind : null,
+    dind: present ? dind : null,
     context: state.context ?? `${names.world}-dind`,
     scratch: state.scratch,
     clientEnv,
   });
-  say(`daemon ${dind} · ${found.status === 0 ? "removed" : "was gone"} · scratch removed`);
+  say(`daemon ${dind} · ${present ? "removed" : "was gone"} · scratch removed`);
   let scan = 0;
   if (existsSync(names.privateDir) && existsSync(names.evidenceDir)) {
     const result = await world.run(
