@@ -13,10 +13,9 @@ import { MendApiError, MendClient, normalizeProjectName } from "./client.js";
 import { ConnectionStore } from "./config.js";
 import { currentBranch, pathContains, repositoryFacts, worktreePath } from "./git.js";
 import { modelPickRows } from "./model-picks.js";
-import { joinLineOf, liveSessionLines } from "./session-lines.js";
+import { displaySession, joinLineOf, liveSessionLines } from "./session-lines.js";
 import {
   MendTreeProvider,
-  displaySession,
   isProjectNode,
   isSessionNode,
   type ProjectNode,

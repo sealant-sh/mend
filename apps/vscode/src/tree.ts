@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 
 import type { MendClient } from "./client.js";
-import { readProjects, sessionLines, workspaceReads } from "./session-lines.js";
+import { displaySession, readProjects, sessionLines, workspaceReads } from "./session-lines.js";
 import type { Project, ProjectDetail, Session } from "./types.js";
 
 const LIVE_STATUSES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
@@ -29,9 +29,6 @@ export const sessionTooltip = (
   session: Session,
   lines: ReadonlyArray<string>,
 ): string => [`${project.name} · ${session.branch} · ${session.status}`, ...lines].join("\n");
-
-const sessionLabel = (session: Session): string =>
-  session.label ?? `${session.harness} · ${session.id.slice(0, 8)}`;
 
 const statusIcon = (status: string): vscode.ThemeIcon => {
   switch (status) {
@@ -163,7 +160,7 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
       }
       case "session": {
         const item = new vscode.TreeItem(
-          sessionLabel(element.session),
+          displaySession(element.session),
           vscode.TreeItemCollapsibleState.None,
         );
         item.description = element.session.status;
@@ -270,5 +267,3 @@ export const isSessionNode = (value: unknown): value is SessionNode =>
 
 export const isProjectNode = (value: unknown): value is ProjectNode =>
   typeof value === "object" && value !== null && Reflect.get(value, "kind") === "project";
-
-export const displaySession = sessionLabel;

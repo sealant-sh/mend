@@ -15,6 +15,10 @@ import type { LivePerson, Project, ProjectDetail, Session } from "./types.js";
  * waiting line and the retirement line. Parsing is tolerant: an older server omits all of it.
  */
 
+/** A session's name: its label, else its harness and short id. */
+export const displaySession = (session: Pick<Session, "label" | "harness" | "id">): string =>
+  session.label ?? `${session.harness} · ${session.id.slice(0, 8)}`;
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
