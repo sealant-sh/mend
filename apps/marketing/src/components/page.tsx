@@ -52,9 +52,8 @@ export function MarketingPage() {
     <div className="mend-grain mend-grain-surface min-h-dvh pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] text-foreground">
       {/* The header sits in the root stacking context above <main>, which
           isolates its own. Nothing between the header and the viewport clips;
-          the horizontal clip lives on <main>. On iOS only, translateZ(0) gives
-          the header its own layer; desktop keeps its subpixel text. */}
-      <header className="mend-grain-surface mend-grain-header sticky top-0 z-40 pt-[env(safe-area-inset-top)] supports-[-webkit-touch-callout:none]:[transform:translateZ(0)]">
+          the horizontal clip lives on <main>. */}
+      <header className="mend-grain-surface mend-grain-header sticky top-0 z-40 pt-[env(safe-area-inset-top)]">
         <div
           className={`${FRAME} flex min-h-16 items-center justify-between gap-4 border-b-2 px-5 sm:px-8`}
         >
