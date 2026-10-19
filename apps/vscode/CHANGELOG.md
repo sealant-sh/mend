@@ -15,8 +15,8 @@ patch number is the extension's own.
 - A session's workspace window attaches the agent's terminal and focuses it (`claude · <session>`).
   A conversation started elsewhere shows **Continue here**, which moves it into a terminal through
   Mend's mode handoff.
-- **Take over session in the editor** is removed: typing into the attached terminal, or **Continue
-  here**, does the same without stopping the agent.
+- **Take over session in the editor** is removed: typing into the attached terminal does the same,
+  and **Continue here** moves a conversation into a terminal and keeps the conversation.
 - A row whose workspace someone else launched offers **Review**, and **Watch terminal** while shared
   control is on, instead of an **Open** that Remote-SSH would refuse. Its tooltip says why.
 - Remote-SSH no longer asks for the platform of Mend's host: the open sets it to Linux.

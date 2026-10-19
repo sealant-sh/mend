@@ -39,11 +39,6 @@ import {
   type EditorSyncState,
 } from "./editor-status.js";
 
-/** VS Code's API exposes only the remote name, so the authority comes off a remote workspace folder. */
-export const windowRemoteAuthority = (): string | undefined =>
-  (vscode.workspace.workspaceFolders ?? []).find((folder) => folder.uri.scheme === "vscode-remote")
-    ?.uri.authority;
-
 export interface WorkspaceEditorReport {
   readonly state: EditorSyncState;
   readonly mode: EditorMode;
