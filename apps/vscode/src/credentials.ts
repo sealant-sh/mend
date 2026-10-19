@@ -1,8 +1,8 @@
 /**
  * Which token the editor sends to a server, from what it keeps in its secret storage and what the
  * Mend CLI saved on this machine (`cli.json`). The editor's own entry wins for its URL, and that
- * includes an entry that says "no token": after a sign-out, or a connect with no token, the editor
- * must not quietly fall back to the CLI's sign-in, which may be another account.
+ * includes an entry that says "no token": after a sign-out the editor must not quietly fall back to
+ * the CLI's sign-in, which may be another account.
  */
 
 /** What the editor keeps for one server URL. */
@@ -13,6 +13,8 @@ export type StoredCredential =
       readonly token: string;
       /** The device a browser sign-in created; sign-out revokes it. Null for a pasted token. */
       readonly deviceId: string | null;
+      /** The account the sign-in approved, for the Accounts menu while Mend cannot be read. */
+      readonly email?: string;
     }
   | { readonly kind: "none"; readonly url: string };
 
@@ -41,7 +43,14 @@ const credentialOf = (value: unknown): StoredCredential | null => {
   const token = value["token"];
   if (typeof token === "string") {
     const deviceId = value["deviceId"];
-    return { kind: "token", url, token, deviceId: typeof deviceId === "string" ? deviceId : null };
+    const email = value["email"];
+    return {
+      kind: "token",
+      url,
+      token,
+      deviceId: typeof deviceId === "string" ? deviceId : null,
+      ...(typeof email === "string" ? { email } : {}),
+    };
   }
   return token === null ? { kind: "none", url } : null;
 };
@@ -79,10 +88,22 @@ export const serializeCredentialStore = (store: CredentialStore): string =>
   JSON.stringify({
     entries: [...store.values()].map((credential) =>
       credential.kind === "token"
-        ? { url: credential.url, token: credential.token, deviceId: credential.deviceId }
+        ? {
+            url: credential.url,
+            token: credential.token,
+            deviceId: credential.deviceId,
+            ...(credential.email === undefined ? {} : { email: credential.email }),
+          }
         : { url: credential.url, token: null },
     ),
   });
+
+/** The store with no entry of its own for `url`: the CLI's sign-in for it applies again. */
+export const withoutCredential = (store: CredentialStore, url: string): CredentialStore => {
+  const next = new Map(store);
+  next.delete(canonicalServerUrl(url));
+  return next;
+};
 
 /** The store with `credential` as its server's entry, every other server's left as it was. */
 export const withCredential = (
