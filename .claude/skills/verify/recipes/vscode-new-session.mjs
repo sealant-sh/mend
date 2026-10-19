@@ -2,11 +2,14 @@
 // quick input on the project her window's origin matched, Enter starts claude on her prompt as a
 // terminal agent, the row goes `starting` then `running`, no window opens and nothing toasts, and
 // Open shows claude's TUI on her prompt (a1-a3). Then the edge cases, in an order where each leaves
-// the next a usable world: Change… (codex and a model, one Back, remembered for the project), a
-// base Mend's store has not seen (a local commit on a new branch), a folder whose origin is not
-// adopted (Adopt this repository, then the prompt), a launch that fails (Claude disconnected; one
-// toast with Retry, which relaunches the same session once Claude is back), and Mend going offline
-// while she has typed a prompt (kept, and there again once Mend is back).
+// the next a usable world: Change… (codex and a model, one Back, remembered for the project), the
+// join title, a base Mend's store has not seen (a local commit on a new branch), the base as the
+// ref that proved it (a branch tracking origin/<default> under another name, one pushed without
+// -u, one the store cannot find), a folder named like the project whose origin is not adopted
+// (Adopt this repository, then the prompt), a refused launch (Claude disconnected; the row reads
+// the server's state, one toast with Retry, which relaunches the same session once Claude is
+// back), and Mend going offline while she has typed a prompt (kept, the cursor after it, and there
+// again once Mend is back).
 //
 //   node .claude/skills/verify/scripts/drive-vscode.mjs run \
 //     .claude/skills/verify/recipes/vscode-new-session.mjs --out <dir>
@@ -35,6 +38,12 @@ const UNPUSHED = "verify-unpushed";
 const OTHER_REPO = "https://github.com/octocat/Spoon-Knife.git";
 const OPEN = /^Mend: Open$/;
 const OFFLINE = "Mend is offline · retrying";
+/**
+ * A refused launch reads the server's state: `failed · <its summary>` once the server settles it,
+ * `starting · launch refused · <the refusal>` while it still reads it starting.
+ */
+const REFUSED_ROW = /^failed · |^starting · launch refused · /;
+const REFUSED_TOAST = / failed · | · launch refused · /;
 
 const expect = (holds, message) => {
   if (!holds) throw new Error(message);
@@ -325,7 +334,7 @@ export default async (h) => {
       await quickInput.type(PROMPT);
       await shot("a2-prompt-typed");
       await quickInput.accept();
-      await waitUntil("the input to close", async () => !(await quickInput.isOpen()), 10_000);
+      await waitUntil("the input to close", async () => !(await quickInput.isOpen()), 60_000);
       const { row, seen, firstMs } = await followNewRow(before.labels, /^running/, 600_000);
       await shot("a2-row-running");
       expect(
@@ -520,6 +529,34 @@ export default async (h) => {
     },
   );
 
+  await step(
+    `New session in this worktree on ${started.label}'s row: the title names the worktree by its session, never wt-<uuid>`,
+    async () => {
+      await mendView();
+      await treeItem(started.label).contextMenu("Mend: New session in this worktree…");
+      await quickInput.waitFor();
+      const seen = await waitUntil(
+        "the join title",
+        async () => {
+          const now = await read();
+          return now.title?.includes(" · in ") ? now : null;
+        },
+        30_000,
+      );
+      await shot("join-title");
+      await quickInput.cancel();
+      const observed = said(seen);
+      expect(
+        seen.title === `New session · ${project.name} · in ${started.label}'s worktree` ||
+          (seen.title?.startsWith(`New session · ${project.name} · in `) &&
+            !/wt-[0-9a-f-]{36}/.test(seen.title)),
+        `the title: ${observed}`,
+      );
+      expect(!/wt-[0-9a-f-]{36}/.test(seen.rows[0]?.description ?? ""), observed);
+      return observed;
+    },
+  );
+
   // ── base not in the store ──
   await step(
     `a local commit on a new branch ${UNPUSHED} in the window's checkout`,
@@ -565,10 +602,167 @@ export default async (h) => {
     { via: "setup" },
   );
 
-  // ── no project matched ──
-  const other = join(state.scratch, "spoon-knife");
+  // ── the base is the ref that proved her commits are on origin ──
+  /** Enter on a typed prompt; the session it created, and its worktree's base over the API. */
+  const startAndReadBase = async (prompt) => {
+    const ids = await sessionIds();
+    await quickInput.type(prompt);
+    await quickInput.accept();
+    await waitUntil("the input to close", async () => !(await quickInput.isOpen()), 120_000);
+    const session = await waitUntil(
+      "the created session",
+      async () => (await createdSince(ids))[0] ?? null,
+      60_000,
+    );
+    const detail = await api(`/projects/${project.id}`);
+    const worktree = detail.worktrees?.find((one) => one.id === session.worktreeId);
+    expect(worktree !== undefined, `no worktree ${session.worktreeId} for ${session.id}`);
+    return { session, worktree, created: (await createdSince(ids)).length };
+  };
+
   await step(
-    `a second local repository, cloned from ${OTHER_REPO}, which no project adopted`,
+    `a branch verify-tracks that tracks origin/${base} under another name`,
+    async () => {
+      git(["switch", "-q", "-c", "verify-tracks", "--track", `origin/${base}`]);
+      return `${git(["branch", "--show-current"])} · @{upstream} ${git(["rev-parse", "--symbolic-full-name", "@{upstream}"])}`;
+    },
+    { via: "setup" },
+  );
+
+  await step(
+    `its upstream is the base: the dim line reads "from ${base}" with no warning, and the created session's worktree is based on ${base} at origin/${base}'s commit`,
+    async () => {
+      const seen = await waitUntil(
+        "the dim line to read the upstream",
+        async () => {
+          const now = await newSession();
+          if (now.rows[0]?.description.endsWith(`from ${base}`)) return now;
+          await quickInput.cancel();
+          return null;
+        },
+        60_000,
+      );
+      await shot("base-upstream");
+      expect(!seen.rows[0].icons.includes("warning"), `a warning: ${said(seen)}`);
+      const { session, worktree, created } = await startAndReadBase("check the base");
+      const upstream = git(["rev-parse", `origin/${base}`]);
+      const observed = `${said(seen)} · ${created} session ${session.id.slice(0, 8)} · worktree ${worktree.name} baseRef ${worktree.baseRef} baseSha ${worktree.baseSha} · origin/${base} ${upstream}`;
+      expect(created === 1, observed);
+      expect(worktree.baseRef === base && worktree.baseSha === upstream, observed);
+      return observed;
+    },
+    { via: "api" },
+  );
+
+  const remoteTest = (() => {
+    try {
+      return git(["rev-parse", "--verify", "--quiet", "refs/remotes/origin/test"]);
+    } catch {
+      return null;
+    }
+  })();
+  if (remoteTest === null) {
+    note("origin has no branch test: the pushed-without -u lane is skipped");
+  } else {
+    await step(
+      `a local branch test at origin/test, its @{upstream} set to origin/${base} (pushed without -u)`,
+      async () => {
+        git(["switch", "-q", "-c", "test", "origin/test"]);
+        git(["branch", "-q", "--set-upstream-to", `origin/${base}`]);
+        return `HEAD ${git(["rev-parse", "--short", "HEAD"])} · @{upstream} ${git(["rev-parse", "--symbolic-full-name", "@{upstream}"])} · origin/test ${remoteTest.slice(0, 7)}`;
+      },
+      { via: "setup" },
+    );
+
+    await step(
+      `pushed without -u: origin/test proves it, not @{upstream}: the dim line reads "from test", and the created session's worktree is based on test`,
+      async () => {
+        const seen = await waitUntil(
+          "the dim line to read test",
+          async () => {
+            const now = await newSession();
+            if (now.rows[0]?.description.endsWith("from test")) return now;
+            await quickInput.cancel();
+            return null;
+          },
+          60_000,
+        );
+        await shot("base-pushed-without-u");
+        expect(!seen.rows[0].icons.includes("warning"), `a warning: ${said(seen)}`);
+        const { session, worktree, created } = await startAndReadBase("check the pushed branch");
+        const observed = `${said(seen)} · ${created} session ${session.id.slice(0, 8)} · worktree baseRef ${worktree.baseRef} baseSha ${worktree.baseSha} · origin/test ${remoteTest}`;
+        expect(worktree.baseRef === "test" && worktree.baseSha === remoteTest, observed);
+        return observed;
+      },
+      { via: "api" },
+    );
+  }
+
+  await step(
+    "a branch verify-gone with a remote-tracking ref origin/verify-gone that origin does not have",
+    async () => {
+      git(["switch", "-q", "-c", "verify-gone", `origin/${base}`]);
+      git(["update-ref", "refs/remotes/origin/verify-gone", "HEAD"]);
+      return git(["rev-parse", "--symbolic-full-name", "origin/verify-gone"]);
+    },
+    { via: "setup" },
+  );
+
+  await step(
+    `the store can't find it: Enter keeps the input with her prompt and the line "from ${base} · Mend's store couldn't find verify-gone"; Enter again starts from ${base}`,
+    async () => {
+      const ids = await sessionIds();
+      await waitUntil(
+        "the dim line to read verify-gone",
+        async () => {
+          const now = await newSession();
+          if (now.rows[0]?.description.endsWith("from verify-gone")) return now;
+          await quickInput.cancel();
+          return null;
+        },
+        60_000,
+      );
+      await quickInput.type("check the missing base");
+      await quickInput.accept();
+      const refused = await waitUntil(
+        "the store's refusal on the line",
+        async () => {
+          const now = await read();
+          return now.rows[0]?.description.includes("couldn't find") ? now : null;
+        },
+        180_000,
+      );
+      await shot("base-store-refused");
+      const between = (await createdSince(ids)).length;
+      const { worktree, created } = await startAndReadBase("check the missing base");
+      const observed = `${said(refused)} · sessions created by the refused Enter ${between} · after Enter again ${created}, worktree baseRef ${worktree.baseRef}`;
+      expect(
+        refused.rows[0].description.endsWith(
+          `from ${base} · Mend's store couldn't find verify-gone`,
+        ) && refused.value === "check the missing base",
+        observed,
+      );
+      expect(between === 0 && created === 1 && worktree.baseRef === base, observed);
+      return observed;
+    },
+    { via: "api" },
+  );
+
+  await step(
+    `the checkout back on ${base}, origin/verify-gone removed`,
+    async () => {
+      git(["update-ref", "-d", "refs/remotes/origin/verify-gone"]);
+      git(["switch", "-q", base]);
+      return git(["branch", "--show-current"]);
+    },
+    { via: "setup" },
+  );
+
+  // ── no project matched ──
+  // Its folder is named after the adopted project: an origin that differs is not that project.
+  const other = join(state.scratch, "same-name", project.name);
+  await step(
+    `a second local repository, cloned from ${OTHER_REPO} into a folder named ${project.name} like the adopted project, its origin adopted by no project`,
     async () => {
       execFileSync("git", ["clone", "-q", OTHER_REPO, other], { env, timeout: 300_000 });
       const adopted = (await api("/projects")).map((one) => one.originUrl);
@@ -593,7 +787,7 @@ export default async (h) => {
 
   const projectsBefore = (await api("/projects")).map((one) => one.id);
   await step(
-    "no project matched: the first step lists Adopt this repository on top, then the projects",
+    `no project matched, though the folder is named ${project.name}: the first step lists Adopt this repository on top, then the projects`,
     async () => {
       const seen = await newSession();
       await shot("no-match");
@@ -660,7 +854,7 @@ export default async (h) => {
   };
   const failWatch = await watch();
   const failed = await step(
-    "launch fails: New session, Change… back to claude, Enter: the row reads failed · …, one error toast with Retry",
+    "launch refused: New session, Change… back to claude, Enter: the row reads what the server holds with the refusal's words, one error toast with Retry",
     async () => {
       await newSession();
       await quickInput.type(PROMPT_FAILS);
@@ -669,12 +863,12 @@ export default async (h) => {
       );
       expect(prompt.rows[0].description.startsWith("claude · "), `the dim line: ${said(prompt)}`);
       await quickInput.accept();
-      const { row, seen } = await followNewRow(beforeFail.labels, /^failed/, 120_000);
+      const { row, seen } = await followNewRow(beforeFail.labels, REFUSED_ROW, 120_000);
       const toast = await waitUntil(
         "the failure's toast",
         async () => {
           const all = await notifications();
-          return all.find((text) => / failed · /.test(text)) ?? null;
+          return all.find((text) => REFUSED_TOAST.test(text)) ?? null;
         },
         60_000,
       );
@@ -682,9 +876,14 @@ export default async (h) => {
       const caught = await failWatch.stop();
       await shot("launch-failed");
       const created = await createdSince(beforeFail.ids);
-      const observed = `Change… ${trail.join(" · ")} · dim line "${prompt.rows[0].description}" · rows sampled ${JSON.stringify(seen)} · toast "${toast}" · ${shown(caught)} · sessions created ${created.length}`;
-      const failures = (caught?.toasts ?? []).filter((text) => / failed · /.test(text));
+      const server = await api(`/sessions/${created[0]?.id}`);
+      const observed = `Change… ${trail.join(" · ")} · dim line "${prompt.rows[0].description}" · rows sampled ${JSON.stringify(seen)} · the server reads ${server.session.status} · "${server.session.summary}" · toast "${toast}" · ${shown(caught)} · sessions created ${created.length}`;
+      const failures = (caught?.toasts ?? []).filter((text) => REFUSED_TOAST.test(text));
       expect(created.length === 1, observed);
+      expect(
+        row.description.startsWith(`${server.session.status} · `),
+        `the row reads a state the server does not hold: ${observed}`,
+      );
       expect(failures.length === 1, `${failures.length} failure toasts: ${observed}`);
       expect(/Retry/.test(toast), `the toast offers no Retry: ${observed}`);
       return {
@@ -706,7 +905,7 @@ export default async (h) => {
     "Retry on the toast: the same session launches again (no new session, a second launch on its id) and its row reads running",
     async () => {
       const ids = await sessionIds();
-      await notification(/ failed · /).click("Retry");
+      await notification(REFUSED_TOAST).click("Retry");
       const detail = await waitUntil(
         "the same session running",
         async () => {
@@ -813,18 +1012,26 @@ export default async (h) => {
     { via: "setup" },
   );
 
-  await step("New session again: her offline prompt is still there", async () => {
-    const seen = await waitUntil(
-      "New session to run",
-      async () => newSession().catch(() => null),
-      120_000,
-    );
-    await shot("offline-prompt-kept");
-    await quickInput.cancel();
-    expect(seen.value === PROMPT_OFFLINE, `the prompt: ${said(seen)}`);
-    expect(seen.rows[0]?.description !== OFFLINE, `still offline: ${said(seen)}`);
-    return said(seen);
-  });
+  await step(
+    "New session again: her offline prompt is still there, the cursor after it, and what she types adds to it",
+    async () => {
+      const seen = await waitUntil(
+        "New session to run",
+        async () => newSession().catch(() => null),
+        120_000,
+      );
+      await shot("offline-prompt-kept");
+      const selection = await quickInput.selection();
+      await quickInput.keys(" now");
+      const typed = await quickInput.value();
+      await quickInput.cancel();
+      const observed = `${said(seen)} · selection ${JSON.stringify(selection)} · after typing " now" "${typed}"`;
+      expect(seen.value === PROMPT_OFFLINE, `the prompt: ${observed}`);
+      expect(seen.rows[0]?.description !== OFFLINE, `still offline: ${observed}`);
+      expect(typed === `${PROMPT_OFFLINE} now`, `the kept prompt was replaced: ${observed}`);
+      return observed;
+    },
+  );
 
   note(`sessions: claude ${first.id} · retried ${failed.id}`);
 };

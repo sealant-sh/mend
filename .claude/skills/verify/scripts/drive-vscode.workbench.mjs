@@ -478,6 +478,13 @@ export const workbenchHelpers = async (context, options) => {
       return shown === null ? null : quickInputStep(shown);
     },
     value: () => page().locator(QUICK_INPUT_BOX).inputValue(),
+    /** Keys typed where the cursor is, as she types: a selected value is replaced, else added to. */
+    keys: (text) => page().keyboard.type(text),
+    /** The input box's selection as `[start, end]`: equal when only the cursor shows. */
+    selection: () =>
+      page()
+        .locator(QUICK_INPUT_BOX)
+        .evaluate((box) => [box.selectionStart, box.selectionEnd]),
     placeholder: async () =>
       (await page().locator(QUICK_INPUT_BOX).getAttribute("placeholder")) ?? "",
     /** Whether the widget's progress bar runs (the input is busy). */
