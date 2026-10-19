@@ -228,9 +228,10 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
   - No project matched (`via: "setup"`): `git clone https://github.com/octocat/Spoon-Knife.git` into
     the scratch, then `openFolder(<it>)` and `waitForWindow`. There New session's first step reads
     `New session`, placeholder `Choose a project`, `Adopt this repository` (icon `repo-clone`,
-    description the origin URL) on top, then the projects. Picking it: the input busy, then the
-    prompt step `New session · <adopted>`; `GET /projects` lists one new project from that URL. The
-    window closes.
+    description the origin URL) on top, then the projects. Picking it: the prompt step
+    `New session · <adopted>` (its delay after the pick is recorded, and whether the progress bar
+    showed: VS Code draws a busy input's bar only after 800 ms); `GET /projects` lists one new
+    project from that URL. The window closes.
   - Launch fails: `mend connect claude --remove` (`via: "setup"`). New session, a prompt, Change… →
     `claude`, the rest kept, Enter. The server refuses the launch (observed over the API on
     `0.0.0-dev.shab2a748d64120`, 2026-10-19: `422 Connect Claude to start a session here. …`, the

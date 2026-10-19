@@ -604,31 +604,30 @@ export default async (h) => {
     },
   );
 
-  await step(
-    "Adopt this repository: the input busy, then the prompt step of the adopted project",
-    async () => {
-      await quickInput.pick("Adopt this repository", { exact: true });
-      const busy = await waitUntil("the input busy", () => quickInput.busy(), 10_000).catch(
-        () => false,
-      );
-      const prompt = await waitUntil(
-        "the prompt step",
-        async () => {
-          const now = await read();
-          return now.title?.startsWith("New session · ") ? now : null;
-        },
-        300_000,
-      );
-      await shot("adopted-prompt");
-      await quickInput.cancel();
-      const adopted = (await api("/projects")).filter((one) => !projectsBefore.includes(one.id));
-      const observed = `busy seen ${busy} · ${said(prompt)} · new projects ${JSON.stringify(adopted.map((one) => ({ name: one.name, originUrl: one.originUrl })))}`;
-      expect(adopted.length === 1 && adopted[0].originUrl === OTHER_REPO, observed);
-      expect(prompt.title === `New session · ${adopted[0].name}`, `the title: ${observed}`);
-      expect(prompt.rows.length === 1 && prompt.rows[0].description !== "", observed);
-      return observed;
-    },
-  );
+  await step("Adopt this repository: the prompt step of the adopted project follows", async () => {
+    const since = Date.now();
+    await quickInput.pick("Adopt this repository", { exact: true });
+    // VS Code draws a busy input's progress bar only after 800 ms: a faster adopt shows none.
+    let busy = false;
+    const prompt = await waitUntil(
+      "the prompt step",
+      async () => {
+        busy ||= await quickInput.busy();
+        const now = await read();
+        return now.title?.startsWith("New session · ") ? now : null;
+      },
+      300_000,
+    );
+    const busyLine = `busy ${busy ? "seen" : "not seen"}, the prompt step ${Date.now() - since} ms after the pick`;
+    await shot("adopted-prompt");
+    await quickInput.cancel();
+    const adopted = (await api("/projects")).filter((one) => !projectsBefore.includes(one.id));
+    const observed = `${busyLine} · ${said(prompt)} · new projects ${JSON.stringify(adopted.map((one) => ({ name: one.name, originUrl: one.originUrl })))}`;
+    expect(adopted.length === 1 && adopted[0].originUrl === OTHER_REPO, observed);
+    expect(prompt.title === `New session · ${adopted[0].name}`, `the title: ${observed}`);
+    expect(prompt.rows.length === 1 && prompt.rows[0].description !== "", observed);
+    return observed;
+  });
 
   await step("that window closed, back to the project's window", async () => {
     const result = await closeWindow(otherWindow.page);
