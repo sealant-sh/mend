@@ -108,7 +108,8 @@ scheme's default counts. A folder with an origin never matches a project by its 
 the folder sits matches only when its Git root is the adopted source itself or one of the project's
 worktrees: a separate repository nested inside the source, with an origin of its own, is matched by
 that origin, and gets **Adopt this repository** when it is not adopted. Type what the agent should
-do and press Enter. One dim line under the prompt says what Enter starts:
+do and press Enter. The prompt is an input box, so a pasted log of any length reaches Mend whole.
+One line under it says what Enter starts:
 
 ```text
 claude · default model · from main
@@ -150,8 +151,8 @@ starts from the default branch.
 
 ### Change…
 
-**Change…**, the gear on the line, steps through the options in the same input, with a step counter
-and Back:
+**Change…**, the gear on the input's title bar, steps through the options as lists in the same
+place, with a step counter and Back:
 
 - **Harness**: claude, codex, opencode, pi, or shell. A `shell` session runs no agent: what you type
   names it, and its shell holds the workspace. Mend observes and records what you run there, within
@@ -182,17 +183,19 @@ with what you typed, and the line reads your choices.
   nothing. What you typed is kept, per project, for the next **New session** in this window.
 - **More than one project has the window's origin.** The first step lists those projects only.
 - **The prompt can't be one argument.** A prompt with a NUL, one that starts with `-`, or one over
-  120,000 UTF-8 bytes is not sent, and the line says why. The prompt reaches the agent as one
-  argument, and Linux takes at most 131,072 bytes per argument.
+  120,000 UTF-8 bytes is not sent: the line under it turns to a warning that says why, such as
+  `the prompt is 130,000 bytes · claude takes at most 120,000`, and Enter keeps the input open with
+  the prompt. The prompt reaches the agent as one argument, and Linux takes at most 131,072 bytes
+  per argument.
 - **The launch fails.** The row reads what the server holds. A launch the server refused while it
   still reads the session `starting` reads `starting · launch refused · <its words>`, such as
   `starting · launch refused · Connect Claude to start a session here. …`. One that failed reads
   `failed · <the launch's line>`. An error notification says so and offers **Retry** when a read of
   the session just then says it failed, or that the refused launch never started. Retry reads it
   again before it sends, and launches the same session again. A session that reads `starting` under
-  another launch, or runs, is never sent again: a launch whose answer was lost may be running. Retry
-  shows only in the window that launched it. A failure the server settled shows one notification
-  across your VS Code windows, the launching one included.
+  another launch, or runs, is never sent again: a launch whose answer was lost, or that an edge
+  answered with a 5xx, may be running. Retry shows only in the window that launched it. A failure
+  the server settled shows one notification across your VS Code windows, the launching one included.
 
 **Mend: New session in this worktree…** on a session opens the same input for a second session in
 the same worktree: the same files and branch, with a new conversation. Its title ends
