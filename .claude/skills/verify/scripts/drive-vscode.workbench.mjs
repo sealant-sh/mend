@@ -494,8 +494,9 @@ export const workbenchHelpers = async (context, options) => {
         .evaluate((bar) => !bar.classList.contains("done") && bar.offsetParent !== null),
     /**
      * The line under the input box (an InputBox's `prompt`, or its validation message in its
-     * place): `{ text, severity }`, severity `warning`, `error` or `info` as the box is decorated,
-     * else `none`; null while none shows.
+     * place): `{ text, hint, severity }`. `hint` is what VS Code adds after a prompt,
+     * `(Press 'Enter' to confirm or 'Escape' to cancel)`, split off `text`, else null; severity is
+     * `warning`, `error` or `info` as the box is decorated, else `none`. Null while none shows.
      */
     message: async () =>
       page()
@@ -506,7 +507,13 @@ export const workbenchHelpers = async (context, options) => {
           const box = widget.querySelector(".quick-input-box .monaco-inputbox");
           const severity =
             ["error", "warning", "info"].find((name) => box?.classList.contains(name)) ?? "none";
-          return { text: (line.textContent ?? "").trim(), severity };
+          const shown = (line.textContent ?? "").trim();
+          const hinted = /^(.*?)\s*(\(Press 'Enter' to confirm or 'Escape' to cancel\))$/s.exec(
+            shown,
+          );
+          return hinted === null
+            ? { text: shown, hint: null, severity }
+            : { text: hinted[1], hint: hinted[2], severity };
         }),
     /** Every row: `{ label, icons, description, detail, buttons, focused }`, icons by codicon name. */
     rows: async () =>
