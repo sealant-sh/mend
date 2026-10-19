@@ -40,4 +40,43 @@ describe("launch gate", () => {
     );
     expect(outcome).toEqual({ failed: true, again: "again" });
   });
+
+  it("runs a recovery once the launch under way ends, and refuses a launch while it runs", async () => {
+    const outcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        const gate = makeLaunchGate();
+        const order: string[] = [];
+        const releaseLaunch = yield* Deferred.make<void>();
+        const releaseRecovery = yield* Deferred.make<void>();
+        const launch = yield* gate
+          .run("s-1")(
+            Deferred.await(releaseLaunch).pipe(
+              Effect.andThen(Effect.sync(() => order.push("launch"))),
+            ),
+          )
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        const recovery = yield* gate
+          .runWhenFree("s-1")(
+            Effect.sync(() => order.push("recovery started")).pipe(
+              Effect.andThen(Deferred.await(releaseRecovery)),
+            ),
+          )
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        const waited = [...order];
+        yield* Deferred.succeed(releaseLaunch, undefined);
+        yield* Fiber.join(launch);
+        while (!order.includes("recovery started")) yield* Effect.yieldNow;
+        const duringRecovery = yield* gate.run("s-1")(Effect.succeed("second")).pipe(Effect.exit);
+        yield* Deferred.succeed(releaseRecovery, undefined);
+        yield* Fiber.join(recovery);
+        return { waited, order, duringRecovery, after: gate.underWay("s-1") };
+      }),
+    );
+    expect(outcome.waited).toEqual([]);
+    expect(outcome.order).toEqual(["launch", "recovery started"]);
+    expect(Exit.isFailure(outcome.duringRecovery)).toBe(true);
+    expect(outcome.after).toBe(false);
+  });
 });

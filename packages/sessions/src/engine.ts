@@ -6960,7 +6960,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ).pipe(Effect.annotateLogs({ sessionId: session.id }));
             return;
           }
-          yield* resumeSession(session.id, null).pipe(
+          // In the launch gate (SLNT-167): a launch under way starts the agent itself.
+          yield* oneLaunch(session.id)(resumeSession(session.id, null)).pipe(
             Effect.catch((error) =>
               Effect.logWarning("session engine: replacement pickup failed").pipe(
                 Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
@@ -7092,43 +7093,55 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.gen(function* () {
           const workspaceId = session.sealantWorkspaceId;
           // A relaunch's last step: the launch it planned (`RelaunchPlan`). Taken up only when no
-          // launch here is carrying it out.
-          const finishRelaunch = Effect.gen(function* () {
-            const stored = yield* sessions.relaunchOf(session.id);
-            if (stored === null || relaunching.has(session.id) || stopUnderWay(session.id)) {
-              return;
-            }
-            const plan = readRelaunchPlan(stored);
-            relaunching.add(session.id);
-            yield* Effect.logInfo(
-              "session engine: capture mode · finishing a relaunch after a restart",
-            ).pipe(Effect.annotateLogs({ sessionId: session.id, kind: plan.kind }));
-            // Kept until the attempt has run its course, so a restart in the middle tries again;
-            // the correlation id makes the launch and its opening turn happen once. A launch
-            // whose opening turn was not accepted keeps its plan (`finishPlannedLaunch`).
-            const attempt: Effect.Effect<"done" | "retained"> =
-              plan.kind === "launch"
-                ? finishPlannedLaunch(session.id, plan)
-                : resumeSession(session.id, plan.harness).pipe(
-                    Effect.as("done" as const),
-                    Effect.catch((error) =>
-                      Effect.logWarning("session engine: the relaunch could not be finished").pipe(
-                        Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
-                        Effect.as("done" as const),
+          // launch here is carrying it out, and in the launch gate (SLNT-167): a launch admitted
+          // while the plan ran would tear down what it started. One under way leaves the plan for
+          // the next pass, read again then.
+          const finishRelaunch = oneLaunch(session.id)(
+            Effect.gen(function* () {
+              const stored = yield* sessions.relaunchOf(session.id);
+              if (stored === null || relaunching.has(session.id) || stopUnderWay(session.id)) {
+                return;
+              }
+              const plan = readRelaunchPlan(stored);
+              relaunching.add(session.id);
+              yield* Effect.logInfo(
+                "session engine: capture mode · finishing a relaunch after a restart",
+              ).pipe(Effect.annotateLogs({ sessionId: session.id, kind: plan.kind }));
+              // Kept until the attempt has run its course, so a restart in the middle tries again;
+              // the correlation id makes the launch and its opening turn happen once. A launch
+              // whose opening turn was not accepted keeps its plan (`finishPlannedLaunch`).
+              const attempt: Effect.Effect<"done" | "retained"> =
+                plan.kind === "launch"
+                  ? finishPlannedLaunch(session.id, plan)
+                  : resumeSession(session.id, plan.harness).pipe(
+                      Effect.as("done" as const),
+                      Effect.catch((error) =>
+                        Effect.logWarning(
+                          "session engine: the relaunch could not be finished",
+                        ).pipe(
+                          Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
+                          Effect.as("done" as const),
+                        ),
                       ),
-                    ),
-                  );
-            yield* attempt.pipe(
-              Effect.onExit((exit) =>
-                Effect.suspend(() => {
-                  relaunching.delete(session.id);
-                  return Exit.isSuccess(exit) && exit.value === "done"
-                    ? sessions.clearRelaunch(session.id)
-                    : Effect.void;
-                }),
-              ),
-            );
-          });
+                    );
+              yield* attempt.pipe(
+                Effect.onExit((exit) =>
+                  Effect.suspend(() => {
+                    relaunching.delete(session.id);
+                    return Exit.isSuccess(exit) && exit.value === "done"
+                      ? sessions.clearRelaunch(session.id)
+                      : Effect.void;
+                  }),
+                ),
+              );
+            }),
+          ).pipe(
+            Effect.catch(() =>
+              Effect.logInfo(
+                "session engine: capture mode · the relaunch waits · a launch of the session is under way",
+              ).pipe(Effect.annotateLogs({ sessionId: session.id })),
+            ),
+          );
           if (session.captureDrain === null) {
             yield* finishRelaunch;
             return;
@@ -15594,7 +15607,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         yield* harnessLayouts.clearRetirement(workspaceId);
         if (plan.relaunch) {
-          yield* resumeSession(holder.id, null).pipe(
+          // In the launch gate (SLNT-167): a launch under way starts the agent itself.
+          yield* oneLaunch(holder.id)(resumeSession(holder.id, null)).pipe(
             Effect.catch((error) =>
               Effect.logWarning("session engine: the replacement's relaunch failed").pipe(
                 Effect.annotateLogs({ sessionId: holder.id, error: String(error) }),
@@ -23009,59 +23023,78 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // end (and the sweep releases the lease); nothing to rehydrate.
             return;
           }
-          // A pipe whose session may no longer run where it does (`accessStopReason`: a removed
-          // member, or a joiner who lost access) is not restored, and no further turn reaches it:
-          // it is ended with the reason. A session in its owner's own executor is restored as
-          // ever (review 3 of mend#558, P1).
-          const owner =
-            (yield* sessions
-              .byId(protocolProcess.sessionId)
-              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null))))
-              ?.ownerUserId ?? null;
-          const access =
-            owner === null
-              ? null
-              : yield* sessions.executorAccessOf(protocolProcess.sealantWorkspaceId, owner);
-          const verdict =
-            access === null || owner === null ? null : accessStopReason(access, owner);
-          if (verdict !== null) {
-            yield* Effect.logInfo("session engine: protocol process not restored · no access").pipe(
-              Effect.annotateLogs({ processId: protocolProcess.id, reason: verdict.code }),
-            );
-            // The boot access sweep owns the Stop, capture and audit record. Do not end only
-            // this agent here and leave its shells or Services out of that reconciliation.
-            return;
-          }
-          const { pipe, status } = probed.value;
-          const options = protocolProcess.protocolOptions;
-          yield* protocolHost
-            .rehydrate({
-              process: protocolProcess,
-              pipe,
-              cwd: "/workspace/repo",
-              model: options?.model ?? undefined,
-              effort: options?.effort ?? undefined,
-              permissionMode: options?.permissionMode ?? "bypass",
-              hooks: protocolHooksFor(protocolProcess),
-              launchedWithLoginOf: yield* launchLoginOfProcess(protocolProcess),
-              runsAs: protocolProcess.runsAs,
-              highWater: status.outputHighWater,
-            })
-            .pipe(
-              Effect.tapError(() => relaunchProtocolProcess(protocolProcess).pipe(Effect.ignore)),
-            );
-          if (yield* protocolHost.has(protocolProcess.id)) {
-            yield* renewWorkspaceLease(
-              protocolProcess.sessionId,
-              protocolProcess.sealantWorkspaceId,
-            ).pipe(Effect.ignore);
-            yield* Effect.logInfo("session engine: protocol process rehydrated").pipe(
-              Effect.annotateLogs({
-                processId: protocolProcess.id,
-                sessionId: protocolProcess.sessionId,
-              }),
-            );
-          }
+          // Under the launch gate (SLNT-167): the relaunch behind a failed rehydrate ends this
+          // agent and starts another, and a launch admitted in between would tear that one down.
+          // A launch that ran first may have replaced this agent: it is read again, and one that
+          // ended is not restored.
+          yield* queuedLaunch(protocolProcess.sessionId)(
+            Effect.gen(function* () {
+              const current = yield* processes.byId(protocolProcess.id);
+              if (current === null || current.exitedAt !== null) {
+                yield* Effect.logInfo(
+                  "session engine: protocol process not restored · it ended while a launch held the session",
+                ).pipe(Effect.annotateLogs({ processId: protocolProcess.id }));
+                return;
+              }
+              // A pipe whose session may no longer run where it does (`accessStopReason`: a removed
+              // member, or a joiner who lost access) is not restored, and no further turn reaches it:
+              // it is ended with the reason. A session in its owner's own executor is restored as
+              // ever (review 3 of mend#558, P1).
+              const owner =
+                (yield* sessions
+                  .byId(protocolProcess.sessionId)
+                  .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null))))
+                  ?.ownerUserId ?? null;
+              const access =
+                owner === null
+                  ? null
+                  : yield* sessions.executorAccessOf(protocolProcess.sealantWorkspaceId, owner);
+              const verdict =
+                access === null || owner === null ? null : accessStopReason(access, owner);
+              if (verdict !== null) {
+                yield* Effect.logInfo(
+                  "session engine: protocol process not restored · no access",
+                ).pipe(
+                  Effect.annotateLogs({ processId: protocolProcess.id, reason: verdict.code }),
+                );
+                // The boot access sweep owns the Stop, capture and audit record. Do not end only
+                // this agent here and leave its shells or Services out of that reconciliation.
+                return;
+              }
+              const { pipe, status } = probed.value;
+              const options = protocolProcess.protocolOptions;
+              yield* protocolHost
+                .rehydrate({
+                  process: protocolProcess,
+                  pipe,
+                  cwd: "/workspace/repo",
+                  model: options?.model ?? undefined,
+                  effort: options?.effort ?? undefined,
+                  permissionMode: options?.permissionMode ?? "bypass",
+                  hooks: protocolHooksFor(protocolProcess),
+                  launchedWithLoginOf: yield* launchLoginOfProcess(protocolProcess),
+                  runsAs: protocolProcess.runsAs,
+                  highWater: status.outputHighWater,
+                })
+                .pipe(
+                  Effect.tapError(() =>
+                    relaunchProtocolProcess(protocolProcess).pipe(Effect.ignore),
+                  ),
+                );
+              if (yield* protocolHost.has(protocolProcess.id)) {
+                yield* renewWorkspaceLease(
+                  protocolProcess.sessionId,
+                  protocolProcess.sealantWorkspaceId,
+                ).pipe(Effect.ignore);
+                yield* Effect.logInfo("session engine: protocol process rehydrated").pipe(
+                  Effect.annotateLogs({
+                    processId: protocolProcess.id,
+                    sessionId: protocolProcess.sessionId,
+                  }),
+                );
+              }
+            }),
+          );
         },
       );
 
@@ -23069,7 +23102,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Rehydrate fallback: end the unrecoverable row (queued turns move to
        * the replacement before the cancel sweep) and start a fresh pipe that
        * resumes by provider id. Only a failed relaunch leaves the session
-       * settled — and then with the relaunch's own error, not ours.
+       * settled — and then with the relaunch's own error, not ours. Runs in the launch gate its
+       * caller holds, so it starts the agent with the gate-free `launchProtocol`.
        */
       const relaunchProtocolProcess = Effect.fn("SessionEngine.relaunchProtocolProcess")(function* (
         protocolProcess: SessionProcess,
@@ -23167,6 +23201,75 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* sessions.setHasTranscript(session.id, live);
         }
       });
+      /**
+       * One launch at a time (`launch-gate.ts`), and the second half of a stop during a launch: a
+       * stop that came after the launch's last look found no agent to end, and the launch started
+       * one anyway. Stopped again as the launch ends, it finds the agent's row and ends it, so the
+       * session ends on the stop. A launch the gate refuses leaves the one under way its mark.
+       *
+       * Without capture, a launch starts once the session's Stops have run their tails: a tail still
+       * harvesting when a resume stops the old workspace would then settle the session and sweep the
+       * workspace the resume had just created (CI, 2026-10-10: two stops of it). A Stop arriving
+       * during the wait finds the launch under way and stands it down, as it does later. Capture
+       * mode does not wait: its relaunch is planned durably while the Stop's drain saves, and waits
+       * on that drain itself (`launchInternal`).
+       *
+       * Defined ahead of the boot pass and the reaper: both start agents under the gate.
+       */
+      const holdingLaunch =
+        (sessionId: SessionId) =>
+        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          capture === null ? Effect.andThen(stopTailsSettled(sessionId), effect) : effect;
+      const stopAfterStoppedLaunch = (sessionId: SessionId) =>
+        Effect.suspend(() =>
+          stoppedDuringLaunch.delete(sessionId)
+            ? stop(sessionId).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning(
+                    "session engine: the stop after a stopped launch did not finish",
+                  ).pipe(Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) })),
+                ),
+              )
+            : Effect.void,
+        );
+      const gatedLaunch =
+        <E2, R2>(sessionId: SessionId, refused: Effect.Effect<never, E2, R2>) =>
+        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          Effect.suspend(() =>
+            launchGate.underWay(sessionId)
+              ? refused
+              : launchGate
+                  .runOr(
+                    sessionId,
+                    refused,
+                  )(holdingLaunch(sessionId)(effect))
+                  .pipe(Effect.ensuring(stopAfterStoppedLaunch(sessionId))),
+          );
+      const oneLaunch = (sessionId: SessionId) =>
+        gatedLaunch(
+          sessionId,
+          Effect.fail(
+            new SealantPlatformError({
+              code: "session_starting",
+              status: 409,
+              message: LAUNCH_UNDER_WAY_WORDS,
+              cause: null,
+            }),
+          ),
+        );
+      /**
+       * An agent Mend recovers on its own after a restart (SLNT-167). It waits for a launch under
+       * way instead of being refused, then holds the gate as any launch does: no launch is admitted
+       * against the agent it is about to replace, and it never starts over what such a launch
+       * started. It reads what it recovers again once it holds the gate.
+       */
+      const queuedLaunch =
+        (sessionId: SessionId) =>
+        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          launchGate
+            .runWhenFree(sessionId)(holdingLaunch(sessionId)(effect))
+            .pipe(Effect.ensuring(stopAfterStoppedLaunch(sessionId)));
+
       // Boot runs with no request context, and the platform answers for nobody: every piece of
       // boot work that reaches it runs as its session's owner (`owned`), forked in the engine's
       // scope, and the engine stands as soon as the rows are reconciled. Nothing here waits on an
@@ -23739,61 +23842,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const detached = <A, E>(effect: Effect.Effect<A, E>) =>
         detach(effect).pipe(Effect.flatMap(Fiber.join));
-
-      /**
-       * One launch at a time (`launch-gate.ts`), and the second half of a stop during a launch: a
-       * stop that came after the launch's last look found no agent to end, and the launch started
-       * one anyway. Stopped again as the launch ends, it finds the agent's row and ends it, so the
-       * session ends on the stop. A launch the gate refuses leaves the one under way its mark.
-       *
-       * Without capture, a launch starts once the session's Stops have run their tails: a tail still
-       * harvesting when a resume stops the old workspace would then settle the session and sweep the
-       * workspace the resume had just created (CI, 2026-10-10: two stops of it). A Stop arriving
-       * during the wait finds the launch under way and stands it down, as it does later. Capture
-       * mode does not wait: its relaunch is planned durably while the Stop's drain saves, and waits
-       * on that drain itself (`launchInternal`).
-       */
-      const gatedLaunch =
-        <E2, R2>(sessionId: SessionId, refused: Effect.Effect<never, E2, R2>) =>
-        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.suspend(() =>
-            launchGate.underWay(sessionId)
-              ? refused
-              : launchGate
-                  .runOr(
-                    sessionId,
-                    refused,
-                  )(capture === null ? Effect.andThen(stopTailsSettled(sessionId), effect) : effect)
-                  .pipe(
-                    Effect.ensuring(
-                      Effect.suspend(() =>
-                        stoppedDuringLaunch.delete(sessionId)
-                          ? stop(sessionId).pipe(
-                              Effect.catchCause((cause) =>
-                                Effect.logWarning(
-                                  "session engine: the stop after a stopped launch did not finish",
-                                ).pipe(
-                                  Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
-                                ),
-                              ),
-                            )
-                          : Effect.void,
-                      ),
-                    ),
-                  ),
-          );
-      const oneLaunch = (sessionId: SessionId) =>
-        gatedLaunch(
-          sessionId,
-          Effect.fail(
-            new SealantPlatformError({
-              code: "session_starting",
-              status: 409,
-              message: LAUNCH_UNDER_WAY_WORDS,
-              cause: null,
-            }),
-          ),
-        );
 
       /**
        * The public launch verbs only (SLNT-167): the launch runs over what its caller named, as

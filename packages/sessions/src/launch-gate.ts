@@ -1,5 +1,5 @@
 import { SealantPlatformError } from "@mend/sealant";
-import { Effect } from "effect";
+import { Deferred, Effect } from "effect";
 
 export const LAUNCH_UNDER_WAY_WORDS =
   "starting · a launch of this session is already under way · nothing new started";
@@ -20,19 +20,50 @@ export interface LaunchGate {
     sessionId: string,
     refused: Effect.Effect<never, E2, R2>,
   ) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | E2, R | R2>;
+  /**
+   * `run`, waiting for the launch under way to end instead of refusing. For Mend's own recovery
+   * of an agent a restart left behind (SLNT-167): it must run, but only between launches, and it
+   * reads what it recovers again once it holds the gate.
+   */
+  readonly runWhenFree: (
+    sessionId: string,
+  ) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
   readonly underWay: (sessionId: string) => boolean;
 }
 
 export const makeLaunchGate = (): LaunchGate => {
-  const underWay = new Set<string>();
+  /** Each holder's release, awaited by whoever waits for the gate. */
+  const held = new Map<string, Deferred.Deferred<void>>();
+  const hold = <A, E, R>(sessionId: string, effect: Effect.Effect<A, E, R>) => {
+    const released = Deferred.makeUnsafe<void>();
+    held.set(sessionId, released);
+    return effect.pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          held.delete(sessionId);
+          Deferred.doneUnsafe(released, Effect.void);
+        }),
+      ),
+    );
+  };
   const runOr =
     <E2, R2>(sessionId: string, refused: Effect.Effect<never, E2, R2>) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      Effect.suspend((): Effect.Effect<A, E | E2, R | R2> => {
-        if (underWay.has(sessionId)) return refused;
-        underWay.add(sessionId);
-        return effect.pipe(Effect.ensuring(Effect.sync(() => underWay.delete(sessionId))));
+      Effect.suspend(
+        (): Effect.Effect<A, E | E2, R | R2> =>
+          held.has(sessionId) ? refused : hold(sessionId, effect),
+      );
+  const runWhenFree =
+    (sessionId: string) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> => {
+      const attempt: Effect.Effect<A, E, R> = Effect.suspend(() => {
+        const current = held.get(sessionId);
+        return current === undefined
+          ? hold(sessionId, effect)
+          : Deferred.await(current).pipe(Effect.andThen(attempt));
       });
+      return attempt;
+    };
   return {
     run: (sessionId) =>
       runOr(
@@ -47,6 +78,7 @@ export const makeLaunchGate = (): LaunchGate => {
         ),
       ),
     runOr,
-    underWay: (sessionId) => underWay.has(sessionId),
+    runWhenFree,
+    underWay: (sessionId) => held.has(sessionId),
   };
 };

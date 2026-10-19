@@ -7,7 +7,12 @@ import {
   type SealantClientShape,
   SealantPlatformError,
 } from "@mend/sealant";
-import { captureHoldWords, SessionEngine } from "@mend/sessions";
+import {
+  captureHoldWords,
+  NoLiveAgent,
+  SessionEngine,
+  WorkspaceHostUserNamespaces,
+} from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSession, InteractiveSessionStatus } from "@sealant/sdk";
 import { Clock, Deferred, Duration, Effect, Fiber, Layer, Logger, Queue } from "effect";
@@ -2287,6 +2292,102 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             ),
           },
         );
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a relaunch taken up after a restart waits for a launch under way, and starts nothing over it (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const waits = yield* logged(
+          "session engine: capture mode · the relaunch waits · a launch of the session is under way",
+        );
+        const launchHeld = yield* Deferred.make<void>();
+        const releaseLaunch = yield* Deferred.make<void>();
+        let holding = false;
+        /** Holds the next launch past its admission, before it replaces anything. */
+        const heldLaunch = Layer.succeed(WorkspaceHostUserNamespaces, {
+          observe: () =>
+            Effect.suspend(() => {
+              if (!holding) return Effect.succeed(null);
+              holding = false;
+              return Deferred.succeed(launchHeld, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseLaunch)),
+                Effect.as(null),
+              );
+            }),
+        });
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              yield* shipHarnessCapture(
+                dir,
+                memory,
+                session.worktreeId,
+                memory.leases.get(session.worktreeId)?.epoch ?? 0,
+                crypto.randomUUID(),
+              );
+              yield* engine.stop(session.id);
+              yield* untilChanged(
+                () => world.sessions.get(session.id)?.status === "stopped",
+                "the stop",
+              );
+              // What a restart finds: a planned resume whose old executor is already gone.
+              const current = world.sessions.get(session.id);
+              if (current === undefined) throw new Error("the session is gone");
+              world.relaunches.set(session.id, "codex");
+              world.sessions.set(
+                session.id,
+                new Session({
+                  ...current,
+                  sealantWorkspaceId: null,
+                  captureDrain: "relaunch",
+                  captureDrainRequestedAt: new Date(),
+                  captureDrainProgressAt: new Date(),
+                }),
+              );
+              holding = true;
+              const launching = yield* engine
+                .launch(session.id, ["codex"], { over: NoLiveAgent })
+                .pipe(Effect.forkChild);
+              yield* Deferred.await(launchHeld);
+              const createdWhileHeld = created.length;
+
+              yield* engine.reapCaptureLeases();
+              const first = yield* Effect.raceFirst(
+                Deferred.await(waits.seen).pipe(Effect.as("the relaunch waited")),
+                untilChanged(() => created.length > createdWhileHeld, "a create").pipe(
+                  Effect.as("the relaunch created an executor"),
+                ),
+              );
+
+              expect(first).toBe("the relaunch waited");
+              expect(created).toHaveLength(createdWhileHeld);
+              expect(world.relaunches.has(session.id)).toBe(true);
+              yield* Deferred.succeed(releaseLaunch, undefined);
+              yield* Fiber.join(launching);
+              expect(created).toHaveLength(createdWhileHeld + 1);
+              // The next pass reads the plan again and finds the agent the launch started.
+              yield* engine.reapCaptureLeases();
+              yield* untilChanged(() => !world.relaunches.has(session.id), "the plan's end");
+              expect(created).toHaveLength(createdWhileHeld + 1);
+              expect(world.sessions.get(session.id)?.status).toBe("running");
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            hostUserNamespaces: heldLaunch,
+            sealantLayer: signalling(lifecycleLayer(created)),
+          },
+        ).pipe(Effect.provide(waits.layer));
       }),
     { timeout: 20_000 },
   );
