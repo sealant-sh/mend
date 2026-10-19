@@ -57,14 +57,19 @@ that server-side path for your own use.
 The Mend icon in the Activity Bar opens **Sessions**. In any window that is not a session's
 workspace it has four groups, in this order:
 
-- **Needs you**: sessions that wait for you and that you can answer, your own or one whose owner
-  turned shared control on. A terminal agent's row says what it waits for, as its own hooks reported
-  it: `waiting · claude needs your permission to use Bash · since 02:14`.
+- **Needs you**: sessions that wait for you and that **Answer** lets you answer. A terminal agent
+  waits for its owner alone, since only the owner types in its terminal, even with shared control
+  on. A conversation's request waits for anyone who may steer it: its owner, or anyone while the
+  owner has shared control on. A row says what the session waits for, as Mend observed it:
+  `waiting · claude needs your permission to use Bash · since 02:14`. A session that waits for a
+  reason Mend has not read yet, or that waits for someone else, stays under **Running**.
 - **Since you last looked**: sessions that completed, failed or landed since this VS Code last
   showed them. A session counts as shown once you select its row, or while its workspace window is
   focused. VS Code keeps this per server and per machine. Past eight rows the group lists projects.
 - **Running**: sessions that are starting or running.
 - **Projects**, collapsed: every project with all of its sessions.
+
+A group with no sessions stays in its place and reads `nothing`.
 
 Every row reads `<word> · <fact>` as Mend observed it, for example `completed · observed`,
 `failed · exit 1 at 03:40` or `landed by Ana · pull request #415 · merged · observed`. The Mend icon
@@ -79,10 +84,11 @@ In a session's workspace window the view shows that session only, and one line f
 the status bar both open the session picker.
 
 Only the focused VS Code window shows a notification, and only when a session waits for you or a
-session you started finished, and that window is not already showing it. Other windows show the
-badge. When Mend cannot be reached, the view reads `last heard from Mend at 23:10`, the rows keep
-the last words Mend reported with `· last seen 2 min ago`, and **New session** and **Answer** are
-disabled.
+session you started finished, and that window is not already showing it: selected in the view, the
+window's own session, or the session whose agent terminal is in front after **Answer**. One wait
+shows one notification across all your VS Code windows. Other windows show the badge. When Mend
+cannot be reached, the view reads `last heard from Mend at 23:10`, the rows keep the last words Mend
+reported with `· last seen 2 min ago`, and **New session** and **Answer** are disabled.
 
 With no project adopted, the view offers **Adopt a project…**, which asks for a Git clone URL and a
 project name.
