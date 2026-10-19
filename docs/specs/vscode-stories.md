@@ -121,8 +121,9 @@ _The agent is mid-task; Dana wants to look at the code it is writing and run the
 2. **The window becomes the workspace.**
    - VS Code follows her own `window.openFoldersInNewWindow` setting. The default reuses this
      window; `on` opens a new one. There is no question.
-   - The context menu also has **Open in New Window**, which always opens a new one. It does not ask
-     either.
+   - The context menu also has **Open in New Window**, which opens a new one. It does not ask
+     either. VS Code keeps one window per folder: when a window already holds the session's
+     workspace, both gestures focus that window and show the session's agent.
    - Behind it, Mend opens the session's workspace over Remote-SSH
      (`vscode-remote://ssh-remote+…/workspace/repo`).
    - The window title becomes `add-rate-limit — newsroom-api`.
@@ -387,8 +388,9 @@ _Dana installs the extension for the first time. Her Mend server is the Mac mini
 ### Open
 
 1. **An explicit button never asks.** **Open** follows VS Code's `window.openFoldersInNewWindow`.
-   **Open in New Window** always opens a new window. There is no question panel: no story needed
-   one, and the old one is removed.
+   **Open in New Window** opens a new window, except that VS Code focuses a window already on the
+   session's workspace, which then shows that session's agent. There is no question panel: no story
+   needed one, and the old one is removed.
 2. **A row click selects; it never opens a window.** Selecting shows the session's change. Opening
    is only the button, so single and double clicks cannot open twice.
 3. **One open in flight per session.** A second gesture while one is running focuses the first.

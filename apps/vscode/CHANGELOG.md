@@ -19,11 +19,14 @@ patch number is the extension's own.
   and **Continue here** moves a conversation into a terminal and keeps the conversation.
 - A row whose workspace someone else launched offers **Review**, and **Watch terminal** while shared
   control is on, instead of an **Open** that Remote-SSH would refuse. Its tooltip says why. When
-  Mend cannot read who you are, the row offers **Review** only and an **Open** from elsewhere reads
-  again before it opens anything. **Stop** is offered only on sessions you may steer.
+  Mend cannot read who you are, the row offers **Review** only, an **Open** from elsewhere reads
+  again before it opens anything, **Stop** refuses before it asks, and a workspace window attaches
+  no agent. **Stop** is offered only on sessions you may steer.
 - In a worktree that holds several sessions, the window attaches the agent of the session you
-  opened. In a window that already holds the session's workspace, Open and Open in New Window both
-  show that session's agent: VS Code keeps one window per folder.
+  opened. When that session is gone or has moved, the window attaches no agent and its status bar
+  says why. In a window that already holds the session's workspace, Open and Open in New Window both
+  show that session's agent, after resuming it if it had stopped: VS Code keeps one window per
+  folder.
 - Remote-SSH no longer asks for the platform of Mend's host: the open sets it to Linux.
 
 - Cancelling browser sign-in, including choosing **Paste a device token instead**, discards an

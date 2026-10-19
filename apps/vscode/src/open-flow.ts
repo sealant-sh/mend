@@ -1,6 +1,9 @@
 import type { Session } from "./types.js";
 
-/** Open follows VS Code's `window.openFoldersInNewWindow`; Open in New Window always opens one. */
+/**
+ * Open follows VS Code's `window.openFoldersInNewWindow`; Open in New Window asks for a new window.
+ * VS Code keeps one window per folder, so a window already on the workspace is focused instead.
+ */
 export type OpenMode = "follow-setting" | "new-window";
 
 export type OpenFolderOptions =

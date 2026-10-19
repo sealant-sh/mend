@@ -77,13 +77,15 @@ new conversation.
 
 **Open**, the window button on a session's row (or **Mend: Open**), makes a VS Code window the
 session's workspace. It follows your `window.openFoldersInNewWindow` setting. **Open in New
-Window**, in the row's right-click menu, always opens a new one. Neither asks a question. Clicking
-the row only selects it.
+Window**, in the row's right-click menu, opens a new one. VS Code keeps one window per folder, so
+when a window already holds the session's workspace, both focus that window and show the session's
+agent. Neither asks a question. Clicking the row only selects it.
 
 The status bar shows the open's progress. A stopped session is resumed as a workbench shell first
 (`starting <session>'s workspace · 20 s`). A missing Remote-SSH install or workspace SSH setup runs
 as a step of the same open. Opening the window that already is the workspace focuses its agent's
-terminal.
+terminal, after resuming the session if it had stopped. When the session a window was opened for is
+gone or has moved, the window attaches no agent and its status bar says why.
 
 In the workspace window the agent's terminal is attached in the panel and focused, named
 `<harness> · <session>`, so driving by hand is typing into it. A conversation started on the phone,
