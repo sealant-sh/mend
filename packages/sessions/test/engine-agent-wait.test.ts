@@ -1,6 +1,7 @@
 import { SessionId } from "@mend/domain";
 import {
   AgentHookReport,
+  AgentWait,
   type HookedHarness,
   SessionProcess,
   agentWaitLine,
@@ -95,6 +96,45 @@ const withClaudeSession = <A, E>(
   work: (world: World, sessionId: SessionId) => Effect.Effect<A, E, SessionEngine>,
   spawned: Array<ReadonlyArray<string>> = [],
 ) => withTerminalSession("claude", work, spawned);
+
+/** `count` changes to the wait from none, alternating an ask and its answer. */
+const changeWait = (world: World, sessionId: SessionId, count: number) =>
+  Effect.gen(function* () {
+    for (let change = 0; change < count; change++) {
+      const event = change % 2 === 0 ? "PermissionRequest" : "PostToolUse";
+      expect(yield* hookOf(sessionId)(own(world, sessionId, event, { tool: "Bash" }))).toBe(
+        "applied",
+      );
+    }
+  });
+
+/** Holds every move of a wait until `parties` of them arrived: they all read the same wait. */
+const holdMovesUntil = (world: World, parties: number) => {
+  let arrived = 0;
+  const { promise, resolve } = Promise.withResolvers<void>();
+  world.beforeWaitingMove.current = () => {
+    arrived += 1;
+    if (arrived === parties) {
+      world.beforeWaitingMove.current = null;
+      resolve();
+    }
+    return promise;
+  };
+};
+
+/** Lands `change` on the agent's row once, between the next reader and its move. */
+const landBeforeNextMove = (
+  world: World,
+  id: string,
+  change: (process: SessionProcess) => SessionProcess,
+) => {
+  world.beforeWaitingMove.current = () => {
+    world.beforeWaitingMove.current = null;
+    const process = world.processes.get(id);
+    if (process !== undefined) world.processes.set(id, change(process));
+    return Promise.resolve();
+  };
+};
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ANOTHER_CONVERSATION = "7d1e6f0a-2b3c-4d5e-8f90-a1b2c3d4e5f6";
@@ -348,6 +388,104 @@ describe("a terminal agent's hooks (G4)", () => {
         expect(typeof refused === "object" ? refused.retryAfterSeconds : 0).toBeGreaterThan(0);
         expect(statusOf(world, sessionId)).toBe("running");
         expect(agentOf(world, sessionId)?.waiting).toBeNull();
+      }),
+    );
+  });
+
+  it("spends one change, and writes once, for two reports that answer the same ask at once", async () => {
+    await withClaudeSession((world, sessionId) =>
+      Effect.gen(function* () {
+        const hook = hookOf(sessionId);
+        yield* changeWait(world, sessionId, 1);
+        holdMovesUntil(world, 2);
+        const outcomes = yield* Effect.all(
+          [
+            hook(own(world, sessionId, "PostToolUse", { tool: "Bash" })),
+            hook(own(world, sessionId, "PostToolUse", { tool: "Bash" })),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(outcomes.filter((outcome) => outcome === "applied")).toHaveLength(1);
+        expect(outcomes.filter((outcome) => outcome === "unchanged")).toHaveLength(1);
+        expect(agentOf(world, sessionId)?.waiting).toBeNull();
+        yield* changeWait(world, sessionId, 58);
+        expect(
+          yield* hook(own(world, sessionId, "PermissionRequest", { tool: "Bash" })),
+        ).toMatchObject({ _tag: "too-many" });
+      }),
+    );
+  });
+
+  it("spends no change and brings no wait back when the agent ends between a report's read and its move", async () => {
+    await withClaudeSession((world, sessionId) =>
+      Effect.gen(function* () {
+        const hook = hookOf(sessionId);
+        yield* changeWait(world, sessionId, 1);
+        const agent = agentOf(world, sessionId);
+        if (agent === null) throw new Error("no agent");
+        landBeforeNextMove(
+          world,
+          agent.id,
+          (process) =>
+            new SessionProcess({ ...process, exitedAt: world.clock.now(), waiting: null }),
+        );
+        expect(yield* hook(own(world, sessionId, "Stop"))).toBe("no-live-agent");
+        expect(agentOf(world, sessionId)?.waiting).toBeNull();
+
+        const ended = agentOf(world, sessionId);
+        if (ended === null) throw new Error("no agent");
+        world.processes.set(ended.id, new SessionProcess({ ...ended, exitedAt: null }));
+        yield* changeWait(world, sessionId, 59);
+        expect(yield* hook(own(world, sessionId, "PostToolUse", { tool: "Bash" }))).toMatchObject({
+          _tag: "too-many",
+        });
+      }),
+    );
+  });
+
+  it("never writes back a wait a key cleared between a report's read and its move", async () => {
+    await withClaudeSession((world, sessionId) =>
+      Effect.gen(function* () {
+        const agent = agentOf(world, sessionId);
+        if (agent === null) throw new Error("no agent");
+        const asked = new AgentWait({
+          kind: "permission",
+          tool: null,
+          since: new Date(world.clock.now().getTime() - 60_000),
+        });
+        world.processes.set(agent.id, new SessionProcess({ ...agent, waiting: asked }));
+        landBeforeNextMove(
+          world,
+          agent.id,
+          (process) => new SessionProcess({ ...process, waiting: null }),
+        );
+        // Read alone, this report would name the cleared ask's tool and keep its since.
+        expect(
+          yield* hookOf(sessionId)(own(world, sessionId, "PermissionRequest", { tool: "Bash" })),
+        ).toBe("applied");
+        const after = agentOf(world, sessionId)?.waiting;
+        expect(after?.tool).toBe("Bash");
+        expect(after?.since.getTime()).toBeGreaterThan(asked.since.getTime());
+      }),
+    );
+  });
+
+  it("clears only the wait a key read, not one that replaced it at the same time", async () => {
+    await withClaudeSession((world, sessionId) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        yield* changeWait(world, sessionId, 1);
+        const agent = agentOf(world, sessionId);
+        const read = agent?.waiting ?? null;
+        if (agent === null || read === null) throw new Error("no wait");
+        const replacement = new AgentWait({ kind: "permission", tool: "Edit", since: read.since });
+        landBeforeNextMove(
+          world,
+          agent.id,
+          (process) => new SessionProcess({ ...process, waiting: replacement }),
+        );
+        expect(yield* engine.personTyped(agent.id, new Date())).toBe(false);
+        expect(agentOf(world, sessionId)?.waiting).toEqual(replacement);
       }),
     );
   });

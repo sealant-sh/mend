@@ -110,9 +110,9 @@ describe.skipIf(postgres.skip)("a terminal agent's wait, in Postgres", () => {
       Effect.gen(function* () {
         const processes = yield* SessionProcessesRepo;
         const agent = yield* createProcess("agent-pty");
-        const set = yield* processes.setWaiting(agent.id, SESSION, WAIT);
+        const set = yield* processes.setWaiting(agent.id, SESSION, null, WAIT);
         const afterSet = yield* processes.byId(agent.id);
-        const cleared = yield* processes.setWaiting(agent.id, SESSION, null);
+        const cleared = yield* processes.setWaiting(agent.id, SESSION, WAIT, null);
         const afterClear = yield* processes.byId(agent.id);
         yield* processes.markExited(agent.id, "exited", 0);
         return { agent, set, afterSet, cleared, afterClear };
@@ -133,9 +133,9 @@ describe.skipIf(postgres.skip)("a terminal agent's wait, in Postgres", () => {
         const shell = yield* createProcess("shell");
         const protocol = yield* createProcess("agent-protocol");
         const outcomes = [
-          yield* processes.setWaiting(others.id, SESSION, WAIT),
-          yield* processes.setWaiting(shell.id, SESSION, WAIT),
-          yield* processes.setWaiting(protocol.id, SESSION, WAIT),
+          yield* processes.setWaiting(others.id, SESSION, null, WAIT),
+          yield* processes.setWaiting(shell.id, SESSION, null, WAIT),
+          yield* processes.setWaiting(protocol.id, SESSION, null, WAIT),
         ];
         const rows = yield* Effect.forEach([others, shell, protocol], (row) =>
           processes.byId(row.id),
@@ -155,13 +155,13 @@ describe.skipIf(postgres.skip)("a terminal agent's wait, in Postgres", () => {
       Effect.gen(function* () {
         const processes = yield* SessionProcessesRepo;
         const exiting = yield* createProcess("agent-pty");
-        yield* processes.setWaiting(exiting.id, SESSION, WAIT);
+        yield* processes.setWaiting(exiting.id, SESSION, null, WAIT);
         yield* processes.markExited(exiting.id, "exited", 0);
-        const late = yield* processes.setWaiting(exiting.id, SESSION, WAIT);
+        const late = yield* processes.setWaiting(exiting.id, SESSION, null, WAIT);
         const afterExit = yield* processes.byId(exiting.id);
 
         const reaped = yield* createProcess("agent-pty");
-        yield* processes.setWaiting(reaped.id, SESSION, WAIT);
+        yield* processes.setWaiting(reaped.id, SESSION, null, WAIT);
         yield* processes.reapLiveForWorkspace(SealantWorkspaceId.make("ws-1"));
         const afterReap = yield* processes.byId(reaped.id);
 
@@ -176,33 +176,43 @@ describe.skipIf(postgres.skip)("a terminal agent's wait, in Postgres", () => {
     expect(result.next.waiting).toBeNull();
   });
 
-  it("clears a wait only while it is the one that opened at the given time", async () => {
-    const replacement = new AgentWait({
-      kind: "permission",
-      tool: "Edit",
-      since: new Date(WAIT.since.getTime() + 1),
-    });
+  it("moves a wait only while the row holds the one the caller read: kind, tool and since", async () => {
+    const otherTool = new AgentWait({ kind: "permission", tool: "Edit", since: WAIT.since });
+    const otherKind = new AgentWait({ kind: "question", tool: null, since: WAIT.since });
     const result = await run(
       Effect.gen(function* () {
         const processes = yield* SessionProcessesRepo;
         const agent = yield* createProcess("agent-pty");
-        yield* processes.setWaiting(agent.id, SESSION, replacement);
-        const replaced = yield* processes.clearWaiting(agent.id, SESSION, WAIT.since);
-        const afterReplaced = yield* processes.byId(agent.id);
-        const otherSession = yield* processes.clearWaiting(
-          agent.id,
-          OTHER_SESSION,
-          replacement.since,
-        );
-        const own = yield* processes.clearWaiting(agent.id, SESSION, replacement.since);
+        yield* processes.setWaiting(agent.id, SESSION, null, otherTool);
+        const staleTool = yield* processes.setWaiting(agent.id, SESSION, WAIT, null);
+        const afterStaleTool = yield* processes.byId(agent.id);
+        yield* processes.setWaiting(agent.id, SESSION, otherTool, otherKind);
+        const staleKind = yield* processes.setWaiting(agent.id, SESSION, WAIT, null);
+        const staleOpen = yield* processes.setWaiting(agent.id, SESSION, null, WAIT);
+        const afterStaleKind = yield* processes.byId(agent.id);
+        const otherSession = yield* processes.setWaiting(agent.id, OTHER_SESSION, otherKind, null);
+        const own = yield* processes.setWaiting(agent.id, SESSION, otherKind, null);
         const afterOwn = yield* processes.byId(agent.id);
-        const again = yield* processes.clearWaiting(agent.id, SESSION, replacement.since);
+        const again = yield* processes.setWaiting(agent.id, SESSION, otherKind, null);
         yield* processes.markExited(agent.id, "exited", 0);
-        return { replaced, afterReplaced, otherSession, own, afterOwn, again };
+        return {
+          staleTool,
+          afterStaleTool,
+          staleKind,
+          staleOpen,
+          afterStaleKind,
+          otherSession,
+          own,
+          afterOwn,
+          again,
+        };
       }),
     );
-    expect(result.replaced).toBe(false);
-    expect(result.afterReplaced?.waiting).toEqual(replacement);
+    expect(result.staleTool).toBe(false);
+    expect(result.afterStaleTool?.waiting).toEqual(otherTool);
+    expect(result.staleKind).toBe(false);
+    expect(result.staleOpen).toBe(false);
+    expect(result.afterStaleKind?.waiting).toEqual(otherKind);
     expect(result.otherSession).toBe(false);
     expect(result.own).toBe(true);
     expect(result.afterOwn?.waiting).toBeNull();

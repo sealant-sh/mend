@@ -116,7 +116,7 @@ import {
   type CapturePosition,
   withoutAgentStarting,
 } from "@mend/domain/workbench";
-import type { HarnessLayout } from "@mend/domain/workbench";
+import type { AgentWait, HarnessLayout } from "@mend/domain/workbench";
 import {
   type CaptureFlushKind,
   PersonLayoutPlatform,
@@ -1285,6 +1285,8 @@ export interface World {
   readonly checkpointCaptureIds: Map<string, string | null>;
   /** When set, `CheckpointsRepo.create` waits on it first: a store that does not answer. */
   readonly checkpointHold: { current: Promise<void> | null };
+  /** When set, `setWaiting` awaits it first: whatever lands between a reader and its move. */
+  readonly beforeWaitingMove: { current: (() => Promise<void>) | null };
   /** Inserts refused by the unique `(worktree_id, ordinal)` index — the fake counts them. */
   readonly checkpointConflicts: { count: number };
   /** Keyed by worktree id. */
@@ -1373,6 +1375,7 @@ export const makeWorld = (): World => ({
   checkpoints: [],
   checkpointCaptureIds: new Map(),
   checkpointHold: { current: null },
+  beforeWaitingMove: { current: null },
   checkpointConflicts: { count: 0 },
   worktrees: new Map(),
   // Maria joins other people's executors in many worlds: a member, as only a member can be.
@@ -1401,6 +1404,14 @@ export const makeWorld = (): World => ({
  */
 export const drawnLine = (summary: string | null | undefined): string | null =>
   withoutAgentStarting(summary ?? null);
+
+/** The repository's identity of a wait: its kind, tool and `since`. */
+const sameWait = (held: AgentWait | null, expected: AgentWait | null) =>
+  held === null || expected === null
+    ? held === expected
+    : held.kind === expected.kind &&
+      held.tool === expected.tool &&
+      held.since.getTime() === expected.since.getTime();
 
 /** Shared sessionProcessesLayer fixture for engine scenarios. */
 export const sessionProcessesLayer = (world: World) => {
@@ -1561,41 +1572,28 @@ export const sessionProcessesLayer = (world: World) => {
         );
         return true;
       }),
-    setWaiting: (id, sessionId, waiting) =>
-      Effect.sync(() => {
-        const process = world.processes.get(id);
-        if (
-          process === undefined ||
-          process.sessionId !== sessionId ||
-          process.kind !== "agent-pty" ||
-          process.exitedAt !== null
-        ) {
-          return false;
-        }
-        world.processes.set(
-          id,
-          new SessionProcess({ ...process, waiting, updatedAt: world.clock.now() }),
-        );
-        return true;
-      }),
-    clearWaiting: (id, sessionId, since) =>
-      Effect.sync(() => {
-        const process = world.processes.get(id);
-        if (
-          process === undefined ||
-          process.sessionId !== sessionId ||
-          process.kind !== "agent-pty" ||
-          process.exitedAt !== null ||
-          process.waiting?.since.getTime() !== since.getTime()
-        ) {
-          return false;
-        }
-        world.processes.set(
-          id,
-          new SessionProcess({ ...process, waiting: null, updatedAt: world.clock.now() }),
-        );
-        return true;
-      }),
+    setWaiting: (id, sessionId, from, to) =>
+      Effect.promise(() => world.beforeWaitingMove.current?.() ?? Promise.resolve()).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            const process = world.processes.get(id);
+            if (
+              process === undefined ||
+              process.sessionId !== sessionId ||
+              process.kind !== "agent-pty" ||
+              process.exitedAt !== null ||
+              !sameWait(process.waiting, from)
+            ) {
+              return false;
+            }
+            world.processes.set(
+              id,
+              new SessionProcess({ ...process, waiting: to, updatedAt: world.clock.now() }),
+            );
+            return true;
+          }),
+        ),
+      ),
     markExited: (id, outcome, exitCode) =>
       Effect.sync(() => {
         const process = world.processes.get(id);
