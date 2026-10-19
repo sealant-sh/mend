@@ -73,7 +73,7 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
     return checkout;
   };
 
-  it("lays capture 0 down from the snapshot: branch at H, checkpoint W, W's and I's trees, packs that close, review equal to the checkout's diff", async () => {
+  it("lays capture 0 down from the snapshot: branch at H, ordinal 0 at M, W's and I's trees off the seed, packs that close, review equal to the checkout's diff", async () => {
     const checkout = makeCheckout("checkout-one");
     const bundle = buildHandoffBundle(checkout, { machine: "dana-mbp" });
     const worktreeId = newWorktreeId();
@@ -94,8 +94,8 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
         );
         const created = yield* repo.createWorktree(
           world.project.id,
-          { directory: worktreeId, branch },
-          { kind: "handoff", admitted },
+          { id: worktreeId, directory: worktreeId, branch },
+          { kind: "handoff", admitted, ownerUserId: "user-dana" },
           null,
         );
         const row = yield* rows.create({
@@ -120,7 +120,44 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
           worktreeId,
           created.baseSha,
         );
-        return { created, row, manifest, branchRef, baseRef, verified, changed };
+        // The engine's creation tail and the first session-start, as capture 0 alone answers them.
+        const ordinal0 = yield* repo.checkpoint({
+          projectId: world.project.id,
+          scope: worktreeId,
+          worktreeName: worktreeId,
+          index: 0,
+          parent: null,
+        });
+        const ordinal1 = yield* repo.checkpoint({
+          projectId: world.project.id,
+          scope: worktreeId,
+          worktreeName: worktreeId,
+          index: 1,
+          parent: ordinal0.sha,
+        });
+        const checkpointRef0 = yield* refs.get(
+          world.project.id,
+          `refs/mend/checkpoints/${worktreeId}/0`,
+        );
+        const reviewed = yield* (yield* WorktreeReads).diffRange(
+          world.project.id,
+          worktreeId,
+          ordinal0.sha,
+          ordinal1.sha,
+        );
+        return {
+          created,
+          row,
+          manifest,
+          branchRef,
+          baseRef,
+          verified,
+          changed,
+          ordinal0,
+          ordinal1,
+          checkpointRef0,
+          reviewed,
+        };
       }),
     );
     expect(seen.created).toMatchObject({
@@ -134,10 +171,16 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
         index: bundle.index,
         checkpoint: bundle.checkpoint,
         mergeBase: bundle.mergeBase,
+        worktreeTree: bundle.worktreeTree,
+        indexTree: bundle.indexTree,
+        ownerUserId: "user-dana",
       },
     });
     expect(bundle.mergeBase).toBe(world.baseSha);
-    expect(seen.row.handoff?.deltaPack).toMatch(/^projects\/proj-cap\/packs\/[0-9a-f]{64}$/);
+    // Under the worktree's own capture prefix, so retention owns it with the chain.
+    expect(seen.row.handoff?.deltaPack).toMatch(
+      new RegExp(`^captures/${worktreeId}/0/packs/[0-9a-f]{64}$`),
+    );
     expect(seen.branchRef?.sha).toBe(bundle.head);
     expect(seen.baseRef?.sha).toBe(bundle.mergeBase);
     expect(seen.manifest.sections.git.refs).toEqual({
@@ -148,16 +191,24 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
     expect(seen.manifest.sections.git.packs).toHaveLength(2);
     expect(seen.manifest.sections.git.packs[1]).toBe(seen.row.handoff?.deltaPack);
     expect(seen.manifest.sections.git.fsck).toBe("verified");
+    // Ordinal 0 is the base M, what Review anchors at; the first session-start is W itself.
     expect(seen.manifest.checkpoint).toEqual({
       ordinal: 0,
-      sha: bundle.checkpoint,
+      sha: bundle.mergeBase,
       ref: `refs/mend/checkpoints/${worktreeId}/0`,
     });
+    expect(seen.checkpointRef0?.sha).toBe(bundle.mergeBase);
+    expect(seen.ordinal0.sha).toBe(bundle.mergeBase);
+    expect(seen.ordinal1.sha).toBe(bundle.checkpoint);
     expect(seen.verified).toMatchObject({ outcome: "verified" });
     const expected = sh(checkout, ["diff", "--name-only", bundle.mergeBase, bundle.checkpoint])
       .split("\n")
       .toSorted();
     expect(seen.changed.value.map((file) => file.path).toSorted()).toEqual(expected);
+    const reviewedPaths = [...seen.reviewed.value.matchAll(/^\+\+\+ b\/(.+)$/gm)]
+      .map((match) => match[1])
+      .toSorted();
+    expect(reviewedPaths).toEqual(expected);
     expect(expected).toEqual(["a.txt", "login.ts", "notes.txt", "staged.ts"]);
   });
 
@@ -181,14 +232,14 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
         );
         const first = yield* repo.createWorktree(
           world.project.id,
-          { directory: worktreeId, branch },
-          { kind: "handoff", admitted },
+          { id: worktreeId, directory: worktreeId, branch },
+          { kind: "handoff", admitted, ownerUserId: "user-dana" },
           null,
         );
         const again = yield* repo.createWorktree(
           world.project.id,
-          { directory: worktreeId, branch },
-          { kind: "handoff", admitted },
+          { id: worktreeId, directory: worktreeId, branch },
+          { kind: "handoff", admitted, ownerUserId: "user-dana" },
           null,
         );
         const otherAdmitted = yield* store.admitHandoff(
@@ -200,8 +251,8 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
         const taken = yield* repo
           .createWorktree(
             world.project.id,
-            { directory: worktreeId, branch },
-            { kind: "handoff", admitted: otherAdmitted },
+            { id: worktreeId, directory: worktreeId, branch },
+            { kind: "handoff", admitted: otherAdmitted, ownerUserId: "user-dana" },
             null,
           )
           .pipe(Effect.result);

@@ -1,6 +1,5 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import {
@@ -71,15 +70,22 @@ const gitFailure = (cwd: string, what: string, detail: string) =>
   new GitError({ args: ["capture", what], cwd, exitCode: null, stderr: detail });
 
 export interface CaptureZeroSource {
+  /** The commit the worktree's branch ref names. */
   readonly head: Sha;
+  /** Checkpoint ordinal 0: the worktree's base state, the one Review anchors at. */
   readonly checkpoint: Sha;
-  readonly worktreeTreeOf: Sha;
-  readonly indexTreeOf: Sha;
+  /** The trees capture 0 lays down; null lays down `checkpoint`'s own tree as both. */
+  readonly trees: { readonly worktreeTree: Sha; readonly indexTree: Sha } | null;
   readonly basePackTip: Sha;
   readonly extraPacks: ReadonlyArray<string>;
-  readonly treesIn: "store" | "handoff-packs";
 }
 
+/**
+ * Where capture 0 comes from. A handed-off worktree's trees are W's and I's, read off the seed,
+ * while its ordinal 0 is M, the merge base: Review diffs the worktree against the base, so
+ * the local change shows from the first open. The first session-start checkpoint (ordinal 1)
+ * is W itself (`checkpoint`, capture 0 alone on the chain).
+ */
 export const captureZeroSource = (
   worktree: Worktree,
   legacy: { readonly headSha: Sha; readonly checkpointSha: Sha } | null,
@@ -88,25 +94,18 @@ export const captureZeroSource = (
     const handoff = worktree.handoff;
     return {
       head: Sha.make(handoff.head),
-      checkpoint: Sha.make(handoff.checkpoint),
-      worktreeTreeOf: Sha.make(handoff.checkpoint),
-      indexTreeOf: Sha.make(handoff.index),
+      checkpoint: Sha.make(handoff.mergeBase),
+      trees: {
+        worktreeTree: Sha.make(handoff.worktreeTree),
+        indexTree: Sha.make(handoff.indexTree),
+      },
       basePackTip: Sha.make(handoff.mergeBase),
       extraPacks: [handoff.deltaPack],
-      treesIn: "handoff-packs",
     };
   }
   const head = legacy?.headSha ?? worktree.baseSha;
   const checkpoint = legacy?.checkpointSha ?? worktree.baseSha;
-  return {
-    head,
-    checkpoint,
-    worktreeTreeOf: checkpoint,
-    indexTreeOf: checkpoint,
-    basePackTip: checkpoint,
-    extraPacks: [],
-    treesIn: "store",
-  };
+  return { head, checkpoint, trees: null, basePackTip: checkpoint, extraPacks: [] };
 };
 
 /** Seed the virtual harness root so sealantd materializes and watches it before startup. */
@@ -167,12 +166,11 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
       gitFailure(cwd, what, `bucket: ${error._tag}`);
 
     const putPack = Effect.fn("SessionRepositoryCaptured.putPack")(function* (
-      projectId: ProjectId,
       storePath: string,
+      key: string,
       pack: Uint8Array,
       idx: Uint8Array,
     ) {
-      const key = `${derivedPackPrefix(projectId)}${sha256Hex(pack)}`;
       yield* blobs
         .put(key, pack, { ifAbsent: true })
         .pipe(Effect.catch(blobFailure(storePath, "put")));
@@ -212,43 +210,15 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         );
         const pack = new Uint8Array(fs.readFileSync(path.join(staging, `p-${name}.pack`)));
         const idx = new Uint8Array(fs.readFileSync(path.join(staging, `p-${name}.idx`)));
-        return yield* putPack(projectId, storePath, pack, idx);
+        return yield* putPack(
+          storePath,
+          `${derivedPackPrefix(projectId)}${sha256Hex(pack)}`,
+          pack,
+          idx,
+        );
       });
       return yield* attempt.pipe(
         Effect.ensuring(Effect.sync(() => fs.rmSync(staging, { recursive: true, force: true }))),
-      );
-    });
-
-    const treesFromPacks = Effect.fn("SessionRepositoryCaptured.treesFromPacks")(function* (
-      storePath: string,
-      packKeys: ReadonlyArray<string>,
-      commits: ReadonlyArray<Sha>,
-    ) {
-      const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-handoff-trees-"));
-      const read = Effect.gen(function* () {
-        yield* git(["init", "-q", "--bare", scratch], os.tmpdir());
-        const objects = yield* git(
-          ["rev-parse", "--path-format=absolute", "--git-path", "objects"],
-          storePath,
-        );
-        fs.writeFileSync(path.join(scratch, "objects", "info", "alternates"), `${objects}\n`);
-        for (const key of packKeys) {
-          const pack = yield* blobs.get(key).pipe(Effect.catch(blobFailure(storePath, "get")));
-          const idx = yield* blobs
-            .get(packIdxKeyOf(key))
-            .pipe(Effect.catch(blobFailure(storePath, "get")));
-          const name = path.join(scratch, "objects", "pack", `pack-${sha256Hex(pack)}`);
-          fs.writeFileSync(`${name}.pack`, pack);
-          fs.writeFileSync(`${name}.idx`, idx);
-        }
-        const trees = yield* git(
-          ["rev-parse", ...commits.map((commit) => `${commit}^{tree}`)],
-          scratch,
-        );
-        return trees.split("\n");
-      });
-      return yield* read.pipe(
-        Effect.ensuring(Effect.sync(() => fs.rmSync(scratch, { recursive: true, force: true }))),
       );
     });
 
@@ -291,10 +261,13 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
           `branch "${identity.branch}" already exists in this project — pick another worktree name`,
         );
         if (start.kind === "handoff") {
-          const { admitted } = start;
+          const { admitted, ownerUserId } = start;
+          // Under the worktree's own capture prefix, at epoch 0, before any claim: capture 0
+          // names it, so retention keeps it while the chain lives, and reclaims it after the
+          // grace when the row never came or once the worktree is gone (ADR-0002 "Retention").
           const delta = yield* putPack(
-            projectId,
             project.storePath,
+            captureKeys(identity.id, 0).pack(sha256Hex(admitted.deltaPack.pack)),
             admitted.deltaPack.pack,
             admitted.deltaPack.idx,
           );
@@ -307,6 +280,9 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             index: HexSha.make(admitted.index),
             checkpoint: HexSha.make(admitted.checkpoint),
             mergeBase: HexSha.make(admitted.mergeBase),
+            worktreeTree: HexSha.make(admitted.worktreeTree),
+            indexTree: HexSha.make(admitted.indexTree),
+            ownerUserId,
             deltaPack: delta.key,
           };
           return {
@@ -357,23 +333,11 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         const source = captureZeroSource(worktree, legacy);
         const basePack = yield* uploadBasePack(projectId, project.storePath, source.basePackTip);
         const packs = [basePack.key, ...source.extraPacks];
-        const [worktreeTree, indexTree] =
-          source.treesIn === "store"
-            ? (yield* git(
-                ["rev-parse", `${source.worktreeTreeOf}^{tree}`, `${source.indexTreeOf}^{tree}`],
-                project.storePath,
-              )).split("\n")
-            : yield* treesFromPacks(project.storePath, packs, [
-                source.worktreeTreeOf,
-                source.indexTreeOf,
-              ]);
-        if (worktreeTree === undefined || indexTree === undefined) {
-          return yield* gitFailure(
-            project.storePath,
-            "attach",
-            "capture 0's trees could not be read",
-          );
-        }
+        const trees =
+          source.trees ??
+          (yield* git(["rev-parse", `${source.checkpoint}^{tree}`], project.storePath).pipe(
+            Effect.map((tree) => ({ worktreeTree: Sha.make(tree), indexTree: Sha.make(tree) })),
+          ));
         // The project's object format (e2e8 F4): capture 0 of a SHA-256 project named 64-digit
         // ids under no `object_format`, and sealantd restored them into a SHA-1 repository. Named
         // when it is not `sha1`, as sealantd names it (the `object_format` manifest feature).
@@ -431,8 +395,8 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
                 packs,
                 refs: {
                   [`refs/heads/${worktree.branch}`]: source.head,
-                  [WORKTREE_TREE_REF]: worktreeTree,
-                  [INDEX_TREE_REF]: indexTree,
+                  [WORKTREE_TREE_REF]: trees.worktreeTree,
+                  [INDEX_TREE_REF]: trees.indexTree,
                 },
                 head: `refs/heads/${worktree.branch}`,
                 fsck: "verified",
@@ -596,13 +560,23 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
           }
         }
         // 3. Capture 0 alone on the chain: no executor has captured anything, so the worktree
-        //    is byte for byte the base and the checkpoint is the base commit, observed at
-        //    capture 0. Session create lands here (the worktree-start checkpoint is ordinal 0,
-        //    the session-start one ordinal 1, and no executor has booted) — the derive path
-        //    below would otherwise run a runner over an empty workspace class and fail.
+        //    is byte for byte capture 0 and the checkpoint is its commit, observed at capture 0.
+        //    Session create lands here (the worktree-start checkpoint is ordinal 0, the
+        //    session-start one ordinal 1, and no executor has booted) — the derive path below
+        //    would otherwise run a runner over an empty workspace class and fail. A handed-off
+        //    worktree's ordinal 0 is its base M; its content from ordinal 1 on is the snapshot W.
         if (chain.head.n === 0 && fromHead.checkpoint !== undefined) {
           const ref = checkpointRef(worktreeId, input.index);
-          const sha = Sha.make(fromHead.checkpoint.sha);
+          const base = Sha.make(fromHead.checkpoint.sha);
+          const sha =
+            input.index === 0
+              ? base
+              : yield* worktrees.byId(worktreeId as WorktreeId).pipe(
+                  Effect.map((row) =>
+                    row.handoff === null ? base : Sha.make(row.handoff.checkpoint),
+                  ),
+                  Effect.orDie,
+                );
           const existing = yield* refs.get(input.projectId, ref);
           yield* refs
             .set(input.projectId, ref, sha, existing?.version ?? null)
@@ -616,7 +590,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
               ),
             );
           yield* Effect.logInfo(
-            "capture mode: checkpoint observed at capture 0 · the base tree, no executor capture yet",
+            "capture mode: checkpoint observed at capture 0 · no executor capture yet",
           ).pipe(Effect.annotateLogs({ worktreeId, ordinal: input.index, sha }));
           return { ref, sha, captureId: chain.head.id };
         }

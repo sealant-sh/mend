@@ -1734,8 +1734,8 @@ const isLinkedProjectMountPath = (mountPath: string) => mountPath.startsWith("/w
 
 const worktreeIdentityFor = (worktreeId: WorktreeId, name: string | null) =>
   name === null
-    ? { directory: `wt-${worktreeId}`, branch: `mend/wt/${worktreeId}` }
-    : { directory: name, branch: `mend/${name}` };
+    ? { id: worktreeId, directory: `wt-${worktreeId}`, branch: `mend/wt/${worktreeId}` }
+    : { id: worktreeId, directory: name, branch: `mend/${name}` };
 
 /** A supporting process needs a current reachable workspace. */
 export class SessionNotLiveError extends Schema.TaggedError<SessionNotLiveError>()(
@@ -8697,25 +8697,38 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           baseRef: created.baseRef,
           handoff: created.handoff,
         });
-        // Capture mode: capture 0, the lease and the chain rows follow the worktree row at once
-        // (ADR-0002 "Decisions made here" 6); the co-located adapter has nothing to attach.
-        if (sessionRepo.attachWorktree !== undefined) {
-          yield* sessionRepo.attachWorktree(project.id, row.id);
-        }
-        yield* takeWorktreeCheckpoint(row, "session-start", null, {
-          sealantRunId: null,
-          sequence: 0n,
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("session engine: worktree-start checkpoint failed").pipe(
-              Effect.annotateLogs({ worktreeId: row.id, error: String(error) }),
-              Effect.as(null),
-            ),
-          ),
-        );
-        yield* changes.ensureForWorktree(project.id, row.id, row.branch, row.baseSha);
+        yield* completeWorktreeCreation(project, row);
         return row;
       });
+
+      /**
+       * What follows a worktree row: capture 0 (capture mode, where the lease and the chain
+       * rows follow the row at once, ADR-0002 "Decisions made here" 6; the co-located adapter
+       * has nothing to attach), the ordinal-0 checkpoint and the change row. Each step is a
+       * no-op once done, so a creation that died after its row is finished by the next session
+       * provisioned in it (a handoff's replay).
+       */
+      const completeWorktreeCreation = Effect.fn("SessionEngine.completeWorktreeCreation")(
+        function* (project: Project, row: Worktree) {
+          if (sessionRepo.attachWorktree !== undefined) {
+            yield* sessionRepo.attachWorktree(project.id, row.id);
+          }
+          if ((yield* checkpoints.countForWorktree(row.id)) === 0) {
+            yield* takeWorktreeCheckpoint(row, "session-start", null, {
+              sealantRunId: null,
+              sequence: 0n,
+            }).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("session engine: worktree-start checkpoint failed").pipe(
+                  Effect.annotateLogs({ worktreeId: row.id, error: String(error) }),
+                  Effect.as(null),
+                ),
+              ),
+            );
+          }
+          yield* changes.ensureForWorktree(project.id, row.id, row.branch, row.baseSha);
+        },
+      );
 
       /** A new conversation inside a worktree: session row + its start checkpoint. */
       const provisionSessionIn = Effect.fn("SessionEngine.provisionSessionIn")(function* (
@@ -24056,6 +24069,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const worktree = yield* worktreesRepo.byId(worktreeId);
             const project = yield* projects.byId(worktree.projectId);
             yield* refuseUnsupportedProject(project);
+            // A handed-off worktree is created in one request that can die after its row; the
+            // next session in it finishes what the creation owed. A base worktree made before
+            // captures attaches at launch instead (`ensureCaptureZero`).
+            if (worktree.handoff !== null) yield* completeWorktreeCreation(project, worktree);
             return yield* provisionInWorktree(project, worktree, input);
           }).pipe(asSealantUser(input.ownerUserId)),
         attachRun: (sessionId, sealantRunId, workspaceId) =>

@@ -22,7 +22,12 @@ import * as Context from "effect/Context";
  */
 export type WorktreeStart =
   | { readonly kind: "base"; readonly base: string | null }
-  | { readonly kind: "handoff"; readonly admitted: AdmittedHandoff };
+  | {
+      readonly kind: "handoff";
+      readonly admitted: AdmittedHandoff;
+      /** The account the handoff is received for: recorded on the seed, checked on replay. */
+      readonly ownerUserId: string;
+    };
 
 export const startFromBase = (base: string | null): WorktreeStart => ({ kind: "base", base });
 
@@ -71,7 +76,7 @@ export class SessionRepository extends Context.Service<
      */
     readonly createWorktree: (
       projectId: ProjectId,
-      identity: { readonly directory: string; readonly branch: string },
+      identity: { readonly id: WorktreeId; readonly directory: string; readonly branch: string },
       start: WorktreeStart,
       remoteEnv: GitRemoteEnvironment | null,
     ) => Effect.Effect<SessionWorktreeSummary, SessionRepositoryError>;

@@ -249,7 +249,7 @@ export const makeHandoffStart = Effect.gen(function* () {
         harness: query.harness,
         label: null,
         name,
-        start: { kind: "handoff", admitted },
+        start: { kind: "handoff", admitted, ownerUserId: userId },
         ownerUserId: userId,
         origin: "mend",
       })

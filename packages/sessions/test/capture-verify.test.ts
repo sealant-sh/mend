@@ -206,7 +206,7 @@ describe("capture git verification", () => {
           const repo = yield* SessionRepository;
           yield* repo.createWorktree(
             world.project.id,
-            { directory: worktreeId, branch },
+            { id: worktreeId, directory: worktreeId, branch },
             { kind: "base", base: null },
             null,
           );
@@ -528,7 +528,7 @@ describe("review 13 #1: a git step the Mend host could not finish concludes noth
         const repo = yield* SessionRepository;
         yield* repo.createWorktree(
           world.project.id,
-          { directory: worktreeId, branch },
+          { id: worktreeId, directory: worktreeId, branch },
           { kind: "base", base: null },
           null,
         );
@@ -941,7 +941,7 @@ describe("a seal rests only on sections Mend observed restore", () => {
         const repo = yield* SessionRepository;
         yield* repo.createWorktree(
           world.project.id,
-          { directory: worktreeId, branch },
+          { id: worktreeId, directory: worktreeId, branch },
           { kind: "base", base: null },
           null,
         );
@@ -2275,7 +2275,7 @@ describe("git sections that name their trees (git_trees)", () => {
         const repo = yield* SessionRepository;
         yield* repo.createWorktree(
           world.project.id,
-          { directory: worktreeId, branch },
+          { id: worktreeId, directory: worktreeId, branch },
           { kind: "base", base: null },
           null,
         );
@@ -2446,7 +2446,7 @@ const describeSeals = (
           const repo = yield* SessionRepository;
           yield* repo.createWorktree(
             world.project.id,
-            { directory: worktreeId, branch },
+            { id: worktreeId, directory: worktreeId, branch },
             { kind: "base", base: null },
             null,
           );

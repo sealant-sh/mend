@@ -80,7 +80,7 @@ describe("summary-observe", () => {
         const repo = yield* SessionRepository;
         yield* repo.createWorktree(
           world.project.id,
-          { directory: worktreeId, branch },
+          { id: worktreeId, directory: worktreeId, branch },
           { kind: "base", base: null },
           null,
         );

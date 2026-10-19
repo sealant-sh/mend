@@ -67,7 +67,7 @@ describe("SessionRepositoryCapturedLive", () => {
         const repo = yield* SessionRepository;
         return yield* repo.createWorktree(
           world.project.id,
-          { directory: worktreeId, branch: `mend/wt/${worktreeId}` },
+          { id: worktreeId, directory: worktreeId, branch: `mend/wt/${worktreeId}` },
           { kind: "base", base: null },
           null,
         );
@@ -136,7 +136,7 @@ describe("SessionRepositoryCapturedLive", () => {
         return yield* repo
           .createWorktree(
             world.project.id,
-            { directory: "other", branch: `mend/wt/${worktreeId}` },
+            { id: worktreeId, directory: "other", branch: `mend/wt/${worktreeId}` },
             { kind: "base", base: null },
             null,
           )
@@ -176,7 +176,7 @@ describe("SessionRepositoryCapturedLive", () => {
           const repo = yield* SessionRepository;
           yield* repo.createWorktree(
             world.project.id,
-            { directory: worktreeId, branch },
+            { id: worktreeId, directory: worktreeId, branch },
             { kind: "base", base: null },
             null,
           );
@@ -510,7 +510,7 @@ describe("SessionRepositoryCapturedLive over a SHA-256 project", () => {
         const repo = yield* SessionRepository;
         yield* repo.createWorktree(
           world.project.id,
-          { directory: worktreeId, branch },
+          { id: worktreeId, directory: worktreeId, branch },
           { kind: "base", base: null },
           null,
         );
