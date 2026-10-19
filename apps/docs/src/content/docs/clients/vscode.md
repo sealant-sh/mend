@@ -104,8 +104,11 @@ folder is a clone of an adopted project, matched by its origin URL, the input is
 titled `New session · <project>`, and nothing asks which project. Two origins match when they name
 the same host and path: `https://`, `ssh://` and `git@host:path` forms are alike, the host is
 compared without case, the path exactly, a trailing `.git` is dropped, and a port other than the
-scheme's default counts. A folder with an origin never matches a project by its folder name. Type
-what the agent should do and press Enter. One dim line under the prompt says what Enter starts:
+scheme's default counts. A folder with an origin never matches a project by its folder name. Where
+the folder sits matches only when its Git root is the adopted source itself or one of the project's
+worktrees: a separate repository nested inside the source, with an origin of its own, is matched by
+that origin, and gets **Adopt this repository** when it is not adopted. Type what the agent should
+do and press Enter. One dim line under the prompt says what Enter starts:
 
 ```text
 claude · default model · from main
@@ -125,20 +128,25 @@ you chose: `default model` until you choose one, `high thinking`, and `asks befo
 
 A new worktree starts from the window's branch when origin has every commit of it. Mend checks
 `origin/<branch>`, else the branch's upstream, with `git merge-base --is-ancestor HEAD`, against
-what this machine last fetched; it does not fetch. The session starts from the ref that check
-proved. A branch on origin is sent by its name there, so `fix/login` tracking `origin/main` starts
-from `main`, and the line reads `from main`. An upstream on another remote is sent as the commit it
-pointed at, and the line reads `from upstream/main`.
+what this machine last fetched; it does not fetch. The upstream is read once, and HEAD is checked
+against that commit, so a fetch in between cannot prove a commit that lacks HEAD. A branch on origin
+is sent by its name there, so `fix/login` tracking `origin/main` starts from `main`, and the line
+reads `from main`. The server resolves the name on origin when it creates the worktree; origin
+moving on since the check only adds commits after the one that holds HEAD, unless someone rewrote
+the branch. An upstream on another remote is sent as the commit HEAD was checked against, and the
+line reads `from upstream/main`.
 
 When origin lacks commits of the branch, or the branch has no remote-tracking ref, the session
 starts from the project's default branch and the line says so before you press Enter:
 `from main · your branch fix/login isn't pushed`, or
 `from main · your commits on main aren't pushed` on the default branch itself. When git does not
-answer within 3 seconds, or fails other than by saying no (a shallow clone's history), the line
-reads `from main · couldn't read your branch`. When the server's store cannot find the ref at
-create, the input stays open with your prompt and the line reads
-`from main · Mend's store couldn't find fix/login`; Enter then starts from the default branch. A
-window on another repository, or on a detached HEAD, starts from the default branch.
+answer within 3 seconds, fails, or says no in a shallow clone, whose boundary can hide that HEAD is
+on origin, the line reads `from main · couldn't read your branch`. When the server's store does not
+know the ref at create, even after fetching origin, the input stays open with your prompt and the
+line reads `from main · Mend's store couldn't find fix/login`; Enter then starts from the default
+branch. Any other failure to create, such as a fetch or `git worktree add` failing, shows its own
+reason and keeps your prompt and your base. A window on another repository, or on a detached HEAD,
+starts from the default branch.
 
 ### Change…
 
@@ -183,7 +191,8 @@ with what you typed, and the line reads your choices.
   the session just then says it failed, or that the refused launch never started. Retry reads it
   again before it sends, and launches the same session again. A session that reads `starting` under
   another launch, or runs, is never sent again: a launch whose answer was lost may be running. Retry
-  shows only in the window that launched it.
+  shows only in the window that launched it. A failure the server settled shows one notification
+  across your VS Code windows, the launching one included.
 
 **Mend: New session in this worktree…** on a session opens the same input for a second session in
 the same worktree: the same files and branch, with a new conversation. Its title ends
