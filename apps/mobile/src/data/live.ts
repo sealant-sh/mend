@@ -15,7 +15,6 @@ import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
 import { Platform } from "react-native";
 
-import type { StatusTone } from "@/components/status";
 import { failureLogLine, failureWords } from "@/data/failure-words";
 import { harnessName } from "@/data/harness-name";
 import type { LaunchOptions } from "@/data/harness-options";
@@ -27,6 +26,7 @@ import type {
   ReplaceWorkspaceBody,
   WorkspaceRetirementDto,
 } from "@/data/shared-workspace";
+import { ACTIVE, toneOf } from "@/data/status-tone";
 
 // ─── config ─────────────────────────────────────────────────────────────────
 
@@ -479,8 +479,6 @@ export const uploadSessionImage = (
   };
 };
 
-export const ACTIVE = new Set(["starting", "running", "waiting", "idle"]);
-
 export const agentIsActive = (
   session: SessionDto | undefined,
   currentAgent: SessionProcessDto | null,
@@ -493,16 +491,7 @@ export const agentIsActive = (
     currentAgent.exitedAt === null &&
     (currentAgent.status === "starting" || currentAgent.status === "running"));
 
-export const toneOf = (status: string): StatusTone =>
-  status === "completed"
-    ? "observed"
-    : status === "failed"
-      ? "breakage"
-      : status === "waiting"
-        ? "waiting"
-        : ACTIVE.has(status)
-          ? "live"
-          : "pending";
+export { ACTIVE, toneOf };
 
 /** Adapt a server session into the shape the skeleton's components render. */
 export const toSession = (dto: SessionDto, projectName: string) => ({
