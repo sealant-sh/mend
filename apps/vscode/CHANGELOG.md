@@ -5,6 +5,21 @@ patch number is the extension's own.
 
 ## Unreleased
 
+- The Mend view is **Sessions**: **Needs you**, **Since you last looked**, **Running**, then
+  **Projects**, collapsed. Each row reads `<word> · <fact>` as Mend observed it, such as
+  `waiting · claude needs your permission to use Bash · since 02:14` or
+  `completed · observed · exited with code 0`. **Since you last looked** lists what completed,
+  failed or landed since this VS Code last showed it, kept per server on this machine.
+- The badge on the Mend icon counts the sessions that wait for you, and the status bar reads
+  `Mend · 1 needs you · 2 finished`. A session's workspace window shows that session only, one line
+  for the others, and `● <session> · <word>` in the status bar; both open the session picker.
+- A notification shows only in the focused window, only when a session waits for you or a session
+  you started finished, and only when that window is not showing it. **Answer** attaches the agent's
+  terminal in this window.
+- When Mend cannot be reached the view says when it was last heard, rows keep their last words, and
+  **New session** and **Answer** are disabled.
+- The view follows Mend's events by re-reading only the session or project an event names, instead
+  of every project. **Mend: Toggle current project scope** is gone.
 - **Open** replaces **Open in VS Code**. It follows your `window.openFoldersInNewWindow` setting,
   and **Open in New Window** in the row's right-click menu opens a new one. Neither asks. A stopped
   session is resumed as part of the open; a missing Remote-SSH install or workspace SSH setup runs

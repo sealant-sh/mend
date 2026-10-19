@@ -41,9 +41,10 @@ out** revokes a browser sign-in's token and forgets it.
 
 ## Open a session over Remote-SSH
 
-The Mend icon in the Activity Bar opens **Projects and sessions**: sessions waiting for you under
-**Needs you**, then each project with its sessions and their status. **Open** on a session's row
-opens it.
+The Mend icon in the Activity Bar opens **Sessions**: **Needs you**, **Since you last looked**,
+**Running**, then **Projects**, collapsed. The badge counts the sessions that wait for you, and the
+status bar says `Mend · 1 needs you · 2 finished`. **Open** on a session's row opens it. **Answer**
+on a waiting row attaches its agent's terminal in this window.
 
 The first open asks once: **Set up workspace SSH to open sessions (one Host block in
 ~/.ssh/config)**. Setup registers this machine's SSH public key with Mend and adds one `Host` block
@@ -98,6 +99,8 @@ else's session reads `read-only · <owner>'s session`.
 
 | Command                         | What it does                                                  |
 | ------------------------------- | ------------------------------------------------------------- |
+| **Mend: Answer**                | A waiting session's agent terminal in this window's panel     |
+| **Mend: Choose a session**      | Pick a session that needs you, finished or runs               |
 | **Mend: Open terminal**         | The session's terminal in a VS Code terminal tab, without SSH |
 | **Mend: Review change**         | The session's change in Mend's review, in your browser        |
 | **Mend: Open in Mend**          | The session or project in Mend's web app                      |
