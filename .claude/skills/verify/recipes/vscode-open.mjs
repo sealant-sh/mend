@@ -7,8 +7,9 @@
 // through its resume, a conversation's tab offers Continue here and becomes claude's TUI, Ana's
 // session is never opened from the row, the palette or a deep link (each offers what Dana may do
 // instead, the status bar's pick too), two live sessions in one worktree each open to their own
-// agent (and Open in New Window from inside that workspace opens a window), a session caught
-// stopping is resumed once it has stopped, and Open with VS Code's default setting turns the window
+// agent (and Open in New Window from inside that workspace shows its agent there), a session caught
+// stopping is resumed once it has stopped, a stopped session's Open from its own workspace window
+// resumes it before showing its agent there, and Open with VS Code's default setting turns the window
 // itself into the workspace of a claude terminal agent, attached and focused, that she types into,
 // though a newer session shares its worktree.
 //
@@ -47,6 +48,9 @@ const delta = (before, after) =>
 
 const linesMatching = (log, needle) =>
   log.split("\n").filter((line) => line.includes(needle)).length;
+
+/** A stop settles a claude terminal agent as `stopped` or, when claude exits non-zero on it, `failed`. */
+const SETTLED = new Set(["stopped", "failed", "completed"]);
 
 const liveProcess = (processes, kind) =>
   processes.find((process) => process.kind === kind && process.exitedAt === null);
@@ -1183,6 +1187,79 @@ export default async (h) => {
     },
   );
 
+  await step(
+    `${second.name} stopped while ${agent.name} keeps their shared workspace running`,
+    async () => {
+      const { session: before } = await api(`/sessions/${second.id}`);
+      await api(`/sessions/${second.id}/stop`, { method: "POST", body: "{}" });
+      const stopped = await waitUntil(
+        `${second.name} to settle`,
+        async () => {
+          const { session: read } = await api(`/sessions/${second.id}`);
+          return SETTLED.has(read.status) ? read : null;
+        },
+        120_000,
+      );
+      const { session: holder } = await api(`/sessions/${agent.id}`);
+      const observed = `${second.name} ${stopped.status} · workspace ${before.sealantWorkspaceId} → ${stopped.sealantWorkspaceId} · ${agent.name} ${holder.status} in ${holder.sealantWorkspaceId}`;
+      expect(
+        stopped.sealantWorkspaceId === before.sealantWorkspaceId &&
+          holder.sealantWorkspaceId === before.sealantWorkspaceId,
+        `the workspace moved: ${observed}`,
+      );
+      return observed;
+    },
+    { via: "api" },
+  );
+
+  await step(
+    `in that window, which is ${second.name}'s workspace, the open button on the stopped ${second.name}: it resumes as a step, then shows its agent here; nothing opens, nothing asks`,
+    async () => {
+      const resumesOf = async () =>
+        linesMatching(await serverLogs(), `'/api/sessions/${second.id}/resume'`);
+      const url = older.page.url();
+      const known = await windows();
+      const before = await openCounts();
+      const resumedBefore = await resumesOf();
+      const watching = await watch();
+      await view("Mend");
+      await treeItem(second.name).inline(OPEN);
+      const starting = statusBar(`starting ${second.name}'s workspace`);
+      const caught = await starting
+        .waitFor(60_000)
+        .then(() => starting.text())
+        .catch(() => null);
+      const shellTab = `shell · ${second.name}`;
+      const tabs = await waitUntil(
+        `the tab "${shellTab}" attached, active and focused`,
+        async () => {
+          const read = await terminal().tabs();
+          return read.active === shellTab && read.focused ? read : null;
+        },
+        300_000,
+      ).catch(async () => {
+        throw new Error(`the tabs are ${JSON.stringify(await terminal().tabs())}`);
+      });
+      await sleep(3_000);
+      const opened = await newWindows(known, { settle: 5_000, limit: 15_000 });
+      const seen = await watching.stop();
+      const after = await openCounts();
+      const resumedAfter = await resumesOf();
+      const { session: now } = await api(`/sessions/${second.id}`);
+      await shot("stopped-in-own-window-resumed");
+      const observed = `status bar ${caught === null ? "never showed starting" : `"${caught}"`} · resumes of ${second.name} ${resumedBefore} → ${resumedAfter} · ${second.name} now ${now.status} in ${now.sealantWorkspaceId} · tabs ${JSON.stringify(tabs.names)} · active "${tabs.active}" · focused ${tabs.focused} · windows opened ${opened.length} · page unchanged ${older.page.url() === url} · ${shown(seen)} · ${delta(before, after)}`;
+      expect(caught !== null, `no starting progress: ${observed}`);
+      expect(resumedAfter - resumedBefore === 1, `resumes: ${observed}`);
+      expect(opened.length === 0 && after.opens === before.opens, `a window opened: ${observed}`);
+      expect(older.page.url() === url, `the window reloaded: ${observed}`);
+      expect(
+        seen !== null && seen.dialogs.length === 0 && seen.quickInputs.length === 0,
+        `it asked: ${observed}`,
+      );
+      return observed;
+    },
+  );
+
   await step("that workspace window closed, back to the local window", async () => {
     const result = await closeWindow(older.page);
     await useWindow(await homeWindow());
@@ -1282,6 +1359,26 @@ export default async (h) => {
       const line = rows.split("\n").find((row) => /who-\S+ in \//.test(row)) ?? "";
       return `terminal "${line.trim()}" · LIMIT.md listed · tabs ${JSON.stringify((await terminal().tabs()).names)}`;
     },
+  );
+
+  await step(
+    `verified-unreachable: a window asked for a session its running workspace no longer holds. ${second.name} stopped and removed while ${agent.name} holds the workspace stays listed in it`,
+    async () => {
+      await api(`/sessions/${second.id}/stop`, { method: "POST", body: "{}" });
+      await waitUntil(
+        `${second.name} to settle`,
+        async () =>
+          SETTLED.has((await api(`/sessions/${second.id}`)).session.status) ? true : null,
+        120_000,
+      );
+      const removal = await api(`/sessions/${second.id}`, { method: "DELETE" });
+      const listed = (await api(`/projects/${project.id}`)).sessions.find(
+        (item) => item.id === second.id,
+      );
+      const { session: holder } = await api(`/sessions/${agent.id}`);
+      return `DELETE answered ${JSON.stringify(removal)} · ${second.name} listed ${listed === undefined ? "no" : `${listed.status} in ${listed.sealantWorkspaceId}`} · ${agent.name} ${holder.status} in ${holder.sealantWorkspaceId}. A session leaves its workspace only once that workspace stops, and a workspace window closes when its workspace stops, so no running window can take an intent for a session it lost; the unit tests cover that branch`;
+    },
+    { via: "api" },
   );
 
   await step(
