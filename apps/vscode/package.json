@@ -94,11 +94,6 @@
         "icon": "$(refresh)"
       },
       {
-        "command": "mend.toggleAllProjects",
-        "title": "Mend: Toggle current project scope",
-        "icon": "$(list-tree)"
-      },
-      {
         "command": "mend.connect",
         "title": "Mend: Connect to server"
       },
@@ -195,11 +190,6 @@
         {
           "command": "mend.adoptProject",
           "when": "view == mend.sessions",
-          "group": "navigation"
-        },
-        {
-          "command": "mend.toggleAllProjects",
-          "when": "view == mend.sessions && mend.hasWorkspaceProject",
           "group": "navigation"
         }
       ],

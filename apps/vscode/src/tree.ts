@@ -66,41 +66,7 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
   private current: Snapshot | null = null;
   private loading: Promise<Snapshot> | null = null;
   private error: string | null = null;
-  private workspaceProjectId: string | null = null;
-  private showingAllProjects = false;
-
   constructor(private readonly client: MendClient) {}
-
-  setWorkspaceProject(projectId: string | null): void {
-    if (projectId !== this.workspaceProjectId) this.showingAllProjects = false;
-    this.workspaceProjectId = projectId;
-    void vscode.commands.executeCommand(
-      "setContext",
-      "mend.hasWorkspaceProject",
-      projectId !== null,
-    );
-    void vscode.commands.executeCommand(
-      "setContext",
-      "mend.projectScoped",
-      this.activeProjectId() !== null,
-    );
-    this.changed.fire();
-  }
-
-  toggleAllProjects(): void {
-    if (this.workspaceProjectId === null) return;
-    this.showingAllProjects = !this.showingAllProjects;
-    void vscode.commands.executeCommand(
-      "setContext",
-      "mend.projectScoped",
-      this.activeProjectId() !== null,
-    );
-    this.changed.fire();
-  }
-
-  private activeProjectId(): string | null {
-    return this.showingAllProjects ? null : this.workspaceProjectId;
-  }
 
   refresh(): void {
     this.current = null;
@@ -238,11 +204,8 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
       if (this.error !== null)
         return [{ kind: "message", label: this.error, detail: "Run Mend: Connect to server" }];
       if (snapshot.projects.length === 0) return [];
-      const activeProjectId = this.activeProjectId();
-      const waiting = [...snapshot.details.values()].some(
-        (detail) =>
-          (activeProjectId === null || detail.project.id === activeProjectId) &&
-          detail.sessions.some((session) => session.status === "waiting"),
+      const waiting = [...snapshot.details.values()].some((detail) =>
+        detail.sessions.some((session) => session.status === "waiting"),
       );
       return [
         ...(waiting ? [{ kind: "group", group: "needs" } satisfies GroupNode] : []),
@@ -250,9 +213,7 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
       ];
     }
     if (element.kind === "group" && element.group === "needs") {
-      const activeProjectId = this.activeProjectId();
       return [...snapshot.details.values()]
-        .filter((detail) => activeProjectId === null || detail.project.id === activeProjectId)
         .flatMap((detail) =>
           detail.sessions
             .filter((session) => session.status === "waiting")
@@ -261,10 +222,7 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
         .toSorted((left, right) => right.session.createdAt.localeCompare(left.session.createdAt));
     }
     if (element.kind === "group" && element.group === "projects") {
-      const activeProjectId = this.activeProjectId();
-      return snapshot.projects
-        .filter((project) => activeProjectId === null || project.id === activeProjectId)
-        .map((project): ProjectNode => ({ kind: "project", project }));
+      return snapshot.projects.map((project): ProjectNode => ({ kind: "project", project }));
     }
     if (element.kind === "project") {
       const sessions = snapshot.details.get(element.project.id)?.sessions ?? [];

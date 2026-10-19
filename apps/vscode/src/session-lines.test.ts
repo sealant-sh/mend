@@ -5,7 +5,6 @@ import {
   joinLine,
   joinLineOf,
   launcherName,
-  liveSessionLines,
   othersInWorktree,
   parseLivePeople,
   parseMembers,
@@ -242,18 +241,6 @@ describe("with per-person homes off, no request beyond the project view", () => 
     expect(quiet.asked.toSorted()).toEqual(["/organization", "/projects", "/projects/p1"]);
     const launched = reading([session({ workspaceLauncherUserId: "anna" })]);
     expect((await readProjects(launched)).viewer).toBe("bob");
-  });
-
-  it("says a live session's lines without a request", async () => {
-    const client = countingClient();
-    expect(await liveSessionLines(session(), client)).toEqual([]);
-    expect(client.asked).toEqual([]);
-  });
-
-  it("asks for the viewer and the waiting line only once the row lists people", async () => {
-    const client = countingClient();
-    await liveSessionLines(session({ livePeople: [anna, bob] }), client);
-    expect(client.asked).toEqual(["/organization", "/sessions/s1/waiting"]);
   });
 
   it("checks the join without asking who you are, and says the shared-home line only for a known viewer", async () => {

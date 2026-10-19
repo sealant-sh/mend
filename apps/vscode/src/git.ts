@@ -52,11 +52,3 @@ export const worktreePath = (project: Project, session: Session): string => {
   const flavor = pathFlavor(project.storePath);
   return flavor.join(flavor.dirname(project.storePath), "worktrees", session.worktree);
 };
-
-const normalized = (value: string): string => value.replaceAll("\\", "/").replace(/\/+$/, "");
-
-export const pathContains = (candidate: string, root: string): boolean => {
-  const child = normalized(candidate);
-  const parent = normalized(root);
-  return child === parent || child.startsWith(`${parent}/`);
-};
