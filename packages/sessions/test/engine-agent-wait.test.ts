@@ -293,15 +293,41 @@ describe("a terminal agent's hooks (G4)", () => {
     );
   });
 
-  it("refuses the 61st report a session sends in a minute, before it reads anything", async () => {
+  it("reads waiting on a PermissionRequest that follows 70 PostToolUse reports in a minute", async () => {
     await withClaudeSession((world, sessionId) =>
       Effect.gen(function* () {
         const hook = hookOf(sessionId);
-        for (let sent = 0; sent < 60; sent++) {
-          expect(yield* hook(own(world, sessionId, "PreToolUse", { tool: "Bash" }))).toBe(
-            "ignored",
+        for (let sent = 0; sent < 70; sent++) {
+          expect(yield* hook(own(world, sessionId, "PostToolUse", { tool: "Bash" }))).toBe(
+            "unchanged",
           );
         }
+        expect(yield* hook(own(world, sessionId, "PermissionRequest", { tool: "Bash" }))).toBe(
+          "applied",
+        );
+        expect(statusOf(world, sessionId)).toBe("waiting");
+        expect(agentWaitLine(agentOf(world, sessionId))).toBe(
+          "waiting · claude needs your permission to use Bash",
+        );
+      }),
+    );
+  });
+
+  it("refuses the 61st change a session's agent makes to its wait in a minute", async () => {
+    await withClaudeSession((world, sessionId) =>
+      Effect.gen(function* () {
+        const hook = hookOf(sessionId);
+        for (let flip = 0; flip < 30; flip++) {
+          expect(yield* hook(own(world, sessionId, "PermissionRequest", { tool: "Bash" }))).toBe(
+            "applied",
+          );
+          expect(yield* hook(own(world, sessionId, "PostToolUse", { tool: "Bash" }))).toBe(
+            "applied",
+          );
+        }
+        expect(yield* hook(own(world, sessionId, "PostToolUse", { tool: "Bash" }))).toBe(
+          "unchanged",
+        );
         const refused = yield* hook(own(world, sessionId, "PermissionRequest", { tool: "Bash" }));
         expect(refused).toMatchObject({ _tag: "too-many" });
         expect(typeof refused === "object" ? refused.retryAfterSeconds : 0).toBeGreaterThan(0);

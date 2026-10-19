@@ -884,7 +884,12 @@ const TakenAheadRef = Context.Reference<TakenAhead | null>("@mend/sessions/Taken
 /** How long a hand-over to a sender that failed after its stop is not tried again (review 2, P3-3). */
 const HAND_OVER_BACKOFF_MS = 60_000;
 
-const AGENT_HOOK_REPORTS_PER_MINUTE = 60;
+/**
+ * Only a report that changes the agent's wait spends from this bound: a burst of no-op reports
+ * (one `PostToolUse` per tool call, subagents included) never starves the `PermissionRequest` or
+ * `Stop` after it. Every write, event, push and Slack edit comes from a counted report.
+ */
+const AGENT_WAIT_CHANGES_PER_MINUTE = 60;
 
 /** A failure's own words, for a session line. */
 const causeWords = (cause: Cause.Cause<unknown>): string => {
@@ -21700,12 +21705,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         report: AgentHookReport,
       ): Effect.fn.Return<AgentHookOutcome> {
-        const retryAfterSeconds = agentHookReports.take(
-          sessionId,
-          AGENT_HOOK_REPORTS_PER_MINUTE,
-          clock.currentTimeMillisUnsafe(),
-        );
-        if (retryAfterSeconds !== null) return { _tag: "too-many", retryAfterSeconds };
         if (report.providerSessionId === null) return "unidentified";
         const live = liveTerminalAgentsOf(
           yield* processes.listForSession(sessionId),
@@ -21733,6 +21732,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           new Date(clock.currentTimeMillisUnsafe()),
         );
         if (next === agent.waiting) return "unchanged";
+        const retryAfterSeconds = agentHookReports.take(
+          sessionId,
+          AGENT_WAIT_CHANGES_PER_MINUTE,
+          clock.currentTimeMillisUnsafe(),
+        );
+        if (retryAfterSeconds !== null) return { _tag: "too-many", retryAfterSeconds };
         if (!(yield* processes.setWaiting(agent.id, sessionId, next))) return "no-live-agent";
         yield* reconcileSession(sessionId, { sweep: false }).pipe(Effect.orDie);
         return "applied";

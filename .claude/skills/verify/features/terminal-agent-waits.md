@@ -20,10 +20,11 @@ another process (a hand-run `codex`, a `codex exec` the agent starts). A report 
 is refused (400). After claude's `/clear`, claude runs under a new session id, so its reports stop
 matching until the next launch: an honest limitation.
 
-Bounds: a session's channel takes at most 60 hook reports a minute (429 with `retry-after`); the
-push notifier re-rings an `attention` phase at most once per 60 s per session; the Slack status line
-moves between non-settled states at most once per 30 s per session, with one delayed re-look so it
-converges.
+Bounds: a session's agent changes its wait at most 60 times a minute (the report past that gets 429
+with `retry-after`; reports that change nothing never count, so a burst of `PostToolUse` never
+starves the `PermissionRequest` after it); the push notifier re-rings an `attention` phase at most
+once per 60 s per session; the Slack status line moves between non-settled states at most once per
+30 s per session, with one delayed re-look so it converges.
 
 ## Sub-features
 
