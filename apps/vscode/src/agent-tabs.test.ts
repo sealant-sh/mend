@@ -16,6 +16,9 @@ import { sessionOfWorkspace } from "./window-role.js";
 
 const WORKSPACE = "61aaf28f-f715-4ce1-89be-8626d33acbb6";
 
+/** What a session read throws once Mend no longer has the session. */
+class Gone extends Error {}
+
 const project: Project = {
   id: "project-1",
   name: "newsroom-api",
@@ -124,6 +127,7 @@ const world = (
       return tab;
     }),
     handoff: vi.fn(async (_id: string) => undefined),
+    gone: (cause: unknown) => cause instanceof Gone,
     refusal: () => null,
     now: () => clock,
     sleep: async (ms: number) => {
@@ -178,7 +182,7 @@ describe("a workspace window holding two live sessions", () => {
         return read;
       }),
     });
-    await agents.focus(located.kind === "found" ? located.session.id : "");
+    await agents.focus(located.kind === "found" ? located.session.id : "", WORKSPACE);
     expect(effects.attachPty).toHaveBeenCalledTimes(1);
     expect(effects.attachPty).toHaveBeenCalledWith(
       expect.objectContaining({ processId: "older-pty" }),
@@ -189,19 +193,19 @@ describe("a workspace window holding two live sessions", () => {
 describe("focusing a session's agent", () => {
   it("shows its tab while that process still is the agent, without attaching again", async () => {
     const { effects, agents, tabs } = world([detail([terminalAgent])]);
-    await agents.focus("older");
-    await agents.focus("older");
+    await agents.focus("older", WORKSPACE);
+    await agents.focus("older", WORKSPACE);
     expect(effects.attachPty).toHaveBeenCalledTimes(1);
     expect(tabs[0]?.shows).toBe(2);
   });
 
   it("never shows a tab whose process ended as if live: it attaches the agent again", async () => {
     const { effects, agents, tabs } = world([detail([terminalAgent])]);
-    await agents.focus("older");
+    await agents.focus("older", WORKSPACE);
     const ended = tabs[0];
     if (ended === undefined) throw new Error("no tab attached");
     ended.ended = true;
-    await agents.focus("older");
+    await agents.focus("older", WORKSPACE);
     expect(ended.shows).toBe(1);
     expect(ended.disposed).toBe(true);
     expect(effects.attachPty).toHaveBeenCalledTimes(2);
@@ -209,7 +213,7 @@ describe("focusing a session's agent", () => {
 
   it("attaches nothing when Mend could not read who she is, and says why", async () => {
     const { effects, agents } = world([detail([terminalAgent])], { viewer: async () => null });
-    await agents.focus("older");
+    await agents.focus("older", WORKSPACE);
     expect(effects.attachPty).not.toHaveBeenCalled();
     expect(effects.showConversation).not.toHaveBeenCalled();
     expect(effects.refused).toHaveBeenCalledWith(
@@ -224,7 +228,7 @@ describe("focusing a session's agent", () => {
       sharedControlEnabledAt: "2026-10-19T09:00:00.000Z",
     });
     const { effects, agents } = world([detail([terminalAgent], anas)]);
-    await agents.focus("older");
+    await agents.focus("older", WORKSPACE);
     expect(effects.attachPty).not.toHaveBeenCalled();
     expect(effects.refused).toHaveBeenCalledWith(
       "another person launched this workspace · Remote-SSH opens it only for them · no agent attached",
@@ -233,13 +237,13 @@ describe("focusing a session's agent", () => {
 
   it("forgets a tab she closed: it offers nothing more, and the next focus attaches anew", async () => {
     const { effects, agents, tabs } = world([detail([conversation])]);
-    await agents.focus("older");
+    await agents.focus("older", WORKSPACE);
     const closed = tabs[0];
     if (closed === undefined) throw new Error("no tab attached");
     expect(agents.continueOffered(closed)).toBe("older");
     agents.forget(closed);
     expect(agents.continueOffered(closed)).toBeNull();
-    await agents.focus("older");
+    await agents.focus("older", WORKSPACE);
     expect(closed.shows).toBe(1);
     expect(effects.showConversation).toHaveBeenCalledTimes(2);
   });
@@ -256,8 +260,8 @@ describe("focusing a session's agent", () => {
         conversation,
       ]),
     ]);
-    await agents.focus("older");
-    await agents.focus("older");
+    await agents.focus("older", WORKSPACE);
+    await agents.focus("older", WORKSPACE);
     expect(tabs[0]?.disposed).toBe(true);
     expect(tabs[0]?.shows).toBe(1);
     expect(effects.showConversation).toHaveBeenCalledTimes(1);
@@ -268,8 +272,8 @@ describe("focusing a session's agent", () => {
 
   it("replaces a conversation's tab once the agent runs in a terminal", async () => {
     const { effects, agents, tabs } = world([detail([conversation]), detail([terminalAgent])]);
-    await agents.focus("older");
-    await agents.focus("older");
+    await agents.focus("older", WORKSPACE);
+    await agents.focus("older", WORKSPACE);
     expect(tabs[0]?.disposed).toBe(true);
     expect(effects.attachPty).toHaveBeenCalledWith(
       expect.objectContaining({ processId: "claude-pty" }),
@@ -283,7 +287,7 @@ describe("Continue here", () => {
     const { effects, agents, tabs } = world([detail([conversation]), detail([terminalAgent])], {
       handoff: vi.fn(() => handoff.promise),
     });
-    await agents.focus("older");
+    await agents.focus("older", WORKSPACE);
     const tab = tabs[0];
     if (tab === undefined) throw new Error("no conversation tab");
     expect(agents.continueOffered(tab)).toBe("older");
@@ -303,7 +307,7 @@ describe("Continue here", () => {
       new Error("Mend did not answer in 30 s"),
       detail([terminalAgent]),
     ]);
-    await agents.focus("older");
+    await agents.focus("older", WORKSPACE);
     const tab = tabs[0];
     if (tab === undefined) throw new Error("no conversation tab");
     await agents.continueHere("older");
@@ -327,7 +331,7 @@ describe("Continue here", () => {
         return fakeTab("pty");
       }),
     });
-    await agents.focus("older");
+    await agents.focus("older", WORKSPACE);
     const tab = tabs[0];
     if (tab === undefined) throw new Error("no conversation tab");
     await agents.continueHere("older");
@@ -345,7 +349,7 @@ describe("Continue here", () => {
       }),
       refusal: () => ({ tag: "HandoffUnsupported", words: "refused" }),
     });
-    await agents.focus("older");
+    await agents.focus("older", WORKSPACE);
     await agents.continueHere("older");
     expect(tabs[0]?.lines.at(-1)).toBe(
       "claude can't continue in a terminal yet · open the terminal to watch",
@@ -359,10 +363,40 @@ describe("Continue here", () => {
       sharedControlEnabledAt: "2026-10-19T09:00:00Z",
     });
     const { agents, tabs } = world([detail([conversation], anas)]);
-    await agents.focus("older");
+    await agents.focus("older", WORKSPACE);
     const tab = tabs[0];
     if (tab === undefined) throw new Error("no conversation tab");
     expect(tab.lines).toEqual(["read-only · Ana's session"]);
     expect(agents.continueOffered(tab)).toBeNull();
+  });
+});
+
+describe("a window asked again for the session it already shows", () => {
+  it("attaches nothing for a session Mend deleted, and says so instead of an error", async () => {
+    const { effects, agents, tabs } = world([new Gone("404")]);
+    await agents.focus("older", WORKSPACE);
+    expect(tabs).toHaveLength(0);
+    expect(effects.onError).not.toHaveBeenCalled();
+    expect(effects.refused).toHaveBeenCalledWith(
+      "Mend lists no session older now · no agent attached",
+    );
+  });
+
+  it("attaches nothing for a session that moved to another workspace", async () => {
+    const moved = session({ id: "older", sealantWorkspaceId: "another-workspace" });
+    const { effects, agents, tabs } = world([detail([process({ id: "moved-pty" })], moved)]);
+    await agents.focus("older", WORKSPACE);
+    expect(tabs).toHaveLength(0);
+    expect(effects.attachPty).not.toHaveBeenCalled();
+    expect(effects.refused).toHaveBeenCalledWith(
+      "add-rate-limit is running and not in this workspace · no agent attached",
+    );
+  });
+
+  it("attaches a session in any workspace when Answer names none", async () => {
+    const elsewhere = session({ id: "older", sealantWorkspaceId: "another-workspace" });
+    const { agents, tabs } = world([detail([process({ id: "answered-pty" })], elsewhere)]);
+    await agents.focus("older", null);
+    expect(tabs.map((tab) => tab.label)).toEqual(["pty:answered-pty"]);
   });
 });

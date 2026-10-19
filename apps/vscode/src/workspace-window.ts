@@ -13,7 +13,7 @@ import { MendApiError, type MendClient } from "./client.js";
 import type { OpenIntents } from "./open-intent.js";
 import { readProjects } from "./session-lines.js";
 import type { Project, Session } from "./types.js";
-import { sessionOfWorkspace, type WindowRole } from "./window-role.js";
+import { requestOfWindow, sessionOfWorkspace, type WindowRole } from "./window-role.js";
 
 const CONTINUE = "Continue here";
 
@@ -125,6 +125,7 @@ export class WorkspaceWindow implements vscode.Disposable {
       handoff: async (sessionId) => {
         await client.handoff(sessionId, "pty");
       },
+      gone: (cause) => cause instanceof MendApiError && cause.status === 404,
       refusal: (cause) =>
         cause instanceof MendApiError && cause.status === 422
           ? { tag: cause.tag, words: cause.message }
@@ -170,7 +171,7 @@ export class WorkspaceWindow implements vscode.Disposable {
    */
   async answer(sessionId: string): Promise<void> {
     try {
-      await this.#tabs.focus(sessionId);
+      await this.#tabs.focus(sessionId, null);
     } catch (cause) {
       this.onError(cause);
     }
@@ -193,12 +194,11 @@ export class WorkspaceWindow implements vscode.Disposable {
   async focusAgentTerminal(sessionId: string | null): Promise<void> {
     if (this.role.kind !== "workspace") return;
     try {
-      const requested =
-        sessionId ??
-        (await this.intents.take(this.role.workspaceId)) ??
-        this.#located?.session.id ??
-        null;
-      if (requested === null || requested !== this.#located?.session.id) {
+      const { requested, check } = requestOfWindow({
+        explicit: sessionId ?? (await this.intents.take(this.role.workspaceId)),
+        shown: this.#located?.session.id ?? null,
+      });
+      if (check) {
         const { details } = await readProjects(this.client);
         const found = sessionOfWorkspace(details, this.role.workspaceId, requested);
         if (found.kind === "missing") {
@@ -212,7 +212,7 @@ export class WorkspaceWindow implements vscode.Disposable {
       }
       this.#say(null);
       const shown = this.#located;
-      if (shown !== null) await this.#tabs.focus(shown.session.id);
+      if (shown !== null) await this.#tabs.focus(shown.session.id, this.role.workspaceId);
     } catch (cause) {
       this.onError(cause);
     }

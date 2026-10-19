@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import type { Project, Session, SessionProcess } from "./types.js";
-import { agentTab, handoffRefusedLine, sessionOfWorkspace, windowRole } from "./window-role.js";
+import {
+  agentTab,
+  handoffRefusedLine,
+  requestOfWindow,
+  sessionOfWorkspace,
+  windowRole,
+} from "./window-role.js";
 
 const ALIAS = "mend-ws-172-17-0-3-de2f165a9e5801413f7fb934";
 const WORKSPACE = "61aaf28f-f715-4ce1-89be-8626d33acbb6";
@@ -185,5 +191,23 @@ describe("handoffRefusedLine", () => {
     const words = "No saved harness state to reopen as a terminal — resume the session instead.";
     expect(handoffRefusedLine("claude", { tag: "StoreFailure", words })).toBe(words);
     expect(handoffRefusedLine("claude", { tag: null, words })).toBe(words);
+  });
+});
+
+describe("which request a workspace window checks against the workspace", () => {
+  it("checks every explicit request, the session it already shows included", () => {
+    expect(requestOfWindow({ explicit: "a", shown: "a" })).toEqual({ requested: "a", check: true });
+    expect(requestOfWindow({ explicit: "b", shown: "a" })).toEqual({ requested: "b", check: true });
+  });
+
+  it("skips the read only when it falls back to what it shows", () => {
+    expect(requestOfWindow({ explicit: null, shown: "a" })).toEqual({
+      requested: "a",
+      check: false,
+    });
+    expect(requestOfWindow({ explicit: null, shown: null })).toEqual({
+      requested: null,
+      check: true,
+    });
   });
 });

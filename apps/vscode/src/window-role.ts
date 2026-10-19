@@ -32,6 +32,32 @@ export type WindowSession =
   | { readonly kind: "missing"; readonly line: string }
   | { readonly kind: "none" };
 
+/** Why a window attaches nothing for a session Mend no longer lists. */
+export const missingSessionLine = (sessionId: string): string =>
+  `Mend lists no session ${sessionId.slice(0, 8)} now · no agent attached`;
+
+/** Why a window attaches nothing for a session whose workspace is another. */
+export const notInWorkspaceLine = (
+  session: Pick<Session, "label" | "harness" | "id" | "status">,
+): string =>
+  `${displaySession(session)} is ${session.status} and not in this workspace · no agent attached`;
+
+/**
+ * Whether a window must read the workspace again before it shows `requested`. Every explicit
+ * request is checked, the one it already shows included: that session may since have gone or
+ * moved. Only the window falling back to what it shows skips the read.
+ */
+export const requestOfWindow = (facts: {
+  readonly explicit: string | null;
+  readonly shown: string | null;
+}): { readonly requested: string | null; readonly check: boolean } => {
+  const requested = facts.explicit ?? facts.shown;
+  return {
+    requested,
+    check: facts.explicit !== null || requested === null || requested !== facts.shown,
+  };
+};
+
 /**
  * Several sessions of one worktree share its workspace. A requested session is shown only if the
  * workspace still holds it; with none requested, the live one, then the newest.
@@ -46,18 +72,10 @@ export const sessionOfWorkspace = (
   );
   if (requested !== null) {
     const asked = all.find(({ session }) => session.id === requested);
-    if (asked === undefined) {
-      return {
-        kind: "missing",
-        line: `Mend lists no session ${requested.slice(0, 8)} now · no agent attached`,
-      };
-    }
+    if (asked === undefined) return { kind: "missing", line: missingSessionLine(requested) };
     return asked.session.sealantWorkspaceId === workspaceId
       ? { kind: "found", ...asked }
-      : {
-          kind: "missing",
-          line: `${displaySession(asked.session)} is ${asked.session.status} and not in this workspace · no agent attached`,
-        };
+      : { kind: "missing", line: notInWorkspaceLine(asked.session) };
   }
   const shown = all
     .filter(({ session }) => session.sealantWorkspaceId === workspaceId)

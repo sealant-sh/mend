@@ -1,6 +1,12 @@
 import { maySteer, ownsSession, rowCapability } from "./session-capability.js";
 import type { Session, SessionDetail } from "./types.js";
-import { agentTab, handoffRefusedLine, type AgentTab } from "./window-role.js";
+import {
+  agentTab,
+  handoffRefusedLine,
+  missingSessionLine,
+  notInWorkspaceLine,
+  type AgentTab,
+} from "./window-role.js";
 
 /** One terminal tab in the panel, as the window's attach lifecycle sees it. */
 export interface AgentTabHandle {
@@ -35,6 +41,8 @@ export interface AgentTabEffects {
   }) => ConversationTabHandle;
   /** Mend's mode handoff: POST /sessions/:id/handoff {to:"pty"}. */
   readonly handoff: (sessionId: string) => Promise<void>;
+  /** Whether a read failed because Mend no longer has the session (a 404). */
+  readonly gone: (cause: unknown) => boolean;
   /** The server's refusal (a 422) by its tag and words; null for any other failure. */
   readonly refusal: (
     cause: unknown,
@@ -84,11 +92,17 @@ export class AgentTabs {
     this.#pollMs = options.pollMs ?? 1_000;
   }
 
-  /** Shows the session's live agent: its tab when that still is the agent, else a new one. */
-  focus(sessionId: string): Promise<void> {
+  /**
+   * Shows the session's live agent: its tab when that still is the agent, else a new one. A
+   * workspace window names its workspace, and attaches nothing for a session that left it; Answer
+   * names none, since it attaches the agent in whatever window she is in.
+   */
+  focus(sessionId: string, workspaceId: string | null): Promise<void> {
     const running = this.#focusing.get(sessionId);
     if (running !== undefined) return running;
-    const run = this.#reconcile(sessionId).finally(() => this.#focusing.delete(sessionId));
+    const run = this.#reconcile(sessionId, workspaceId).finally(() =>
+      this.#focusing.delete(sessionId),
+    );
     this.#focusing.set(sessionId, run);
     return run;
   }
@@ -126,12 +140,16 @@ export class AgentTabs {
     return run;
   }
 
-  async #reconcile(sessionId: string): Promise<void> {
+  async #reconcile(sessionId: string, workspaceId: string | null): Promise<void> {
     const { effects } = this;
     try {
       if (this.#showContinuing(sessionId)) return;
       const [detail, viewer] = await Promise.all([effects.detail(sessionId), effects.viewer()]);
       if (this.#showContinuing(sessionId)) return;
+      if (workspaceId !== null && detail.session.sealantWorkspaceId !== workspaceId) {
+        effects.refused(notInWorkspaceLine(detail.session));
+        return;
+      }
       // Only the workspace's launcher types into its agent; anyone else, and anyone Mend cannot
       // name, gets nothing here (Watch terminal is the read-only way in).
       const capability = rowCapability({ session: detail.session, viewer, members: [] });
@@ -157,7 +175,8 @@ export class AgentTabs {
       }
       await this.#attach(sessionId, detail, viewer, want);
     } catch (cause) {
-      effects.onError(cause);
+      if (effects.gone(cause)) effects.refused(missingSessionLine(sessionId));
+      else effects.onError(cause);
     }
   }
 
