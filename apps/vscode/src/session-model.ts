@@ -182,9 +182,11 @@ const sessionView = (
   const live = LIVE.has(session.status);
   const mine = viewer !== null && session.ownerUserId === viewer;
   const waiting = session.status === "waiting";
-  const wait = waiting ? (input.waits.get(session.id) ?? null) : null;
+  // An idle terminal agent's report is a finished turn: it says so, and asks nobody.
+  const reported = waiting || session.status === "idle";
+  const wait = reported ? (input.waits.get(session.id) ?? null) : null;
   // Only a wait Mend observed needs her, and only one Answer lets her answer.
-  const canAnswer = wait !== null && mayAnswer(session, viewer, wait.via);
+  const canAnswer = waiting && wait !== null && mayAnswer(session, viewer, wait.via);
   const landed = live ? null : (input.landings.get(session.id) ?? null);
   // A landing of an earlier turn says nothing about a turn that settled after it.
   const landing =
@@ -204,7 +206,7 @@ const sessionView = (
       ? landedFact(landing)
       : waiting && !canAnswer && someoneElses
         ? `${nameOf(session.ownerUserId, members)}'s session`
-        : waiting
+        : reported
           ? (wait?.words ?? summary)
           : session.status === "completed"
             ? ["observed", ...(summary === null ? [] : [summary])].join(" · ")

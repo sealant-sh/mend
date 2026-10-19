@@ -553,9 +553,10 @@ export class SessionStore implements vscode.Disposable {
       landing: this.#snapshot.landings.get(session.id) ?? null,
     };
     let wait: WaitFact | null = null;
-    if (session.status === "waiting") {
+    // An idle terminal agent keeps its finished turn's report: its row says it in G4's words.
+    if (session.status === "waiting" || session.status === "idle") {
       wait = terminalWait(known ?? (await this.client.sessionDetail(session.id)));
-      if (wait === null) {
+      if (wait === null && session.status === "waiting") {
         const requests = await this.client.pendingRequests(session.id).catch(() => null);
         wait = requests === null ? before.wait : conversationWait(requests);
       }

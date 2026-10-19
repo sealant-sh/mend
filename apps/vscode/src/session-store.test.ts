@@ -14,7 +14,7 @@ import {
 } from "./session-store.js";
 import { Notifier } from "./session-surfaces.js";
 import { EventEmitter, fake, window } from "./test-vscode.js";
-import type { Project, ProjectDetail, Session, SessionDetail } from "./types.js";
+import type { Project, ProjectDetail, Session, SessionDetail, SessionProcess } from "./types.js";
 
 vi.mock("vscode", () => import("./test-vscode.js"));
 
@@ -61,6 +61,7 @@ class FakeMend implements StoreClient {
   readonly sessions = new Map<string, Session>();
   readonly requests = new Map<string, ReadonlyArray<PendingRequest>>();
   readonly landings = new Map<string, LandingFact>();
+  readonly processes = new Map<string, ReadonlyArray<SessionProcess>>();
   /** Every read refuses this sign-in. */
   refusing = false;
   /** Pending-request reads fail. */
@@ -141,7 +142,12 @@ class FakeMend implements StoreClient {
     return this.#read(`detail:${id}`, "detail", () => {
       const found = this.sessions.get(id);
       if (found === undefined) throw new MendApiError("no session", 404);
-      return { session: found, processes: [], currentAgent: null, changeId: null };
+      return {
+        session: found,
+        processes: this.processes.get(id) ?? [],
+        currentAgent: null,
+        changeId: null,
+      };
     });
   }
 
@@ -386,6 +392,33 @@ describe("wait facts and toasts (S1, S2)", () => {
     }
     await tick(200);
     expect(toasts()).toEqual(["t is waiting · run pnpm db:migrate?"]);
+  });
+});
+
+describe("a finished terminal turn (idle, #1089)", () => {
+  it("reads the idle agent's report, and nothing needs her", async () => {
+    const { mend, store } = world();
+    mend.add(session({ id: "s" }));
+    store.start();
+    await tick(200);
+    mend.add(session({ id: "s", status: "idle" }));
+    mend.processes.set("s", [
+      {
+        id: "pty",
+        kind: "agent-pty",
+        harness: "claude",
+        status: "running",
+        exitedAt: null,
+        providerSessionId: null,
+        label: null,
+        waiting: { kind: "prompt", tool: null, since: START.toISOString() },
+      },
+    ]);
+    mend.signal({ kind: "event", event: event("session-process", "s") });
+    await tick(200);
+    expect(store.model()?.sessions.get("s")?.line).toBe("idle · claude finished its turn");
+    expect(store.model()?.badge).toBe(0);
+    expect(toasts()).toEqual([]);
   });
 });
 

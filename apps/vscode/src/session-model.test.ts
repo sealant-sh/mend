@@ -352,6 +352,38 @@ describe("the badge (rule 15)", () => {
   });
 });
 
+describe("a terminal agent that finished its turn (idle, #1089)", () => {
+  const finishedTurn: WaitFact = {
+    key: "2026-10-19T08:59:00.000Z",
+    words: "claude finished its turn",
+    since: "2026-10-19T08:59:00.000Z",
+    via: "terminal",
+  };
+  const running = session({ id: "add-rate-limit", status: "running" });
+  const idle = session({ id: "add-rate-limit", status: "idle" });
+  const read = (one: Session) =>
+    sessionModel(input([one], { waits: new Map([[one.id, finishedTurn]]) }));
+
+  it("reads in G4's words under Running: not Needs you, no badge, not Since you last looked", () => {
+    const model = read(idle);
+    expect(model.sessions.get(idle.id)).toMatchObject({
+      line: "idle · claude finished its turn",
+      needsYou: false,
+      sinceYouLastLooked: false,
+    });
+    expect(model.badge).toBe(0);
+    expect(rowsOf(model)[0]).toEqual({
+      group: "running",
+      rows: ["add-rate-limit · idle · claude finished its turn"],
+    });
+    expect(model.statusBar.text).toBe("Mend · 1 running");
+  });
+
+  it("toasts nothing when a turn finishes", () => {
+    expect(transitions(read(running), read(idle), looking)).toEqual([]);
+  });
+});
+
 describe("toasts (rules 12-14)", () => {
   const running = session({ id: "add-rate-limit", status: "running" });
   const waiting = session({ id: "add-rate-limit", status: "waiting" });
