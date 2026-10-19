@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 
 import { MendApiError, type MendClient } from "./client.js";
+import { showErrorToast } from "./error-toast.js";
+import { TRY_AGAIN } from "./first-run.js";
 import { checkoutFact } from "./git.js";
 import type { Launches } from "./launches.js";
 import {
@@ -271,7 +273,7 @@ export class NewSessionInput implements vscode.Disposable {
       dispatch({ kind: "adopted", project });
     } catch (cause) {
       dispatch({ kind: "adoptFailed" });
-      void vscode.window.showErrorMessage(`Mend could not adopt ${effect.name} · ${words(cause)}`);
+      void showErrorToast(cause, `Mend could not adopt ${effect.name} · ${words(cause)}`);
     }
   }
 
@@ -301,11 +303,14 @@ export class NewSessionInput implements vscode.Disposable {
       const kept = new Map(this.#kept.get(server) ?? []);
       kept.set(keptPromptKey(draft.project.id, draft.join), draft.prompt);
       this.#kept.set(server, kept);
-      const picked = await vscode.window.showErrorMessage(
-        `Mend could not create the session · ${words(cause)}`,
-        "Try again",
-      );
-      if (picked === "Try again") await this.open({ project: draft.project, join: draft.join });
+      if (
+        await showErrorToast(
+          cause,
+          `Mend could not create the session · ${words(cause)}`,
+          TRY_AGAIN,
+        )
+      )
+        await this.open({ project: draft.project, join: draft.join });
     }
   }
 }

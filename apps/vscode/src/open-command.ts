@@ -4,8 +4,9 @@ import { parseWorkspaceSshTarget, type WorkspaceSshTarget } from "@mend/workspac
 import * as vscode from "vscode";
 
 import type { MendClient } from "./client.js";
-import { openConsent, parseSshConsent } from "./first-run.js";
-import { statusText, type OpenAction, type OpenState } from "./open-flow.js";
+import { showErrorToast } from "./error-toast.js";
+import { openConsent, parseSshConsent, withSshConsent, type SshConsent } from "./first-run.js";
+import { statusText, type OpenState } from "./open-flow.js";
 import type { OpenIntents } from "./open-intent.js";
 import { OpenRunner, type OpenEffects } from "./open-runner.js";
 import type { NotYoursOffer, RowCapability } from "./session-capability.js";
@@ -18,7 +19,24 @@ import type { WorkspaceWindow } from "./workspace-window.js";
 const REMOTE_SSH = "ms-vscode-remote.remote-ssh";
 const REMOTE_SSH_INSTALL_MS = 60_000;
 /** The consent record (`SshConsent`): given by Set up or by Open's one question, or skipped. */
-export const CONSENT_KEY = "mend.workspaceSsh.consent";
+const CONSENT_KEY = "mend.workspaceSsh.consent";
+
+/** What she consented to for `server`'s Host block. */
+export const sshConsentFor = (
+  context: Pick<vscode.ExtensionContext, "globalState">,
+  server: string,
+): SshConsent => parseSshConsent(context.globalState.get(CONSENT_KEY), server);
+
+export const recordSshConsent = async (
+  context: Pick<vscode.ExtensionContext, "globalState">,
+  server: string,
+  consent: Exclude<SshConsent, "never">,
+): Promise<void> => {
+  await context.globalState.update(
+    CONSENT_KEY,
+    withSshConsent(context.globalState.get(CONSENT_KEY), server, consent),
+  );
+};
 
 export const remoteSshInstalled = (): boolean =>
   vscode.extensions.getExtension(REMOTE_SSH) !== undefined;
@@ -103,7 +121,7 @@ export const setUpWorkspaceSsh = async (
   await runWorkspaceSshSetup(target, (publicKey, name) =>
     client.ensureWorkspaceSshKey(publicKey, name),
   );
-  await context.globalState.update(CONSENT_KEY, "given");
+  await recordSshConsent(context, (await client.connection()).url, "given");
   await seedRemotePlatform(target.alias);
 };
 
@@ -197,7 +215,7 @@ export const openRunner = (deps: {
       const { view, target } = await workspaceSshFacts(client);
       return workspaceSshReadiness(view, target).ready ? "ready" : "needsSetup";
     },
-    sshConsent: () => openConsent(parseSshConsent(context.globalState.get(CONSENT_KEY))),
+    sshConsent: async () => openConsent(sshConsentFor(context, (await client.connection()).url)),
     askSshConsent: async () =>
       (await vscode.window.showInformationMessage(
         "Set up workspace SSH to open sessions (one Host block in ~/.ssh/config)",
@@ -225,12 +243,12 @@ export const openRunner = (deps: {
       );
     },
     render: (sessionId, name, state) => progress.render(sessionId, name, state),
-    report: async (_sessionId, reason, action) => {
-      const answer = await (action === null
-        ? vscode.window.showErrorMessage(reason)
-        : vscode.window.showErrorMessage(reason, action));
-      const actions: ReadonlyArray<OpenAction> = ["Retry", "Set up"];
-      return actions.find((candidate) => candidate === answer);
+    report: async (_sessionId, reason, action, cause) => {
+      if (action === null) {
+        await showErrorToast(cause, reason);
+        return undefined;
+      }
+      return (await showErrorToast(cause, reason, action)) ? action : undefined;
     },
   };
   return { runner: new OpenRunner(effects), disposable: progress };

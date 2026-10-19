@@ -1,4 +1,5 @@
 import { canonicalServerUrl, type CliCredential, type StoredCredential } from "./credentials.js";
+import { redactOrigin } from "./project-match.js";
 
 /**
  * Story h, first run: what the Mend view's welcome says from what this machine holds. Pure, so the
@@ -80,14 +81,40 @@ export const accountEmail = (organization: unknown, members: unknown): string | 
 };
 
 /**
- * The one consent in the product (`globalState mend.workspaceSsh.consent`): workspace SSH writes a
- * Host block into `~/.ssh/config`. First run's Set up gives it; skipping records that she skipped,
- * so the welcome moves on and Open still asks once.
+ * The one consent in the product (`globalState mend.workspaceSsh.consent`), one per server: its
+ * workspace SSH writes that server's Host block into `~/.ssh/config`. First run's Set up gives it;
+ * skipping records that she skipped, so the welcome moves on and Open still asks once. Consent to
+ * one server's block never lets another server's be written.
  */
 export type SshConsent = "given" | "skipped" | "never";
 
-export const parseSshConsent = (value: unknown): SshConsent =>
-  value === "given" || value === "skipped" ? value : "never";
+type RecordedConsent = Exclude<SshConsent, "never">;
+
+const isRecordedConsent = (value: unknown): value is RecordedConsent =>
+  value === "given" || value === "skipped";
+
+/** The consents kept, by canonical server URL. */
+export type SshConsentRecord = Readonly<Record<string, RecordedConsent>>;
+
+const consentsOf = (value: unknown): SshConsentRecord =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? Object.fromEntries(
+        Object.entries(value).flatMap(([url, consent]) =>
+          isRecordedConsent(consent) ? [[url, consent]] : [],
+        ),
+      )
+    : {};
+
+/** What the record says for `server`. */
+export const parseSshConsent = (value: unknown, server: string): SshConsent =>
+  consentsOf(value)[canonicalServerUrl(server)] ?? "never";
+
+/** The record with `consent` for `server`, every other server's as it was. */
+export const withSshConsent = (
+  value: unknown,
+  server: string,
+  consent: RecordedConsent,
+): SshConsentRecord => ({ ...consentsOf(value), [canonicalServerUrl(server)]: consent });
 
 /** What Open reads of the record (open-runner's `sshConsent`): only given spares the question. */
 export const openConsent = (consent: SshConsent): "given" | "never" =>
@@ -137,7 +164,7 @@ export interface SetUpEffects {
   /** Registers this machine's key and writes the server's one Host block. */
   readonly workspaceSsh: () => Promise<void>;
   readonly seedPlatform: () => Promise<void>;
-  readonly recordConsent: (consent: Exclude<SshConsent, "never">) => Promise<void>;
+  readonly recordConsent: (consent: RecordedConsent) => Promise<void>;
 }
 
 /** Runs every missing step, then records the consent: an Open after it never asks. */
@@ -318,7 +345,7 @@ export const offerOf = (welcome: Welcome): Offer | null => {
         action: {
           label: "Adopt",
           command: "mend.adoptHere",
-          tooltip: `Adopt ${welcome.origin} into Mend as ${welcome.name}`,
+          tooltip: `Adopt ${redactOrigin(welcome.origin)} into Mend as ${welcome.name}`,
         },
       };
     case "connect":

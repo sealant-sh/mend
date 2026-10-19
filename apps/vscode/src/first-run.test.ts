@@ -16,6 +16,7 @@ import {
   useCli,
   viewMode,
   offerOf,
+  withSshConsent,
   type ConnectEffects,
   type FirstRun,
   type SetUpEffects,
@@ -156,10 +157,16 @@ describe("a machine whose Mend CLI is signed in (h1 variant)", () => {
   });
 });
 
-/** One machine: the consent record, Remote-SSH, the key and Host block, the platform seed. */
-const machine = (start: Partial<Extract<SshFacts, { kind: "read" }>> = {}) => {
+/**
+ * One machine as one server's Set up and Open see it: the machine's consent record (`globalState`,
+ * shared by every server), Remote-SSH, that server's key and Host block, its platform seed.
+ */
+const machine = (
+  start: Partial<Extract<SshFacts, { kind: "read" }>> = {},
+  server = MINI,
+  record: { value: unknown } = { value: undefined },
+) => {
   const facts = { remoteSsh: false, workspaceSsh: false, platform: false, ...start };
-  let consent: unknown;
   const ran: Array<string> = [];
   const setUp: SetUpEffects = {
     installRemoteSsh: async () => {
@@ -175,17 +182,18 @@ const machine = (start: Partial<Extract<SshFacts, { kind: "read" }>> = {}) => {
       facts.platform = true;
     },
     recordConsent: async (given) => {
-      consent = given;
+      record.value = withSshConsent(record.value, server, given);
     },
   };
   return {
     facts,
     ran,
     setUp,
+    record,
     read: (): Extract<SshFacts, { kind: "read" }> => ({ kind: "read", ...facts }),
-    consent: () => parseSshConsent(consent),
+    consent: () => parseSshConsent(record.value, server),
     skip: () => {
-      consent = "skipped";
+      record.value = withSshConsent(record.value, server, "skipped");
     },
   };
 };
@@ -231,7 +239,7 @@ const openOn = (box: ReturnType<typeof machine>) => {
     installRemoteSsh: box.setUp.installRemoteSsh,
     workspaceSsh: async (): Promise<"ready" | "needsSetup"> =>
       box.facts.workspaceSsh ? "ready" : "needsSetup",
-    sshConsent: () => openConsent(box.consent()),
+    sshConsent: async () => openConsent(box.consent()),
     askSshConsent: vi.fn(async () => true),
     setUpWorkspaceSsh: vi.fn(async () => {
       await box.setUp.workspaceSsh();
@@ -289,6 +297,24 @@ describe("Set up (h3)", () => {
     expect(done.consent()).toBe("given");
   });
 
+  it("after a step fails, records no consent; Try again runs only what is still missing", async () => {
+    const box = machine();
+    const failing: SetUpEffects = {
+      ...box.setUp,
+      workspaceSsh: async () => {
+        throw new Error("Mend could not register the key.");
+      },
+    };
+    await expect(runSetUp(box.read(), failing)).rejects.toThrow("could not register");
+    expect(box.ran).toEqual(["installRemoteSsh"]);
+    expect(box.consent()).toBe("never");
+    expect(viewMode(connected(box))).toEqual({ kind: "welcome", welcome: { kind: "setUp" } });
+
+    await runSetUp(box.read(), box.setUp);
+    expect(box.ran).toEqual(["installRemoteSsh", "workspaceSsh", "seedPlatform"]);
+    expect(box.consent()).toBe("given");
+  });
+
   it("names what it sets up in its progress", () => {
     expect(setUpTitle(missingSteps(machine().read()))).toBe(
       "Setting up: Remote-SSH · an SSH key for Mend · one Host block in ~/.ssh/config",
@@ -326,9 +352,34 @@ describe("skipping Set up", () => {
   });
 
   it("reads an unknown record as never given", () => {
-    expect(parseSshConsent(undefined)).toBe("never");
-    expect(parseSshConsent("yes")).toBe("never");
+    expect(parseSshConsent(undefined, MINI)).toBe("never");
+    expect(parseSshConsent("given", MINI)).toBe("never");
+    expect(parseSshConsent({ [MINI]: "yes" }, MINI)).toBe("never");
     expect(openConsent("skipped")).toBe("never");
+  });
+});
+
+describe("consent, one per server", () => {
+  const OTHER = "https://mend.example.com";
+
+  it("given for one server never lets Open write another server's Host block unasked", async () => {
+    const record = { value: undefined };
+    const mini = machine({}, MINI, record);
+    await runSetUp(mini.read(), mini.setUp);
+    const other = machine({ remoteSsh: true, platform: true }, OTHER, record);
+    expect(other.consent()).toBe("never");
+    expect(viewMode(connected(other))).toEqual({ kind: "welcome", welcome: { kind: "setUp" } });
+    const open = openOn(other);
+    await open.runner.open({ session, project }, "follow-setting");
+    expect(open.effects.askSshConsent).toHaveBeenCalledTimes(1);
+    expect(mini.consent()).toBe("given");
+  });
+
+  it("keeps each server's answer under any spelling of its URL", () => {
+    const skipped = withSshConsent(undefined, OTHER, "skipped");
+    const both = withSshConsent(skipped, "HTTP://mend-mini.local:3105/", "given");
+    expect(parseSshConsent(both, MINI)).toBe("given");
+    expect(parseSshConsent(both, OTHER)).toBe("skipped");
   });
 });
 
@@ -379,6 +430,18 @@ describe("her first project (h4)", () => {
     expect(atProject(projectMatch({ read: true, projects: 1, unmatched: null }))).toEqual({
       kind: "tree",
     });
+  });
+
+  it("never shows a clone's credentials, in the message or the tooltip", () => {
+    const shown = offerOf({
+      kind: "adopt",
+      name: "newsroom-api",
+      origin: "https://dana:ghp_secret@github.com/acme/newsroom-api.git",
+    });
+    expect(shown?.message).toBe("Adopt newsroom-api from github.com/acme/newsroom-api");
+    expect(shown?.action.tooltip).toBe(
+      "Adopt https://github.com/acme/newsroom-api.git into Mend as newsroom-api",
+    );
   });
 
   it("names an origin the same way in every URL form", () => {

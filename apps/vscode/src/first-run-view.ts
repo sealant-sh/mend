@@ -1,3 +1,4 @@
+import type { WorkspaceSshTarget } from "@mend/workspace-ssh";
 import * as vscode from "vscode";
 
 import type { MendClient } from "./client.js";
@@ -7,7 +8,6 @@ import {
   accountEmail,
   firstRun,
   missingSteps,
-  parseSshConsent,
   projectMatch,
   runSetUp,
   setUpTitle,
@@ -23,11 +23,12 @@ import {
 } from "./first-run.js";
 import { requestMend } from "./mend-http.js";
 import {
-  CONSENT_KEY,
   installRemoteSsh,
+  recordSshConsent,
   remotePlatformSeeded,
   remoteSshInstalled,
   seedRemotePlatform,
+  sshConsentFor,
   workspaceSshFacts,
 } from "./open-command.js";
 import { originProjectName } from "./project-match.js";
@@ -227,7 +228,10 @@ export class FirstRunView implements vscode.Disposable {
       connection,
       offer: this.#offer,
       ssh: this.#ssh,
-      consent: parseSshConsent(this.deps.context.globalState.get(CONSENT_KEY)),
+      consent:
+        connection.kind === "connected"
+          ? sshConsentFor(this.deps.context, connection.url)
+          : "never",
       project: projectMatch({
         read: store.hasRead(),
         projects: store.details().length,
@@ -254,7 +258,10 @@ export class FirstRunView implements vscode.Disposable {
     }
   }
 
-  async #sshTarget() {
+  async #sshTarget(): Promise<{
+    readonly target: WorkspaceSshTarget;
+    readonly facts: Extract<SshFacts, { readonly kind: "read" }>;
+  }> {
     const { view, target } = await workspaceSshFacts(this.deps.client);
     return {
       target,
@@ -263,7 +270,7 @@ export class FirstRunView implements vscode.Disposable {
         remoteSsh: remoteSshInstalled(),
         workspaceSsh: workspaceSshReadiness(view, target).ready,
         platform: remotePlatformSeeded(target.alias),
-      } satisfies SshFacts,
+      },
     };
   }
 
@@ -282,6 +289,8 @@ export class FirstRunView implements vscode.Disposable {
    */
   async setUp(): Promise<void> {
     const { client, context } = this.deps;
+    const server = this.connected()?.url;
+    if (server === undefined) return;
     try {
       const { target, facts } = await this.#sshTarget();
       await vscode.window.withProgress(
@@ -297,8 +306,7 @@ export class FirstRunView implements vscode.Disposable {
                 client.ensureWorkspaceSshKey(publicKey, name),
               ),
             seedPlatform: () => seedRemotePlatform(target.alias),
-            recordConsent: (consent) =>
-              Promise.resolve(context.globalState.update(CONSENT_KEY, consent)),
+            recordConsent: (consent) => recordSshConsent(context, server, consent),
           }),
       );
     } catch (cause) {
@@ -311,7 +319,9 @@ export class FirstRunView implements vscode.Disposable {
 
   /** Skipping Set up: everything but Open works, and Open asks its one question later. */
   async skipSetUp(): Promise<void> {
-    await this.deps.context.globalState.update(CONSENT_KEY, "skipped");
+    const server = this.connected()?.url;
+    if (server === undefined) return;
+    await recordSshConsent(this.deps.context, server, "skipped");
     this.render();
   }
 
