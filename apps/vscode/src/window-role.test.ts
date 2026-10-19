@@ -39,6 +39,7 @@ const process = (overrides: Partial<SessionProcess>): SessionProcess => ({
   id: "process",
   kind: "agent-pty",
   harness: "claude",
+  waiting: null,
   status: "running",
   exitedAt: null,
   providerSessionId: null,

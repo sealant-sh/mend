@@ -88,6 +88,9 @@ class ContinueLink extends vscode.TerminalLink {
 export class WorkspaceWindow implements vscode.Disposable {
   #located: { readonly project: Project; readonly session: Session } | null = null;
   #notice: vscode.Disposable | null = null;
+  readonly #located$ = new vscode.EventEmitter<void>();
+  /** The window found (or changed) the session it is the workspace of. */
+  readonly onDidLocate = this.#located$.event;
   readonly #tabs: AgentTabs;
   readonly #byTerminal = new WeakMap<vscode.Terminal, TerminalTab>();
   readonly #disposables: ReadonlyArray<vscode.Disposable>;
@@ -132,30 +135,45 @@ export class WorkspaceWindow implements vscode.Disposable {
       refused: (line) => this.#say(line),
     };
     this.#tabs = new AgentTabs(effects);
-    this.#disposables =
-      role.kind === "workspace"
+    // Any window attaches an agent's tab when she answers it (rule 8), so every window tracks them.
+    this.#disposables = [
+      this.#located$,
+      vscode.window.registerTerminalLinkProvider({
+        provideTerminalLinks: (context) => this.#links(context),
+        handleTerminalLink: (link) => {
+          if (link instanceof ContinueLink) void this.#tabs.continueHere(link.sessionId);
+        },
+      }),
+      vscode.window.onDidCloseTerminal((closed) => {
+        const tab = this.#byTerminal.get(closed);
+        if (tab !== undefined) this.#tabs.forget(tab);
+      }),
+      ...(role.kind === "workspace"
         ? [
-            vscode.window.registerTerminalLinkProvider({
-              provideTerminalLinks: (context) => this.#links(context),
-              handleTerminalLink: (link) => {
-                if (link instanceof ContinueLink) void this.#tabs.continueHere(link.sessionId);
-              },
-            }),
-            vscode.window.onDidCloseTerminal((closed) => {
-              const tab = this.#byTerminal.get(closed);
-              if (tab !== undefined) this.#tabs.forget(tab);
-            }),
             // VS Code focuses a window already open on the folder instead of opening another.
             vscode.window.onDidChangeWindowState((state) => {
               if (state.focused) void this.#takeIntent();
             }),
           ]
-        : [];
+        : []),
+    ];
   }
 
   dispose(): void {
     for (const disposable of this.#disposables) disposable.dispose();
     this.#notice?.dispose();
+  }
+
+  /**
+   * Answer (rule 8): the session's agent in this window's panel, attached or shown again, in any
+   * window, and no window opens. A conversation gets its tab and Continue here.
+   */
+  async answer(sessionId: string): Promise<void> {
+    try {
+      await this.#tabs.focus(sessionId);
+    } catch (cause) {
+      this.onError(cause);
+    }
   }
 
   /** The session this window is the workspace of, once the window has found it. */
@@ -190,6 +208,7 @@ export class WorkspaceWindow implements vscode.Disposable {
         // Not a session this person can see: the window stays a plain Remote-SSH window.
         if (found.kind === "none") return;
         this.#located = { project: found.project, session: found.session };
+        this.#located$.fire();
       }
       this.#say(null);
       const shown = this.#located;

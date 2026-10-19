@@ -133,6 +133,15 @@ export interface SessionProcess {
   readonly providerSessionId: string | null;
   /** The process's human name ("claude", "shell", "web"); null when unnamed and from older servers. */
   readonly label: string | null;
+  /** An `agent-pty`'s reported wait (G4); null while it works, and from older servers. */
+  readonly waiting: AgentWaitView | null;
+}
+
+/** Why a terminal agent waits, as its own hooks reported it (G4, `AgentWait` in @mend/domain). */
+export interface AgentWaitView {
+  readonly kind: "permission" | "question" | "prompt";
+  readonly tool: string | null;
+  readonly since: string;
 }
 
 /** GET /sessions/:id — the session with every process it has held. */

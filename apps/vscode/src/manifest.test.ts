@@ -153,6 +153,40 @@ describe("a session row as the code labels it", () => {
   });
 });
 
+describe("a row that needs her (story b)", () => {
+  it("offers Answer as its first button and keeps what the row offers beside it", () => {
+    expect(inline(groupsOn("mend.answer", "mend.session.live.open.steer.needs"))).toEqual([
+      "inline@0",
+    ]);
+    expect(inline(groupsOn("mend.open", "mend.session.live.open.steer.needs"))).toEqual([
+      "inline@1",
+    ]);
+    expect(inline(groupsOn("mend.watchTerminal", "mend.session.live.watch.steer.needs"))).toEqual([
+      "inline@1",
+    ]);
+    expect(groupsOn("mend.answer", "mend.session.live.open")).toEqual([]);
+    expect(groupsOn("mend.stopSession", "mend.session.live.open.steer.needs")).toEqual([
+      "2_session@1",
+    ]);
+    expect(groupsOn("mend.stopSession", "mend.session.live.review.needs")).toEqual([]);
+  });
+});
+
+const commandEntries = (): ReadonlyArray<Record<string, unknown>> => {
+  const commands = contributed("commands");
+  return Array.isArray(commands)
+    ? commands.filter((entry): entry is Record<string, unknown> => isMenuEntry(entry))
+    : [];
+};
+
+describe("offline (stories a and b)", () => {
+  it.each(["mend.newSession", "mend.answer"])("%s is disabled while Mend is offline", (id) => {
+    expect(commandEntries().find((entry) => entry.command === id)?.enablement).toBe(
+      "!mend.offline",
+    );
+  });
+});
+
 describe("the commands", () => {
   it("have no takeover and no Open in VS Code", () => {
     const commands = contributed("commands");

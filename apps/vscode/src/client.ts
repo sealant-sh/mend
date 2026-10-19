@@ -13,6 +13,7 @@ import {
   type MemberName,
   type RetirementView,
 } from "./session-lines.js";
+import type { LandingFact } from "./session-model.js";
 import {
   SESSION_STATUSES,
   type Effort,
@@ -20,14 +21,15 @@ import {
   type LaunchStart,
   type Project,
   type ProjectDetail,
-  type ProjectResolution,
-  type RepositoryFacts,
   type Session,
   type SessionDetail,
   type SessionProcess,
   type SessionStatus,
+  type AgentWaitView,
   type WorkspaceSshView,
   type Worktree,
+  type ProjectResolution,
+  type RepositoryFacts,
 } from "./types.js";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -174,8 +176,101 @@ const parseSessionProcess = (value: unknown): SessionProcess => {
     exitedAt: exitedAt === null || exitedAt === undefined ? null : String(exitedAt),
     providerSessionId: nullableStringField(value, "providerSessionId"),
     label: typeof value["label"] === "string" ? value["label"] : null,
+    waiting: parseAgentWait(value["waiting"]),
   };
 };
+
+const WAIT_KINDS: ReadonlyArray<AgentWaitView["kind"]> = ["permission", "question", "prompt"];
+
+/** A terminal agent's reported wait (G4); absent, malformed and older servers read as none. */
+const parseAgentWait = (value: unknown): AgentWaitView | null => {
+  if (!isRecord(value) || typeof value["since"] !== "string") return null;
+  const kind = WAIT_KINDS.find((candidate) => candidate === value["kind"]);
+  if (kind === undefined) return null;
+  return {
+    kind,
+    tool: typeof value["tool"] === "string" ? value["tool"] : null,
+    since: value["since"],
+  };
+};
+
+/** A conversation's pending request, as much as the view says of it. */
+export interface PendingRequest {
+  readonly id: string;
+  readonly title: string | null;
+  readonly createdAt: string;
+}
+
+const parsePendingRequest = (value: unknown): PendingRequest => {
+  if (!isRecord(value)) throw new Error("Mend returned an invalid request.");
+  return {
+    id: stringField(value, "id"),
+    title: typeof value["title"] === "string" ? value["title"] : null,
+    createdAt: stringField(value, "createdAt"),
+  };
+};
+
+const LANDED_OUTCOMES: ReadonlySet<unknown> = new Set(["pushed", "pull-request", "adopted"]);
+const PULL_REQUEST_STATES: ReadonlyArray<"open" | "closed" | "merged"> = [
+  "open",
+  "closed",
+  "merged",
+];
+
+/** The newest landing that reached origin (or adopted a pull request); null when none did. */
+const parseLanding = (value: unknown): LandingFact | null => {
+  if (!isRecord(value) || !Array.isArray(value["landings"])) return null;
+  for (const landing of value["landings"]) {
+    if (!isRecord(landing) || !LANDED_OUTCOMES.has(landing["outcome"])) continue;
+    const pullRequest = landing["pullRequest"];
+    const state = isRecord(pullRequest)
+      ? PULL_REQUEST_STATES.find((candidate) => candidate === pullRequest["state"])
+      : undefined;
+    return {
+      id: stringField(landing, "id"),
+      userId: stringField(landing, "userId"),
+      createdAt: stringField(landing, "createdAt"),
+      remoteBranch: stringField(landing, "remoteBranch"),
+      pullRequest:
+        isRecord(pullRequest) && typeof pullRequest["number"] === "number" && state !== undefined
+          ? { number: pullRequest["number"], state }
+          : null,
+    };
+  }
+  return null;
+};
+
+/** What `/api/events` says changed: a pointer the store re-reads, never data. */
+export interface EventPointer {
+  readonly type: string;
+  readonly sessionId: string | null;
+  readonly projectId: string | null;
+}
+
+const parseEventPointer = (data: string): EventPointer | null => {
+  let value: unknown;
+  try {
+    value = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  if (!isRecord(value) || typeof value["type"] !== "string") return null;
+  return {
+    type: value["type"],
+    sessionId: typeof value["sessionId"] === "string" ? value["sessionId"] : null,
+    projectId: typeof value["projectId"] === "string" ? value["projectId"] : null,
+  };
+};
+
+/** What the event stream tells its subscriber. */
+export type StreamSignal =
+  /** A stream opened: whatever changed while none was open was never announced. */
+  | { readonly kind: "opened" }
+  /** Any bytes, the heartbeat included: Mend was heard now. */
+  | { readonly kind: "heard" }
+  | { readonly kind: "event"; readonly event: EventPointer }
+  /** The stream failed or went quiet past the heartbeat; it is tried again. */
+  | { readonly kind: "lost" };
 
 const parseSessionDetail = (value: unknown): SessionDetail => {
   if (!isRecord(value)) throw new Error("Mend returned an invalid session detail.");
@@ -231,41 +326,6 @@ export class MendClient {
 
   async projectDetail(id: string): Promise<ProjectDetail> {
     return parseProjectDetail(await this.request(`/projects/${encodeURIComponent(id)}`));
-  }
-
-  async resolveProject(facts: RepositoryFacts): Promise<ProjectResolution> {
-    const projects = await this.listProjects();
-    const normalizedOrigin = normalizeRemoteUrl(facts.originUrl);
-    const byRemote =
-      normalizedOrigin === null
-        ? undefined
-        : projects.find((project) => normalizeRemoteUrl(project.originUrl) === normalizedOrigin);
-    if (byRemote !== undefined)
-      return { status: "matched", project: byRemote, matchedBy: "origin" };
-
-    const normalizedName = normalizeProjectName(facts.folder);
-    const byName = projects.find((project) => project.name === normalizedName);
-    if (byName !== undefined)
-      return { status: "matched", project: byName, matchedBy: "folder-name" };
-
-    const byPath = projects.filter((project) => {
-      if (
-        project.originUrl !== null &&
-        normalizePath(project.originUrl) !== null &&
-        sameOrInside(facts.path, project.originUrl)
-      ) {
-        return true;
-      }
-      const store = normalizePath(project.storePath);
-      if (store === null) return false;
-      const separator = store.lastIndexOf("/");
-      return separator > 0 && sameOrInside(facts.path, store.slice(0, separator));
-    });
-    if (byPath.length === 1 && byPath[0] !== undefined) {
-      return { status: "matched", project: byPath[0], matchedBy: "path" };
-    }
-    if (byPath.length > 1) return { status: "ambiguous", candidates: byPath, matchedBy: "path" };
-    return { status: "not-found" };
   }
 
   /**
@@ -453,24 +513,30 @@ export class MendClient {
     return parseProject(await this.post("/projects", { name, source }));
   }
 
-  async findSession(
-    sessionId: string,
-  ): Promise<{ readonly project: Project; readonly session: Session } | null> {
-    for (const project of await this.listProjects()) {
-      const detail = await this.projectDetail(project.id);
-      const session = detail.sessions.find((candidate) => candidate.id === sessionId);
-      if (session !== undefined) return { project, session };
-    }
-    return null;
+  /** A conversation's requests still waiting for an answer. */
+  async pendingRequests(sessionId: string): Promise<ReadonlyArray<PendingRequest>> {
+    return parseArray(
+      await this.request(`/sessions/${encodeURIComponent(sessionId)}/requests?pending=true`),
+      parsePendingRequest,
+      "requests",
+    );
   }
 
-  subscribe(onEvent: () => void): vscode.Disposable {
+  /** The session's newest landing that reached origin; null when none did. */
+  async landing(sessionId: string): Promise<LandingFact | null> {
+    return parseLanding(await this.request(`/sessions/${encodeURIComponent(sessionId)}/landings`));
+  }
+
+  subscribe(onSignal: (signal: StreamSignal) => void): vscode.Disposable {
     const controller = new AbortController();
-    void this.eventLoop(controller.signal, onEvent);
+    void this.eventLoop(controller.signal, onSignal);
     return new vscode.Disposable(() => controller.abort());
   }
 
-  private async eventLoop(signal: AbortSignal, onEvent: () => void): Promise<void> {
+  private async eventLoop(
+    signal: AbortSignal,
+    onSignal: (signal: StreamSignal) => void,
+  ): Promise<void> {
     let delay = 1_000;
     while (!signal.aborted) {
       // One stream per attempt. A stream that goes quiet past the heartbeat is dead (a Mac mini
@@ -479,6 +545,8 @@ export class MendClient {
       const abortAttempt = () => attempt.abort();
       signal.addEventListener("abort", abortAttempt, { once: true });
       let watchdog: NodeJS.Timeout | undefined;
+      // A server that answers, even with a refusal, is reachable: only silence reads as lost.
+      let refused = false;
       const feed = () => {
         clearTimeout(watchdog);
         watchdog = setTimeout(abortAttempt, EVENT_STREAM_STALL_MS);
@@ -492,11 +560,13 @@ export class MendClient {
           headers,
           signal: attempt.signal,
         });
-        if (!response.ok || response.body === null)
+        if (!response.ok || response.body === null) {
+          refused = true;
+          onSignal({ kind: "heard" });
           throw new Error(`events responded ${response.status}`);
+        }
         delay = 1_000;
-        // Whatever changed while no stream was open was never announced: read it all again.
-        onEvent();
+        onSignal({ kind: "opened" });
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -504,18 +574,26 @@ export class MendClient {
           const chunk = await reader.read();
           if (chunk.done) break;
           feed();
+          onSignal({ kind: "heard" });
           buffer += decoder.decode(chunk.value, { stream: true });
           let boundary = buffer.indexOf("\n\n");
           while (boundary !== -1) {
-            const message = buffer.slice(0, boundary);
+            const data = buffer
+              .slice(0, boundary)
+              .split("\n")
+              .filter((line) => line.startsWith("data:"))
+              .map((line) => line.slice(5).replace(/^ /, ""))
+              .join("\n");
             buffer = buffer.slice(boundary + 2);
-            if (message.split("\n").some((line) => line.startsWith("data:"))) onEvent();
+            const event = data === "" ? null : parseEventPointer(data);
+            if (event !== null) onSignal({ kind: "event", event });
             boundary = buffer.indexOf("\n\n");
           }
         }
       } catch {
         if (signal.aborted) return;
       } finally {
+        if (!signal.aborted && !refused) onSignal({ kind: "lost" });
         clearTimeout(watchdog);
         signal.removeEventListener("abort", abortAttempt);
         attempt.abort();
@@ -564,4 +642,40 @@ const sameOrInside = (candidate: string, root: string): boolean => {
     normalizedRoot !== null &&
     (normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}/`))
   );
+};
+
+/** Which adopted project a local folder is a clone of: its origin URL, then its name, then its path. */
+export const matchProject = (
+  projects: ReadonlyArray<Project>,
+  facts: RepositoryFacts,
+): ProjectResolution => {
+  const normalizedOrigin = normalizeRemoteUrl(facts.originUrl);
+  const byRemote =
+    normalizedOrigin === null
+      ? undefined
+      : projects.find((project) => normalizeRemoteUrl(project.originUrl) === normalizedOrigin);
+  if (byRemote !== undefined) return { status: "matched", project: byRemote, matchedBy: "origin" };
+
+  const normalizedName = normalizeProjectName(facts.folder);
+  const byName = projects.find((project) => project.name === normalizedName);
+  if (byName !== undefined) return { status: "matched", project: byName, matchedBy: "folder-name" };
+
+  const byPath = projects.filter((project) => {
+    if (
+      project.originUrl !== null &&
+      normalizePath(project.originUrl) !== null &&
+      sameOrInside(facts.path, project.originUrl)
+    ) {
+      return true;
+    }
+    const store = normalizePath(project.storePath);
+    if (store === null) return false;
+    const separator = store.lastIndexOf("/");
+    return separator > 0 && sameOrInside(facts.path, store.slice(0, separator));
+  });
+  if (byPath.length === 1 && byPath[0] !== undefined) {
+    return { status: "matched", project: byPath[0], matchedBy: "path" };
+  }
+  if (byPath.length > 1) return { status: "ambiguous", candidates: byPath, matchedBy: "path" };
+  return { status: "not-found" };
 };
