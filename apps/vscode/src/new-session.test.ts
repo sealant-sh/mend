@@ -18,6 +18,7 @@ import {
   type FlowFacts,
   type FlowState,
   type JoinTarget,
+  type QuickInputView,
   type SessionOptions,
 } from "./new-session.js";
 import type { Project } from "./types.js";
@@ -114,8 +115,20 @@ const run = (
   return { state: current, effects, facts: known };
 };
 
+/** The view as a list (the project and Change… steps); the prompt step fails the test. */
+const asList = (view: QuickInputView) => {
+  if (view.kind !== "pick") throw new Error(`the prompt step, not a list: ${view.title}`);
+  return view;
+};
+
+/** The view as the prompt step; a list fails the test. */
+const asPrompt = (view: QuickInputView) => {
+  if (view.kind !== "prompt") throw new Error(`a list, not the prompt step: ${view.title}`);
+  return view;
+};
+
 const dim = (state: FlowState, given: FlowFacts = facts()): string =>
-  render(state, given).items[0]?.description ?? "";
+  asPrompt(render(state, given)).line;
 
 const starts = (effects: ReadonlyArray<FlowEffect>) =>
   effects.flatMap((effect) => (effect.kind === "start" ? [effect] : []));
@@ -189,7 +202,7 @@ describe("Enter on the prompt", () => {
     const { effects, state } = run(opened(), [{ kind: "typed", value: "fix\0this" }, ENTER]);
     expect(starts(effects)).toHaveLength(0);
     expect(dim(state)).toBe("the prompt has a NUL character, which no argument can carry");
-    expect(render(state, facts()).items[0]?.label).toBe("$(warning)");
+    expect(asPrompt(render(state, facts())).warned).toBe(true);
   });
 
   it("takes a prompt of 120,000 UTF-8 bytes and refuses one byte more, counting bytes not characters", () => {
@@ -210,21 +223,17 @@ describe("the project", () => {
     expect(view.title).toBe("New session · newsroom-api");
     expect(view.placeholder).toBe("What should claude do?");
     expect(view.back).toBe(false);
-    expect(view.items).toEqual([
-      {
-        id: "start",
-        label: "",
-        description: "claude · default model · from main",
-        change: true,
-        alwaysShow: true,
-      },
-    ]);
+    expect(view).toMatchObject({
+      kind: "prompt",
+      line: "claude · default model · from main",
+      warned: false,
+    });
   });
 
   it("is asked for when nothing matched, with Adopt this repository on top only when adoptable", () => {
     const origin = "git@github.com:sealant-sh/newsroom-web.git";
     const adoptable = facts({ adoptable: { origin, name: "newsroom-web" } });
-    const asked = render(opened({ project: null }, adoptable), adoptable);
+    const asked = asList(render(opened({ project: null }, adoptable), adoptable));
     expect(asked.title).toBe("New session");
     expect(asked.placeholder).toBe("Choose a project");
     expect(asked.items.map((item) => item.label)).toEqual([
@@ -233,10 +242,9 @@ describe("the project", () => {
       "mend",
     ]);
     expect(asked.items[0]?.description).toBe(origin);
-    expect(render(opened({ project: null }), facts()).items.map((item) => item.label)).toEqual([
-      "newsroom-api",
-      "mend",
-    ]);
+    expect(
+      asList(render(opened({ project: null }), facts())).items.map((item) => item.label),
+    ).toEqual(["newsroom-api", "mend"]);
   });
 
   it("adopted continues to its prompt step with the window's checkout", () => {
@@ -256,7 +264,7 @@ describe("the project", () => {
     const { state } = run(adopting.state, [{ kind: "adopted", project: web }], given);
     const view = render(state, given);
     expect(view.title).toBe("New session · newsroom-web");
-    expect(view.items[0]?.description).toBe("claude · default model · from fix/login");
+    expect(asPrompt(view).line).toBe("claude · default model · from fix/login");
     expect(view.back).toBe(true);
   });
 
@@ -270,7 +278,7 @@ describe("the project", () => {
   it("shows Adopt's origin without its userinfo, and adopts the origin as git has it", () => {
     const origin = "https://dana:ghp_secret@github.com/sealant-sh/newsroom-web.git";
     const given = facts({ adoptable: { origin, name: "newsroom-web" } });
-    const asked = render(opened({ project: null }, given), given);
+    const asked = asList(render(opened({ project: null }, given), given));
     expect(asked.items[0]?.description).toBe("https://github.com/sealant-sh/newsroom-web.git");
     expect(JSON.stringify(asked)).not.toContain("ghp_secret");
     const { effects } = run(
@@ -289,7 +297,7 @@ describe("the project", () => {
       candidates: [newsroom, twin],
       checkout: PUSHED,
     });
-    const asked = render(opened({ project: null }, given), given);
+    const asked = asList(render(opened({ project: null }, given), given));
     expect(asked.items.map((item) => item.label)).toEqual(["newsroom-api", "newsroom-api-2"]);
     expect(asked.placeholder).toBe("Several projects have this repository's origin: choose one");
     expect(
@@ -306,7 +314,7 @@ describe("the project", () => {
   });
 });
 
-const counter = (state: FlowState, given: FlowFacts) => render(state, given).step;
+const counter = (state: FlowState, given: FlowFacts) => asList(render(state, given)).step;
 
 describe("Change…", () => {
   it("remembers each pick for its project at once, and the dim line then reads them", () => {
@@ -348,7 +356,7 @@ describe("Change…", () => {
       { kind: "accept", item: "harness:claude" },
       { kind: "back" },
     ]);
-    const harness = render(state, after);
+    const harness = asList(render(state, after));
     expect(harness.placeholder).toBe("Harness");
     expect(harness.items.find((item) => item.current)).toMatchObject({
       label: "$(check) claude",
@@ -384,7 +392,7 @@ describe("Change…", () => {
     expect(counter(join.state, join.facts)).toEqual({ n: 1, total: 4 });
     const pi = run(join.state, [{ kind: "accept", item: "harness:pi" }], join.facts);
     expect(render(pi.state, pi.facts).placeholder).toBe("Model for pi");
-    expect(render(pi.state, pi.facts).items.map((item) => item.label)).toEqual([
+    expect(asList(render(pi.state, pi.facts)).items.map((item) => item.label)).toEqual([
       "$(check) default model",
     ]);
     expect(counter(pi.state, pi.facts)).toEqual({ n: 2, total: 4 });
@@ -398,7 +406,7 @@ describe("Change…", () => {
       [{ kind: "change" }, { kind: "accept", item: "harness:claude" }],
       given,
     );
-    const view = render(state, given);
+    const view = asList(render(state, given));
     expect(view.placeholder).toBe("Model for claude · the server's models aren't read yet");
     expect(view.items.map((item) => item.label)).toEqual([
       "default model",
@@ -468,11 +476,11 @@ describe("the base", () => {
 
   it("is the default branch when her branch isn't pushed, and the dim line says so first", () => {
     const unpushed: CheckoutFact = { kind: "unpushed", branch: "fix/login" };
-    const view = render(opened({ checkout: unpushed }), facts());
-    expect(view.items[0]?.description).toBe(
+    const view = asPrompt(render(opened({ checkout: unpushed }), facts()));
+    expect(view.line).toBe(
       "claude · default model · from main · your branch fix/login isn't pushed",
     );
-    expect(view.items[0]?.label).toBe("$(warning)");
+    expect(view.warned).toBe(true);
     expect(starts(prompted(unpushed).effects)[0]?.create.base).toBe("main");
   });
 

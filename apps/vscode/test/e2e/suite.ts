@@ -109,10 +109,13 @@ const openedFolders: Array<vscode.Uri> = [];
 const ptys: Array<vscode.Pseudoterminal> = [];
 /** Every quick input the extension made, the real ones: New session is driven through its own. */
 const quickInputs: Array<vscode.QuickPick<vscode.QuickPickItem>> = [];
+/** Every input box the extension made: New session's prompt is typed into one. */
+const promptBoxes: Array<vscode.InputBox> = [];
 
 const original = {
   showQuickPick: vscode.window.showQuickPick,
   createQuickPick: vscode.window.createQuickPick.bind(vscode.window),
+  createInputBox: vscode.window.createInputBox.bind(vscode.window),
   executeCommand: vscode.commands.executeCommand,
 };
 
@@ -146,6 +149,11 @@ const install = (): void => {
     const input = original.createQuickPick();
     quickInputs.push(input);
     return input;
+  };
+  window["createInputBox"] = () => {
+    const box = original.createInputBox();
+    promptBoxes.push(box);
+    return box;
   };
   window["showInputBox"] = async (options: unknown) => {
     const answer = inputBoxes.shift();
@@ -366,23 +374,22 @@ export async function run(): Promise<void> {
   };
   const known = new Set(await idsNow());
   const inputsBefore = quickInputs.length;
+  const boxesBefore = promptBoxes.length;
   const opening = vscode.commands.executeCommand("mend.newSession");
   const input = await until("New session's quick input", async () => quickInputs[inputsBefore]);
+  const box = await until("New session's prompt box", async () => promptBoxes[boxesBefore]);
   await opening;
-  if (input.title !== "New session" && input.title !== `New session · ${projectName}`) {
-    throw new Error(`New session's quick input is titled ${String(input.title)}`);
-  }
   if (input.title === "New session") {
     input.value = projectName;
     await sleep(500);
     await original.executeCommand("workbench.action.acceptSelectedQuickOpenItem");
-    await until(
-      "New session's prompt step",
-      async () => input.title === `New session · ${projectName}`,
-    );
   }
-  const dimLine = input.items[0]?.description ?? "";
-  input.value = "st-vscode-new-session";
+  await until(
+    "New session's prompt step",
+    async () => box.title === `New session · ${projectName}`,
+  );
+  const dimLine = box.prompt ?? "";
+  box.value = "st-vscode-new-session";
   await sleep(500);
   await original.executeCommand("workbench.action.acceptSelectedQuickOpenItem");
   const startedIds = await until("the session New session started", async () => {

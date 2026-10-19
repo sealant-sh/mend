@@ -210,31 +210,41 @@ export interface QuickInputItem {
   readonly id: string;
   readonly label: string;
   readonly description?: string;
-  /** The prompt step's one row carries the Change… button. */
-  readonly change?: boolean;
-  /** Shown whatever she typed: the prompt's row, and the typed base. */
+  /** Shown whatever she typed: the typed base. */
   readonly alwaysShow?: boolean;
   readonly current?: boolean;
 }
 
-/** What the quick input shows for a state: the adapter maps it onto one `vscode.QuickPick`. */
-export interface QuickInputView {
+interface InputView {
   readonly title: string;
-  /** `n/total` on Change…'s steps; null elsewhere. */
-  readonly step: { readonly n: number; readonly total: number } | null;
   readonly back: boolean;
   readonly placeholder: string;
   readonly value: string;
   readonly busy: boolean;
-  readonly items: ReadonlyArray<QuickInputItem>;
 }
+
+/** What the quick input shows for a state; the adapter maps each kind onto its own VS Code input. */
+export type QuickInputView =
+  /** The project step and Change…'s steps: a `vscode.QuickPick`, its rows filtered by `value`. */
+  | (InputView & {
+      readonly kind: "pick";
+      /** `n/total` on Change…'s steps; null on the project step. */
+      readonly step: { readonly n: number; readonly total: number } | null;
+      readonly items: ReadonlyArray<QuickInputItem>;
+    })
+  /**
+   * The prompt: a `vscode.InputBox`, which filters nothing. A QuickPick matches its value against
+   * its rows as a regular expression, which VS Code's renderer cannot build past about 32,000
+   * characters, so a longer prompt never reached the extension. `line` is the dim line under the
+   * input, `warned` when it says something Mend observed; Change… is a button on the title bar.
+   */
+  | (InputView & { readonly kind: "prompt"; readonly line: string; readonly warned: boolean });
 
 // ─── reading the draft ────────────────────────────────────────────────────────
 
 const SHELL = "shell";
 export const HARNESSES: ReadonlyArray<string> = [...PROMPTABLE_HARNESSES, SHELL];
 export const OFFLINE_LINE = "Mend is offline · retrying";
-const START_ITEM = "start";
 const ADOPT_ITEM = "adopt";
 
 const catalogOf = (
@@ -850,6 +860,7 @@ export const render = (state: FlowState, facts: FlowFacts): QuickInputView => {
   const { step: at, draft } = state;
   if (at.kind === "project" || draft === null)
     return {
+      kind: "pick",
       title: "New session",
       step: null,
       back: false,
@@ -866,6 +877,7 @@ export const render = (state: FlowState, facts: FlowFacts): QuickInputView => {
     const steps = applicableSteps(draft, facts);
     const remembered = facts.remembered[draft.project.id] !== undefined;
     return {
+      kind: "pick",
       title: titleOf(draft),
       step: { n: steps.indexOf(at.option) + 1, total: steps.length },
       back: true,
@@ -886,11 +898,9 @@ export const render = (state: FlowState, facts: FlowFacts): QuickInputView => {
     };
   }
   const base = resolveBase(draft);
-  const warned =
-    !state.offline && ((base.kind === "ref" && base.note !== null) || draftIssue(draft) !== null);
   return {
+    kind: "prompt",
     title: titleOf(draft),
-    step: null,
     back: state.cameFromProjects,
     placeholder:
       draft.options.harness === SHELL
@@ -898,15 +908,9 @@ export const render = (state: FlowState, facts: FlowFacts): QuickInputView => {
         : `What should ${draft.options.harness} do?`,
     value: draft.prompt,
     busy: at.kind === "started",
-    items: [
-      {
-        id: START_ITEM,
-        label: warned ? "$(warning)" : "",
-        description: dimLine(draft, facts, state.offline, state.dropped),
-        change: true,
-        alwaysShow: true,
-      },
-    ],
+    line: dimLine(draft, facts, state.offline, state.dropped),
+    warned:
+      !state.offline && ((base.kind === "ref" && base.note !== null) || draftIssue(draft) !== null),
   };
 };
 
