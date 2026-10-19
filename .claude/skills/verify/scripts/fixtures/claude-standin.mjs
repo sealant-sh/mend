@@ -5,7 +5,7 @@
 // hook claude` helper, the session channel, the session's status); it does not prove that a real
 // claude fires these hooks, when, or with these exact fields.
 //
-//   node claude-standin.mjs --settings '<json or path>' --events PermissionRequest,Notification:permission_prompt,PostToolUse,Stop,UserPromptSubmit
+//   node claude-standin.mjs --settings '<json or path>' --events SessionStart,PermissionRequest,Notification:permission_prompt,PostToolUse,Stop,UserPromptSubmit
 //       [--pause-ms <ms>] [--cwd <dir>] [--marker <word>] [--session-id <id>]
 //
 // Everything below follows https://code.claude.com/docs/en/hooks (read 2026-10-19), by section:
@@ -15,8 +15,8 @@
 // - "Matcher patterns": `*`, `""` or no matcher match all; a matcher of only letters, digits, `_`,
 //   `-`, spaces, `,` and `|` is an exact string or a `|`/`,` list of them; anything else is an
 //   unanchored JavaScript regular expression. Tool events match `tool_name`, `Notification` matches
-//   the notification type; `Stop` and `UserPromptSubmit` have no matcher support, so a matcher on
-//   them is ignored.
+//   the notification type, `SessionStart` matches its `source`; `Stop` and `UserPromptSubmit` have
+//   no matcher support, so a matcher on them is ignored.
 // - "Hook handler fields": all matching hooks run in parallel; the same handler runs once.
 // - "Common fields": `timeout` is in seconds, 600 by default for a command hook, 30 on
 //   `UserPromptSubmit`; a timed-out hook is cancelled ("Timeouts").
@@ -25,8 +25,9 @@
 //   lifecycle"); the process inherits the environment and gets `CLAUDE_PROJECT_DIR`; it runs in its
 //   own session without a controlling terminal ("Hook input and output").
 // - "Common input fields": `session_id`, `transcript_path`, `cwd`, `permission_mode`,
-//   `hook_event_name`. Per event, the example payloads of "PermissionRequest input", "Notification
-//   input", "PostToolUse input", "Stop input" and "UserPromptSubmit input".
+//   `hook_event_name`. Per event, the example payloads of "SessionStart input" (`source` is
+//   `startup`, as for a fresh claude), "PermissionRequest input", "Notification input",
+//   "PostToolUse input", "Stop input" and "UserPromptSubmit input".
 //
 // Each event fired prints one line `<marker>:{json}` on stdout (its hooks' exit codes, timeouts and
 // output sizes, never their output); `<marker>:{"start":…}` and `<marker>:{"done":…}` bracket them.
@@ -57,6 +58,16 @@ const NOTIFICATION_MESSAGES = {
  * default command timeout in seconds.
  */
 export const EVENTS = {
+  SessionStart: {
+    matcherField: "source",
+    timeout: 600,
+    payload: (common) => ({
+      ...common,
+      permission_mode: "default",
+      hook_event_name: "SessionStart",
+      source: "startup",
+    }),
+  },
   PermissionRequest: {
     matcherField: "tool_name",
     timeout: 600,

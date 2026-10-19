@@ -38,6 +38,7 @@ const command = (cmd, extra = {}) => ({ type: "command", command: cmd, ...extra 
 /** The shape Mend composes: one `mend hook claude` command per event, Notification matched. */
 const mendShaped = (record) => ({
   hooks: {
+    SessionStart: [{ hooks: [command(record("SessionStart"), { timeout: 5 })] }],
     PermissionRequest: [{ hooks: [command(record("PermissionRequest"), { timeout: 5 })] }],
     Notification: [
       {
@@ -61,6 +62,7 @@ test("each event sends the docs' payload on stdin, with this run's session and c
   const { dir, record, read } = scratch(t);
   const settings = mendShaped(record);
   for (const spec of [
+    "SessionStart",
     "PermissionRequest",
     "Notification",
     "PostToolUse",
@@ -68,6 +70,12 @@ test("each event sends the docs' payload on stdin, with this run's session and c
     "UserPromptSubmit",
   ])
     await fire(settings, parseEventSpec(spec), context(dir));
+
+  const [start] = read("SessionStart");
+  assert.equal(start.hook_event_name, "SessionStart");
+  assert.equal(start.session_id, "0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b");
+  assert.equal(start.source, "startup");
+  assert.equal(start.tool_name, undefined, "SessionStart names no tool");
 
   const [permission] = read("PermissionRequest");
   assert.equal(permission.hook_event_name, "PermissionRequest");
@@ -138,6 +146,18 @@ test("matchers: exact lists, unanchored regular expressions, and events without 
   assert.equal(read("edit-only").length, 0);
   assert.equal(read("bash-regex").length, 1);
   assert.equal(read("stop").length, 1, "Stop has no matcher support: the matcher is ignored");
+
+  const sources = {
+    hooks: {
+      SessionStart: [
+        { matcher: "startup", hooks: [command(record("startup"))] },
+        { matcher: "resume|clear", hooks: [command(record("resume-or-clear"))] },
+      ],
+    },
+  };
+  await fire(sources, parseEventSpec("SessionStart"), context(dir));
+  assert.equal(read("startup").length, 1, "SessionStart matches its source");
+  assert.equal(read("resume-or-clear").length, 0);
 });
 
 test("matching handlers run in parallel, the same handler once, with the environment inherited", async (t) => {
@@ -227,6 +247,7 @@ test("the CLI takes --settings inline or as a path and prints one marker line pe
       });
     assert.equal(lines[0].start, true);
     assert.deepEqual(lines[0].hookEvents, [
+      "SessionStart",
       "PermissionRequest",
       "Notification",
       "PostToolUse",

@@ -1,10 +1,14 @@
-// G4 live: a terminal agent reports that it waits, and why. A claude session launched as a PTY agent
-// (the world has no provider login, so the real claude sits at its sign-in screen: still a live
-// `agent-pty`), its argv read for the hooks Mend wires, then claude's hooks replayed by
-// fixtures/claude-standin.mjs inside the session's own workspace, in a shell beside the agent, to
-// the real `mend hook claude` helper. Each state is read from `GET /api/sessions/:id` and the frames
-// of `/api/events`. Then Stop: the wait ends with the agent, and a report replayed after it changes
-// nothing. Last, codex: the `[hooks]` table of the workspace's `/etc/codex/config.toml`.
+// G4 live: a terminal agent reports that it waits, and why. The skill's fake Claude login is
+// connected first when the account has none (the provider refuses it, so the real claude sits at
+// its sign-in screen: still a live `agent-pty`). A claude session is launched as a PTY agent, its
+// argv read from /proc for the hooks Mend wires and the `--session-id` Mend pinned, then claude's
+// hooks replayed by fixtures/claude-standin.mjs inside the session's own workspace, in a shell
+// beside the agent, to the real helper, each report carrying the agent's own session id. Each
+// state is read from `GET /api/sessions/:id` and the frames of `/api/events`. Then a report under
+// another session id changes nothing; the agent's own terminal attached with the replies a real
+// xterm sends, and nothing typed, keeps the wait, and one key clears it. Then Stop: the wait ends
+// with the agent, and a report replayed after it changes nothing. Last, codex: the `[hooks]`
+// table of the workspace's `/etc/codex/config.toml`.
 //
 //   node .claude/skills/verify/scripts/drive-vscode.mjs run \
 //     .claude/skills/verify/recipes/g4-terminal-agent-waits.mjs --out <dir>
@@ -12,11 +16,13 @@
 // MEND_VERIFY_G4_PAUSE_MS (default 8000) is the stand-in's pause before each event: every state
 // must be read inside it. Needs a world from `up` built from a checkout with G4 (`--build`).
 
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { parseArgs } from "../scripts/drive-vscode.lib.mjs";
+import { FAKES } from "../scripts/fakes.mjs";
 import { EVENTS, handlersFor } from "../scripts/fixtures/claude-standin.mjs";
 import { redact } from "../scripts/redact.mjs";
 import { loadSecrets, redactValues } from "../scripts/secrets.mjs";
@@ -24,15 +30,33 @@ import { loadSecrets, redactValues } from "../scripts/secrets.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const STANDIN = join(here, "../scripts/fixtures/claude-standin.mjs");
 
-export const HELPER = { claude: "mend hook claude", codex: "mend hook codex" };
+export const HELPER = {
+  claude: "/run/mend/bin/mend hook claude",
+  codex: "/run/mend/bin/mend hook codex",
+};
 export const CLAUDE_EVENTS = [
+  "SessionStart",
   "PermissionRequest",
   "Notification",
   "Stop",
   "UserPromptSubmit",
   "PostToolUse",
 ];
-export const CODEX_EVENTS = ["PermissionRequest", "Stop", "UserPromptSubmit", "PostToolUse"];
+export const CODEX_EVENTS = [
+  "SessionStart",
+  "PermissionRequest",
+  "Stop",
+  "UserPromptSubmit",
+  "PostToolUse",
+];
+/** The replies a real xterm sends on attach: DA1, DA2, a cursor report, kitty flags, focus in. */
+export const XTERM_ATTACH_REPLIES = [
+  "\x1b[?1;2c",
+  "\x1b[>0;276;0c",
+  "\x1b[24;1R",
+  "\x1b[?0u",
+  "\x1b[I",
+];
 const NOTIFICATION_TYPES = [
   "permission_prompt",
   "elicitation_dialog",
@@ -53,9 +77,15 @@ export const settingsOfArgv = (argv) => {
   throw new Error("the agent's --settings is not inline JSON");
 };
 
+/** The session id a claude argv is pinned to (`--session-id <id>`), or null. */
+export const sessionIdOfArgv = (argv) => {
+  const at = argv.indexOf("--session-id");
+  return at === -1 ? null : (argv[at + 1] ?? null);
+};
+
 /**
- * Which claude events would run `mend hook claude`, resolved the way claude resolves them (the
- * stand-in's matcher and payloads), and which Notification types the matcher admits.
+ * Which claude events would run the helper, resolved the way claude resolves them (the stand-in's
+ * matcher and payloads), and which Notification types the matcher admits.
  */
 export const claudeHookCheck = (settings) => {
   const common = {
@@ -80,7 +110,7 @@ export const claudeHookCheck = (settings) => {
 };
 
 /**
- * Which codex events a config.toml wires to `mend hook codex`: an array of tables
+ * Which codex events a config.toml wires to the helper: an array of tables
  * `[[hooks.<Event>]]` (or `[[hooks.<Event>.hooks]]`) whose body names the helper, or a
  * `<Event> = […]` key of `[hooks]` that does.
  */
@@ -143,7 +173,6 @@ const sseParser = () => {
   };
 };
 
-/** Lines that write `text` to `$D/<target>` in a shell: base64 in a quoted heredoc, 76 a line. */
 /**
  * Typed into the shell beside the agent: every process in the workspace that runs claude with a
  * `--settings`, as one marker line. The first one's argv is what the stand-in replays.
@@ -170,6 +199,7 @@ console.log(
 );
 `;
 
+/** Lines that write `text` to `$D/<target>` in a shell: base64 in a quoted heredoc, 76 a line. */
 const heredoc = (target, text) => [
   `base64 -d > "$D/${target}" <<'MEND_G4_EOF'`,
   ...(Buffer.from(text)
@@ -285,6 +315,7 @@ export default async (h) => {
         status: row.status,
         exitedAt: row.exitedAt,
         waiting: row.waiting ?? null,
+        providerSessionId: row.providerSessionId ?? null,
       })),
     };
   };
@@ -301,8 +332,50 @@ export default async (h) => {
     return fail(`${why} within ${ms / 1000} s; last read ${JSON.stringify(last)}`);
   };
 
+  /** The run's own CLI: its home, its config, the server, the first account's token. */
+  const cliEnv = {
+    ...process.env,
+    HOME: state.home,
+    XDG_CONFIG_HOME: state.configHome,
+    MEND_URL: origin,
+    MEND_TOKEN: token,
+  };
+
   let shell = null;
+  let agentTerminal = null;
   try {
+    await step(
+      "the account has a Claude login: the skill's fake setup token, connected now if none is",
+      async () => {
+        const before = (await api("/me/sealant")).accounts.filter(
+          (account) => account.provider === "claude",
+        );
+        if (before.length > 0) {
+          return {
+            observed: `claude already connected (${before.map((a) => a.status).join(", ")}) · nothing sent`,
+            connected: false,
+          };
+        }
+        const ran = await world.cli(["connect", "claude", "--from-stdin"], cliEnv, {
+          input: FAKES.claude,
+          allowFailure: true,
+        });
+        if (ran.status !== 0)
+          fail(
+            `mend connect claude --from-stdin exited ${ran.status}: ${scrub(ran.stderr).trim().split("\n").slice(-3).join(" / ")}`,
+          );
+        const after = (await api("/me/sealant")).accounts.filter(
+          (account) => account.provider === "claude",
+        );
+        if (after.length === 0) fail("after mend connect claude, GET /me/sealant lists no claude");
+        return {
+          observed: `connected the fake Claude setup token · GET /me/sealant lists claude (${after.map((a) => a.status).join(", ")})`,
+          connected: true,
+        };
+      },
+      { via: "cli" },
+    );
+
     const session = await step(
       "a claude session in a fresh worktree, its agent launched in a PTY",
       async () => {
@@ -346,6 +419,40 @@ export default async (h) => {
       { via: "api" },
     );
 
+    /** A process's terminal over `/api/tty`, with an upgrade ticket, as the extension attaches. */
+    const attach = async (processId) => {
+      const { ticket } = await api("/upgrade-tickets", {
+        method: "POST",
+        body: JSON.stringify({ target: "tty", process: processId }),
+      });
+      transient.add(ticket);
+      const url = new URL(`${origin}/api/tty`);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      url.searchParams.set("process", processId);
+      url.searchParams.set("ticket", ticket);
+      const socket = new WebSocket(url);
+      socket.binaryType = "arraybuffer";
+      const decoder = new TextDecoder();
+      const attached = { id: processId, socket, text: "", closed: null };
+      socket.addEventListener("message", (event) => {
+        attached.text +=
+          typeof event.data === "string"
+            ? event.data
+            : decoder.decode(new Uint8Array(event.data), { stream: true });
+      });
+      socket.addEventListener("close", (event) => (attached.closed = event.code));
+      await new Promise((resolveOpen, reject) => {
+        socket.addEventListener("open", resolveOpen, { once: true });
+        socket.addEventListener(
+          "error",
+          () => reject(new Error("the terminal socket did not open")),
+          { once: true },
+        );
+      });
+      socket.send(JSON.stringify({ t: "resize", cols: 240, rows: 50 }));
+      return attached;
+    };
+
     await step(
       "a shell beside the agent, attached over the terminal socket",
       async () => {
@@ -353,36 +460,8 @@ export default async (h) => {
           method: "POST",
           body: "{}",
         });
-        const { ticket } = await api("/upgrade-tickets", {
-          method: "POST",
-          body: JSON.stringify({ target: "tty", process: opened.id }),
-        });
-        transient.add(ticket);
-        const url = new URL(`${origin}/api/tty`);
-        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-        url.searchParams.set("process", opened.id);
-        url.searchParams.set("ticket", ticket);
-        const socket = new WebSocket(url);
-        socket.binaryType = "arraybuffer";
-        const decoder = new TextDecoder();
-        const attached = { id: opened.id, socket, text: "", closed: null };
+        const attached = await attach(opened.id);
         shell = attached;
-        socket.addEventListener("message", (event) => {
-          attached.text +=
-            typeof event.data === "string"
-              ? event.data
-              : decoder.decode(new Uint8Array(event.data), { stream: true });
-        });
-        socket.addEventListener("close", (event) => (attached.closed = event.code));
-        await new Promise((resolveOpen, reject) => {
-          socket.addEventListener("open", resolveOpen, { once: true });
-          socket.addEventListener(
-            "error",
-            () => reject(new Error("the terminal socket did not open")),
-            { once: true },
-          );
-        });
-        socket.send(JSON.stringify({ t: "resize", cols: 240, rows: 50 }));
         for (const deadline = Date.now() + 60_000; attached.text.trim() === ""; await sleep(250))
           if (Date.now() > deadline || attached.closed !== null)
             fail("the shell drew nothing within 60 s");
@@ -425,16 +504,18 @@ export default async (h) => {
       );
       if (off.length > 0)
         fail(
-          `${what}: mend hook claude did not exit 0 silently (${JSON.stringify(off.map(({ command: _c, ...rest }) => rest))})`,
+          `${what}: the helper did not exit 0 silently (${JSON.stringify(off.map(({ command: _c, ...rest }) => rest))})`,
         );
       return line.hooks.map(({ exitCode, ms }) => ({ exitCode, ms }));
     };
 
     // The process row's `argv` is the composed launch, without Mend's own flags, so the
-    // `--settings` Mend adds shows only on the live process: read it from /proc inside the workspace.
+    // `--settings` and `--session-id` Mend adds show only on the live process: read them from
+    // /proc inside the workspace.
     let settingsText = null;
+    let agentSessionId = null;
     await step(
-      "the live claude's command line carries --settings that run mend hook claude for every event G4 reads",
+      "the live claude's command line carries --settings that run the helper for every event G4 reads, and the --session-id its row records",
       async () => {
         await type([
           "D=$(mktemp -d /tmp/mend-g4.XXXXXX)",
@@ -451,12 +532,22 @@ export default async (h) => {
           fail("no process in the workspace runs claude with --settings");
         const parsed = settingsOfArgv(found.settingsArgv);
         settingsText = JSON.stringify(parsed);
+        agentSessionId = sessionIdOfArgv(found.settingsArgv);
+        if (agentSessionId === null) fail("the live claude's command line has no --session-id");
+        const recorded =
+          (await read(session.id)).processes.find((row) => row.id === session.agentId)
+            ?.providerSessionId ?? null;
+        if (recorded !== agentSessionId)
+          fail(
+            `the agent row records providerSessionId ${recorded}, not the --session-id ${agentSessionId} on its command line`,
+          );
         const check = claudeHookCheck(parsed);
         keep(
           "claude-settings.json",
           JSON.stringify(
             {
               cmdline: found.cmdline,
+              sessionId: agentSessionId,
               hooks: parsed.hooks ?? null,
               otherKeys: Object.keys(parsed),
             },
@@ -466,18 +557,19 @@ export default async (h) => {
         );
         if (check.missing.length > 0)
           fail(
-            `the live claude's --settings runs mend hook claude for ${check.wired.join(", ") || "nothing"}, not ${check.missing.join(", ")}`,
+            `the live claude's --settings runs the helper for ${check.wired.join(", ") || "nothing"}, not ${check.missing.join(", ")}`,
           );
         for (const type of ["permission_prompt", "elicitation_dialog", "idle_prompt"])
           if (!check.notificationTypes[type])
             fail(`the Notification matcher does not admit ${type}`);
         return {
-          observed: `pid ${found.cmdline[0]?.pid} ${found.cmdline[0]?.argv0} · hooks for ${check.wired.join(", ")} · Notification admits ${Object.entries(
+          observed: `pid ${found.cmdline[0]?.pid} ${found.cmdline[0]?.argv0} · --session-id ${agentSessionId} recorded on the row · hooks for ${check.wired.join(", ")} · Notification admits ${Object.entries(
             check.notificationTypes,
           )
             .filter(([, admitted]) => admitted)
             .map(([type]) => type)
             .join("|")}`,
+          sessionId: agentSessionId,
           check,
         };
       },
@@ -485,6 +577,7 @@ export default async (h) => {
     );
 
     const SEQUENCE = [
+      { spec: "SessionStart", status: "running", kind: null },
       {
         spec: "PermissionRequest",
         status: "waiting",
@@ -496,6 +589,7 @@ export default async (h) => {
         status: "waiting",
         kind: "permission",
         tool: "Bash",
+        sameSince: true,
       },
       { spec: "PostToolUse", status: "running", kind: null },
       { spec: "Stop", status: "waiting", kind: "prompt" },
@@ -516,7 +610,7 @@ export default async (h) => {
           ...heredoc("claude-standin.mjs", readFileSync(STANDIN, "utf8")),
           ...heredoc("settings.json", settingsText),
           `node -e 'const e=process.env,fs=require("fs");console.log("MEND-G4"+":"+JSON.stringify({env:{sessionId:e.MEND_SESSION_ID??null,tokenFile:Boolean(e.MEND_SESSION_TOKEN_FILE),launchToken:Boolean(e.MEND_SESSION_TOKEN),mend:(e.PATH??"").split(":").some((d)=>fs.existsSync(d+"/mend")),cwd:process.cwd(),user:require("os").userInfo().username}}))'`,
-          `node "$D/claude-standin.mjs" --settings "$(cat "$D/settings.json")" --events ${SEQUENCE.map((item) => item.spec).join(",")} --pause-ms ${pauseMs} --marker MEND-G4`,
+          `node "$D/claude-standin.mjs" --settings "$(cat "$D/settings.json")" --session-id ${agentSessionId} --events ${SEQUENCE.map((item) => item.spec).join(",")} --pause-ms ${pauseMs} --marker MEND-G4`,
         ]);
         const { env } = await marker("MEND-G4", (line) => "env" in line, 60_000, "the shell's env");
         if (env.sessionId !== session.id)
@@ -529,7 +623,7 @@ export default async (h) => {
         if (now.status !== "running" || now.waiting !== null)
           fail(`before any hook the session reads ${said(now)}, not running`);
         return {
-          observed: `MEND_SESSION_ID is the session's · mend on PATH · ${env.tokenFile ? "person token file" : "launch token"} · user ${env.user} · cwd ${env.cwd} · session ${said(now)}`,
+          observed: `MEND_SESSION_ID is the session's · mend on PATH · ${env.tokenFile ? "person token file" : "launch token"} · user ${env.user} · cwd ${env.cwd} · reports as --session-id ${agentSessionId} · session ${said(now)}`,
           env,
         };
       },
@@ -573,11 +667,11 @@ export default async (h) => {
           );
           if (expected.kind !== null && now.agent?.harness !== "claude")
             fail(`${what}: the wait is on ${JSON.stringify(now.agent)}, not the claude agent-pty`);
-          if (index === 1 && now.waiting.since !== firstWait?.since)
+          if (expected.sameSince && now.waiting.since !== firstWait?.since)
             fail(
               `${what}: a repeat of the permission wait moved its since (${firstWait?.since} → ${now.waiting.since})`,
             );
-          if (index === 0) firstWait = now.waiting;
+          if (expected.kind === "permission" && firstWait === null) firstWait = now.waiting;
           const changed = said(now) !== said(previous);
           const seen = changed
             ? await pointerFrames(session.id, since, what)
@@ -599,6 +693,136 @@ export default async (h) => {
       );
     }
     await marker("MEND-G4", (line) => line.done === true, 30_000, "the stand-in's end");
+
+    /** `ms` of reads: every one the same `waiting · permission · Bash` with the same `since`. */
+    const waitHeld = async (ms, what) => {
+      const reads = [];
+      const start = await read(session.id);
+      if (start.waiting?.kind !== "permission")
+        fail(`${what}: the session reads ${said(start)} before it starts, not a permission wait`);
+      for (const deadline = Date.now() + ms; Date.now() < deadline; await sleep(500)) {
+        const now = await read(session.id);
+        reads.push(`${said(now)} · since ${now.waiting?.since ?? "none"}`);
+        if (now.status !== "waiting" || now.waiting?.since !== start.waiting.since)
+          fail(
+            `${what}: the wait changed to ${said(now)} (since ${now.waiting?.since ?? "none"}, was ${start.waiting.since})`,
+          );
+      }
+      return { since: start.waiting.since, reads };
+    };
+
+    await step(
+      "a PermissionRequest under another session id changes nothing: the wait keeps its since, no process frame",
+      async () => {
+        const other = randomUUID();
+        const from = Date.now();
+        await type([
+          `node "$D/claude-standin.mjs" --settings "$(cat "$D/settings.json")" --session-id ${other} --events PermissionRequest --marker MEND-G4O`,
+        ]);
+        const line = await marker(
+          "MEND-G4O",
+          (found) => found.index === 0,
+          30_000,
+          "the other process's PermissionRequest",
+        );
+        const hooks = helperRan(line, "the other process's PermissionRequest");
+        const held = await waitHeld(6_000, "after the other process's report");
+        const processFrames = framesFor(session.id, from).filter(
+          (frame) => frame.type === "session-process",
+        );
+        if (processFrames.length > 0)
+          fail(
+            `/api/events sent ${processFrames.length} session-process frame(s) for a refused report`,
+          );
+        return {
+          observed: `helper exited 0 silently for session id ${other.slice(0, 8)}… · ${held.reads.length} reads over 6 s, every one ${[...new Set(held.reads)].join(" | ")} · no session-process frame`,
+          otherSessionId: other,
+          hooks,
+          since: held.since,
+          reads: held.reads.length,
+        };
+      },
+      { via: "tty" },
+    );
+
+    await step(
+      "the agent's own terminal attached, the replies a real xterm sends, nothing typed: the wait survives",
+      async () => {
+        const from = Date.now();
+        agentTerminal = await attach(session.agentId);
+        for (const reply of XTERM_ATTACH_REPLIES) agentTerminal.socket.send(encoder.encode(reply));
+        const held = await waitHeld(3_000, "with the agent's terminal attached");
+        if (agentTerminal.closed !== null)
+          fail(`the agent's terminal socket closed (${agentTerminal.closed})`);
+        const processFrames = framesFor(session.id, from).filter(
+          (frame) => frame.type === "session-process",
+        );
+        if (processFrames.length > 0)
+          fail(
+            `/api/events sent ${processFrames.length} session-process frame(s) while nothing was typed`,
+          );
+        return {
+          observed: `attached agent ${session.agentId.slice(0, 8)} · sent ${XTERM_ATTACH_REPLIES.length} emulator replies · ${held.reads.length} reads over 3 s, every one ${[...new Set(held.reads)].join(" | ")} · no session-process frame`,
+          replies: XTERM_ATTACH_REPLIES.map((reply) => JSON.stringify(reply)),
+          since: held.since,
+          reads: held.reads.length,
+        };
+      },
+      { via: "tty" },
+    );
+
+    await step(
+      "one key in the agent's terminal clears the permission wait: running, both pointer frames",
+      async () => {
+        const from = Date.now();
+        agentTerminal.socket.send(encoder.encode("\r"));
+        const now = await until(
+          session.id,
+          (seen) => seen.status === "running" && seen.waiting === null,
+          10_000,
+          "after a key in the agent's terminal the session did not read running",
+        );
+        const seen = await pointerFrames(session.id, from, "the key's clear");
+        previous = now;
+        since = Date.now();
+        return {
+          observed: `${said(now)} (${Date.now() - from} ms after the key) · frames ${seen.map((f) => f.type).join(", ")}`,
+          status: now.status,
+          waiting: now.waiting,
+          frames: seen,
+        };
+      },
+      { via: "tty" },
+    );
+
+    await step(
+      "PermissionRequest again, so Stop ends a live wait",
+      async () => {
+        const from = Date.now();
+        await type([
+          `node "$D/claude-standin.mjs" --settings "$(cat "$D/settings.json")" --session-id ${agentSessionId} --events PermissionRequest --marker MEND-G4A`,
+        ]);
+        const line = await marker("MEND-G4A", (found) => found.index === 0, 30_000, "the re-arm");
+        const hooks = helperRan(line, "the re-arm");
+        const now = await until(
+          session.id,
+          (seen) => seen.status === "waiting" && seen.waiting?.kind === "permission",
+          10_000,
+          "the re-armed PermissionRequest did not read waiting · permission",
+        );
+        const seen = await pointerFrames(session.id, from, "the re-arm");
+        previous = now;
+        since = Date.now();
+        return {
+          observed: `${said(now)} · frames ${seen.map((f) => f.type).join(", ")}`,
+          status: now.status,
+          waiting: now.waiting,
+          hooks,
+          frames: seen,
+        };
+      },
+      { via: "tty" },
+    );
 
     await step(
       "Stop ends the agent and its wait; the shell keeps the workspace up",
@@ -637,7 +861,7 @@ export default async (h) => {
       "a PermissionRequest replayed after Stop is refused: the session stays idle",
       async () => {
         await type([
-          `node "$D/claude-standin.mjs" --settings "$(cat "$D/settings.json")" --events PermissionRequest --marker MEND-G4R`,
+          `node "$D/claude-standin.mjs" --settings "$(cat "$D/settings.json")" --session-id ${agentSessionId} --events PermissionRequest --marker MEND-G4R`,
         ]);
         const line = await marker(
           "MEND-G4R",
@@ -685,16 +909,9 @@ export default async (h) => {
     await step(
       "codex: the workspace's /etc/codex/config.toml wires mend hook codex",
       async () => {
-        const env = {
-          ...process.env,
-          HOME: state.home,
-          XDG_CONFIG_HOME: state.configHome,
-          MEND_URL: origin,
-          MEND_TOKEN: token,
-        };
         const ran = await world.cli(
           ["run", "--project", project.name, "--", "cat", "/etc/codex/config.toml"],
-          env,
+          cliEnv,
           { allowFailure: true },
         );
         const text = ran.stdout.replaceAll("\r", "");
@@ -707,16 +924,20 @@ export default async (h) => {
         if (!check.hooksTable) fail("/etc/codex/config.toml has no [hooks] table");
         if (check.missing.length > 0)
           fail(
-            `/etc/codex/config.toml wires mend hook codex for ${check.wired.join(", ") || "nothing"}, not ${check.missing.join(", ")}`,
+            `/etc/codex/config.toml wires the helper for ${check.wired.join(", ") || "nothing"}, not ${check.missing.join(", ")}`,
           );
         return {
-          observed: `[hooks] names mend hook codex for ${check.wired.join(", ")}`,
+          observed: `[hooks] names ${HELPER.codex} for ${check.wired.join(", ")}`,
           check,
         };
       },
       { via: "cli" },
     );
   } finally {
+    if (agentTerminal !== null) {
+      keep("agent-terminal.txt", agentTerminal.text);
+      if (agentTerminal.closed === null) agentTerminal.socket.close();
+    }
     if (shell !== null) {
       keep("shell.txt", shell.text);
       if (shell.closed === null) shell.socket.close();
@@ -725,7 +946,7 @@ export default async (h) => {
     await reading;
     keep("events.json", JSON.stringify({ frames, otherFramesCounted: otherFrames }, null, 2));
     note(
-      `evidence: steps.jsonl, shell.txt, events.json, claude-settings.json, codex-config.toml in ${out}`,
+      `evidence: steps.jsonl, shell.txt, agent-terminal.txt, events.json, claude-settings.json, codex-config.toml in ${out}`,
     );
   }
 };
