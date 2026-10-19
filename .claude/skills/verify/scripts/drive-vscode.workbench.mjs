@@ -17,6 +17,7 @@ import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { remoteSshLogFiles, resolves } from "./drive-vscode.lib.mjs";
 import { CREDENTIAL_PATTERNS, redact } from "./redact.mjs";
 import { redactValues } from "./secrets.mjs";
 
@@ -114,6 +115,25 @@ export const workbenchHelpers = async (context, options) => {
   };
 
   const text = async (target = page()) => target.evaluate(deepText);
+
+  /**
+   * Remote-SSH window opens and reloads so far (`resolves`), once the count has held still for
+   * 5 s: the resolver logs a moment after its window appears.
+   */
+  const opens = async () => {
+    let last = resolves(state.userData);
+    let since = Date.now();
+    const settled = await waitUntil(
+      "the opens count to hold still for 5 s",
+      async () => {
+        const now = resolves(state.userData);
+        if (now !== last) [last, since] = [now, Date.now()];
+        return Date.now() - since >= 5_000 ? { now } : null;
+      },
+      60_000,
+    );
+    return settled.now;
+  };
 
   const windows = async () =>
     Promise.all(
@@ -518,6 +538,8 @@ export const workbenchHelpers = async (context, options) => {
     homeWindow,
     closeWindow,
     serverLogs: options.serverLogs,
+    opens,
+    remoteSshLogs: () => remoteSshLogFiles(state.userData).length,
     palette,
     quickInput,
     view,

@@ -15,6 +15,8 @@ import {
   parseArgs,
   pickRun,
   readState,
+  remoteSshLogFiles,
+  resolves,
   runNames,
   stepLog,
   updateState,
@@ -156,5 +158,53 @@ test("a step line is numbered and redacted by value and by shape, strings at any
     assert.equal(log.scrub(`x ${TOKEN} y`), "x <secret> y");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("opens count each Remote-SSH window's first resolve, across every window's log", () => {
+  const userData = mkdtempSync(join(tmpdir(), "verify-vscode-resolves-"));
+  const log = (window, stamp, lines) => {
+    const dir = join(
+      userData,
+      "logs",
+      "20261019T001716",
+      window,
+      "exthost",
+      `output_logging_${stamp}`,
+    );
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "1-Remote - SSH.log"), `${lines.join("\n")}\n`);
+  };
+  const authority = "ssh-remote+ws-90a77cd2@mend-ws-172-17-0-4-670a93b5";
+  try {
+    assert.equal(resolves(userData), 0, "no logs directory yet");
+    // The local window loads Remote-SSH too and logs, but resolves nothing.
+    log("window1", "20261019T001716", ["[00:17:16.500] Remote-SSH version: remote-ssh@0.122.0"]);
+    log("window2", "20261019T001721", [
+      `[00:17:21.934] SSH Resolver called for "${authority}", attempt 1`,
+      `[00:17:21.941] SSH Resolver called for host: ws-90a77cd2@mend-ws-172-17-0-4-670a93b5`,
+      `[00:19:02.100] SSH Resolver called for "${authority}", attempt 2`,
+    ]);
+    log("window3", "20261019T001751", [
+      `[00:17:51.344] SSH Resolver called for "${authority}", attempt 1`,
+    ]);
+    // A reload of window3: a new extension host, a new log, a second open of that window.
+    log("window3", "20261019T001830", [
+      `[00:18:30.002] SSH Resolver called for "${authority}", attempt 1`,
+    ]);
+    const other = join(userData, "logs", "20261019T001716", "window1", "exthost");
+    mkdirSync(other, { recursive: true });
+    writeFileSync(
+      join(other, "exthost.log"),
+      `SSH Resolver called for "${authority}", attempt 1\n`,
+    );
+    assert.equal(remoteSshLogFiles(userData).length, 4);
+    assert.equal(
+      resolves(userData),
+      3,
+      "two windows, one reloaded; the reconnect and other logs not counted",
+    );
+  } finally {
+    rmSync(userData, { recursive: true, force: true });
   }
 });

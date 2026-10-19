@@ -39,12 +39,13 @@
 // never this repository's) over CDP and runs the recipe module's default export with the helpers of
 // drive-vscode.workbench.mjs: `palette`, `quickInput`, `view`, `treeItem`, `notification`,
 // `dialog`, `statusBar`, `terminal`, `windows`/`waitForWindow`/`useWindow`, `waitForText`,
-// `shot`, `step` and `api`. Each step is one redacted line of <out>/steps.jsonl; a failing recipe
-// keeps `failure-<n>.png`, collects the logs, and exits 1. `logs` copies the editor's logs (main,
-// renderer, extension host, the output channels, Remote-SSH's) and the server container's into the
-// evidence, redacted. `down` ends the editor, ffmpeg and Xvfb by pid, removes the daemon, the scratch
-// and the context, scans the evidence against the registry, then removes the private directory.
-// Running it twice, or after a crash, converges.
+// `opens` (Remote-SSH window opens, from the resolver's lines), `shot`, `step` and `api`. Each step
+// is one redacted line of <out>/steps.jsonl; a failing recipe keeps `failure-<n>.png`, collects the
+// logs, and exits 1. `logs` copies the editor's logs (main, renderer, extension host, the output
+// channels, Remote-SSH's) and the server container's into the evidence, redacted. `down` ends the
+// editor, ffmpeg and Xvfb by pid, removes the daemon, the scratch and the context, scans the
+// evidence against the registry, then removes the private directory. Running it twice, or after a
+// crash, converges.
 
 import { spawn } from "node:child_process";
 import {
@@ -155,11 +156,17 @@ const background = (program, args, { env, logFile, cwd }) => {
 const VERSION_SHAPE =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
+const downCommand = (run) => `node ${join(here, "drive-vscode.mjs")} down --run ${run}`;
+
+/** The run `up` is making, once it has a name: a failed `up` names it for `down`. */
+let upRun = null;
+
 const up = async () => {
   const run = options.run ?? newRunName();
   const names = runNames(run);
   if (existsSync(names.stateFile))
-    fail(`run ${run} is already up (${names.stateFile}); down it first`);
+    fail(`run ${run} is already up (${names.stateFile}); down it first: ${downCommand(run)}`);
+  upRun = run;
   const extensionCheckout = resolve(options.extension ?? world.repoRoot);
   const extensionDir = join(extensionCheckout, "apps/vscode");
   if (!existsSync(join(extensionDir, "package.json")))
@@ -524,22 +531,25 @@ const down = async () => {
   if (pids.vscode) say(`VS Code · ${await end(pids.vscode, "SIGTERM", 15_000)}`);
   if (pids.ffmpeg) say(`ffmpeg · ${await end(pids.ffmpeg, "SIGINT", 15_000)}`);
   if (pids.xvfb) say(`Xvfb · ${await end(pids.xvfb, "SIGTERM", 5_000)}`);
-  const dind = state.dind ?? `${names.world}-dind`;
+  // By the name `up` gives it (the ledger keeps its id): `docker ps` exits 0 with no id when the
+  // daemon is already gone.
+  const dind = `${names.world}-dind`;
   const found = await world.run("docker", ["ps", "-aq", "--filter", `name=^${dind}$`], {
     allowFailure: true,
   });
+  const present = found.status === 0 && found.stdout.trim() !== "";
   const clientEnv = {
     ...process.env,
     HOME: state.home ?? names.root,
     XDG_CONFIG_HOME: state.configHome ?? join(names.root, "none"),
   };
   await world.removeWorld({
-    dind: found.status === 0 ? dind : null,
+    dind: present ? dind : null,
     context: state.context ?? `${names.world}-dind`,
     scratch: state.scratch,
     clientEnv,
   });
-  say(`daemon ${dind} · ${found.status === 0 ? "removed" : "was gone"} · scratch removed`);
+  say(`daemon ${dind} · ${present ? "removed" : "was gone"} · scratch removed`);
   let scan = 0;
   if (existsSync(names.privateDir) && existsSync(names.evidenceDir)) {
     const result = await world.run(
@@ -578,11 +588,16 @@ try {
   if (error instanceof UsageError) fail(error.message, 2);
   const names = (() => {
     try {
-      return runNames(pickRun(options.run));
+      return runNames(upRun ?? pickRun(options.run));
     } catch {
       return null;
     }
   })();
   const secrets = names && existsSync(names.privateDir) ? loadSecrets(names.privateDir) : new Map();
-  fail(redact(redactValues(String(error?.stack ?? error), secrets)));
+  const message = redact(redactValues(String(error?.stack ?? error), secrets));
+  fail(
+    upRun === null
+      ? message
+      : `${message}\nup failed part way; whatever it made is in its ledger: ${downCommand(upRun)}`,
+  );
 }

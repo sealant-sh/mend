@@ -260,6 +260,7 @@ test("packaging retains browser, Docker, OpenTofu and acceptance contracts in it
     ".claude/skills/verify/scripts/leaks.test.mjs",
     ".claude/skills/verify/scripts/leaks.closed-roots.test.mjs",
     ".claude/skills/verify/scripts/leaks.frames.test.mjs",
+    ".claude/skills/verify/scripts/drive-vscode.test.mjs",
     "scripts/next-version.test.mjs",
     "scripts/next-version.histories.test.mjs",
   ])
