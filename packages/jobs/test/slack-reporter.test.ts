@@ -58,10 +58,17 @@ import { WORKTREE_STAMP, WorktreeReads } from "@mend/sessions";
 import { PRIVATE_PROJECT_STATUS, SLACK_ACTIONS, statusLine, SUMMARY_PROVENANCE } from "@mend/slack";
 import { makeFakeSlack, type FakeSlackCall } from "@mend/slack/client";
 import { SecretCipher, Store, StoreConfig, type ChangedFile } from "@mend/store";
-import { Effect, Layer } from "effect";
-import { describe, expect, it } from "vitest";
+import { TestClock } from "@mend/test-ci/effect-vitest";
+import { Effect, Exit, Layer, Scope } from "effect";
+import { describe, expect, it, onTestFinished } from "vitest";
 
-import { closingOf, makeSlackReporter, openingOf, reviewMoment } from "../src/slack-reporter.ts";
+import {
+  closingOf,
+  makeSlackReporter,
+  openingOf,
+  reviewMoment,
+  STATUS_EDIT_EVERY_MS,
+} from "../src/slack-reporter.ts";
 
 const NOW = new Date("2026-09-23T10:00:00.000Z");
 const minutesAgo = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000);
@@ -479,7 +486,14 @@ const world = (options: WorldOptions = {}) => {
   );
   const writes = () => slack.calls.slice(1);
 
+  // The reporter's own fibers (a held-back look) run in this scope until the test ends.
+  const scope = Scope.makeUnsafe();
+  onTestFinished(() => Effect.runPromise(Scope.close(scope, Exit.void)));
+  // Effect's clock drives the reporter's sleeps; `state.now` is the clock it reads windows on.
+  const clock = Effect.runSync(Layer.buildWithScope(TestClock.layer(), scope));
+
   const layer = Layer.mergeAll(
+    Layer.succeedContext(clock),
     slack.layer,
     Layer.mock(SlackThreadsRepo, {
       forSession: (id) =>
@@ -551,11 +565,22 @@ const world = (options: WorldOptions = {}) => {
 
   /** One worker process: its own memory of what it has seen, the shared database and Slack. */
   const worker = () =>
-    Effect.runSync(makeSlackReporter({ now: () => state.now }).pipe(Effect.provide(layer)));
+    Effect.runSync(
+      makeSlackReporter({ now: () => state.now }).pipe(
+        Effect.provide(layer),
+        Effect.provideService(Scope.Scope, scope),
+      ),
+    );
   const observe = (reporter: ReturnType<typeof worker>) =>
     Effect.runPromise(reporter.observe(SESSION).pipe(Effect.provide(layer)));
   const baseline = (reporter: ReturnType<typeof worker>) =>
     Effect.runPromise(reporter.baseline().pipe(Effect.provide(layer)));
+
+  /** Move both clocks on by `ms`, and let whatever was sleeping until then run. */
+  const advance = async (ms: number) => {
+    state.now += ms;
+    await Effect.runPromise(TestClock.adjust(ms).pipe(Effect.provideContext(clock)));
+  };
 
   return {
     state,
@@ -563,6 +588,7 @@ const world = (options: WorldOptions = {}) => {
     worker,
     observe,
     baseline,
+    advance,
     writes,
     posts: () =>
       writes().flatMap((call: FakeSlackCall) => (call.kind === "postMessage" ? [call.input] : [])),
@@ -602,6 +628,32 @@ describe("the Slack thread reporter", () => {
       ts: STATUS,
     });
     expect(w.state.thread.reportedState).toBe("completed");
+  });
+
+  it("moves the status line at most every 30 s while the session runs, then lands on the latest state", async () => {
+    const running =
+      "billing-api · from a link in the thread · claude · running · mend/flaky-login-test";
+    const waiting =
+      "billing-api · from a link in the thread · claude · waiting for input · mend/flaky-login-test";
+    const w = world();
+    const reporter = w.worker();
+    w.state.turns = [turn(1, "running")];
+    await w.observe(reporter);
+    expect(w.updates()).toEqual([running]);
+
+    await w.advance(5_000);
+    w.state.session = sessionWith("waiting");
+    await w.observe(reporter);
+    await w.observe(reporter);
+    expect(w.updates()).toEqual([running]);
+    expect(w.state.thread.reportedState).toBe("running");
+
+    await w.advance(STATUS_EDIT_EVERY_MS - 5_000);
+    expect(w.updates()).toEqual([running, waiting]);
+    expect(w.state.thread.reportedState).toBe("waiting");
+
+    await w.advance(STATUS_EDIT_EVERY_MS);
+    expect(w.updates()).toEqual([running, waiting]);
   });
 
   it("offers Switch project until the first turn completes, and takes it off with that edit", async () => {

@@ -97,9 +97,15 @@ import { Cause, Clock, Effect, Layer, Queue, Schema, Stream } from "effect";
  * twice: the status line moves only by compare-and-set (`claimStatus`), and each reply is claimed
  * by key (`claimPost`) before it is posted. A claimed reply whose post fails is logged, not
  * retried, as a claimed Slack event is.
+ *
+ * While the session runs, its status line moves at most once every `STATUS_EDIT_EVERY_MS`: a loop
+ * that flips it between `running` and `waiting` would otherwise edit the message on every flip. A
+ * move held back looks again when the window ends, so the line still lands on the latest state. A
+ * move into a settled state, and the first move out of one, is edited at once.
  */
 
 const REPORT_FRESHNESS_MS = 2 * 60_000;
+export const STATUS_EDIT_EVERY_MS = 30_000;
 
 /** A settled session not looked at for this long is forgotten: its next look is a baseline. */
 const SEEN_SETTLED_TTL_MS = 60 * 60_000;
@@ -269,8 +275,13 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
     const slack = yield* SlackApi;
     const clock = yield* Clock.Clock;
     const now = options.now ?? (() => clock.currentTimeMillisUnsafe());
+    const scope = yield* Effect.scope;
 
     const seen = new Map<string, Seen>();
+    /** Per session: when this process last edited its status line to a state that is not settled. */
+    const editedAt = new Map<string, number>();
+    /** Sessions with a look waiting for their edit window to end. */
+    const heldBack = new Set<string>();
     let sweptAt = 0;
 
     /** Forget settled sessions nobody has looked at in an hour, and anything after a day. */
@@ -282,6 +293,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         const idle = at - entry.at;
         if (idle > SEEN_TTL_MS || (entry.settled && idle > SEEN_SETTLED_TTL_MS)) {
           seen.delete(sessionId);
+          editedAt.delete(sessionId);
         }
       }
     };
@@ -371,6 +383,29 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         ),
       );
 
+    /** Look at the session again in `delayMs`, unless a look is already held back for it. */
+    const lookAgainIn = (sessionId: SessionId, delayMs: number) =>
+      Effect.suspend(() => {
+        if (heldBack.has(sessionId)) return Effect.void;
+        heldBack.add(sessionId);
+        return Effect.sleep(delayMs).pipe(
+          Effect.andThen(
+            Effect.suspend((): Effect.Effect<void> => {
+              heldBack.delete(sessionId);
+              return observe(sessionId).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("slack reporter: held-back session report failed").pipe(
+                    Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+                  ),
+                ),
+              );
+            }),
+          ),
+          Effect.forkIn(scope),
+          Effect.asVoid,
+        );
+      });
+
     /**
      * Edit the status message to `message` and move the reaction to the state, once, whichever
      * worker gets there first. A line that stays the same (a private project's) still moves the
@@ -385,12 +420,20 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       if (thread.statusTs === null) return;
       const edit = message.text !== thread.reportedStatus;
       if (!edit && state === thread.reportedState) return;
+      const lastEdit = editedAt.get(session.id);
+      if (edit && !isSettledState(state) && lastEdit !== undefined) {
+        const wait = lastEdit + STATUS_EDIT_EVERY_MS - now();
+        if (wait > 0) return yield* lookAgainIn(session.id, wait);
+      }
       const moved = yield* threads.claimStatus(session.id, thread.reportedStatus, {
         state,
         line: message.text,
       });
       if (!moved) return;
       if (edit) {
+        // A move out of a settled state (a reply resuming the session) is news: no window.
+        if (isSettledState(state)) editedAt.delete(session.id);
+        else editedAt.set(session.id, now());
         yield* quietly(
           "chat.update",
           slack.update(token, { channel: thread.channelId, ts: thread.statusTs, ...message }),
@@ -666,6 +709,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       const look = yield* lookAt(sessionId);
       if (look === null) {
         seen.delete(sessionId);
+        editedAt.delete(sessionId);
         return;
       }
       // A thread started in the last two minutes has no history to replay: everything in it is
