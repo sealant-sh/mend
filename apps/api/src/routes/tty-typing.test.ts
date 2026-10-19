@@ -21,6 +21,8 @@ describe("isTyping", () => {
     ["focus out", `${ESC}[O`],
     ["OSC 10 foreground colour reply, BEL", `${ESC}]10;rgb:ffff/ffff/ffff${BEL}`],
     ["OSC 11 background colour reply, ST", `${ESC}]11;rgb:1e1e/1e1e/1e1e${ST}`],
+    ["OSC 12 cursor colour reply", `${ESC}]12;rgb:ffff/ffff/ffff${BEL}`],
+    ["OSC 52 clipboard reply", `${ESC}]52;c;aGVsbG8=${BEL}`],
     ["SGR mouse press", `${ESC}[<0;12;5M`],
     ["SGR mouse release", `${ESC}[<0;12;5m`],
     ["bracketed paste start", `${ESC}[200~`],
@@ -43,6 +45,12 @@ describe("isTyping", () => {
     }
     expect(isTyping(`${ESC}[200~git status${ESC}[201~`)).toBe(true);
     expect(isTyping(`${ESC}[I\r`)).toBe(true);
+  });
+
+  it("keeps an OSC that is not one of the four replies, such as a title or a hyperlink", () => {
+    expect(isTyping(`${ESC}]0;title${BEL}`)).toBe(true);
+    expect(isTyping(`${ESC}]8;;https://example.test${ST}`)).toBe(true);
+    expect(isTyping(`${ESC}]133;A${BEL}`)).toBe(true);
   });
 });
 

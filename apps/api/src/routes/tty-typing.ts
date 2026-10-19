@@ -2,9 +2,10 @@ import { Clock, Effect, type Scope } from "effect";
 
 /**
  * What a terminal emulator sends by itself, unasked by the person: replies to the program's
- * queries (DA1, DA2, DA3, XTVERSION, DSR, DECRQM, kitty keyboard flags, OSC 10/11 colours, the
- * window size report), focus in/out, SGR mouse reports and the bracketed-paste markers (xterm
- * ctlseqs names).
+ * queries (DA1, DA2, DA3, XTVERSION, DSR, DECRQM, kitty keyboard flags, the OSC 10/11/12 colour
+ * and OSC 52 clipboard replies, the window size report), focus in/out, SGR mouse reports and the
+ * bracketed-paste markers (xterm ctlseqs names). Only those four OSC numbers are replies; any
+ * other OSC from the client is kept as typing.
  */
 const EMULATOR_REPLIES = new RegExp(
   [
@@ -17,7 +18,7 @@ const EMULATOR_REPLIES = new RegExp(
     String.raw`\x1b\[\??[\d;]*\$y`,
     String.raw`\x1b\[\?\d*u`,
     String.raw`\x1b\[[IO]`,
-    String.raw`\x1b\]\d+;[^\x07\x1b]*(?:\x07|\x1b\\)`,
+    String.raw`\x1b\](?:1[012]|52);[^\x07\x1b]*(?:\x07|\x1b\\)`,
     String.raw`\x1b\[<[\d;]*[Mm]`,
     String.raw`\x1b\[20[01]~`,
     String.raw`\x1b\[\d+;\d+;\d+t`,
