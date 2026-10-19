@@ -14,6 +14,7 @@ import {
   newRunName,
   parseArgs,
   pickRun,
+  quickInputStep,
   readState,
   remoteSshLogFiles,
   resolves,
@@ -212,4 +213,25 @@ test("opens count each Remote-SSH window's first resolve, across every window's 
   } finally {
     rmSync(userData, { recursive: true, force: true });
   }
+});
+
+test("a quick input's step counter is read off its title as VS Code appends it", () => {
+  assert.deepEqual(quickInputStep("New session · newsroom-api (2/5)"), {
+    title: "New session · newsroom-api",
+    step: 2,
+    total: 5,
+  });
+  assert.deepEqual(quickInputStep("New session · newsroom-api"), {
+    title: "New session · newsroom-api",
+    step: null,
+    total: null,
+  });
+  assert.deepEqual(quickInputStep("Pick one (3)"), { title: "Pick one", step: 3, total: null });
+  assert.deepEqual(quickInputStep("1/4"), { title: "", step: 1, total: 4 });
+  assert.deepEqual(quickInputStep("Run (fast) mode"), {
+    title: "Run (fast) mode",
+    step: null,
+    total: null,
+  });
+  assert.deepEqual(quickInputStep(null), { title: "", step: null, total: null });
 });

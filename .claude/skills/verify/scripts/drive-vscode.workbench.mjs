@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { remoteSshLogFiles, resolves } from "./drive-vscode.lib.mjs";
+import { quickInputStep, remoteSshLogFiles, resolves } from "./drive-vscode.lib.mjs";
 import { CREDENTIAL_PATTERNS, redact } from "./redact.mjs";
 import { redactValues } from "./secrets.mjs";
 
@@ -32,6 +32,32 @@ const CONTEXT_MENU_ITEM = ".context-view .monaco-menu .action-item:not(.disabled
 const HOVER = ".monaco-hover.workbench-hover";
 const CONTEXT_MENU = ".context-view .monaco-menu";
 const STATUS_ITEM = ".part.statusbar .statusbar-item";
+const VIEW_ACTION =
+  ".part.sidebar .title-actions .action-label, .part.sidebar .pane-header .actions .action-label";
+
+/** A button's tooltip as VS Code labels it: its aria-label, else its title. */
+const tooltipOf = async (button) =>
+  (await button.getAttribute("aria-label")) ?? (await button.getAttribute("title"));
+
+/** A quick input row as a person reads it; separators (the group labels) are left out. */
+const quickInputRow = (row) => {
+  const [main, meta] = row.querySelectorAll(".quick-input-list-row");
+  const name = main?.querySelector(".label-name");
+  const icon = (element) =>
+    [...element.classList]
+      .find((cls) => cls.startsWith("codicon-") && !/^codicon-(colored|modifier-)/.test(cls))
+      ?.slice("codicon-".length);
+  return {
+    label: (name?.textContent ?? "").trim(),
+    icons: [...(name?.querySelectorAll(".codicon") ?? [])].map(icon).filter(Boolean),
+    description: (main?.querySelector(".label-description")?.textContent ?? "").trim(),
+    detail: (meta?.textContent ?? "").trim(),
+    buttons: [...row.querySelectorAll(".quick-input-list-entry-action-bar .action-label")].map(
+      (button) => button.getAttribute("aria-label") ?? button.getAttribute("title") ?? "",
+    ),
+    focused: row.classList.contains("focused"),
+  };
+};
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -291,7 +317,7 @@ export const workbenchHelpers = async (context, options) => {
     // F1 opens quick open in command mode, the `>` already in the box: keep it.
     await box.fill(`>${title.replace(/…$/, "")}`);
     // The row whose label is the title itself, not a longer one the fuzzy filter also lists
-    // (`Mend: New session in this worktree…` beside `Mend: New Session…`), and not a position
+    // (`Mend: New session in this worktree…` beside `Mend: New session`), and not a position
     // that another row takes once the filter settles.
     const exact = new RegExp(`^${escapeRegExp(title.replace(/…$/, ""))}…?$`);
     const row = target
@@ -316,6 +342,102 @@ export const workbenchHelpers = async (context, options) => {
     );
   };
 
+  /**
+   * What the command palette lists for `query` as a person sees it before choosing (F1, the text
+   * typed, the list left to settle), then Escape: each row's label and whether it reads disabled.
+   */
+  const paletteRows = async (query) => {
+    const target = page();
+    await target.bringToFront();
+    if (await target.locator(QUICK_INPUT).isVisible()) await target.keyboard.press("Escape");
+    await target.keyboard.press("F1");
+    const box = target.locator(QUICK_INPUT_BOX);
+    await box.waitFor({ timeout });
+    await box.fill(`>${query}`);
+    let last = null;
+    const rows = await waitUntil(
+      "the palette's list to settle",
+      async () => {
+        await sleep(500);
+        const now = await target.locator(QUICK_INPUT_ROW).evaluateAll((found) =>
+          found.map((row) => ({
+            label: (row.querySelector(".label-name")?.textContent ?? "").trim(),
+            disabled:
+              row.classList.contains("disabled") || row.getAttribute("aria-disabled") === "true",
+          })),
+        );
+        const key = JSON.stringify(now);
+        if (key === last) return now;
+        last = key;
+        return null;
+      },
+      timeout,
+    );
+    await target.keyboard.press("Escape");
+    await waitUntil(
+      "the palette to close",
+      async () => ((await target.locator(QUICK_INPUT).isVisible()) ? null : true),
+      5_000,
+    );
+    return rows;
+  };
+
+  /** The sidebar view's title bar buttons, left to right: `{ title, disabled }`. */
+  const viewActions = () =>
+    page()
+      .locator(VIEW_ACTION)
+      .evaluateAll((found) =>
+        found
+          .filter((action) => action.offsetParent !== null)
+          .map((action) => ({
+            title: action.getAttribute("aria-label") ?? "",
+            disabled:
+              action.classList.contains("disabled") ||
+              action.getAttribute("aria-disabled") === "true" ||
+              action.closest(".action-item")?.classList.contains("disabled") === true,
+          })),
+      );
+
+  /** One of the view's title bar buttons, by its title (a prefix) or a pattern it matches. */
+  const viewAction = (title) => {
+    const matches = (label) =>
+      typeof title === "string" ? label.startsWith(title) : title.test(label);
+    const found = async () => {
+      for (const candidate of await page().locator(VIEW_ACTION).filter({ visible: true }).all())
+        if (matches((await candidate.getAttribute("aria-label")) ?? "")) return candidate;
+      throw new Error(
+        `no view title button ${title} among ${JSON.stringify((await viewActions()).map((one) => one.title))}`,
+      );
+    };
+    return {
+      waitFor: async (limit = timeout) =>
+        waitUntil(`the view's button ${title}`, async () => (await found()).isVisible(), limit),
+      title: async () => (await found()).getAttribute("aria-label"),
+      disabled: async () =>
+        (await found()).evaluate(
+          (element) =>
+            element.classList.contains("disabled") ||
+            element.getAttribute("aria-disabled") === "true" ||
+            element.closest(".action-item")?.classList.contains("disabled") === true,
+        ),
+      click: async () => (await found()).click(),
+      /** Its tooltip: the pointer rests on it until VS Code's hover shows. */
+      tooltip: async () => {
+        const hover = page().locator(HOVER).first();
+        return waitUntil("the button's tooltip", async () => {
+          await page().mouse.move(1, 1);
+          await sleep(300);
+          await (await found()).hover({ force: true });
+          const shown = await hover
+            .waitFor({ timeout: 5_000 })
+            .then(() => true)
+            .catch(() => false);
+          return shown ? (await hover.innerText()).trim() : null;
+        });
+      },
+    };
+  };
+
   const quickInput = {
     /** The widget's title, or null while none is open. */
     title: async () => {
@@ -333,13 +455,119 @@ export const workbenchHelpers = async (context, options) => {
       await box.waitFor({ timeout });
       await box.fill(value);
     },
-    pick: async (label) => {
-      const row = page().locator(QUICK_INPUT_ROW, { hasText: label }).first();
+    /** The row whose text holds `label`; with `{ exact: true }`, whose label is `label` itself. */
+    pick: async (label, { exact = false } = {}) => {
+      const row = exact
+        ? page()
+            .locator(QUICK_INPUT_ROW)
+            .filter({
+              has: page().locator(".quick-input-list-label .label-name", {
+                hasText: new RegExp(`^\\s*${escapeRegExp(label)}\\s*$`),
+              }),
+            })
+            .first()
+        : page().locator(QUICK_INPUT_ROW, { hasText: label }).first();
       await row.waitFor({ timeout });
       await row.click();
     },
     accept: () => page().keyboard.press("Enter"),
     cancel: () => page().keyboard.press("Escape"),
+    /** The title with its step counter split off (`{ title, step, total }`), or null while none shows. */
+    step: async () => {
+      const shown = await quickInput.title();
+      return shown === null ? null : quickInputStep(shown);
+    },
+    value: () => page().locator(QUICK_INPUT_BOX).inputValue(),
+    placeholder: async () =>
+      (await page().locator(QUICK_INPUT_BOX).getAttribute("placeholder")) ?? "",
+    /** Whether the widget's progress bar runs (the input is busy). */
+    busy: () =>
+      page()
+        .locator(`${QUICK_INPUT} .quick-input-progress`)
+        .evaluate((bar) => !bar.classList.contains("done") && bar.offsetParent !== null),
+    /** Every row: `{ label, icons, description, detail, buttons, focused }`, icons by codicon name. */
+    rows: async () =>
+      Promise.all(
+        (await page().locator(QUICK_INPUT_ROW).all()).map((row) => row.evaluate(quickInputRow)),
+      ),
+    /**
+     * Every button the widget shows, by tooltip: the title bar's (`where: "title bar"`, Back
+     * included), the input box's, and each row's (`where: "row <label>"`, shown on hover).
+     */
+    buttons: async () =>
+      page()
+        .locator(QUICK_INPUT)
+        .evaluate((widget) => {
+          const tooltip = (button) =>
+            button.getAttribute("aria-label") ?? button.getAttribute("title") ?? "";
+          const enabled = (button) =>
+            !button.classList.contains("disabled") &&
+            button.getAttribute("aria-disabled") !== "true";
+          const found = [];
+          for (const [scope, where] of [
+            [".quick-input-titlebar", "title bar"],
+            [".quick-input-inline-action-bar", "input box"],
+          ])
+            for (const button of widget.querySelectorAll(`${scope} .action-label`))
+              if (button.offsetParent !== null)
+                found.push({ tooltip: tooltip(button), where, enabled: enabled(button) });
+          for (const row of widget.querySelectorAll(".quick-input-list .monaco-list-row")) {
+            const label = (row.querySelector(".label-name")?.textContent ?? "").trim();
+            for (const button of row.querySelectorAll(
+              ".quick-input-list-entry-action-bar .action-label",
+            ))
+              found.push({
+                tooltip: tooltip(button),
+                where: `row ${label}`,
+                enabled: enabled(button),
+              });
+          }
+          return found;
+        }),
+    /**
+     * A button clicked by its tooltip (a string, whole, or a pattern): the title bar's or the input
+     * box's first, else a row's, the pointer resting on its row first (a row shows its buttons on
+     * hover). Returns where it was.
+     */
+    button: async (tooltip) => {
+      const matches = (label) =>
+        typeof tooltip === "string" ? label === tooltip : tooltip.test(label ?? "");
+      const found = await waitUntil(`a quick input button "${tooltip}"`, async () => {
+        const widget = page().locator(QUICK_INPUT);
+        for (const [scope, where] of [
+          [".quick-input-titlebar", "title bar"],
+          [".quick-input-inline-action-bar", "input box"],
+        ])
+          for (const button of await widget.locator(`${scope} .action-label`).all())
+            if ((await button.isVisible()) && matches(await tooltipOf(button)))
+              return { button, row: null, where };
+        for (const row of await page().locator(QUICK_INPUT_ROW).all())
+          for (const button of await row
+            .locator(".quick-input-list-entry-action-bar .action-label")
+            .all())
+            if (matches(await tooltipOf(button)))
+              return {
+                button,
+                row,
+                where: `row "${(await row.locator(".label-name").first().innerText()).trim()}"`,
+              };
+        return null;
+      });
+      if (found.row !== null) await found.row.hover();
+      await found.button.click();
+      return found.where;
+    },
+    /** The title bar's Back (VS Code puts it alone at the bar's left); returns its tooltip. */
+    back: async () => {
+      const back = page()
+        .locator(`${QUICK_INPUT} .quick-input-left-action-bar .action-label`)
+        .filter({ visible: true })
+        .first();
+      await back.waitFor({ timeout });
+      const tooltip = await back.getAttribute("aria-label");
+      await back.click();
+      return tooltip;
+    },
     /**
      * Watches the widget from now: every time it is shown, or shown with another title, one
      * event `{ at, title }`. Two commands asking at once show two (the second replaces the first).
@@ -767,11 +995,8 @@ export const workbenchHelpers = async (context, options) => {
     return settings;
   };
 
-  /**
-   * A `vscode://` link followed the way the OS URL handler follows one: `code --open-url` with the
-   * run's user data, which hands it to the running editor and exits.
-   */
-  const openUrl = async (url) => {
+  /** The `code` launcher with the run's user data: it hands its arguments to the running editor and exits. */
+  const codeCli = async (args) => {
     const env = {
       ...process.env,
       HOME: state.home,
@@ -783,14 +1008,7 @@ export const workbenchHelpers = async (context, options) => {
     const { status, stderr } = await new Promise((done) => {
       const child = spawn(
         state.editor.cli,
-        [
-          "--open-url",
-          url,
-          "--user-data-dir",
-          state.userData,
-          "--extensions-dir",
-          state.extensions,
-        ],
+        [...args, "--user-data-dir", state.userData, "--extensions-dir", state.extensions],
         { env, stdio: ["ignore", "ignore", "pipe"], timeout: 60_000 },
       );
       let err = "";
@@ -798,8 +1016,18 @@ export const workbenchHelpers = async (context, options) => {
       child.on("close", (code) => done({ status: code, stderr: err }));
       child.on("error", (error) => done({ status: -1, stderr: String(error) }));
     });
-    if (status !== 0) throw new Error(`code --open-url exited ${status}: ${scrub(stderr).trim()}`);
+    if (status !== 0) throw new Error(`code ${args[0]} exited ${status}: ${scrub(stderr).trim()}`);
   };
+
+  /** A `vscode://` link followed the way the OS URL handler follows one: `code --open-url`. */
+  const openUrl = (url) => codeCli(["--open-url", url]);
+
+  /**
+   * A folder opened the way a person opens one from a terminal: `code --new-window <folder>`, with
+   * `--skip-welcome` as `up` started the editor (the welcome a fresh user data shows once would
+   * cover the window). The window comes as a new page: `waitForWindow(known)` finds it.
+   */
+  const openFolder = (folder) => codeCli(["--new-window", "--skip-welcome", folder]);
 
   const note = (message) => {
     const line = steps.write({ note: message });
@@ -819,8 +1047,11 @@ export const workbenchHelpers = async (context, options) => {
     opens,
     remoteSshLogs: () => remoteSshLogFiles(state.userData).length,
     palette,
+    paletteRows,
     quickInput,
     view,
+    viewActions,
+    viewAction,
     treeItem,
     notification,
     notifications,
@@ -834,6 +1065,7 @@ export const workbenchHelpers = async (context, options) => {
     watch,
     userSettings,
     openUrl,
+    openFolder,
     waitForText,
     waitUntil,
     text,
