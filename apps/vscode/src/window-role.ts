@@ -1,4 +1,5 @@
 import { MendWorkspace } from "./editor-home.js";
+import { displaySession } from "./session-lines.js";
 import type { Project, ProjectDetail, Session, SessionProcess } from "./types.js";
 
 /** What this VS Code window is to Mend: a session's workspace, or anything else. */
@@ -22,28 +23,51 @@ export const windowRole = (
 const LIVE_STATUSES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
 
 /**
- * The session a workspace window shows. Several sessions of one worktree share its workspace:
- * the one an Open meant wins, and without one the live one, then the newest.
+ * The session a workspace window shows. `found` attaches it; `missing` attaches nothing, since
+ * another session of the worktree is not the one she asked for, and says why; `none` is a window
+ * whose workspace holds no session this person can see.
+ */
+export type WindowSession =
+  | { readonly kind: "found"; readonly project: Project; readonly session: Session }
+  | { readonly kind: "missing"; readonly line: string }
+  | { readonly kind: "none" };
+
+/**
+ * Several sessions of one worktree share its workspace. A requested session is shown only if the
+ * workspace still holds it; with none requested, the live one, then the newest.
  */
 export const sessionOfWorkspace = (
   details: ReadonlyArray<ProjectDetail>,
   workspaceId: string,
-  intended: string | null = null,
-): { readonly project: Project; readonly session: Session } | null => {
-  const candidates = details
-    .flatMap((detail) =>
-      detail.sessions
-        .filter((session) => session.sealantWorkspaceId === workspaceId)
-        .map((session) => ({ project: detail.project, session })),
-    )
+  requested: string | null = null,
+): WindowSession => {
+  const all = details.flatMap((detail) =>
+    detail.sessions.map((session) => ({ project: detail.project, session })),
+  );
+  if (requested !== null) {
+    const asked = all.find(({ session }) => session.id === requested);
+    if (asked === undefined) {
+      return {
+        kind: "missing",
+        line: `Mend lists no session ${requested.slice(0, 8)} now · no agent attached`,
+      };
+    }
+    return asked.session.sealantWorkspaceId === workspaceId
+      ? { kind: "found", ...asked }
+      : {
+          kind: "missing",
+          line: `${displaySession(asked.session)} is ${asked.session.status} and not in this workspace · no agent attached`,
+        };
+  }
+  const shown = all
+    .filter(({ session }) => session.sealantWorkspaceId === workspaceId)
     .toSorted(
       (left, right) =>
-        Number(right.session.id === intended) - Number(left.session.id === intended) ||
         Number(LIVE_STATUSES.has(right.session.status)) -
           Number(LIVE_STATUSES.has(left.session.status)) ||
         right.session.createdAt.localeCompare(left.session.createdAt),
-    );
-  return candidates[0] ?? null;
+    )[0];
+  return shown === undefined ? { kind: "none" } : { kind: "found", ...shown };
 };
 
 /** The terminal tab a workspace window attaches for its session. */

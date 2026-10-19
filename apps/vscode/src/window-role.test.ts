@@ -76,17 +76,49 @@ describe("sessionOfWorkspace", () => {
     const elsewhere = session({ id: "other", sealantWorkspaceId: "another" });
     expect(
       sessionOfWorkspace([{ project, sessions: [stopped, elsewhere, live] }], WORKSPACE),
-    ).toEqual({ project, session: live });
-    expect(sessionOfWorkspace([{ project, sessions: [elsewhere] }], WORKSPACE)).toBeNull();
+    ).toEqual({ kind: "found", project, session: live });
+    expect(sessionOfWorkspace([{ project, sessions: [elsewhere] }], WORKSPACE)).toEqual({
+      kind: "none",
+    });
   });
 
   it("finds the session an Open meant, over a newer live one in the same worktree", () => {
     const older = session({ id: "older", createdAt: "2026-10-19T09:00:00Z" });
     const newer = session({ id: "newer", createdAt: "2026-10-19T10:00:00Z" });
     const details = [{ project, sessions: [older, newer] }];
-    expect(sessionOfWorkspace(details, WORKSPACE, "older")).toEqual({ project, session: older });
-    expect(sessionOfWorkspace(details, WORKSPACE)).toEqual({ project, session: newer });
-    expect(sessionOfWorkspace(details, WORKSPACE, "gone")).toEqual({ project, session: newer });
+    expect(sessionOfWorkspace(details, WORKSPACE, "older")).toEqual({
+      kind: "found",
+      project,
+      session: older,
+    });
+    expect(sessionOfWorkspace(details, WORKSPACE)).toEqual({
+      kind: "found",
+      project,
+      session: newer,
+    });
+  });
+
+  it("shows no other session when the one an Open meant is gone, and says why", () => {
+    const newer = session({ id: "newer", createdAt: "2026-10-19T10:00:00Z" });
+    expect(
+      sessionOfWorkspace([{ project, sessions: [newer] }], WORKSPACE, "0f9e8d7c-gone"),
+    ).toEqual({ kind: "missing", line: "Mend lists no session 0f9e8d7c now · no agent attached" });
+  });
+
+  it("shows no other session when the one an Open meant moved out of this workspace", () => {
+    const moved = session({
+      id: "moved",
+      label: "fix-auth",
+      status: "stopped",
+      sealantWorkspaceId: null,
+    });
+    const newer = session({ id: "newer", createdAt: "2026-10-19T10:00:00Z" });
+    expect(sessionOfWorkspace([{ project, sessions: [moved, newer] }], WORKSPACE, "moved")).toEqual(
+      {
+        kind: "missing",
+        line: "fix-auth is stopped and not in this workspace · no agent attached",
+      },
+    );
   });
 });
 

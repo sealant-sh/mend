@@ -10,7 +10,7 @@ import {
 } from "./agent-tabs.js";
 import { attachTerminal, memberName } from "./agent-terminal.js";
 import { MendApiError, type MendClient } from "./client.js";
-import { takeOpenIntent, type IntentStore } from "./open-intent.js";
+import type { OpenIntents } from "./open-intent.js";
 import { readProjects } from "./session-lines.js";
 import type { Project, Session } from "./types.js";
 import { sessionOfWorkspace, type WindowRole } from "./window-role.js";
@@ -19,10 +19,8 @@ const CONTINUE = "Continue here";
 
 const dim = (text: string): string => `\x1b[2m${text}\x1b[0m`;
 
-/** A terminal tab in this window, live until she closes it or its process ends. */
+/** A terminal tab in this window, live until its process ends. */
 class TerminalTab implements AgentTabHandle {
-  #closed = false;
-
   constructor(readonly terminal: vscode.Terminal) {}
 
   show(): void {
@@ -34,11 +32,7 @@ class TerminalTab implements AgentTabHandle {
   }
 
   live(): boolean {
-    return !this.#closed && this.terminal.exitStatus === undefined;
-  }
-
-  closed(): void {
-    this.#closed = true;
+    return this.terminal.exitStatus === undefined;
   }
 }
 
@@ -86,12 +80,14 @@ class ContinueLink extends vscode.TerminalLink {
 
 /**
  * A session's workspace window: its agent's terminal attached in the panel and focused, as soon
- * as the window opens. The session is the one the Open meant (`open-intent.ts`); a window opened
- * any other way shows the workspace's live session. A conversation started elsewhere gets a tab
+ * as the window opens. The session is the one the Open meant (`open-intent.ts`), and when the
+ * workspace no longer holds it the window attaches nothing and says why in the status bar; a window
+ * opened any other way shows the workspace's live session. A conversation started elsewhere gets a tab
  * with its line, where Continue here hands it to a terminal through Mend's mode handoff.
  */
 export class WorkspaceWindow implements vscode.Disposable {
   #located: { readonly project: Project; readonly session: Session } | null = null;
+  #notice: vscode.Disposable | null = null;
   readonly #tabs: AgentTabs;
   readonly #byTerminal = new WeakMap<vscode.Terminal, TerminalTab>();
   readonly #disposables: ReadonlyArray<vscode.Disposable>;
@@ -99,7 +95,7 @@ export class WorkspaceWindow implements vscode.Disposable {
   constructor(
     private readonly client: MendClient,
     private readonly role: WindowRole,
-    private readonly intents: IntentStore,
+    private readonly intents: Pick<OpenIntents, "take">,
     private readonly onError: (cause: unknown) => void,
   ) {
     const effects: AgentTabEffects = {
@@ -144,7 +140,10 @@ export class WorkspaceWindow implements vscode.Disposable {
                 if (link instanceof ContinueLink) void this.#tabs.continueHere(link.sessionId);
               },
             }),
-            vscode.window.onDidCloseTerminal((closed) => this.#byTerminal.get(closed)?.closed()),
+            vscode.window.onDidCloseTerminal((closed) => {
+              const tab = this.#byTerminal.get(closed);
+              if (tab !== undefined) this.#tabs.forget(tab);
+            }),
             // VS Code focuses a window already open on the folder instead of opening another.
             vscode.window.onDidChangeWindowState((state) => {
               if (state.focused) void this.#takeIntent();
@@ -155,6 +154,7 @@ export class WorkspaceWindow implements vscode.Disposable {
 
   dispose(): void {
     for (const disposable of this.#disposables) disposable.dispose();
+    this.#notice?.dispose();
   }
 
   /** The session this window is the workspace of, once the window has found it. */
@@ -174,18 +174,23 @@ export class WorkspaceWindow implements vscode.Disposable {
   async focusAgentTerminal(sessionId: string | null): Promise<void> {
     if (this.role.kind !== "workspace") return;
     try {
-      const intended =
+      const requested =
         sessionId ??
-        (await takeOpenIntent(this.intents, this.role.workspaceId, Date.now())) ??
+        (await this.intents.take(this.role.workspaceId)) ??
         this.#located?.session.id ??
         null;
-      if (intended === null || intended !== this.#located?.session.id) {
+      if (requested === null || requested !== this.#located?.session.id) {
         const { details } = await readProjects(this.client);
-        const located = sessionOfWorkspace(details, this.role.workspaceId, intended);
+        const found = sessionOfWorkspace(details, this.role.workspaceId, requested);
+        if (found.kind === "missing") {
+          this.#say(found.line);
+          return;
+        }
         // Not a session this person can see: the window stays a plain Remote-SSH window.
-        if (located === null) return;
-        this.#located = located;
+        if (found.kind === "none") return;
+        this.#located = { project: found.project, session: found.session };
       }
+      this.#say(null);
       const shown = this.#located;
       if (shown !== null) await this.#tabs.focus(shown.session.id);
     } catch (cause) {
@@ -196,8 +201,19 @@ export class WorkspaceWindow implements vscode.Disposable {
   /** An Open from another window meant a session here: show it. */
   async #takeIntent(): Promise<void> {
     if (this.role.kind !== "workspace") return;
-    const intended = await takeOpenIntent(this.intents, this.role.workspaceId, Date.now());
-    if (intended !== null) await this.focusAgentTerminal(intended);
+    try {
+      const requested = await this.intents.take(this.role.workspaceId);
+      if (requested !== null) await this.focusAgentTerminal(requested);
+    } catch (cause) {
+      this.onError(cause);
+    }
+  }
+
+  /** Why the window shows no agent, until it shows one. */
+  #say(line: string | null): void {
+    this.#notice?.dispose();
+    this.#notice =
+      line === null ? null : vscode.window.setStatusBarMessage(`$(circle-slash) ${line}`);
   }
 
   #track<Tab extends TerminalTab>(tab: Tab): Tab {

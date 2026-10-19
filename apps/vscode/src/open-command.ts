@@ -5,7 +5,7 @@ import * as vscode from "vscode";
 
 import type { MendClient } from "./client.js";
 import { statusText, type OpenAction, type OpenState } from "./open-flow.js";
-import { writeOpenIntent } from "./open-intent.js";
+import type { OpenIntents } from "./open-intent.js";
 import { OpenRunner, type OpenEffects } from "./open-runner.js";
 import type { NotYoursOffer, RowCapability } from "./session-capability.js";
 import type { SessionNode } from "./tree.js";
@@ -142,6 +142,7 @@ export const openRunner = (deps: {
   readonly context: vscode.ExtensionContext;
   readonly client: MendClient;
   readonly workspaceWindow: WorkspaceWindow;
+  readonly intents: OpenIntents;
   readonly capability: (session: Session) => Promise<RowCapability>;
 }): { readonly runner: OpenRunner; readonly disposable: vscode.Disposable } => {
   const { context, client, workspaceWindow } = deps;
@@ -199,7 +200,7 @@ export const openRunner = (deps: {
     sessionNow: async (sessionId) => (await client.sessionDetail(sessionId)).session,
     openFolder: async ({ workspaceId, sessionId }, options) => {
       const { target, usernamePrefix } = await workspaceSshFacts(client);
-      await writeOpenIntent(context.globalState, { workspaceId, sessionId, at: Date.now() });
+      await deps.intents.write({ workspaceId, sessionId });
       await vscode.commands.executeCommand(
         "vscode.openFolder",
         vscode.Uri.from({

@@ -14,6 +14,7 @@ import { currentBranch, pathContains, repositoryFacts, worktreePath } from "./gi
 import { modelPickRows } from "./model-picks.js";
 import { OFFER_COMMANDS, openRunner, setUpWorkspaceSsh } from "./open-command.js";
 import type { OpenMode } from "./open-flow.js";
+import { OpenIntents } from "./open-intent.js";
 import type { OpenRunner } from "./open-runner.js";
 import {
   maySteer,
@@ -1046,19 +1047,21 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const client = new MendClient(connections);
   const tree = new MendTreeProvider(client);
   const scope = new WorkspaceScope(client, (projectId) => tree.setWorkspaceProject(projectId));
+  const intents = new OpenIntents(path.join(context.globalStorageUri.fsPath, "open-intents"));
   const workspaceWindow = new WorkspaceWindow(
     client,
     windowRole(
       vscode.env.remoteName,
       (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.authority),
     ),
-    context.globalState,
+    intents,
     (cause) => void showError(cause),
   );
   const opens = openRunner({
     context,
     client,
     workspaceWindow,
+    intents,
     // Who she is is read at the gesture: a failed read in the tree's snapshot must not decide.
     capability: async (session) => {
       const viewer = await client.viewerId();

@@ -1,3 +1,7 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -6,7 +10,7 @@ import {
   type AgentTabHandle,
   type ConversationTabHandle,
 } from "./agent-tabs.js";
-import { takeOpenIntent, writeOpenIntent, type IntentStore } from "./open-intent.js";
+import { OpenIntents } from "./open-intent.js";
 import type { Project, Session, SessionDetail, SessionProcess } from "./types.js";
 import { sessionOfWorkspace } from "./window-role.js";
 
@@ -150,26 +154,15 @@ describe("a workspace window holding two live sessions", () => {
       id: "newer",
       createdAt: "2026-10-19T10:00:00.000Z",
     });
-    const values = new Map<string, unknown>();
-    const store: IntentStore = {
-      get: (key) => values.get(key),
-      update: async (key, value) => {
-        values.set(key, value);
-      },
-    };
-    await writeOpenIntent(store, {
-      workspaceId: WORKSPACE,
-      sessionId: "older",
-      at: 0,
-    });
+    const intents = new OpenIntents(await mkdtemp(join(tmpdir(), "mend-intents-")));
+    await intents.write({ workspaceId: WORKSPACE, sessionId: "older" });
 
-    const intended = await takeOpenIntent(store, WORKSPACE, 1000);
     const located = sessionOfWorkspace(
       [{ project, sessions: [older, newer] }],
       WORKSPACE,
-      intended,
+      await intents.take(WORKSPACE),
     );
-    expect(located?.session.id).toBe("older");
+    expect(located).toMatchObject({ kind: "found", session: { id: "older" } });
 
     const reads = new Map([
       ["older", detail([process({ id: "older-pty" })], older)],
@@ -182,35 +175,11 @@ describe("a workspace window holding two live sessions", () => {
         return read;
       }),
     });
-    await agents.focus(located?.session.id ?? "");
+    await agents.focus(located.kind === "found" ? located.session.id : "");
     expect(effects.attachPty).toHaveBeenCalledTimes(1);
     expect(effects.attachPty).toHaveBeenCalledWith(
       expect.objectContaining({ processId: "older-pty" }),
     );
-  });
-
-  it("takes an Open's session once, and not once it is stale", async () => {
-    const values = new Map<string, unknown>();
-    const store: IntentStore = {
-      get: (key) => values.get(key),
-      update: async (key, value) => {
-        values.set(key, value);
-      },
-    };
-    await writeOpenIntent(store, {
-      workspaceId: WORKSPACE,
-      sessionId: "older",
-      at: 0,
-    });
-    expect(await takeOpenIntent(store, "another-workspace", 1000)).toBeNull();
-    expect(await takeOpenIntent(store, WORKSPACE, 1000)).toBe("older");
-    expect(await takeOpenIntent(store, WORKSPACE, 1000)).toBeNull();
-    await writeOpenIntent(store, {
-      workspaceId: WORKSPACE,
-      sessionId: "older",
-      at: 0,
-    });
-    expect(await takeOpenIntent(store, WORKSPACE, 11 * 60 * 1000)).toBeNull();
   });
 });
 
@@ -233,6 +202,19 @@ describe("focusing a session's agent", () => {
     expect(ended.shows).toBe(1);
     expect(ended.disposed).toBe(true);
     expect(effects.attachPty).toHaveBeenCalledTimes(2);
+  });
+
+  it("forgets a tab she closed: it offers nothing more, and the next focus attaches anew", async () => {
+    const { effects, agents, tabs } = world([detail([conversation])]);
+    await agents.focus("older");
+    const closed = tabs[0];
+    if (closed === undefined) throw new Error("no tab attached");
+    expect(agents.continueOffered(closed)).toBe("older");
+    agents.forget(closed);
+    expect(agents.continueOffered(closed)).toBeNull();
+    await agents.focus("older");
+    expect(closed.shows).toBe(1);
+    expect(effects.showConversation).toHaveBeenCalledTimes(2);
   });
 
   it("replaces a terminal tab once the phone moved the agent into a conversation", async () => {

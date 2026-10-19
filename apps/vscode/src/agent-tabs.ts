@@ -6,7 +6,7 @@ import { agentTab, handoffRefusedLine, type AgentTab } from "./window-role.js";
 export interface AgentTabHandle {
   show(): void;
   dispose(): void;
-  /** False once she closed it or its process ended. */
+  /** False once its process ended. */
   live(): boolean;
 }
 
@@ -89,6 +89,13 @@ export class AgentTabs {
     const run = this.#reconcile(sessionId).finally(() => this.#focusing.delete(sessionId));
     this.#focusing.set(sessionId, run);
     return run;
+  }
+
+  /** She closed the tab: the window keeps nothing of it, and the next focus attaches anew. */
+  forget(tab: AgentTabHandle): void {
+    for (const [sessionId, attached] of this.#attached) {
+      if (attached.tab === tab) this.#attached.delete(sessionId);
+    }
   }
 
   /** The session whose conversation this tab shows, when Continue here is hers to click now. */
