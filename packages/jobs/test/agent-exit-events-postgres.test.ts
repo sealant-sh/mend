@@ -75,6 +75,17 @@ const PROJECT = ProjectId.make("p-web");
 const OWNER = "alice";
 const PHONE = "alice-phone";
 const BASE = Sha.make("a".repeat(40));
+const BILLING_DIFF = [
+  "diff --git a/src/billing.ts b/src/billing.ts",
+  "--- a/src/billing.ts",
+  "+++ b/src/billing.ts",
+  "@@ -1,1 +1,3 @@",
+  "-export const fee = 1;",
+  "+export const fee = 2;",
+  "+export const cap = 10;",
+  "+export const floor = 0;",
+  "",
+].join("\n");
 
 interface Seeded {
   readonly sessionId: SessionId;
@@ -161,60 +172,62 @@ interface Observed {
  * scratch database, with only the push transport, the job queue and the git read faked. Returns
  * once both streams have heard a NOTIFY, so the LISTEN is in place before the caller triggers.
  */
-const startWorkers = Effect.gen(function* () {
-  const sql = yield* PgClient.PgClient;
-  const pushes: Array<PushMessage> = [];
-  const jobs: Array<JobSpec> = [];
-  const fakes = Layer.mergeAll(
-    CaptureRuntimeOff,
-    Layer.mock(PushSender, {
-      send: (messages) =>
-        Effect.sync(() => {
-          pushes.push(...messages);
-          return [];
-        }),
-    }),
-    Layer.mock(JobRunner, {
-      enqueue: (job) =>
-        Effect.sync(() => {
-          jobs.push(job);
-          return `job-${jobs.length}`;
-        }),
-    }),
-    Layer.mock(WorktreeReads, {
-      changedFiles: () =>
-        Effect.succeed({
-          stamp: WORKTREE_STAMP,
-          value: [{ path: "src/billing.ts", additions: 3, deletions: 1 }],
-        }),
-    }),
-  );
-  const heard = { notifier: false, prep: false };
-  const listening = (mark: () => void) =>
-    listenEvents(sql).pipe(Stream.tap(() => Effect.sync(mark)));
-  yield* sessionNotifier(listening(() => (heard.notifier = true))).pipe(Effect.provide(fakes));
-  yield* reviewPrep(listening(() => (heard.prep = true))).pipe(Effect.provide(fakes));
-  const listeningNow = yield* notifyEvent(sql, {
-    type: "project",
-    projectId: "listen-canary",
-  }).pipe(
-    Effect.map(() => heard.notifier && heard.prep),
-    Effect.repeat({ until: (ok) => ok, schedule: Schedule.spaced("50 millis") }),
-    Effect.timeoutOption("10 seconds"),
-  );
-  expect(listeningNow._tag, "both workers hear the channel").toBe("Some");
-  return {
-    observed: (): Observed => ({
-      pushes: pushes.map((message) => ({
-        token: Redacted.value(message.token),
-        title: message.title,
-        body: message.body,
-        sessionId: message.data.sessionId,
-      })),
-      jobs: [...jobs],
-    }),
-  };
-});
+const startWorkers = (diff: () => string = () => BILLING_DIFF) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const pushes: Array<PushMessage> = [];
+    const jobs: Array<JobSpec> = [];
+    const fakes = Layer.mergeAll(
+      CaptureRuntimeOff,
+      Layer.mock(PushSender, {
+        send: (messages) =>
+          Effect.sync(() => {
+            pushes.push(...messages);
+            return [];
+          }),
+      }),
+      Layer.mock(JobRunner, {
+        enqueue: (job) =>
+          Effect.sync(() => {
+            jobs.push(job);
+            return `job-${jobs.length}`;
+          }),
+      }),
+      Layer.mock(WorktreeReads, {
+        changedFiles: () =>
+          Effect.succeed({
+            stamp: WORKTREE_STAMP,
+            value: [{ path: "src/billing.ts", additions: 3, deletions: 1 }],
+          }),
+        diffWorktree: () => Effect.sync(() => ({ stamp: WORKTREE_STAMP, value: diff() })),
+      }),
+    );
+    const heard = { notifier: false, prep: false };
+    const listening = (mark: () => void) =>
+      listenEvents(sql).pipe(Stream.tap(() => Effect.sync(mark)));
+    yield* sessionNotifier(listening(() => (heard.notifier = true))).pipe(Effect.provide(fakes));
+    yield* reviewPrep(listening(() => (heard.prep = true))).pipe(Effect.provide(fakes));
+    const listeningNow = yield* notifyEvent(sql, {
+      type: "project",
+      projectId: "listen-canary",
+    }).pipe(
+      Effect.map(() => heard.notifier && heard.prep),
+      Effect.repeat({ until: (ok) => ok, schedule: Schedule.spaced("50 millis") }),
+      Effect.timeoutOption("10 seconds"),
+    );
+    expect(listeningNow._tag, "both workers hear the channel").toBe("Some");
+    return {
+      observed: (): Observed => ({
+        pushes: pushes.map((message) => ({
+          token: Redacted.value(message.token),
+          title: message.title,
+          body: message.body,
+          sessionId: message.data.sessionId,
+        })),
+        jobs: [...jobs],
+      }),
+    };
+  });
 
 const reviewPasses = (changeId: ChangeId): ReadonlyArray<JobSpec> => [
   {
@@ -281,7 +294,7 @@ describe.skipIf(postgres.skip)("a terminal agent's exit under a live shell, thro
           const processes = yield* SessionProcessesRepo;
           const seeded = yield* seedSession("billing-fix", "idle", finishedTurn());
           const before = yield* sessions.byId(seeded.sessionId);
-          const workers = yield* startWorkers;
+          const workers = yield* startWorkers();
 
           yield* processes.markExited(seeded.agentId, "exited", 0);
 
@@ -322,7 +335,7 @@ describe.skipIf(postgres.skip)("a terminal agent's exit under a live shell, thro
           const processes = yield* SessionProcessesRepo;
           const finishing = yield* seedSession("finishing", "running", null);
           const marker = yield* seedSession("marker", "idle", finishedTurn());
-          const workers = yield* startWorkers;
+          const workers = yield* startWorkers();
 
           const set = yield* processes.setWaiting(
             finishing.agentId,
@@ -350,6 +363,124 @@ describe.skipIf(postgres.skip)("a terminal agent's exit under a live shell, thro
             pushes: pushesFor(observed, finishing.sessionId),
             jobs: jobsFor(observed, finishing.changeId),
           }).toEqual({ pushes: [], jobs: [] });
+        }),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "prepares review and rings once when the exited agent's session then settles through stopping",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const sessions = yield* SessionsRepo;
+          const processes = yield* SessionProcessesRepo;
+          const seeded = yield* seedSession("settle-through-stop", "idle", finishedTurn());
+          const marker = yield* seedSession("stop-marker", "idle", finishedTurn());
+          const workers = yield* startWorkers();
+
+          yield* processes.markExited(seeded.agentId, "exited", 0);
+          yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 2);
+          yield* sessions.setStatus(seeded.sessionId, "stopping");
+          yield* sessions.settle(seeded.sessionId, "completed", null);
+          yield* processes.markExited(marker.agentId, "exited", 0);
+
+          yield* eventually(() => jobsFor(workers.observed(), marker.changeId).length >= 2);
+          const observed = workers.observed();
+          expect({
+            pushes: pushesFor(observed, seeded.sessionId).map((push) => push.body),
+            jobs: jobsFor(observed, seeded.changeId),
+          }).toEqual({
+            pushes: ["settle-through-stop completed"],
+            jobs: reviewPasses(seeded.changeId),
+          });
+          expect((yield* sessions.byId(seeded.sessionId)).status).toBe("completed");
+        }),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "does not prepare the same change again when the workers restart before it stops",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const sessions = yield* SessionsRepo;
+          const processes = yield* SessionProcessesRepo;
+          const seeded = yield* seedSession("restart-mid-stop", "idle", finishedTurn());
+          const marker = yield* seedSession("restart-marker", "idle", finishedTurn());
+
+          const first = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const workers = yield* startWorkers();
+              yield* processes.markExited(seeded.agentId, "exited", 0);
+              yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 2);
+              return workers.observed();
+            }),
+          );
+          expect(jobsFor(first, seeded.changeId)).toEqual(reviewPasses(seeded.changeId));
+
+          const restarted = yield* startWorkers();
+          yield* sessions.setStatus(seeded.sessionId, "stopping");
+          yield* sessions.settle(seeded.sessionId, "completed", null);
+          yield* processes.markExited(marker.agentId, "exited", 0);
+
+          yield* eventually(() => jobsFor(restarted.observed(), marker.changeId).length >= 2);
+          const observed = restarted.observed();
+          expect({
+            pushes: pushesFor(observed, seeded.sessionId),
+            jobs: jobsFor(observed, seeded.changeId),
+          }).toEqual({ pushes: [], jobs: [] });
+        }),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "prepares a resumed session's change again only when its diff moved",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const sessions = yield* SessionsRepo;
+          const processes = yield* SessionProcessesRepo;
+          const seeded = yield* seedSession("follow-up", "idle", finishedTurn());
+          const asked = yield* seedSession("follow-up-asked", "idle", finishedTurn());
+          const edited = yield* seedSession("follow-up-edited", "idle", finishedTurn());
+          let diff = BILLING_DIFF;
+          const workers = yield* startWorkers(() => diff);
+          const turnThatEnds = Effect.fn("turnThatEnds")(function* (turn: string) {
+            yield* sessions.reopen(seeded.sessionId, "running");
+            const agent = yield* processes.create({
+              sessionId: seeded.sessionId,
+              sealantWorkspaceId: SealantWorkspaceId.make("ws-follow-up"),
+              sealantSessionId: `pty-follow-up-${turn}`,
+              kind: "agent-pty",
+              harness: "claude",
+              label: turn,
+              argv: ["claude", "--resume"],
+            });
+            yield* processes.markExited(agent.id, "exited", 0);
+            yield* sessions.setStatus(seeded.sessionId, "idle");
+          });
+
+          yield* processes.markExited(seeded.agentId, "exited", 0);
+          yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 2);
+          yield* turnThatEnds("a question, nothing written");
+          // Handled in NOTIFY order: once a marker is prepared, every settle before it has been.
+          yield* processes.markExited(asked.agentId, "exited", 0);
+          yield* eventually(() => jobsFor(workers.observed(), asked.changeId).length >= 2);
+          diff = `${BILLING_DIFF}+export const ceiling = 99;\n`;
+          yield* turnThatEnds("an edit");
+          yield* processes.markExited(edited.agentId, "exited", 0);
+
+          yield* eventually(() => jobsFor(workers.observed(), edited.changeId).length >= 2);
+          expect(jobsFor(workers.observed(), seeded.changeId)).toEqual([
+            ...reviewPasses(seeded.changeId),
+            ...reviewPasses(seeded.changeId),
+          ]);
         }),
       );
     },
