@@ -8,6 +8,7 @@ import {
   plainHttpWarning,
   pollDeadline,
   SignInError,
+  urlNotice,
   type SignInDeps,
 } from "./sign-in.js";
 
@@ -138,7 +139,7 @@ describe("browserSignIn", () => {
         .mockResolvedValueOnce(json(403, {})),
     );
     await expect(browserSignIn("http://mend-mini.local:3105", denied.value)).rejects.toThrow(
-      new SignInError("Denied in the browser. Nothing was granted."),
+      new SignInError("Sign-in denied in the browser."),
     );
   });
 
@@ -283,31 +284,43 @@ describe("server URL", () => {
     expect(normalizeServerUrl("  ")).toBe(null);
   });
 
-  it("warns about plain http to another machine only, in words that fit the picker", () => {
-    expect(plainHttpWarning("http://192.168.1.20:3105")).toBe(
-      "Plain http: anyone on this local network can read the token.",
-    );
-    expect(plainHttpWarning("http://mend-mini.local:3105")).toContain("local network");
-    expect(plainHttpWarning("http://10.0.0.40:3105")).toContain("local network");
-    expect(plainHttpWarning("http://mend.example.com:3105")).toBe(
-      "Plain http: the token crosses the network unencrypted.",
-    );
-    expect(plainHttpWarning("http://203.0.113.9:3105")).toContain("unencrypted");
-    // Tailscale encrypts the connection itself: by address, IPv6 address, or MagicDNS name.
-    expect(plainHttpWarning("http://100.64.135.118:3105")).toBe(null);
-    expect(plainHttpWarning("http://[fd7a:115c:a1e0::1]:3105")).toBe(null);
-    expect(plainHttpWarning("http://yianniss-macbook-pro.tailc79e49.ts.net:3105")).toBe(null);
-    // Just outside 100.64.0.0/10 is not a tailnet.
-    expect(plainHttpWarning("http://100.128.0.1:3105")).toContain("unencrypted");
-    expect(plainHttpWarning("https://mend.example.com")).toBe(null);
-    expect(plainHttpWarning("http://localhost:3105")).toBe(null);
-    expect(plainHttpWarning("http://127.0.0.1:3105")).toBe(null);
-    expect(plainHttpWarning("http://[::1]:3105")).toBe(null);
-    // A DNS name that begins with 127. is not this machine.
-    expect(plainHttpWarning("http://127.remote.example:3105")).toContain("unencrypted");
-    for (const url of ["http://192.168.1.20:3105", "http://mend.example.com:3105"]) {
-      expect(plainHttpWarning(url)?.length ?? 0).toBeLessThan(70);
+  it("warns about plain http to another machine, in story h's words, and not on loopback", () => {
+    const words = "Plain http: anyone on this network can read the token";
+    for (const url of [
+      "http://mend-mini.local:3105",
+      "http://192.168.1.20:3105",
+      "http://172.17.0.2:3105",
+      "http://mend.example.com:3105",
+      "http://203.0.113.9:3105",
+      // Just outside 100.64.0.0/10 is not a tailnet.
+      "http://100.128.0.1:3105",
+      // A DNS name that begins with 127. is not this machine.
+      "http://127.remote.example:3105",
+    ]) {
+      expect(plainHttpWarning(url), url).toBe(words);
     }
+    for (const url of [
+      "http://localhost:3105",
+      "http://127.0.0.1:3105",
+      "http://[::1]:3105",
+      "https://mend.example.com",
+      // Tailscale encrypts the connection itself: by address, IPv6 address, or MagicDNS name.
+      "http://100.64.135.118:3105",
+      "http://[fd7a:115c:a1e0::1]:3105",
+      "http://yianniss-macbook-pro.tailc79e49.ts.net:3105",
+    ]) {
+      expect(plainHttpWarning(url), url).toBe(null);
+    }
+  });
+
+  it("lets the URL input accept a plain-http server with the warning, and refuses a non-URL", () => {
+    expect(urlNotice("mend-mini.local:3105")).toEqual({
+      severity: "warning",
+      message: "Plain http: anyone on this network can read the token",
+    });
+    expect(urlNotice("http://localhost:3105")).toBe(null);
+    expect(urlNotice("https://mend.example.com")).toBe(null);
+    expect(urlNotice("ssh://mend-mini.local")?.severity).toBe("error");
   });
 
   it("groups the code as the browser shows it", () => {
