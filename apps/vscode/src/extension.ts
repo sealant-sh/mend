@@ -286,15 +286,16 @@ class MendCommands {
     const picks = [...model.sessions.values()]
       .filter((view) => view.session.id !== own && pickOrder(view) < 3)
       .toSorted((left, right) => pickOrder(left) - pickOrder(right))
-      .map(
-        (view): OfferPick => ({
-          ...offerPick(view.session, view.capability, {
-            label: view.name,
-            detail: view.project.name,
-          }),
-          description: view.line,
-        }),
-      );
+      .map((view): OfferPick => {
+        const pick = offerPick(view.session, view.capability, {
+          label: view.name,
+          detail: view.project.name,
+        });
+        return {
+          ...pick,
+          description: pick.offer === "Open" ? view.line : `${view.line} · ${pick.offer}`,
+        };
+      });
     const picked = await vscode.window.showQuickPick<OfferPick>(picks, {
       title: "Mend sessions",
       placeHolder: picks.length === 0 ? "Nothing else needs you or runs" : "Choose a session",
