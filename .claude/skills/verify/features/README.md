@@ -70,7 +70,7 @@ pass's results and evidence paths, and its corrections are in these files.
   camera, push) is reported unreachable on the web build.
 - VS Code steps run in a real VS Code through the skill's `drive-vscode.mjs` (SKILL.md, Drive):
   gestures on the workbench DOM over CDP, written as its helper calls
-  (`palette("Mend: New Session…")`, `treeItem(label).dblclick()`), with numbered screenshots and a
+  (`palette("Mend: New session")`, `treeItem(label).dblclick()`), with numbered screenshots and a
   step log as evidence. Slack steps are `not drivable yet`: that file lists entry points and
   observable end states only, and says why.
 - Web sign-in goes through `/login`: the textbox `Email`, the password field labelled `Password`,

@@ -42,9 +42,11 @@ origin's branches into the store so new worktrees base on current tips.
 - TUI: the dashboard's `worktrees` section; `w` opens the new worktree form (from the projects or
   worktrees section), `Shift+D` removes the selected worktree, `Shift+K` stops all its live
   sessions.
-- VS Code: `Mend: New worktree without an agent…` and `Mend: Copy worktree path`. Not drivable yet:
-  this map has no VS Code driver; the end states are a new worktree in `mend worktrees` and the path
-  on the clipboard (`Mend worktree path copied` in the status bar).
+- VS Code: `Mend: New session` with Change… → `Harness` → `shell` and no prompt (a new worktree
+  without an agent), and `Mend: Copy worktree path`. This map does not drive them; the VS Code
+  driver drives the shell start in its own world (see [VS Code extension](./vscode.md)). The end
+  states are a new worktree in `mend worktrees` and the path on the clipboard
+  (`Mend worktree path copied` in the status bar).
 - Desktop and mobile: no worktree list; their session views name the worktree. Mobile's
   `Clear settled` on the Now tab removes settled sessions, not worktrees. Not driven by this map.
 - Slack: none.

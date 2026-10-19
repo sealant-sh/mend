@@ -29,8 +29,8 @@ makes.
   `pi`.
 - TUI: the dashboard (`mend ui`, or bare `mend`) offers `pi` in its harness picker.
 - Desktop: the launcher's harness menu offers `pi`.
-- VS Code: `Mend: New Session…` and `Mend: New session in this worktree…` offer `pi` in the
-  `Harness` picker. `not drivable yet`: the verify stack has no VS Code driver.
+- VS Code: `Mend: New session` and `Mend: New session in this worktree…` offer `pi` in the `Harness`
+  step of their Change….
 - Mobile and Slack: session launches offer Claude and Codex only; neither offers pi. Slack is
   `not drivable yet`: the verify stack has no Slack driver.
 - These pi entry points use the saved profile, subject to the shared-home limit in Gotchas. Only the
@@ -72,8 +72,13 @@ Preconditions:
   `ls ~/.pi/agent/mend/profile ~/.pi/agent/mend/profile/prompts`. The listing shows `prompts` and
   `settings.json`, and `bye.md` and `verify.md` under `prompts`. Run
   `grep '"theme"' ~/.pi/agent/settings.json`; it prints the `"theme": "dark"` line.
-- **VS Code entry point.** `not drivable yet`: the verify stack has no VS Code driver. The `Harness`
-  picker in either new-session command offers `pi`; launching creates a pi session.
+- **VS Code entry point.** The VS Code driver runs its own server, not this map's stack (see
+  [VS Code extension](./vscode.md)). There run `palette("Mend: New session")`, then
+  `quickInput.button("Change…")`, and pick `pi` at `Harness`. Keep the later steps. The prompt step
+  returns with the placeholder `What should pi do?` and a dim line that starts `pi · `. Type a
+  prompt and press Enter. Over the API (`via: "api"`) one new session has harness `pi`. No profile
+  is saved in that world unless the run saves one there, so the profile checks above stay on the CLI
+  path.
 - **Remove.** Run `mend connect pi --remove`. Stdout is `pi: profile removed`. Run it again: stdout
   is `pi: no profile saved`. Stop the session with `mend stop <id8>`.
 - **Proof.** Keep every `mend connect pi` transcript with exit codes, the `mend pi --detach`

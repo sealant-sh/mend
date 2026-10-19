@@ -21,7 +21,7 @@ reads as an observation ("Running · recording", "Completed · observed").
 - `start-desktop` starts one from the desktop launcher or its inline composer, or opens a shell
   session (`Open a shell`).
 - `start-mobile` starts a `claude` or `codex` conversation from a project on the phone.
-- `start-vscode` starts one from `Mend: New Session…` or `Mend: New session in this worktree…`.
+- `start-vscode` starts one from `Mend: New session` or `Mend: New session in this worktree…`.
 - `start-slack` starts one with `@mend <prompt>` in Slack.
 - `session-page` shows the session's status, terminal or record, checkpoints, and the way to its
   review.
@@ -54,8 +54,9 @@ reads as an observation ("Running · recording", "Completed · observed").
   `codex` row, each with `Start`. The Project screen (`/project/<id>`) holds the same under
   `Start a session`, but nothing in the app links to it. The Now tab lists sessions under
   `Needs you`, `Live` and `Recently settled`; a row opens `/session/<id>`.
-- VS Code: `Mend: New Session…`, `Mend: New session in this worktree…`,
-  `Mend: New worktree without an agent…` and `Mend: Stop session`.
+- VS Code: `Mend: New session` (the view's `+`), `Mend: New session in this worktree…` and
+  `Mend: Stop session`. A session without an agent is `Mend: New session` with Change… → `Harness` →
+  `shell`.
 - Slack: `@mend <prompt>` in a channel or thread the organization's Slack app is in starts a session
   for the person (see [Slack](./slack.md)).
 
@@ -227,11 +228,18 @@ Preconditions:
 - **Mobile: resume.** After `mend stop <id8>` on that session, open `/session/<id>`. The header has
   the button `Resume` (`page.getByRole("button", { name: "Resume" })`). Tap it. It reads
   `Resuming…`, and the status word leaves `stopped`.
-- **VS Code.** `not drivable yet`: no VS Code harness. `Mend: New Session…` asks for the session
-  kind, the harness (`Claude`, `Codex`, `opencode`, `pi`), the model, thinking, permissions and a
-  prompt, under the title `New session · <project>`; `Mend: New session in this worktree…` asks the
-  same under `New session · <project> › <worktree>`. The end state is a new session in the Mend tree
-  and in `mend sessions`. `Mend: Stop session` asks `Stop <session>?` with
+- **VS Code.** The VS Code driver runs its own server, not this map's stack (see
+  [VS Code extension](./vscode.md), story a, and `recipes/vscode-new-session.mjs`). There
+  `palette("Mend: New session")` opens one quick input titled `New session · <project>`, with the
+  placeholder `What should claude do?` and one dim line `claude · default model · from <base>`. Type
+  a prompt and press Enter. The input closes, no window opens, and the session's row reads
+  `starting · …`, then `running`. `quickInput.button("Change…")` steps through `Harness` (`claude`,
+  `codex`, `opencode`, `pi`, `shell`), `Model for <harness>`, `Thinking for <model>`, `Permissions`
+  and `Base: a branch or commit`, each step's title followed by `(<n>/<total>)`, then returns to the
+  prompt. A step that does not apply is skipped: a shell has no model, thinking or permissions step.
+  `Mend: New session in this worktree…` on a row opens the same input titled
+  `New session · <project> · in <worktree>`, with no base step. The end state is a new session in
+  the Mend view and over the API (`via: "api"`). `Mend: Stop session` asks `Stop <session>?` with
   `The worktree and reviewable change remain.` and the button `Stop session`.
 - **Slack.** `not drivable yet`: it needs a Slack workspace with the organization's Slack app
   connected. `@mend <prompt>` gets a ⏳ reaction and one status message naming the project, why it
