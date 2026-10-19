@@ -9,9 +9,8 @@
 //
 // Needs a world from `up` that is signed in with workspace SSH set up, on a server with G4 (#1082):
 // a terminal agent's wait is replayed by claude's hook stand-in (`fixtures/claude-standin.mjs`,
-// from #1082) typed into a shell beside the agent, as recipes/g4-terminal-agent-waits.mjs does.
-// Until this branch has #1082 the stand-in is read from origin/main, where #1082 landed. Each report
-// carries the agent's own `--session-id`, as #1082's recipe sends it. Claude runs on the skill's fake setup
+// from #1082) typed into a shell beside the agent, as recipes/g4-terminal-agent-waits.mjs does; each
+// report carries the agent's own `--session-id`. Claude runs on the skill's fake setup
 // token (`scripts/fakes.mjs`): as a terminal agent it sits at its prompt. The session that
 // finishes is told `/exit`, which claude answers with exit 0; the one that fails gets SIGTERM, which
 // claude answers with exit 143 (SIGKILL records no exit code, and reads completed).
@@ -19,8 +18,7 @@
 // The editor was started by `up` before the overnight sessions exist, so f1 reloads its window:
 // the extension starts again on sessions that settled while it was not looking.
 
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -30,18 +28,8 @@ const world = await import(
   pathToFileURL(join(import.meta.dirname, "../../../../scripts/vscode-remote-world.mjs")).href
 );
 
-const STANDIN_PATH = ".claude/skills/verify/scripts/fixtures/claude-standin.mjs";
-const G4_BRANCH = "origin/main";
-
-/** The stand-in's source: this checkout's once it has #1082, origin/main's until then. */
-const standinSource = () => {
-  const local = join(import.meta.dirname, "../scripts/fixtures/claude-standin.mjs");
-  if (existsSync(local)) return readFileSync(local, "utf8");
-  return execFileSync("git", ["show", `${G4_BRANCH}:${STANDIN_PATH}`], {
-    cwd: join(import.meta.dirname, "../../../.."),
-    encoding: "utf8",
-  });
-};
+const standinSource = () =>
+  readFileSync(join(import.meta.dirname, "../scripts/fixtures/claude-standin.mjs"), "utf8");
 
 /** Typed into the shell beside the agent: the live claude's `--settings` and `--session-id`. */
 const SETTINGS_SCAN = `import { readdirSync, readFileSync } from "node:fs";

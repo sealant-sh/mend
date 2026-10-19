@@ -109,7 +109,7 @@ export default async (h) => {
     await view("Mend");
     await treeItem(project.name).waitFor();
     await shot("mend-view");
-    return `row "${await treeItem(project.name).text()}" · status bar "${await statusBar("Mend:").text()}" · opens ${await opens()} · windows ${(await windows()).length}`;
+    return `row "${await treeItem(project.name).text()}" · status bar "${await statusBar(/^Mend/).text()}" · opens ${await opens()} · windows ${(await windows()).length}`;
   });
 
   const listedBefore = await api(`/projects/${project.id}`);
@@ -1028,22 +1028,21 @@ export default async (h) => {
   );
 
   await step(
-    "the status bar's Mend item, shared control off: its pick lists Ana's session with Review, not Open; nothing opens",
+    "Mend: Choose a session, shared control off: its pick lists Ana's session with Review, not Open; nothing opens",
     async () => {
       await useWindow(await homeWindow());
       const before = await openCounts();
-      const item = statusBar("Mend:");
-      const itemText = await item.text();
-      await item.click();
+      const itemText = await statusBar(/^Mend/).text();
+      await palette("Mend: Choose a session");
       await quickInput.waitFor();
       const title = await quickInput.title();
       const items = (await quickInput.items()).map((entry) => entry.replace(/\s+/g, " ").trim());
       const anas = items.find((entry) => entry.includes(ANA_WHY)) ?? null;
-      await shot("status-bar-pick-ana");
+      await shot("session-pick-ana");
       await quickInput.cancel();
       const after = await openCounts();
       const observed = `status bar "${itemText}" · pick "${title}" · Ana's item "${anas}" · items ${JSON.stringify(items)} · ${delta(before, after)}`;
-      expect(anas !== null && anas.includes("running · Review"), observed);
+      expect(anas !== null && /running.* · Review/.test(anas), observed);
       expect(!anas.includes("Watch terminal"), observed);
       expect(after.opens === before.opens && after.windows === before.windows, observed);
       return observed;

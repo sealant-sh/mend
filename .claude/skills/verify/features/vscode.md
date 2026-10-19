@@ -64,11 +64,11 @@ in `docs/specs/vscode-stories.md` (a to h) and say, per story, where today's ext
 
 ## How to get to it (user POV)
 
-- VS Code: the Mend icon in the Activity Bar opens the view `Projects and sessions`. Its title bar
-  holds `Mend: New Session…`, `Mend: Refresh`, `Mend: Adopt a project…` and, when the open folder
-  belongs to a project, `Mend: Toggle current project scope`. With nothing adopted it shows
-  `Nothing adopted yet.` and the link `Adopt a project…`. When the view cannot read Mend, it shows
-  one row naming the error, with the description `Run Mend: Connect to server`.
+- VS Code: the Mend icon in the Activity Bar opens the view `Sessions`. Its title bar holds
+  `Mend: New Session…` (disabled while Mend is unreachable), `Mend: Refresh` and
+  `Mend: Adopt a project…`. With nothing adopted it shows `Nothing adopted yet.` and the link
+  `Adopt a project…`. When the view cannot read Mend, it shows one row naming the error, with the
+  description `Run Mend: Connect to server`.
 - VS Code: on a project row, inline `Mend: New Session…`. Its context menu holds
   `Mend: New Session…` and `Mend: New worktree without an agent…`.
 - VS Code: on a session row whose workspace this person may open, inline `Mend: Open` and
@@ -215,9 +215,16 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     input with a step counter and Back; today each is its own prompt.
 - **b. The agent needs Dana; she answers without leaving VS Code.** From the default `up`, with the
   Workbench session of story a live.
-  - The story's signal (the row in `Needs you`, the badge `1`, the toast with [Answer]) needs a
-    terminal agent that reports it waits. `not run · G4`. Today a terminal agent that asks still
-    reads `running`.
+  - The story's signal (the row in `Needs you`, the badge `1`, the toast with [Answer]) is
+    `recipes/vscode-view.mjs` on a server with G4: the stand-in's `PermissionRequest` moves the row
+    to `Needs you` as `waiting · claude needs your permission to use Bash · since <hh:mm>`, badge
+    `1`, one toast `add-rate-limit is waiting · claude needs your permission to use Bash` [Answer];
+    `notification(...).click("Answer")` attaches `claude · add-rate-limit` in this window, `opens`
+    and windows unchanged; `PostToolUse` returns the row to `running` and clears the badge.
+  - Another window: `palette("New Window")`. Under Xvfb, with no window manager, VS Code holds both
+    windows focused (each custom title bar active, `xdotool windowfocus` changes nothing), so both
+    toast. The recipe records it `not drivable` and checks each window toasted once and shows badge
+    `1`.
   - A conversation's question in a toast with [Allow] [Deny] needs a conversation session, which
     needs a provider login. Report `verified-unreachable · provider login`.
   - The answer's mechanics are drivable today. Record `windows()`, then
@@ -291,7 +298,7 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     the server reads it `stopping`, the open button. The open waits the stop out and resumes once:
     resumes `2 → 3`, `opens` +1, 1 window, the status bar `starting fresh worktree's workspace` to
     `· 2 s`, then `opening fresh worktree`; 0 dialogs, 0 quick inputs.
-  - Ana: lane e's edge case below, then the status bar's pick there.
+  - Ana: lane e's edge case below, then `Mend: Choose a session` there.
   - Two live sessions in one worktree (`via: "api"`): `second-look` created with
     `name: <add-rate-limit's worktree>` and launched in a PTY, running in the same workspace, the
     newer of the two. The open button on `add-rate-limit` (setting on): 1 window, its tabs
@@ -345,8 +352,9 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     handle survives an insert; the click may have landed while the view re-fetched its rows. A
     person who clicks Open just as the list changes would get the session pick. Not reproduced since
     the recipe waits.
-  - The story's workspace-window Mend view (this session only, `<n> other sessions · <n> needs you`)
-    and status bar `● <session> · <status>` are not built. Report `not run · not built`.
+  - The workspace window's Mend view (`recipes/vscode-view.mjs`): `Open in New Window` on a running
+    session; the view reads its line (`running`) and `1 other session`, the status bar
+    `● add-rate-limit · running`; clicking it opens the picker `Mend sessions`.
   - First open on a machine without Remote-SSH: `recipes/vscode-open-first.mjs` from
     `up --no-remote-ssh`. `contextMenu("Mend: Open in New Window")` on the stopped `fresh worktree`
     row (the inline button is Open). Observed (run `first2`): the status bar
