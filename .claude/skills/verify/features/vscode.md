@@ -234,7 +234,9 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
   answers its first turn with the provider's `401`. The lanes, in order, with what runs `open4` and
   `open5` (2026-10-19, the redesign at this branch) and `trunk3` (main's `apps/vscode`, #1080's head
   `1a7196046`) observed; the claude lanes, Ana's palette and deep links were added in `r1f` and
-  `r1g` (round 1, rebased on main `cfc3862`), and `r1t` reran the trunk lane on main's extension:
+  `r1g` (round 1, rebased on main `cfc3862`), and `r1t` reran the trunk lane on main's extension;
+  round 2 (`r2b`, `r2c` on main `66bdd4c`, the trunk lane `r2t`) added the read count, the stopping
+  lane, the status bar's pick and the two sessions in one worktree:
   - The start. `palette("Mend: New Session…")`, `Workbench`; the row reads `running`. The start
     opens one window on both builds (story a is not built): `opens 0 → 1`, the signal's first check.
     Its terminal is recorded, not asserted: the redesign attached `shell · <session>`, focused,
@@ -245,10 +247,14 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     then +2 (`1 → 2 → 3` on all three runs). Main's button `Mend: Open in VS Code` asked
     `<session> is running` each time (answered `Open alongside`); the redesign's `Mend: Open` asked
     nothing.
-  - Double-click the running row: the story expects it to select only. The redesign: `opens 3 → 3`,
-    0 windows, 0 dialogs, 0 quick inputs, 0 toasts, the row selected. Main fails here (`trunk3`, the
-    recipe exits 1): the quick pick `claude · <id8> is running` shown and left open, `opens 3 → 3`,
-    0 windows, 0 dialogs.
+  - Double-click the running row: the story expects it to select only. An open's first act is
+    `GET /api/sessions/<id>` (both builds), so the server's `'/api/sessions/<id>'` lines count the
+    opens that ran; the watch lists each distinct quick input title once, so it cannot tell one pick
+    from two. The redesign: the reads unchanged (`9 → 9` in `r2b`, `13 → 13` in `r2c`): no open ran,
+    so no read, which is also what a click makes. `opens 3 → 3`, 0 windows, 0 dialogs, 0 quick
+    inputs, 0 toasts, the row selected. Main fails here on the reads (the recipe exits 1; `r2t`:
+    `6 → 8`, `2 open(s) ran`): a click makes one read and a double-click two, each showing the pick
+    `claude · <id8> is running`, the second replacing the first in place.
   - Click the running row once, then double-click the stopped `fresh worktree` row: on the redesign
     each reads `opens` unchanged, 0 windows, nothing shown, the row selected, and the stopped
     session's resume count on the server unchanged.
@@ -257,9 +263,8 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     `opening <session>` once.
   - `contextMenu("Mend: Open in New Window")`: 1 window, `opens` +1, nothing asked. In it `SSH:`,
     README, and before any terminal gesture the tab `shell · <session>` active and focused with its
-    banner. VS Code also shows a `bash` tab there: VS Code's own terminal, not Mend's (where it
-    comes from is not established; the start's window and the last lane's showed none). Then
-    `Terminal: Create New Terminal`,
+    banner. VS Code also shows a `bash` tab there, listed before Mend's: VS Code's own terminal
+    (below, under the rules), in every run so far. Then `Terminal: Create New Terminal`,
     `echo who-$(id -un) in $(pwd); printf 'verified\n' > VERIFY.md; ls`: the line names
     `/workspace/repo` and the listing holds `VERIFY.md`.
   - Already open. The open button in that window: the attached tab active and focused again, the
@@ -272,7 +277,21 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     `starting fresh worktree's workspace · 0 s`, counting to `· 3 s` (`open4`) and `· 5 s`
     (`open5`), then `opening fresh worktree`; 0 dialogs, 0 quick inputs, 0 toasts; the server's
     `'/api/sessions/<id>/resume'` lines `1 → 2`; 1 window with `SSH:` and README.
-  - Ana: lane e's edge case below.
+  - The same row while it stops: `POST /sessions/<id>/stop` (`via: "api"`, not awaited), and once
+    the server reads it `stopping`, the open button. The open waits the stop out and resumes once:
+    resumes `2 → 3`, `opens` +1, 1 window, the status bar `starting fresh worktree's workspace` to
+    `· 2 s`, then `opening fresh worktree`; 0 dialogs, 0 quick inputs.
+  - Ana: lane e's edge case below, then the status bar's pick there.
+  - Two live sessions in one worktree (`via: "api"`): `second-look` created with
+    `name: <add-rate-limit's worktree>` and launched in a PTY, running in the same workspace, the
+    newer of the two. The open button on `add-rate-limit` (setting on): 1 window, its tabs
+    `["claude · add-rate-limit"]`, active and focused, and no `claude · second-look`. In that window
+    the open button on `second-look`: the tab `claude · second-look` attached, active and focused at
+    `❯`, the page unchanged, `opens` and windows unchanged. Then
+    `contextMenu("Mend: Open in New Window")` on `add-rate-limit` there: 0 windows, `opens`
+    unchanged, `claude · add-rate-limit` active and focused again. VS Code keeps one window per
+    folder: asked for a new window on a folder a window holds, it focuses that window, whatever
+    `forceNewWindow` says, so the extension shows the agent instead.
   - Setup: the setting removed (VS Code's default).
   - Setup for the claude lanes (`via: "api"`, the calls story a's New session makes, since that flow
     is not built): `add-rate-limit` created and launched as a terminal agent
@@ -288,10 +307,12 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     title `[Extension Development Host] repo [SSH: <alias>] - Visual Studio Code` (the story wants
     `<session> — <project>`; the redesign leaves VS Code's own title), no dialog and no quick input
     open after it (the watch went with the page). Before any gesture the tab
-    `claude · add-rate-limit` is active and focused with claude's `❯` prompt;
-    `keyboard.type("add a test for the limit")` reads back `❯ add a test for the limit` (claude
-    draws a no-break space after `❯`: match it with `\s`). The Explorer lists README;
-    `Terminal: Create New Terminal` there runs in `/workspace/repo` and lists the file it wrote.
+    `claude · add-rate-limit` is active and focused with claude's `❯` prompt, though the newer
+    `second-look` shares its workspace: the session the Open meant survives the window's reload (the
+    extension's `globalState`, `open-intent.ts`); `keyboard.type("add a test for the limit")` reads
+    back `❯ add a test for the limit` (claude draws a no-break space after `❯`: match it with `\s`).
+    The Explorer lists README; `Terminal: Create New Terminal` there runs in `/workspace/repo` and
+    lists the file it wrote.
   - Open question: the `r1c` click above. VS Code keys an id-less tree item by its label, so a row's
     handle survives an insert; the click may have landed while the view re-fetched its rows. A
     person who clicks Open just as the list changes would get the session pick. Not reproduced since
@@ -333,8 +354,11 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     conversation (`❯ say hi`, then the 401 answer) and its prompt, and `go on` typed reads back
     `❯ go on`. A conversation with no completed turn cannot be continued: the handoff answers 422
     `StoreFailure` `No saved harness state to reopen as a terminal — resume the session instead.`
-    (the tab says that sentence), after it has already stopped the conversation. The take-over
-    command is gone from the manifest.
+    (the tab says that sentence), after it has already stopped the conversation. In `r2a` a
+    conversation whose first turn had completed got the same 422 once: the server's log shows the
+    handoff answered at `05:43:07.299` and the harness state captured at `07.630`, after it, where
+    the passing runs (`v1084a`, `r2b`) capture inside the handoff's own request first. A server-side
+    race, not the editor's; rerun the lane. The take-over command is gone from the manifest.
   - Not her session. Ana is a second account, set up `via: "api"`: an invitation, her sign-up with
     `x-mend-invitation`, the project shared, her session resumed as a shell, shared control on. Her
     row (`treeItem("ana")`) offers inline `Mend: Watch terminal`, `Mend: Review change` and
@@ -361,6 +385,9 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     with `Review`; its click shows VS Code's
     `Do you want Code to open the external website? <web>/changes/<changeId>` (dismissed). The
     palette's pick lists `ana running · Review`.
+  - The status bar's `Mend: <project> · <n> sessions` item, shared control off: its pick
+    `Mend · <project>` lists `ana running · Review` with the reason, no Open; `opens` and windows
+    unchanged.
 - **f. Dana comes back the next morning.** From the default `up`, after stories a and c.
   - `palette("Developer: Reload Window")`, then `view("Mend")`. Record
     `treeItem("Projects").text()`, `treeItem(<project>).text()`, each session row's
@@ -480,8 +507,17 @@ Commands outside the stories, one gesture each:
   the pointer on the item for 300 ms before clicking and checks the menu closed.
 - A tree row's tooltip is bound to its label, not the whole row: `tooltip()` hovers `.label-name`
   and moves away and back until VS Code's hover shows.
-- A workspace window can show a `bash` tab beside Mend's attached tab: VS Code's own terminal, not
-  Mend's; where it comes from is not established. `terminal().tabs()` reads every tab's name, the
-  active one's and whether the keyboard is in a terminal.
+- A workspace window can show a `bash` tab beside Mend's attached tab: VS Code's own terminal in its
+  default profile, not Mend's (Mend names every tab it makes `<what runs> · <session>`). VS Code's
+  terminal view makes one when it shows with no terminal in it once the remote terminal backend
+  connects. Seen: listed before Mend's tab in the Workbench session's Open in New Window window
+  (`r2a`, `r2b`, `r2c`, the verifier's `v1084a`), and after Mend's tab once in the last lane
+  (`r2c`). Not seen: the start's window (the folder's first open, its panel hidden), and the probes
+  in `r2a` (`bash-probe`, `bash-probe2`), which reopened two folders whose last window closed with
+  the panel shown: the panel showed from 0.0 s, Mend's tab came at 1.0 and 1.5 s, and no `bash`. So
+  it is not a terminal restored every time; which order of startup events makes it is not pinned.
+  The extension leaves it: dropping it would mean disposing a terminal VS Code started for her.
+  `terminal().tabs()` reads every tab's name, the active one's and whether the keyboard is in a
+  terminal.
 - The CLI's token is used only while `mend.serverUrl` is empty or equals the CLI's URL. A token
   saved through `Mend: Connect to server` lives in VS Code's secret storage, not in `cli.json`.

@@ -659,10 +659,10 @@ never for the action under test. The recipes: `recipes/vscode-open.mjs` (stories
 either build of the extension: today's fails at the double-click, the redesign passes),
 `recipes/vscode-open-first.mjs` (the first open without Remote-SSH, from `up --no-remote-ssh`) and
 `recipes/vscode-open-as-built.mjs` (#1080's extension as built); the map's
-[vscode.md](features/vscode.md) has the flows by story. `recipes/g4-terminal-agent-waits.mjs`
-drives no editor: it replays claude's hooks through `scripts/fixtures/claude-standin.mjs` in a shell
-beside a real (signed-out) claude agent and reads the session's `waiting` from the API and
-`/api/events` ([terminal-agent-waits.md](features/terminal-agent-waits.md)).
+[vscode.md](features/vscode.md) has the flows by story. `recipes/g4-terminal-agent-waits.mjs` drives
+no editor: it replays claude's hooks through `scripts/fixtures/claude-standin.mjs` in a shell beside
+a real (signed-out) claude agent and reads the session's `waiting` from the API and `/api/events`
+([terminal-agent-waits.md](features/terminal-agent-waits.md)).
 
 What cannot be driven, and why: VS Code draws its modals and context menus as GTK windows outside
 the page unless `window.dialogStyle` and `window.titleBarStyle` are `custom` (the driver writes both
