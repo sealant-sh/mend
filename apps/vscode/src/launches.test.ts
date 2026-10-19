@@ -34,7 +34,7 @@ const session = (status: SessionStatus, settledAt: string | null = null): Sessio
  * and each read returns `reads` in turn (the last one repeats).
  */
 const fakeServer = (
-  answers: ReadonlyArray<"ok" | "refused" | "under-way" | "unanswered">,
+  answers: ReadonlyArray<"ok" | "refused" | "under-way" | "unanswered" | "edge-504">,
   reads: ReadonlyArray<Session>,
 ) => {
   const launched: Array<{ readonly sessionId: string; readonly body: LaunchRequest }> = [];
@@ -54,6 +54,11 @@ const fakeServer = (
         );
       if (said === "unanswered")
         throw new MendApiError("Cannot reach Mend at http://localhost:3100.", null);
+      if (said === "edge-504")
+        throw new MendApiError(
+          "Mend could not do that. Try again; the server log has the detail.",
+          504,
+        );
       return {};
     },
     sessionDetail: async () => {
@@ -102,6 +107,17 @@ describe("Launches", () => {
     const server = fakeServer(["unanswered"], [session("running")]);
     const launches = new Launches(server, sink());
     await launches.launch("s1", START);
+    expect(await launches.offer("s1")).toEqual({ kind: "moved" });
+    await launches.relaunch("s1");
+    expect(server.launched).toHaveLength(1);
+  });
+
+  it("reads an edge's 5xx as no answer: nothing refused, and no Retry while it reads starting", async () => {
+    const server = fakeServer(["edge-504"], [session("starting")]);
+    const store = sink();
+    const launches = new Launches(server, store);
+    await launches.launch("s1", START);
+    expect(store.said.at(-1)?.attempt).toEqual({ n: 1, after: null, refusal: null });
     expect(await launches.offer("s1")).toEqual({ kind: "moved" });
     await launches.relaunch("s1");
     expect(server.launched).toHaveLength(1);

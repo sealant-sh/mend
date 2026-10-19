@@ -125,8 +125,11 @@ export class Launches {
       await this.client.launchSession(sessionId, start);
       return attempt;
     } catch (cause) {
-      // No answer: it may be running. Saying it again reads the session, and the reads say.
-      if (!(cause instanceof MendApiError) || cause.status === null) return attempt;
+      // No answer, or a 5xx (an edge in front of the server answers 502/504 while the server
+      // still runs the launch): it may be running. Saying it again reads the session, and the
+      // reads say.
+      if (!(cause instanceof MendApiError) || cause.status === null || cause.status >= 500)
+        return attempt;
       // The server settles most refusals failed before it answers: then that failure, keyed by
       // its `settledAt` in every window, is the one toast, and the refusal is not said apart.
       if (await this.#settledSince(sessionId, after)) return attempt;
