@@ -57,10 +57,10 @@ that server-side path for your own use.
 The Mend icon in the Activity Bar opens **Sessions**. In any window that is not a session's
 workspace it has four groups, in this order:
 
-- **Needs you**: sessions that wait for you and that **Answer** lets you answer. A terminal agent
-  waits for its owner alone, since only the owner types in its terminal, even with shared control
-  on. A conversation's request waits for anyone who may steer it: its owner, or anyone while the
-  owner has shared control on. A row says what the session waits for, as Mend observed it:
+- **Needs you**: sessions that wait for you and that **Answer** lets you answer. Each waits for
+  its owner alone, even with shared control on. Only the owner types in a terminal agent's
+  terminal, and only the owner gets **Continue here** on a conversation, which is how **Answer**
+  answers its request for now. A row says what the session waits for, as Mend observed it:
   `waiting · claude needs your permission to use Bash · since 02:14`. A session that waits for a
   reason Mend has not read yet, or that waits for someone else, stays under **Running**.
 - **Since you last looked**: sessions that completed, failed or landed since this VS Code last

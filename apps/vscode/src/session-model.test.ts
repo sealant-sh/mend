@@ -304,16 +304,27 @@ describe("the badge (rule 15)", () => {
     sharedControlEnabledAt: YESTERDAY,
   });
 
-  it("counts Ana's conversation waiting once she turns shared control on: Dana may respond", () => {
-    const request: WaitFact = {
-      key: "r1",
-      words: "run pnpm db:migrate?",
-      since: YESTERDAY,
-      via: "conversation",
-    };
+  const request: WaitFact = {
+    key: "r1",
+    words: "run pnpm db:migrate?",
+    since: YESTERDAY,
+    via: "conversation",
+  };
+
+  it("does not count Ana's conversation even with shared control on: Answer gives Dana a read-only tab", () => {
     const model = sessionModel(input([sharedByAna], { waits: new Map([["anas", request]]) }));
+    expect(model.badge).toBe(0);
+    expect(model.sessions.get("anas")?.needsYou).toBe(false);
+    expect(model.sessions.get("anas")?.line).toBe("waiting · Ana's session");
+  });
+
+  it("counts her own conversation's request: Answer offers her Continue here", () => {
+    const mine = session({ id: "mine", status: "waiting" });
+    const model = sessionModel(input([mine], { waits: new Map([["mine", request]]) }));
     expect(model.badge).toBe(1);
-    expect(model.sessions.get("anas")?.needsYou).toBe(true);
+    expect(model.sessions.get("mine")?.line).toBe(
+      `waiting · run pnpm db:migrate? · since ${clockTime(YESTERDAY)}`,
+    );
   });
 
   it("does not count Ana's terminal agent waiting even with shared control on: only Ana types in it", () => {

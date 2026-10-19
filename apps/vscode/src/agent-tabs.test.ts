@@ -235,7 +235,16 @@ describe("focusing a session's agent", () => {
     );
   });
 
-  it("answers a conversation Ana shares from a workspace she launched, and not her terminal agent", async () => {
+  it("answers her own conversation from a workspace Ana launched, with Continue here", async () => {
+    const mine = session({ workspaceLauncherUserId: "ana" });
+    const asked = world([detail([conversation], mine)]);
+    await asked.agents.focus("older", null);
+    const tab = asked.tabs[0];
+    if (tab === undefined) throw new Error("no conversation tab");
+    expect(asked.agents.continueOffered(tab)).toBe("older");
+  });
+
+  it("answers nothing of Ana's from a workspace she launched, shared control on or not", async () => {
     const anas = session({
       ownerUserId: "ana",
       workspaceLauncherUserId: "ana",
@@ -243,7 +252,7 @@ describe("focusing a session's agent", () => {
     });
     const asked = world([detail([conversation], anas)]);
     await asked.agents.focus("older", null);
-    expect(asked.tabs.map((tab) => tab.lines)).toEqual([["read-only · Ana's session"]]);
+    expect(asked.tabs).toEqual([]);
     const terminal = world([detail([terminalAgent], anas)]);
     await terminal.agents.focus("older", null);
     expect(terminal.effects.attachPty).not.toHaveBeenCalled();

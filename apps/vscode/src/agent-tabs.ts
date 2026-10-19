@@ -157,7 +157,7 @@ export class AgentTabs {
         return;
       }
       const want = agentTab(detail.session, detail.processes);
-      // Answer shows a conversation's tab to whoever may respond to it (`mayAnswer`). Otherwise
+      // Answer shows a conversation's tab to its owner, wherever launched (`mayAnswer`). Otherwise
       // only the workspace's launcher types into its agent; anyone else, and anyone Mend cannot
       // name, gets nothing here (Watch terminal is the read-only way in).
       const answering =
