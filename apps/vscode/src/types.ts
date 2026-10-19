@@ -153,11 +153,6 @@ export interface SessionDetail {
   readonly changeId: string | null;
 }
 
-/** Joining an existing worktree: the new session becomes another conversation inside it. */
-export interface WorktreeJoin {
-  readonly name: string;
-}
-
 export interface SessionLocation {
   readonly project: Project;
   readonly session: Session;

@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 
 import type * as vscode from "vscode";
 
+import type { CheckoutFact } from "./new-session.js";
 import type { Project, RepositoryFacts, Session } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -37,11 +38,31 @@ export const repositoryFacts = async (folder: vscode.WorkspaceFolder): Promise<R
   };
 };
 
-export const currentBranch = async (
-  folder: vscode.WorkspaceFolder | undefined,
-): Promise<string | null> => {
-  if (folder === undefined || folder.uri.scheme !== "file") return null;
-  return git(folder.uri.fsPath, ["branch", "--show-current"]);
+const succeeds = async (cwd: string, args: ReadonlyArray<string>): Promise<boolean> => {
+  try {
+    await execFileAsync("git", args, { cwd });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Whether the folder's commits are on origin, so the server's store can start from its branch:
+ * the branch, its upstream (else `origin/<branch>`), and whether HEAD is an ancestor of it. Read
+ * from what this machine last fetched; nothing is fetched.
+ */
+export const checkoutFact = async (folder: vscode.WorkspaceFolder): Promise<CheckoutFact> => {
+  if (folder.uri.scheme !== "file") return { kind: "elsewhere" };
+  const cwd = folder.uri.fsPath;
+  const branch = await git(cwd, ["branch", "--show-current"]);
+  if (branch === null) return { kind: "elsewhere" };
+  const tracking =
+    (await git(cwd, ["rev-parse", "--verify", "--quiet", "@{upstream}"])) ??
+    (await git(cwd, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`]));
+  const pushed =
+    tracking !== null && (await succeeds(cwd, ["merge-base", "--is-ancestor", "HEAD", tracking]));
+  return { kind: pushed ? "pushed" : "unpushed", branch };
 };
 
 const pathFlavor = (value: string): typeof path.posix | typeof path.win32 =>

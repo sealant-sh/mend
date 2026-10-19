@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 
 import type { ConnectionStore, MendConnection } from "./config.js";
 import { requestMend } from "./mend-http.js";
+import type { CreateRequest } from "./new-session.js";
 import {
   parseLivePeople,
   parseRetirementState,
@@ -338,20 +339,9 @@ export class MendClient {
    * conversation inside it; the server refuses a conflicting base) and otherwise creates it;
    * null derives an anonymous worktree.
    */
-  async createSession(
-    projectId: string,
-    harness: string,
-    label: string | null,
-    base: string | null,
-    name: string | null = null,
-  ): Promise<Session> {
+  async createSession(projectId: string, request: CreateRequest): Promise<Session> {
     return parseSession(
-      await this.post(`/projects/${encodeURIComponent(projectId)}/sessions`, {
-        harness,
-        label,
-        base,
-        name,
-      }),
+      await this.post(`/projects/${encodeURIComponent(projectId)}/sessions`, request),
     );
   }
 
@@ -415,35 +405,6 @@ export class MendClient {
     return parseSession(
       await this.post(`/sessions/${encodeURIComponent(sessionId)}/launch`, start),
     );
-  }
-
-  /**
-   * Follow a launch the server answered while it was still under way (`starting`: it waits for the
-   * worktree's previous session to save, builds the workspace image, boots): each new session
-   * line goes to `onLine` until the session runs. A launch that settles instead fails with its
-   * own words.
-   */
-  async untilStarted(
-    session: Session,
-    onLine: (line: string) => void,
-    options: { readonly intervalMs?: number; readonly limitMs?: number } = {},
-  ): Promise<Session> {
-    const intervalMs = options.intervalMs ?? 3000;
-    const deadline = Date.now() + (options.limitMs ?? 40 * 60 * 1000);
-    let current = session;
-    let said: string | null = null;
-    while (current.status === "starting") {
-      const line = current.summary === null ? "starting" : `starting · ${current.summary}`;
-      if (line !== said) onLine(line);
-      said = line;
-      if (Date.now() >= deadline) throw new Error(`the session is still ${line}`);
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-      current = (await this.sessionDetail(current.id)).session;
-    }
-    if (current.status === "failed" || current.status === "stopped") {
-      throw new Error(current.summary === null ? `the session ${current.status}` : current.summary);
-    }
-    return current;
   }
 
   async stopSession(sessionId: string): Promise<Session> {

@@ -6,8 +6,9 @@ import * as vscode from "vscode";
 import { attachTerminal, memberName } from "./agent-terminal.js";
 import { MendApiError, MendClient, normalizeProjectName } from "./client.js";
 import { ConnectionStore } from "./config.js";
-import { currentBranch, worktreePath } from "./git.js";
+import { worktreePath } from "./git.js";
 import { Launches } from "./launches.js";
+import { NewSessionInput } from "./new-session-input.js";
 import { OFFER_COMMANDS, openRunner, setUpWorkspaceSsh } from "./open-command.js";
 import type { OpenMode } from "./open-flow.js";
 import { OpenIntents } from "./open-intent.js";
@@ -36,16 +37,12 @@ import {
   type SessionNode,
 } from "./tree.js";
 import { attachableProcesses, type TtyAddress } from "./tty-protocol.js";
-import type { Project, ProjectDetail, Session, SessionLocation, WorktreeJoin } from "./types.js";
+import type { Project, ProjectDetail, Session, SessionLocation } from "./types.js";
 import { terminalTabName, windowRole } from "./window-role.js";
 import { startWorkspaceEditor, type WorkspaceEditorReport } from "./workspace-editor.js";
 import { WorkspaceWindow } from "./workspace-window.js";
 
 const liveStatuses: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
-
-/** New session title: the project, plus the worktree when the session joins one. */
-const newSessionTitle = (project: Project, join: WorktreeJoin | null): string =>
-  join === null ? `New session · ${project.name}` : `New session · ${project.name} › ${join.name}`;
 
 const errorMessage = (cause: unknown): string =>
   cause instanceof MendApiError && cause.status === 401
@@ -142,6 +139,7 @@ class MendCommands {
     private readonly store: SessionStore,
     private readonly workspaceWindow: WorkspaceWindow,
     private readonly runner: OpenRunner,
+    private readonly newSessionInput: NewSessionInput,
   ) {}
 
   async connect(): Promise<boolean> {
@@ -451,113 +449,39 @@ class MendCommands {
     }
   }
 
-  async newSession(argument?: unknown, join: WorktreeJoin | null = null): Promise<void> {
-    const project = await this.pickProject(argument);
-    if (project === null) return;
-    await this.startAgent(project, "claude", join);
+  /**
+   * Mend: New session (story a): one quick input on the window's project, or the project a row
+   * named, or a project she picks. Enter starts a terminal agent; no window opens.
+   */
+  async newSession(argument?: unknown): Promise<void> {
+    const project = isProjectNode(argument) || isSessionNode(argument) ? argument.project : null;
+    await this.newSessionInput.open({ project, join: null });
   }
 
   /**
-   * Another session inside an existing worktree — the same files, a new conversation. The
-   * worktree keeps its base; this session's harness state is its own (each session owns its
-   * harness home), so it does not continue a sibling's conversation.
+   * Another session inside an existing worktree: the same files, a new conversation, and the
+   * worktree's own base. Who else runs there is on the input's dim line.
    */
   async newSessionInWorktree(argument?: unknown): Promise<void> {
     const location = await this.sessionLocation(argument);
     if (location === null) return;
     try {
-      const name = await this.worktreeNameOf(location);
-      if (name === null) {
+      const worktreeId = location.session.worktreeId;
+      const detail =
+        worktreeId === undefined ? null : await this.client.projectDetail(location.project.id);
+      const worktree = detail?.worktrees?.find((candidate) => candidate.id === worktreeId);
+      if (worktree === undefined) {
         void vscode.window.showErrorMessage(
           "This server does not report worktrees, so the session's worktree cannot be joined.",
         );
         return;
       }
-      await this.newSession({ kind: "project", project: location.project } satisfies ProjectNode, {
-        name,
+      await this.newSessionInput.open({
+        project: location.project,
+        join: { worktree: worktree.name, worktreeId: worktree.id },
       });
     } catch (cause) {
       void showError(cause);
-    }
-  }
-
-  /** The joinable name of the session's worktree; null on a pre-worktree server. */
-  private async worktreeNameOf(location: SessionLocation): Promise<string | null> {
-    const worktreeId = location.session.worktreeId;
-    if (worktreeId === undefined) return null;
-    const detail = await this.client.projectDetail(location.project.id);
-    return detail.worktrees?.find((worktree) => worktree.id === worktreeId)?.name ?? null;
-  }
-
-  /** Launch the harness on a prompt with defaults, then open the workspace in VS Code. */
-  private async startAgent(
-    project: Project,
-    harness: "claude" | "codex",
-    join: WorktreeJoin | null,
-  ): Promise<void> {
-    const prompt = await vscode.window.showInputBox({
-      title: newSessionTitle(project, join),
-      prompt: "What should the agent do? Empty opens the harness without a prompt.",
-      ignoreFocusOut: true,
-    });
-    if (prompt === undefined) return;
-    if (prompt.trim().startsWith("-")) {
-      void vscode.window.showErrorMessage(
-        "A prompt cannot start with '-'. The harness would read it as a flag.",
-      );
-      return;
-    }
-    try {
-      const session = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Starting ${harness}…` },
-        async (progress) => {
-          const created = await this.createSessionSafely(project, harness, join);
-          const launched = await this.client.launchSession(
-            created.id,
-            prompt.trim() === "" ? {} : { prompt: prompt.trim() },
-          );
-          // The server answers a long launch before it ends; follow it until the agent runs.
-          await this.client.untilStarted(launched, (line) => progress.report({ message: line }));
-          return created;
-        },
-      );
-      this.store.refresh();
-      await this.open(session.id, "new-window");
-    } catch (cause) {
-      void showError(cause);
-    }
-  }
-
-  /** The base for quick flows — the open window's branch when it IS the project; else the default. */
-  private async quietBase(project: Project): Promise<string | null> {
-    const branch =
-      this.store.windowProject()?.project.id === project.id
-        ? await currentBranch(this.store.windowProject()?.folder)
-        : null;
-    return branch;
-  }
-
-  /**
-   * Create with the quietly inferred base; when the store does not know that ref (a local
-   * branch never pushed), fall back to the project default instead of failing the quick path.
-   */
-  private async createSessionSafely(
-    project: Project,
-    harness: string,
-    join: WorktreeJoin | null,
-  ): Promise<Session> {
-    // A join takes the worktree's own base — sending another is refused, never re-based.
-    if (join !== null) return this.client.createSession(project.id, harness, null, null, join.name);
-    const base = await this.quietBase(project);
-    if (base === null) return this.client.createSession(project.id, harness, null, null);
-    try {
-      return await this.client.createSession(project.id, harness, null, base);
-    } catch {
-      void vscode.window.setStatusBarMessage(
-        `Mend: base ${base} is not in the project store — starting from the default branch`,
-        5_000,
-      );
-      return this.client.createSession(project.id, harness, null, null);
     }
   }
 
@@ -580,7 +504,7 @@ class MendCommands {
         }),
       );
     const actions: ActionPick[] = [
-      { label: "$(add) New session…", action: "new-session" },
+      { label: "$(add) New session", action: "new-session" },
       { label: "$(link-external) Open in Mend", action: "open-mend" },
     ];
     const picked = await vscode.window.showQuickPick<ScopePick>([...sessions, ...actions], {
@@ -747,6 +671,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
         : unnamed;
     },
   });
+  const newSessionInput = new NewSessionInput(context, client, store, launches);
   const commands = new MendCommands(
     context,
     connections,
@@ -754,6 +679,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     store,
     workspaceWindow,
     opens.runner,
+    newSessionInput,
   );
   const view = vscode.window.createTreeView("mend.sessions", {
     treeDataProvider: tree,
@@ -766,6 +692,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     statusBar,
     workspaceWindow,
     opens.disposable,
+    newSessionInput,
     store.onDidChange((change) => {
       const { next } = change;
       tree.changed(next);

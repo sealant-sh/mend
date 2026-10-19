@@ -98,6 +98,12 @@ type Facts = {
   readonly landing: LandingFact | null;
 };
 
+/** A window folder that is a git clone no adopted project matched. */
+export interface UnmatchedRepository {
+  readonly folder: vscode.WorkspaceFolder;
+  readonly originUrl: string;
+}
+
 export interface StoreChange {
   readonly prev: WindowModel | null;
   readonly next: WindowModel;
@@ -152,6 +158,7 @@ export class SessionStore implements vscode.Disposable {
   #wantedSince: number | null = null;
   #lastWantAt = 0;
   #lastBatchAt = Number.NEGATIVE_INFINITY;
+  #unmatched: UnmatchedRepository | null = null;
   /** Launches this VS Code sent that the server refused, by session (`refused`). */
   readonly #refusals = new Map<string, Refusal>();
   #timer: NodeJS.Timeout | null = null;
@@ -270,6 +277,26 @@ export class SessionStore implements vscode.Disposable {
   /** The adopted project this window's folder is a clone of. */
   windowProject(): { readonly project: Project; readonly folder: vscode.WorkspaceFolder } | null {
     return this.#windowProject;
+  }
+
+  /** This window's repository when no adopted project matched it: what New session offers to adopt. */
+  unmatchedRepository(): UnmatchedRepository | null {
+    return this.#windowProject === null ? this.#unmatched : null;
+  }
+
+  /**
+   * A session this window just created: its row shows at once, and a read of it is wanted as a
+   * frame's would be.
+   */
+  showCreated(session: Session): void {
+    const detail = this.#snapshot.details.get(session.projectId);
+    if (detail !== undefined && !detail.sessions.some((known) => known.id === session.id)) {
+      const details = new Map(this.#snapshot.details);
+      details.set(session.projectId, { ...detail, sessions: [...detail.sessions, session] });
+      this.#snapshot = { ...this.#snapshot, details };
+    }
+    this.#want({ all: false, projects: new Set(), sessions: new Set([session.id]) });
+    this.#emit();
   }
 
   /**
@@ -651,18 +678,21 @@ export class SessionStore implements vscode.Disposable {
   }
 
   async #matchWindow(): Promise<void> {
-    if (this.role.kind === "workspace") {
-      this.#windowProject = null;
-      return;
-    }
-    for (const folder of vscode.workspace.workspaceFolders ?? []) {
-      const resolution = matchProject(this.#snapshot.projects, await repositoryFacts(folder));
+    let unmatched: UnmatchedRepository | null = null;
+    for (const folder of this.role.kind === "workspace"
+      ? []
+      : (vscode.workspace.workspaceFolders ?? [])) {
+      const facts = await repositoryFacts(folder);
+      const resolution = matchProject(this.#snapshot.projects, facts);
       if (resolution.status === "matched") {
         this.#windowProject = { project: resolution.project, folder };
+        this.#unmatched = null;
         return;
       }
+      unmatched ??= facts.originUrl === null ? null : { folder, originUrl: facts.originUrl };
     }
     this.#windowProject = null;
+    this.#unmatched = unmatched;
   }
 
   /**

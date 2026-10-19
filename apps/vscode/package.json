@@ -165,9 +165,15 @@
       },
       {
         "command": "mend.newSession",
-        "title": "Mend: New Session…",
+        "title": "Mend: New session",
         "icon": "$(add)",
         "enablement": "!mend.offline"
+      },
+      {
+        "command": "mend.newSessionOffline",
+        "title": "Mend is offline · retrying",
+        "icon": "$(add)",
+        "enablement": "false"
       },
       {
         "command": "mend.showQuickPick",
@@ -183,10 +189,21 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "mend.newSessionOffline",
+          "when": "false"
+        }
+      ],
       "view/title": [
         {
           "command": "mend.newSession",
-          "when": "view == mend.sessions",
+          "when": "view == mend.sessions && !mend.offline",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mend.newSessionOffline",
+          "when": "view == mend.sessions && mend.offline",
           "group": "navigation@1"
         },
         {
