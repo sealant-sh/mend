@@ -206,8 +206,10 @@ the row takes the job's name.
   `0.0.0-dev.shab2a748d64120`) passed every step; `ns2` stopped at Change… on a race in the recipe
   (it read a step's title over the last step's rows), fixed by reading a step once two samples
   agree. Runs `nsr1` and `nsr2` (flow 3 rebased onto #1088's round 2, server
-  `0.0.0-dev.shae93b27a70513`, each from a fresh `up`) passed all 29 steps. The lanes, in an order
-  where each leaves the next a usable world:
+  `0.0.0-dev.shae93b27a70513`, each from a fresh `up`) passed all 29 steps. Runs `nsq1` and `nsq2`
+  (#1092's round 2, server `0.0.0-dev.sha7a79816ce884`, each from a fresh `up`) passed all 37 steps;
+  `recipes/vscode-open.mjs` then passed its 53 on `nsq1`'s world. The lanes, in an order where each
+  leaves the next a usable world:
   - a1. `palette("Mend: New session")`: one quick input, `quickInput.step()` reads the title
     `New session · <project>` with no counter, placeholder `What should claude do?`, and one row
     whose description is the dim line `claude · default model · from <base>` and whose buttons read
@@ -231,12 +233,25 @@ the row takes the job's name.
     `codex · <model> · …`. Enter: one session, harness `codex`, `model` that id, `argv` holding it
     and ending in the prompt. New session again: the dim line starts `codex · <model> · `, and
     Change…'s `Harness` step marks `codex` with `check` and `remembered for <project>`.
+  - The join title: `treeItem(<a2's label>).contextMenu("Mend: New session in this worktree…")`. The
+    title reads `New session · <project> · in <label>'s worktree`, never `wt-<uuid>`. Escape.
   - Base not in the store (`via: "setup"`): `git switch -c verify-unpushed` and an empty commit in
     the window's checkout. New session's dim line ends
     `from <base> · your branch verify-unpushed isn't pushed` and the row's icon is `warning`. The
     checkout goes back to `<base>`.
+  - The base is the ref that proved it. `git switch -c verify-tracks --track origin/<base>`
+    (`via: "setup"`): the dim line ends `from <base>` with no `warning`; Enter, and the created
+    session's worktree in `GET /projects/<id>` has `baseRef` `<base>` and `baseSha` the checkout's
+    `origin/<base>` (`via: "api"`). Then a local `test` at `origin/test` (Hello-World has one) with
+    `--set-upstream-to origin/<base>`, as `git push origin test` without `-u` leaves it: the line
+    ends `from test`, and the worktree's `baseRef` is `test` at `origin/test`. Then `verify-gone`
+    with `git update-ref refs/remotes/origin/verify-gone HEAD`, a ref origin does not have: Enter
+    keeps the input open with the prompt and the line
+    `from <base> · Mend's store couldn't find verify-gone`, no session created; Enter again starts
+    one whose `baseRef` is `<base>`. The checkout goes back to `<base>`.
   - No project matched (`via: "setup"`): `git clone https://github.com/octocat/Spoon-Knife.git` into
-    the scratch, then `openFolder(<it>)` and `waitForWindow`. There New session's first step reads
+    a scratch folder named `<project>`, like the adopted project, so a match by folder name would
+    take it. Then `openFolder(<it>)` and `waitForWindow`. There New session's first step reads
     `New session`, placeholder `Choose a project`, `Adopt this repository` (icon `repo-clone`,
     description the origin URL) on top, then the projects. Picking it: the prompt step
     `New session · <adopted>` (its delay after the pick is recorded, and whether the progress bar
@@ -245,9 +260,11 @@ the row takes the job's name.
   - Launch fails: `mend connect claude --remove` (`via: "setup"`). New session, a prompt, Change… →
     `claude`, the rest kept, Enter. The server refuses the launch (observed over the API on
     `0.0.0-dev.shab2a748d64120`, 2026-10-19: `422 Connect Claude to start a session here. …`, the
-    session `failed` at once). The row reads `failed · …`, the watch caught exactly one toast
-    `<label> failed · …` with [Retry], and one session was created. Claude reconnected
-    (`via: "setup"`), `notification(/ failed · /).click("Retry")`: no new session, the server's
+    session `failed` at once). The row reads the server's status with the refusal's words
+    (`failed · launch refused · …`, or `starting · launch refused · …` while the server reads it
+    `starting`), the watch caught exactly one toast `<label>[ failed] · launch refused · …` with
+    [Retry], and one session was created. Claude reconnected (`via: "setup"`),
+    `notification(/( failed)? · launch refused · /).click("Retry")`: no new session, the server's
     `'/api/sessions/<id>/launch'` lines +1, the session `running` with a live agent, the row
     `running`.
   - Offline: New session with a prompt typed; the server container stopped (`via: "setup"`). The row
@@ -255,7 +272,9 @@ the row takes the job's name.
     what VS Code shows: `paletteRows("Mend: New session")` (VS Code leaves a command whose
     enablement is false out of the palette), `viewActions()`, and the title bar button
     (`viewAction(/^(Mend: New session|Mend is offline)/)`) disabled with its tooltip. The server
-    started again: New session opens with the prompt typed before.
+    started again: New session opens with the prompt typed before, the cursor after it
+    (`quickInput.selection()` reads `[n, n]`), and `quickInput.keys(" now")`, typed where the cursor
+    is, adds to it rather than replacing it.
 - **b. The agent needs Dana; she answers without leaving VS Code.** From the default `up`, with the
   shell session of story a live.
   - The story's signal (the row in `Needs you`, the badge `1`, the toast with [Answer]) is
