@@ -106,15 +106,19 @@ const capabilitiesOf = async (
   return (session) => rowCapability({ session, viewer, members });
 };
 
+/** How a session's row reads, from the store's last read; its bare status before one. */
+const lineOf = (store: SessionStore, session: Session): string =>
+  store.model()?.sessions.get(session.id)?.line ?? session.status;
+
 const offerPick = (
   session: Session,
   capability: RowCapability,
-  item: { readonly label: string; readonly detail?: string },
+  item: { readonly label: string; readonly line: string; readonly detail?: string },
 ): OfferPick => {
   const detail = capability.kind === "notYours" ? capability.why : item.detail;
   return {
     label: item.label,
-    description: pickDescription(session, capability),
+    description: pickDescription(item.line, capability),
     ...(detail === undefined ? {} : { detail }),
     action: "session",
     session,
@@ -248,7 +252,10 @@ class MendCommands {
     const capability = await capabilitiesOf(this.client, this.store, sessions);
     const picked = await vscode.window.showQuickPick<OfferPick>(
       sessions.map((session) =>
-        offerPick(session, capability(session), { label: displaySession(session) }),
+        offerPick(session, capability(session), {
+          label: displaySession(session),
+          line: lineOf(this.store, session),
+        }),
       ),
       { title: `Choose a session · ${project.name}`, ignoreFocusOut: true },
     );
@@ -291,16 +298,14 @@ class MendCommands {
     const picks = [...model.sessions.values()]
       .filter((view) => view.session.id !== own && pickOrder(view) < 3)
       .toSorted((left, right) => pickOrder(left) - pickOrder(right))
-      .map((view): OfferPick => {
-        const pick = offerPick(view.session, view.capability, {
-          label: view.name,
-          detail: view.project.name,
-        });
-        return {
-          ...pick,
-          description: pick.offer === "Open" ? view.line : `${view.line} · ${pick.offer}`,
-        };
-      });
+      .map(
+        (view): OfferPick =>
+          offerPick(view.session, view.capability, {
+            label: view.name,
+            line: view.line,
+            detail: view.project.name,
+          }),
+      );
     const picked = await vscode.window.showQuickPick<OfferPick>(picks, {
       title: "Mend sessions",
       placeHolder: picks.length === 0 ? "Nothing else needs you or runs" : "Choose a session",
@@ -834,6 +839,7 @@ class MendCommands {
       .map((session) =>
         offerPick(session, capability(session), {
           label: `${session.status === "waiting" ? "$(bell-dot)" : "$(circle-filled)"} ${displaySession(session)}`,
+          line: lineOf(this.store, session),
           detail: session.branch,
         }),
       );
@@ -934,7 +940,7 @@ class MendCommands {
     const picked = await vscode.window.showQuickPick<SessionPick>(
       sessions.map((session) => ({
         label: displaySession(session),
-        description: session.status,
+        description: lineOf(this.store, session),
         action: "session",
         session,
       })),

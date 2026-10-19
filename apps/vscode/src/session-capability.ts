@@ -130,11 +130,11 @@ export const rowContextValue = (
   return `mend.session.${phase}.${OFFER_KEYS[rowOffer(capability)]}${steer ? ".steer" : ""}`;
 };
 
-/** A session picker's words beside a name: its status, and what picking it does when not Open. */
-export const pickDescription = (
-  session: Pick<Session, "status">,
-  capability: RowCapability,
-): string => {
+/**
+ * A session picker's words beside a name: how its row reads (`waiting · claude needs your
+ * permission to use Bash`), and what picking it does when not Open.
+ */
+export const pickDescription = (line: string, capability: RowCapability): string => {
   const offer = rowOffer(capability);
-  return offer === "Open" ? session.status : `${session.status} · ${offer}`;
+  return offer === "Open" ? line : `${line} · ${offer}`;
 };
