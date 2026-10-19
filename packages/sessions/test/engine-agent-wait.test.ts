@@ -6,6 +6,7 @@ import {
   SessionProcess,
   agentWaitLine,
   currentAgentProcess,
+  liveAgentsReading,
 } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import type { CreateOptions } from "@sealant/sdk";
@@ -49,8 +50,14 @@ const hookOf = (sessionId: SessionId) => {
   return api.agentHook;
 };
 
+const rowsOf = (world: World, sessionId: SessionId) =>
+  [...world.processes.values()].filter((row) => row.sessionId === sessionId);
+
 const agentOf = (world: World, sessionId: SessionId) =>
-  currentAgentProcess([...world.processes.values()].filter((row) => row.sessionId === sessionId));
+  currentAgentProcess(rowsOf(world, sessionId));
+
+const lineOf = (world: World, sessionId: SessionId) =>
+  agentWaitLine(liveAgentsReading(rowsOf(world, sessionId)))?.line ?? null;
 
 const statusOf = (world: World, sessionId: SessionId) => world.sessions.get(sessionId)?.status;
 
@@ -206,9 +213,7 @@ describe("a terminal agent's hooks (G4)", () => {
           "applied",
         );
         expect(statusOf(world, sessionId)).toBe("waiting");
-        expect(agentWaitLine(agentOf(world, sessionId))).toBe(
-          "waiting · claude needs your permission to use Bash",
-        );
+        expect(lineOf(world, sessionId)).toBe("waiting · claude needs your permission to use Bash");
         expect(
           yield* hook(
             new AgentHookReport({
@@ -227,7 +232,7 @@ describe("a terminal agent's hooks (G4)", () => {
 
         expect(yield* hook(own(world, sessionId, "Stop"))).toBe("applied");
         expect(statusOf(world, sessionId)).toBe("idle");
-        expect(agentWaitLine(agentOf(world, sessionId))).toBe("idle · claude finished its turn");
+        expect(lineOf(world, sessionId)).toBe("idle · claude finished its turn");
         expect(yield* hook(own(world, sessionId, "UserPromptSubmit"))).toBe("applied");
         expect(statusOf(world, sessionId)).toBe("running");
       }),
@@ -241,15 +246,13 @@ describe("a terminal agent's hooks (G4)", () => {
         expect(yield* hook(own(world, sessionId, "Stop"))).toBe("applied");
         expect(statusOf(world, sessionId)).toBe("idle");
         expect(agentOf(world, sessionId)?.exitedAt).toBeNull();
-        expect(agentWaitLine(agentOf(world, sessionId))).toBe("idle · claude finished its turn");
+        expect(lineOf(world, sessionId)).toBe("idle · claude finished its turn");
 
         expect(yield* hook(own(world, sessionId, "PermissionRequest", { tool: "Bash" }))).toBe(
           "applied",
         );
         expect(statusOf(world, sessionId)).toBe("waiting");
-        expect(agentWaitLine(agentOf(world, sessionId))).toBe(
-          "waiting · claude needs your permission to use Bash",
-        );
+        expect(lineOf(world, sessionId)).toBe("waiting · claude needs your permission to use Bash");
       }),
     );
   });
@@ -308,7 +311,7 @@ describe("a terminal agent's hooks (G4)", () => {
         if (agent === null) throw new Error("no agent");
         expect(yield* engine.personTyped(agent.id, new Date())).toBe(false);
         expect(statusOf(world, sessionId)).toBe("idle");
-        expect(agentWaitLine(agentOf(world, sessionId))).toBe("idle · claude finished its turn");
+        expect(lineOf(world, sessionId)).toBe("idle · claude finished its turn");
         yield* hookOf(sessionId)(own(world, sessionId, "UserPromptSubmit"));
         expect(statusOf(world, sessionId)).toBe("running");
       }),
@@ -382,9 +385,7 @@ describe("a terminal agent's hooks (G4)", () => {
           "applied",
         );
         expect(statusOf(world, sessionId)).toBe("waiting");
-        expect(agentWaitLine(agentOf(world, sessionId))).toBe(
-          "waiting · claude needs your permission to use Bash",
-        );
+        expect(lineOf(world, sessionId)).toBe("waiting · claude needs your permission to use Bash");
       }),
     );
   });

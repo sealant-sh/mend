@@ -22,6 +22,7 @@ import {
   captureStatusLine,
   currentAgentProcess,
   latestDecidedTurn,
+  liveAgentsReading,
   type AgentItem,
   type AgentRequest,
   type AgentTurn,
@@ -206,7 +207,7 @@ interface Look {
   readonly thread: SlackThreadSession;
   readonly session: Session;
   readonly state: SlackSessionState;
-  /** What the live terminal agent's hooks last reported (`agentWaitLine`); null for none. */
+  /** What the live terminal agents' hooks say together (`agentWaitLine`); null for none. */
   readonly agent: string | null;
   readonly turns: ReadonlyArray<AgentTurn>;
   readonly pending: ReadonlyArray<AgentRequest>;
@@ -325,7 +326,8 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
       if (session === null) return null;
       const turns = yield* conversations.listTurns(session.id);
-      const currentAgent = currentAgentProcess(yield* processes.listForSession(session.id));
+      const rows = yield* processes.listForSession(session.id);
+      const currentAgent = currentAgentProcess(rows);
       const pending = yield* conversations.listRequests(session.id, true);
       const firstTurn = turns.reduce<AgentTurn | null>(
         (first, turn) => (first === null || turn.ordinal < first.ordinal ? turn : first),
@@ -356,7 +358,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         thread,
         session,
         state,
-        agent: agentWaitLine(currentAgent),
+        agent: agentWaitLine(liveAgentsReading(rows, pending.length > 0))?.line ?? null,
         turns,
         pending,
         opening,
