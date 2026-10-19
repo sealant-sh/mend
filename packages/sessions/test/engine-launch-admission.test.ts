@@ -334,7 +334,7 @@ describe("SessionEngine launch admission (SLNT-167)", () => {
 
           expect(refused._tag).toBe("SessionAgentLiveError");
           expect(refused.message).toBe(
-            "the session's agent is live · nothing restarted · attach to it, or launch with restart to replace it",
+            "the session's agent is live · nothing restarted · attach to it, or stop it and launch again",
           );
           expect(footprint(world, session.id, seen)).toEqual(before);
         }),

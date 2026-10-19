@@ -140,7 +140,7 @@ describe("refusalOf (SLNT-167)", () => {
     });
     expect(live._tag).toBe("SessionAgentLiveError");
     expect(live.message).toBe(
-      "the session's agent is live · nothing restarted · attach to it, or launch with restart to replace it",
+      "the session's agent is live · nothing restarted · attach to it, or stop it and launch again",
     );
     expect(
       refusalError("s-1", {

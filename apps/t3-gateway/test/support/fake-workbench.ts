@@ -1230,7 +1230,7 @@ export class FakeWorkbench {
         status: "running",
         settledAt: null,
         message:
-          "the session's agent is live · nothing restarted · attach to it, or launch with restart to replace it",
+          "the session's agent is live · nothing restarted · attach to it, or stop it and launch again",
       });
     }
     if (refusal !== null) {

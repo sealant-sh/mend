@@ -27,7 +27,7 @@ describe("POST /sessions/:id/launch refusals", () => {
         status: "running",
         settledAt,
         message:
-          "the session's agent is live · nothing restarted · attach to it, or launch with restart to replace it",
+          "the session's agent is live · nothing restarted · attach to it, or stop it and launch again",
       }),
       tag: "SessionAgentLive",
       body: {},
