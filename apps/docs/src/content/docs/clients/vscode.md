@@ -66,7 +66,8 @@ workspace it has four groups, in this order:
 - **Since you last looked**: sessions that completed, failed or landed since this VS Code last
   showed them. A session counts as shown once you select its row, or while its workspace window is
   focused. VS Code keeps this per server and per machine. Past eight rows the group lists projects.
-- **Running**: sessions that are starting or running.
+- **Running**: sessions that are starting, running or idle. A terminal agent that finished its turn
+  reads `idle · claude finished its turn`: it asks nobody, so it is not under **Needs you**.
 - **Projects**, collapsed: every project with all of its sessions.
 
 A group with no sessions stays in its place and reads `nothing`.
