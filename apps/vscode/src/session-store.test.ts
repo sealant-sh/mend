@@ -8,6 +8,7 @@ import type { LandingFact } from "./session-model.js";
 import {
   FAN_OUT,
   MAX_WAIT_MS,
+  MIN_GAP_MS,
   SessionStore,
   type StoreClient,
   type WindowSessions,
@@ -67,6 +68,10 @@ class FakeMend implements StoreClient {
   /** Pending-request reads fail. */
   requestsFail = false;
   readonly calls: Array<string> = [];
+  /** When each call was made, on the test's clock. */
+  readonly made: Array<{ readonly call: string; readonly at: number }> = [];
+  /** How long reads of a kind take, on the test's clock. */
+  readonly latency = new Map<string, number>();
   readonly #held = new Map<string, Array<() => void>>();
   readonly #holding = new Set<string>();
   #running = new Map<string, number>();
@@ -93,6 +98,7 @@ class FakeMend implements StoreClient {
 
   async #read<T>(call: string, kind: string, answer: () => T): Promise<T> {
     this.calls.push(call);
+    this.made.push({ call, at: Date.now() });
     this.#running.set(kind, (this.#running.get(kind) ?? 0) + 1);
     this.most.set(kind, Math.max(this.most.get(kind) ?? 0, this.#running.get(kind) ?? 0));
     try {
@@ -101,6 +107,8 @@ class FakeMend implements StoreClient {
           const key = this.#holding.has(call) ? call : kind;
           this.#held.set(key, [...(this.#held.get(key) ?? []), resume]);
         });
+      const takes = this.latency.get(kind);
+      if (takes !== undefined) await new Promise((resume) => setTimeout(resume, takes));
       if (this.refusing) throw new MendApiError("Signed out — sign in again.", 401);
       return answer();
     } finally {
@@ -252,6 +260,105 @@ describe("frames the view reads (B3)", () => {
   });
 });
 
+describe("how fast the store reads (B3, round 3)", () => {
+  it("reads a session streaming a frame every 10 ms at most once per MAX_WAIT_MS", async () => {
+    const { mend, store } = world();
+    mend.add(session({ id: "busy" }));
+    mend.latency.set("detail", 20);
+    store.start();
+    await tick(300);
+    const from = Date.now();
+    for (let elapsed = 0; elapsed < 2_000; elapsed += 10) {
+      mend.signal({ kind: "event", event: event("session-process", "busy") });
+      await tick(10);
+    }
+    const reads = mend.made.filter(({ call, at }) => call === "detail:busy" && at >= from);
+    expect(reads.length).toBeGreaterThanOrEqual(1);
+    expect(reads.length).toBeLessThanOrEqual(Math.ceil(2_000 / MAX_WAIT_MS));
+    for (const [index, read] of reads.entries()) {
+      const before = reads[index - 1];
+      if (before !== undefined) expect(read.at - before.at).toBeGreaterThanOrEqual(MIN_GAP_MS);
+    }
+  });
+
+  it("reads another session within MAX_WAIT_MS while one session's read is held", async () => {
+    const { mend, store } = world();
+    mend.add(session({ id: "slow" }), session({ id: "other" }));
+    store.start();
+    await tick(300);
+    mend.hold("detail:slow");
+    mend.signal({ kind: "event", event: event("session", "slow") });
+    await tick(300);
+    expect(mend.count("detail:slow")).toBe(1);
+    mend.add(
+      session({ id: "other", status: "completed", settledAt: new Date(Date.now()).toISOString() }),
+    );
+    mend.signal({ kind: "event", event: event("session", "other") });
+    for (let elapsed = 0; elapsed < MAX_WAIT_MS; elapsed += 10) {
+      mend.signal({ kind: "event", event: event("session-process", "slow") });
+      await tick(10);
+    }
+    expect(wordOf(store, "other")).toBe("completed");
+    expect(mend.count("detail:slow")).toBe(1);
+  });
+
+  it("keeps both of two sessions read side by side in one project", async () => {
+    const { mend, store } = world();
+    mend.add(session({ id: "a" }), session({ id: "b" }));
+    store.start();
+    await tick(300);
+    mend.add(session({ id: "a", status: "waiting" }), session({ id: "b", status: "failed" }));
+    mend.requests.set("a", [{ id: "r1", title: "run it?", createdAt: START.toISOString() }]);
+    mend.hold("requests:a");
+    mend.signal({ kind: "event", event: event("session", "a") });
+    mend.signal({ kind: "event", event: event("session", "b") });
+    await tick(300);
+    expect(wordOf(store, "b")).toBe("failed");
+    mend.release("requests:a");
+    await tick(300);
+    expect([wordOf(store, "a"), wordOf(store, "b")]).toEqual(["waiting", "failed"]);
+  });
+
+  it("reads at most FAN_OUT sessions at once", async () => {
+    const { mend, store } = world();
+    const ids = Array.from({ length: 10 }, (_, index) => `s${index}`);
+    mend.add(...ids.map((id) => session({ id })));
+    store.start();
+    await tick(300);
+    mend.hold("detail");
+    for (const id of ids) mend.signal({ kind: "event", event: event("session", id) });
+    await tick(300);
+    expect(mend.most.get("detail")).toBe(FAN_OUT);
+    mend.release("detail");
+    await tick(300);
+    expect(ids.every((id) => mend.count(`detail:${id}`) === 1)).toBe(true);
+  });
+});
+
+describe("a session's frame read together with a full read (S6, round 3)", () => {
+  it("still reads the session's landing, however long ago it settled", async () => {
+    const { mend, store } = world();
+    const settled = new Date(START.getTime() - 30 * DAY).toISOString();
+    mend.add(session({ id: "last-month", status: "completed", settledAt: settled }));
+    store.start();
+    await tick(300);
+    mend.landings.set("last-month", {
+      id: "l1",
+      userId: "ana",
+      createdAt: new Date(Date.now()).toISOString(),
+      remoteBranch: "mend/last-month",
+      pullRequest: { number: 415, state: "merged" },
+    });
+    store.refresh();
+    mend.signal({ kind: "event", event: event("session-change", "last-month") });
+    await tick(300);
+    expect(mend.count("landing:last-month")).toBe(1);
+    expect(store.model()?.sessions.get("last-month")?.line).toBe(
+      "landed by Ana · pull request #415 · merged · observed",
+    );
+  });
+});
+
 describe("how much the store reads (S5)", () => {
   it("reads a session once after a slow read, however many frames named it meanwhile", async () => {
     const { mend, store } = world();
@@ -344,19 +451,19 @@ describe("wait facts and toasts (S1, S2)", () => {
     const { mend, store } = world();
     mend.add(session({ id: "s" }));
     store.start();
-    await tick(200);
+    await tick(300);
     mend.add(session({ id: "s", status: "waiting" }));
     mend.requests.set("s", [request]);
     mend.requestsFail = true;
     mend.signal({ kind: "event", event: event("agent-conversation", "s") });
-    await tick(200);
+    await tick(300);
     expect(toasts()).toEqual([]);
     mend.requestsFail = false;
     mend.signal({ kind: "event", event: event("agent-conversation", "s") });
-    await tick(200);
+    await tick(300);
     mend.requestsFail = true;
     mend.signal({ kind: "event", event: event("agent-conversation", "s") });
-    await tick(200);
+    await tick(300);
     expect(toasts()).toEqual(["s is waiting · run pnpm db:migrate?"]);
     expect(store.model()?.sessions.get("s")?.needsYou).toBe(true);
   });
@@ -365,17 +472,17 @@ describe("wait facts and toasts (S1, S2)", () => {
     const { mend, store } = world();
     mend.add(session({ id: "s" }), session({ id: "t" }));
     store.start();
-    await tick(200);
+    await tick(300);
     fake.focus(false);
     mend.add(session({ id: "s", status: "waiting" }));
     mend.requests.set("s", [request]);
     mend.signal({ kind: "event", event: event("agent-conversation", "s") });
-    await tick(200);
+    await tick(300);
     fake.focus(true);
     mend.add(session({ id: "t", status: "waiting" }));
     mend.requests.set("t", [{ ...request, id: "r-t" }]);
     mend.signal({ kind: "event", event: event("agent-conversation", "t") });
-    await tick(200);
+    await tick(300);
     expect(toasts()).toEqual(["t is waiting · run pnpm db:migrate?"]);
   });
 

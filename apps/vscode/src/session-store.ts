@@ -29,6 +29,8 @@ const LAST_SEEN_KEY = "mend.lastSeen";
 const DEBOUNCE_MS = 150;
 /** However busy the stream, what it announced is read within this long of its first frame. */
 export const MAX_WAIT_MS = 1_000;
+/** Reads start in batches at least this far apart, however fast Mend answers. */
+export const MIN_GAP_MS = 250;
 /** At most this many reads at once: a full read fans out per project and per session. */
 export const FAN_OUT = 6;
 /**
@@ -141,15 +143,22 @@ export class SessionStore implements vscode.Disposable {
   #retry: NodeJS.Timeout | null = null;
   #windowProject: { readonly project: Project; readonly folder: vscode.WorkspaceFolder } | null =
     null;
-  /** What frames asked for since the last read began: one plan, however many frames. */
+  /** What frames asked for and no read has begun on: each named once, however many frames. */
   #wantAll = false;
   readonly #wantProjects = new Set<string>();
   readonly #wantSessions = new Set<string>();
-  /** When the oldest wish not yet read arrived: the read starts by `MAX_WAIT_MS` after it. */
+  /** When the oldest wish not yet read arrived: its read starts by `MAX_WAIT_MS` after it. */
   #wantedSince: number | null = null;
+  #lastWantAt = 0;
+  #lastBatchAt = Number.NEGATIVE_INFINITY;
   #timer: NodeJS.Timeout | null = null;
-  /** A read runs: what is asked meanwhile is read right after it, never beside it. */
-  #reading = false;
+  /** Sessions read now, one read each: a frame meanwhile reads that session again after it. */
+  readonly #reading = new Set<string>();
+  /**
+   * A full or project read runs. It reads alone: it rewrites sessions, and a session read beside
+   * it could land older words over newer ones.
+   */
+  #readingAlone = false;
   /** The stream was refused: its reconnects are refused alike, and are read again only once. */
   #refused = false;
   #ticker: NodeJS.Timeout | null = null;
@@ -344,50 +353,101 @@ export class SessionStore implements vscode.Disposable {
     this.#emit();
   }
 
-  /** Adds to what the next read reads, and makes sure one comes. */
+  /** Adds to what the next reads read, and makes sure they come. */
   #want(plan: ReadPlan): void {
     if (plan.all) this.#wantAll = true;
     for (const id of plan.projects) this.#wantProjects.add(id);
     for (const id of plan.sessions) this.#wantSessions.add(id);
-    const now = Date.now();
-    this.#wantedSince ??= now;
+    this.#lastWantAt = Date.now();
+    this.#wantedSince ??= this.#lastWantAt;
+    this.#schedule();
+  }
+
+  /** Whether what is wanted needs a read alone: a full read, or a project's. */
+  #wantsAlone(): boolean {
+    return this.#wantAll || this.#wantProjects.size > 0 || !this.#read;
+  }
+
+  /** Whether a read could begin now on what is wanted, or must wait for one running to end. */
+  #startable(): boolean {
+    if (this.#readingAlone) return false;
+    if (!this.#wantAll && this.#wantProjects.size === 0 && this.#wantSessions.size === 0)
+      return false;
+    if (this.#wantsAlone()) return this.#reading.size === 0;
+    return (
+      this.#reading.size < FAN_OUT && [...this.#wantSessions].some((id) => !this.#reading.has(id))
+    );
+  }
+
+  /**
+   * Arms the next batch: `DEBOUNCE_MS` after the last frame, by `MAX_WAIT_MS` after the oldest one
+   * not yet read, and never within `MIN_GAP_MS` of the last batch. A read that ends arms it again
+   * for what it held back.
+   */
+  #schedule(): void {
     if (this.#timer !== null) clearTimeout(this.#timer);
-    const delay = Math.max(0, Math.min(DEBOUNCE_MS, this.#wantedSince + MAX_WAIT_MS - now));
-    this.#timer = setTimeout(() => {
-      this.#timer = null;
-      void this.#readWanted();
-    }, delay);
+    this.#timer = null;
+    if (!this.#startable()) return;
+    const now = Date.now();
+    const due = Math.max(
+      this.#lastBatchAt + MIN_GAP_MS,
+      Math.min(this.#lastWantAt + DEBOUNCE_MS, (this.#wantedSince ?? now) + MAX_WAIT_MS),
+    );
+    this.#timer = setTimeout(
+      () => {
+        this.#timer = null;
+        this.#startBatch();
+      },
+      Math.max(0, due - now),
+    );
   }
 
-  /** Reads what was asked, one plan at a time, until nothing more is asked. */
-  async #readWanted(): Promise<void> {
-    if (this.#reading) return;
-    this.#reading = true;
-    try {
-      while (this.#wantAll || this.#wantProjects.size > 0 || this.#wantSessions.size > 0) {
-        const plan: ReadPlan = {
-          all: this.#wantAll || !this.#read,
-          projects: new Set(this.#wantProjects),
-          sessions: new Set(this.#wantSessions),
-        };
-        this.#wantAll = false;
-        this.#wantProjects.clear();
-        this.#wantSessions.clear();
-        this.#wantedSince = null;
-        await this.#apply(plan, this.#generation);
+  /**
+   * Begins what can begin of what is wanted: a full or project read alone, else a read for each
+   * wanted session not read now, up to `FAN_OUT`, side by side so a slow one holds back none.
+   */
+  #startBatch(): void {
+    if (!this.#startable()) return;
+    this.#lastBatchAt = Date.now();
+    if (this.#wantsAlone()) {
+      const whole = this.#wantAll || !this.#read;
+      const projects = new Set(this.#wantProjects);
+      // A frame's own session keeps its own read inside a full one: a landing however old.
+      const targets = whole ? new Set(this.#wantSessions) : new Set<string>();
+      this.#wantAll = false;
+      this.#wantProjects.clear();
+      if (whole) this.#wantSessions.clear();
+      this.#readingAlone = true;
+      void this.#apply((generation) =>
+        whole ? this.#readAll(generation, targets) : this.#readProjects(projects, generation),
+      ).finally(() => {
+        this.#readingAlone = false;
+        this.#schedule();
+      });
+    } else {
+      for (const id of [...this.#wantSessions]) {
+        if (this.#reading.size >= FAN_OUT) break;
+        if (this.#reading.has(id)) continue;
+        this.#wantSessions.delete(id);
+        this.#reading.add(id);
+        void this.#apply((generation) => this.#readSession(id, generation)).finally(() => {
+          this.#reading.delete(id);
+          this.#schedule();
+        });
       }
-    } finally {
-      this.#reading = false;
     }
+    if (!this.#wantAll && this.#wantProjects.size === 0 && this.#wantSessions.size === 0)
+      this.#wantedSince = null;
   }
 
-  async #apply(plan: ReadPlan, generation: number): Promise<void> {
+  async #readProjects(projects: ReadonlySet<string>, generation: number): Promise<void> {
+    for (const projectId of projects) await this.#readProject(projectId, generation);
+  }
+
+  async #apply(read: (generation: number) => Promise<void>): Promise<void> {
+    const generation = this.#generation;
     try {
-      if (plan.all) await this.#readAll(generation);
-      else {
-        for (const projectId of plan.projects) await this.#readProject(projectId, generation);
-        for (const sessionId of plan.sessions) await this.#readSession(sessionId, generation);
-      }
+      await read(generation);
       if (generation !== this.#generation) return;
       this.#error = null;
       this.#heard();
@@ -415,7 +475,8 @@ export class SessionStore implements vscode.Disposable {
     }, RETRY_MS);
   }
 
-  async #readAll(generation: number): Promise<void> {
+  /** Everything again; `targets` are sessions a frame named, read as their own frame reads them. */
+  async #readAll(generation: number, targets: ReadonlySet<string>): Promise<void> {
     const connection = await this.client.connection();
     if (connection.url !== this.#serverUrl) {
       this.#serverUrl = connection.url;
@@ -432,7 +493,10 @@ export class SessionStore implements vscode.Disposable {
     const facts = await limited(
       details.flatMap((detail) => detail.sessions),
       FAN_OUT,
-      async (session) => ({ id: session.id, ...(await this.#factsOf(session, "recent")) }),
+      async (session) => ({
+        id: session.id,
+        ...(await this.#factsOf(session, targets.has(session.id) ? "any" : "recent")),
+      }),
     );
     if (generation !== this.#generation) return;
     const waits = new Map<string, WaitFact>();
@@ -494,14 +558,16 @@ export class SessionStore implements vscode.Disposable {
       throw cause;
     }
     const { session } = detail;
-    const project = this.#snapshot.details.get(session.projectId);
-    if (project === undefined) {
+    if (!this.#snapshot.details.has(session.projectId)) {
       this.refresh();
       return;
     }
     // Its own frame may be a landing, however long ago the session settled.
     const facts = { id: session.id, ...(await this.#factsOf(session, "any", detail)) };
     if (generation !== this.#generation) return;
+    // As it is now: other sessions' reads ran beside this one and changed the project meanwhile.
+    const project = this.#snapshot.details.get(session.projectId);
+    if (project === undefined) return;
     const sessions = project.sessions.some((candidate) => candidate.id === session.id)
       ? project.sessions.map((candidate) => (candidate.id === session.id ? session : candidate))
       : [...project.sessions, session];
