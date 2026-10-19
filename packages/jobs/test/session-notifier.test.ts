@@ -29,9 +29,11 @@ import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  ATTENTION_RERING_MS,
   captureAlertsToRing,
   captureFailingNotificationBody,
   latestSenderWhoSees,
+  makeAttentionRings,
   notSavedNotificationBody,
   phaseKind,
   phaseOf,
@@ -520,5 +522,32 @@ describe("capture alerts", () => {
     expect(captureFailingNotificationBody(session)).toBe(
       "billing-fix capture failing since 16:29:51 UTC · EIO: tree/db.sqlite",
     );
+  });
+});
+
+describe("the attention re-ring bound", () => {
+  it("holds a session's second ring back for a minute, then lets it ring", () => {
+    const rings = makeAttentionRings();
+    expect(rings.heldBack("session-1", 0)).toBe(false);
+    rings.rang("session-1", 0);
+    expect(rings.heldBack("session-1", ATTENTION_RERING_MS - 1)).toBe(true);
+    expect(rings.heldBack("session-1", ATTENTION_RERING_MS)).toBe(false);
+  });
+
+  it("forgets the sessions that rang and settled once the minute passes", () => {
+    const rings = makeAttentionRings();
+    for (let session = 0; session < 1_000; session++) {
+      rings.rang(`session-${session}`, session);
+    }
+    expect(rings.size()).toBe(1_000);
+    rings.rang("session-0", 30_000);
+    expect(rings.size()).toBe(1_000);
+    expect(rings.heldBack("session-new", ATTENTION_RERING_MS + 999)).toBe(false);
+    expect(rings.size()).toBe(1);
+    rings.rang("session-new", ATTENTION_RERING_MS + 999);
+    expect(rings.heldBack("session-0", ATTENTION_RERING_MS + 999)).toBe(true);
+    expect(rings.size()).toBe(2);
+    expect(rings.heldBack("session-new", 2 * ATTENTION_RERING_MS + 999)).toBe(false);
+    expect(rings.size()).toBe(0);
   });
 });

@@ -66,6 +66,38 @@ const TERMINAL_FRESHNESS_MS = 2 * 60_000;
 export const ATTENTION_RERING_MS = 60_000;
 const BODY_LIMIT = 140;
 
+/** When each session last rang `attention`, for the re-ring bound. */
+export interface AttentionRings {
+  /** Whether a ring for `sessionId` at `now` is held back. Forgets every ring past the bound. */
+  readonly heldBack: (sessionId: string, now: number) => boolean;
+  readonly rang: (sessionId: string, now: number) => void;
+  readonly size: () => number;
+}
+
+/** Holds only the rings of the last `windowMs`: one older holds nothing back, so it goes. */
+export const makeAttentionRings = (windowMs: number = ATTENTION_RERING_MS): AttentionRings => {
+  // A ring re-inserts its session, so the map is in ring order and the expired ones lead.
+  const rangAt = new Map<string, number>();
+  const forgetExpired = (now: number) => {
+    for (const [sessionId, at] of rangAt) {
+      if (now - at < windowMs) return;
+      rangAt.delete(sessionId);
+    }
+  };
+  return {
+    heldBack: (sessionId, now) => {
+      forgetExpired(now);
+      return rangAt.has(sessionId);
+    },
+    rang: (sessionId, now) => {
+      rangAt.delete(sessionId);
+      rangAt.set(sessionId, now);
+      forgetExpired(now);
+    },
+    size: () => rangAt.size,
+  };
+};
+
 /**
  * The phase of a session as the phone should hear it. Session status is a fold over EVERY
  * process (docs/SESSION-SERVICES.md): a session whose agent ended while a shell still holds the
@@ -261,7 +293,7 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
     const slackInstalls = yield* SlackInstallsRepo;
 
     const lastPhase = new Map<string, Phase | null>();
-    const lastAttentionRing = new Map<string, number>();
+    const attentionRings = makeAttentionRings();
     /** Per session: the open (queued/running) turn ids seen on the last event. */
     const watchedTurns = new Map<string, ReadonlySet<string>>();
 
@@ -325,14 +357,13 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
       if (previous === phase || phase === null) return;
       const now = yield* Clock.currentTimeMillis;
       if (phase === "attention") {
-        const rang = lastAttentionRing.get(session.id);
-        if (rang !== undefined && now - rang < ATTENTION_RERING_MS) return;
+        if (attentionRings.heldBack(session.id, now)) return;
       } else {
         const endedAt = session.settledAt?.getTime() ?? currentAgent?.exitedAt?.getTime() ?? now;
         if (now - endedAt > TERMINAL_FRESHNESS_MS) return;
       }
       yield* send(session, phaseKind(phase), notificationBody(session, phase));
-      if (phase === "attention") lastAttentionRing.set(session.id, now);
+      if (phase === "attention") attentionRings.rang(session.id, now);
     });
 
     const ringForTurn = Effect.fn("SessionNotifier.ringForTurn")(function* (
