@@ -107,9 +107,12 @@ const modals = new Map<string, string>();
 const opened: Array<string> = [];
 const openedFolders: Array<vscode.Uri> = [];
 const ptys: Array<vscode.Pseudoterminal> = [];
+/** Every quick input the extension made, the real ones: New session is driven through its own. */
+const quickInputs: Array<vscode.QuickPick<vscode.QuickPickItem>> = [];
 
 const original = {
   showQuickPick: vscode.window.showQuickPick,
+  createQuickPick: vscode.window.createQuickPick.bind(vscode.window),
   executeCommand: vscode.commands.executeCommand,
 };
 
@@ -138,6 +141,11 @@ const install = (): void => {
     if (answer === undefined) throw new Error(`unexpected quick pick ${JSON.stringify(options)}`);
     const resolved = await Promise.resolve(items);
     return answer(Array.isArray(resolved) ? resolved : [], options);
+  };
+  window["createQuickPick"] = () => {
+    const input = original.createQuickPick();
+    quickInputs.push(input);
+    return input;
   };
   window["showInputBox"] = async (options: unknown) => {
     const answer = inputBoxes.shift();
@@ -215,7 +223,7 @@ const sshIn = (alias: string, user: string, script: string, timeoutMs = 60_000) 
   );
 
 /**
- * The window step 8 opens is a Remote-SSH window over the managed alias, and extension tests run
+ * The window step 9 opens is a Remote-SSH window over the managed alias, and extension tests run
  * in every window of the instance: there the suite reads the workspace through Remote-SSH and
  * says what it found, for the first window to wait on.
  */
@@ -350,11 +358,97 @@ export async function run(): Promise<void> {
   );
   record("liveEvents", { sessionId: liveId, ms: Date.now() - liveStarted });
 
-  // 4. Start a session from the editor (Workbench): VS Code opens inside its workspace over SSH.
-  quickPicks.push(pick((item) => item["label"] === projectName));
-  quickPicks.push(pick((item) => item["sessionKind"] === "workbench"));
+  // 4. New session: one quick input, and Enter starts one session and opens no window. Nothing
+  // here has Claude connected, so its launch is refused and the session reads failed.
+  const idsNow = async (): Promise<ReadonlyArray<string>> => {
+    const sessions = field(await api(`/projects/${project.project.id}`), "sessions");
+    return (Array.isArray(sessions) ? sessions : []).map((one) => String(field(one, "id")));
+  };
+  const known = new Set(await idsNow());
+  const inputsBefore = quickInputs.length;
+  const opening = vscode.commands.executeCommand("mend.newSession");
+  const input = await until("New session's quick input", async () => quickInputs[inputsBefore]);
+  await opening;
+  if (input.title !== "New session" && input.title !== `New session · ${projectName}`) {
+    throw new Error(`New session's quick input is titled ${String(input.title)}`);
+  }
+  if (input.title === "New session") {
+    input.value = projectName;
+    await sleep(500);
+    await original.executeCommand("workbench.action.acceptSelectedQuickOpenItem");
+    await until(
+      "New session's prompt step",
+      async () => input.title === `New session · ${projectName}`,
+    );
+  }
+  const dimLine = input.items[0]?.description ?? "";
+  input.value = "st-vscode-new-session";
+  await sleep(500);
+  await original.executeCommand("workbench.action.acceptSelectedQuickOpenItem");
+  const startedIds = await until("the session New session started", async () => {
+    const fresh = (await idsNow()).filter((id) => !known.has(id));
+    return fresh.length > 0 ? fresh : null;
+  });
+  // A second Enter, or a slow launch, must not make a second session or open a window.
+  await original.executeCommand("workbench.action.acceptSelectedQuickOpenItem");
+  await sleep(5_000);
+  const newIds = (await idsNow()).filter((id) => !known.has(id));
+  if (newIds.length !== 1 || startedIds.length !== 1) {
+    throw new Error(`New session made ${newIds.length} sessions`);
+  }
+  if (openedFolders.length !== 0) throw new Error("New session opened a window");
+  const newSessionId = newIds[0] ?? "";
+  const newSession = await until(
+    "the started session's launch to settle",
+    async () => {
+      const read = field(await api(`/sessions/${newSessionId}`), "session");
+      return field(read, "status") === "starting" ? null : read;
+    },
+    120_000,
+  );
+  await sleep(2_000);
+  const names = [field(newSession, "label"), field(newSession, "worktree")].map(String);
+  // The refused launch's toast is the one error this step expects.
+  const shownSoFar = evidence["errorsShown"];
+  evidence["errorsShown"] = (Array.isArray(shownSoFar) ? shownSoFar : []).filter(
+    (message) => !names.some((name) => String(message).startsWith(`${name} failed`)),
+  );
+  record("newSession", {
+    sessionId: newSessionId,
+    dimLine,
+    status: field(newSession, "status"),
+    windowsOpened: openedFolders.length,
+  });
+  await api(`/sessions/${newSessionId}/stop`, { method: "POST", body: "{}" }).catch(
+    () => undefined,
+  );
+
+  // 5. A shell session set up over the API opens inside its workspace over SSH.
+  const shell = await api(`/projects/${project.project.id}/sessions`, {
+    method: "POST",
+    body: JSON.stringify({
+      harness: "shell",
+      mode: "pty",
+      label: "st-vscode-shell",
+      base: null,
+      name: null,
+    }),
+  });
+  const workbenchId = String(field(shell, "id"));
+  await api(`/sessions/${workbenchId}/launch`, {
+    method: "POST",
+    body: JSON.stringify({ mode: "pty" }),
+  });
+  await until(
+    "the shell session in the view",
+    async () =>
+      (await mend.projects()).some((detail) =>
+        detail.sessions.some((session) => session.id === workbenchId),
+      ),
+    60_000,
+  );
   modals.set("Set up workspace SSH to open sessions", "Set up");
-  await vscode.commands.executeCommand("mend.newSession");
+  await vscode.commands.executeCommand("mend.openInNewWindow", workbenchId);
   const folder = await until("the workspace window to open", async () => openedFolders[0], 600_000);
   const authority = folder.authority;
   const match = /^ssh-remote\+([^@]+)@(.+)$/.exec(authority);
@@ -362,12 +456,10 @@ export async function run(): Promise<void> {
     throw new Error(`unexpected workspace URI ${folder.toString()}`);
   }
   const [, sshUser = "", alias = ""] = match;
-  const detail = await api(`/projects/${project.project.id}`);
-  const sessions = field(detail, "sessions");
-  const workbench = (Array.isArray(sessions) ? sessions : []).find(
-    (session) => field(session, "sealantWorkspaceId") === sshUser.replace(/^ws-/, ""),
-  );
-  const workbenchId = String(field(workbench, "id"));
+  const workspaceId = field(await api(`/sessions/${workbenchId}`), "session", "sealantWorkspaceId");
+  if (workspaceId !== sshUser.replace(/^ws-/, "")) {
+    throw new Error(`the window opened ${sshUser}, not the shell session's workspace`);
+  }
   const sshConfig = fs.readFileSync(path.join(os.homedir(), ".ssh", "config"), "utf8");
   if (
     !sshConfig.endsWith(
@@ -385,7 +477,7 @@ export async function run(): Promise<void> {
       .slice(0, 10),
   });
 
-  // 5. The Remote-SSH config the extension wrote, used by plain OpenSSH, as Remote-SSH uses it.
+  // 6. The Remote-SSH config the extension wrote, used by plain OpenSSH, as Remote-SSH uses it.
   const probe = sshIn(
     alias,
     sshUser,
@@ -394,7 +486,7 @@ export async function run(): Promise<void> {
   if (probe.status !== 0) throw new Error(`ssh into the workspace failed: ${probe.stderr}`);
   record("ssh", { stdout: probe.stdout.trim().split("\n") });
 
-  // 6. The session's terminal over /api/tty with an upgrade ticket: type, and read the answer.
+  // 7. The session's terminal over /api/tty with an upgrade ticket: type, and read the answer.
   quickPicks.push(pick((item) => String(item["label"]).includes("Shell")));
   await vscode.commands.executeCommand("mend.openTerminal", workbenchId);
   const pty = await until("the Mend terminal", async () => ptys[0], 30_000);
@@ -413,7 +505,7 @@ export async function run(): Promise<void> {
     /who-([a-z0-9_-]+)/.exec(screen.replaceAll("who-$(id -un)", ""))?.[1] ?? null;
   record("terminal", { answered: "typed-42", user: terminalUser, bytes: screen.length });
 
-  // 7. Review: the change opens in the browser, and the edit made in the terminal is in it.
+  // 8. Review: the change opens in the browser, and the edit made in the terminal is in it.
   await vscode.commands.executeCommand("mend.reviewChange", workbenchId);
   const reviewPage = await until("the review page to open", async () =>
     opened.find((page) => page.includes("/changes/")),
@@ -437,7 +529,7 @@ export async function run(): Promise<void> {
     throw new Error("the review page is not served at the server's URL");
   }
 
-  // 8. Remote-SSH for real: a new window over the managed alias installs VS Code's server there.
+  // 9. Remote-SSH for real: a new window over the managed alias installs VS Code's server there.
   if (process.env["MEND_E2E_REMOTE_SSH"] === "1") {
     await vscode.workspace
       .getConfiguration("remote.SSH")
@@ -587,7 +679,7 @@ export async function run(): Promise<void> {
     record("sessionSeesEdit", { terminal: "edited in VS Code over Remote-SSH", files: edited });
   }
 
-  // 9. Stop what this run started. The workbench session goes last: the Remote-SSH window runs in
+  // 10. Stop what this run started. The workbench session goes last: the Remote-SSH window runs in
   // its workspace, and VS Code in CLI test mode exits when that window's extension host exits, so
   // the harness confirms this stop.
   modals.set("Stop ", "Stop session");
