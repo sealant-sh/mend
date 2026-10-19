@@ -106,6 +106,7 @@ export default async (h) => {
     sleep,
     view,
     viewRows,
+    viewAction,
     badge,
     statusBarItems,
     treeItem,
@@ -1050,13 +1051,14 @@ export default async (h) => {
         (now) => now.message.startsWith("last heard from Mend at"),
         90_000,
       );
-      const newSession = await page()
-        .locator('.part.sidebar .title-actions .action-label[aria-label^="Mend: New Session"]')
-        .first()
-        .evaluate((element) => ({
-          disabled:
-            element.classList.contains("disabled") ||
-            element.getAttribute("aria-disabled") === "true",
+      // `Mend: New session` (`Mend: New Session…` on main's extension), or its offline twin.
+      const button = viewAction(/^(Mend: New [Ss]ession|Mend is offline)/);
+      const newSession = await button
+        .disabled()
+        .then(async (disabled) => ({
+          title: await button.title(),
+          disabled,
+          tooltip: await button.tooltip(),
         }))
         .catch(() => null);
       await shot("offline");
