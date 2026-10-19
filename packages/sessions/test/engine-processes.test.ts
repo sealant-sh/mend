@@ -1646,6 +1646,40 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("holds a provisioned session's workspace with no agent: the fold reads idle, a shell holds it, the resume's shell is ended", async () => {
+    const created: CreateOptions[] = [];
+    const stopped: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const held = yield* engine.holdWorkspace(session.id, "user-fixture");
+          expect(held.status).toBe("idle");
+          expect(held.settledAt).toBeNull();
+          expect(world.sessions.get(session.id)?.status).toBe("idle");
+          const rows = [...world.processes.values()].toSorted(
+            (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+          );
+          expect(rows.map((process) => [process.kind, process.harness, process.status])).toEqual([
+            ["agent-pty", "shell", "stopped"],
+            ["shell", null, "running"],
+          ]);
+          expect(created).toHaveLength(1);
+          expect(stopped).toEqual([]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
+    );
+  });
+
   it.effect("resumes a settled session with shell — no saved state required", () =>
     Effect.gen(function* () {
       const created: CreateOptions[] = [];

@@ -2562,6 +2562,27 @@ export class SessionEngine extends Context.Service<
       | DotfilesResolveError
     >;
     /**
+     * Hold the session's worktree open with no agent (docs/specs/mend-handoff.md, "Engine
+     * verb"): the workspace a shell resume opens, a shell process of `openedBy`'s in it, and
+     * the resume's own open-workbench shell ended. The fold reads `idle`: a supporting shell
+     * holds the workspace and no agent is live, as it does once an agent exits beside a
+     * `mend shell`. Answers the session as it then stands.
+     */
+    readonly holdWorkspace: (
+      sessionId: SessionId,
+      openedBy: string,
+    ) => Effect.Effect<
+      Session,
+      | SessionNotFoundError
+      | SessionNotLiveError
+      | LegacyBenchReadOnlyError
+      | ProjectNotFoundError
+      | SealantPlatformError
+      | HarnessStateError
+      | SessionLaunchSetupError
+      | DotfilesResolveError
+    >;
+    /**
      * One observation pass for external agents: a coding agent the user runs by hand (mend
      * shell, SSH, editor terminal) writes into the harness home, and fresh transcript writes —
      * on disk, or in the worktree's head capture — become observed `agent-external` process
@@ -20704,6 +20725,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
+      const holdWorkspace = Effect.fn("SessionEngine.holdWorkspace")(function* (
+        sessionId: SessionId,
+        openedBy: string,
+      ) {
+        yield* resumeSession(sessionId, "shell");
+        yield* openShell(sessionId, openedBy);
+        // The resume's login shell is the current agent; ended as its own exit would be
+        // observed (an open-workbench shell's exit never judges the work), the fold reads
+        // `idle` while the shell opened above holds the workspace.
+        const agent = currentAgentProcess(yield* processes.listForSession(sessionId));
+        if (
+          agent !== null &&
+          isLiveProcess(agent) &&
+          agent.harness === "shell" &&
+          agent.sealantSessionId !== null &&
+          (yield* closeProcessPty(agent.sealantWorkspaceId, agent.sealantSessionId))
+        ) {
+          yield* endProcess(agent, "stopped", null);
+        }
+        return yield* sessions.byId(sessionId);
+      });
+
       /**
        * Mode switch, the history half: land the newest same-harness agent's
        * native transcript (harvested to `transcript.native`) as durable
@@ -24158,6 +24201,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           detached(
             owned(sessionId)(oneLaunch(sessionId)(resumeSession(sessionId, harness, fresh))),
           ),
+        holdWorkspace: (sessionId, openedBy) =>
+          detached(owned(sessionId)(oneLaunch(sessionId)(holdWorkspace(sessionId, openedBy)))),
         switchMode: (sessionId, to, start, author) =>
           detached(
             owned(sessionId)(oneLaunch(sessionId)(switchMode(sessionId, to, start, author))),
