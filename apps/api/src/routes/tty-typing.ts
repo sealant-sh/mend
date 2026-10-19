@@ -1,5 +1,39 @@
 import { Clock, Effect, type Scope } from "effect";
 
+/**
+ * What a terminal emulator sends by itself, unasked by the person: replies to the program's
+ * queries (DA1, DA2, DA3, XTVERSION, DSR, DECRQM, kitty keyboard flags, OSC 10/11 colours, the
+ * window size report), focus in/out, SGR mouse reports and the bracketed-paste markers (xterm
+ * ctlseqs names).
+ */
+const EMULATOR_REPLIES = new RegExp(
+  [
+    String.raw`\x1b\[\?[\d;]*c`,
+    String.raw`\x1b\[>[\d;]*c`,
+    String.raw`\x1bP!\|[0-9A-Fa-f]*\x1b\\`,
+    String.raw`\x1bP>\|[^\x1b]*\x1b\\`,
+    String.raw`\x1b\[\??\d+;\d+(?:;\d+)?R`,
+    String.raw`\x1b\[[03]n`,
+    String.raw`\x1b\[\??[\d;]*\$y`,
+    String.raw`\x1b\[\?\d*u`,
+    String.raw`\x1b\[[IO]`,
+    String.raw`\x1b\]\d+;[^\x07\x1b]*(?:\x07|\x1b\\)`,
+    String.raw`\x1b\[<[\d;]*[Mm]`,
+    String.raw`\x1b\[20[01]~`,
+    String.raw`\x1b\[\d+;\d+;\d+t`,
+  ].join("|"),
+  "g",
+);
+
+const utf8 = new TextDecoder();
+
+/**
+ * Whether an input frame holds anything the person typed, once the emulator's own sequences are
+ * taken out. A reply split across two frames reads as typing; that is rare and costs one clear.
+ */
+export const isTyping = (bytes: Uint8Array | string): boolean =>
+  (typeof bytes === "string" ? bytes : utf8.decode(bytes)).replace(EMULATOR_REPLIES, "") !== "";
+
 /** How long after a key that cleared a wait the next clear waits. */
 export const TYPED_CLEAR_EVERY_MS = 2_000;
 

@@ -426,4 +426,28 @@ describe("keys in a terminal agent's terminal (G4)", () => {
       }
     }
   });
+
+  it("writes the emulator's own replies to the agent but reads only a key as the person typing", async () => {
+    const server = await startServer("process", false, CAROL_AGENT_IN_SHARED_A, false);
+    try {
+      const socket = await server.connect("carol");
+      const replies = "\x1b[?1;2c\x1b[>0;276;0c\x1b[24;1R\x1b[?0u\x1b[I";
+      socket.client.send(new TextEncoder().encode(replies));
+      socket.client.send(JSON.stringify({ t: "input", data: "\x1b[O" }));
+      socket.client.send(JSON.stringify({ t: "input", data: "\r" }));
+      socket.client.send(JSON.stringify({ t: "resize", cols: 132, rows: 47 }));
+      await wait(server.pty.written);
+      server.pty.output(LIVE_OUTPUT);
+      await wait(socket.live);
+      await socket.close();
+      expect(
+        server.pty.inputs.map((input) =>
+          typeof input === "string" ? input : new TextDecoder().decode(input),
+        ),
+      ).toEqual([replies, "\x1b[O", "\r"]);
+      expect(server.typed).toEqual([CAROL_AGENT_IN_SHARED_A]);
+    } finally {
+      await server.close();
+    }
+  });
 });

@@ -18,7 +18,7 @@ import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry, guardSocket } from "../connections.ts";
 import { SessionSteering } from "../session-steering.ts";
 import { connectionRefusal, forEachFrame, makeFrameGuard } from "../socket-budgets.ts";
-import { makeKeystrokeClear } from "./tty-typing.ts";
+import { isTyping, makeKeystrokeClear } from "./tty-typing.ts";
 import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tickets.ts";
 
 /** How long the platform may take to hand over a terminal before the upgrade is answered without one. */
@@ -368,7 +368,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
               if (input?.kind === "resize") attachment.resize(input.cols, input.rows);
               if (input?.kind !== "input") return Effect.void;
               attachment.send(input.data);
-              return typed;
+              return isTyping(input.data) ? typed : Effect.void;
             });
           }),
         );
