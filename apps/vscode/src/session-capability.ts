@@ -41,7 +41,28 @@ export const rowCapability = (facts: {
   };
 };
 
+/**
+ * The one thing a gesture at the session does for this viewer, wherever it comes from (the row,
+ * the palette, the status bar's pick, a deep link): Open, or what helps instead.
+ */
+export type RowOffer = "Open" | "Watch terminal" | "Review";
+
+export type NotYoursOffer = Exclude<RowOffer, "Open">;
+
+export const notYoursOffer = (
+  capability: Extract<RowCapability, { readonly kind: "notYours" }>,
+): NotYoursOffer => (capability.watch ? "Watch terminal" : "Review");
+
+export const rowOffer = (capability: RowCapability): RowOffer =>
+  capability.kind === "open" ? "Open" : notYoursOffer(capability);
+
 const LIVE_STATUSES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
+
+const OFFER_KEYS: Readonly<Record<RowOffer, string>> = {
+  Open: "open",
+  "Watch terminal": "watch",
+  Review: "review",
+};
 
 /** The row's `viewItem`: the manifest's menus key on it. */
 export const rowContextValue = (
@@ -49,6 +70,14 @@ export const rowContextValue = (
   capability: RowCapability,
 ): string => {
   const phase = LIVE_STATUSES.has(session.status) ? "live" : "settled";
-  const offer = capability.kind === "open" ? "open" : capability.watch ? "watch" : "review";
-  return `mend.session.${phase}.${offer}`;
+  return `mend.session.${phase}.${OFFER_KEYS[rowOffer(capability)]}`;
+};
+
+/** A session picker's words beside a name: its status, and what picking it does when not Open. */
+export const pickDescription = (
+  session: Pick<Session, "status">,
+  capability: RowCapability,
+): string => {
+  const offer = rowOffer(capability);
+  return offer === "Open" ? session.status : `${session.status} · ${offer}`;
 };

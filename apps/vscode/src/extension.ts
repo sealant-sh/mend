@@ -12,9 +12,16 @@ import { MendApiError, MendClient, normalizeProjectName } from "./client.js";
 import { ConnectionStore } from "./config.js";
 import { currentBranch, pathContains, repositoryFacts, worktreePath } from "./git.js";
 import { modelPickRows } from "./model-picks.js";
-import { openRunner, setUpWorkspaceSsh } from "./open-command.js";
+import { OFFER_COMMANDS, openRunner, setUpWorkspaceSsh } from "./open-command.js";
 import type { OpenMode } from "./open-flow.js";
 import type { OpenRunner } from "./open-runner.js";
+import {
+  pickDescription,
+  rowCapability,
+  rowOffer,
+  type RowCapability,
+  type RowOffer,
+} from "./session-capability.js";
 import { displaySession, joinLineOf, liveSessionLines } from "./session-lines.js";
 import {
   MendTreeProvider,
@@ -179,6 +186,44 @@ interface SessionPick extends vscode.QuickPickItem {
   readonly session: Session;
 }
 
+/** A session in a picker that opens: picking it does `offer`, which the item says. */
+interface OfferPick extends SessionPick {
+  readonly offer: RowOffer;
+}
+
+/**
+ * What the viewer may do with each of these sessions, by the row's rule. The roster is read only
+ * when one of them is someone else's, to name its launcher.
+ */
+const capabilitiesOf = async (
+  client: MendClient,
+  tree: MendTreeProvider,
+  sessions: ReadonlyArray<Session>,
+): Promise<(session: Session) => RowCapability> => {
+  const viewer = tree.knownViewer() ?? (await client.viewerId());
+  const named = sessions.some(
+    (session) => rowCapability({ session, viewer, members: [] }).kind === "notYours",
+  );
+  const members = named ? await client.memberNames() : [];
+  return (session) => rowCapability({ session, viewer, members });
+};
+
+const offerPick = (
+  session: Session,
+  capability: RowCapability,
+  item: { readonly label: string; readonly detail?: string },
+): OfferPick => {
+  const detail = capability.kind === "notYours" ? capability.why : item.detail;
+  return {
+    label: item.label,
+    description: pickDescription(session, capability),
+    ...(detail === undefined ? {} : { detail }),
+    action: "session",
+    session,
+    offer: rowOffer(capability),
+  };
+};
+
 interface ActionPick extends vscode.QuickPickItem {
   readonly action: "new-session" | "new-worktree" | "open-mend";
 }
@@ -213,7 +258,7 @@ const NEW_SHELL: TerminalPick = {
   address: "new-shell",
 };
 
-type ScopePick = SessionPick | ActionPick;
+type ScopePick = OfferPick | ActionPick;
 
 class MendCommands {
   constructor(
@@ -282,12 +327,42 @@ class MendCommands {
    */
   async open(argument: unknown, mode: OpenMode): Promise<void> {
     try {
-      const location = await this.sessionLocation(argument);
+      const location = await this.sessionLocation(argument, (project, sessions) =>
+        this.pickToOpen(project, sessions, mode),
+      );
       if (location === null) return;
       await this.runner.open({ project: location.project, session: location.session }, mode);
     } catch (cause) {
       void showError(cause);
     }
+  }
+
+  /**
+   * The palette's session pick for Open: each session says what picking it does. A session the
+   * viewer cannot open runs what it offered instead, and nothing is left to open.
+   */
+  private async pickToOpen(
+    project: Project,
+    sessions: ReadonlyArray<Session>,
+    mode: OpenMode,
+  ): Promise<Session | null> {
+    const capability = await capabilitiesOf(this.client, this.tree, sessions);
+    const picked = await vscode.window.showQuickPick<OfferPick>(
+      sessions.map((session) =>
+        offerPick(session, capability(session), { label: displaySession(session) }),
+      ),
+      { title: `Choose a session · ${project.name}`, ignoreFocusOut: true },
+    );
+    if (picked === undefined) return null;
+    if (picked.offer === "Open") return picked.session;
+    await this.act({ kind: "session", project, session: picked.session }, picked.offer, mode);
+    return null;
+  }
+
+  /** What a picked session offered: Open, or what helps instead of it. */
+  private async act(node: SessionNode, offer: RowOffer, mode: OpenMode): Promise<void> {
+    if (offer === "Open") await this.open(node, mode);
+    else await vscode.commands.executeCommand(OFFER_COMMANDS[offer], node);
   }
 
   /**
@@ -795,19 +870,19 @@ class MendCommands {
         ? this.scope.currentDetail()
         : await this.client.projectDetail(project.id);
     if (detail === null) return;
-    const sessions: SessionPick[] = detail.sessions
+    const capability = await capabilitiesOf(this.client, this.tree, detail.sessions);
+    const sessions: OfferPick[] = detail.sessions
       .toSorted((left, right) => {
         if (left.status === "waiting" && right.status !== "waiting") return -1;
         if (right.status === "waiting" && left.status !== "waiting") return 1;
         return right.createdAt.localeCompare(left.createdAt);
       })
-      .map((session) => ({
-        label: `${session.status === "waiting" ? "$(bell-dot)" : "$(circle-filled)"} ${displaySession(session)}`,
-        description: session.status,
-        detail: session.branch,
-        action: "session",
-        session,
-      }));
+      .map((session) =>
+        offerPick(session, capability(session), {
+          label: `${session.status === "waiting" ? "$(bell-dot)" : "$(circle-filled)"} ${displaySession(session)}`,
+          detail: session.branch,
+        }),
+      );
     const actions: ActionPick[] = [
       { label: "$(add) New session…", action: "new-session" },
       { label: "$(new-folder) New worktree without an agent…", action: "new-worktree" },
@@ -820,8 +895,9 @@ class MendCommands {
     });
     if (picked === undefined) return;
     if (picked.action === "session") {
-      await this.open(
-        { kind: "session", project, session: picked.session } satisfies SessionNode,
+      await this.act(
+        { kind: "session", project, session: picked.session },
+        picked.offer,
         "follow-setting",
       );
     } else if (picked.action === "new-session") {
@@ -865,7 +941,13 @@ class MendCommands {
     }
   }
 
-  private async sessionLocation(argument?: unknown): Promise<SessionLocation | null> {
+  private async sessionLocation(
+    argument?: unknown,
+    choose: (project: Project, sessions: ReadonlyArray<Session>) => Promise<Session | null> = (
+      project,
+      sessions,
+    ) => this.chooseSession(project, sessions),
+  ): Promise<SessionLocation | null> {
     if (isSessionNode(argument)) {
       return {
         project: argument.project,
@@ -889,8 +971,18 @@ class MendCommands {
     const project = this.scope.currentProject();
     if (project === null) return null;
     const detail = await this.client.projectDetail(project.id);
+    const session = await choose(project, detail.sessions);
+    return session === null
+      ? null
+      : { project, session, worktreePath: worktreePath(project, session) };
+  }
+
+  private async chooseSession(
+    project: Project,
+    sessions: ReadonlyArray<Session>,
+  ): Promise<Session | null> {
     const picked = await vscode.window.showQuickPick<SessionPick>(
-      detail.sessions.map((session) => ({
+      sessions.map((session) => ({
         label: displaySession(session),
         description: session.status,
         action: "session",
@@ -898,9 +990,7 @@ class MendCommands {
       })),
       { title: `Choose a session · ${project.name}`, ignoreFocusOut: true },
     );
-    return picked === undefined
-      ? null
-      : { project, session: picked.session, worktreePath: worktreePath(project, picked.session) };
+    return picked?.session ?? null;
   }
 
   /** Set up workspace SSH for this client and its configured Mend server, from the palette. */
@@ -944,7 +1034,12 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     ),
     (cause) => void showError(cause),
   );
-  const opens = openRunner({ context, client, workspaceWindow });
+  const opens = openRunner({
+    context,
+    client,
+    workspaceWindow,
+    capability: async (session) => (await capabilitiesOf(client, tree, [session]))(session),
+  });
   const commands = new MendCommands(
     context,
     connections,

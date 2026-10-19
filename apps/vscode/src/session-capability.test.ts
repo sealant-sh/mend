@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { rowCapability, rowContextValue } from "./session-capability.js";
+import { pickDescription, rowCapability, rowContextValue, rowOffer } from "./session-capability.js";
 import type { Session } from "./types.js";
 
 type Facts = Pick<
@@ -47,6 +47,25 @@ describe("a session Ana launched, as Dana sees it", () => {
     expect(rowCapability({ session: anas, viewer: "dana", members: [] })).toMatchObject({
       why: "another person launched this workspace · Remote-SSH opens it only for them",
     });
+  });
+});
+
+describe("a session picker", () => {
+  it("lists Ana's session with what helps instead of Open", () => {
+    const shared = { ...anas, sharedControlEnabledAt: "2026-10-19T09:00:00.000Z" };
+    expect(
+      pickDescription(shared, rowCapability({ session: shared, viewer: "dana", members })),
+    ).toBe("running · Watch terminal");
+    expect(pickDescription(anas, rowCapability({ session: anas, viewer: "dana", members }))).toBe(
+      "running · Review",
+    );
+  });
+
+  it("lists Dana's own session by its status: picking it opens", () => {
+    const danas = { ...anas, ownerUserId: "dana", workspaceLauncherUserId: "dana" };
+    const capability = rowCapability({ session: danas, viewer: "dana", members });
+    expect(rowOffer(capability)).toBe("Open");
+    expect(pickDescription(danas, capability)).toBe("running");
   });
 });
 

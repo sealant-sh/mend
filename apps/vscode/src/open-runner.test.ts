@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { OpenAction, OpenState } from "./open-flow.js";
 import { OpenRunner, type OpenEffects, type OpenTarget } from "./open-runner.js";
+import { rowCapability, type RowCapability } from "./session-capability.js";
 import type { Project, Session } from "./types.js";
 import type { WindowRole } from "./window-role.js";
 
@@ -45,6 +46,8 @@ const world = (
   const reads = [...(overrides.reads ?? [{ status: "running", sealantWorkspaceId: WORKSPACE }])];
   const states: Array<OpenState> = [];
   const effects = {
+    capability: async (): Promise<RowCapability> => ({ kind: "open" }),
+    refuse: vi.fn(),
     now: () => clock,
     sleep: async (ms: number) => {
       clock += ms;
@@ -78,6 +81,53 @@ const world = (
 const target = (overrides: Partial<Session> = {}): OpenTarget => ({
   session: session(overrides),
   project,
+});
+
+describe("OpenRunner, a session Ana launched", () => {
+  const anas = (sharedControlEnabledAt: string | null) =>
+    target({ ownerUserId: "ana", workspaceLauncherUserId: "ana", sharedControlEnabledAt });
+  /** Dana's world, reading capabilities the way the extension does. */
+  const danas = () =>
+    world({
+      capability: async (session) =>
+        rowCapability({ session, viewer: "dana", members: [{ userId: "ana", name: "Ana" }] }),
+    });
+
+  it("opens nothing, from any entry point: it says why once and offers Watch terminal with shared control", async () => {
+    const { effects, runner, states } = danas();
+    const shared = anas("2026-10-19T09:00:00.000Z");
+    expect(await runner.open(shared, "follow-setting")).toBe("refused");
+    expect(effects.refuse).toHaveBeenCalledTimes(1);
+    expect(effects.refuse).toHaveBeenCalledWith(
+      shared,
+      "Ana launched this workspace · Remote-SSH opens it only for them",
+      "Watch terminal",
+    );
+    expect(effects.openFolder).not.toHaveBeenCalled();
+    expect(effects.resume).not.toHaveBeenCalled();
+    expect(effects.installRemoteSsh).not.toHaveBeenCalled();
+    expect(effects.seedRemotePlatform).not.toHaveBeenCalled();
+    expect(effects.report).not.toHaveBeenCalled();
+    expect(states).toEqual([]);
+  });
+
+  it("offers Review when shared control is off, and Open in New Window refuses the same way", async () => {
+    const { effects, runner } = danas();
+    expect(await runner.open(anas(null), "new-window")).toBe("refused");
+    expect(effects.refuse).toHaveBeenCalledWith(
+      anas(null),
+      "Ana launched this workspace · Remote-SSH opens it only for them",
+      "Review",
+    );
+    expect(effects.openFolder).not.toHaveBeenCalled();
+  });
+
+  it("still opens Dana's own session in the same world", async () => {
+    const { effects, runner } = danas();
+    expect(await runner.open(target(), "follow-setting")).toBe("opened");
+    expect(effects.refuse).not.toHaveBeenCalled();
+    expect(effects.openFolder).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("OpenRunner", () => {

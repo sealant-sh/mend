@@ -6,7 +6,9 @@ import * as vscode from "vscode";
 import type { MendClient } from "./client.js";
 import { statusText, type OpenAction, type OpenState } from "./open-flow.js";
 import { OpenRunner, type OpenEffects } from "./open-runner.js";
-import type { WorkspaceSshView } from "./types.js";
+import type { NotYoursOffer, RowCapability } from "./session-capability.js";
+import type { SessionNode } from "./tree.js";
+import type { Session, WorkspaceSshView } from "./types.js";
 import { windowRole } from "./window-role.js";
 import { runWorkspaceSshSetup, workspaceSshReadiness } from "./workspace-ssh.js";
 import type { WorkspaceWindow } from "./workspace-window.js";
@@ -128,15 +130,32 @@ class OpenProgress implements vscode.Disposable {
   }
 }
 
+/** The command each refused open offers instead, run on the session's row node. */
+export const OFFER_COMMANDS: Readonly<Record<NotYoursOffer, string>> = {
+  "Watch terminal": "mend.watchTerminal",
+  Review: "mend.reviewChange",
+};
+
 /** The open runner over VS Code and Mend. */
 export const openRunner = (deps: {
   readonly context: vscode.ExtensionContext;
   readonly client: MendClient;
   readonly workspaceWindow: WorkspaceWindow;
+  readonly capability: (session: Session) => Promise<RowCapability>;
 }): { readonly runner: OpenRunner; readonly disposable: vscode.Disposable } => {
   const { context, client, workspaceWindow } = deps;
   const progress = new OpenProgress();
   const effects: OpenEffects = {
+    capability: deps.capability,
+    refuse: (target, why, offer) =>
+      void (async () => {
+        if ((await vscode.window.showInformationMessage(why, offer)) !== offer) return;
+        await vscode.commands.executeCommand(OFFER_COMMANDS[offer], {
+          kind: "session",
+          project: target.project,
+          session: target.session,
+        } satisfies SessionNode);
+      })(),
     now: () => Date.now(),
     sleep: (ms) => wait(ms),
     thisWindow: () =>

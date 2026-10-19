@@ -8,6 +8,7 @@ import {
   type OpenMode,
   type OpenState,
 } from "./open-flow.js";
+import { notYoursOffer, type NotYoursOffer, type RowCapability } from "./session-capability.js";
 import { displaySession } from "./session-lines.js";
 import type { Project, Session } from "./types.js";
 import type { WindowRole } from "./window-role.js";
@@ -17,10 +18,17 @@ export interface OpenTarget {
   readonly project: Project;
 }
 
-export type OpenOutcome = "opened" | "focused" | "cancelled" | "failed";
+export type OpenOutcome = "opened" | "focused" | "cancelled" | "failed" | "refused";
 
 /** Everything an open does to the world, injected so the run itself stays pure. */
 export interface OpenEffects {
+  /** What the viewer may do with the session, by the row's rule. */
+  readonly capability: (session: Session) => Promise<RowCapability>;
+  /**
+   * Says once why the session does not open for this viewer and offers what helps instead. It
+   * waits on her, so it runs on its own and the open settles at once.
+   */
+  readonly refuse: (target: OpenTarget, why: string, offer: NotYoursOffer) => void;
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
   readonly thisWindow: () => WindowRole;
@@ -113,6 +121,12 @@ export class OpenRunner {
     };
     let action: OpenAction = "Retry";
     try {
+      // Remote-SSH would refuse anyone but the launcher; Open stops here instead.
+      const capability = await effects.capability(target.session);
+      if (capability.kind === "notYours") {
+        effects.refuse(target, capability.why, notYoursOffer(capability));
+        return { outcome: "refused", failure: null };
+      }
       const role = effects.thisWindow();
       if (role.kind === "workspace" && role.workspaceId === target.session.sealantWorkspaceId) {
         await effects.focusAgentTerminal();
