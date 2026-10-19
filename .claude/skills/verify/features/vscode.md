@@ -197,7 +197,10 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
   `FAKES.claude` and, for Change…, Codex with `FAKES.codexAuth`
   (`mend connect <provider> --from-stdin`, `via: "setup"`); `window.openFoldersInNewWindow` is `on`,
   so Open keeps the local window. `<base>` is the project's default branch (`master` for
-  octocat/Hello-World). The lanes, in an order where each leaves the next a usable world:
+  octocat/Hello-World). Runs `ns1` and `ns3` (2026-10-19, flow 3 at `cabb426c8`, server
+  `0.0.0-dev.shab2a748d64120`) passed every step; `ns2` stopped at Change… on a race in the recipe
+  (it read a step's title over the last step's rows), fixed by reading a step once two samples
+  agree. The lanes, in an order where each leaves the next a usable world:
   - a1. `palette("Mend: New session")`: one quick input, `quickInput.step()` reads the title
     `New session · <project>` with no counter, placeholder `What should claude do?`, and one row
     whose description is the dim line `claude · default model · from <base>` and whose buttons read
@@ -308,9 +311,12 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
   - The start. With flow 3: `palette("Mend: New session")`, `workbench` typed (a shell's name),
     `quickInput.button("Change…")`, `Harness` → `shell`, the later steps kept, Enter; the row
     `workbench` reads `running`, and the start opens no window (`opens` and windows unchanged; the
-    calibration next is the counter's first +1). On main's extension (the palette lists
-    `Mend: New Session…`): `Workbench` picked, and the start opens one window: `opens 0 → 1`, the
-    signal's first check, its terminal recorded, not asserted (main attached nothing).
+    calibration next is the counter's first +1). Run `op1` (flow 3 at `cabb426c8`): `Harness` →
+    `shell`, `Base: a branch or commit` → `this window's branch`, the dim line
+    `shell · from master`, 0 windows, `opens 0 → 0`, then the calibration `opens 0 → 1 → 2`. On
+    main's extension (the palette lists `Mend: New Session…`): `Workbench` picked, and the start
+    opens one window: `opens 0 → 1`, the signal's first check, its terminal recorded, not asserted
+    (main attached nothing).
   - Setup (`via: "setup"`): `userSettings({ "window.openFoldersInNewWindow": "on" })`, so every open
     keeps the local window until the last lane.
   - Calibration. The open button twice with a gap, each window connected and closed: `opens` +1,
