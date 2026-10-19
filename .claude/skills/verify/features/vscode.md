@@ -1,14 +1,14 @@
 # VS Code extension
 
-The Mend extension for VS Code (`apps/vscode`) lists a person's projects and sessions in a
-`Projects and sessions` view and opens a session inside its workspace over Remote-SSH. The editor's
-files are then the session's worktree, and its integrated terminal runs in the workspace, where Mend
-observes a `claude` or `codex` started there. From the view a person starts a session (a Workbench
-shell, a Claude or Codex agent, or an agent with options), starts another session in the same
-worktree, makes a worktree without an agent, attaches a session's terminal in the current window,
-watches another person's session read-only, stops a session, and opens it or its change in Mend's
-web app. The extension is published as `sealant-sh.mend`. A verify run drives it live in a real VS
-Code with `scripts/drive-vscode.mjs`. The driver builds the extension from a checkout, runs it with
+The Mend extension for VS Code (`apps/vscode`) lists a person's sessions in a `Sessions` view and
+opens a session inside its workspace over Remote-SSH. The editor's files are then the session's
+worktree, and its integrated terminal runs in the workspace, where Mend observes a `claude` or
+`codex` started there. From the view a person starts a session (a Workbench shell, a Claude or Codex
+agent, or an agent with options), starts another session in the same worktree, makes a worktree
+without an agent, attaches a session's terminal in the current window, watches another person's
+session read-only, stops a session, and opens it or its change in Mend's web app. The extension is
+published as `sealant-sh.mend`. A verify run drives it live in a real VS Code with
+`scripts/drive-vscode.mjs`. The driver builds the extension from a checkout, runs it with
 Microsoft's Remote-SSH on an Xvfb display, and clicks the workbench DOM over CDP against a packaged
 Mend server in Docker-in-Docker. Its evidence is numbered screenshots, a step log (`steps.jsonl`),
 the editor's and the server's logs, and a video of the display. The flows below follow the stories
@@ -20,8 +20,14 @@ in `docs/specs/vscode-stories.md` (a to h) and say, per story, where today's ext
   `mend-<version>.vsix` (`<version>` is `apps/vscode/package.json`'s).
 - `vscode-connect` reads the CLI's connection, or `Mend: Connect to server` signs in through the
   browser, with a pasted device token, or with none. `Mend: Sign out` ends it.
-- `vscode-view` shows `Needs you` and the projects with their sessions, scoped to the open folder's
-  project unless toggled; the status bar names the project and what waits.
+- `vscode-view` groups `Needs you`, `Since you last looked`, `Running` and `Projects` (collapsed) in
+  any window that is not a session's workspace; a workspace window shows its session and one line,
+  `<n> other sessions · <n> needs you`. Rows read `<word> · <fact>`. The Mend icon's badge counts
+  `Needs you`; the status bar reads `Mend · 1 needs you · 2 finished`, or `● <session> · <word>` in
+  a workspace window. Only the focused window toasts a wait (`<session> is waiting · <fact>`
+  [Answer]) or a finished session (`<session> finished · <fact>` [Review] [Open]).
+- `vscode-answer` is `Mend: Answer` on a waiting row or toast: the agent's terminal attaches in this
+  window's panel, and no window opens.
 - `vscode-adopt` adopts a project from a clone URL and a name.
 - `vscode-new-session` starts a Workbench shell, a Claude or Codex agent, or an agent with options.
 - `vscode-new-in-worktree` starts another session in a session's worktree.
@@ -80,16 +86,18 @@ in `docs/specs/vscode-stories.md` (a to h) and say, per story, where today's ext
   `installing Remote-SSH · <n> s`, `setting up workspace SSH · <n> s`,
   `starting <session>'s workspace · <n> s` or `opening <session>`.
 - VS Code: the Command Palette lists every command, titles verbatim: `Mend: Refresh`,
-  `Mend: Toggle current project scope`, `Mend: Connect to server`, `Mend: Sign out`,
-  `Mend: Adopt a project…`, `Mend: Open`, `Mend: Open in New Window`, `Mend: Open terminal`,
+  `Mend: Connect to server`, `Mend: Sign out`, `Mend: Adopt a project…`, `Mend: Open`,
+  `Mend: Open in New Window`, `Mend: Answer`, `Mend: Choose a session`, `Mend: Open terminal`,
   `Mend: Watch terminal`, `Mend: Review change`, `Mend: New session in this worktree…`,
   `Mend: Open in Mend`, `Mend: Copy worktree path`, `Mend: Set up workspace SSH`,
   `Mend: Stop session`, `Mend: New Session…`, `Mend: New worktree without an agent…`,
   `Mend: Show project sessions`, `Mend: Bring my editor into this workspace`,
   `Mend: Show workspace editor log`.
-- VS Code: the status bar item `$(pulse) Mend: <project> · <n> sessions[ · <n> waiting]`, or
-  `Mend: <project> › <session>` when the window's folder is a session's worktree. It runs
-  `Mend: Show project sessions`, a quick pick titled `Mend · <project>`.
+- VS Code: the status bar item `Mend · <n> needs you · <n> finished · <n> running` (only the parts
+  that are not zero; `Mend` alone otherwise), which shows the Mend view; offline
+  `Mend · last heard at <hh:mm>`. In a session's workspace window two items, the session's dot and
+  `<session> · <word>`; both open the picker titled `Mend sessions`.
+- VS Code: the Mend icon's badge, the number of sessions under `Needs you`.
 - VS Code settings: `mend.serverUrl`, `mend.workspaceSshHost` and `mend.workspaces.bringMyEditor`.
 - URI: `vscode://sealant-sh.mend/open?session=<session-id>`; without `session` it shows the Mend
   view.
@@ -407,17 +415,25 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     with `Review`; its click shows VS Code's
     `Do you want Code to open the external website? <web>/changes/<changeId>` (dismissed). The
     palette's pick lists `ana running · Review`.
-  - The status bar's `Mend: <project> · <n> sessions` item, shared control off: its pick
-    `Mend · <project>` lists `ana running · Review` with the reason, no Open; `opens` and windows
-    unchanged.
-- **f. Dana comes back the next morning.** From the default `up`, after stories a and c.
-  - `palette("Developer: Reload Window")`, then `view("Mend")`. Record
-    `treeItem("Projects").text()`, `treeItem(<project>).text()`, each session row's
-    `treeItem(<label>).text()` and `statusBar("Mend:").text()`, then `shot("next-morning")`. Today's
-    order is `Needs you` (only while a session reads `waiting`), then `Projects`.
-  - The story's `Needs you` row for a terminal agent, and its badge, are `not run · G4`.
-  - **Since you last looked**, **Running** and the status bar `Mend · 1 needs you · 2 finished` are
-    not in today's extension. Report `not run · not built`.
+  - `Mend: Show project sessions`, shared control off: its pick `Mend · <project>` lists
+    `ana running · Review` with the reason, no Open; `opens` and windows unchanged.
+- **f. Dana comes back the next morning.** `recipes/vscode-view.mjs`, from a default `up` on a
+  server with G4 (`--build`, or `--image` of one built from a checkout that has #1082).
+  - Setup over the API: three claude terminal agents; `migrate-orders` waits (the G4 stand-in fires
+    `PermissionRequest` in a shell beside it, with the agent's `--session-id`), `docs-typos` is told
+    `/exit` (`completed`, `exited with code 0`), `flaky-auth-test` gets SIGTERM (`failed`,
+    `exited with code 143`; SIGKILL records no code and reads `completed`). Close a shell opened
+    beside an agent (`exit`) before the session should settle: a live shell holds it `idle`.
+  - `palette("Developer: Reload Window")` stands in for VS Code starting, then `view("Mend")`;
+    `viewRows()`, `badge("Mend")` and `statusBarItems()` read the view. Observed (run `view4`):
+    badge `1`, status bar `Mend · 1 needs you · 2 finished`, `Needs you`
+    `migrate-orders · waiting · claude needs your permission to use Bash · since 09:01`,
+    `Since you last looked` `flaky-auth-test · failed · exited with code 143` and
+    `docs-typos · completed · observed · exited with code 0`, `Projects` collapsed.
+  - f3: `treeItem(<row>).click()` takes each out of `Since you last looked`; after
+    `Developer: Reload Window` they stay out.
+  - A landing (`landed · pull request #412 · open · observed`) is `not run`: the world's origin is a
+    public GitHub repository nobody can push to. The model's unit tests cover the words.
 - **g. mend handoff: Dana's local branch becomes a session.** `not run · G6`. The command **Hand off
   to Mend…** is not in today's manifest either.
 - **h. First run.** From `up --signed-out --no-ssh-setup`.
