@@ -50,6 +50,8 @@ import { PushSender } from "./push-sender.ts";
  *   state silently — reconnecting or restarting the server must not buzz the
  *   phone. A turn rings only if this process saw it open first.
  * - freshness: a terminal state older than two minutes is history, not news.
+ * - re-ring bound: a session rings `attention` at most once a minute (`ATTENTION_RERING_MS`), so
+ *   a loop that flips it between `running` and `waiting` cannot buzz a phone on every flip.
  * - stops: the idle stop (`idle · stopped after 15 min`) and a person's stop never ring. Both end
  *   the agent as `stopped` and cancel its open turns; a session whose idle stop is claimed reads
  *   no phase even before the stop lands.
@@ -61,6 +63,7 @@ import { PushSender } from "./push-sender.ts";
 type Phase = "attention" | "completed" | "failed";
 
 const TERMINAL_FRESHNESS_MS = 2 * 60_000;
+export const ATTENTION_RERING_MS = 60_000;
 const BODY_LIMIT = 140;
 
 /**
@@ -258,6 +261,8 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
     const slackInstalls = yield* SlackInstallsRepo;
 
     const lastPhase = new Map<string, Phase | null>();
+    /** Per session: when its last attention push went out. */
+    const lastAttentionRing = new Map<string, number>();
     /** Per session: the open (queued/running) turn ids seen on the last event. */
     const watchedTurns = new Map<string, ReadonlySet<string>>();
 
@@ -319,12 +324,17 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
       lastPhase.set(session.id, phase);
       if (previous === undefined) return; // unknown baseline — record, never ring
       if (previous === phase || phase === null) return;
-      if (phase !== "attention") {
-        const now = yield* Clock.currentTimeMillis;
+      const now = yield* Clock.currentTimeMillis;
+      if (phase === "attention") {
+        const rang = lastAttentionRing.get(session.id);
+        if (rang !== undefined && now - rang < ATTENTION_RERING_MS) return;
+      } else {
         const endedAt = session.settledAt?.getTime() ?? currentAgent?.exitedAt?.getTime() ?? now;
         if (now - endedAt > TERMINAL_FRESHNESS_MS) return;
       }
       yield* send(session, phaseKind(phase), notificationBody(session, phase));
+      // After the send: a push that failed did not ring, so it does not hold the next one back.
+      if (phase === "attention") lastAttentionRing.set(session.id, now);
     });
 
     const ringForTurn = Effect.fn("SessionNotifier.ringForTurn")(function* (
