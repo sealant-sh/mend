@@ -270,7 +270,8 @@ Starting a session records the Slack thread (`team_id`, `channel_id`, `thread_ts
 Mend posts only into the thread the request came from.
 
 - **A reaction** on the request: ⏳ while the session runs, ✅ when it completes, ❌ when it fails
-  or is refused, 💤 once Mend stopped its idle agent (below).
+  or is refused, 💤 once Mend stopped its idle agent (below). A terminal agent that finished its
+  turn reads `idle · claude finished its turn` and carries none (decided 2026-10-19).
 - **One status message**, which Mend edits in place (`chat.update`). It shows the project and why it
   was chosen, the harness, the worktree branch and the observed state, with an "Open in Mend"
   button. For example: `billing-api · from the thread · claude · running · mend/flaky-login-test`,

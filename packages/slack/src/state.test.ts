@@ -1,5 +1,5 @@
 import { SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
-import { SessionProcess, type AgentTurnStatus } from "@mend/domain/workbench";
+import { AgentWait, SessionProcess, type AgentTurnStatus } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -102,6 +102,31 @@ describe("the state a thread hears", () => {
       }),
     ).toBe("failed");
     expect(slackSessionState({ status: "idle", currentAgent: null, turns: [] })).toBe("starting");
+  });
+
+  it("reads a live terminal agent that finished its turn as idle, and an ended one by its exit", () => {
+    const finished = new AgentWait({ kind: "prompt", tool: null, since: new Date(0) });
+    const terminal = agent({ kind: "agent-pty", waiting: finished });
+    expect(slackSessionState({ status: "idle", currentAgent: terminal, turns: [] })).toBe("idle");
+    expect(isSettledState("idle")).toBe(false);
+    const ended = agent({
+      kind: "agent-pty",
+      status: "exited",
+      exitCode: 0,
+      exitedAt: new Date("2026-09-23T10:20:00.000Z"),
+    });
+    expect(slackSessionState({ status: "idle", currentAgent: ended, turns: [] })).toBe("completed");
+  });
+
+  it("keeps the session's own running or waiting when its newest agent finished its turn", () => {
+    const finished = new AgentWait({ kind: "prompt", tool: null, since: new Date(0) });
+    const terminal = agent({ kind: "agent-pty", waiting: finished });
+    expect(slackSessionState({ status: "running", currentAgent: terminal, turns: [] })).toBe(
+      "running",
+    );
+    expect(slackSessionState({ status: "waiting", currentAgent: terminal, turns: [] })).toBe(
+      "waiting",
+    );
   });
 
   it("reads a session still saving its workspace after the stop as its agent ended", () => {

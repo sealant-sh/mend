@@ -556,7 +556,7 @@ export default async (h) => {
         sameSince: true,
       },
       { spec: "PostToolUse", status: "running", kind: null },
-      { spec: "Stop", status: "waiting", kind: "prompt" },
+      { spec: "Stop", status: "idle", kind: "prompt" },
       { spec: "UserPromptSubmit", status: "running", kind: null },
       {
         spec: "PermissionRequest",

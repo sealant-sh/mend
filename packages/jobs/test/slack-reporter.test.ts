@@ -39,10 +39,12 @@ import {
   AgentItem,
   AgentRequest,
   AgentTurn,
+  AgentWait,
   Change,
   ChangeLanding,
   ChangePass,
   ChangeTour,
+  foldSessionLiveness,
   Project,
   ReviewComment,
   idleStopSummary,
@@ -597,6 +599,13 @@ const world = (options: WorldOptions = {}) => {
 
 const blockText = (post: { readonly blocks?: ReadonlyArray<unknown> }) => JSON.stringify(post);
 
+const statusWith = (state: string) =>
+  `billing-api · from a link in the thread · claude · ${state} · mend/flaky-login-test`;
+
+/** The session's live terminal claude, waiting as its hooks last reported. */
+const terminal = (waiting: AgentWait | null) =>
+  new SessionProcess({ ...agent, kind: "agent-pty", sealantSessionId: "pty-1", waiting });
+
 describe("the Slack thread reporter", () => {
   it("edits the one status message as the state moves, and swaps ⏳ for ✅ with the line counts", async () => {
     const w = world();
@@ -651,6 +660,83 @@ describe("the Slack thread reporter", () => {
 
     await w.advance(STATUS_EDIT_EVERY_MS);
     expect(w.updates()).toEqual([running, waiting]);
+  });
+
+  it("words a terminal agent's finished turn as idle with no reaction, and its next ask as waiting", async () => {
+    const w = world();
+    const reporter = w.worker();
+    const report = async (row: SessionProcess) => {
+      w.state.processes = [row];
+      const liveness = foldSessionLiveness([row]);
+      if (liveness === "settled") throw new Error("the terminal agent is live");
+      w.state.session = sessionWith(liveness);
+      await w.observe(reporter);
+      await w.advance(STATUS_EDIT_EVERY_MS);
+    };
+
+    await report(terminal(null));
+    expect(w.updates()).toEqual([statusWith("running")]);
+    expect(w.reactions()).toEqual(new Set(["hourglass_flowing_sand"]));
+
+    await report(terminal(new AgentWait({ kind: "prompt", tool: null, since: NOW })));
+    expect(w.updates().at(-1)).toBe(statusWith("idle · claude finished its turn"));
+    expect(w.state.thread.reportedState).toBe("idle");
+    expect(w.reactions()).toEqual(new Set());
+
+    await report(terminal(new AgentWait({ kind: "permission", tool: "Bash", since: NOW })));
+    expect(w.updates().at(-1)).toBe(
+      statusWith("waiting · claude needs your permission to use Bash"),
+    );
+    expect(w.state.thread.reportedState).toBe("waiting");
+    expect(w.reactions()).toEqual(new Set(["hourglass_flowing_sand"]));
+  });
+
+  it("follows the session's fold when several agents are live, and words only a line of its state", async () => {
+    const pty = (id: string, waiting: AgentWait | null, createdAt: Date) =>
+      new SessionProcess({
+        ...terminal(waiting),
+        id: SessionProcessId.make(id),
+        sealantSessionId: id,
+        createdAt,
+      });
+    const asks = new AgentWait({ kind: "permission", tool: "Bash", since: NOW });
+    const finished = new AgentWait({ kind: "prompt", tool: null, since: NOW });
+    const threadSays = async (
+      rows: ReadonlyArray<SessionProcess>,
+      requests: ReadonlyArray<AgentRequest> = [],
+    ) => {
+      const w = world();
+      w.state.processes = rows;
+      w.state.requests = requests;
+      const liveness = foldSessionLiveness(rows, requests.length > 0);
+      if (liveness === "settled") throw new Error("an agent is live");
+      w.state.session = sessionWith(liveness);
+      await w.observe(w.worker());
+      return { line: w.updates().at(-1), reactions: w.reactions() };
+    };
+    const waiting = {
+      line: statusWith("waiting · claude needs your permission to use Bash"),
+      reactions: new Set(["hourglass_flowing_sand"]),
+    };
+    const older = new Date(NOW.getTime() - 60_000);
+
+    expect(await threadSays([pty("old", asks, older), pty("new", finished, NOW)])).toEqual(waiting);
+    expect(await threadSays([pty("b", finished, NOW), pty("a", asks, NOW)])).toEqual(waiting);
+    expect(await threadSays([pty("a", asks, NOW), pty("b", finished, NOW)])).toEqual(waiting);
+    expect(await threadSays([pty("one", finished, older), pty("two", finished, NOW)])).toEqual({
+      line: statusWith("idle · claude finished its turn"),
+      reactions: new Set(),
+    });
+    expect(await threadSays([pty("working", null, older), pty("done", finished, NOW)])).toEqual({
+      line: statusWith("running"),
+      reactions: new Set(["hourglass_flowing_sand"]),
+    });
+    expect(
+      await threadSays([agent, pty("done", finished, NOW)], [request("r1", "user-input")]),
+    ).toEqual({
+      line: statusWith("waiting for input"),
+      reactions: new Set(["hourglass_flowing_sand"]),
+    });
   });
 
   it("offers Switch project until the first turn completes, and takes it off with that edit", async () => {

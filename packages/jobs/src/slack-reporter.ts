@@ -18,12 +18,15 @@ import {
 } from "@mend/db";
 import { SessionId } from "@mend/domain";
 import {
+  agentWaitLine,
   captureStatusLine,
   currentAgentProcess,
   latestDecidedTurn,
+  liveAgentsReading,
   type AgentItem,
   type AgentRequest,
   type AgentTurn,
+  type AgentWaitLine,
   type Change,
   type ChangeLanding,
   type ChangePass,
@@ -205,6 +208,8 @@ interface Look {
   readonly thread: SlackThreadSession;
   readonly session: Session;
   readonly state: SlackSessionState;
+  /** What the live terminal agents' hooks say together (`agentWaitLine`); null for none. */
+  readonly agent: AgentWaitLine | null;
   readonly turns: ReadonlyArray<AgentTurn>;
   readonly pending: ReadonlyArray<AgentRequest>;
   readonly opening: AgentItem | null | undefined;
@@ -322,7 +327,8 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
       if (session === null) return null;
       const turns = yield* conversations.listTurns(session.id);
-      const currentAgent = currentAgentProcess(yield* processes.listForSession(session.id));
+      const rows = yield* processes.listForSession(session.id);
+      const currentAgent = currentAgentProcess(rows);
       const pending = yield* conversations.listRequests(session.id, true);
       const firstTurn = turns.reduce<AgentTurn | null>(
         (first, turn) => (first === null || turn.ordinal < first.ordinal ? turn : first),
@@ -353,6 +359,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         thread,
         session,
         state,
+        agent: agentWaitLine(liveAgentsReading(rows, pending.length > 0)),
         turns,
         pending,
         opening,
@@ -473,6 +480,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         branch: session.branch,
         state,
         recorded: session.sealantRunId !== null,
+        agent: look.agent,
         change,
         url: sessionUrl(install.webOrigin, session.id),
         // Offered until the first turn completes, which also moves the line, so the button

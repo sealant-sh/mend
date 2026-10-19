@@ -4,15 +4,17 @@ import { SealantWorkspaceId, SessionId, SessionProcessId } from "../src/ids.ts";
 import { AgentWait } from "../src/workbench/agent-wait.ts";
 import {
   agentWaitLine,
-  agentWaitOf,
   foldSessionLiveness,
+  liveAgentsReading,
   servicesHoldLine,
 } from "../src/workbench/session-fold.ts";
 import { SessionProcess } from "../src/workbench/session-process.ts";
 
 const process = (
   kind: "agent-protocol" | "agent-pty" | "shell",
-  extra: Partial<Pick<SessionProcess, "waiting" | "exitedAt" | "status" | "createdAt">> = {},
+  extra: Partial<
+    Pick<SessionProcess, "id" | "waiting" | "exitedAt" | "status" | "createdAt" | "harness">
+  > = {},
 ) =>
   new SessionProcess({
     id: SessionProcessId.make(`${kind}-${extra.createdAt?.getTime() ?? 0}`),
@@ -41,6 +43,8 @@ const process = (
   });
 
 const permission = new AgentWait({ kind: "permission", tool: "Bash", since: new Date(5) });
+const question = new AgentWait({ kind: "question", tool: null, since: new Date(5) });
+const finished = new AgentWait({ kind: "prompt", tool: null, since: new Date(5) });
 const ended = { exitedAt: new Date(9), status: "exited" } as const;
 
 describe("foldSessionLiveness", () => {
@@ -50,9 +54,25 @@ describe("foldSessionLiveness", () => {
     expect(foldSessionLiveness([process("agent-pty")], true)).toBe("running");
   });
 
-  it("reports waiting for a live terminal agent that reported a wait", () => {
+  it("reports waiting for a live terminal agent that asks the person", () => {
     expect(foldSessionLiveness([process("agent-pty", { waiting: permission })])).toBe("waiting");
+    expect(foldSessionLiveness([process("agent-pty", { waiting: question })])).toBe("waiting");
     expect(foldSessionLiveness([process("agent-pty", { waiting: null })])).toBe("running");
+  });
+
+  it("reports idle, not waiting, for a live terminal agent that finished its turn", () => {
+    expect(foldSessionLiveness([process("agent-pty", { waiting: finished })])).toBe("idle");
+    expect(
+      foldSessionLiveness([process("agent-pty", { waiting: finished }), process("shell")]),
+    ).toBe("idle");
+  });
+
+  it("reports running while another live agent works beside the one that finished its turn", () => {
+    const working = process("agent-pty", { createdAt: new Date(1) });
+    const done = process("agent-pty", { waiting: finished, createdAt: new Date(2) });
+    expect(foldSessionLiveness([working, done])).toBe("running");
+    const asking = process("agent-pty", { waiting: permission, createdAt: new Date(2) });
+    expect(foldSessionLiveness([working, asking])).toBe("waiting");
   });
 
   it("ignores the wait an ended terminal agent carried", () => {
@@ -67,31 +87,109 @@ describe("foldSessionLiveness", () => {
   });
 });
 
-describe("agentWaitOf", () => {
-  it("reads the newest live terminal agent, not an older one", () => {
+const read = (rows: ReadonlyArray<SessionProcess>) => ({
+  status: foldSessionLiveness(rows),
+  line: agentWaitLine(liveAgentsReading(rows))?.line ?? null,
+});
+
+const lineOf = (rows: ReadonlyArray<SessionProcess>) => agentWaitLine(liveAgentsReading(rows));
+
+describe("several live agents", () => {
+  it("keeps an older agent's permission waiting beside a newer one that finished its turn", () => {
     const older = process("agent-pty", { waiting: permission, createdAt: new Date(1) });
-    const newer = process("agent-pty", { createdAt: new Date(2) });
-    expect(agentWaitOf([older, newer])).toBeNull();
-    expect(agentWaitOf([newer, older])).toBeNull();
-    expect(agentWaitOf([older])).toBe(permission);
+    const newer = process("agent-pty", { waiting: finished, createdAt: new Date(2) });
+    const asking = { status: "waiting", line: "waiting · codex needs your permission to use Bash" };
+    expect(read([older, newer])).toEqual(asking);
+    expect(read([newer, older])).toEqual(asking);
   });
 
-  it("reads no wait from a protocol agent's row", () => {
-    expect(agentWaitOf([process("agent-protocol", { waiting: permission })])).toBeNull();
+  it("reads the same whichever order rows with the same createdAt arrive in", () => {
+    const tie = new Date(3);
+    const asking = process("agent-pty", { id: SessionProcessId.make("b"), waiting: question });
+    const done = process("agent-pty", { id: SessionProcessId.make("a"), waiting: finished });
+    for (const rows of [
+      [asking, done],
+      [done, asking],
+    ]) {
+      expect(read(rows.map((row) => new SessionProcess({ ...row, createdAt: tie })))).toEqual({
+        status: "waiting",
+        line: "waiting · codex asks you a question",
+      });
+    }
+    const first = new AgentWait({ kind: "permission", tool: "Bash", since: new Date(4) });
+    const second = new AgentWait({ kind: "permission", tool: "Edit", since: new Date(4) });
+    const claude = process("agent-pty", {
+      id: SessionProcessId.make("c"),
+      waiting: first,
+      harness: "claude",
+      createdAt: tie,
+    });
+    const codex = process("agent-pty", {
+      id: SessionProcessId.make("d"),
+      waiting: second,
+      createdAt: tie,
+    });
+    expect(read([claude, codex])).toEqual(read([codex, claude]));
+  });
+
+  it("words the earliest ask when several agents ask", () => {
+    const later = new AgentWait({ kind: "permission", tool: "Edit", since: new Date(8) });
+    const first = process("agent-pty", { waiting: later, createdAt: new Date(1) });
+    const second = process("agent-pty", { waiting: question, createdAt: new Date(2) });
+    expect(read([first, second]).line).toBe("waiting · codex asks you a question");
+  });
+
+  it("reads idle when every live agent finished its turn", () => {
+    const one = process("agent-pty", { waiting: finished, createdAt: new Date(1) });
+    const two = process("agent-pty", { waiting: finished, createdAt: new Date(2) });
+    expect(read([one, two])).toEqual({ status: "idle", line: "idle · codex finished its turn" });
+  });
+
+  it("reads running while another live agent works beside the one that finished its turn", () => {
+    const done = process("agent-pty", { waiting: finished, createdAt: new Date(1) });
+    const working = process("agent-pty", { createdAt: new Date(2) });
+    expect(read([done, working])).toEqual({ status: "running", line: null });
+    expect(read([working, done])).toEqual({ status: "running", line: null });
+    expect(read([done, process("agent-protocol", { createdAt: new Date(2) })])).toEqual({
+      status: "running",
+      line: null,
+    });
+  });
+
+  it("gives a protocol agent's request its own waiting, with no terminal line", () => {
+    const done = process("agent-pty", { waiting: finished, createdAt: new Date(2) });
+    const rows = [process("agent-protocol", { createdAt: new Date(1) }), done];
+    expect(foldSessionLiveness(rows, true)).toBe("waiting");
+    expect(agentWaitLine(liveAgentsReading(rows, true))).toBeNull();
   });
 });
 
 describe("agentWaitLine", () => {
-  it("says what the live agent waits for", () => {
-    expect(agentWaitLine(process("agent-pty", { waiting: permission }))).toBe(
-      "waiting · codex needs your permission to use Bash",
-    );
+  it("says what the live agent waits for, with the word the fold reads for it", () => {
+    expect(lineOf([process("agent-pty", { waiting: permission })])).toEqual({
+      status: "waiting",
+      line: "waiting · codex needs your permission to use Bash",
+    });
+    expect(lineOf([process("agent-pty", { waiting: finished })])).toEqual({
+      status: "idle",
+      line: "idle · codex finished its turn",
+    });
   });
 
-  it("says nothing for no agent, a working agent, or an ended one", () => {
-    expect(agentWaitLine(null)).toBeNull();
-    expect(agentWaitLine(process("agent-pty"))).toBeNull();
-    expect(agentWaitLine(process("agent-pty", { waiting: permission, ...ended }))).toBeNull();
+  it("tells a finished turn from an ended agent beside a shell: only the live one has a line", () => {
+    const shell = process("shell");
+    const live = process("agent-pty", { waiting: finished });
+    const gone = process("agent-pty", ended);
+    expect(foldSessionLiveness([live, shell])).toBe(foldSessionLiveness([gone, shell]));
+    expect(lineOf([live, shell])?.line).toBe("idle · codex finished its turn");
+    expect(lineOf([gone, shell])).toBeNull();
+  });
+
+  it("says nothing for no agent, a working agent, an ended one, or a protocol agent's row", () => {
+    expect(lineOf([])).toBeNull();
+    expect(lineOf([process("agent-pty")])).toBeNull();
+    expect(lineOf([process("agent-pty", { waiting: permission, ...ended })])).toBeNull();
+    expect(lineOf([process("agent-protocol", { waiting: permission })])).toBeNull();
   });
 });
 

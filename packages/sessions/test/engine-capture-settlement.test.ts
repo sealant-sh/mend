@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { type CaptureRow, CaptureStoreRepo } from "@mend/db";
 import { SessionId, SessionProcessId, WorktreeId } from "@mend/domain";
 import {
+  AgentHookReport,
   Session,
   SessionProcess,
   captureDiscardAuditData,
@@ -1239,153 +1240,176 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
    * flushes, and each suspend flush stages a capture on top of the final (the sealantd side is
    * fixed in parallel); the drain's FINAL completes and the workspace is terminated.
    */
-  const m3 = (statusAnswers: boolean) => () =>
-    Effect.gen(function* () {
-      const clock = yield* Clock.Clock;
-      const created: Array<CreateOptions> = [];
-      const events = yield* watchedList<string>();
-      const kinds: CaptureFlushKind[] = [];
-      const ptyStates = new Map<string, InteractiveSessionStatus>();
-      const memory = makeMemoryCaptureStore();
-      const observed = yield* observedWorld;
-      const firstLook = yield* Deferred.make<void>();
-      let dir = "";
-      let finalRan = false;
-      let firstLookAt: number | null = null;
-      let worktree: WorktreeId | null = null;
-      yield* withPreparedEngineEffect(
-        (world, tmp) => setup(tmp, world),
-        (world, tmp, project) =>
-          Effect.gen(function* () {
-            dir = tmp;
-            const { engine, session } = yield* provisionIn(project);
-            worktree = session.worktreeId;
-            yield* engine.launch(session.id, ["codex"]);
-            /** Every status the session's row went through, one entry per change. */
-            const seen = () =>
-              observed.rows
-                .filter((row) => row.id === session.id)
-                .map((row) => row.status)
-                .filter((status, index, all) => index === 0 || all[index - 1] !== status);
-            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-            yield* shipHarnessCapture(tmp, memory, session.worktreeId, epoch, "m3", "final");
-            finalRan = true;
-            const agent = [...world.processes.values()].find(
-              (process) => process.sessionId === session.id && process.kind === "agent-pty",
-            );
-            if (agent === undefined || agent.sealantSessionId === null) {
-              throw new Error("the launch recorded no agent PTY");
-            }
-            // The final flush terminated the harness.
-            ptyStates.set(agent.sealantSessionId, {
-              status: "exited",
-              exitCode: 143,
-              outputHighWater: 0n,
-            });
-            // The watcher's next look at the PTY (every 2 s) finds the harness gone.
-            yield* TestClock.adjust(1999);
-            expect(firstLookAt).toBeNull();
-            yield* TestClock.adjust(1);
-            yield* Deferred.await(firstLook);
-            // The harness is gone: the line leaves `running` at once, not after the looks.
-            yield* observed.untilChanged(
-              () =>
-                world.sessions.get(session.id)?.status !== "running" &&
-                clock.currentTimeMillisUnsafe() - (firstLookAt ?? 0) < 1000,
-              "the session leaving `running` within a second of the harness going",
-            );
-            if (statusAnswers) {
-              // The executor's status says its final flush completed: that is the end reading.
-              yield* observed.untilChanged(
-                () => world.sessions.get(session.id)?.settledAt != null,
-                "the settle on the executor's word",
+  const m3 =
+    (statusAnswers: boolean, finishedTurn = false) =>
+    () =>
+      Effect.gen(function* () {
+        const clock = yield* Clock.Clock;
+        const created: Array<CreateOptions> = [];
+        const events = yield* watchedList<string>();
+        const kinds: CaptureFlushKind[] = [];
+        const ptyStates = new Map<string, InteractiveSessionStatus>();
+        const memory = makeMemoryCaptureStore();
+        const observed = yield* observedWorld;
+        const firstLook = yield* Deferred.make<void>();
+        let dir = "";
+        let finalRan = false;
+        let firstLookAt: number | null = null;
+        let worktree: WorktreeId | null = null;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              dir = tmp;
+              const { engine, session } = yield* provisionIn(project);
+              worktree = session.worktreeId;
+              yield* engine.launch(session.id, ["codex"]);
+              /** Every status the session's row went through, one entry per change. */
+              const seen = () =>
+                observed.rows
+                  .filter((row) => row.id === session.id)
+                  .map((row) => row.status)
+                  .filter((status, index, all) => index === 0 || all[index - 1] !== status);
+              const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+              yield* shipHarnessCapture(tmp, memory, session.worktreeId, epoch, "m3", "final");
+              finalRan = true;
+              const agent = [...world.processes.values()].find(
+                (process) => process.sessionId === session.id && process.kind === "agent-pty",
               );
-              expect(world.sessions.get(session.id)?.status).toBe("stopped");
-              expect(world.sessions.get(session.id)?.summary).toMatch(
-                /^stopped outside Mend · saved at \d\d:\d\d:\d\d UTC · capture \d+$/,
-              );
-            } else {
-              // Nothing says yet how the executor ended: `stopping`, never `running`.
-              expect(world.sessions.get(session.id)?.status).toBe("stopping");
-            }
-            // The owner's stop, while the watcher may still be looking.
-            yield* engine.stop(session.id);
-            yield* events.untilChanged(
-              () => events.items.includes("workspace-1"),
-              "the workspace stop",
-            );
-            yield* observed.untilChanged(() => {
-              const current = world.sessions.get(session.id);
-              return current?.settledAt != null && current.captureDrain === null;
-            }, "the settle");
-            // Past every look the watcher could still take.
-            yield* TestClock.adjust(Duration.millis(1500));
-            const settled = world.sessions.get(session.id);
-            expect(settled?.status).toBe("stopped");
-            expect(settled?.summary ?? "").not.toMatch(/executor lost/);
-            expect(seen()).not.toContain("failed");
-            expect(kinds).toContain("final");
-          }),
-        {
-          captured: memory,
-          fixture: observed.fixture,
-          drainPolicy: { pollInterval: Duration.seconds(1), terminationWait: Duration.seconds(3) },
-          sealantLayer: sealantLaunchLayer(
-            created,
-            undefined,
-            events.items,
-            undefined,
-            undefined,
-            undefined,
-            ptyStates,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            {
-              flushKinds: kinds,
-              // Admission is closed once the final ran: nothing is exec'd there.
-              exec: (argv) => {
-                if (argv.length !== 1 || argv[0] !== "true") return undefined;
-                if (!finalRan) return { exitCode: 0, stdout: "", stderr: "" };
-                if (firstLookAt === null) {
-                  firstLookAt = clock.currentTimeMillisUnsafe();
-                  Deferred.doneUnsafe(firstLook, Effect.void);
+              if (agent === undefined || agent.sealantSessionId === null) {
+                throw new Error("the launch recorded no agent PTY");
+              }
+              const before = finishedTurn ? "idle" : "running";
+              if (finishedTurn) {
+                const hook = servedSocketApis.get(session.id)?.agentHook;
+                if (hook === undefined) throw new Error("the session serves no channel");
+                for (const event of ["SessionStart", "Stop"]) {
+                  yield* hook(
+                    new AgentHookReport({
+                      harness: "codex",
+                      event,
+                      notificationType: null,
+                      tool: null,
+                      providerSessionId: "codex-thread",
+                    }),
+                  );
                 }
-                return { exitCode: 1, stdout: "", stderr: "admission closed" };
-              },
-              flush: () =>
-                Effect.gen(function* () {
-                  // A suspend flush after the final stages a capture on top of it.
-                  if (kinds.at(-1) === "suspend" && finalRan && worktree !== null) {
-                    const epoch = memory.leases.get(worktree)?.epoch ?? 0;
-                    yield* shipHarnessCapture(
-                      dir,
-                      memory,
-                      worktree,
-                      epoch,
-                      crypto.randomUUID(),
-                      "suspend",
-                    ).pipe(Effect.orDie);
-                  }
-                  const headN = worktree === null ? 0 : (memory.chains.get(worktree)?.headN ?? 0);
-                  return finalRan ? completedStatus(headN) : flushReport(0, headN);
-                }),
-              ...(statusAnswers
-                ? {
-                    captureStatus: () =>
-                      Effect.sync(() => {
-                        const headN =
-                          worktree === null ? 0 : (memory.chains.get(worktree)?.headN ?? 0);
-                        return finalRan ? completedStatus(headN) : flushReport(0, headN);
-                      }),
-                  }
-                : {}),
+              }
+              expect(world.sessions.get(session.id)?.status).toBe(before);
+              // The final flush terminated the harness.
+              ptyStates.set(agent.sealantSessionId, {
+                status: "exited",
+                exitCode: 143,
+                outputHighWater: 0n,
+              });
+              // The watcher's next look at the PTY (every 2 s) finds the harness gone.
+              yield* TestClock.adjust(1999);
+              expect(firstLookAt).toBeNull();
+              yield* TestClock.adjust(1);
+              yield* Deferred.await(firstLook);
+              // The harness is gone: the line leaves `running` (or a finished turn's `idle`) at
+              // once, not after the looks.
+              yield* observed.untilChanged(
+                () =>
+                  world.sessions.get(session.id)?.status !== before &&
+                  clock.currentTimeMillisUnsafe() - (firstLookAt ?? 0) < 1000,
+                "the session leaving `running` within a second of the harness going",
+              );
+              if (statusAnswers) {
+                // The executor's status says its final flush completed: that is the end reading.
+                yield* observed.untilChanged(
+                  () => world.sessions.get(session.id)?.settledAt != null,
+                  "the settle on the executor's word",
+                );
+                expect(world.sessions.get(session.id)?.status).toBe("stopped");
+                expect(world.sessions.get(session.id)?.summary).toMatch(
+                  /^stopped outside Mend · saved at \d\d:\d\d:\d\d UTC · capture \d+$/,
+                );
+              } else {
+                // Nothing says yet how the executor ended: `stopping`, never `running`.
+                expect(world.sessions.get(session.id)?.status).toBe("stopping");
+              }
+              // The owner's stop, while the watcher may still be looking.
+              yield* engine.stop(session.id);
+              yield* events.untilChanged(
+                () => events.items.includes("workspace-1"),
+                "the workspace stop",
+              );
+              yield* observed.untilChanged(() => {
+                const current = world.sessions.get(session.id);
+                return current?.settledAt != null && current.captureDrain === null;
+              }, "the settle");
+              // Past every look the watcher could still take.
+              yield* TestClock.adjust(Duration.millis(1500));
+              const settled = world.sessions.get(session.id);
+              expect(settled?.status).toBe("stopped");
+              expect(settled?.summary ?? "").not.toMatch(/executor lost/);
+              expect(seen()).not.toContain("failed");
+              expect(kinds).toContain("final");
+            }),
+          {
+            captured: memory,
+            fixture: observed.fixture,
+            drainPolicy: {
+              pollInterval: Duration.seconds(1),
+              terminationWait: Duration.seconds(3),
             },
-          ),
-        },
-      );
-    });
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              events.items,
+              undefined,
+              undefined,
+              undefined,
+              ptyStates,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              {
+                flushKinds: kinds,
+                // Admission is closed once the final ran: nothing is exec'd there.
+                exec: (argv) => {
+                  if (argv.length !== 1 || argv[0] !== "true") return undefined;
+                  if (!finalRan) return { exitCode: 0, stdout: "", stderr: "" };
+                  if (firstLookAt === null) {
+                    firstLookAt = clock.currentTimeMillisUnsafe();
+                    Deferred.doneUnsafe(firstLook, Effect.void);
+                  }
+                  return { exitCode: 1, stdout: "", stderr: "admission closed" };
+                },
+                flush: () =>
+                  Effect.gen(function* () {
+                    // A suspend flush after the final stages a capture on top of it.
+                    if (kinds.at(-1) === "suspend" && finalRan && worktree !== null) {
+                      const epoch = memory.leases.get(worktree)?.epoch ?? 0;
+                      yield* shipHarnessCapture(
+                        dir,
+                        memory,
+                        worktree,
+                        epoch,
+                        crypto.randomUUID(),
+                        "suspend",
+                      ).pipe(Effect.orDie);
+                    }
+                    const headN = worktree === null ? 0 : (memory.chains.get(worktree)?.headN ?? 0);
+                    return finalRan ? completedStatus(headN) : flushReport(0, headN);
+                  }),
+                ...(statusAnswers
+                  ? {
+                      captureStatus: () =>
+                        Effect.sync(() => {
+                          const headN =
+                            worktree === null ? 0 : (memory.chains.get(worktree)?.headN ?? 0);
+                          return finalRan ? completedStatus(headN) : flushReport(0, headN);
+                        }),
+                    }
+                  : {}),
+              },
+            ),
+          },
+        );
+      });
 
   it.effect(
     "a final flush run inside the executor, then Mend's stop: the executor's `complete` is the save, the line leaves `running` at once, and it ends `stopped`, never `failed · executor lost`",
@@ -1396,6 +1420,12 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
   it.effect(
     "the same with no status read (an older SDK): the stop's drain is re-checked on every look, and a settled `stopped` is never overwritten with `failed`",
     m3(false),
+    { timeout: 30_000 },
+  );
+
+  it.effect(
+    "the same after the agent finished its turn: the harness going moves `idle` to `stopping` at once",
+    m3(false, true),
     { timeout: 30_000 },
   );
 

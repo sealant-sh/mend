@@ -56,12 +56,13 @@ export type SlackProjectSource = typeof SlackProjectSource.Type;
  * session, process and turn state into this, and the status message and the reaction show it.
  * `completed` and `failed` also cover a protocol turn that ended while the agent stays live.
  * `idle-stopped` is a stop Mend made because the agent sat idle (`protocolIdleReading`); a reply in
- * the thread resumes it.
+ * the thread resumes it. `idle` is a live terminal agent that finished its turn.
  */
 export const SlackSessionState = Schema.Literals([
   "starting",
   "running",
   "waiting",
+  "idle",
   "completed",
   "failed",
   "stopped",

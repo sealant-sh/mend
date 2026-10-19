@@ -821,6 +821,21 @@ export const markServicesStopped = (data: Workbench, sessionId: string): Workben
 const AGENT_WORKING: ReadonlySet<string> = new Set(["starting", "running", "waiting"]);
 
 /**
+ * What keeps ⇧D from removing the session from under its agent, in observed words; null when it
+ * may go. A live agent in an `idle` session finished its turn and sits at its prompt; an `idle`
+ * whose agent ended (a shell or Services hold the workspace) may go.
+ */
+export const agentStillThere = (item: SessionItem): string | null => {
+  const agent = item.annotation?.currentAgent ?? null;
+  const agentLive =
+    agent === null
+      ? item.processes.some((process) => process.kind !== "shell" && process.exitedAt === null)
+      : agent.exitedAt === null;
+  if (AGENT_WORKING.has(item.session.status)) return "the agent is still working";
+  return agentLive ? "the agent is at its prompt" : null;
+};
+
+/**
  * What the conversation reads once its agent is no longer live while its Services keep the
  * workspace up — `agent stopped · 3 services keep the workspace up` — else null. A stop leaves
  * Services running, so the status word alone would hide a workspace that is still up.

@@ -16,6 +16,7 @@ import {
   AgentTurnId,
   OrganizationId,
   ProjectId,
+  SealantWorkspaceId,
   SessionId,
   SessionProcessId,
   Sha,
@@ -23,11 +24,14 @@ import {
 } from "@mend/domain";
 import {
   AgentTurn,
+  AgentWait,
+  type AgentWaitKind,
+  foldSessionLiveness,
   NotificationSettings,
   Organization,
   Project,
   Session,
-  type SessionProcess,
+  SessionProcess,
 } from "@mend/domain/workbench";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Fiber, Layer, Queue, Redacted, Stream, type Scope } from "effect";
@@ -190,6 +194,7 @@ const makeWorld = (
 ) => {
   let session = sessionRow(options.baseline ?? "running");
   let turns: ReadonlyArray<AgentTurn> = [];
+  let processRows: ReadonlyArray<SessionProcess> = [];
   let phones = [...DEVICE_ROWS];
   const members = new Set(["alice", "carol"]);
   const settings = new Map<string, NotificationSettings>();
@@ -206,7 +211,7 @@ const makeWorld = (
           : Effect.fail(new SessionNotFoundError({ sessionId: id })),
     }),
     Layer.mock(SessionProcessesRepo, {
-      listForSession: () => Effect.succeed<ReadonlyArray<SessionProcess>>([]),
+      listForSession: () => Effect.sync(() => processRows),
     }),
     Layer.mock(ProjectsRepo, {
       byId: (id) =>
@@ -286,6 +291,12 @@ const makeWorld = (
     turns: (next: ReadonlyArray<AgentTurn>) => {
       turns = next;
     },
+    /** The session's processes, and the status the engine folds from them while one is live. */
+    processes: (next: ReadonlyArray<SessionProcess>) => {
+      processRows = next;
+      const liveness = foldSessionLiveness(next);
+      if (liveness !== "settled") session = new Session({ ...session, status: liveness });
+    },
     sessionEvent: () =>
       events.publish(JSON.stringify({ type: "session", sessionId: SESSION, projectId: PROJECT })),
     turnEvent: () =>
@@ -295,6 +306,33 @@ const makeWorld = (
   };
 };
 type World = ReturnType<typeof makeWorld>;
+/** The session's live terminal claude, waiting as its hooks last reported. */
+const terminalAgent = (kind: AgentWaitKind | null, tool: string | null = null) =>
+  new SessionProcess({
+    id: SessionProcessId.make("agent"),
+    sessionId: SESSION,
+    sealantWorkspaceId: SealantWorkspaceId.make("review-workspace"),
+    sealantSessionId: "pty-1",
+    sealantRunId: null,
+    launchCorrelationId: null,
+    serviceId: null,
+    attemptOrdinal: null,
+    kind: "agent-pty",
+    harness: "claude",
+    providerSessionId: "claude-session",
+    protocolOptions: null,
+    label: "claude",
+    argv: ["claude"],
+    status: "running",
+    exitCode: null,
+    workspacePort: null,
+    protocol: "tcp",
+    hostPort: null,
+    createdAt: NOW,
+    exitedAt: null,
+    updatedAt: NOW,
+    waiting: kind === null ? null : new AgentWait({ kind, tool, since: NOW }),
+  });
 const deliveries = (world: World) =>
   world.sent.map((batch) =>
     batch.map((message) => ({ ...message, token: Redacted.value(message.token) })),
@@ -587,6 +625,24 @@ describe("SessionNotifierLive event worker", () => {
         ]);
       }),
     ),
+  );
+  it.effect(
+    "rings nothing when a terminal agent finishes its turn, and rings once it asks for permission",
+    () =>
+      runWorld((world) =>
+        Effect.gen(function* () {
+          world.processes([terminalAgent(null)]);
+          yield* world.sessionEvent();
+          world.processes([terminalAgent("prompt")]);
+          yield* world.sessionEvent();
+          expect(world.sent).toEqual([]);
+          world.processes([terminalAgent("permission", "Bash")]);
+          yield* world.sessionEvent();
+          expect(deliveries(world)).toEqual([
+            expected(["alice-first", "alice-last"], "billing-fix is waiting on you"),
+          ]);
+        }),
+      ),
   );
   it.effect("never delivers for a null owner or idle-stop housekeeping", () =>
     runWorld((world) =>

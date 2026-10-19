@@ -149,14 +149,26 @@ export const nextAgentWait = (
 };
 
 /**
- * Whether a key the person typed at `typedAt` answers `wait`: a permission or a question the agent
- * asked before the key. A wait that opened after the key is a new ask the key never saw. A finished
- * turn waits for a submitted prompt (`UserPromptSubmit`), not a key.
+ * What the session reads while its live terminal agent waits. A permission or a question asks the
+ * person: `waiting`, which is Needs you, the badge and a push. A finished turn asks nobody
+ * anything: `idle` (decided 2026-10-19).
+ */
+const AGENT_WAIT_STATUS: Readonly<Record<AgentWaitKind, "waiting" | "idle">> = {
+  permission: "waiting",
+  question: "waiting",
+  prompt: "idle",
+};
+
+export const agentWaitStatus = (wait: AgentWait): "waiting" | "idle" =>
+  AGENT_WAIT_STATUS[wait.kind];
+
+/**
+ * Whether a key the person typed at `typedAt` answers `wait`: an ask the agent made before the
+ * key. A wait that opened after the key is a new ask the key never saw. A finished turn waits for
+ * a submitted prompt (`UserPromptSubmit`), not a key.
  */
 export const keyAnswers = (wait: AgentWait | null, typedAt: Date): wait is AgentWait =>
-  wait !== null &&
-  (wait.kind === "permission" || wait.kind === "question") &&
-  wait.since.getTime() <= typedAt.getTime();
+  wait !== null && agentWaitStatus(wait) === "waiting" && wait.since.getTime() <= typedAt.getTime();
 
 export const agentWaitWords = (harness: string, wait: AgentWait): string => {
   switch (wait.kind) {

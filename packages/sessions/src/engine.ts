@@ -10337,7 +10337,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         // The harness is gone and its executor does not answer: the row says so at once, and a
         // session with nothing else live reads `stopping` while Mend finds out how the executor
-        // ended — never `running` for a harness that is not there.
+        // ended — never `running`, or a finished turn's `idle`, for a harness that is not there.
         let exitedEarly = false;
         const harnessGone = Effect.gen(function* () {
           yield* markProcessExited(agentProcess.id, end.how, end.exitCode);
@@ -10346,7 +10346,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const rows = yield* processes.listForSession(sessionId);
           if (
             session.settledAt === null &&
-            (session.status === "running" || session.status === "waiting") &&
+            (session.status === "running" ||
+              session.status === "waiting" ||
+              session.status === "idle") &&
             foldSessionLiveness(rows) === "settled" &&
             !handingOverProcesses.has(agentProcess.id)
           ) {
