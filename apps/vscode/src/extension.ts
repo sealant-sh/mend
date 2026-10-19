@@ -1022,7 +1022,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     store.onDidChange((change) => {
       const { next } = change;
       tree.changed();
-      if (store.hasRead() || next.offline) statusBar.update(next);
+      if (store.hasRead() || next.offline || store.error() !== null) statusBar.update(next);
       view.badge =
         next.badge === 0
           ? undefined
@@ -1035,6 +1035,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
         next.kind === "workspace" && next.session !== null ? next.session.name : "";
       notifier.changed(change);
     }),
+    view.onDidChangeVisibility((event) => store.setVisible(event.visible)),
     view.onDidChangeSelection((event) => {
       store.select(event.selection.flatMap((node) => sessionIdOf(node) ?? []));
       const [node] = event.selection;
@@ -1095,6 +1096,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     }),
   );
 
+  store.setVisible(view.visible);
   store.start();
   workspaceWindow.start();
   const editor = startWorkspaceEditor(context);

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   clockTime,
+  mergeLastSeen,
   othersLine,
   seen,
   sessionModel,
@@ -201,6 +202,49 @@ describe("the morning after (story f)", () => {
 });
 
 describe("Since you last looked (Decided 3)", () => {
+  it("merges two windows' records: the later look per session, the earlier baseline", () => {
+    expect(
+      mergeLastSeen(
+        { baseline: "2026-10-18T10:00:00.000Z", sessions: { a: "2026-10-19T08:00:00.000Z" } },
+        {
+          baseline: "2026-10-18T12:00:00.000Z",
+          sessions: { a: "2026-10-19T07:00:00.000Z", b: "2026-10-19T06:00:00.000Z" },
+        },
+      ),
+    ).toEqual({
+      baseline: "2026-10-18T10:00:00.000Z",
+      sessions: { a: "2026-10-19T08:00:00.000Z", b: "2026-10-19T06:00:00.000Z" },
+    });
+  });
+
+  it("reads a turn that settled after the session's last landing as that turn, not the landing", () => {
+    const resumed = session({
+      id: "docs-typos",
+      status: "completed",
+      settledAt: "2026-10-19T08:00:00.000Z",
+    });
+    const model = sessionModel(
+      input([resumed], {
+        landings: new Map([
+          [
+            "docs-typos",
+            {
+              id: "l1",
+              userId: "dana",
+              createdAt: "2026-10-19T01:00:00.000Z",
+              remoteBranch: "mend/docs-typos",
+              pullRequest: { number: 412, state: "open" },
+            },
+          ],
+        ]),
+      }),
+    );
+    expect(model.sessions.get("docs-typos")).toMatchObject({
+      word: "completed",
+      sinceYouLastLooked: true,
+    });
+  });
+
   const done = session({
     id: "add-rate-limit",
     status: "completed",

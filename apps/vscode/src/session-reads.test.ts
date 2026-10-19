@@ -22,6 +22,11 @@ describe("what a run of event frames re-reads", () => {
     expect(plan.all).toBe(false);
   });
 
+  it("reads everything again when the feed resyncs or the roster moves", () => {
+    expect(readPlan([event("session", "s1"), event("resync", null, null)]).all).toBe(true);
+    expect(readPlan([event("organization", null, null)]).all).toBe(true);
+  });
+
   it("re-reads nothing for progress lines, comments or account facts", () => {
     const plan = readPlan([
       event("session-progress", "s1"),

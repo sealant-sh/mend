@@ -195,7 +195,13 @@ const sessionView = (
     );
   const waiting = session.status === "waiting";
   const wait = waiting ? (input.waits.get(session.id) ?? null) : null;
-  const landing = live ? null : (input.landings.get(session.id) ?? null);
+  const landed = live ? null : (input.landings.get(session.id) ?? null);
+  // A landing of an earlier turn says nothing about a turn that settled after it.
+  const landing =
+    landed !== null &&
+    (session.settledAt === null || Date.parse(landed.createdAt) >= Date.parse(session.settledAt))
+      ? landed
+      : null;
   const word: Word = landing === null ? session.status : "landed";
   const by =
     landing !== null && viewer !== null && landing.userId !== viewer
@@ -467,6 +473,20 @@ export const transitions = (
       }),
     );
   return [...waits, ...finished, ...withdrawn];
+};
+
+/** Two windows' records of one server, as one: the later look per session, the earlier baseline. */
+export const mergeLastSeen = (left: LastSeen, right: LastSeen): LastSeen => {
+  const sessions: Record<string, string> = { ...left.sessions };
+  for (const [id, at] of Object.entries(right.sessions)) {
+    const known = sessions[id];
+    if (known === undefined || Date.parse(at) > Date.parse(known)) sessions[id] = at;
+  }
+  return {
+    baseline:
+      Date.parse(left.baseline) <= Date.parse(right.baseline) ? left.baseline : right.baseline,
+    sessions,
+  };
 };
 
 /** Sessions this VS Code shows now count as seen now (Decided 3). */

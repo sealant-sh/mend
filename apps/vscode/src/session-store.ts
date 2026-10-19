@@ -10,6 +10,7 @@ import {
 import { repositoryFacts } from "./git.js";
 import type { MemberName } from "./session-lines.js";
 import {
+  mergeLastSeen,
   seen,
   sessionModel,
   type Connection,
@@ -53,11 +54,19 @@ export interface StoreChange {
   readonly next: WindowModel;
 }
 
-const isLastSeen = (value: unknown): value is LastSeen =>
-  typeof value === "object" &&
-  value !== null &&
-  typeof Reflect.get(value, "baseline") === "string" &&
-  typeof Reflect.get(value, "sessions") === "object";
+const isLastSeen = (value: unknown): value is LastSeen => {
+  if (typeof value !== "object" || value === null) return false;
+  const sessions: unknown = Reflect.get(value, "sessions");
+  return (
+    typeof Reflect.get(value, "baseline") === "string" &&
+    typeof sessions === "object" &&
+    sessions !== null &&
+    Object.values(sessions).every((at) => typeof at === "string")
+  );
+};
+
+/** A read that failed is tried again after this long: no frame may ever come to retry it. */
+const RETRY_MS = 5_000;
 
 /**
  * Every read the Mend view, status bar, badge and notifier rest on: one snapshot, kept current by
@@ -78,6 +87,11 @@ export class SessionStore implements vscode.Disposable {
   /** Whether `#model` came from a read: the first read's change then raises no toast. */
   #modelRead = false;
   #selected: ReadonlyArray<string> = [];
+  /** A selection shows a session only while the view is on screen. */
+  #visible = false;
+  /** Bumped by `start()`: a read begun for an earlier sign-in or server is dropped when it lands. */
+  #generation = 0;
+  #retry: NodeJS.Timeout | null = null;
   #windowProject: { readonly project: Project; readonly folder: vscode.WorkspaceFolder } | null =
     null;
   #pending: Array<EventPointer> = [];
@@ -113,12 +127,14 @@ export class SessionStore implements vscode.Disposable {
     this.#subscription?.dispose();
     if (this.#timer !== null) clearTimeout(this.#timer);
     if (this.#ticker !== null) clearInterval(this.#ticker);
+    if (this.#retry !== null) clearTimeout(this.#retry);
     for (const disposable of this.#disposables) disposable.dispose();
   }
 
   /** Subscribe and read everything; again after a sign-in or a new server. */
   start(): void {
     this.#subscription?.dispose();
+    this.#generation += 1;
     this.#snapshot = EMPTY;
     this.#read = false;
     this.#modelRead = false;
@@ -174,14 +190,23 @@ export class SessionStore implements vscode.Disposable {
    */
   windowSessionId(): string | null {
     if (this.role.kind !== "workspace") return null;
-    const found = sessionOfWorkspace(this.details(), this.role.workspaceId);
-    return this.workspace.session()?.session.id ?? (found.kind === "found" ? found.session.id : null);
+    // Through window-role's rule with the window's own choice, so the view and the window agree:
+    // a session the window asked for that is gone shows nothing, as the window attaches nothing.
+    const intended = this.workspace.session()?.session.id ?? null;
+    const found = sessionOfWorkspace(this.details(), this.role.workspaceId, intended);
+    return found.kind === "found" ? found.session.id : null;
   }
 
-  /** Sessions this window shows now: selected in its view, or the window's own. */
+  /** Sessions this window shows now: selected in its view while it is on screen, or its own. */
   showing(): ReadonlySet<string> {
     const own = this.windowSessionId();
-    return new Set([...this.#selected, ...(own === null ? [] : [own])]);
+    return new Set([...(this.#visible ? this.#selected : []), ...(own === null ? [] : [own])]);
+  }
+
+  /** The view came on screen or left it. */
+  setVisible(visible: boolean): void {
+    this.#visible = visible;
+    this.#emit();
   }
 
   /** The view's selection changed: a selected session is looked at now. */
@@ -239,27 +264,40 @@ export class SessionStore implements vscode.Disposable {
       this.#pendingAll = false;
       this.#pending = [];
       // One read at a time: a frame that lands mid-read is read after it, never beside it.
-      this.#reading = this.#reading.then(() => this.#apply(plan));
+      const generation = this.#generation;
+      this.#reading = this.#reading
+        .then(() => this.#apply(plan, generation))
+        .catch(() => undefined);
     }, DEBOUNCE_MS);
   }
 
-  async #apply(plan: ReadPlan): Promise<void> {
+  async #apply(plan: ReadPlan, generation: number): Promise<void> {
     try {
-      if (plan.all) await this.#readAll();
+      if (plan.all) await this.#readAll(generation);
       else {
-        for (const projectId of plan.projects) await this.#readProject(projectId);
-        for (const sessionId of plan.sessions) await this.#readSession(sessionId);
+        for (const projectId of plan.projects) await this.#readProject(projectId, generation);
+        for (const sessionId of plan.sessions) await this.#readSession(sessionId, generation);
       }
+      if (generation !== this.#generation) return;
       this.#error = null;
       this.#heard();
     } catch (cause) {
+      if (generation !== this.#generation) return;
       if (cause instanceof MendApiError && cause.status === null) this.#offline();
       else this.#error = cause;
+      this.#retryLater();
     }
     this.#emit();
   }
 
-  async #readAll(): Promise<void> {
+  #retryLater(): void {
+    this.#retry ??= setTimeout(() => {
+      this.#retry = null;
+      this.refresh();
+    }, RETRY_MS);
+  }
+
+  async #readAll(generation: number): Promise<void> {
     const connection = await this.client.connection();
     if (connection.url !== this.#serverUrl) {
       this.#serverUrl = connection.url;
@@ -269,8 +307,10 @@ export class SessionStore implements vscode.Disposable {
     const details = await Promise.all(
       projects.map((project) => this.client.projectDetail(project.id)),
     );
-    const viewer = await this.client.viewerId();
-    const members = viewer === null ? [] : await this.client.memberNames();
+    // A failed read of who she is keeps the last answer: it must not make every session hers.
+    const viewer = (await this.client.viewerId()) ?? this.#snapshot.viewer;
+    const named = viewer === null ? [] : await this.client.memberNames();
+    const members = named.length === 0 ? this.#snapshot.members : named;
     const sessions = details.flatMap((detail) => detail.sessions);
     const waits = new Map<string, WaitFact>();
     const landings = new Map<string, LandingFact>();
@@ -281,6 +321,7 @@ export class SessionStore implements vscode.Disposable {
         if (facts.landing !== null) landings.set(session.id, facts.landing);
       }),
     );
+    if (generation !== this.#generation) return;
     this.#snapshot = {
       projects,
       details: new Map(details.map((detail) => [detail.project.id, detail])),
@@ -295,7 +336,7 @@ export class SessionStore implements vscode.Disposable {
     void vscode.commands.executeCommand("setContext", "mend.hasProjects", projects.length > 0);
   }
 
-  async #readProject(projectId: string): Promise<void> {
+  async #readProject(projectId: string, generation: number): Promise<void> {
     const known = this.#snapshot.details.get(projectId);
     if (known === undefined) {
       this.#pendingAll = true;
@@ -315,19 +356,20 @@ export class SessionStore implements vscode.Disposable {
     const facts = await Promise.all(
       changed.map(async (session) => ({ id: session.id, ...(await this.#factsOf(session)) })),
     );
+    if (generation !== this.#generation) return;
     const details = new Map(this.#snapshot.details);
     details.set(projectId, detail);
     this.#snapshot = { ...this.#withFacts(facts), details };
   }
 
-  async #readSession(sessionId: string): Promise<void> {
+  async #readSession(sessionId: string, generation: number): Promise<void> {
     let detail: SessionDetail;
     try {
       detail = await this.client.sessionDetail(sessionId);
     } catch (cause) {
       // A session removed, or one this person no longer sees: it leaves the view.
       if (cause instanceof MendApiError && (cause.status === 404 || cause.status === 403)) {
-        this.#drop(sessionId);
+        if (generation === this.#generation) this.#drop(sessionId);
         return;
       }
       throw cause;
@@ -340,6 +382,7 @@ export class SessionStore implements vscode.Disposable {
       return;
     }
     const facts = { id: session.id, ...(await this.#factsOf(session, detail)) };
+    if (generation !== this.#generation) return;
     const sessions = project.sessions.some((candidate) => candidate.id === session.id)
       ? project.sessions.map((candidate) => (candidate.id === session.id ? session : candidate))
       : [...project.sessions, session];
@@ -393,7 +436,12 @@ export class SessionStore implements vscode.Disposable {
     if (session.status === "waiting") {
       wait = terminalWait(known ?? (await this.client.sessionDetail(session.id)));
       if (wait === null) {
-        wait = conversationWait(await this.client.pendingRequests(session.id).catch(() => []));
+        const requests = await this.client.pendingRequests(session.id).catch(() => null);
+        // A failed read keeps the wait it knew, so the same wait is not raised again as new.
+        wait =
+          requests === null
+            ? (this.#snapshot.waits.get(session.id) ?? null)
+            : conversationWait(requests);
       }
     }
     const news =
@@ -417,6 +465,25 @@ export class SessionStore implements vscode.Disposable {
       }
     }
     this.#windowProject = null;
+  }
+
+  /**
+   * Every window of this VS Code writes the same record (Decided 3: per machine), so each emit
+   * merges what the others saved, adds what this window shows while it is focused, and saves only
+   * when that moved something.
+   */
+  #syncLastSeen(url: string, now: Date): LastSeen {
+    const stored = this.context.globalState.get<unknown>(LAST_SEEN_KEY);
+    const entry = typeof stored === "object" && stored !== null ? Reflect.get(stored, url) : null;
+    const merged = isLastSeen(entry) ? mergeLastSeen(entry, this.#lastSeen) : this.#lastSeen;
+    const showing =
+      vscode.window.state.focused && this.#read
+        ? [...this.showing()].filter((id) => this.find(id) !== null)
+        : [];
+    const next = seen(merged, showing, now);
+    if (!isLastSeen(entry) || JSON.stringify(entry) !== JSON.stringify(next))
+      this.#saveLastSeen(url, next);
+    return next;
   }
 
   #loadLastSeen(url: string): LastSeen {
@@ -447,15 +514,7 @@ export class SessionStore implements vscode.Disposable {
 
   #emit(): void {
     const now = new Date();
-    // What this VS Code shows while it is focused is looked at now (Decided 3).
-    if (vscode.window.state.focused && this.#read) {
-      const showing = [...this.showing()].filter((id) => this.find(id) !== null);
-      const next = seen(this.#lastSeen, showing, now);
-      if (next !== this.#lastSeen) {
-        this.#lastSeen = next;
-        if (this.#serverUrl !== null) this.#saveLastSeen(this.#serverUrl, next);
-      }
-    }
+    if (this.#serverUrl !== null) this.#lastSeen = this.#syncLastSeen(this.#serverUrl, now);
     const prev = this.#modelRead ? this.#model : null;
     const next = sessionModel({
       projects: this.#snapshot.projects,

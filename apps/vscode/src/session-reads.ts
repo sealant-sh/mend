@@ -24,6 +24,8 @@ const SESSION_EVENTS: ReadonlySet<string> = new Set([
   "shared-control-off",
 ]);
 const PROJECT_EVENTS: ReadonlySet<string> = new Set(["project", "worktree"]);
+/** Frames that name nothing to re-read: the feed lost track (`resync`), or the roster moved. */
+const EVERYTHING_EVENTS: ReadonlySet<string> = new Set(["resync", "organization"]);
 
 /**
  * The reads a batch of frames needs: a session frame re-reads that session, a project or worktree
@@ -32,6 +34,8 @@ const PROJECT_EVENTS: ReadonlySet<string> = new Set(["project", "worktree"]);
 export const readPlan = (events: ReadonlyArray<EventPointer>): ReadPlan => {
   const projects = new Set<string>();
   const sessions = new Set<string>();
+  if (events.some((event) => EVERYTHING_EVENTS.has(event.type)))
+    return { all: true, projects, sessions };
   for (const event of events) {
     if (SESSION_EVENTS.has(event.type) && event.sessionId !== null) sessions.add(event.sessionId);
     else if (PROJECT_EVENTS.has(event.type) && event.projectId !== null)

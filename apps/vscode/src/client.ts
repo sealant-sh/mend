@@ -561,8 +561,9 @@ export class MendClient {
           signal: attempt.signal,
         });
         if (!response.ok || response.body === null) {
-          refused = true;
-          onSignal({ kind: "heard" });
+          // A refused token comes from Mend itself; a 502 from an edge in front of it does not.
+          refused = response.status === 401 || response.status === 403;
+          if (refused) onSignal({ kind: "heard" });
           throw new Error(`events responded ${response.status}`);
         }
         delay = 1_000;
