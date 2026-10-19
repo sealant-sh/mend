@@ -13,6 +13,7 @@
 // The terminal is read from the DOM renderer (`terminal.integrated.gpuAcceleration: off`, also
 // written there): the canvas renderer leaves no text to read.
 
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -718,6 +719,40 @@ export const workbenchHelpers = async (context, options) => {
     return settings;
   };
 
+  /**
+   * A `vscode://` link followed the way the OS URL handler follows one: `code --open-url` with the
+   * run's user data, which hands it to the running editor and exits.
+   */
+  const openUrl = async (url) => {
+    const env = {
+      ...process.env,
+      HOME: state.home,
+      XDG_CONFIG_HOME: state.configHome,
+      DISPLAY: state.display,
+    };
+    for (const key of ["WAYLAND_DISPLAY", "NIXOS_OZONE_WL", "ELECTRON_RUN_AS_NODE"])
+      delete env[key];
+    const { status, stderr } = await new Promise((done) => {
+      const child = spawn(
+        state.editor.cli,
+        [
+          "--open-url",
+          url,
+          "--user-data-dir",
+          state.userData,
+          "--extensions-dir",
+          state.extensions,
+        ],
+        { env, stdio: ["ignore", "ignore", "pipe"], timeout: 60_000 },
+      );
+      let err = "";
+      child.stderr.on("data", (chunk) => (err += chunk));
+      child.on("close", (code) => done({ status: code, stderr: err }));
+      child.on("error", (error) => done({ status: -1, stderr: String(error) }));
+    });
+    if (status !== 0) throw new Error(`code --open-url exited ${status}: ${scrub(stderr).trim()}`);
+  };
+
   const note = (message) => {
     const line = steps.write({ note: message });
     log(`note · ${line.note}`);
@@ -747,6 +782,7 @@ export const workbenchHelpers = async (context, options) => {
     terminal,
     watch,
     userSettings,
+    openUrl,
     waitForText,
     waitUntil,
     text,
