@@ -1650,6 +1650,10 @@ const isLegacyBench = (session: Session): boolean =>
 const isEngineAgentProcess = (row: SessionProcess): boolean =>
   row.kind !== "agent-external" && isAgentProcessKind(row.kind) && row.harness !== "shell";
 
+/** The open workbench: a shell Mend launched as the session's agent (`resumeSession(…, "shell")`). */
+const isWorkbenchShell = (row: SessionProcess): boolean =>
+  row.kind === "agent-pty" && row.harness === "shell";
+
 /**
  * The observer's answer when the home could not be read this pass (a head that is not there or
  * still saving, a blob or manifest read that failed): no answer, so nothing is ended or started.
@@ -19852,12 +19856,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Whether the session's AGENT is live — the fold, not the row: a live agent process; a
        * launch in flight (no process row yet); or a run supervised without a process of its own.
        * Shells and Services holding the workspace (`idle`) do not count — a new agent may join
-       * them.
+       * them. `workbench` says whether the open workbench shell counts: a launch may replace it
+       * (SLNT-167), a resume may not.
        */
-      const agentIsLive = Effect.fn("SessionEngine.agentIsLive")(function* (session: Session) {
+      const agentIsLive = Effect.fn("SessionEngine.agentIsLive")(function* (
+        session: Session,
+        workbench: "counts" | "replaceable" = "counts",
+      ) {
         if (session.settledAt !== null) return false;
         const rows = yield* processes.listForSession(session.id);
-        if (rows.some(isLiveAgentProcess)) return true;
+        if (
+          rows.some(
+            (row) => isLiveAgentProcess(row) && (workbench === "counts" || !isWorkbenchShell(row)),
+          )
+        ) {
+          return true;
+        }
         // "starting" is a launch in flight only when something was actually launched. A
         // provisioned-but-never-launched session carries the same status (the schema default)
         // with nothing behind it — refusing that would dead-end every provision-then-resume
@@ -23867,7 +23881,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const refusal = refusalOf(over, {
                 status: session.status,
                 settledAt: session.settledAt,
-                agentLive: yield* agentIsLive(session),
+                agentLive: yield* agentIsLive(session, "replaceable"),
                 underWay: false,
               });
               if (refusal !== null) return yield* refusalError(sessionId, refusal);

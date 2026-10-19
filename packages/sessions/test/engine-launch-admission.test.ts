@@ -201,6 +201,37 @@ describe("SessionEngine launch admission (SLNT-167)", () => {
     );
   });
 
+  it("launches over the open workbench shell, and still refuses over the agent it started", async () => {
+    const seen = platform();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const engine = yield* SessionEngine;
+          const { session, harvested } = yield* provisioned(tmp, world);
+          yield* engine.resumeSession(session.id, "shell");
+          const [shell] = liveAgents(world, session.id);
+          expect(shell?.harness).toBe("shell");
+          harvested();
+
+          yield* engine.launch(session.id, ["codex"], { over: NoLiveAgent });
+
+          const [agent] = liveAgents(world, session.id);
+          expect(liveAgents(world, session.id)).toHaveLength(1);
+          expect(agent?.harness).toBe("codex");
+          expect(world.processes.get(shell?.id ?? "")?.exitedAt).not.toBeNull();
+          const before = footprint(world, session.id, seen);
+
+          const refused = yield* engine
+            .launch(session.id, ["codex"], { over: NoLiveAgent })
+            .pipe(Effect.flip);
+
+          expect(refused._tag).toBe("SessionAgentLiveError");
+          expect(footprint(world, session.id, seen)).toEqual(before);
+        }),
+      { sealantLayer: seen.layer },
+    );
+  });
+
   it("refuses a never-launched attempt once another client's launch brought its agent up", async () => {
     const seen = platform();
     await withEngine(

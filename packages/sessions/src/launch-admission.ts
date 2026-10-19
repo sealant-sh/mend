@@ -37,7 +37,7 @@ export const Expected = (settledAt: Date | null): LaunchOver => ({ _tag: "Expect
 export interface LaunchObserved {
   readonly status: SessionStatus;
   readonly settledAt: Date | null;
-  /** The engine's `agentIsLive`: shells and Services alone are not an agent. */
+  /** The engine's `agentIsLive`: shells, Services and the workbench shell are not an agent. */
   readonly agentLive: boolean;
   /** Another launch verb holds the gate. */
   readonly underWay: boolean;
