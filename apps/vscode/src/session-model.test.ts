@@ -4,6 +4,7 @@ import {
   clockTime,
   mergeLastSeen,
   othersLine,
+  ownLine,
   seen,
   sessionModel,
   transitions,
@@ -538,5 +539,18 @@ describe("offline (stories f and b)", () => {
     expect(model.message).toBe(`last heard from Mend at ${clockTime(lastHeardAt)}`);
     expect(model.statusBar.text).toBe(`Mend · last heard at ${clockTime(lastHeardAt)}`);
     expect(model.offline).toBe(true);
+  });
+});
+
+describe("a session the model has not read yet (N2)", () => {
+  it("reads <word> · <fact> from the session alone", () => {
+    expect(ownLine(session({ id: "a", status: "completed", summary: "4 files\nmore" }))).toBe(
+      "completed · observed · 4 files",
+    );
+    expect(ownLine(session({ id: "b", status: "completed" }))).toBe("completed · observed");
+    expect(ownLine(session({ id: "c", status: "running", summary: "reading src/auth" }))).toBe(
+      "running · reading src/auth",
+    );
+    expect(ownLine(session({ id: "d", status: "waiting" }))).toBe("waiting");
   });
 });

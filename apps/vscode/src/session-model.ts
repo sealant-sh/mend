@@ -172,6 +172,23 @@ const landedFact = (landing: LandingFact): string =>
     ? `pushed · ${landing.remoteBranch} · observed`
     : `pull request #${landing.pullRequest.number} · ${landing.pullRequest.state} · observed`;
 
+/** What the session itself says beside its word: its summary, after `observed` once completed. */
+const ownFact = (session: Pick<Session, "status" | "summary">): string | null => {
+  const summary = firstLine(session.summary);
+  return session.status === "completed"
+    ? ["observed", ...(summary === null ? [] : [summary])].join(" · ")
+    : summary;
+};
+
+/**
+ * How a session reads before a read of its wait or landing: `completed · observed · 4 files`,
+ * `running · reading src/auth`, or the word alone where the session says nothing more.
+ */
+export const ownLine = (session: Pick<Session, "status" | "summary">): string => {
+  const fact = ownFact(session);
+  return fact === null ? session.status : `${session.status} · ${fact}`;
+};
+
 const sessionView = (
   input: ModelInput,
   project: Project,
@@ -208,9 +225,7 @@ const sessionView = (
         ? `${nameOf(session.ownerUserId, members)}'s session`
         : reported
           ? (wait?.words ?? summary)
-          : session.status === "completed"
-            ? ["observed", ...(summary === null ? [] : [summary])].join(" · ")
-            : summary;
+          : ownFact(session);
   const settledAt =
     landing !== null ? landing.createdAt : live ? null : (session.settledAt ?? null);
   const seen = input.lastSeen.sessions[session.id] ?? input.lastSeen.baseline;

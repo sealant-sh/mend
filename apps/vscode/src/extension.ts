@@ -27,7 +27,7 @@ import {
   type RowOffer,
 } from "./session-capability.js";
 import { displaySession, joinLineOf } from "./session-lines.js";
-import type { SessionView } from "./session-model.js";
+import { ownLine, type SessionView } from "./session-model.js";
 import { SessionStore } from "./session-store.js";
 import { MendStatusBar, Notifier } from "./session-surfaces.js";
 import { ToastClaims } from "./toast-claims.js";
@@ -106,9 +106,9 @@ const capabilitiesOf = async (
   return (session) => rowCapability({ session, viewer, members });
 };
 
-/** How a session's row reads, from the store's last read; its bare status before one. */
+/** How a session's row reads, from the store's last read; from the session alone before one. */
 const lineOf = (store: SessionStore, session: Session): string =>
-  store.model()?.sessions.get(session.id)?.line ?? session.status;
+  store.model()?.sessions.get(session.id)?.line ?? ownLine(session);
 
 const offerPick = (
   session: Session,
