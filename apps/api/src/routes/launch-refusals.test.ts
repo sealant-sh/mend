@@ -41,8 +41,10 @@ describe("POST /sessions/:id/launch refusals", () => {
           engine: {
             launchUnderWay: () => false,
             detach: (effect) => Effect.forkDetach(effect),
-            launch: (_sessionId, _argv, over) =>
-              Effect.sync(() => void asked.push(over)).pipe(Effect.andThen(Effect.fail(refusal))),
+            launch: (_sessionId, _argv, admission) =>
+              Effect.sync(() => void asked.push(admission?.over)).pipe(
+                Effect.andThen(Effect.fail(refusal)),
+              ),
           },
         },
       },

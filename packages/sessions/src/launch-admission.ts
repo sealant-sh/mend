@@ -1,5 +1,5 @@
 import { SessionStatus } from "@mend/domain/workbench";
-import { Schema } from "effect";
+import { type Effect, Schema } from "effect";
 
 import { LAUNCH_UNDER_WAY_WORDS } from "./launch-gate.ts";
 
@@ -18,6 +18,16 @@ export type LaunchOver =
   | { readonly _tag: "NoLiveAgent" }
   /** Replace a live agent (a PTY relaunch stops its workspace, as it always has). */
   | { readonly _tag: "Restart" };
+
+/** A public launch's terms: what it may launch over, and what it does once admitted. */
+export interface LaunchAdmission {
+  readonly over: LaunchOver;
+  /**
+   * Runs once the launch is admitted, before it starts anything, and never for one refused: the
+   * caller's writes about this launch (its model and effort, the session's naming).
+   */
+  readonly onAdmitted?: Effect.Effect<void>;
+}
 
 export const Restart: LaunchOver = { _tag: "Restart" };
 export const NoLiveAgent: LaunchOver = { _tag: "NoLiveAgent" };

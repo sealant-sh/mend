@@ -88,6 +88,9 @@ const holdOpens = (seen: ReturnType<typeof platform>) =>
     return { asked, release };
   });
 
+/** What a refused launch must never run. */
+const neverAdmitted = Effect.die("a refused launch ran what it does once admitted");
+
 /** Everything a launch could tear down or rewrite, to compare before and after a refusal. */
 const footprint = (world: World, sessionId: SessionId, seen: ReturnType<typeof platform>) => {
   const row = world.sessions.get(sessionId);
@@ -105,7 +108,7 @@ const footprint = (world: World, sessionId: SessionId, seen: ReturnType<typeof p
 };
 
 describe("SessionEngine launch admission (SLNT-167)", () => {
-  it("launches over the failed attempt its caller saw, and writes the options it admitted", async () => {
+  it("launches over the failed attempt its caller saw, and runs what its caller does once admitted", async () => {
     const seen = platform();
     await withEngine(
       (world, tmp) =>
@@ -120,15 +123,17 @@ describe("SessionEngine launch admission (SLNT-167)", () => {
           const settledAt = failed?.settledAt ?? null;
           expect(settledAt).not.toBeNull();
 
-          yield* engine.launch(session.id, ["codex"], Expected(settledAt), {
-            model: "gpt-5.5",
-            effort: "low",
+          const admitted: Array<string> = [];
+          yield* engine.launch(session.id, ["codex"], {
+            over: Expected(settledAt),
+            onAdmitted: Effect.sync(() => {
+              admitted.push(`${seen.created.length} created`);
+            }),
           });
 
           expect(world.sessions.get(session.id)?.status).toBe("running");
           expect(liveAgents(world, session.id)).toHaveLength(1);
-          expect(world.sessions.get(session.id)?.model).toBe("gpt-5.5");
-          expect(world.sessions.get(session.id)?.effort).toBe("low");
+          expect(admitted).toEqual([`${seen.created.length - 1} created`]);
         }),
       { sealantLayer: seen.layer },
     );
@@ -151,7 +156,7 @@ describe("SessionEngine launch admission (SLNT-167)", () => {
           const before = footprint(world, session.id, seen);
 
           const refused = yield* engine
-            .launch(session.id, ["codex"], Expected(stale), { model: "other", effort: "high" })
+            .launch(session.id, ["codex"], { over: Expected(stale), onAdmitted: neverAdmitted })
             .pipe(Effect.flip);
 
           expect(refused._tag).toBe("SessionMovedOnError");
@@ -182,7 +187,7 @@ describe("SessionEngine launch admission (SLNT-167)", () => {
           const before = footprint(world, session.id, seen);
 
           const refused = yield* engine
-            .launch(session.id, ["codex"], Expected(stale))
+            .launch(session.id, ["codex"], { over: Expected(stale) })
             .pipe(Effect.flip);
 
           expect(refused).toMatchObject({
@@ -203,13 +208,13 @@ describe("SessionEngine launch admission (SLNT-167)", () => {
         Effect.gen(function* () {
           const engine = yield* SessionEngine;
           const { session, harvested } = yield* provisioned(tmp, world);
-          yield* engine.launch(session.id, ["codex"], Expected(null));
+          yield* engine.launch(session.id, ["codex"], { over: Expected(null) });
           expect(world.sessions.get(session.id)?.settledAt).toBeNull();
           harvested();
           const before = footprint(world, session.id, seen);
 
           const refused = yield* engine
-            .launch(session.id, ["codex"], Expected(null))
+            .launch(session.id, ["codex"], { over: Expected(null) })
             .pipe(Effect.flip);
 
           expect(refused).toMatchObject({ _tag: "SessionMovedOnError", status: "running" });
@@ -238,7 +243,7 @@ describe("SessionEngine launch admission (SLNT-167)", () => {
           const before = footprint(world, session.id, seen);
 
           const refused = yield* engine
-            .launch(session.id, ["codex"], Expected(stale))
+            .launch(session.id, ["codex"], { over: Expected(stale) })
             .pipe(Effect.flip);
 
           expect(refused).toMatchObject({ _tag: "SessionMovedOnError", status: "starting" });
@@ -264,7 +269,7 @@ describe("SessionEngine launch admission (SLNT-167)", () => {
           const before = footprint(world, session.id, seen);
 
           const refused = yield* engine
-            .launch(session.id, ["codex"], NoLiveAgent, { model: "other", effort: "high" })
+            .launch(session.id, ["codex"], { over: NoLiveAgent, onAdmitted: neverAdmitted })
             .pipe(Effect.flip);
 
           expect(refused._tag).toBe("SessionAgentLiveError");
@@ -321,7 +326,9 @@ describe("SessionEngine launch admission (SLNT-167)", () => {
             expect(world.sessions.get(session.id)?.status).toBe("failed");
           }
 
-          yield* engine.launch(session.id, ["codex"], expected ? Expected(null) : NoLiveAgent);
+          yield* engine.launch(session.id, ["codex"], {
+            over: expected ? Expected(null) : NoLiveAgent,
+          });
 
           expect(world.sessions.get(session.id)?.status).toBe("running");
           expect(liveAgents(world, session.id)).toHaveLength(1);
@@ -346,8 +353,8 @@ describe("SessionEngine launch admission (SLNT-167)", () => {
 
           const [first, second] = yield* Effect.all(
             [
-              engine.launch(session.id, ["codex"], Expected(settledAt)).pipe(Effect.exit),
-              engine.launch(session.id, ["codex"], Expected(settledAt)).pipe(Effect.exit),
+              engine.launch(session.id, ["codex"], { over: Expected(settledAt) }).pipe(Effect.exit),
+              engine.launch(session.id, ["codex"], { over: Expected(settledAt) }).pipe(Effect.exit),
               Deferred.await(asked).pipe(Effect.andThen(Deferred.succeed(release, undefined))),
             ],
             { concurrency: "unbounded" },

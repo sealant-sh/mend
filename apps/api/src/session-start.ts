@@ -325,13 +325,14 @@ export const makeSessionStart = Effect.gen(function* () {
       ),
       Effect.asVoid,
     );
-    // Inline naming has no transcript dependency and a first launch can
-    // take minutes — enqueue before the launch so the label lands while
-    // the workspace still provisions.
-    if (inlineNamePrompt !== null) yield* queueAutoName;
+    // Inline naming has no transcript dependency and a first launch can take minutes: it is
+    // enqueued as the launch is admitted, so the label lands while the workspace still
+    // provisions, and a refused launch names nothing from its prompt (SLNT-167).
+    const nameOnAdmission = inlineNamePrompt === null ? Effect.void : queueAutoName;
     const over = launchOverOf(request);
-    // Recorded by the engine once the launch is admitted, never for one refused. A verbatim argv
-    // names its own flags, which Mend did not resolve: the row says so with null.
+    // A PTY launch's model and effort, recorded once it is admitted (a protocol launch records its
+    // own). A verbatim argv names its own flags, which Mend did not resolve: the row says so with
+    // null.
     const launch =
       input.mode === "protocol"
         ? engine.launchProtocol(
@@ -340,9 +341,14 @@ export const makeSessionStart = Effect.gen(function* () {
             userId,
             undefined,
             undefined,
-            over,
+            { over, onAdmitted: nameOnAdmission },
           )
-        : engine.launch(session.id, argv, over, resolved ?? { model: null, effort: null });
+        : engine.launch(session.id, argv, {
+            over,
+            onAdmitted: Effect.suspend(() =>
+              sessions.setLaunchOptions(session.id, resolved ?? { model: null, effort: null }),
+            ).pipe(Effect.andThen(nameOnAdmission)),
+          });
     // A launch holds a platform workspace build for minutes. One account starts a bounded
     // number at once; a launch already under way is never touched. The slot is held for the
     // launch's whole course, in the background too: it is taken and given back inside the

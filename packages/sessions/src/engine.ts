@@ -428,7 +428,7 @@ import {
   refusalError,
   refusalOf,
   underWayRefusal,
-  type LaunchOver,
+  type LaunchAdmission,
   type SessionAgentLiveError,
   type SessionMovedOnError,
 } from "./launch-admission.ts";
@@ -2097,9 +2097,7 @@ export class SessionEngine extends Context.Service<
        * What it may launch over (SLNT-167), checked once the launch holds the gate. Omitted:
        * `Restart`, a live agent's workspace stopped and replaced as it always was.
        */
-      over?: LaunchOver,
-      /** Written to the session once the launch is admitted, never for one refused. */
-      launchOptions?: { readonly model: string | null; readonly effort: EffortLevel | null },
+      admission?: LaunchAdmission,
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
@@ -2120,7 +2118,7 @@ export class SessionEngine extends Context.Service<
       launchCorrelationId?: string | null,
       forceFreshWorkspace?: boolean,
       /** As `launch`'s; a live protocol agent is refused even on `Restart` (`session_active`). */
-      over?: LaunchOver,
+      admission?: LaunchAdmission,
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
@@ -23804,7 +23802,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the refusal says so in the same terms. Resume, handoff and follow-up keep `oneLaunch`.
        */
       const admittedLaunch =
-        (sessionId: SessionId, over: LaunchOver) =>
+        (sessionId: SessionId, { over, onAdmitted }: LaunchAdmission = { over: Restart }) =>
         <A, E, R>(effect: Effect.Effect<A, E, R>) =>
           gatedLaunch(
             sessionId,
@@ -23825,6 +23823,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 underWay: false,
               });
               if (refusal !== null) return yield* refusalError(sessionId, refusal);
+              if (onAdmitted !== undefined) yield* onAdmitted;
               return yield* effect;
             }),
           );
@@ -23853,33 +23852,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // its image build ran on).
         launchUnderWay: (sessionId) =>
           launchGate.underWay(sessionId) && !stoppedDuringLaunch.has(sessionId),
-        launch: (sessionId, argv, over = Restart, launchOptions) =>
-          detached(
-            owned(sessionId)(
-              admittedLaunch(
-                sessionId,
-                over,
-              )(
-                (launchOptions === undefined
-                  ? Effect.void
-                  : sessions.setLaunchOptions(sessionId, launchOptions)
-                ).pipe(Effect.andThen(launch(sessionId, argv))),
-              ),
-            ),
-          ),
+        launch: (sessionId, argv, admission) =>
+          detached(owned(sessionId)(admittedLaunch(sessionId, admission)(launch(sessionId, argv)))),
         launchProtocol: (
           sessionId,
           start,
           author,
           launchCorrelationId,
           forceFreshWorkspace,
-          over = Restart,
+          admission,
         ) =>
           detached(
             owned(sessionId)(
               admittedLaunch(
                 sessionId,
-                over,
+                admission,
               )(launchProtocol(sessionId, start, author, launchCorrelationId, forceFreshWorkspace)),
             ),
           ),

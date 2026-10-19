@@ -36,6 +36,7 @@ import {
   SessionEngine,
   SessionLaunchSetupError,
   SessionMovedOnError,
+  type LaunchAdmission,
   type LaunchOver,
 } from "@mend/sessions";
 import { GitError } from "@mend/store";
@@ -152,11 +153,17 @@ const startWorld = (
   const effects: Array<string> = [];
   const settlements: Array<Parameters<SessionsRepo["Service"]["settle"]>> = [];
   const fibers: Array<Fiber.Fiber<unknown, unknown>> = [];
-  /** What each engine launch was asked to launch over, and the options it was to record. */
-  const launches: Array<{
-    readonly over: LaunchOver | undefined;
-    readonly options: { readonly model: string | null; readonly effort: string | null } | null;
-  }> = [];
+  /** What each engine launch was asked to launch over. */
+  const launches: Array<{ readonly over: LaunchOver | undefined }> = [];
+  /**
+   * The engine's admission: a refusal runs nothing of the caller's; any other launch runs what
+   * its caller does once admitted, before it starts anything.
+   */
+  const admitted = (admission: LaunchAdmission | undefined) =>
+    options.launchFailure?._tag === "SessionMovedOnError" ||
+    options.launchFailure?._tag === "SessionAgentLiveError"
+      ? Effect.void
+      : (admission?.onAdmitted ?? Effect.void);
   let current =
     options.initial === undefined
       ? new Session({ ...provisioned("alice"), status: "starting", summary: "booting" })
@@ -257,11 +264,12 @@ const startWorld = (
                   : Effect.fail(options.provisionFailure),
               ),
             ),
-          launchProtocol: (sessionId, start, author, _correlation, _fresh, over) =>
+          launchProtocol: (sessionId, start, author, _correlation, _fresh, admission) =>
             note(
               `engine.launchProtocol:${sessionId}:${author}:${start.model ?? "-"}:${start.effort ?? "-"}:${start.prompt}`,
             ).pipe(
-              Effect.tap(() => Effect.sync(() => void launches.push({ over, options: null }))),
+              Effect.tap(() => Effect.sync(() => void launches.push({ over: admission?.over }))),
+              Effect.andThen(admitted(admission)),
               Effect.andThen(
                 options.launchEntered === undefined
                   ? Effect.void
@@ -276,11 +284,10 @@ const startWorld = (
                   : Effect.fail(options.launchFailure),
               ),
             ),
-          launch: (sessionId, argv, over, launchOptions) =>
+          launch: (sessionId, argv, admission) =>
             note(`engine.launch:${sessionId}:${argv.join(" ")}`).pipe(
-              Effect.tap(() =>
-                Effect.sync(() => void launches.push({ over, options: launchOptions ?? null })),
-              ),
+              Effect.tap(() => Effect.sync(() => void launches.push({ over: admission?.over }))),
+              Effect.andThen(admitted(admission)),
               Effect.andThen(
                 options.launchFailure === undefined
                   ? Effect.succeed(provisioned("alice"))
@@ -360,9 +367,10 @@ describe("SessionStart.startAs", () => {
       // The catalog is read for the model; Claude's names no default, so none is sent and Claude
       // Code's own decides. The engine records the launch once it is admitted.
       "harnessModels.forHarness:claude",
-      // A composed start knows its first prompt: the namer is queued before the launch.
-      "jobs.enqueue:name-session:0",
       `engine.launchProtocol:${SESSION}:alice:-:-: fix the flaky test `,
+      // A composed start knows its first prompt: the namer is queued as the launch is admitted,
+      // before it provisions.
+      "jobs.enqueue:name-session:0",
     ]);
     expect(world.effects.some((entry) => entry.startsWith("sessions.setLaunchOptions"))).toBe(
       false,
@@ -409,9 +417,7 @@ describe("SessionStart.startAs", () => {
 
     expect(result._tag).toBe("Success");
     expect(world.effects).toContain(`engine.launch:${SESSION}:claude --effort high`);
-    expect(world.launches.map((launch) => launch.options)).toEqual([
-      { model: null, effort: "high" },
-    ]);
+    expect(world.effects).toContain(`sessions.setLaunchOptions:${SESSION}:null:high`);
   });
 
   it("sends opencode no model nobody chose, so the person's own opencode config decides", async () => {
@@ -431,9 +437,7 @@ describe("SessionStart.startAs", () => {
     };
     const bare = await launch(new LaunchRequest({ prompt: "fix the test" }));
     expect(bare.effects).toContain(`engine.launch:${SESSION}:opencode --prompt fix the test`);
-    expect(bare.launches.map((launched) => launched.options)).toEqual([
-      { model: null, effort: null },
-    ]);
+    expect(bare.effects).toContain(`sessions.setLaunchOptions:${SESSION}:null:null`);
     const chosen = await launch(new LaunchRequest({ model: "openai/gpt-6-astra" }));
     expect(chosen.effects).toContain(
       `engine.launch:${SESSION}:opencode --model openai/gpt-6-astra`,
@@ -476,7 +480,7 @@ describe("SessionStart.startAs", () => {
 
     expect(result._tag).toBe("Success");
     expect(world.effects.some((entry) => entry.startsWith("harnessModels."))).toBe(false);
-    expect(world.launches.map((launch) => launch.options)).toEqual([{ model: null, effort: null }]);
+    expect(world.effects).toContain(`sessions.setLaunchOptions:${SESSION}:null:null`);
     expect(world.effects).toContain(`engine.launch:${SESSION}:claude --model opus`);
   });
 
@@ -618,7 +622,10 @@ describe("SessionStart.startAs", () => {
     const result = await startAs(world, "alice", request({}));
 
     expect(result._tag).toBe("Success");
-    expect(world.effects.slice(-2)).toEqual([
+    expect(
+      world.effects.filter((entry) => entry.startsWith("engine.") || entry.startsWith("jobs.")),
+    ).toEqual([
+      `engine.provision:${PROJECT}:alice:slack`,
       `engine.launch:${SESSION}:claude`,
       "jobs.enqueue:name-session:45",
     ]);
@@ -1020,13 +1027,17 @@ describe("what a launch may launch over (SLNT-167)", () => {
       contract: "SessionAgentLive",
     },
   ])(
-    "answers the engine's $engine._tag as $contract, and settles nothing",
+    "answers the engine's $engine._tag as $contract, and settles, records and names nothing",
     async ({ engine, contract }) => {
       for (const mode of [undefined, "protocol"] as const) {
         const row = unlaunched();
         const world = startWorld({ initial: row, launchFailure: engine });
         const { result } = await launchWith(
-          new LaunchRequest({ ...(mode === undefined ? {} : { mode }), expected: { settledAt } }),
+          new LaunchRequest({
+            ...(mode === undefined ? {} : { mode }),
+            prompt: "rename the module",
+            expected: { settledAt },
+          }),
           world,
           row,
         );
@@ -1044,7 +1055,29 @@ describe("what a launch may launch over (SLNT-167)", () => {
         expect(world.effects.some((entry) => entry.startsWith("sessions.setLaunchOptions"))).toBe(
           false,
         );
+        expect(world.effects.some((entry) => entry.startsWith("jobs.enqueue:name-session"))).toBe(
+          false,
+        );
       }
     },
   );
+
+  it("names an admitted launch from its prompt, PTY and protocol alike", async () => {
+    for (const mode of [undefined, "protocol"] as const) {
+      const row = unlaunched();
+      const { result, world } = await launchWith(
+        new LaunchRequest({
+          ...(mode === undefined ? {} : { mode }),
+          prompt: "rename the module",
+          expected: { settledAt },
+        }),
+        startWorld({ initial: row }),
+        row,
+      );
+      expect(result._tag).toBe("Success");
+      expect(
+        world.effects.filter((entry) => entry.startsWith("jobs.enqueue:name-session")),
+      ).toEqual(["jobs.enqueue:name-session:0"]);
+    }
+  });
 });
