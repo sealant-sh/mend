@@ -37,6 +37,8 @@ const world = await import(
 
 /** The row's open button on either manifest. */
 const OPEN = /^Mend: Open( in VS Code)?$/;
+/** A workspace window lists its own session as one row, its status line (rule 10). */
+const OWN_ROW = /^(starting|running|waiting|idle)/;
 /** What Remote-SSH would refuse, said where Open would have been. */
 const ANA_WHY = "Ana launched this workspace · Remote-SSH opens it only for them";
 
@@ -110,6 +112,17 @@ export default async (h) => {
    */
   const mendView = async () => {
     await view("Mend");
+    // The view draws its groups once its first read lands; a workspace window has none.
+    await waitUntil(
+      "the Mend view's first rows",
+      async () =>
+        (await viewRows()).rows.some(
+          (one) => one.label === "Projects" || /other sessions?$/.test(one.label),
+        )
+          ? true
+          : null,
+      120_000,
+    );
     for (const label of ["Projects", project.name]) {
       const row = (await viewRows()).rows.find((one) => one.label === label);
       if (row?.expanded === "false") {
@@ -529,8 +542,7 @@ export default async (h) => {
       const before = await counts();
       const watching = await watch();
       await mendView();
-      // The workspace window lists its own session as one row, its status line (rule 10).
-      const { title } = await treeItem(/^(starting|running|waiting|idle)/).inline(OPEN);
+      const { title } = await treeItem(OWN_ROW).inline(OPEN);
       const tabs = await waitUntil(
         "the attached tab to be active and focused",
         async () => {
@@ -1156,13 +1168,16 @@ export default async (h) => {
   );
 
   await step(
-    `in ${agent.name}'s window, the open button on second-look, which shares the workspace: its own claude attached and focused, nothing opens`,
+    `in ${agent.name}'s window, second-look picked from the others line (it shares the workspace): its own claude attached and focused, nothing opens`,
     async () => {
       const url = older.page.url();
       const before = await openCounts();
       const watching = await watch();
       await mendView();
-      await treeItem(second.name).inline(OPEN);
+      // The workspace window lists only its own session; the others line opens the picker.
+      await treeItem(/other sessions?/).click();
+      await quickInput.waitFor();
+      await quickInput.pick(second.name);
       const tabs = await waitUntil(
         `the tab "${second.tab}" attached, active and focused`,
         async () => {
@@ -1191,7 +1206,7 @@ export default async (h) => {
       const before = await openCounts();
       const watching = await watch();
       await mendView();
-      await treeItem(agent.name).contextMenu("Mend: Open in New Window");
+      await treeItem(OWN_ROW).contextMenu("Mend: Open in New Window");
       const tabs = await waitUntil(
         `the tab "${agent.tab}" active and focused again`,
         async () => {
