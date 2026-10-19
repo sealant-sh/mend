@@ -128,6 +128,7 @@ const world = (
       clock += ms;
     },
     onError: vi.fn(),
+    refused: vi.fn(),
     ...overrides,
   } satisfies AgentTabEffects;
   return {
@@ -202,6 +203,30 @@ describe("focusing a session's agent", () => {
     expect(ended.shows).toBe(1);
     expect(ended.disposed).toBe(true);
     expect(effects.attachPty).toHaveBeenCalledTimes(2);
+  });
+
+  it("attaches nothing when Mend could not read who she is, and says why", async () => {
+    const { effects, agents } = world([detail([terminalAgent])], { viewer: async () => null });
+    await agents.focus("older");
+    expect(effects.attachPty).not.toHaveBeenCalled();
+    expect(effects.showConversation).not.toHaveBeenCalled();
+    expect(effects.refused).toHaveBeenCalledWith(
+      "Mend could not read who you are on this server · no agent attached",
+    );
+  });
+
+  it("attaches nothing for a workspace someone else launched, shared control on or not", async () => {
+    const anas = session({
+      ownerUserId: "ana",
+      workspaceLauncherUserId: "ana",
+      sharedControlEnabledAt: "2026-10-19T09:00:00.000Z",
+    });
+    const { effects, agents } = world([detail([terminalAgent], anas)]);
+    await agents.focus("older");
+    expect(effects.attachPty).not.toHaveBeenCalled();
+    expect(effects.refused).toHaveBeenCalledWith(
+      "another person launched this workspace · Remote-SSH opens it only for them · no agent attached",
+    );
   });
 
   it("forgets a tab she closed: it offers nothing more, and the next focus attaches anew", async () => {

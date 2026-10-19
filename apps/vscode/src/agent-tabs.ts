@@ -1,4 +1,4 @@
-import { maySteer, ownsSession } from "./session-capability.js";
+import { maySteer, ownsSession, rowCapability } from "./session-capability.js";
 import type { Session, SessionDetail } from "./types.js";
 import { agentTab, handoffRefusedLine, type AgentTab } from "./window-role.js";
 
@@ -42,6 +42,8 @@ export interface AgentTabEffects {
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
   readonly onError: (cause: unknown) => void;
+  /** Says why the window attaches no agent for the session. */
+  readonly refused: (line: string) => void;
 }
 
 type Attached =
@@ -130,6 +132,13 @@ export class AgentTabs {
       if (this.#showContinuing(sessionId)) return;
       const [detail, viewer] = await Promise.all([effects.detail(sessionId), effects.viewer()]);
       if (this.#showContinuing(sessionId)) return;
+      // Only the workspace's launcher types into its agent; anyone else, and anyone Mend cannot
+      // name, gets nothing here (Watch terminal is the read-only way in).
+      const capability = rowCapability({ session: detail.session, viewer, members: [] });
+      if (capability.kind !== "open") {
+        effects.refused(`${capability.why} · no agent attached`);
+        return;
+      }
       if (viewer !== null && !maySteer(detail.session, viewer)) return;
       const want = agentTab(detail.session, detail.processes);
       const have = this.#attached.get(sessionId);

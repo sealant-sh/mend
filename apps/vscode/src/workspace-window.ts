@@ -129,6 +129,7 @@ export class WorkspaceWindow implements vscode.Disposable {
       now: () => Date.now(),
       sleep: (ms) => wait(ms),
       onError,
+      refused: (line) => this.#say(line),
     };
     this.#tabs = new AgentTabs(effects);
     this.#disposables =
