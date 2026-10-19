@@ -14,6 +14,9 @@ import {
   CODEX_SYSTEM_CONFIG,
   CODEX_SYSTEM_CONFIG_TEXT,
   CODEX_SYSTEM_CONFIG_TEXT_V1,
+  CODEX_SYSTEM_CONFIG_TEXT_V2,
+  CODEX_SYSTEM_CONFIG_TEXT_V3,
+  CODEX_SYSTEM_CONFIG_TEXTS_WRITTEN,
   CODEX_TRUST_SEED,
   codexSystemConfigScript,
   COPY_REFRESH_TOKEN,
@@ -732,6 +735,33 @@ describe("Codex's system default: no sandbox of its own in a workspace", () => {
       expect(table.handler).toBe(
         'hooks = [{ type = "command", command = "/run/mend/bin/mend hook codex", timeout = 5 }]',
       );
+    }
+  });
+
+  it("writes now the last text it has frozen, so a new text needs a new literal", () => {
+    expect(CODEX_SYSTEM_CONFIG_TEXT).toBe(CODEX_SYSTEM_CONFIG_TEXTS_WRITTEN.at(-1));
+    expect(CODEX_SYSTEM_CONFIG_TEXTS_WRITTEN).toEqual([
+      CODEX_SYSTEM_CONFIG_TEXT_V1,
+      CODEX_SYSTEM_CONFIG_TEXT_V2,
+      CODEX_SYSTEM_CONFIG_TEXT_V3,
+    ]);
+  });
+
+  it("replaces each text Mend wrote before, and leaves the current one without a temporary", () => {
+    for (const [earlier, replaced] of [
+      [CODEX_SYSTEM_CONFIG_TEXT_V1, true],
+      [CODEX_SYSTEM_CONFIG_TEXT_V2, true],
+      [CODEX_SYSTEM_CONFIG_TEXT_V3, false],
+    ] as const) {
+      const root = makeHome();
+      const file = path.join(root, "etc", "codex", "config.toml");
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, earlier, { mode: 0o600 });
+      const before = fs.statSync(file).ino;
+      runCodexSystemConfig(file);
+      expect(fs.readFileSync(file, "utf8")).toBe(CODEX_SYSTEM_CONFIG_TEXT);
+      expect(fs.statSync(file).ino === before).toBe(!replaced);
+      expect(fs.readdirSync(path.dirname(file))).toEqual(["config.toml"]);
     }
   });
 

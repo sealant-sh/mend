@@ -226,7 +226,58 @@ const CODEX_SANDBOX_LINES = [
   'sandbox_mode = "danger-full-access"',
 ];
 
-export const CODEX_SYSTEM_CONFIG_TEXT_V1 = [...CODEX_SANDBOX_LINES, ""].join("\n");
+/**
+ * Every text Mend has written to the system config, oldest first, byte for byte: a file holding
+ * one of them is Mend's own and is brought up to date. Literals on purpose, so changing what Mend
+ * writes cannot change what it recognises; the last one is the text written now.
+ */
+export const CODEX_SYSTEM_CONFIG_TEXT_V1 =
+  "# Written by Mend. A workspace is the sandbox: Codex's own (bubblewrap) cannot start in one,\n" +
+  "# so Codex runs here without it, as the Codex sessions Mend starts do. A sandbox_mode in your\n" +
+  "# ~/.codex/config.toml wins over this file.\n" +
+  'sandbox_mode = "danger-full-access"\n';
+
+/** 0.36 G4: the hooks, run as a bare `mend`. */
+export const CODEX_SYSTEM_CONFIG_TEXT_V2 =
+  "# Written by Mend. A workspace is the sandbox: Codex's own (bubblewrap) cannot start in one,\n" +
+  "# so Codex runs here without it, as the Codex sessions Mend starts do. A sandbox_mode in your\n" +
+  "# ~/.codex/config.toml wins over this file.\n" +
+  'sandbox_mode = "danger-full-access"\n' +
+  "\n" +
+  "# Each hook tells Mend when Codex waits for you, and when it goes on.\n" +
+  "[[hooks.PermissionRequest]]\n" +
+  'hooks = [{ type = "command", command = "mend hook codex", timeout = 5 }]\n' +
+  "[[hooks.Stop]]\n" +
+  'hooks = [{ type = "command", command = "mend hook codex", timeout = 5 }]\n' +
+  "[[hooks.UserPromptSubmit]]\n" +
+  'hooks = [{ type = "command", command = "mend hook codex", timeout = 5 }]\n' +
+  "[[hooks.PostToolUse]]\n" +
+  'hooks = [{ type = "command", command = "mend hook codex", timeout = 5 }]\n';
+
+/** G4 review: `SessionStart`, and the helper by its absolute path. */
+export const CODEX_SYSTEM_CONFIG_TEXT_V3 =
+  "# Written by Mend. A workspace is the sandbox: Codex's own (bubblewrap) cannot start in one,\n" +
+  "# so Codex runs here without it, as the Codex sessions Mend starts do. A sandbox_mode in your\n" +
+  "# ~/.codex/config.toml wins over this file.\n" +
+  'sandbox_mode = "danger-full-access"\n' +
+  "\n" +
+  "# Each hook tells Mend when Codex waits for you, and when it goes on.\n" +
+  "[[hooks.SessionStart]]\n" +
+  'hooks = [{ type = "command", command = "/run/mend/bin/mend hook codex", timeout = 5 }]\n' +
+  "[[hooks.PermissionRequest]]\n" +
+  'hooks = [{ type = "command", command = "/run/mend/bin/mend hook codex", timeout = 5 }]\n' +
+  "[[hooks.Stop]]\n" +
+  'hooks = [{ type = "command", command = "/run/mend/bin/mend hook codex", timeout = 5 }]\n' +
+  "[[hooks.UserPromptSubmit]]\n" +
+  'hooks = [{ type = "command", command = "/run/mend/bin/mend hook codex", timeout = 5 }]\n' +
+  "[[hooks.PostToolUse]]\n" +
+  'hooks = [{ type = "command", command = "/run/mend/bin/mend hook codex", timeout = 5 }]\n';
+
+export const CODEX_SYSTEM_CONFIG_TEXTS_WRITTEN = [
+  CODEX_SYSTEM_CONFIG_TEXT_V1,
+  CODEX_SYSTEM_CONFIG_TEXT_V2,
+  CODEX_SYSTEM_CONFIG_TEXT_V3,
+] as const;
 
 /**
  * Codex runs a hook only from a layer it trusts; the system layer is one, so these run without
@@ -251,20 +302,23 @@ export const CODEX_SYSTEM_CONFIG_TEXT = [
  * link. An `ln` without `-T` gets the same refusal from a check made right before it. A
  * `/etc/codex` that is a link is never written through. The temporary goes either way.
  *
- * The one file it does replace is Mend's own earlier text, byte for byte
- * (`CODEX_SYSTEM_CONFIG_TEXT_V1`), renamed over it in one step; any other content stays.
+ * The one file it does replace is Mend's own earlier text, byte for byte (any of
+ * `CODEX_SYSTEM_CONFIG_TEXTS_WRITTEN` but the last), renamed over it in one step; any other
+ * content stays. The new text is written to the temporary first, so the compare runs right before
+ * the rename.
  */
 export const codexSystemConfigScript = (file: string = CODEX_SYSTEM_CONFIG): string => {
   const target = shellQuote(file);
   const text = shellQuote(CODEX_SYSTEM_CONFIG_TEXT);
-  const previous = shellQuote(CODEX_SYSTEM_CONFIG_TEXT_V1);
+  const earlier = CODEX_SYSTEM_CONFIG_TEXTS_WRITTEN.slice(0, -1).map(shellQuote).join(" ");
   return (
     `( f=${target}; t=; d=$(dirname "$f"); umask 022; if [ ! -L "$d" ]; then ` +
     `if [ ! -e "$f" ] && [ ! -L "$f" ]; then ` +
     `{ mkdir -p "$d" && [ ! -L "$d" ] && t=$(mktemp "$d/.config.toml.mend-XXXXXX") && printf '%s' ${text} > "$t" && ` +
     `chmod 0644 "$t" && { ln -T "$t" "$f" || { [ ! -e "$f" ] && [ ! -L "$f" ] && ln "$t" "$f"; }; }; } 2>/dev/null; ` +
-    `elif [ -f "$f" ] && [ ! -L "$f" ] && { printf '%s' ${previous} | cmp -s - "$f"; } 2>/dev/null; then ` +
+    `elif [ -f "$f" ] && [ ! -L "$f" ]; then ` +
     `{ t=$(mktemp "$d/.config.toml.mend-XXXXXX") && printf '%s' ${text} > "$t" && chmod 0644 "$t" && ` +
+    `{ m=; for p in ${earlier}; do printf '%s' "$p" | cmp -s - "$f" && m=1; done; [ -n "$m" ]; } && ` +
     `mv -f "$t" "$f"; } 2>/dev/null; fi; fi; [ -z "$t" ] || rm -f "$t"; true )`
   );
 };
