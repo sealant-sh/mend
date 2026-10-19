@@ -9,6 +9,7 @@ import { Effect, Layer } from "effect";
 
 import { AgentBridgeLive } from "../src/agent-bridge.ts";
 import { MendKeysConfig, MendKeysLive } from "../src/git-auth.ts";
+import { gitCommitOf } from "../src/git.ts";
 import { preparedRemoteEnvironment } from "../src/remote-operation-env.ts";
 import { makeSourcePolicy } from "../src/source-policy.ts";
 import { Store, StoreConfig } from "../src/store.ts";
@@ -133,6 +134,39 @@ it("reports an unknown base after a successful origin fetch and retains its fetc
         }).trim(),
       ).toBe(current);
       expect(fs.readFileSync(path.join(repository, "FETCH_HEAD"), "utf8")).toContain(current);
+    }),
+  );
+});
+
+it("keeps git's own error for a base it could not read after a successful fetch, never an unknown base", async () => {
+  await withRepository(({ repository, env }) =>
+    Effect.gen(function* () {
+      const store = yield* Store;
+      const run = (args: ReadonlyArray<string>, input?: string) =>
+        execFileSync("git", [...args], { cwd: repository, env, input, encoding: "utf8" }).trim();
+      const tree = run(["mktree"], "");
+      const commit = run(["commit-tree", tree, "-m", "unreadable"]);
+      const loose = path.join(repository, "objects", commit.slice(0, 2), commit.slice(2));
+      fs.rmSync(loose);
+      fs.writeFileSync(loose, "not a git object");
+      const error = yield* store.resolveBase(repository, commit, env).pipe(Effect.flip);
+      expect(error.unknownBase).toBeUndefined();
+      expect(error.args).toEqual(["rev-parse", "--verify", "--quiet", `${commit}^{commit}`]);
+      expect(error.exitCode).toBe(128);
+      expect(error.stderr).toContain("is corrupt");
+      expect(fs.existsSync(path.join(repository, "FETCH_HEAD"))).toBe(true);
+    }),
+  );
+});
+
+it("reads a ref as missing only when git exits 1 and says nothing; a run Node could not start keeps its error", async () => {
+  await withRepository(({ repository, head }) =>
+    Effect.gen(function* () {
+      expect(yield* gitCommitOf("main", repository)).toBe(head);
+      expect(yield* gitCommitOf("missing-base", repository)).toBeNull();
+      const vanished = yield* gitCommitOf("main", path.join(repository, "gone")).pipe(Effect.flip);
+      expect(vanished.code).toBe("ENOENT");
+      expect(vanished.exitCode).toBeNull();
     }),
   );
 });

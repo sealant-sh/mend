@@ -160,6 +160,46 @@ export const git = (
   });
 
 /**
+ * The commit `ref` names, or null when git proves it names none: `rev-parse --verify --quiet`
+ * exits 1 and prints nothing. Any other ending (Node's `EMFILE`, a corrupt object, a signal) is
+ * that run's own error, never a missing ref.
+ */
+export const gitCommitOf = (ref: string, cwd: string): Effect.Effect<string | null, GitError> =>
+  Effect.callback<string | null, GitError>((resume) => {
+    const args = ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`];
+    const child = execFile(
+      "git",
+      args,
+      { cwd, env: gitProcessEnv(undefined) },
+      (error, stdout, stderr) => {
+        if (error === null) {
+          resume(Effect.succeed(stdout.trim()));
+          return;
+        }
+        const exitCode = typeof error.code === "number" ? error.code : null;
+        const signal = typeof error.signal === "string" ? error.signal : null;
+        if (exitCode === 1 && signal === null && stdout === "" && stderr === "") {
+          resume(Effect.succeed(null));
+          return;
+        }
+        resume(
+          Effect.fail(
+            gitError({
+              args,
+              cwd,
+              exitCode,
+              stderr: (stderr === "" ? error.message : stderr).trim(),
+              ...(signal === null ? {} : { signal }),
+              ...(typeof error.code === "string" ? { code: error.code } : {}),
+            }),
+          ),
+        );
+      },
+    );
+    return Effect.sync(() => child.kill());
+  });
+
+/**
  * Run git with args in cwd; resolve with stdout as bytes, untouched — for output that names paths
  * (`ls-tree -z`), which are bytes and need not be UTF-8.
  */
