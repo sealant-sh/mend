@@ -26,6 +26,7 @@ import {
   type AgentItem,
   type AgentRequest,
   type AgentTurn,
+  type AgentWaitLine,
   type Change,
   type ChangeLanding,
   type ChangePass,
@@ -208,7 +209,7 @@ interface Look {
   readonly session: Session;
   readonly state: SlackSessionState;
   /** What the live terminal agents' hooks say together (`agentWaitLine`); null for none. */
-  readonly agent: string | null;
+  readonly agent: AgentWaitLine | null;
   readonly turns: ReadonlyArray<AgentTurn>;
   readonly pending: ReadonlyArray<AgentRequest>;
   readonly opening: AgentItem | null | undefined;
@@ -358,7 +359,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         thread,
         session,
         state,
-        agent: agentWaitLine(liveAgentsReading(rows, pending.length > 0))?.line ?? null,
+        agent: agentWaitLine(liveAgentsReading(rows, pending.length > 0)),
         turns,
         pending,
         opening,

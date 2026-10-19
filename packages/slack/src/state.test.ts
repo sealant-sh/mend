@@ -118,6 +118,17 @@ describe("the state a thread hears", () => {
     expect(slackSessionState({ status: "idle", currentAgent: ended, turns: [] })).toBe("completed");
   });
 
+  it("keeps the session's own running or waiting when its newest agent finished its turn", () => {
+    const finished = new AgentWait({ kind: "prompt", tool: null, since: new Date(0) });
+    const terminal = agent({ kind: "agent-pty", waiting: finished });
+    expect(slackSessionState({ status: "running", currentAgent: terminal, turns: [] })).toBe(
+      "running",
+    );
+    expect(slackSessionState({ status: "waiting", currentAgent: terminal, turns: [] })).toBe(
+      "waiting",
+    );
+  });
+
   it("reads a session still saving its workspace after the stop as its agent ended", () => {
     const ended = new Date("2026-09-23T11:00:00.000Z");
     expect(

@@ -81,6 +81,24 @@ describe("the status message", () => {
     );
   });
 
+  it("words the state with a terminal agent's line only when the line is that state's", () => {
+    const finished = { status: "idle", line: "idle · claude finished its turn" } as const;
+    const asks = { status: "waiting", line: "waiting · claude asks you a question" } as const;
+    expect(statusLine({ ...status, state: "idle", agent: finished })).toBe(
+      "billing-api · from the thread · claude · idle · claude finished its turn · mend/flaky-login-test",
+    );
+    expect(statusLine({ ...status, state: "waiting", agent: asks })).toBe(
+      "billing-api · from the thread · claude · waiting · claude asks you a question · mend/flaky-login-test",
+    );
+    expect(statusLine({ ...status, state: "waiting", agent: finished })).toBe(
+      "billing-api · from the thread · claude · waiting for input · mend/flaky-login-test",
+    );
+    expect(statusLine({ ...status, state: "idle", agent: asks })).toBe(
+      "billing-api · from the thread · claude · idle · mend/flaky-login-test",
+    );
+    expect(statusLine({ ...status, state: "running", agent: finished })).toBe(statusLine(status));
+  });
+
   it("says what a stop is still saving, and what it kept, beside the state", () => {
     expect(statusLine({ ...status, state: "stopped", capture: "saving · 3 left" })).toBe(
       "billing-api · from the thread · claude · stopped · saving · 3 left · mend/flaky-login-test",

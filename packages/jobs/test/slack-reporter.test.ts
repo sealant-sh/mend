@@ -691,6 +691,54 @@ describe("the Slack thread reporter", () => {
     expect(w.reactions()).toEqual(new Set(["hourglass_flowing_sand"]));
   });
 
+  it("follows the session's fold when several agents are live, and words only a line of its state", async () => {
+    const pty = (id: string, waiting: AgentWait | null, createdAt: Date) =>
+      new SessionProcess({
+        ...terminal(waiting),
+        id: SessionProcessId.make(id),
+        sealantSessionId: id,
+        createdAt,
+      });
+    const asks = new AgentWait({ kind: "permission", tool: "Bash", since: NOW });
+    const finished = new AgentWait({ kind: "prompt", tool: null, since: NOW });
+    const threadSays = async (
+      rows: ReadonlyArray<SessionProcess>,
+      requests: ReadonlyArray<AgentRequest> = [],
+    ) => {
+      const w = world();
+      w.state.processes = rows;
+      w.state.requests = requests;
+      const liveness = foldSessionLiveness(rows, requests.length > 0);
+      if (liveness === "settled") throw new Error("an agent is live");
+      w.state.session = sessionWith(liveness);
+      await w.observe(w.worker());
+      return { line: w.updates().at(-1), reactions: w.reactions() };
+    };
+    const waiting = {
+      line: statusWith("waiting · claude needs your permission to use Bash"),
+      reactions: new Set(["hourglass_flowing_sand"]),
+    };
+    const older = new Date(NOW.getTime() - 60_000);
+
+    expect(await threadSays([pty("old", asks, older), pty("new", finished, NOW)])).toEqual(waiting);
+    expect(await threadSays([pty("b", finished, NOW), pty("a", asks, NOW)])).toEqual(waiting);
+    expect(await threadSays([pty("a", asks, NOW), pty("b", finished, NOW)])).toEqual(waiting);
+    expect(await threadSays([pty("one", finished, older), pty("two", finished, NOW)])).toEqual({
+      line: statusWith("idle · claude finished its turn"),
+      reactions: new Set(),
+    });
+    expect(await threadSays([pty("working", null, older), pty("done", finished, NOW)])).toEqual({
+      line: statusWith("running"),
+      reactions: new Set(["hourglass_flowing_sand"]),
+    });
+    expect(
+      await threadSays([agent, pty("done", finished, NOW)], [request("r1", "user-input")]),
+    ).toEqual({
+      line: statusWith("waiting for input"),
+      reactions: new Set(["hourglass_flowing_sand"]),
+    });
+  });
+
   it("offers Switch project until the first turn completes, and takes it off with that edit", async () => {
     const w = world();
     const reporter = w.worker();

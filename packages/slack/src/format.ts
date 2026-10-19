@@ -5,6 +5,7 @@ import {
   notLandedReasonOf,
   offersLanding,
   type AgentTurn,
+  type AgentWaitLine,
   type ChangeLanding,
   type DecidedTurn,
   type NotLandedReason,
@@ -156,10 +157,11 @@ export interface StatusInput {
   readonly state: SlackSessionState;
   readonly recorded: boolean;
   /**
-   * What a live terminal agent's hooks last reported (`agentWaitLine`), which words a `waiting` or
-   * `idle` state: `idle · claude finished its turn`. Absent or null leaves the state's own words.
+   * What the session's live terminal agents' hooks last reported (`agentWaitLine`), which words
+   * the state only when it is that line's own: `idle · claude finished its turn`. Absent, null or
+   * another state's line leaves the state's own words.
    */
-  readonly agent?: string | null;
+  readonly agent?: AgentWaitLine | null;
   /** The change against its base, once there is one. */
   readonly change: ChangeCounts | null;
   /** The session in Mend. */
@@ -191,12 +193,8 @@ const stateLine = (input: StatusInput): string => {
   if (input.state === "idle-stopped" && input.summary !== undefined && input.summary !== null) {
     return input.summary;
   }
-  if (
-    (input.state === "waiting" || input.state === "idle") &&
-    input.agent !== undefined &&
-    input.agent !== null
-  ) {
-    return input.agent;
+  if (input.agent !== undefined && input.agent !== null && input.agent.status === input.state) {
+    return input.agent.line;
   }
   return stateWords(input.state, input.recorded);
 };
