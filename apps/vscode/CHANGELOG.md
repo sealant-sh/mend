@@ -6,10 +6,10 @@ patch number is the extension's own.
 ## Unreleased
 
 - **Open** replaces **Open in VS Code**. It follows your `window.openFoldersInNewWindow` setting,
-  and **Open in New Window** in the row's right-click menu always opens a new one. Neither asks. A
-  stopped session is resumed as part of the open; a missing Remote-SSH install or workspace SSH
-  setup runs as a step of it; progress shows in the status bar. The one question left is the
-  one-time consent, **Set up workspace SSH to open sessions**, when setup never ran on this machine.
+  and **Open in New Window** in the row's right-click menu opens a new one. Neither asks. A stopped
+  session is resumed as part of the open; a missing Remote-SSH install or workspace SSH setup runs
+  as a step of it; progress shows in the status bar. The one question left is the one-time consent,
+  **Set up workspace SSH to open sessions**, when setup never ran on this machine.
 - Clicking or double-clicking a session row selects it and never opens a window. Before, a
   double-click opened the workspace twice.
 - A session's workspace window attaches the agent's terminal and focuses it (`claude · <session>`).
@@ -18,7 +18,12 @@ patch number is the extension's own.
 - **Take over session in the editor** is removed: typing into the attached terminal does the same,
   and **Continue here** moves a conversation into a terminal and keeps the conversation.
 - A row whose workspace someone else launched offers **Review**, and **Watch terminal** while shared
-  control is on, instead of an **Open** that Remote-SSH would refuse. Its tooltip says why.
+  control is on, instead of an **Open** that Remote-SSH would refuse. Its tooltip says why. When
+  Mend cannot read who you are, the row offers **Review** only and an **Open** from elsewhere reads
+  again before it opens anything. **Stop** is offered only on sessions you may steer.
+- In a worktree that holds several sessions, the window attaches the agent of the session you
+  opened. In a window that already holds the session's workspace, Open and Open in New Window both
+  show that session's agent: VS Code keeps one window per folder.
 - Remote-SSH no longer asks for the platform of Mend's host: the open sets it to Linux.
 
 - Cancelling browser sign-in, including choosing **Paste a device token instead**, discards an

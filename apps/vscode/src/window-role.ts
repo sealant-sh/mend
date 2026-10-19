@@ -22,12 +22,13 @@ export const windowRole = (
 const LIVE_STATUSES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
 
 /**
- * The session a workspace window belongs to. Several sessions of one worktree share its
- * workspace; the live one wins, then the newest.
+ * The session a workspace window shows. Several sessions of one worktree share its workspace:
+ * the one an Open meant wins, and without one the live one, then the newest.
  */
 export const sessionOfWorkspace = (
   details: ReadonlyArray<ProjectDetail>,
   workspaceId: string,
+  intended: string | null = null,
 ): { readonly project: Project; readonly session: Session } | null => {
   const candidates = details
     .flatMap((detail) =>
@@ -37,6 +38,7 @@ export const sessionOfWorkspace = (
     )
     .toSorted(
       (left, right) =>
+        Number(right.session.id === intended) - Number(left.session.id === intended) ||
         Number(LIVE_STATUSES.has(right.session.status)) -
           Number(LIVE_STATUSES.has(left.session.status)) ||
         right.session.createdAt.localeCompare(left.session.createdAt),
@@ -47,7 +49,12 @@ export const sessionOfWorkspace = (
 /** The terminal tab a workspace window attaches for its session. */
 export type AgentTab =
   | { readonly kind: "pty"; readonly processId: string; readonly name: string }
-  | { readonly kind: "conversation"; readonly name: string; readonly line: string }
+  | {
+      readonly kind: "conversation";
+      readonly processId: string;
+      readonly name: string;
+      readonly line: string;
+    }
   | { readonly kind: "none" };
 
 const PROCESS_LIVE: ReadonlySet<string> = new Set(["starting", "running"]);
@@ -87,6 +94,7 @@ export const agentTab = (
         : conversation.label;
     return {
       kind: "conversation",
+      processId: conversation.id,
       name: terminalTabName(session, conversation),
       line: `${harness} is running as a conversation (from ${origin}) · Continue here to type to it`,
     };

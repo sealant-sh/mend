@@ -1,7 +1,12 @@
 import * as vscode from "vscode";
 
 import type { MendClient } from "./client.js";
-import { rowCapability, rowContextValue, type RowCapability } from "./session-capability.js";
+import {
+  mayStop,
+  rowCapability,
+  rowContextValue,
+  type RowCapability,
+} from "./session-capability.js";
 import { displaySession, readProjects, sessionLines, workspaceReads } from "./session-lines.js";
 import type { Project, ProjectDetail, Session } from "./types.js";
 
@@ -32,7 +37,7 @@ export const sessionTooltip = (
 ): string => [`${project.name} · ${session.branch} · ${session.status}`, ...lines].join("\n");
 
 const whyLine = (capability: RowCapability): ReadonlyArray<string> =>
-  capability.kind === "notYours" ? [capability.why] : [];
+  capability.kind === "open" ? [] : [capability.why];
 
 const statusIcon = (status: string): vscode.ThemeIcon => {
   switch (status) {
@@ -180,7 +185,11 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
           ...whyLine(capability),
         ]);
         item.iconPath = statusIcon(element.session.status);
-        item.contextValue = rowContextValue(element.session, capability);
+        item.contextValue = rowContextValue(
+          element.session,
+          capability,
+          mayStop(element.session, this.current?.viewer ?? null),
+        );
         return item;
       }
       case "message": {

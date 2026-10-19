@@ -36,14 +36,17 @@ const session = (overrides: Partial<Session> = {}): Session => ({
   ...overrides,
 });
 
-type Facts = Pick<Session, "status" | "sealantWorkspaceId">;
-
-/** A world where everything is set up and the session runs with a workspace, unless told otherwise. */
+/**
+ * A world where everything is set up and the session runs with a workspace, unless told otherwise.
+ * Each read of the session returns the next of `reads` over the default session; the last repeats.
+ */
 const world = (
-  overrides: Partial<OpenEffects> & { readonly reads?: ReadonlyArray<Facts> } = {},
+  overrides: Partial<OpenEffects> & {
+    readonly reads?: ReadonlyArray<Partial<Session>>;
+  } = {},
 ) => {
   let clock = 0;
-  const reads = [...(overrides.reads ?? [{ status: "running", sealantWorkspaceId: WORKSPACE }])];
+  const reads = [...(overrides.reads ?? [{}])];
   const states: Array<OpenState> = [];
   const effects = {
     capability: async (): Promise<RowCapability> => ({ kind: "open" }),
@@ -63,10 +66,10 @@ const world = (
     setUpWorkspaceSsh: vi.fn(async () => undefined),
     seedRemotePlatform: vi.fn(async () => undefined),
     resume: vi.fn(async () => undefined),
-    sessionNow: vi.fn(async (_id: string) => {
+    sessionNow: vi.fn(async (id: string) => {
       const next = reads.length > 1 ? reads.shift() : reads[0];
       if (next === undefined) throw new Error("the test world has no session read");
-      return next;
+      return session({ id, ...next });
     }),
     openFolder: vi.fn(async () => undefined),
     render: (_id: string, _name: string, state: OpenState) => {
@@ -83,22 +86,28 @@ const target = (overrides: Partial<Session> = {}): OpenTarget => ({
   project,
 });
 
+const anasFacts = (sharedControlEnabledAt: string | null): Partial<Session> => ({
+  ownerUserId: "ana",
+  workspaceLauncherUserId: "ana",
+  sharedControlEnabledAt,
+});
+
 describe("OpenRunner, a session Ana launched", () => {
-  const anas = (sharedControlEnabledAt: string | null) =>
-    target({ ownerUserId: "ana", workspaceLauncherUserId: "ana", sharedControlEnabledAt });
-  /** Dana's world, reading capabilities the way the extension does. */
-  const danas = () =>
+  const anas = (sharedControlEnabledAt: string | null) => target(anasFacts(sharedControlEnabledAt));
+  /** Dana's world, reading capabilities the way the extension does, the server reading `reads`. */
+  const danas = (reads: ReadonlyArray<Partial<Session>>, viewer: string | null = "dana") =>
     world({
+      reads,
       capability: async (opened) =>
         rowCapability({
           session: opened,
-          viewer: "dana",
+          viewer,
           members: [{ userId: "ana", name: "Ana" }],
         }),
     });
 
   it("opens nothing, from any entry point: it says why once and offers Watch terminal with shared control", async () => {
-    const { effects, runner, states } = danas();
+    const { effects, runner, states } = danas([anasFacts("2026-10-19T09:00:00.000Z")]);
     const shared = anas("2026-10-19T09:00:00.000Z");
     expect(await runner.open(shared, "follow-setting")).toBe("refused");
     expect(effects.refuse).toHaveBeenCalledTimes(1);
@@ -116,7 +125,7 @@ describe("OpenRunner, a session Ana launched", () => {
   });
 
   it("offers Review when shared control is off, and Open in New Window refuses the same way", async () => {
-    const { effects, runner } = danas();
+    const { effects, runner } = danas([anasFacts(null)]);
     expect(await runner.open(anas(null), "new-window")).toBe("refused");
     expect(effects.refuse).toHaveBeenCalledWith(
       anas(null),
@@ -127,10 +136,35 @@ describe("OpenRunner, a session Ana launched", () => {
   });
 
   it("still opens Dana's own session in the same world", async () => {
-    const { effects, runner } = danas();
+    const { effects, runner } = danas([{}]);
     expect(await runner.open(target(), "follow-setting")).toBe("opened");
     expect(effects.refuse).not.toHaveBeenCalled();
     expect(effects.openFolder).toHaveBeenCalledTimes(1);
+  });
+
+  it("decides on the server's read, not the row's: a row that offered Open refuses once Ana launched", async () => {
+    const { effects, runner } = danas([anasFacts(null)]);
+    expect(await runner.open(target(), "follow-setting")).toBe("refused");
+    expect(effects.refuse).toHaveBeenCalledWith(
+      anas(null),
+      "Ana launched this workspace · Remote-SSH opens it only for them",
+      "Review",
+    );
+    expect(effects.openFolder).not.toHaveBeenCalled();
+  });
+
+  it("opens nothing when Mend could not read who she is, and offers Retry", async () => {
+    const { effects, runner, states } = danas([anasFacts(null)], null);
+    expect(await runner.open(anas(null), "follow-setting")).toBe("failed");
+    expect(effects.openFolder).not.toHaveBeenCalled();
+    expect(effects.resume).not.toHaveBeenCalled();
+    expect(effects.refuse).not.toHaveBeenCalled();
+    expect(states.at(-1)).toMatchObject({ kind: "failed", action: "Retry" });
+    expect(effects.report).toHaveBeenCalledWith(
+      "session-1",
+      "Mend could not read who you are on this server, so it did not open add-rate-limit",
+      "Retry",
+    );
   });
 });
 
@@ -157,8 +191,11 @@ describe("OpenRunner", () => {
     const { effects, runner } = world();
     await runner.open(target(), "follow-setting");
     await runner.open(target(), "new-window");
-    expect(effects.openFolder).toHaveBeenNthCalledWith(1, WORKSPACE, {});
-    expect(effects.openFolder).toHaveBeenNthCalledWith(2, WORKSPACE, { forceNewWindow: true });
+    const opened = { workspaceId: WORKSPACE, sessionId: "session-1" };
+    expect(effects.openFolder).toHaveBeenNthCalledWith(1, opened, {});
+    expect(effects.openFolder).toHaveBeenNthCalledWith(2, opened, {
+      forceNewWindow: true,
+    });
   });
 
   it("resumes a stopped session once, waits for its workspace, and opens it", async () => {
@@ -196,7 +233,10 @@ describe("OpenRunner", () => {
     ).toBe("opened");
     expect(effects.resume).not.toHaveBeenCalled();
     expect(effects.sessionNow).toHaveBeenCalledTimes(2);
-    expect(effects.openFolder).toHaveBeenCalledWith(WORKSPACE, { forceNewWindow: true });
+    expect(effects.openFolder).toHaveBeenCalledWith(
+      { workspaceId: WORKSPACE, sessionId: "session-1" },
+      { forceNewWindow: true },
+    );
   });
 
   it("gives up waiting with Retry when the workspace never comes", async () => {
@@ -285,6 +325,46 @@ describe("OpenRunner", () => {
     expect(effects.focusAgentTerminal).toHaveBeenCalledTimes(1);
     expect(effects.openFolder).not.toHaveBeenCalled();
     expect(effects.resume).not.toHaveBeenCalled();
+  });
+
+  it("focuses the agent for Open in New Window from inside the workspace: VS Code would only focus this window", async () => {
+    const { effects, runner } = world({
+      thisWindow: (): WindowRole => ({ kind: "workspace", workspaceId: WORKSPACE }),
+    });
+    expect(await runner.open(target(), "new-window")).toBe("focused");
+    expect(effects.focusAgentTerminal).toHaveBeenCalledWith("session-1");
+    expect(effects.openFolder).not.toHaveBeenCalled();
+  });
+
+  it("carries the session it opens, not just its workspace, two live sessions sharing it", async () => {
+    const older = { id: "older", createdAt: "2026-10-19T09:00:00.000Z" };
+    const fromElsewhere = world();
+    expect(await fromElsewhere.runner.open(target(older), "follow-setting")).toBe("opened");
+    expect(fromElsewhere.effects.openFolder).toHaveBeenCalledWith(
+      { workspaceId: WORKSPACE, sessionId: "older" },
+      {},
+    );
+    const fromInside = world({
+      thisWindow: (): WindowRole => ({ kind: "workspace", workspaceId: WORKSPACE }),
+    });
+    expect(await fromInside.runner.open(target(older), "follow-setting")).toBe("focused");
+    expect(fromInside.effects.focusAgentTerminal).toHaveBeenCalledWith("older");
+  });
+
+  it("resumes a session read as stopping once a later read says stopped, exactly once", async () => {
+    const { effects, runner } = world({
+      reads: [
+        { status: "stopping", sealantWorkspaceId: WORKSPACE },
+        { status: "stopping", sealantWorkspaceId: WORKSPACE },
+        { status: "stopped", sealantWorkspaceId: null },
+        { status: "stopped", sealantWorkspaceId: null },
+        { status: "starting", sealantWorkspaceId: null },
+        { status: "running", sealantWorkspaceId: WORKSPACE },
+      ],
+    });
+    expect(await runner.open(target({ status: "stopping" }), "follow-setting")).toBe("opened");
+    expect(effects.resume).toHaveBeenCalledTimes(1);
+    expect(effects.openFolder).toHaveBeenCalledTimes(1);
   });
 
   it("reports a failure once, with the action that helps", async () => {

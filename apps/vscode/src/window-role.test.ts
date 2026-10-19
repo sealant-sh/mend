@@ -79,6 +79,15 @@ describe("sessionOfWorkspace", () => {
     ).toEqual({ project, session: live });
     expect(sessionOfWorkspace([{ project, sessions: [elsewhere] }], WORKSPACE)).toBeNull();
   });
+
+  it("finds the session an Open meant, over a newer live one in the same worktree", () => {
+    const older = session({ id: "older", createdAt: "2026-10-19T09:00:00Z" });
+    const newer = session({ id: "newer", createdAt: "2026-10-19T10:00:00Z" });
+    const details = [{ project, sessions: [older, newer] }];
+    expect(sessionOfWorkspace(details, WORKSPACE, "older")).toEqual({ project, session: older });
+    expect(sessionOfWorkspace(details, WORKSPACE)).toEqual({ project, session: newer });
+    expect(sessionOfWorkspace(details, WORKSPACE, "gone")).toEqual({ project, session: newer });
+  });
 });
 
 describe("agentTab", () => {
@@ -99,6 +108,7 @@ describe("agentTab", () => {
       agentTab(owner, [process({ id: "web", kind: "agent-protocol", label: "your phone" })]),
     ).toEqual({
       kind: "conversation",
+      processId: "web",
       name: "claude · add-rate-limit",
       line: "claude is running as a conversation (from your phone) · Continue here to type to it",
     });

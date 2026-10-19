@@ -5,6 +5,7 @@ import * as vscode from "vscode";
 
 import type { MendClient } from "./client.js";
 import { statusText, type OpenAction, type OpenState } from "./open-flow.js";
+import { writeOpenIntent } from "./open-intent.js";
 import { OpenRunner, type OpenEffects } from "./open-runner.js";
 import type { NotYoursOffer, RowCapability } from "./session-capability.js";
 import type { SessionNode } from "./tree.js";
@@ -163,7 +164,7 @@ export const openRunner = (deps: {
         vscode.env.remoteName,
         (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.authority),
       ),
-    focusAgentTerminal: () => workspaceWindow.focusAgentTerminal(),
+    focusAgentTerminal: (sessionId) => workspaceWindow.focusAgentTerminal(sessionId),
     focusProgress: () => progress.focus(),
     remoteSshInstalled: () => vscode.extensions.getExtension(REMOTE_SSH) !== undefined,
     installRemoteSsh: async () => {
@@ -196,8 +197,9 @@ export const openRunner = (deps: {
       await client.resumeSession(sessionId, "shell");
     },
     sessionNow: async (sessionId) => (await client.sessionDetail(sessionId)).session,
-    openFolder: async (workspaceId, options) => {
+    openFolder: async ({ workspaceId, sessionId }, options) => {
       const { target, usernamePrefix } = await workspaceSshFacts(client);
+      await writeOpenIntent(context.globalState, { workspaceId, sessionId, at: Date.now() });
       await vscode.commands.executeCommand(
         "vscode.openFolder",
         vscode.Uri.from({

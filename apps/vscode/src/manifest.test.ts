@@ -3,6 +3,9 @@ import * as path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { mayStop, rowCapability, rowContextValue } from "./session-capability.js";
+import type { Session } from "./types.js";
+
 interface MenuEntry {
   readonly command: string;
   readonly when?: string;
@@ -58,10 +61,15 @@ const inline = (groups: ReadonlyArray<string>) =>
 const contextMenu = (groups: ReadonlyArray<string>) =>
   groups.filter((group) => !group.startsWith("inline"));
 
-const OPEN_ROWS = ["mend.session.live.open", "mend.session.settled.open"];
+const OPEN_ROWS = [
+  "mend.session.live.open.steer",
+  "mend.session.settled.open.steer",
+  "mend.session.live.open",
+  "mend.session.settled.open",
+];
 const NOT_YOURS_ROWS = [
-  "mend.session.live.watch",
-  "mend.session.settled.watch",
+  "mend.session.live.watch.steer",
+  "mend.session.settled.watch.steer",
   "mend.session.live.review",
   "mend.session.settled.review",
 ];
@@ -76,9 +84,10 @@ describe("a session row the viewer can open", () => {
     expect(groupsOn("mend.openInNewWindow", row)).toEqual(["1_open@1"]);
   });
 
-  it("offers the terminal only while the session is live", () => {
-    expect(groupsOn("mend.openTerminal", "mend.session.live.open")).toEqual(["1_open@2"]);
-    expect(groupsOn("mend.openTerminal", "mend.session.settled.open")).toEqual([]);
+  it("offers the terminal only while the session is live and hers to steer", () => {
+    expect(groupsOn("mend.openTerminal", "mend.session.live.open.steer")).toEqual(["1_open@2"]);
+    expect(groupsOn("mend.openTerminal", "mend.session.live.open")).toEqual([]);
+    expect(groupsOn("mend.openTerminal", "mend.session.settled.open.steer")).toEqual([]);
   });
 });
 
@@ -91,9 +100,56 @@ describe("a session row whose workspace someone else launched", () => {
   });
 
   it("offers Watch terminal as a button while the session is live and shared", () => {
-    expect(inline(groupsOn("mend.watchTerminal", "mend.session.live.watch"))).toEqual(["inline@1"]);
+    expect(inline(groupsOn("mend.watchTerminal", "mend.session.live.watch.steer"))).toEqual([
+      "inline@1",
+    ]);
     expect(groupsOn("mend.watchTerminal", "mend.session.live.review")).toEqual([]);
-    expect(groupsOn("mend.openTerminal", "mend.session.live.watch")).toEqual([]);
+    expect(groupsOn("mend.openTerminal", "mend.session.live.watch.steer")).toEqual([]);
+  });
+});
+
+type Row = Pick<
+  Session,
+  "ownerUserId" | "sharedControlEnabledAt" | "workspaceLauncherUserId" | "livePeople" | "status"
+>;
+
+/** The `viewItem` the tree gives a row of this session for this viewer. */
+const row = (session: Row, viewer: string | null) =>
+  rowContextValue(
+    session,
+    rowCapability({ session, viewer, members: [] }),
+    mayStop(session, viewer),
+  );
+
+describe("a session row as the code labels it", () => {
+  const ana: Row = {
+    ownerUserId: "ana",
+    sharedControlEnabledAt: null,
+    workspaceLauncherUserId: "ana",
+    livePeople: [],
+    status: "running",
+  };
+  it("offers Stop only on a live session the viewer may steer", () => {
+    expect(groupsOn("mend.stopSession", row(ana, "ana"))).toEqual(["2_session@1"]);
+    expect(groupsOn("mend.stopSession", row(ana, "dana"))).toEqual([]);
+    expect(
+      groupsOn("mend.stopSession", row({ ...ana, workspaceLauncherUserId: null }, "dana")),
+    ).toEqual([]);
+    expect(
+      groupsOn(
+        "mend.stopSession",
+        row({ ...ana, sharedControlEnabledAt: "2026-10-19T09:00:00.000Z" }, "dana"),
+      ),
+    ).toEqual(["2_session@1"]);
+    expect(groupsOn("mend.stopSession", row({ ...ana, status: "stopped" }, "ana"))).toEqual([]);
+  });
+
+  it("offers no Open and no Stop when Mend could not read who the viewer is", () => {
+    const unknown = row(ana, null);
+    expect(groupsOn("mend.open", unknown)).toEqual([]);
+    expect(groupsOn("mend.openInNewWindow", unknown)).toEqual([]);
+    expect(groupsOn("mend.stopSession", unknown)).toEqual([]);
+    expect(inline(groupsOn("mend.reviewChange", unknown))).toEqual(["inline@2"]);
   });
 });
 

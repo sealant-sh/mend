@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { pickDescription, rowCapability, rowContextValue, rowOffer } from "./session-capability.js";
+import {
+  mayStop,
+  pickDescription,
+  rowCapability,
+  rowContextValue,
+  rowOffer,
+} from "./session-capability.js";
 import type { Session } from "./types.js";
 
 type Facts = Pick<
@@ -28,15 +34,17 @@ describe("a session Ana launched, as Dana sees it", () => {
       watch: false,
       why: "Ana launched this workspace · Remote-SSH opens it only for them",
     });
-    expect(rowContextValue(anas, capability)).toBe("mend.session.live.review");
-    expect(rowContextValue({ status: "stopped" }, capability)).toBe("mend.session.settled.review");
+    expect(rowContextValue(anas, capability, false)).toBe("mend.session.live.review");
+    expect(rowContextValue({ status: "stopped" }, capability, false)).toBe(
+      "mend.session.settled.review",
+    );
   });
 
   it("offers Watch terminal while Ana has shared control on", () => {
     const shared = { ...anas, sharedControlEnabledAt: "2026-10-19T09:00:00.000Z" };
     const capability = rowCapability({ session: shared, viewer: "dana", members });
     expect(capability).toMatchObject({ kind: "notYours", watch: true });
-    expect(rowContextValue(shared, capability)).toBe("mend.session.live.watch");
+    expect(rowContextValue(shared, capability, true)).toBe("mend.session.live.watch.steer");
   });
 
   it("names Ana from the people live in the workspace when the roster is not read", () => {
@@ -74,11 +82,10 @@ describe("Open", () => {
     const danas = { ...anas, ownerUserId: "dana", workspaceLauncherUserId: "dana" };
     const capability = rowCapability({ session: danas, viewer: "dana", members });
     expect(capability).toEqual({ kind: "open" });
-    expect(rowContextValue(danas, capability)).toBe("mend.session.live.open");
+    expect(rowContextValue(danas, capability, true)).toBe("mend.session.live.open.steer");
   });
 
-  it("is offered when the viewer or the launcher is unknown", () => {
-    expect(rowCapability({ session: anas, viewer: null, members })).toEqual({ kind: "open" });
+  it("is offered when no one launched the workspace yet: the opener becomes its launcher", () => {
     expect(
       rowCapability({
         session: { ...anas, workspaceLauncherUserId: null },
@@ -86,8 +93,30 @@ describe("Open", () => {
         members,
       }),
     ).toEqual({ kind: "open" });
-    expect(rowContextValue({ status: "completed" }, { kind: "open" })).toBe(
-      "mend.session.settled.open",
+    expect(rowContextValue({ status: "completed" }, { kind: "open" }, true)).toBe(
+      "mend.session.settled.open.steer",
     );
+  });
+
+  it("is not offered when Mend could not read who the viewer is: the row offers Review", () => {
+    const capability = rowCapability({ session: anas, viewer: null, members });
+    expect(capability).toEqual({
+      kind: "unknown",
+      why: "Mend could not read who you are on this server",
+    });
+    expect(rowOffer(capability)).toBe("Review");
+    expect(rowContextValue(anas, capability, mayStop(anas, null))).toBe("mend.session.live.review");
+    expect(pickDescription(anas, capability)).toBe("running · Review");
+  });
+});
+
+describe("Stop", () => {
+  it("is the viewer's to use only on a session she may steer", () => {
+    expect(mayStop(anas, "ana")).toBe(true);
+    expect(mayStop(anas, "dana")).toBe(false);
+    expect(mayStop({ ...anas, sharedControlEnabledAt: "2026-10-19T09:00:00.000Z" }, "dana")).toBe(
+      true,
+    );
+    expect(mayStop(anas, null)).toBe(false);
   });
 });

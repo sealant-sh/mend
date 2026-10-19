@@ -1,27 +1,12 @@
-import { canSteerSession } from "@mend/domain/workbench";
 import * as vscode from "vscode";
 
 import type { MendClient } from "./client.js";
+import { maySteer, ownsSession } from "./session-capability.js";
 import { displaySession } from "./session-lines.js";
 import { isRefusal } from "./tty-attachment.js";
 import { attachableProcesses, type TtyAddress } from "./tty-protocol.js";
 import { MendTtyTerminal } from "./tty-terminal.js";
 import type { Session } from "./types.js";
-
-/** Whether the server lets `viewer` steer, and so attach to the terminal of, `session`. */
-export const maySteer = (session: Session, viewer: string): boolean =>
-  canSteerSession(
-    {
-      ownerUserId: session.ownerUserId,
-      sharedControlEnabledAt:
-        session.sharedControlEnabledAt === null ? null : new Date(session.sharedControlEnabledAt),
-    },
-    viewer,
-  );
-
-/** Whether `viewer` types in the session's terminals: its owner, or anyone when Mend cannot say. */
-export const ownsSession = (session: Session, viewer: string | null): boolean =>
-  viewer === null || session.ownerUserId === null || viewer === session.ownerUserId;
 
 /** A member's name as the organization lists it; "another person" when it cannot say. */
 export const memberName = async (client: MendClient, userId: string | null): Promise<string> => {

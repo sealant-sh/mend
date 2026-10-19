@@ -7,7 +7,7 @@ import {
 } from "@mend/domain/workbench";
 import * as vscode from "vscode";
 
-import { attachTerminal, maySteer, memberName, ownsSession } from "./agent-terminal.js";
+import { attachTerminal, memberName } from "./agent-terminal.js";
 import { MendApiError, MendClient, normalizeProjectName } from "./client.js";
 import { ConnectionStore } from "./config.js";
 import { currentBranch, pathContains, repositoryFacts, worktreePath } from "./git.js";
@@ -16,6 +16,8 @@ import { OFFER_COMMANDS, openRunner, setUpWorkspaceSsh } from "./open-command.js
 import type { OpenMode } from "./open-flow.js";
 import type { OpenRunner } from "./open-runner.js";
 import {
+  maySteer,
+  ownsSession,
   pickDescription,
   rowCapability,
   rowOffer,
@@ -497,6 +499,22 @@ class MendCommands {
   async stopSession(argument?: unknown): Promise<void> {
     const location = await this.sessionLocation(argument);
     if (location === null || !liveStatuses.has(location.session.status)) return;
+    try {
+      // The row's snapshot may be stale; the server decides from who steers it now.
+      const [detail, viewer] = await Promise.all([
+        this.client.sessionDetail(location.session.id),
+        this.client.viewerId(),
+      ]);
+      if (viewer !== null && !maySteer(detail.session, viewer)) {
+        void vscode.window.showInformationMessage(
+          `${displaySession(detail.session)} is ${await memberName(this.client, detail.session.ownerUserId)}'s session. Only its owner stops it while shared control is off.`,
+        );
+        return;
+      }
+    } catch (cause) {
+      void showError(cause);
+      return;
+    }
     const answer = await vscode.window.showWarningMessage(
       `Stop ${displaySession(location.session)}?`,
       { modal: true, detail: "The worktree and reviewable change remain." },
@@ -1032,13 +1050,21 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
       vscode.env.remoteName,
       (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.authority),
     ),
+    context.globalState,
     (cause) => void showError(cause),
   );
   const opens = openRunner({
     context,
     client,
     workspaceWindow,
-    capability: async (session) => (await capabilitiesOf(client, tree, [session]))(session),
+    // Who she is is read at the gesture: a failed read in the tree's snapshot must not decide.
+    capability: async (session) => {
+      const viewer = await client.viewerId();
+      const unnamed = rowCapability({ session, viewer, members: [] });
+      return unnamed.kind === "notYours"
+        ? rowCapability({ session, viewer, members: await client.memberNames() })
+        : unnamed;
+    },
   });
   const commands = new MendCommands(
     context,
