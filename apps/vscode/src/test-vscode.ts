@@ -32,7 +32,9 @@ export const window = {
   onDidChangeWindowState: windowState.event,
   onDidChangeActiveTerminal: new EventEmitter<unknown>().event,
   showInformationMessage: vi.fn(async (..._: ReadonlyArray<unknown>) => undefined),
-  showErrorMessage: vi.fn(async (..._: ReadonlyArray<unknown>) => undefined),
+  showErrorMessage: vi.fn(
+    async (..._: ReadonlyArray<unknown>): Promise<string | undefined> => undefined,
+  ),
   setStatusBarMessage: vi.fn(),
 };
 

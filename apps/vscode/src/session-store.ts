@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import { MendApiError, type MendClient, type StreamSignal } from "./client.js";
+import { refusedSignIn } from "./error-toast.js";
 import { canonicalPaths, realPathFor, repositoryFacts } from "./git.js";
 import { comparedPaths, matchProject } from "./project-match.js";
 import type { MemberName } from "./session-lines.js";
@@ -122,10 +123,6 @@ const isLastSeen = (value: unknown): value is LastSeen => {
     Object.values(sessions).every((at) => typeof at === "string")
   );
 };
-
-/** Mend refused this sign-in: what it read before is no longer hers to see. */
-const refusedSignIn = (cause: unknown): boolean =>
-  cause instanceof MendApiError && cause.status === 401;
 
 /**
  * Every read the Mend view, status bar, badge and notifier rest on: one snapshot, kept current by

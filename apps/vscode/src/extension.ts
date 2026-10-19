@@ -5,8 +5,9 @@ import * as vscode from "vscode";
 
 import { attachTerminal, memberName } from "./agent-terminal.js";
 import { AUTH_PROVIDER_ID, MendAuthenticationProvider } from "./auth-provider.js";
-import { MendApiError, MendClient } from "./client.js";
+import { MendClient } from "./client.js";
 import { ConnectionStore } from "./config.js";
+import { showErrorToast } from "./error-toast.js";
 import { FirstRunTree, FirstRunView, isOfferRow } from "./first-run-view.js";
 import { offerOf } from "./first-run.js";
 import { worktreePath } from "./git.js";
@@ -49,19 +50,11 @@ import { WorkspaceWindow } from "./workspace-window.js";
 const liveStatuses: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
 
 const errorMessage = (cause: unknown): string =>
-  cause instanceof MendApiError && cause.status === 401
-    ? `${cause.message} Run Mend: Connect to server to sign in.`
-    : cause instanceof MendApiError || cause instanceof Error
-      ? cause.message
-      : "Mend could not complete that action.";
+  cause instanceof Error ? cause.message : "Mend could not complete that action.";
 
 /** The error, with Connect offered when the server refused the token. */
 const showError = async (cause: unknown): Promise<void> => {
-  const action =
-    cause instanceof MendApiError && cause.status === 401
-      ? await vscode.window.showErrorMessage(errorMessage(cause), "Connect to server")
-      : await vscode.window.showErrorMessage(errorMessage(cause));
-  if (action === "Connect to server") await vscode.commands.executeCommand("mend.connect");
+  await showErrorToast(cause, errorMessage(cause));
 };
 
 interface ProjectPick extends vscode.QuickPickItem {

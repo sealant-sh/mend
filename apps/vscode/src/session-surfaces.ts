@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 
-import { MendApiError } from "./client.js";
+import { refusedSignIn, showErrorToast } from "./error-toast.js";
 import type { Launches } from "./launches.js";
 import { transitions, waitsOf, type Notification, type WindowModel } from "./session-model.js";
 import type { SessionStore, StoreChange } from "./session-store.js";
@@ -149,13 +149,7 @@ export class Notifier {
     const words = error instanceof Error ? error.message : null;
     if (words === this.#errorSaid) return;
     this.#errorSaid = words;
-    if (!vscode.window.state.focused || !(error instanceof MendApiError) || error.status !== 401)
-      return;
-    void this.#offerConnect(error.message);
-  }
-
-  async #offerConnect(words: string): Promise<void> {
-    const picked = await vscode.window.showErrorMessage(words, "Connect to server");
-    if (picked === "Connect to server") await vscode.commands.executeCommand("mend.connect");
+    if (!vscode.window.state.focused || !refusedSignIn(error)) return;
+    void showErrorToast(error, error.message);
   }
 }

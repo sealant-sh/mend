@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 
 import type { MendClient } from "./client.js";
 import type { ConnectionStore } from "./config.js";
+import { showErrorToast } from "./error-toast.js";
 import {
   accountEmail,
   firstRun,
@@ -302,9 +303,7 @@ export class FirstRunView implements vscode.Disposable {
       );
     } catch (cause) {
       await this.refresh();
-      if ((await vscode.window.showErrorMessage(words(cause), TRY_AGAIN)) === TRY_AGAIN) {
-        await this.setUp();
-      }
+      if (await showErrorToast(cause, words(cause), TRY_AGAIN)) await this.setUp();
       return;
     }
     await this.refresh();
@@ -327,11 +326,8 @@ export class FirstRunView implements vscode.Disposable {
       );
       this.deps.store.refresh();
     } catch (cause) {
-      const picked = await vscode.window.showErrorMessage(
-        `Mend could not adopt ${name} · ${words(cause)}`,
-        TRY_AGAIN,
-      );
-      if (picked === TRY_AGAIN) await this.adoptHere();
+      if (await showErrorToast(cause, `Mend could not adopt ${name} · ${words(cause)}`, TRY_AGAIN))
+        await this.adoptHere();
     }
   }
 }
