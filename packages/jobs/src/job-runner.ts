@@ -22,7 +22,7 @@ export interface JobSpec {
    * Structural, per ARCHITECTURE.md §5: `compose-tour:{change_id}`,
    * `brief:{change_id}:{head_sha}`. While a job with the same name and key is
    * queued, waiting to retry or running, another enqueue with it is dropped
-   * (`enqueue` answers null). Once that job has completed or failed, the key
+   * (`enqueue` answers `Absorbed`). Once that job has completed or failed, the key
    * starts a new one. The live layer locks this name and key in a database
    * transaction before checking and sending. Existing standard queues and
    * their jobs remain in place.
@@ -47,6 +47,18 @@ export interface WorkOptions {
 const LIVE_JOB_STATES: ReadonlySet<string> = new Set(["created", "retry", "active"]);
 
 /**
+ * What became of an enqueue: a new job, or a live job with the same key that absorbed it. A job
+ * waiting to run (or to retry) reads its input when it runs, so it covers the request; a job
+ * already `running` may have read its input before the request was made.
+ */
+export type Enqueued =
+  | { readonly _tag: "Queued"; readonly id: string }
+  | { readonly _tag: "Absorbed"; readonly running: boolean };
+
+const queuedOrDropped = (id: string | null): Enqueued =>
+  id === null ? { _tag: "Absorbed", running: false } : { _tag: "Queued", id };
+
+/**
  * The seam over the side-effect job engine. pg-boss is the live layer today;
  * if it ever disappoints, the engine is a layer swap — nothing upstream knows
  * about it (ARCHITECTURE.md §5).
@@ -54,8 +66,7 @@ const LIVE_JOB_STATES: ReadonlySet<string> = new Set(["created", "retry", "activ
 export class JobRunner extends Context.Service<
   JobRunner,
   {
-    /** Returns the job id, or null when a live job with the same key absorbed it. */
-    readonly enqueue: (job: JobSpec) => Effect.Effect<string | null, JobEnqueueError>;
+    readonly enqueue: (job: JobSpec) => Effect.Effect<Enqueued, JobEnqueueError>;
     /**
      * Register the worker for a job name. Handlers arrive fully provided
      * (R = never); a failed handler fails the job into pg-boss retry, and the
@@ -203,10 +214,13 @@ export const JobRunnerLive: Layer.Layer<JobRunner, Config.ConfigError> = Layer.e
         const db: Db = {
           executeSql: query,
         };
-        const found = await boss.findJobs(job.name, { key, db });
-        const result = found.some((item) => LIVE_JOB_STATES.has(item.state))
-          ? null
-          : await send(job, db);
+        const live = (await boss.findJobs(job.name, { key, db })).filter((item) =>
+          LIVE_JOB_STATES.has(item.state),
+        );
+        const result: Enqueued =
+          live.length === 0
+            ? queuedOrDropped(await send(job, db))
+            : { _tag: "Absorbed", running: live.every((item) => item.state === "active") };
         await query("COMMIT");
         return result;
       } catch (cause) {
@@ -228,7 +242,7 @@ export const JobRunnerLive: Layer.Layer<JobRunner, Config.ConfigError> = Layer.e
       );
       const key = job.idempotencyKey;
       const request = Effect.tryPromise({
-        try: () => (key === undefined ? send(job) : enqueueKeyed(job, key)),
+        try: () => (key === undefined ? send(job).then(queuedOrDropped) : enqueueKeyed(job, key)),
         catch: (cause) => new JobEnqueueError({ job: job.name, cause }),
       });
       // Await the bounded transaction's commit/rollback and release before honoring interruption.
@@ -237,9 +251,9 @@ export const JobRunnerLive: Layer.Layer<JobRunner, Config.ConfigError> = Layer.e
       const result = yield* key === undefined
         ? request
         : Effect.uninterruptible(Effect.exit(request)).pipe(Effect.flatMap((exit) => exit));
-      if (result === null) {
+      if (result._tag === "Absorbed") {
         yield* Effect.logDebug("jobs: enqueue dropped · the key's job is still live").pipe(
-          Effect.annotateLogs({ job: job.name, key }),
+          Effect.annotateLogs({ job: job.name, key, running: result.running }),
         );
       }
       return result;
@@ -310,15 +324,15 @@ export const JobRunnerTest: Layer.Layer<JobRunner> = Layer.sync(JobRunner, () =>
   const handlers = new Map<string, (payload: unknown) => Effect.Effect<void>>();
   const seenKeys = new Set<string>();
 
-  const enqueue = (job: JobSpec): Effect.Effect<string | null, JobEnqueueError> =>
+  const enqueue = (job: JobSpec): Effect.Effect<Enqueued, JobEnqueueError> =>
     Effect.gen(function* () {
       if (job.idempotencyKey !== undefined) {
-        if (seenKeys.has(job.idempotencyKey)) return null;
+        if (seenKeys.has(job.idempotencyKey)) return queuedOrDropped(null);
         seenKeys.add(job.idempotencyKey);
       }
       const handler = handlers.get(job.name);
       if (handler !== undefined) yield* handler(job.payload);
-      return crypto.randomUUID();
+      return queuedOrDropped(crypto.randomUUID());
     });
 
   const work = (name: string, handler: (payload: unknown) => Effect.Effect<void>) =>

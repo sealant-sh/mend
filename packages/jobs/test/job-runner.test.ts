@@ -15,7 +15,7 @@ import { SqlClient } from "effect/sql";
 import { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, describe, expect } from "vitest";
 
-import { JobRunner, type JobSpec } from "../src/job-runner.ts";
+import { type Enqueued, JobRunner, type JobSpec } from "../src/job-runner.ts";
 
 /**
  * Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out.
@@ -45,12 +45,16 @@ const makeJobs = (databaseUrl = scratchUrl) =>
     ),
   );
 type Jobs = ManagedRuntime.ManagedRuntime<JobRunner, never>;
-const enqueueWith = (runner: Jobs, job: JobSpec) =>
+/** The new job's id, or null when a live job absorbed the enqueue. */
+const idOf = (enqueued: Enqueued): string | null =>
+  enqueued._tag === "Queued" ? enqueued.id : null;
+const outcomeWith = (runner: Jobs, job: JobSpec) =>
   Effect.flatMap(runner.contextEffect, (context) =>
     Effect.flatMap(JobRunner, (service) => service.enqueue(job)).pipe(
       Effect.provideContext(context),
     ),
   );
+const enqueueWith = (runner: Jobs, job: JobSpec) => outcomeWith(runner, job).pipe(Effect.map(idOf));
 
 const until = <E>(check: Effect.Effect<boolean, E>, what: string) =>
   Effect.gen(function* () {
@@ -107,11 +111,12 @@ describe.skipIf(postgres.skip)("JobRunner on pg-boss", () => {
     );
   });
 
-  const enqueue = (job: JobSpec, second = false) => {
+  const outcome = (job: JobSpec, second = false) => {
     const runner = second ? otherRuntime : runtime;
     if (runner === null) throw new Error("runtime not started");
-    return enqueueWith(runner, job);
+    return outcomeWith(runner, job);
   };
+  const enqueue = (job: JobSpec, second = false) => outcome(job, second).pipe(Effect.map(idOf));
 
   const stateOf = (name: string, id: string) =>
     boss((client) => client.findJobs(name, { id })).pipe(Effect.map((rows) => rows[0]?.state));
@@ -129,10 +134,13 @@ describe.skipIf(postgres.skip)("JobRunner on pg-boss", () => {
       if (id === null) throw new Error("first enqueue was absorbed");
       expect((yield* boss((client) => client.fetch(job.name))).map((row) => row.id)).toEqual([id]);
       expect(yield* stateOf(job.name, id)).toBe("active");
-      expect(yield* enqueue({ ...job, payload: { first: false } }, true)).toBeNull();
+      expect(yield* outcome({ ...job, payload: { first: false } }, true)).toEqual({
+        _tag: "Absorbed",
+        running: true,
+      });
       yield* boss((client) => client.fail(job.name, id));
       expect(yield* stateOf(job.name, id)).toBe("retry");
-      expect(yield* enqueue(job, true)).toBeNull();
+      expect(yield* outcome(job, true)).toEqual({ _tag: "Absorbed", running: false });
       expect(
         (yield* boss((client) => client.findJobs(job.name, { key: job.idempotencyKey }))).map(
           (row) => row.data,
@@ -375,7 +383,7 @@ describe.skipIf(postgres.skip)("JobRunner on pg-boss", () => {
           (sender % 2 === 0 ? first : second).runPromise(
             Effect.flatMap(JobRunner, (service) =>
               service.enqueue({ name, payload: { sender }, idempotencyKey: key }),
-            ),
+            ).pipe(Effect.map(idOf)),
           );
         yield* Effect.gen(function* () {
           yield* Effect.promise(() => first.runPromise(Effect.void));
@@ -459,8 +467,15 @@ describe.skipIf(postgres.skip)("JobRunner on pg-boss", () => {
           enqueueWith(jobs(), { name: "dedup-probe", payload: {}, idempotencyKey: key });
         const first = yield* enqueueKey("dedup-probe:change-1");
         expect(first).not.toBeNull();
-        // Queued, not yet worked: the same key is dropped; another key is not.
-        expect(yield* enqueueKey("dedup-probe:change-1")).toBeNull();
+        // Queued, not yet worked: the same key is dropped, and the waiting job covers it; another
+        // key is not.
+        expect(
+          yield* outcome({
+            name: "dedup-probe",
+            payload: {},
+            idempotencyKey: "dedup-probe:change-1",
+          }),
+        ).toEqual({ _tag: "Absorbed", running: false });
         expect(yield* enqueueKey("dedup-probe:change-2")).not.toBeNull();
 
         const ran: Array<unknown> = [];

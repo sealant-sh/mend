@@ -20,7 +20,10 @@ describe("review passes: whose login pays", () => {
       {},
       {
         implement: {
-          jobs: { enqueue: (job) => Effect.sync(() => (enqueued.push(job), "job-1")) },
+          jobs: {
+            enqueue: (job) =>
+              Effect.sync(() => (enqueued.push(job), { _tag: "Queued", id: "job-1" })),
+          },
           changePasses: { queue: () => Effect.void },
         },
       },

@@ -190,7 +190,7 @@ const startWorkers = (diff: () => string = () => BILLING_DIFF) =>
         enqueue: (job) =>
           Effect.sync(() => {
             jobs.push(job);
-            return `job-${jobs.length}`;
+            return { _tag: "Queued", id: `job-${jobs.length}` };
           }),
       }),
       Layer.mock(WorktreeReads, {

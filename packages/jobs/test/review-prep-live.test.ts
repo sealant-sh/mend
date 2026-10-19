@@ -34,7 +34,7 @@ import { buildManifest } from "@mend/store/testing";
 import { Deferred, Effect, Fiber, Layer, Queue, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { JobRunner, type JobSpec } from "../src/job-runner.ts";
+import { type Enqueued, JobRunner, type JobSpec } from "../src/job-runner.ts";
 import { reviewPrep } from "../src/review-prep.ts";
 
 const PROJECT = ProjectId.make("review-project");
@@ -276,7 +276,7 @@ const makeWorld = (events: Events, options: Options) => {
             yield* Deferred.succeed(options.blockedJob.entered, undefined);
             yield* Deferred.await(options.blockedJob.release);
           }
-          return `job-${jobs.length}`;
+          return { _tag: "Queued", id: `job-${jobs.length}` } satisfies Enqueued;
         }),
     }),
   );

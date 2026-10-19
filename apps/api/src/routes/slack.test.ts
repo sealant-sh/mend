@@ -297,7 +297,11 @@ const dependencies = Layer.mergeAll(
             new JobEnqueueError({ job: job.name, cause: new Error("synthetic enqueue failure") }),
           );
         if (enqueueOutcome === "defect") return Effect.die(new Error("synthetic enqueue defect"));
-        return Effect.succeed(enqueueOutcome === "duplicate" ? null : "job-1");
+        return Effect.succeed(
+          enqueueOutcome === "duplicate"
+            ? { _tag: "Absorbed", running: false }
+            : { _tag: "Queued", id: "job-1" },
+        );
       }),
   }),
   Layer.mock(ProjectAccess, {

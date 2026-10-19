@@ -57,7 +57,7 @@ const world = (adoption: Adoption, currentChange: ChangeId | null = CHANGE) => {
   const dependencies = Layer.mergeAll(
     WorkspaceGitHooksLive,
     Layer.succeed(JobRunner, {
-      enqueue: (job) => Effect.sync(() => (enqueued.push(job), "job-1")),
+      enqueue: (job) => Effect.sync(() => (enqueued.push(job), { _tag: "Queued", id: "job-1" })),
       work: (name, handler) => Effect.sync(() => void workers.set(name, handler)),
     }),
     Layer.mock(Landing, {
