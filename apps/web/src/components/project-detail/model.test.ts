@@ -142,7 +142,10 @@ describe("Project detail worktree groups", () => {
         index: HexSha.make("b".repeat(40)),
         checkpoint: HexSha.make("c".repeat(40)),
         mergeBase: HexSha.make("d".repeat(40)),
-        deltaPack: "projects/p/packs/" + "e".repeat(64),
+        worktreeTree: HexSha.make("e".repeat(40)),
+        indexTree: HexSha.make("f".repeat(40)),
+        ownerUserId: "user-dana",
+        deltaPack: "captures/wt/0/packs/" + "e".repeat(64),
       },
     };
     expect(handedOffFrom(handedOff)).toBe("handed off from dana-mbp");

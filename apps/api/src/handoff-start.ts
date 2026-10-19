@@ -97,6 +97,39 @@ const unheld = (session: Session) =>
 
 const BRANCH_PREFIX = "refs/heads/mend/";
 
+/**
+ * The caller's earlier handoff of the same local branch among the names this one passed over on
+ * its way to `chosen` (`fix-login`, `fix-login-2`, … in that order), the newest when several: the
+ * one the CLI names (`fix-login is your earlier handoff`).
+ */
+const previousOf = (
+  rows: ReadonlyArray<Worktree>,
+  chosen: string,
+  userId: string,
+  admitted: AdmittedHandoff,
+): { readonly name: string } | null => {
+  const passed = new Set<string>();
+  for (;;) {
+    const name = handoffWorktreeName(admitted.trailers.localBranch, admitted.head, (candidate) =>
+      passed.has(candidate),
+    );
+    if (name === chosen) break;
+    passed.add(name);
+  }
+  const earlier = rows
+    .filter(
+      (row) =>
+        passed.has(row.name) &&
+        row.handoff !== null &&
+        row.handoff.ownerUserId === userId &&
+        row.handoff.localBranch !== null &&
+        row.handoff.localBranch === admitted.trailers.localBranch,
+    )
+    .toSorted((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .at(0);
+  return earlier === undefined ? null : { name: earlier.name };
+};
+
 export const makeHandoffStart = Effect.gen(function* () {
   const access = yield* ProjectAccess;
   const engine = yield* SessionEngine;
@@ -298,39 +331,6 @@ export const makeHandoffStart = Effect.gen(function* () {
         .map((ref) => ref.name.slice(BRANCH_PREFIX.length)),
     ]);
   });
-
-  /**
-   * The caller's earlier handoff of the same local branch among the names this one passed over
-   * on its way to `chosen` (`fix-login`, `fix-login-2`, … in that order), the newest when
-   * several: the one the CLI names (`fix-login is your earlier handoff`).
-   */
-  const previousOf = (
-    rows: ReadonlyArray<Worktree>,
-    chosen: string,
-    userId: string,
-    admitted: AdmittedHandoff,
-  ): { readonly name: string } | null => {
-    const passed = new Set<string>();
-    for (;;) {
-      const name = handoffWorktreeName(admitted.trailers.localBranch, admitted.head, (candidate) =>
-        passed.has(candidate),
-      );
-      if (name === chosen) break;
-      passed.add(name);
-    }
-    const earlier = rows
-      .filter(
-        (row) =>
-          passed.has(row.name) &&
-          row.handoff !== null &&
-          row.handoff.ownerUserId === userId &&
-          row.handoff.localBranch !== null &&
-          row.handoff.localBranch === admitted.trailers.localBranch,
-      )
-      .toSorted((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .at(0);
-    return earlier === undefined ? null : { name: earlier.name };
-  };
 
   /**
    * Make the worktree under the branch's name, or the next free suffix when a name is taken
