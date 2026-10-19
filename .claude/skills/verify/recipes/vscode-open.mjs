@@ -194,13 +194,18 @@ export default async (h) => {
       let last = await keyOf();
       await quickInput.button("Change…");
       const trail = [];
+      // The title changes a moment before the list: a step is read once two samples agree.
+      let sampled = null;
       for (let guard = 0; guard < 8; guard += 1) {
         const seen = await waitUntil(
           "a step of Change…, or the prompt again",
           async () => {
             const key = await keyOf();
             const rows = await quickInput.rows();
-            return key !== last && rows.length > 0
+            const sample = `${key}|${rows.map((row) => row.label).join(",")}`;
+            const settled = sample === sampled;
+            sampled = sample;
+            return settled && key !== last && rows.length > 0
               ? {
                   key,
                   step: (await quickInput.step())?.step ?? null,

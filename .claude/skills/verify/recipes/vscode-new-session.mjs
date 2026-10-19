@@ -186,12 +186,19 @@ export default async (h) => {
    * (the row marked current, else the active one). Returns each step as read and what was done.
    */
   const change = async (choose) => {
+    // The title and placeholder change a moment before the list does (run ns2 read the thinking
+    // step over the model step's rows): a step is read once two samples a poll apart agree.
+    let candidate = null;
     const next = (previous) =>
       waitUntil(
         "the next step",
         async () => {
           const now = await read();
-          return key(now) !== previous && (now.rows.length > 0 || now.step === null) ? now : null;
+          const settled = candidate !== null && key(candidate) === key(now);
+          candidate = now;
+          return settled && key(now) !== previous && (now.rows.length > 0 || now.step === null)
+            ? now
+            : null;
         },
         30_000,
       );
