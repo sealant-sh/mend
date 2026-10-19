@@ -30,6 +30,7 @@ import { displaySession, joinLineOf } from "./session-lines.js";
 import type { SessionView } from "./session-model.js";
 import { SessionStore } from "./session-store.js";
 import { MendStatusBar, Notifier } from "./session-surfaces.js";
+import { ToastClaims } from "./toast-claims.js";
 import {
   MendTreeProvider,
   isProjectNode,
@@ -985,7 +986,10 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const store = new SessionStore(context, client, role, workspaceWindow);
   const tree = new MendTreeProvider(store, client);
   const statusBar = new MendStatusBar();
-  const notifier = new Notifier(store);
+  const notifier = new Notifier(
+    store,
+    new ToastClaims(path.join(context.globalStorageUri.fsPath, "toasts")),
+  );
   const opens = openRunner({
     context,
     client,

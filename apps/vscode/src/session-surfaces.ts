@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { MendApiError } from "./client.js";
 import { transitions, type Notification, type WindowModel } from "./session-model.js";
 import type { SessionStore, StoreChange } from "./session-store.js";
+import type { ToastClaims } from "./toast-claims.js";
 import { statusColor } from "./tree.js";
 
 /**
@@ -63,7 +64,10 @@ export class Notifier {
   readonly #withdrawn = new Set<string>();
   #errorSaid: string | null = null;
 
-  constructor(private readonly store: SessionStore) {}
+  constructor(
+    private readonly store: Pick<SessionStore, "showing" | "model" | "error">,
+    private readonly claims: Pick<ToastClaims, "claim">,
+  ) {}
 
   changed({ prev, next }: StoreChange): void {
     const notified = transitions(prev, next, {
@@ -84,6 +88,8 @@ export class Notifier {
   }
 
   async #toast(notification: Exclude<Notification, { readonly kind: "withdrawn" }>): Promise<void> {
+    // Another window may have toasted it already, focused when its own read landed.
+    if (!(await this.claims.claim(notification.key))) return;
     const actions = notification.kind === "waits" ? ["Answer"] : ["Review", "Open"];
     const picked = await vscode.window.showInformationMessage(notification.text, ...actions);
     if (picked === undefined) return;
