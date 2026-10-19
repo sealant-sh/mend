@@ -36,7 +36,9 @@ export type HandoffMachine = typeof HandoffMachine.Type;
 export const HandoffBranch = Schema.String.pipe(
   Schema.check(
     Schema.makeFilter((value: string) =>
-      isTrailerValue(value) ? undefined : "a branch name of printable characters",
+      isTrailerValue(value)
+        ? undefined
+        : "a branch name of printable characters",
     ),
   ),
   Schema.brand("HandoffBranch"),
@@ -64,6 +66,8 @@ export const HandoffTrailers = Schema.Struct({
   cutAt: HandoffCutAt,
   /** The client's `origin/<default>` when it cut the snapshot. */
   defaultTip: HexSha,
+  /** M: the merge base of HEAD with that tip, the bundle's cut and the change's base. */
+  mergeBase: HexSha,
 });
 export type HandoffTrailers = typeof HandoffTrailers.Type;
 
@@ -72,6 +76,7 @@ const TRAILER_KEYS = {
   localBranch: "Mend-Branch",
   cutAt: "Mend-Cut-At",
   defaultTip: "Mend-Default-Tip",
+  mergeBase: "Mend-Merge-Base",
 };
 
 /** The message of commit W: the subject, a blank line, then the trailers in a fixed order. */
@@ -85,12 +90,17 @@ export const formatHandoffMessage = (trailers: HandoffTrailers): string =>
       : [`${TRAILER_KEYS.localBranch}: ${trailers.localBranch}`]),
     `${TRAILER_KEYS.cutAt}: ${trailers.cutAt}`,
     `${TRAILER_KEYS.defaultTip}: ${trailers.defaultTip}`,
+    `${TRAILER_KEYS.mergeBase}: ${trailers.mergeBase}`,
     "",
   ].join("\n");
 
 /** Why a commit message is not a handoff's: the reason, and the words naming what was found. */
 export interface HandoffMessageFault {
-  readonly reason: "not-a-handoff" | "garbled-trailer" | "duplicate-trailer" | "missing-trailer";
+  readonly reason:
+    | "not-a-handoff"
+    | "garbled-trailer"
+    | "duplicate-trailer"
+    | "missing-trailer";
   readonly detail: string;
 }
 
@@ -134,26 +144,47 @@ export const parseHandoffMessage = (
     const separator = line.indexOf(": ");
     const key = line.slice(0, separator);
     if (separator === -1 || !knownKeys.has(key)) {
-      return fault("garbled-trailer", `${JSON.stringify(line)} is not a Mend trailer`);
+      return fault(
+        "garbled-trailer",
+        `${JSON.stringify(line)} is not a Mend trailer`,
+      );
     }
-    if (found.has(key)) return fault("duplicate-trailer", `${key} appears more than once`);
+    if (found.has(key))
+      return fault("duplicate-trailer", `${key} appears more than once`);
     found.set(key, line.slice(separator + 2));
   }
   const branch = found.get(TRAILER_KEYS.localBranch);
   return Result.all({
-    machine: decodeTrailer(HandoffMachine, TRAILER_KEYS.machine, found.get(TRAILER_KEYS.machine)),
+    machine: decodeTrailer(
+      HandoffMachine,
+      TRAILER_KEYS.machine,
+      found.get(TRAILER_KEYS.machine),
+    ),
     localBranch:
       branch === undefined
         ? Result.succeed(null)
         : decodeTrailer(HandoffBranch, TRAILER_KEYS.localBranch, branch),
-    cutAt: decodeTrailer(HandoffCutAt, TRAILER_KEYS.cutAt, found.get(TRAILER_KEYS.cutAt)),
-    defaultTip: decodeTrailer(HexSha, TRAILER_KEYS.defaultTip, found.get(TRAILER_KEYS.defaultTip)),
+    cutAt: decodeTrailer(
+      HandoffCutAt,
+      TRAILER_KEYS.cutAt,
+      found.get(TRAILER_KEYS.cutAt),
+    ),
+    defaultTip: decodeTrailer(
+      HexSha,
+      TRAILER_KEYS.defaultTip,
+      found.get(TRAILER_KEYS.defaultTip),
+    ),
+    mergeBase: decodeTrailer(
+      HexSha,
+      TRAILER_KEYS.mergeBase,
+      found.get(TRAILER_KEYS.mergeBase),
+    ),
   });
 };
 
 /**
- * The `worktrees.handoff` value: where a handed-off worktree came from, its replay key
- * (`checkpoint`, the sha of W) and the seed of its capture 0.
+ * The `worktrees.handoff` value: where a handed-off worktree came from, who received it, its
+ * replay key (`checkpoint`, the sha of W) and the seed of its capture 0.
  */
 export const WorktreeHandoff = Schema.Struct({
   machine: HandoffMachine,
@@ -167,6 +198,12 @@ export const WorktreeHandoff = Schema.Struct({
   checkpoint: HexSha,
   /** M: the merge base with the default branch; the change's base. */
   mergeBase: HexSha,
+  /** W's tree: the working tree capture 0 lays down. */
+  worktreeTree: HexSha,
+  /** I's tree: the index capture 0 lays down. */
+  indexTree: HexSha,
+  /** The account the handoff was received for; only it may replay the same bytes. */
+  ownerUserId: Schema.String,
   /** The bucket key of the pack holding `W ^M`. */
   deltaPack: Schema.NonEmptyString,
 });
@@ -177,7 +214,9 @@ const WORKTREE_NAME_MAX = 64;
 /** git check-ref-format refuses a ref component ending in `.lock`. */
 const tidyName = (name: string, max: number): string => {
   const trimmed = name.slice(0, max).replace(/[^a-z0-9]+$/u, "");
-  return trimmed.endsWith(".lock") ? `${trimmed.slice(0, -".lock".length)}-lock` : trimmed;
+  return trimmed.endsWith(".lock")
+    ? `${trimmed.slice(0, -".lock".length)}-lock`
+    : trimmed;
 };
 
 const slugOf = (branch: string): string =>

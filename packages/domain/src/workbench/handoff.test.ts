@@ -2,7 +2,7 @@ import { Result, Schema } from "effect";
 import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { Sha } from "../ids.ts";
+import { ProjectId, Sha, WorktreeId } from "../ids.ts";
 import {
   formatFactLine,
   formatHandoffMessage,
@@ -16,9 +16,10 @@ import {
   parseHandoffMessage,
   WorktreeHandoff,
 } from "./handoff.ts";
-import { WorktreeName } from "./worktree.ts";
+import { Worktree, WorktreeName } from "./worktree.ts";
 
 const TIP = "3e73da3c0ffee0000000000000000000000000ab";
+const BASE = "1a2b3c4d0000000000000000000000000000000c";
 const HEAD = Sha.make("9c1e2f3aa000000000000000000000000000000b");
 
 const trailers = (localBranch: string | null): HandoffTrailers => ({
@@ -26,9 +27,11 @@ const trailers = (localBranch: string | null): HandoffTrailers => ({
   localBranch: localBranch === null ? null : HandoffBranch.make(localBranch),
   cutAt: HandoffCutAt.make("2026-10-18T07:42:05.000Z"),
   defaultTip: HexSha.make(TIP),
+  mergeBase: HexSha.make(BASE),
 });
 
-const message = (...lines: ReadonlyArray<string>) => `mend handoff\n\n${lines.join("\n")}\n`;
+const message = (...lines: ReadonlyArray<string>) =>
+  `mend handoff\n\n${lines.join("\n")}\n`;
 
 const faultOf = (text: string) => {
   const parsed = parseHandoffMessage(text);
@@ -45,6 +48,7 @@ describe("handoff message", () => {
         "Mend-Branch: fix/login",
         "Mend-Cut-At: 2026-10-18T07:42:05.000Z",
         `Mend-Default-Tip: ${TIP}`,
+        `Mend-Merge-Base: ${BASE}`,
         "",
       ].join("\n"),
     );
@@ -55,8 +59,14 @@ describe("handoff message", () => {
   });
 
   it("round-trips attached and detached trailers", () => {
-    for (const value of [trailers("fix/login"), trailers(null), trailers("Ünïcode/brånch")]) {
-      expect(parseHandoffMessage(formatHandoffMessage(value))).toEqual(Result.succeed(value));
+    for (const value of [
+      trailers("fix/login"),
+      trailers(null),
+      trailers("Ünïcode/brånch"),
+    ]) {
+      expect(parseHandoffMessage(formatHandoffMessage(value))).toEqual(
+        Result.succeed(value),
+      );
     }
   });
 
@@ -68,16 +78,24 @@ describe("handoff message", () => {
       fc.property(
         printable,
         fc.option(printable, { nil: null }),
-        fc.date({ min: new Date(0), max: new Date("2100-01-01"), noInvalidDate: true }),
+        fc.date({
+          min: new Date(0),
+          max: new Date("2100-01-01"),
+          noInvalidDate: true,
+        }),
         fc.stringMatching(/^[0-9a-f]{64}$/),
-        (machine, branch, cut, tip) => {
+        fc.stringMatching(/^[0-9a-f]{40}$/),
+        (machine, branch, cut, tip, base) => {
           const value: HandoffTrailers = {
             machine: HandoffMachine.make(machine),
             localBranch: branch === null ? null : HandoffBranch.make(branch),
             cutAt: HandoffCutAt.make(cut.toISOString()),
             defaultTip: HexSha.make(tip),
+            mergeBase: HexSha.make(base),
           };
-          expect(parseHandoffMessage(formatHandoffMessage(value))).toEqual(Result.succeed(value));
+          expect(parseHandoffMessage(formatHandoffMessage(value))).toEqual(
+            Result.succeed(value),
+          );
         },
       ),
     );
@@ -86,7 +104,7 @@ describe("handoff message", () => {
   it("accepts the trailers in any order and without the final newline", () => {
     expect(
       faultOf(
-        `mend handoff\n\nMend-Default-Tip: ${TIP}\nMend-Cut-At: 2026-10-18T07:42:05.000Z\nMend-Machine: m`,
+        `mend handoff\n\nMend-Merge-Base: ${BASE}\nMend-Default-Tip: ${TIP}\nMend-Cut-At: 2026-10-18T07:42:05.000Z\nMend-Machine: m`,
       ),
     ).toBe("parsed");
   });
@@ -103,9 +121,13 @@ describe("handoff message", () => {
       "Mend-Machine: b",
       "Mend-Cut-At: 2026-10-18T07:42:05.000Z",
       `Mend-Default-Tip: ${TIP}`,
+      `Mend-Merge-Base: ${BASE}`,
     );
     expect(parseHandoffMessage(text)).toEqual(
-      Result.fail({ reason: "duplicate-trailer", detail: "Mend-Machine appears more than once" }),
+      Result.fail({
+        reason: "duplicate-trailer",
+        detail: "Mend-Machine appears more than once",
+      }),
     );
     expect(
       faultOf(
@@ -115,19 +137,38 @@ describe("handoff message", () => {
           "Mend-Branch: x",
           "Mend-Cut-At: 2026-10-18T07:42:05.000Z",
           `Mend-Default-Tip: ${TIP}`,
+          `Mend-Merge-Base: ${BASE}`,
         ),
       ),
     ).toBe("duplicate-trailer");
   });
 
   it("refuses a missing required trailer", () => {
-    expect(faultOf(message("Mend-Machine: a", "Mend-Cut-At: 2026-10-18T07:42:05.000Z"))).toBe(
-      "missing-trailer",
-    );
     expect(
-      faultOf(message("Mend-Cut-At: 2026-10-18T07:42:05.000Z", `Mend-Default-Tip: ${TIP}`)),
+      faultOf(
+        message("Mend-Machine: a", "Mend-Cut-At: 2026-10-18T07:42:05.000Z"),
+      ),
     ).toBe("missing-trailer");
-    expect(faultOf(message("Mend-Machine: a", `Mend-Default-Tip: ${TIP}`))).toBe("missing-trailer");
+    expect(
+      faultOf(
+        message(
+          "Mend-Cut-At: 2026-10-18T07:42:05.000Z",
+          `Mend-Default-Tip: ${TIP}`,
+        ),
+      ),
+    ).toBe("missing-trailer");
+    expect(
+      faultOf(message("Mend-Machine: a", `Mend-Default-Tip: ${TIP}`)),
+    ).toBe("missing-trailer");
+    expect(
+      faultOf(
+        message(
+          "Mend-Machine: a",
+          "Mend-Cut-At: 2026-10-18T07:42:05.000Z",
+          `Mend-Default-Tip: ${TIP}`,
+        ),
+      ),
+    ).toBe("missing-trailer");
   });
 
   it("refuses garbled lines and values", () => {
@@ -135,22 +176,73 @@ describe("handoff message", () => {
       machine: "Mend-Machine: a",
       cutAt: "Mend-Cut-At: 2026-10-18T07:42:05.000Z",
       tip: `Mend-Default-Tip: ${TIP}`,
+      base: `Mend-Merge-Base: ${BASE}`,
     };
     const garbled = [
-      message(valid.machine, valid.cutAt, valid.tip, "Signed-off-by: someone"),
-      message(valid.machine, valid.cutAt, valid.tip, "Mend-Branch:fix"),
-      message(valid.machine, valid.cutAt, valid.tip, ""),
-      message(valid.machine, valid.cutAt, "Mend-Default-Tip: 3E73DA3"),
-      message(valid.machine, valid.cutAt, `Mend-Default-Tip: ${TIP.toUpperCase()}`),
-      message(valid.machine, "Mend-Cut-At: 2026-10-18T07:42:05Z", valid.tip),
-      message(valid.machine, "Mend-Cut-At: 2026-10-18T10:42:05+03:00", valid.tip),
-      message(valid.machine, "Mend-Cut-At: yesterday", valid.tip),
-      message(`Mend-Machine: ${"m".repeat(65)}`, valid.cutAt, valid.tip),
-      message("Mend-Machine:  padded", valid.cutAt, valid.tip),
-      message("Mend-Machine: tab\there", valid.cutAt, valid.tip),
-      message(valid.machine, "Mend-Branch: fix\r", valid.cutAt, valid.tip),
+      message(
+        valid.machine,
+        valid.cutAt,
+        valid.tip,
+        valid.base,
+        "Signed-off-by: someone",
+      ),
+      message(
+        valid.machine,
+        valid.cutAt,
+        valid.tip,
+        valid.base,
+        "Mend-Branch:fix",
+      ),
+      message(valid.machine, valid.cutAt, valid.tip, valid.base, ""),
+      message(
+        valid.machine,
+        valid.cutAt,
+        "Mend-Default-Tip: 3E73DA3",
+        valid.base,
+      ),
+      message(
+        valid.machine,
+        valid.cutAt,
+        `Mend-Default-Tip: ${TIP.toUpperCase()}`,
+        valid.base,
+      ),
+      message(
+        valid.machine,
+        valid.cutAt,
+        valid.tip,
+        "Mend-Merge-Base: 1a2b3c4",
+      ),
+      message(
+        valid.machine,
+        "Mend-Cut-At: 2026-10-18T07:42:05Z",
+        valid.tip,
+        valid.base,
+      ),
+      message(
+        valid.machine,
+        "Mend-Cut-At: 2026-10-18T10:42:05+03:00",
+        valid.tip,
+        valid.base,
+      ),
+      message(valid.machine, "Mend-Cut-At: yesterday", valid.tip, valid.base),
+      message(
+        `Mend-Machine: ${"m".repeat(65)}`,
+        valid.cutAt,
+        valid.tip,
+        valid.base,
+      ),
+      message("Mend-Machine:  padded", valid.cutAt, valid.tip, valid.base),
+      message("Mend-Machine: tab\there", valid.cutAt, valid.tip, valid.base),
+      message(
+        valid.machine,
+        "Mend-Branch: fix\r",
+        valid.cutAt,
+        valid.tip,
+        valid.base,
+      ),
     ];
-    for (const text of garbled) expect(faultOf(text), text).toBe("garbled-trailer");
+    for (const text of garbled)
+      expect(faultOf(text), text).toBe("garbled-trailer");
   });
 
   it("admits a 64-character machine name and refuses an empty one", () => {
@@ -169,6 +261,9 @@ describe("WorktreeHandoff", () => {
     index: "b".repeat(40),
     checkpoint: "c".repeat(64),
     mergeBase: "d".repeat(40),
+    worktreeTree: "e".repeat(40),
+    indexTree: "f".repeat(40),
+    ownerUserId: "user-dana",
     deltaPack: "packs/pack-0123.pack",
   };
 
@@ -176,13 +271,38 @@ describe("WorktreeHandoff", () => {
     const decoded = Schema.decodeUnknownSync(WorktreeHandoff)(row);
     expect(Schema.encodeSync(WorktreeHandoff)(decoded)).toEqual(row);
     expect(
-      Schema.decodeUnknownSync(WorktreeHandoff)({ ...row, localBranch: null }).localBranch,
+      Schema.decodeUnknownSync(WorktreeHandoff)({ ...row, localBranch: null })
+        .localBranch,
     ).toBe(null);
   });
 
   it("refuses a short sha and an empty pack key", () => {
     expect(Schema.is(WorktreeHandoff)({ ...row, head: "abc1234" })).toBe(false);
+    expect(
+      Schema.is(WorktreeHandoff)({ ...row, worktreeTree: "abc1234" }),
+    ).toBe(false);
     expect(Schema.is(WorktreeHandoff)({ ...row, deltaPack: "" })).toBe(false);
+  });
+
+  it("is null on a Worktree a server from before handoffs lists, and carried when present", () => {
+    const listed = {
+      id: WorktreeId.make("wt-1"),
+      projectId: ProjectId.make("project-1"),
+      name: "fix-login",
+      directory: "fix-login",
+      branch: "mend/fix-login",
+      baseSha: "d".repeat(40),
+      baseRef: "main",
+      createdAt: "2026-10-18T07:42:05.000Z",
+      updatedAt: "2026-10-18T07:42:05.000Z",
+    };
+    expect(Schema.decodeUnknownSync(Worktree)(listed).handoff).toBe(null);
+    expect(
+      Schema.decodeUnknownSync(Worktree)({ ...listed, handoff: null }).handoff,
+    ).toBe(null);
+    expect(
+      Schema.decodeUnknownSync(Worktree)({ ...listed, handoff: row }).handoff,
+    ).toEqual(Schema.decodeUnknownSync(WorktreeHandoff)(row));
   });
 });
 
@@ -197,9 +317,13 @@ const isGitComponent = (name: string) =>
 describe("handoffWorktreeName", () => {
   it("slugs the branch", () => {
     expect(handoffWorktreeName("fix/login", HEAD, none)).toBe("fix-login");
-    expect(handoffWorktreeName("Feature/Big_Thing", HEAD, none)).toBe("feature-big_thing");
+    expect(handoffWorktreeName("Feature/Big_Thing", HEAD, none)).toBe(
+      "feature-big_thing",
+    );
     expect(handoffWorktreeName("a//b  c", HEAD, none)).toBe("a-b-c");
-    expect(handoffWorktreeName("-_.release/1.2", HEAD, none)).toBe("release-1.2");
+    expect(handoffWorktreeName("-_.release/1.2", HEAD, none)).toBe(
+      "release-1.2",
+    );
     expect(handoffWorktreeName("wip..again", HEAD, none)).toBe("wip.again");
     expect(handoffWorktreeName("topic/", HEAD, none)).toBe("topic");
     expect(handoffWorktreeName("topic.", HEAD, none)).toBe("topic");
@@ -217,17 +341,23 @@ describe("handoffWorktreeName", () => {
   it("cuts a long branch to 64 characters", () => {
     const name = handoffWorktreeName(`${"x".repeat(63)}.lock`, HEAD, none);
     expect(name).toBe("x".repeat(63));
-    expect(handoffWorktreeName("y".repeat(100), HEAD, none)).toBe("y".repeat(64));
+    expect(handoffWorktreeName("y".repeat(100), HEAD, none)).toBe(
+      "y".repeat(64),
+    );
   });
 
   it("counts up past taken names and stays within 64 characters", () => {
     const taken = new Set(["fix-login", "fix-login-2"]);
-    expect(handoffWorktreeName("fix/login", HEAD, (name) => taken.has(name))).toBe("fix-login-3");
-    expect(handoffWorktreeName(null, HEAD, (name) => name === "handoff-9c1e2f3")).toBe(
-      "handoff-9c1e2f3-2",
-    );
+    expect(
+      handoffWorktreeName("fix/login", HEAD, (name) => taken.has(name)),
+    ).toBe("fix-login-3");
+    expect(
+      handoffWorktreeName(null, HEAD, (name) => name === "handoff-9c1e2f3"),
+    ).toBe("handoff-9c1e2f3-2");
     const long = "z".repeat(64);
-    expect(handoffWorktreeName(long, HEAD, (name) => name === long)).toBe(`${"z".repeat(62)}-2`);
+    expect(handoffWorktreeName(long, HEAD, (name) => name === long)).toBe(
+      `${"z".repeat(62)}-2`,
+    );
     const dotted = `${"z".repeat(61)}.ab`;
     expect(handoffWorktreeName(dotted, HEAD, (name) => name === dotted)).toBe(
       `${"z".repeat(61)}-2`,
@@ -247,7 +377,9 @@ describe("handoffWorktreeName", () => {
           let current = first;
           for (let i = 0; i < preTaken; i++) {
             taken.add(current);
-            current = handoffWorktreeName(branch, Sha.make(head), (name) => taken.has(name));
+            current = handoffWorktreeName(branch, Sha.make(head), (name) =>
+              taken.has(name),
+            );
           }
           expect(Schema.is(WorktreeName)(current), current).toBe(true);
           expect(isGitComponent(current), current).toBe(true);
@@ -276,7 +408,12 @@ describe("isEnvPath", () => {
 });
 
 describe("formatFactLine", () => {
-  const counts = { commitsAhead: 2, uncommitted: 3, untracked: 1, defaultBranch: "main" };
+  const counts = {
+    commitsAhead: 2,
+    uncommitted: 3,
+    untracked: 1,
+    defaultBranch: "main",
+  };
 
   it("names commits, uncommitted and untracked files", () => {
     expect(formatFactLine(counts)).toBe(
@@ -285,17 +422,32 @@ describe("formatFactLine", () => {
   });
 
   it("says one in the singular", () => {
-    expect(formatFactLine({ ...counts, commitsAhead: 1, uncommitted: 1, untracked: 0 })).toBe(
-      "1 commit ahead of main · 1 uncommitted file",
-    );
+    expect(
+      formatFactLine({
+        ...counts,
+        commitsAhead: 1,
+        uncommitted: 1,
+        untracked: 0,
+      }),
+    ).toBe("1 commit ahead of main · 1 uncommitted file");
   });
 
   it("says even and none for zero, and leaves zero untracked out", () => {
     expect(
-      formatFactLine({ commitsAhead: 0, uncommitted: 0, untracked: 0, defaultBranch: "trunk" }),
+      formatFactLine({
+        commitsAhead: 0,
+        uncommitted: 0,
+        untracked: 0,
+        defaultBranch: "trunk",
+      }),
     ).toBe("even with trunk · no uncommitted files");
-    expect(formatFactLine({ ...counts, commitsAhead: 0, uncommitted: 0, untracked: 4 })).toBe(
-      "even with main · no uncommitted files · 4 untracked",
-    );
+    expect(
+      formatFactLine({
+        ...counts,
+        commitsAhead: 0,
+        uncommitted: 0,
+        untracked: 4,
+      }),
+    ).toBe("even with main · no uncommitted files · 4 untracked");
   });
 });

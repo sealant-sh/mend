@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { ProjectId, Sha, WorktreeId } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
@@ -52,9 +52,11 @@ export class Worktree extends Schema.Class<Worktree>("Worktree")({
   /**
    * Where a handed-off worktree came from (`mend handoff`): the machine, the local branch, the
    * cut time and the snapshot its capture 0 was laid down from. Null for a worktree that
-   * started from a base.
+   * started from a base, and for one a server from before handoffs lists.
    */
-  handoff: Schema.NullOr(WorktreeHandoff),
+  handoff: Schema.NullOr(WorktreeHandoff).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}

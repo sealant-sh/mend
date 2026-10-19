@@ -1,5 +1,5 @@
 import { ProjectId } from "@mend/domain";
-import { Session, Worktree } from "@mend/domain/workbench";
+import { Session, Worktree, WorktreeName } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
@@ -43,12 +43,20 @@ export const HandoffBundleBytes = Schema.Uint8Array.pipe(
   HttpApiSchema.asUint8Array({ contentType: GIT_BUNDLE_CONTENT_TYPE }),
 );
 
-export class HandoffReceived extends Schema.Class<HandoffReceived>("HandoffReceived")({
+export class HandoffReceived extends Schema.Class<HandoffReceived>(
+  "HandoffReceived",
+)({
   session: Session,
   worktree: Worktree,
   commitsAhead: Schema.Int,
   /** The same bundle arrived before; this is the session it made then. */
   replayed: Schema.Boolean,
+  /**
+   * The caller's earlier handoff of the same local branch whose name this one could not take,
+   * when there is one: `handed off as fix-login-2 · fix-login is your earlier handoff`. Null when
+   * the name was free, or was taken by something else.
+   */
+  previous: Schema.NullOr(Schema.Struct({ name: WorktreeName })),
 }) {}
 
 export const handoffsGroup = HttpApiGroup.make("handoffs")
