@@ -86,7 +86,7 @@ export const plainHttpWarning = (url: string): string | null => {
   const parsed = new URL(url);
   if (parsed.protocol !== "http:" || isLoopbackHost(parsed.hostname)) return null;
   if (isTailnetHost(parsed.hostname)) return null;
-  return "Plain http: anyone on this network can read the token";
+  return "Plain http: the token travels unencrypted";
 };
 
 /**
@@ -174,6 +174,9 @@ export class SignInError extends Error {
   }
 }
 
+/** Nothing answered: a poll retries once, so one dropped request does not end the sign-in. */
+class Unanswered extends SignInError {}
+
 export interface SignInDeps {
   readonly fetch: typeof fetch;
   /**
@@ -213,7 +216,7 @@ const post = async (
       signal: AbortSignal.timeout(30_000),
     });
   } catch (cause) {
-    throw new SignInError(`Cannot reach Mend at ${new URL(url).origin}.${transportReason(cause)}`);
+    throw new Unanswered(`Cannot reach Mend at ${new URL(url).origin}.${transportReason(cause)}`);
   }
   const receivedAt = (deps.now ?? Date.now)();
   const text = await response.text();
@@ -298,10 +301,19 @@ export const browserSignIn = async (base: string, deps: SignInDeps): Promise<Sig
   // "open the external website?" dialog still waits for an answer.
   void deps.openExternal(page).catch(() => false);
   const deadline = pollDeadline(request, started.receivedAt, started.date);
+  let unanswered = false;
   while (now() < deadline) {
     await deps.sleep(pollDelayMs(request.intervalSeconds));
     if (deps.cancelled()) return null;
-    const poll = await post(deps, `${base}/api/cli/auth/token`, { deviceCode: request.deviceCode });
+    let poll: Awaited<ReturnType<typeof post>>;
+    try {
+      poll = await post(deps, `${base}/api/cli/auth/token`, { deviceCode: request.deviceCode });
+    } catch (cause) {
+      if (!(cause instanceof Unanswered) || unanswered) throw cause;
+      unanswered = true;
+      continue;
+    }
+    unanswered = false;
     const result = poll.status >= 200 && poll.status < 300 ? parsePoll(poll.json) : null;
     if (deps.cancelled()) {
       return finishBrowserSignIn(

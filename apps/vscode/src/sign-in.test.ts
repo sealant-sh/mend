@@ -159,6 +159,27 @@ describe("browserSignIn", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("polls again after one request that got no answer, and ends after two in a row", async () => {
+    const dropped = new TypeError("fetch failed", { cause: new Error("read ECONNRESET") });
+    const once = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json(200, opened))
+      .mockRejectedValueOnce(dropped)
+      .mockResolvedValueOnce(json(200, approved));
+    await expect(
+      browserSignIn("http://mend-mini.local:3105", deps(once).value),
+    ).resolves.toMatchObject({ token: "mdt_token" });
+
+    const twice = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json(200, opened))
+      .mockRejectedValueOnce(dropped)
+      .mockRejectedValueOnce(dropped);
+    await expect(browserSignIn("http://mend-mini.local:3105", deps(twice).value)).rejects.toThrow(
+      "Cannot reach Mend at http://mend-mini.local:3105. read ECONNRESET",
+    );
+  });
+
   it("revokes an approval that arrives during a cancelled poll and returns no credential", async () => {
     const pollStarted = Promise.withResolvers<void>();
     const pollResponse = Promise.withResolvers<Response>();
@@ -285,7 +306,7 @@ describe("server URL", () => {
   });
 
   it("warns about plain http to another machine, in story h's words, and not on loopback", () => {
-    const words = "Plain http: anyone on this network can read the token";
+    const words = "Plain http: the token travels unencrypted";
     for (const url of [
       "http://mend-mini.local:3105",
       "http://192.168.1.20:3105",
@@ -316,7 +337,7 @@ describe("server URL", () => {
   it("lets the URL input accept a plain-http server with the warning, and refuses a non-URL", () => {
     expect(urlNotice("mend-mini.local:3105")).toEqual({
       severity: "warning",
-      message: "Plain http: anyone on this network can read the token",
+      message: "Plain http: the token travels unencrypted",
     });
     expect(urlNotice("http://localhost:3105")).toBe(null);
     expect(urlNotice("https://mend.example.com")).toBe(null);
