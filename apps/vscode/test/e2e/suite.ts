@@ -318,7 +318,6 @@ export async function run(): Promise<void> {
 
   // 2. Sign in through the browser walk; the "browser" approves with the owner's own session.
   inputBoxes.push(serverUrl);
-  quickPicks.push(pick((item) => item["method"] === "browser"));
   const approvals: Array<string> = [];
   const vsEnv: Record<string, unknown> = vscode.env;
   vsEnv["openExternal"] = async (uri: vscode.Uri) => {
