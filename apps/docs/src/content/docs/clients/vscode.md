@@ -97,27 +97,76 @@ project name.
 
 ## Start a session
 
-Click **+** in the view, or run **Mend: New Session…**, and pick one of:
+Click **+** in the view, or run **Mend: New session**. One quick input opens. When the window's
+folder is a clone of an adopted project, matched by its origin URL, the input is that project's,
+titled `New session · <project>`, and nothing asks which project. Type what the agent should do and
+press Enter. One dim line under the prompt says what Enter starts:
 
-- **Workbench**: a fresh worktree whose workspace is held open by a shell. VS Code opens in it, and
-  you run `claude` or `codex` yourself in the terminal. Mend observes and records it, within the
-  limits under [Agents you run yourself](#agents-you-run-yourself).
-- **Claude agent** or **Codex agent**: Mend starts the harness on a prompt you type, and the
-  workspace opens in VS Code beside it. An empty prompt starts the harness without one.
-- **Agent with options…**: choose the harness (Claude, Codex, opencode or pi), model, thinking
-  level, permissions (skip permission prompts, or ask before acting) and base branch. The model list
-  is the server's, the same one every other client offers, with the server's default listed first.
-  For Claude and opencode the list leads with the harness's own choice (`claude's own choice`,
-  `opencode's own choice`), which sends no model: Claude Code runs the model your Claude settings
-  name, else its own default, as a `claude` you run yourself does, and opencode's config decides.
+```text
+claude · default model · from main
+```
 
-**Mend: New session in this worktree…** on a session starts a second session in the same worktree:
-the same files and branch, with a new conversation. Each session keeps its own harness state, so the
-new session does not see the first session's conversation. To continue that conversation, take the
-session over instead.
+Mend creates the session (`POST /projects/:id/sessions`) and launches the harness on your prompt as
+a terminal agent: the claude TUI in the session's terminal (`POST /sessions/:id/launch`, PTY mode).
+The launch is not awaited. The session's row shows in the view at once and reads
+`starting · <what it is doing>`, such as `starting · building the workspace image`, until the agent
+runs. No window opens and no notification shows. **Open** opens its workspace when you want it. An
+empty prompt starts the harness without one.
 
-**Mend: New worktree without an agent…** asks for a name and a base, creates the worktree, and opens
-it.
+The line reads `<harness> · <model> · <thinking> · <permissions> · from <base>`, with only the parts
+you chose: `default model` until you choose one, `high thinking`, and `asks before acting`.
+
+### The base
+
+A new worktree starts from the window's branch when origin has every commit of it. Mend checks the
+branch's upstream, else `origin/<branch>`, with `git merge-base --is-ancestor HEAD`, against what
+this machine last fetched; it does not fetch. When origin lacks commits of the branch, or the branch
+has no remote-tracking ref, the session starts from the project's default branch and the line says
+so before you press Enter: `from main · your branch fix/login isn't pushed`, or
+`from main · your commits on main aren't pushed` on the default branch itself. A window on another
+repository, or on a detached HEAD, starts from the default branch.
+
+### Change…
+
+**Change…**, the gear on the line, steps through the options in the same input, with a step counter
+and Back:
+
+- **Harness**: claude, codex, opencode, pi, or shell. A `shell` session runs no agent: what you type
+  names it, and its shell holds the workspace. Mend observes and records what you run there, within
+  the limits under [Agents you run yourself](#agents-you-run-yourself).
+- **Model**: the server's list, the same one every other client offers, with the server's default
+  listed first. For Claude and opencode the list leads with the harness's own choice
+  (`claude's own choice`, `opencode's own choice`), which sends no model: Claude Code runs the model
+  your Claude settings name, else its own default, as a `claude` you run yourself does, and
+  opencode's config decides. A harness the server lists no models for has no model step.
+- **Thinking**: the levels the model takes, or the harness's default. A model that takes none has no
+  thinking step.
+- **Permissions**: skip permission prompts, or ask before acting. A shell has no permissions step.
+- **Base**: this window's branch (its line says what that resolves to), the default branch, or a
+  branch or commit you type. A session in an existing worktree has no base step.
+
+Each choice is remembered at once, for that project on this server, on this machine. The current
+choice is checked and reads `remembered for <project>`. After the last step the prompt comes back
+with what you typed, and the line reads your choices.
+
+### When it can't start
+
+- **No project matches the window.** The first step lists the projects, with **Adopt this
+  repository** on top when the window's origin URL is set and not adopted. Adopting clones it
+  (`POST /projects`) while the input waits, then goes on to the prompt.
+- **Mend is offline.** **New session** is disabled; the view's **+** reads
+  `Mend is offline · retrying`. An input already open says the same on its line, and Enter does
+  nothing. What you typed is kept, per project, for the next **New session** in this window.
+- **The launch fails.** The row reads `failed · <the launch's line>`, such as
+  `failed · launch refused · Connect Claude to start a session here. …`, and an error notification
+  offers **Retry**, which launches the same session again. Retry shows only in the window that
+  launched it.
+
+**Mend: New session in this worktree…** on a session opens the same input for a second session in
+the same worktree: the same files and branch, with a new conversation. Its title ends
+`· in <worktree>`, its line reads `in <worktree>`, and when another person's session runs there the
+line says so. Each session keeps its own harness state, so the new session does not see the first
+session's conversation. To continue that conversation, open that session.
 
 ## Open a session
 
@@ -259,8 +308,8 @@ window is connected over Remote-SSH. Its conversations land where a terminal `cl
 observes them the same way, as you: a turn in the panel showed up after 8 s on 0.36.
 
 To have Mend run the agent, so you can prompt it, follow it, steer it from any device and stop it,
-start it from Mend: **+** → an agent, or **Claude agent** / **Codex agent** under
-[Start a session](#start-a-session). That is the fully supported path.
+start it from Mend: **+**, a prompt and Enter, under [Start a session](#start-a-session). That is
+the fully supported path.
 
 ## Review a change
 

@@ -20,7 +20,24 @@ patch number is the extension's own.
 - An empty group stays in its place and reads `nothing`, so clicking **Open** on a row while another
   row changes still opens that row's session.
 - When Mend cannot be reached the view says when it was last heard, rows keep their last words, and
-  **New session** and **Answer** are disabled.
+  **New session** and **Answer** are disabled. The view's **+** then reads
+  `Mend is offline · retrying`.
+- **Mend: New session** (before, **New Session…**) is one quick input. Type a prompt and press
+  Enter: Mend starts claude on it in a new session's terminal, the row shows at once, and no window
+  opens. A dim line under the prompt says what Enter starts (`claude · default model · from main`).
+  **Change…** steps through harness, model, thinking, permissions and base in the same input, with a
+  step counter and Back, and remembers each choice per project. This replaces the pick between
+  Workbench, Claude agent, Codex agent and Agent with options…, and its separate prompts.
+- A new session starts from the window's branch when origin has its commits. When it does not, it
+  starts from the default branch, and the line says so before Enter:
+  `from main · your branch fix/login isn't pushed`.
+- When no project matches the window, New session lists the projects, with **Adopt this repository**
+  on top when the window's origin URL is not adopted.
+- A launch that fails reads `failed · <the launch's line>` on its row, and its error notification
+  offers **Retry**, which launches the same session again.
+- **Mend: New worktree without an agent…** is removed: choose the `shell` harness in **Change…**.
+- **Mend: New session in this worktree…** opens the same input. Who else runs in the worktree is on
+  its line instead of a dialog.
 - The view follows Mend's events by re-reading only the session or project an event names, instead
   of every project. **Mend: Toggle current project scope** is gone.
 - **Open** replaces **Open in VS Code**. It follows your `window.openFoldersInNewWindow` setting,
