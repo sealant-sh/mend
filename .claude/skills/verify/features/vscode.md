@@ -572,6 +572,29 @@ the row takes the job's name.
     `Mend could not read this change: The connected account was rejected by the provider — reconnect it. (Inference failed: authentication_failed)`.
     The world's logins are fake, so drafts, Accept, Dismiss and Show record from a draft are
     `verified-unreachable · inference`.
+  - Steps 6 and 7 and the edge cases: `recipes/vscode-review-send.mjs`. Two comments, **Send
+    review** opens `review · <label>.md` (`## 1 · src/auth/limit.ts:12`, `## 2 · …:13`), a typed
+    line, **Send to session** (`clickEditorTitle`): the panel attaches `claude · <label>` and
+    `terminal().read()` shows `❯ [Pasted text #1 +12 lines]` (claude folds a long paste), no 401;
+    `follow_ups` holds one row, `vscode-follow-up:<change>:<uuid>|pending` (`followUpRows`, psql in
+    the world's Postgres); the threads read `follow-up pending · in claude's terminal`. The next
+    round (the shell, a mark) adds `worktree changed since this review · 2 new files` and
+    `since my last review · 2 files`; there the sent threads sit on the left of
+    `limit.ts (checkpoint 4 ↔ checkpoint 6)`, and Addressed then Reopen reach Mend. Offline: the
+    disabled `Mend is offline; your comments are kept`. Ana's stopped session: no **Send review**
+    until she turns shared control on.
+  - Delivery fails on a stopped session after `mend connect claude --remove`:
+    `delivery failed · retryable`, one toast with **Retry delivery**, one `delivery_failed` row.
+    Retry after reconnecting moves the same row on (same key). Mend then never answers the deliver:
+    in this build `markSelectedSent` notifies through a second pool connection inside its
+    transaction (`packages/db/src/events.ts:117-121`) and the pool (6, five held by LISTEN) is full,
+    so the server's API stops answering. The recipe records the row's state as a note and runs this
+    lane last. In `rsf3b`, `rsg3a` and `trd1` step 24 failed with the row still `delivery_failed`
+    and no deliver sent: a trace in `trd1` showed Retry reading the review as `sending`, because VS
+    Code's `globalState` handed back an earlier write. The extension now never reads a review older
+    than one it saw. If step 24 fails again, its error carries what Mend's Postgres connections are
+    doing (`serverActivity()`, `pg_stat_activity`): a stall inside Mend reads apart from a deliver
+    the extension never sent.
 - **e. Dana wants to drive by hand.** `recipes/vscode-open.mjs`, from the default `up`.
   - The gesture is Open; typing into the attached `claude · add-rate-limit` is story c's last lane.
   - **Continue here.** `contextMenu("Mend: Open in New Window")` on `from-phone`: the tab
