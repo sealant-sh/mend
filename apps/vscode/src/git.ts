@@ -63,8 +63,8 @@ export const localRepositoryFacts = async (cwd: string, git: Git): Promise<Repos
 /**
  * Whether the folder's commits are on origin, so the server's store can start from them: the
  * branch, `origin/<branch>` (else its upstream), and whether HEAD is an ancestor of it. Read from
- * what this machine last fetched; nothing is fetched. A probe that hangs, or fails in a way git
- * does not use for "no" (a shallow clone's missing history), reads unknown, never unpushed.
+ * what this machine last fetched; nothing is fetched. A probe that hangs or fails, and a "no" from
+ * a shallow clone, read unknown, never unpushed.
  */
 export const checkoutFact = async (
   folder: vscode.WorkspaceFolder,
@@ -87,13 +87,18 @@ export const readCheckout = async (cwd: string, git: Git): Promise<CheckoutFact>
   if (upstream.kind !== "out" || !upstream.stdout.startsWith("refs/remotes/"))
     return { kind: "unpushed", branch };
   const ref = upstream.stdout;
+  // One read of the upstream: a fetch that moves the ref later cannot pass a commit that lacks HEAD.
   const commit = await git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
   if (commit.kind !== "out" || commit.stdout === "") return { kind: "unknown", branch };
-  const ancestry = await git(cwd, ["merge-base", "--is-ancestor", "HEAD", ref]);
+  const ancestry = await git(cwd, ["merge-base", "--is-ancestor", "HEAD", commit.stdout]);
   if (ancestry.kind === "out")
     return { kind: "pushed", branch, upstream: ref, commit: commit.stdout };
-  if (ancestry.kind === "exit" && ancestry.code === 1) return { kind: "unpushed", branch };
-  return { kind: "unknown", branch };
+  if (ancestry.kind !== "exit" || ancestry.code !== 1) return { kind: "unknown", branch };
+  // In a shallow clone git answers 1 when the boundary hides the ancestry, not only for "no".
+  const shallow = await git(cwd, ["rev-parse", "--is-shallow-repository"]);
+  return shallow.kind === "out" && shallow.stdout === "false"
+    ? { kind: "unpushed", branch }
+    : { kind: "unknown", branch };
 };
 
 const pathFlavor = (value: string): typeof path.posix | typeof path.win32 =>

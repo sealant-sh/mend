@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { gitRunner, localRepositoryFacts, readCheckout, type Git } from "./git.js";
+import { DEFAULT_OPTIONS, resolveBase } from "./new-session.js";
 
 const scratch = mkdtempSync(path.join(tmpdir(), "mend-vscode-git-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -81,11 +82,61 @@ describe("readCheckout", () => {
     expect(await readCheckout(clone, git)).toEqual({ kind: "elsewhere" });
   });
 
-  it("reads a merge-base that fails other than 'no' (a shallow clone's missing history) as unknown", async () => {
-    const { clone } = cloned("shallow");
+  it("reads a merge-base that fails other than 'no' as unknown", async () => {
+    const { clone } = cloned("merge-base-fails");
     const failing: Git = (cwd, args) =>
       args[0] === "merge-base" ? Promise.resolve({ kind: "exit", code: 128 }) : git(cwd, args);
     expect(await readCheckout(clone, failing)).toEqual({ kind: "unknown", branch: "main" });
+  });
+
+  it("reads a shallow clone whose boundary hides the ancestry as unknown, not unpushed", async () => {
+    const { origin } = cloned("shallow");
+    const clone = path.join(scratch, "shallow-depth-1");
+    sh(scratch, "clone", "--quiet", "--depth", "1", `file://${origin}`, clone);
+    sh(origin, "commit", "--quiet", "--allow-empty", "-m", "second");
+    sh(clone, "fetch", "--quiet", "--depth", "1", "origin", "main");
+    const hidden = spawnSync("git", ["merge-base", "--is-ancestor", "HEAD", "origin/main"], {
+      cwd: clone,
+      encoding: "utf8",
+    });
+    expect({ status: hidden.status, stderr: hidden.stderr }).toEqual({ status: 1, stderr: "" });
+    expect(sh(origin, "merge-base", "--is-ancestor", sh(clone, "rev-parse", "HEAD"), "main")).toBe(
+      "",
+    );
+    const checkout = await readCheckout(clone, git);
+    expect(checkout).toEqual({ kind: "unknown", branch: "main" });
+    expect(
+      resolveBase({
+        project: {
+          id: "p1",
+          name: "shallow",
+          originUrl: origin,
+          storePath: "/s",
+          defaultBranch: "main",
+        },
+        join: null,
+        prompt: "fix it",
+        options: DEFAULT_OPTIONS,
+        checkout,
+        refusedBase: null,
+      }),
+    ).toEqual({ kind: "ref", ref: "main", shown: "main", note: "couldn't read your branch" });
+  });
+
+  it("checks HEAD against the upstream commit it read once, not the ref a fetch moves after", async () => {
+    const { clone } = cloned("moved");
+    const before = sh(clone, "rev-parse", "origin/main");
+    sh(clone, "commit", "--quiet", "--allow-empty", "-m", "local");
+    const asked: Array<ReadonlyArray<string>> = [];
+    const fetching: Git = async (cwd, args) => {
+      asked.push(args);
+      const answer = await git(cwd, args);
+      if (args.at(-1) === "refs/remotes/origin/main^{commit}")
+        sh(clone, "update-ref", "refs/remotes/origin/main", "HEAD");
+      return answer;
+    };
+    expect(await readCheckout(clone, fetching)).toEqual({ kind: "unpushed", branch: "main" });
+    expect(asked).toContainEqual(["merge-base", "--is-ancestor", "HEAD", before]);
   });
 
   it("reads a git that hangs as unknown within the bound, never as unpushed", async () => {

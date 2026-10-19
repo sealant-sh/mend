@@ -61,9 +61,9 @@ export type CheckoutFact =
   /** Not this project's checkout, not a git folder, or a detached HEAD: nothing to say. */
   | { readonly kind: "elsewhere" }
   /**
-   * HEAD is an ancestor of `upstream` (`refs/remotes/<remote>/<branch>`), which pointed at
-   * `commit` when read: the server's store can have every commit of it. The upstream's branch may
-   * be named unlike the local one.
+   * HEAD is an ancestor of `commit`, what `upstream` (`refs/remotes/<remote>/<branch>`) pointed at
+   * when it was read once: the server's store can have every commit of it. The upstream's branch
+   * may be named unlike the local one.
    */
   | {
       readonly kind: "pushed";
@@ -73,7 +73,7 @@ export type CheckoutFact =
     }
   /** HEAD has commits origin lacks (or the branch has no remote-tracking ref). */
   | { readonly kind: "unpushed"; readonly branch: string }
-  /** Git did not answer in time, or failed other than "no" (a shallow clone's history). */
+  /** Git did not answer in time, failed, or said "no" where a shallow boundary can hide history. */
   | { readonly kind: "unknown"; readonly branch: string | null };
 
 /** Joining an existing worktree: its base is fixed. */
@@ -278,8 +278,9 @@ export const reconcileOptions = (
 
 /**
  * The base the window's upstream gives the create route. A branch of the project's origin goes by
- * its name, which the store fetches and resolves on origin and records for landing; an upstream on
- * another remote goes by the commit it pointed at.
+ * its name, which the store fetches and resolves on origin and records for landing: origin moving
+ * on since the read only adds commits after the one that holds HEAD, unless someone rewrote the
+ * branch. An upstream on another remote goes by the commit HEAD was checked against.
  */
 const upstreamBase = (
   checkout: Extract<CheckoutFact, { readonly kind: "pushed" }>,
