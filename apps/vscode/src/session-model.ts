@@ -1,6 +1,4 @@
-import { canSteerSession } from "@mend/domain/workbench";
-
-import { rowCapability, type RowCapability } from "./session-capability.js";
+import { mayAnswer, rowCapability, type RowCapability } from "./session-capability.js";
 import { displaySession, type MemberName } from "./session-lines.js";
 import type { Project, ProjectDetail, Session, SessionStatus } from "./types.js";
 
@@ -78,11 +76,11 @@ export interface SessionView {
   /** `<word> · <fact>`, then `since` for a wait and `last seen` while Mend is unreachable. */
   readonly line: string;
   readonly wait: WaitFact | null;
-  /** Waiting, and she may answer it: her own, or shared control is on. */
+  /** Waiting for a reason Mend observed, and Answer lets her answer it (`mayAnswer`). */
   readonly needsYou: boolean;
   readonly sinceYouLastLooked: boolean;
   readonly live: boolean;
-  /** She started it (or Mend cannot say who did). */
+  /** She started it; false when Mend cannot say who she is. */
   readonly mine: boolean;
   /** When it settled or landed; null while it is live. */
   readonly settledAt: string | null;
@@ -182,19 +180,11 @@ const sessionView = (
 ): SessionView => {
   const { viewer, members } = input;
   const live = LIVE.has(session.status);
-  const mine = viewer === null || session.ownerUserId === null || session.ownerUserId === viewer;
-  const canAnswer =
-    viewer === null ||
-    canSteerSession(
-      {
-        ownerUserId: session.ownerUserId,
-        sharedControlEnabledAt:
-          session.sharedControlEnabledAt === null ? null : new Date(session.sharedControlEnabledAt),
-      },
-      viewer,
-    );
+  const mine = viewer !== null && session.ownerUserId === viewer;
   const waiting = session.status === "waiting";
   const wait = waiting ? (input.waits.get(session.id) ?? null) : null;
+  // Only a wait Mend observed needs her, and only one Answer lets her answer.
+  const canAnswer = wait !== null && mayAnswer(session, viewer, wait.via);
   const landed = live ? null : (input.landings.get(session.id) ?? null);
   // A landing of an earlier turn says nothing about a turn that settled after it.
   const landing =
@@ -208,10 +198,11 @@ const sessionView = (
       ? nameOf(landing.userId, members)
       : null;
   const summary = firstLine(session.summary);
+  const someoneElses = viewer !== null && session.ownerUserId !== viewer;
   const fact =
     landing !== null
       ? landedFact(landing)
-      : waiting && !canAnswer
+      : waiting && !canAnswer && someoneElses
         ? `${nameOf(session.ownerUserId, members)}'s session`
         : waiting
           ? (wait?.words ?? summary)
@@ -399,12 +390,13 @@ export interface Attention {
   readonly raised: ReadonlySet<string>;
 }
 
-const waitKey = (view: SessionView): string =>
-  `${view.session.id}:wait:${view.wait?.key ?? "unknown"}`;
+/** One key per wait, for as long as it lasts: what it is never toasts twice. */
+const waitKey = (view: SessionView): string | null =>
+  view.needsYou && view.wait !== null ? `${view.session.id}:wait:${view.wait.key}` : null;
 
 const needsKeys = (model: WindowModel | null): ReadonlySet<string> =>
   new Set(
-    model === null ? [] : [...model.sessions.values()].filter((view) => view.needsYou).map(waitKey),
+    model === null ? [] : [...model.sessions.values()].flatMap((view) => waitKey(view) ?? []),
   );
 
 /**
@@ -427,21 +419,19 @@ export const transitions = (
           ? "showing"
           : null;
   const after = [...next.sessions.values()];
-  const waits = after
-    .filter((view) => view.needsYou)
-    .flatMap((view): ReadonlyArray<Notification> => {
-      const key = waitKey(view);
-      if (before.has(key) || attention.raised.has(key)) return [];
-      return [
-        {
-          kind: "waits",
-          key,
-          sessionId: view.session.id,
-          text: [`${view.name} is waiting`, ...(view.fact === null ? [] : [view.fact])].join(" · "),
-          quiet: quietFor(view.session.id),
-        },
-      ];
-    });
+  const waits = after.flatMap((view): ReadonlyArray<Notification> => {
+    const key = waitKey(view);
+    if (key === null || before.has(key) || attention.raised.has(key)) return [];
+    return [
+      {
+        kind: "waits",
+        key,
+        sessionId: view.session.id,
+        text: [`${view.name} is waiting`, ...(view.fact === null ? [] : [view.fact])].join(" · "),
+        quiet: quietFor(view.session.id),
+      },
+    ];
+  });
   const finished = after.flatMap((view): ReadonlyArray<Notification> => {
     if (!view.mine || (view.word !== "completed" && view.word !== "failed")) return [];
     const earlier = prev?.sessions.get(view.session.id);

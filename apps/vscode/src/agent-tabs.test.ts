@@ -235,6 +235,30 @@ describe("focusing a session's agent", () => {
     );
   });
 
+  it("answers a conversation Ana shares from a workspace she launched, and not her terminal agent", async () => {
+    const anas = session({
+      ownerUserId: "ana",
+      workspaceLauncherUserId: "ana",
+      sharedControlEnabledAt: "2026-10-19T09:00:00.000Z",
+    });
+    const asked = world([detail([conversation], anas)]);
+    await asked.agents.focus("older", null);
+    expect(asked.tabs.map((tab) => tab.lines)).toEqual([["read-only · Ana's session"]]);
+    const terminal = world([detail([terminalAgent], anas)]);
+    await terminal.agents.focus("older", null);
+    expect(terminal.effects.attachPty).not.toHaveBeenCalled();
+  });
+
+  it("names the session a tab shows, and none for a tab it did not attach", async () => {
+    const { agents, tabs } = world([detail([terminalAgent])]);
+    await agents.focus("older", null);
+    const tab = tabs[0];
+    if (tab === undefined) throw new Error("no tab attached");
+    expect(agents.sessionOf(tab)).toBe("older");
+    agents.forget(tab);
+    expect(agents.sessionOf(tab)).toBeNull();
+  });
+
   it("forgets a tab she closed: it offers nothing more, and the next focus attaches anew", async () => {
     const { effects, agents, tabs } = world([detail([conversation])]);
     await agents.focus("older", WORKSPACE);

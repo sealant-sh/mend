@@ -174,7 +174,10 @@ describe("the morning after (story f)", () => {
 
   it("leaves out what settled before this VS Code first read the server", () => {
     const fresh = sessionModel(
-      input(overnight, { lastSeen: { baseline: "2026-10-19T08:00:00.000Z", sessions: {} } }),
+      input(overnight, {
+        lastSeen: { baseline: "2026-10-19T08:00:00.000Z", sessions: {} },
+        waits: new Map([["migrate-orders", waitFor(since0214)]]),
+      }),
     );
     expect(local(fresh).groups.map((group) => group.kind)).toEqual(["needs", "projects"]);
   });
@@ -294,14 +297,58 @@ describe("the badge (rule 15)", () => {
     });
   });
 
-  it("counts Ana's waiting session once she turns shared control on", () => {
-    const shared = session({
-      id: "anas",
-      status: "waiting",
-      ownerUserId: "ana",
-      sharedControlEnabledAt: YESTERDAY,
-    });
-    expect(sessionModel(input([shared])).badge).toBe(1);
+  const sharedByAna = session({
+    id: "anas",
+    status: "waiting",
+    ownerUserId: "ana",
+    sharedControlEnabledAt: YESTERDAY,
+  });
+
+  it("counts Ana's conversation waiting once she turns shared control on: Dana may respond", () => {
+    const request: WaitFact = {
+      key: "r1",
+      words: "run pnpm db:migrate?",
+      since: YESTERDAY,
+      via: "conversation",
+    };
+    const model = sessionModel(input([sharedByAna], { waits: new Map([["anas", request]]) }));
+    expect(model.badge).toBe(1);
+    expect(model.sessions.get("anas")?.needsYou).toBe(true);
+  });
+
+  it("does not count Ana's terminal agent waiting even with shared control on: only Ana types in it", () => {
+    const model = sessionModel(
+      input([sharedByAna], { waits: new Map([["anas", waitFor(YESTERDAY)]]) }),
+    );
+    expect(model.badge).toBe(0);
+    expect(model.sessions.get("anas")?.line).toBe("waiting · Ana's session");
+  });
+
+  it("does not count her own terminal agent in a workspace Ana launched: Answer attaches nothing there", () => {
+    const inAnas = session({ id: "mine", status: "waiting", workspaceLauncherUserId: "ana" });
+    const model = sessionModel(input([inAnas], { waits: new Map([["mine", waitFor(YESTERDAY)]]) }));
+    expect(model.badge).toBe(0);
+    expect(model.sessions.get("mine")?.line).toBe(
+      "waiting · claude needs your permission to use Bash",
+    );
+  });
+
+  it("counts nothing, and calls nothing hers, when Mend could not read who she is", () => {
+    const waiting = session({ id: "add-rate-limit", status: "waiting" });
+    const unknown = sessionModel(
+      input([waiting], { viewer: null, waits: new Map([["add-rate-limit", waitFor(YESTERDAY)]]) }),
+    );
+    expect(unknown.badge).toBe(0);
+    expect(unknown.sessions.get("add-rate-limit")?.mine).toBe(false);
+  });
+
+  it("counts a waiting session only once Mend observed why it waits", () => {
+    const waiting = session({ id: "add-rate-limit", status: "waiting" });
+    expect(sessionModel(input([waiting])).badge).toBe(0);
+    expect(
+      sessionModel(input([waiting], { waits: new Map([["add-rate-limit", waitFor(YESTERDAY)]]) }))
+        .badge,
+    ).toBe(1);
   });
 });
 
@@ -349,6 +396,24 @@ describe("toasts (rules 12-14)", () => {
     expect(raise(asRead(running), nextWait)).toHaveLength(1);
   });
 
+  it("raises nothing for a wait Mend has no fact for, then one toast once it reads why", () => {
+    const unknown = asRead(waiting);
+    expect(transitions(asRead(running), unknown, looking)).toEqual([]);
+    expect(toasts(transitions(unknown, waitingRead, looking))).toEqual([
+      "add-rate-limit is waiting · claude needs your permission to use Bash",
+    ]);
+  });
+
+  it("toasts no one for a finished session when Mend could not read who she is", () => {
+    const unknownViewer = (one: Session) => sessionModel(input([one], { viewer: null }));
+    const completed = session({
+      id: "add-rate-limit",
+      status: "completed",
+      settledAt: NOW.toISOString(),
+    });
+    expect(transitions(unknownViewer(running), unknownViewer(completed), looking)).toEqual([]);
+  });
+
   it("withdraws a wait answered elsewhere", () => {
     expect(transitions(waitingRead, asRead(running), looking)).toEqual([
       { kind: "withdrawn", key: `${waiting.id}:wait:${wait.key}`, sessionId: waiting.id },
@@ -384,7 +449,10 @@ describe("a session's workspace window (rule 10)", () => {
     session({ id: "old", status: "stopped" }),
   ];
   const model = sessionModel(
-    input(sessions, { window: { kind: "workspace", sessionId: "add-rate-limit" } }),
+    input(sessions, {
+      window: { kind: "workspace", sessionId: "add-rate-limit" },
+      waits: new Map([["migrate-orders", waitFor(YESTERDAY)]]),
+    }),
   );
 
   it("shows that session only, and one line for the others", () => {

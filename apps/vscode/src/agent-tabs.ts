@@ -1,4 +1,4 @@
-import { maySteer, ownsSession, rowCapability } from "./session-capability.js";
+import { mayAnswer, maySteer, ownsSession, rowCapability } from "./session-capability.js";
 import type { Session, SessionDetail } from "./types.js";
 import {
   agentTab,
@@ -114,6 +114,12 @@ export class AgentTabs {
     }
   }
 
+  /** The session whose agent this tab shows; null for any other tab. */
+  sessionOf(tab: AgentTabHandle): string | null {
+    for (const [sessionId, attached] of this.#attached) if (attached.tab === tab) return sessionId;
+    return null;
+  }
+
   /** The session whose conversation this tab shows, when Continue here is hers to click now. */
   continueOffered(tab: AgentTabHandle): string | null {
     for (const [sessionId, attached] of this.#attached) {
@@ -150,15 +156,20 @@ export class AgentTabs {
         effects.refused(notInWorkspaceLine(detail.session));
         return;
       }
-      // Only the workspace's launcher types into its agent; anyone else, and anyone Mend cannot
+      const want = agentTab(detail.session, detail.processes);
+      // Answer shows a conversation's tab to whoever may respond to it (`mayAnswer`). Otherwise
+      // only the workspace's launcher types into its agent; anyone else, and anyone Mend cannot
       // name, gets nothing here (Watch terminal is the read-only way in).
+      const answering =
+        workspaceId === null &&
+        want.kind === "conversation" &&
+        mayAnswer(detail.session, viewer, "conversation");
       const capability = rowCapability({ session: detail.session, viewer, members: [] });
-      if (capability.kind !== "open") {
+      if (!answering && capability.kind !== "open") {
         effects.refused(`${capability.why} · no agent attached`);
         return;
       }
       if (viewer !== null && !maySteer(detail.session, viewer)) return;
-      const want = agentTab(detail.session, detail.processes);
       const have = this.#attached.get(sessionId);
       if (
         have !== undefined &&
