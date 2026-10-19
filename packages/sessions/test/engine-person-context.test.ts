@@ -2525,6 +2525,7 @@ const STOP_HOOK = new AgentHookReport({
   event: "Stop",
   notificationType: null,
   tool: null,
+  providerSessionId: null,
 });
 
 /** A push to the project's own origin, as git asks the shim for it. */

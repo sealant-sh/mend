@@ -234,6 +234,14 @@ export const handleSessionRequest = async (
           message: "no terminal agent of this harness is live in this session",
         });
       }
+      if (outcome === "other-process") {
+        return respond(409, {
+          message: "the report names another process than this session's terminal agent",
+        });
+      }
+      if (outcome === "unidentified") {
+        return respond(400, { message: "the report names no harness session" });
+      }
       response.writeHead(204);
       response.end();
       return;

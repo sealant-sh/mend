@@ -28,13 +28,18 @@ import {
 
 const report = (
   event: string,
-  fields: { readonly harness?: HookedHarness; readonly tool?: string } = {},
+  fields: {
+    readonly harness?: HookedHarness;
+    readonly tool?: string;
+    readonly providerSessionId?: string | null;
+  } = {},
 ) =>
   new AgentHookReport({
     harness: fields.harness ?? "claude",
     event,
     notificationType: null,
     tool: fields.tool ?? null,
+    providerSessionId: fields.providerSessionId ?? null,
   });
 
 const hookOf = (sessionId: SessionId) => {
@@ -48,7 +53,20 @@ const agentOf = (world: World, sessionId: SessionId) =>
 
 const statusOf = (world: World, sessionId: SessionId) => world.sessions.get(sessionId)?.status;
 
-const withClaudeSession = <A, E>(
+/** A report from the session's own agent: it carries the harness session id the row records. */
+const own = (
+  world: World,
+  sessionId: SessionId,
+  event: string,
+  fields: { readonly harness?: HookedHarness; readonly tool?: string } = {},
+) =>
+  report(event, {
+    ...fields,
+    providerSessionId: agentOf(world, sessionId)?.providerSessionId ?? null,
+  });
+
+const withTerminalSession = <A, E>(
+  harness: HookedHarness,
   work: (world: World, sessionId: SessionId) => Effect.Effect<A, E, SessionEngine>,
   spawned: Array<ReadonlyArray<string>> = [],
 ) => {
@@ -60,13 +78,13 @@ const withClaudeSession = <A, E>(
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
           projectId: project.id,
-          harness: "claude",
+          harness,
           label: null,
           name: null,
           ownerUserId: "user-fixture",
           base: null,
         });
-        yield* engine.launch(session.id, ["claude"]);
+        yield* engine.launch(session.id, [harness]);
         expect(agentOf(world, session.id)?.kind).toBe("agent-pty");
         return yield* work(world, session.id);
       }),
@@ -74,12 +92,69 @@ const withClaudeSession = <A, E>(
   );
 };
 
+const withClaudeSession = <A, E>(
+  work: (world: World, sessionId: SessionId) => Effect.Effect<A, E, SessionEngine>,
+  spawned: Array<ReadonlyArray<string>> = [],
+) => withTerminalSession("claude", work, spawned);
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const ANOTHER_CONVERSATION = "7d1e6f0a-2b3c-4d5e-8f90-a1b2c3d4e5f6";
+
 describe("a terminal agent's hooks (G4)", () => {
-  it("starts a terminal claude in the shared layout with Mend's hooks and nothing else", async () => {
+  it("starts a terminal claude in the shared layout pinned to a session id, with Mend's hooks and nothing else", async () => {
     const spawned: Array<ReadonlyArray<string>> = [];
-    await withClaudeSession(() => Effect.void, spawned);
+    const recorded = await withClaudeSession(
+      (world, sessionId) => Effect.succeed(agentOf(world, sessionId)?.providerSessionId),
+      spawned,
+    );
     const claude = spawned.find((argv) => argv.includes("claude")) ?? [];
-    expect(claude.slice(-2)).toEqual(["--settings", JSON.stringify({ hooks: CLAUDE_AGENT_HOOKS })]);
+    const [flag, pinned, ...rest] = claude.slice(-4);
+    expect(flag).toBe("--session-id");
+    expect(pinned).toMatch(UUID);
+    expect(rest).toEqual(["--settings", JSON.stringify({ hooks: CLAUDE_AGENT_HOOKS })]);
+    expect(recorded).toBe(pinned);
+  });
+
+  it("changes nothing for a report from another claude in the same session", async () => {
+    await withClaudeSession((world, sessionId) =>
+      Effect.gen(function* () {
+        const hook = hookOf(sessionId);
+        expect(
+          yield* hook(
+            report("PermissionRequest", { tool: "Bash", providerSessionId: ANOTHER_CONVERSATION }),
+          ),
+        ).toBe("other-process");
+        expect(yield* hook(report("Stop", { providerSessionId: ANOTHER_CONVERSATION }))).toBe(
+          "other-process",
+        );
+        expect(statusOf(world, sessionId)).toBe("running");
+        expect(agentOf(world, sessionId)?.waiting).toBeNull();
+        expect(yield* hook(report("Stop"))).toBe("unidentified");
+        expect(statusOf(world, sessionId)).toBe("running");
+      }),
+    );
+  });
+
+  it("names a codex by its first session start, and nothing after it", async () => {
+    await withTerminalSession("codex", (world, sessionId) =>
+      Effect.gen(function* () {
+        const hook = hookOf(sessionId);
+        const THREAD = "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b";
+        const codex = (event: string, providerSessionId: string) =>
+          hook(report(event, { harness: "codex", providerSessionId }));
+        expect(agentOf(world, sessionId)?.providerSessionId).toBeNull();
+        expect(yield* codex("Stop", THREAD)).toBe("other-process");
+        expect(statusOf(world, sessionId)).toBe("running");
+
+        expect(yield* codex("SessionStart", THREAD)).toBe("ignored");
+        expect(agentOf(world, sessionId)?.providerSessionId).toBe(THREAD);
+        expect(yield* codex("SessionStart", ANOTHER_CONVERSATION)).toBe("other-process");
+        expect(agentOf(world, sessionId)?.providerSessionId).toBe(THREAD);
+
+        expect(yield* codex("Stop", THREAD)).toBe("applied");
+        expect(statusOf(world, sessionId)).toBe("waiting");
+      }),
+    );
   });
 
   it("reads waiting while claude asks, and running once the tool ran or a prompt arrived", async () => {
@@ -88,7 +163,9 @@ describe("a terminal agent's hooks (G4)", () => {
         const hook = hookOf(sessionId);
         expect(statusOf(world, sessionId)).toBe("running");
 
-        expect(yield* hook(report("PermissionRequest", { tool: "Bash" }))).toBe("applied");
+        expect(yield* hook(own(world, sessionId, "PermissionRequest", { tool: "Bash" }))).toBe(
+          "applied",
+        );
         expect(statusOf(world, sessionId)).toBe("waiting");
         expect(agentWaitLine(agentOf(world, sessionId))).toBe(
           "waiting · claude needs your permission to use Bash",
@@ -100,17 +177,18 @@ describe("a terminal agent's hooks (G4)", () => {
               event: "Notification",
               notificationType: "permission_prompt",
               tool: null,
+              providerSessionId: agentOf(world, sessionId)?.providerSessionId ?? null,
             }),
           ),
         ).toBe("unchanged");
 
-        expect(yield* hook(report("PostToolUse", { tool: "Bash" }))).toBe("applied");
+        expect(yield* hook(own(world, sessionId, "PostToolUse", { tool: "Bash" }))).toBe("applied");
         expect(statusOf(world, sessionId)).toBe("running");
         expect(agentOf(world, sessionId)?.waiting).toBeNull();
 
-        expect(yield* hook(report("Stop"))).toBe("applied");
+        expect(yield* hook(own(world, sessionId, "Stop"))).toBe("applied");
         expect(agentWaitLine(agentOf(world, sessionId))).toBe("waiting · claude finished its turn");
-        expect(yield* hook(report("UserPromptSubmit"))).toBe("applied");
+        expect(yield* hook(own(world, sessionId, "UserPromptSubmit"))).toBe("applied");
         expect(statusOf(world, sessionId)).toBe("running");
       }),
     );
@@ -120,7 +198,7 @@ describe("a terminal agent's hooks (G4)", () => {
     await withClaudeSession((world, sessionId) =>
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
-        yield* hookOf(sessionId)(report("PermissionRequest", { tool: "Bash" }));
+        yield* hookOf(sessionId)(own(world, sessionId, "PermissionRequest", { tool: "Bash" }));
         yield* engine.openShell(sessionId);
         expect(statusOf(world, sessionId)).toBe("waiting");
         expect(agentOf(world, sessionId)?.waiting?.tool).toBe("Bash");
@@ -132,7 +210,7 @@ describe("a terminal agent's hooks (G4)", () => {
     await withClaudeSession((world, sessionId) =>
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
-        yield* hookOf(sessionId)(report("PermissionRequest", { tool: "Bash" }));
+        yield* hookOf(sessionId)(own(world, sessionId, "PermissionRequest", { tool: "Bash" }));
         const shell = yield* engine.openShell(sessionId);
         yield* engine.personTyped(shell.id);
         expect(statusOf(world, sessionId)).toBe("waiting");
@@ -150,7 +228,7 @@ describe("a terminal agent's hooks (G4)", () => {
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
         const hook = hookOf(sessionId);
-        yield* hook(report("PermissionRequest", { tool: "Bash" }));
+        yield* hook(own(world, sessionId, "PermissionRequest", { tool: "Bash" }));
         yield* engine.stop(sessionId);
         const ended = agentOf(world, sessionId);
         expect(ended?.exitedAt).not.toBeNull();
@@ -158,7 +236,9 @@ describe("a terminal agent's hooks (G4)", () => {
         const statusAfterStop = statusOf(world, sessionId);
         expect(statusAfterStop).not.toBe("waiting");
 
-        expect(yield* hook(report("PermissionRequest", { tool: "Bash" }))).toBe("no-live-agent");
+        expect(yield* hook(own(world, sessionId, "PermissionRequest", { tool: "Bash" }))).toBe(
+          "no-live-agent",
+        );
         expect(statusOf(world, sessionId)).toBe(statusAfterStop);
         expect(agentOf(world, sessionId)?.waiting).toBeNull();
       }),
@@ -169,13 +249,17 @@ describe("a terminal agent's hooks (G4)", () => {
     await withClaudeSession((world, sessionId) =>
       Effect.gen(function* () {
         const hook = hookOf(sessionId);
-        expect(yield* hook(report("PermissionRequest", { harness: "codex", tool: "shell" }))).toBe(
-          "no-live-agent",
-        );
+        expect(
+          yield* hook(
+            own(world, sessionId, "PermissionRequest", { harness: "codex", tool: "shell" }),
+          ),
+        ).toBe("no-live-agent");
         const agent = agentOf(world, sessionId);
         if (agent === null) throw new Error("no agent");
         world.processes.set(agent.id, new SessionProcess({ ...agent, kind: "agent-protocol" }));
-        expect(yield* hook(report("PermissionRequest", { tool: "Bash" }))).toBe("no-live-agent");
+        expect(yield* hook(own(world, sessionId, "PermissionRequest", { tool: "Bash" }))).toBe(
+          "no-live-agent",
+        );
         expect(statusOf(world, sessionId)).toBe("running");
         expect(agentOf(world, sessionId)?.waiting).toBeNull();
       }),
@@ -185,7 +269,9 @@ describe("a terminal agent's hooks (G4)", () => {
   it("ignores an event outside the table without touching the session", async () => {
     await withClaudeSession((world, sessionId) =>
       Effect.gen(function* () {
-        expect(yield* hookOf(sessionId)(report("PreToolUse", { tool: "Bash" }))).toBe("ignored");
+        expect(
+          yield* hookOf(sessionId)(own(world, sessionId, "PreToolUse", { tool: "Bash" })),
+        ).toBe("ignored");
         expect(statusOf(world, sessionId)).toBe("running");
       }),
     );

@@ -121,7 +121,8 @@ import {
   composeProtocolArgv,
   agentProcessesOf,
   agentSignalOf,
-  liveTerminalAgentOf,
+  agentHookTarget,
+  liveTerminalAgentsOf,
   nextAgentWait,
   currentAgentProcess,
   foldSessionLiveness,
@@ -309,7 +310,7 @@ import {
   containerTokenRefused,
   pickupOnly,
 } from "./channel-identity.ts";
-import { CLAUDE_AGENT_HOOKS } from "./claude-settings.ts";
+import { CLAUDE_AGENT_HOOKS, withClaudeSessionId } from "./claude-settings.ts";
 import {
   CARRIED_INCOMING,
   carryConversationsExec,
@@ -579,6 +580,7 @@ import {
   SESSION_SOCKET_MOUNT_PATH,
   SessionSocketHost,
   workspaceScriptStaging,
+  type AgentHookOutcome,
   type SessionSocketApi,
 } from "./session-socket.ts";
 import { loadShellProfile, shellProfileApplies } from "./shell-profile.ts";
@@ -17620,9 +17622,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         }
 
+        const memoryArgv = codexMemoryOn
+          ? shapedArgv
+          : withCodexMemoryOff(shapedArgv, { join: false });
+        const claudePin =
+          protocolStart === null
+            ? withClaudeSessionId(memoryArgv, crypto.randomUUID())
+            : { argv: memoryArgv, providerSessionId: null };
         const memoryShapedArgv = yield* withClaudeSettings(
           session,
-          codexMemoryOn ? shapedArgv : withCodexMemoryOff(shapedArgv, { join: false }),
+          claudePin.argv,
           startAs === null ? null : ownerUserId,
           protocolStart === null,
         );
@@ -17776,14 +17785,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             launchCorrelationId: correlationId,
             kind: protocolStart === null ? "agent-pty" : "agent-protocol",
             harness: interactiveShell ? "shell" : session.harness,
-            // Known up front only for a native resume of the same harness; the
-            // harvest fills it when the process ends.
+            // Known up front for a native resume of the same harness and for a Claude Mend
+            // pinned; the harvest, or a Codex's first SessionStart, fills it otherwise.
             providerSessionId: interactiveShell
               ? null
               : (nativeImport?.providerSessionId ??
                 (manifest !== null && manifest.harness === session.harness
                   ? manifest.providerSessionId
-                  : (protocolProviderSessionId ?? protocolResumeId))),
+                  : (protocolProviderSessionId ?? protocolResumeId)) ??
+                (conversation === null || inConversation === null
+                  ? claudePin.providerSessionId
+                  : null)),
             protocolOptions:
               protocolStart === null
                 ? null
@@ -19414,9 +19426,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const codexMemoryOn =
             personStart !== null ||
             (ownHome && (yield* withholdCodexThreads(session, workspace, shapedArgv, [])));
+          const memoryArgv = codexMemoryOn
+            ? shapedArgv
+            : withCodexMemoryOff(shapedArgv, { join: !ownHome });
+          const claudePin =
+            protocolStart === null
+              ? withClaudeSessionId(memoryArgv, crypto.randomUUID())
+              : { argv: memoryArgv, providerSessionId: null };
           const memoryShapedArgv = yield* withClaudeSettings(
             session,
-            codexMemoryOn ? shapedArgv : withCodexMemoryOff(shapedArgv, { join: !ownHome }),
+            claudePin.argv,
             personStart === null ? null : sender,
             protocolStart === null,
           );
@@ -19585,7 +19604,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ? null
                 : (nativeImport?.providerSessionId ??
                   protocolProviderSessionId ??
-                  providerSessionId),
+                  providerSessionId ??
+                  (conversation === null || inConversation === null
+                    ? claudePin.providerSessionId
+                    : null)),
               protocolOptions:
                 protocolStart === null
                   ? null
@@ -21682,25 +21704,39 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const agentHook = Effect.fn("SessionEngine.agentHook")(function* (
         sessionId: SessionId,
         report: AgentHookReport,
-      ) {
-        const signal = agentSignalOf(report);
-        if (signal === null) return "ignored" as const;
-        const agent = liveTerminalAgentOf(yield* processes.listForSession(sessionId));
-        // Codex runs Mend's system hooks in every Codex, a hand-run one in a Claude session's shell too.
-        if (agent === null || agent.harness !== report.harness) {
-          return "no-live-agent" as const;
+      ): Effect.fn.Return<AgentHookOutcome> {
+        if (report.providerSessionId === null) return "unidentified";
+        const live = liveTerminalAgentsOf(
+          yield* processes.listForSession(sessionId),
+          report.harness,
+        );
+        if (live.length === 0) return "no-live-agent";
+        // Codex runs Mend's system hooks in every Codex in the workspace: a hand-run one, or a
+        // `codex exec` the agent starts, reports with its own session id.
+        const target = agentHookTarget(report, live);
+        if (target._tag === "unidentified" || target._tag === "other-process") return target._tag;
+        if (
+          target._tag === "claim" &&
+          !(yield* processes.claimProviderSessionId(
+            target.process.id,
+            sessionId,
+            target.providerSessionId,
+          ))
+        ) {
+          return "other-process";
         }
+        const agent = target.process;
+        const signal = agentSignalOf(report);
+        if (signal === null) return "ignored";
         const next = nextAgentWait(
           agent.waiting,
           signal,
           new Date(clock.currentTimeMillisUnsafe()),
         );
-        if (next === agent.waiting) return "unchanged" as const;
-        if (!(yield* processes.setWaiting(agent.id, sessionId, next))) {
-          return "no-live-agent" as const;
-        }
+        if (next === agent.waiting) return "unchanged";
+        if (!(yield* processes.setWaiting(agent.id, sessionId, next))) return "no-live-agent";
         yield* reconcileSession(sessionId, { sweep: false }).pipe(Effect.orDie);
-        return "applied" as const;
+        return "applied";
       });
 
       const personTyped = Effect.fn("SessionEngine.personTyped")(function* (

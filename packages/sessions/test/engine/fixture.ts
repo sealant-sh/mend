@@ -1543,6 +1543,24 @@ export const sessionProcessesLayer = (world: World) => {
       }),
     listRecentServices: () =>
       Effect.succeed([...world.processes.values()].filter((process) => process.kind === "service")),
+    claimProviderSessionId: (id, sessionId, providerSessionId) =>
+      Effect.sync(() => {
+        const process = world.processes.get(id);
+        if (
+          process === undefined ||
+          process.sessionId !== sessionId ||
+          process.kind !== "agent-pty" ||
+          process.providerSessionId !== null ||
+          process.exitedAt !== null
+        ) {
+          return false;
+        }
+        world.processes.set(
+          id,
+          new SessionProcess({ ...process, providerSessionId, updatedAt: world.clock.now() }),
+        );
+        return true;
+      }),
     setWaiting: (id, sessionId, waiting) =>
       Effect.sync(() => {
         const process = world.processes.get(id);

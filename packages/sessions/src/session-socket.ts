@@ -93,8 +93,8 @@ export interface SessionSocketApi {
   readonly land: () => Effect.Effect<WorkspaceLandOutcome>;
   /**
    * `mend hook <claude|codex>`: the session's terminal agent's own hook says it waits for the
-   * person, or goes on. The newest live agent-pty of this session takes the fact; nothing else
-   * does.
+   * person, or goes on. Only the live agent-pty the report names by its harness session id takes
+   * the fact (`agentHookTarget`).
    */
   readonly agentHook: (report: AgentHookReport) => Effect.Effect<AgentHookOutcome>;
   /**
@@ -172,9 +172,16 @@ export interface SessionSocketApi {
 
 /**
  * `no-live-agent`: this session has no live terminal agent of the report's harness, or it ended
- * while the report was read.
+ * while the report was read. `other-process`: the report names another process of that harness.
+ * `unidentified`: the report carries no harness session id.
  */
-export type AgentHookOutcome = "applied" | "unchanged" | "ignored" | "no-live-agent";
+export type AgentHookOutcome =
+  | "applied"
+  | "unchanged"
+  | "ignored"
+  | "no-live-agent"
+  | "other-process"
+  | "unidentified";
 
 /** What a redeemed pickup answers: each file's path and its bytes in base64. */
 export interface PickupAnswer {
@@ -324,7 +331,7 @@ const hook = (harness) => {
       res.resume();
     });
     req.on("error", done);
-    req.end(JSON.stringify({ harness, event, notificationType: field("notification_type"), tool: field("tool_name") }));
+    req.end(JSON.stringify({ harness, event, notificationType: field("notification_type"), tool: field("tool_name"), providerSessionId: field("session_id") }));
   });
 };
 

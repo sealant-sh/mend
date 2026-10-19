@@ -754,7 +754,7 @@ describe("SessionChannelNetworkHost", () => {
     );
   });
 
-  it("mend hook forwards four fields of the agent's hook, prints nothing and exits 0 on every path", async () => {
+  it("mend hook forwards five fields of the agent's hook, prints nothing and exits 0 on every path", async () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -802,7 +802,13 @@ describe("SessionChannelNetworkHost", () => {
           );
           expect(asked).toEqual(silent);
           expect(seen).toEqual([
-            { harness: "claude", event: "PermissionRequest", notificationType: null, tool: "Bash" },
+            {
+              harness: "claude",
+              event: "PermissionRequest",
+              notificationType: null,
+              tool: "Bash",
+              providerSessionId: "abc123",
+            },
           ]);
 
           outcome = "no-live-agent";
@@ -829,17 +835,33 @@ describe("SessionChannelNetworkHost", () => {
             }),
           );
           expect(refused.status).toBe(400);
+          const codexStop = {
+            harness: "codex",
+            event: "Stop",
+            notificationType: null,
+            tool: null,
+            providerSessionId: "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b",
+          };
+          const post = (body: unknown) =>
+            Effect.promise(() => call(address, "POST", "/session/agent-hook", auth, body));
           outcome = "unchanged";
-          const taken = yield* Effect.promise(() =>
-            call(address, "POST", "/session/agent-hook", auth, {
-              harness: "codex",
-              event: "Stop",
-              notificationType: null,
-              tool: null,
-            }),
-          );
-          expect(taken).toEqual({ status: 204, json: null });
+          expect(yield* post(codexStop)).toEqual({ status: 204, json: null });
           expect(seen).toHaveLength(3);
+
+          outcome = "other-process";
+          const other = yield* post(codexStop);
+          expect(other.status).toBe(409);
+          expect(JSON.stringify(other.json)).toContain("another process");
+          outcome = "no-live-agent";
+          const none = yield* post(codexStop);
+          expect(none.status).toBe(409);
+          expect(JSON.stringify(none.json)).toContain("no terminal agent");
+          outcome = "unidentified";
+          expect((yield* post({ ...codexStop, providerSessionId: null })).status).toBe(400);
+          expect(seen).toHaveLength(6);
+          const { providerSessionId: _dropped, ...unnamed } = codexStop;
+          expect((yield* post(unnamed)).status).toBe(400);
+          expect(seen).toHaveLength(6);
 
           const usage = yield* Effect.promise(() =>
             runScript(path.join(dir, "bin", "mend"), ["publish"], env),
