@@ -69,6 +69,20 @@ export const sessionIdOfArgv = (argv) => {
   return at === -1 ? null : (argv[at + 1] ?? null);
 };
 
+// A session's launch reads the claude account named `default` (the one `mend connect` writes).
+// Core stores a fresh setup token `active` without asking Anthropic, and marks it `invalid` the
+// first time inference is refused on it, so the fake reads `active` only until a pass spends it.
+// An archived row can sit beside a live one under the same name, so a live status wins.
+export const claudeLoginOf = (accounts) => {
+  const mine = accounts.filter(
+    (account) => account.provider === "claude" && account.name === "default",
+  );
+  if (mine.length === 0) return "missing";
+  const live = mine.filter((account) => account.status !== "archived");
+  if (live.some((account) => account.status === "active")) return "active";
+  return (live[0] ?? mine[0]).status;
+};
+
 export const claudeHookCheck = (settings) => {
   const common = {
     session_id: "check",
@@ -314,14 +328,13 @@ export default async (h) => {
   let agentTerminal = null;
   try {
     await step(
-      "the account has a Claude login: the skill's fake setup token, connected now if none is",
+      "the account's Claude login reads active: the skill's fake setup token, connected now if it reads anything else",
       async () => {
-        const before = (await api("/me/sealant")).accounts.filter(
-          (account) => account.provider === "claude",
-        );
-        if (before.length > 0) {
+        const login = async () => claudeLoginOf((await api("/me/sealant")).accounts);
+        const before = await login();
+        if (before === "active") {
           return {
-            observed: `claude already connected (${before.map((a) => a.status).join(", ")}) · nothing sent`,
+            observed: "GET /me/sealant: claude default reads active · nothing sent",
             connected: false,
           };
         }
@@ -333,12 +346,13 @@ export default async (h) => {
           fail(
             `mend connect claude --from-stdin exited ${ran.status}: ${scrub(ran.stderr).trim().split("\n").slice(-3).join(" / ")}`,
           );
-        const after = (await api("/me/sealant")).accounts.filter(
-          (account) => account.provider === "claude",
-        );
-        if (after.length === 0) fail("after mend connect claude, GET /me/sealant lists no claude");
+        const after = await login();
+        if (after !== "active")
+          fail(
+            `claude default read ${before}; after mend connect claude with the fake setup token, GET /me/sealant reads it ${after}, not active`,
+          );
         return {
-          observed: `connected the fake Claude setup token · GET /me/sealant lists claude (${after.map((a) => a.status).join(", ")})`,
+          observed: `claude default read ${before} · connected the fake Claude setup token · GET /me/sealant reads it active`,
           connected: true,
         };
       },
