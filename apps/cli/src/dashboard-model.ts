@@ -821,17 +821,18 @@ export const markServicesStopped = (data: Workbench, sessionId: string): Workben
 const AGENT_WORKING: ReadonlySet<string> = new Set(["starting", "running", "waiting"]);
 
 /**
- * Whether the session's agent is still there, so ⇧D must not remove the session from under it. A
- * terminal agent that finished its turn reads `idle` and stays live; an `idle` whose agent ended
- * (a shell or Services hold the workspace) may go.
+ * What keeps ⇧D from removing the session from under its agent, in observed words; null when it
+ * may go. A live agent in an `idle` session finished its turn and sits at its prompt; an `idle`
+ * whose agent ended (a shell or Services hold the workspace) may go.
  */
-export const agentStillThere = (item: SessionItem): boolean => {
+export const agentStillThere = (item: SessionItem): string | null => {
   const agent = item.annotation?.currentAgent ?? null;
   const agentLive =
     agent === null
       ? item.processes.some((process) => process.kind !== "shell" && process.exitedAt === null)
       : agent.exitedAt === null;
-  return AGENT_WORKING.has(item.session.status) || agentLive;
+  if (AGENT_WORKING.has(item.session.status)) return "the agent is still working";
+  return agentLive ? "the agent is at its prompt" : null;
 };
 
 /**

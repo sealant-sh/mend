@@ -1694,8 +1694,9 @@ export const App = ({
     }
     const session = selectedSession;
     if (selectedItem === null || session === null || isPendingId(session.id)) return;
-    if (agentStillThere(selectedItem)) {
-      say(`the agent is still working · stop it first (⇧K) · ${sessionDisplayName(session)}`);
+    const agentThere = agentStillThere(selectedItem);
+    if (agentThere !== null) {
+      say(`${agentThere} · stop it first (⇧K) · ${sessionDisplayName(session)}`);
       return;
     }
     if (removeArmed === session.id && confirmationVisible("press ⇧D again")) {

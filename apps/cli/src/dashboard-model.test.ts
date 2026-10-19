@@ -1219,9 +1219,9 @@ describe("dashboard status stories", () => {
     services: [],
     processes: [],
   });
-  it("keeps ⇧D off an idle session whose agent finished its turn, and lets an ended agent's go", () => {
+  it("keeps ⇧D off an idle session whose agent is at its prompt, and lets an ended agent's go", () => {
     const finished = itemOf({ id: "s", status: "idle" }, minutesAgo(5));
-    expect(agentStillThere(finished)).toBe(true);
+    expect(agentStillThere(finished)).toBe("the agent is at its prompt");
     const annotation = finished.annotation;
     if (annotation === undefined) throw new Error("no annotation");
     const ended = {
@@ -1231,8 +1231,8 @@ describe("dashboard status stories", () => {
         currentAgent: { ...annotation.currentAgent, status: "exited", exitedAt: minutesAgo(1) },
       },
     };
-    expect(agentStillThere(ended)).toBe(false);
-    expect(agentStillThere(itemOf({ id: "s", status: "idle" }))).toBe(false);
+    expect(agentStillThere(ended)).toBeNull();
+    expect(agentStillThere(itemOf({ id: "s", status: "idle" }))).toBeNull();
     const unannotated = itemOf({ id: "s", status: "idle" });
     const liveRow = {
       id: "agent",
@@ -1242,8 +1242,15 @@ describe("dashboard status stories", () => {
       status: "running",
       exitedAt: null,
     };
-    expect(agentStillThere({ ...unannotated, processes: [liveRow] })).toBe(true);
-    expect(agentStillThere(itemOf({ id: "s", status: "waiting" }))).toBe(true);
+    expect(agentStillThere({ ...unannotated, processes: [liveRow] })).toBe(
+      "the agent is at its prompt",
+    );
+    expect(agentStillThere(itemOf({ id: "s", status: "waiting" }))).toBe(
+      "the agent is still working",
+    );
+    expect(agentStillThere(itemOf({ id: "s", status: "running" }, minutesAgo(5)))).toBe(
+      "the agent is still working",
+    );
   });
   const groupOf = (statuses: ReadonlyArray<string>) => {
     const detail: ProjectDetailDto = {
