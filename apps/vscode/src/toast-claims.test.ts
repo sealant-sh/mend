@@ -4,7 +4,8 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { sessionModel, type WindowModel } from "./session-model.js";
+import type { RetryOffer } from "./launches.js";
+import { sessionModel, type LaunchAttempt, type WindowModel } from "./session-model.js";
 import { Notifier } from "./session-surfaces.js";
 import { fake, window } from "./test-vscode.js";
 import { TOAST_CLAIM_TTL_MS, ToastClaims } from "./toast-claims.js";
@@ -103,7 +104,10 @@ const waiting: Session = {
   workspaceLauncherUserId: null,
 };
 
-const read = (session: Session): WindowModel =>
+const read = (
+  session: Session,
+  launches: ReadonlyMap<string, LaunchAttempt> = new Map(),
+): WindowModel =>
   sessionModel({
     projects: [],
     details: [
@@ -132,7 +136,7 @@ const read = (session: Session): WindowModel =>
       ],
     ]),
     landings: new Map(),
-    launches: new Map(),
+    launches,
     lastSeen: { baseline: waiting.createdAt, sessions: {} },
     connection: { state: "connecting" },
     window: { kind: "local" },
@@ -246,5 +250,70 @@ describe("what changed while a window claimed its toast", () => {
     opened.letGo();
     await vi.waitFor(() => expect(opened.release).toHaveBeenCalledTimes(1));
     expect(window.showInformationMessage).not.toHaveBeenCalled();
+  });
+});
+
+const offering = (offer: RetryOffer) => ({
+  offer: vi.fn(async () => offer),
+  relaunch: vi.fn(async () => undefined),
+});
+
+describe("a launch she sent that the server refused (flow 3)", () => {
+  const starting: Session = { ...waiting, status: "starting" };
+  const refusedAt = iso(Date.now() - 1_000);
+  const refusal = { line: "launch refused · Claude is not connected", at: refusedAt };
+  const refused = () => ({
+    prev: read(starting, new Map([["s", { n: 1, after: null, refusal: null }]])),
+    next: read(starting, new Map([["s", { n: 1, after: null, refusal }]])),
+  });
+
+  it("claims its toast by when it was refused, and offers Retry while its row is on screen", async () => {
+    fake.reset();
+    const shared = await directory();
+    const change = refused();
+    const store = { showing: () => new Set(["s"]), model: () => change.next, error: () => null };
+    new Notifier(
+      store,
+      new ToastClaims(shared),
+      offering({ kind: "retry", read: starting }),
+    ).changed(change);
+    await vi.waitFor(() => expect(window.showErrorMessage).toHaveBeenCalledTimes(1));
+    expect(window.showErrorMessage).toHaveBeenCalledWith(
+      "add-rate-limit · launch refused · Claude is not connected",
+      "Retry",
+    );
+    expect(await readdir(shared)).toEqual([
+      `${Date.parse(refusedAt)}.${encodeURIComponent("s:launchFailed:1")}`,
+    ]);
+  });
+
+  it("gives its claim back and shows nothing when the read before Retry says it moved", async () => {
+    fake.reset();
+    const shared = await directory();
+    const change = refused();
+    const store = { showing: () => new Set<string>(), model: () => change.next, error: () => null };
+    const moved = offering({ kind: "moved" });
+    new Notifier(store, new ToastClaims(shared), moved).changed(change);
+    await vi.waitFor(() => expect(moved.offer).toHaveBeenCalledTimes(1));
+    await vi.waitFor(async () => expect(await readdir(shared)).toEqual([]));
+    expect(window.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  it("gives its claim back and reads nothing once she looked away while it claimed", async () => {
+    fake.reset();
+    const shared = await directory();
+    const change = refused();
+    const store = { showing: () => new Set<string>(), model: () => change.next, error: () => null };
+    const held = heldClaims(new ToastClaims(shared));
+    const retry = offering({ kind: "retry", read: starting });
+    new Notifier(store, held.claims, retry).changed(change);
+    await vi.waitFor(async () => expect(await readdir(shared)).toHaveLength(1));
+    fake.focus(false);
+    held.letGo();
+    await vi.waitFor(() => expect(held.release).toHaveBeenCalledTimes(1));
+    await vi.waitFor(async () => expect(await readdir(shared)).toEqual([]));
+    expect(retry.offer).not.toHaveBeenCalled();
+    expect(window.showErrorMessage).not.toHaveBeenCalled();
+    fake.focus(true);
   });
 });
