@@ -16,7 +16,12 @@ export type StoredCredential =
       /** The account the sign-in approved, for the Accounts menu while Mend cannot be read. */
       readonly email?: string;
     }
-  | { readonly kind: "none"; readonly url: string };
+  | { readonly kind: "none"; readonly url: string }
+  /**
+   * Mend refused the CLI's token there: that token is not sent again, and the CLI's sign-in applies
+   * once it holds another (`mend login`). Kept by its sha256, never the token itself.
+   */
+  | { readonly kind: "cliRefused"; readonly url: string; readonly tokenHash: string };
 
 /** The CLI's saved sign-in, when there is one. */
 export interface CliCredential {
@@ -24,7 +29,15 @@ export interface CliCredential {
   readonly token: string | null;
 }
 
+import { createHash } from "node:crypto";
+
 import { normalizeServerUrl } from "./sign-in.js";
+
+const fingerprint = (token: string): string => createHash("sha256").update(token).digest("hex");
+
+/** Whether `token`, the CLI's, is the one Mend refused at the entry's server. */
+export const cliTokenRefused = (stored: StoredCredential | null, token: string): boolean =>
+  stored?.kind === "cliRefused" && stored.tokenHash === fingerprint(token);
 
 /**
  * The one form a server URL is kept and compared in: what Connect writes (lowercase scheme and
@@ -52,7 +65,11 @@ const credentialOf = (value: unknown): StoredCredential | null => {
       ...(typeof email === "string" ? { email } : {}),
     };
   }
-  return token === null ? { kind: "none", url } : null;
+  if (token !== null) return null;
+  const refused = value["refusedCliToken"];
+  return typeof refused === "string"
+    ? { kind: "cliRefused", url, tokenHash: refused }
+    : { kind: "none", url };
 };
 
 /** What the editor keeps, one entry per server URL. */
@@ -86,16 +103,21 @@ export const parseCredentialStore = (value: string | undefined): CredentialStore
 
 export const serializeCredentialStore = (store: CredentialStore): string =>
   JSON.stringify({
-    entries: [...store.values()].map((credential) =>
-      credential.kind === "token"
-        ? {
+    entries: [...store.values()].map((credential) => {
+      switch (credential.kind) {
+        case "token":
+          return {
             url: credential.url,
             token: credential.token,
             deviceId: credential.deviceId,
             ...(credential.email === undefined ? {} : { email: credential.email }),
-          }
-        : { url: credential.url, token: null },
-    ),
+          };
+        case "none":
+          return { url: credential.url, token: null };
+        case "cliRefused":
+          return { url: credential.url, token: null, refusedCliToken: credential.tokenHash };
+      }
+    }),
   });
 
 /** The store with no entry of its own for `url`: the CLI's sign-in for it applies again. */
@@ -125,10 +147,11 @@ export const tokenFor = (
   cli: CliCredential | null,
 ): string | null => {
   const server = canonicalServerUrl(url);
-  if (stored !== null && canonicalServerUrl(stored.url) === server) {
-    return stored.kind === "token" ? stored.token : null;
-  }
-  return cli !== null && canonicalServerUrl(cli.url) === server ? cli.token : null;
+  const own = stored !== null && canonicalServerUrl(stored.url) === server ? stored : null;
+  if (own?.kind === "token") return own.token;
+  if (own?.kind === "none") return null;
+  const token = cli !== null && canonicalServerUrl(cli.url) === server ? cli.token : null;
+  return token === null || cliTokenRefused(own, token) ? null : token;
 };
 
 /**
@@ -151,18 +174,25 @@ export const signOutOf = (
 };
 
 /**
- * Mend refused `token` at `url` (401): the store with "no token" there, so every window and the
- * Accounts menu drop the account together. Null when the editor no longer sends that token there
- * (a sign-in or a sign-out since), so a late refusal never undoes a newer sign-in.
+ * Mend refused `token` at `url` (401), so every window and the Accounts menu drop the account
+ * together: the editor's own sign-in there ends ("no token"), or, when the token was the CLI's,
+ * that token is not sent again. Null when the editor no longer sends that token there (a sign-in
+ * or a sign-out since), so a late refusal never undoes a newer sign-in.
  */
 export const refusedIn = (
   store: CredentialStore,
   refused: { readonly url: string; readonly token: string },
   cli: CliCredential | null,
-): CredentialStore | null =>
-  tokenFor(refused.url, credentialFor(store, refused.url), cli) === refused.token
-    ? withCredential(store, { kind: "none", url: refused.url })
-    : null;
+): CredentialStore | null => {
+  const own = credentialFor(store, refused.url);
+  if (tokenFor(refused.url, own, cli) !== refused.token) return null;
+  return withCredential(
+    store,
+    own?.kind === "token"
+      ? { kind: "none", url: refused.url }
+      : { kind: "cliRefused", url: refused.url, tokenHash: fingerprint(refused.token) },
+  );
+};
 
 /** What Mend answered when asked to revoke a device (`DELETE /me/devices/:id`). */
 export type RevokeOutcome =

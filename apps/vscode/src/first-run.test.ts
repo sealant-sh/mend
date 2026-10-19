@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { refusedIn } from "./credentials.js";
 import {
   accountEmail,
   connectionOf,
@@ -144,6 +145,18 @@ describe("a machine whose Mend CLI is signed in (h1 variant)", () => {
     expect(connectionOf({ configured: MINI, own: { kind: "none", url: MINI }, cli })).toMatchObject(
       { kind: "notConnected" },
     );
+  });
+
+  it("after Mend refused the CLI's token, offers nothing on it, and connects on the CLI's next one", () => {
+    const refused = refusedIn(new Map(), { url: MINI, token: cli.token }, cli)?.get(MINI) ?? null;
+    expect(connectionOf({ configured: MINI, own: refused, cli })).toEqual({
+      kind: "notConnected",
+      prefill: MINI,
+      cli: null,
+    });
+    expect(
+      connectionOf({ configured: MINI, own: refused, cli: { url: MINI, token: "mdt_cli_2" } }),
+    ).toEqual({ kind: "connected", url: MINI, token: "mdt_cli_2", source: { kind: "cli" } });
   });
 
   it("names the account by the members entry of the signed-in user", () => {

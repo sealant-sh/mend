@@ -1,4 +1,9 @@
-import { canonicalServerUrl, type CliCredential, type StoredCredential } from "./credentials.js";
+import {
+  canonicalServerUrl,
+  cliTokenRefused,
+  type CliCredential,
+  type StoredCredential,
+} from "./credentials.js";
 import { redactOrigin } from "./project-match.js";
 
 /**
@@ -57,10 +62,12 @@ export const connectionOf = (input: {
       source: { kind: "extension", deviceId: own.deviceId },
     };
   }
-  if (own === null && cli !== null && cli.url === url) {
-    return { kind: "connected", url, token: cli.token, source: { kind: "cli" } };
+  // A CLI token Mend refused here is neither sent nor offered; the next one the CLI holds is.
+  const usable = cli !== null && !cliTokenRefused(own, cli.token) ? cli : null;
+  if (own?.kind !== "none" && usable !== null && usable.url === url) {
+    return { kind: "connected", url, token: usable.token, source: { kind: "cli" } };
   }
-  return { kind: "notConnected", prefill: url, cli };
+  return { kind: "notConnected", prefill: url, cli: usable };
 };
 
 /** The CLI's sign-in, offered as Use it: its server and the account Mend says it is. */

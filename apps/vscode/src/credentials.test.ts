@@ -172,9 +172,14 @@ describe("a token Mend refused", () => {
     expect(tokenFor(MINI, next?.get(MINI) ?? null, cli)).toBeNull();
   });
 
-  it("drops the CLI's refused token for that server too", () => {
-    const next = refusedIn(new Map(), { url: MINI, token: "mdt_cli" }, cli);
-    expect(next?.get(MINI)).toEqual({ kind: "none", url: MINI });
+  it("stops sending the CLI's refused token, and sends the next one the CLI holds", () => {
+    const next = roundTrip(refusedIn(new Map(), { url: MINI, token: "mdt_cli" }, cli) ?? new Map());
+    const entry = next.get(MINI) ?? null;
+    expect(entry?.kind).toBe("cliRefused");
+    expect(JSON.stringify(entry)).not.toContain("mdt_cli");
+    expect(tokenFor(MINI, entry, cli)).toBeNull();
+    expect(tokenFor(MINI, entry, { url: MINI, token: "mdt_cli_again" })).toBe("mdt_cli_again");
+    expect(refusedIn(next, { url: MINI, token: "mdt_cli" }, cli)).toBeNull();
   });
 
   it("leaves a newer sign-in, and another server, alone", () => {
