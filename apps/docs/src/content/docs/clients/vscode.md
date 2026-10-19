@@ -94,8 +94,9 @@ offers **Retry**. When Mend cannot be reached, the view reads `last heard from M
 rows keep the last words Mend reported with `· last seen 2 min ago`, and **New session** and
 **Answer** are disabled.
 
-With no project adopted, the view offers **Adopt a project…**, which asks for a Git clone URL and a
-project name.
+With no project adopted, the view offers to adopt the window's repository in one click, named after
+it and adopted from its origin. A window with no repository offers **Adopt a repository…**, which
+asks for a Git clone URL; the project takes the repository's name.
 
 ## Start a session
 
@@ -234,13 +235,16 @@ not use the person's home and logins.
 
 ### Workspace SSH setup
 
-The first open asks once: **Set up workspace SSH to open sessions (one Host block in
-~/.ssh/config)**. Setup registers this machine's SSH public key with Mend and adds one
-server-specific `Host` block at the start of `~/.ssh/config`, before any wildcard entries. It keeps
-hand-written configuration and blocks for other Mend servers. On later runs it reuses the key it
-chose. On first setup it can use a key from your SSH agent or create a dedicated key under
-`~/.config/mend/ssh`. It never prompts for a passphrase: an encrypted or missing private key has to
-be loaded in an unlocked agent.
+Right after you connect, the view offers **Set up**, the only consent the extension asks for. One
+click installs Microsoft's Remote-SSH if it is missing, registers this machine's SSH key, writes one
+`Host` block to `~/.ssh/config`, and sets Remote-SSH's platform for that host to Linux. No open asks
+again after it. If you skip it, everything but **Open** works, and the first open asks once: **Set
+up workspace SSH to open sessions (one Host block in ~/.ssh/config)**. Setup registers this
+machine's SSH public key with Mend and adds one server-specific `Host` block at the start of
+`~/.ssh/config`, before any wildcard entries. It keeps hand-written configuration and blocks for
+other Mend servers. On later runs it reuses the key it chose. On first setup it can use a key from
+your SSH agent or create a dedicated key under `~/.config/mend/ssh`. It never prompts for a
+passphrase: an encrypted or missing private key has to be loaded in an unlocked agent.
 
 Setup writes configuration and registers the key. It does not test the connection or check the
 gateway's host key. OpenSSH accepts an unknown host key on the first connection and refuses a
@@ -373,38 +377,44 @@ session.
 
 ## Sign-in
 
-The extension reads the connection the CLI saved, `$XDG_CONFIG_HOME/mend/cli.json`
-(`~/.config/mend/cli.json` by default): its server URL and token. If you ran `mend login` on this
-machine, there is nothing to set up. With no URL configured anywhere, it uses
-`http://localhost:3105`.
+Until it is connected, the Mend view shows one step at a time.
 
-On a machine without the CLI, run **Mend: Connect to server**. It asks for the server URL as this
-machine reaches it (`http://mend-mini.local:3105`, a tailnet name, or your edge's `https://`
-origin), then how to sign in:
+1. `Connect VS Code to your Mend server.` with **Connect**. When the Mend CLI on this machine is
+   signed in (`$XDG_CONFIG_HOME/mend/cli.json`, `~/.config/mend/cli.json` by default), the view
+   offers **Use it** instead, with the CLI's server and account beside the view's title
+   (`mend-mini.local:3105 · dana@example.com`). **Use it** connects on the CLI's sign-in in one
+   click: no URL and no browser.
+2. **Connect** asks one thing: the server URL as this machine reaches it
+   (`http://mend-mini.local:3105`, a tailnet name, or your edge's `https://` origin), prefilled from
+   the CLI's configuration when there is one. For a plain `http://` URL on another machine the input
+   says `Plain http: anyone on this network can read the token` before anything is sent; you can
+   still go on. It says nothing for this machine, a tailnet address (`100.64.0.0/10`) or a `.ts.net`
+   name, since the tailnet encrypts the connection.
+3. The browser opens the server's `<server>/authorize` page, which asks **Authorize VS Code?**. VS
+   Code shows one notification, `Approve in the browser if it shows ABCD-EFGH`, which you can
+   cancel, and the status bar keeps `Mend sign-in · ABCD-EFGH` until the sign-in ends; clicking it
+   opens the page again, for when VS Code's "open the external website?" dialog sits behind other
+   windows. Approve when the page shows the same code. One notification confirms it:
+   `Signed in to mend-mini.local as dana@example.com`. A denial, an expired request or a server that
+   cannot be reached ends in one error notification with the reason and **Try again**, which asks
+   for the URL again with yours filled in.
+4. The account shows in VS Code's Accounts menu, as `dana@example.com @ mend-mini.local (Mend)`.
+   **Sign Out** there signs this editor out as **Mend: Sign out** does.
 
-- **Sign in with the browser**: the same walk as `mend login`. The browser opens
-  `<server>/authorize`, which asks **Authorize VS Code?**; approve there when it shows the same code
-  as VS Code. A notification shows the link and the code from the start, with **Copy link** and
-  **Paste a device token instead**, so the sign-in does not depend on VS Code's "open the external
-  website?" dialog, which can sit behind other windows. The notification hides after a while; the
-  status bar keeps `Mend sign-in · <code>` until the sign-in ends, and clicking it brings the link
-  and both actions back. The wait is timed from the server's answer, so a server whose clock is off
-  from this machine's (a Mac's Docker VM after sleep) does not expire it early. The editor receives
-  its own device token, listed under **Settings → Devices** as `VS Code on <machine>`.
-- **Paste a device token**: a token minted in the web app under **Settings → Devices**.
-- **No token**: for a local server that does not require one.
+The editor receives its own device token, listed under **Settings → Devices** as
+`VS Code on <machine>`. The wait is timed from the server's answer, so a server whose clock is off
+from this machine's (a Mac's Docker VM after sleep) does not expire it early. The URL is saved as
+the `mend.serverUrl` setting and the token in VS Code's secret storage (encrypted, with its key in
+the macOS Keychain on a Mac). The CLI's token is used only while `mend.serverUrl` points at the same
+URL as the CLI's configuration. **Mend: Sign out** revokes the device the browser sign-in created
+and forgets its token. Signed out stays signed out: the editor does not fall back to the CLI's
+sign-in for that server until you connect again or press **Use it**, and the CLI keeps its own
+(`mend logout` ends it).
 
-The URL is saved as the `mend.serverUrl` setting and the token in VS Code's secret storage
-(encrypted, with its key in the macOS Keychain on a Mac). For a plain `http://` URL on another
-machine, the extension says so when it asks how to sign in:
-`Plain http: anyone on this local network can read the token.` for a LAN address or name, and
-`Plain http: the token crosses the network unencrypted.` otherwise. It says nothing for a tailnet
-address (`100.64.0.0/10`) or a `.ts.net` name, since the tailnet encrypts the connection. Use a
-private network you control or an https edge. The CLI's token is used only while `mend.serverUrl`
-points at the same URL as the CLI's configuration. **Mend: Sign out** revokes a token the browser
-sign-in created and forgets it; a pasted token stays valid until you revoke it under **Settings →
-Devices**. Signed out stays signed out: the editor does not fall back to the CLI's sign-in for that
-server until you connect again, and the CLI keeps its own (`mend logout` ends it).
+Next, the view offers `Open sessions in VS Code: needs Remote-SSH and an SSH key for Mend` with
+**Set up** (see [Workspace SSH setup](#workspace-ssh-setup)), or **Skip for now**. With no project
+yet, it then offers the window's repository, `Adopt` with its name and origin beside the view's
+title, or **Adopt a repository…** in a window with none.
 
 When the server refuses the token, the error offers **Connect to server**. A request that gets no
 answer within 30 seconds (a server asleep, a network change) fails with that, and the live view

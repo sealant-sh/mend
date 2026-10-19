@@ -23,21 +23,22 @@ workspace stays up, and the conversation is recorded and can be resumed from any
 
 ## Sign in
 
-If you ran `mend login` on this machine, there is nothing to set up: the extension reads the CLI's
-connection from `~/.config/mend/cli.json`. With nothing configured, it uses `http://localhost:3105`.
+The Mend view says `Connect VS Code to your Mend server.` with **Connect**. If you ran `mend login`
+on this machine, it offers **Use it** instead, with the CLI's server and account: one click, no URL
+and no browser.
 
-Otherwise run **Mend: Connect to server** and enter the server URL as this machine reaches it, then
-pick how to sign in:
+**Connect** asks for the server URL as this machine reaches it, then opens `<server>/authorize` in
+your browser. Approve there when it shows the same code as VS Code's notification. One notification
+confirms it, `Signed in to <server> as <you>`, and the account shows in VS Code's Accounts menu. The
+editor gets its own device token, listed under **Settings → Devices** as `VS Code on <machine>`.
 
-- **Sign in with the browser**: the browser opens `<server>/authorize`. Approve there when it shows
-  the same code as VS Code. The editor gets its own device token, listed under **Settings →
-  Devices** as `VS Code on <machine>`.
-- **Paste a device token** minted in the web app under **Settings → Devices**.
-- **No token**, for a local server that does not require one.
+The token is kept in VS Code's secret storage. For a plain `http://` URL on another machine the URL
+input says `Plain http: anyone on this network can read the token` before anything is sent. **Sign
+Out** in the Accounts menu, or **Mend: Sign out**, revokes the editor's device and forgets it.
 
-The token is kept in VS Code's secret storage. For a plain `http://` URL on another machine the
-extension says so before you sign in: the token would cross that network unencrypted. **Mend: Sign
-out** revokes a browser sign-in's token and forgets it.
+Next, **Set up** installs Remote-SSH if it is missing, registers an SSH key and writes one `Host`
+block to `~/.ssh/config`, once; no open asks again. **Skip for now** leaves it to the first open,
+which asks once.
 
 ## Open a session over Remote-SSH
 
@@ -128,7 +129,7 @@ else's session reads `read-only · <owner>'s session`.
 | **Mend: Review change**         | The session's change in Mend's review, in your browser        |
 | **Mend: Open in Mend**          | The session or project in Mend's web app                      |
 | **Mend: Stop session**          | Stop a live session; the worktree and its change remain       |
-| **Mend: Adopt a project…**      | Adopt a repository from its clone URL                         |
+| **Mend: Adopt a repository…**   | Adopt a repository from its clone URL                         |
 | **Mend: Show project sessions** | Pick a session of the current project, or start something new |
 | **Mend: Copy worktree path**    | Copy the worktree's path on the server                        |
 
@@ -136,8 +137,8 @@ A link of the form `vscode://sealant-sh.mend/open?session=<session-id>` opens th
 
 ## Settings
 
-- `mend.serverUrl`: the Mend server URL. Empty uses the CLI's configuration, then
-  `http://localhost:3105`.
+- `mend.serverUrl`: the Mend server URL, written by **Connect** and **Use it**. Empty means not
+  connected.
 - `mend.workspaceSshHost`: another SSH hostname for the server, for networks where the URL's
   hostname does not reach the SSH port.
 

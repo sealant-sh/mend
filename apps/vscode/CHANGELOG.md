@@ -38,6 +38,18 @@ patch number is the extension's own.
   `starting · launch refused · …` while the server still reads it starting. Its error notification
   offers **Retry** when a read says it failed or never started. Retry launches the same session
   again.
+- First run: the Mend view says `Connect VS Code to your Mend server.` with **Connect**, which asks
+  one thing, the server URL, and warns there when it is plain http to another machine. The browser
+  opens Mend's approve page while one notification shows the code, and one notification confirms the
+  sign-in (before, two did). A denial, an expired request or an unreachable server ends in one error
+  with **Try again**. The token and no-token choices are gone. When the Mend CLI on this machine is
+  signed in, the view offers **Use it** with its server and account: one click.
+- The account shows in VS Code's Accounts menu, and **Sign Out** there revokes the editor's device.
+- After you connect, **Set up** installs Remote-SSH if it is missing, registers an SSH key, writes
+  one `Host` block to `~/.ssh/config` and sets its Remote-SSH platform, once; no open asks after it.
+  **Skip for now** leaves the one question to the first open.
+- With no project yet, the view offers to adopt the window's repository in one click when no project
+  matches its origin, or **Adopt a repository…**, which asks only for a clone URL.
 - **Mend: New worktree without an agent…** is removed: choose the `shell` harness in **Change…**.
 - **Mend: New session in this worktree…** opens the same input. Who else runs in the worktree is on
   its line instead of a dialog.
