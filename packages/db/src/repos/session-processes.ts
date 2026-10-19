@@ -91,6 +91,15 @@ export class SessionProcessesRepo extends Context.Service<
       providerSessionId: string,
     ) => Effect.Effect<void>;
     /**
+     * Record the harness's session id on a live agent-pty row of `sessionId` that has none yet;
+     * true when this call set it. Two reports racing for one row: only the first takes it.
+     */
+    readonly claimProviderSessionId: (
+      id: SessionProcessId,
+      sessionId: SessionId,
+      providerSessionId: string,
+    ) => Effect.Effect<boolean>;
+    /**
      * Stamp when the process's record first carried output. Only the first stamp takes: true when
      * this call made it, false when the row already had one or is gone.
      */
@@ -317,6 +326,26 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
+    const claimProviderSessionId = Effect.fn("SessionProcessesRepo.claimProviderSessionId")(
+      function* (id: SessionProcessId, sessionId: SessionId, providerSessionId: string) {
+        const rows = yield* db
+          .update(sessionProcesses)
+          .set({ providerSessionId, updatedAt: yield* DateTime.nowAsDate })
+          .where(
+            and(
+              eq(sessionProcesses.id, id),
+              eq(sessionProcesses.sessionId, sessionId),
+              eq(sessionProcesses.kind, "agent-pty"),
+              isNull(sessionProcesses.providerSessionId),
+              isNull(sessionProcesses.exitedAt),
+            ),
+          )
+          .returning({ id: sessionProcesses.id })
+          .pipe(Effect.orDie);
+        return rows.length > 0;
+      },
+    );
+
     const markFirstOutput = Effect.fn("SessionProcessesRepo.markFirstOutput")(function* (
       id: SessionProcessId,
       at: Date,
@@ -439,6 +468,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       markFirstOutput,
       setHostPort,
       setSealantSessionId,
+      claimProviderSessionId,
       setWaiting,
       markExited,
       reapLiveForWorkspace,

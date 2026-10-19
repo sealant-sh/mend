@@ -175,4 +175,33 @@ describe.skipIf(postgres.skip)("a terminal agent's wait, in Postgres", () => {
     expect(result.afterReap?.waiting).toBeNull();
     expect(result.next.waiting).toBeNull();
   });
+
+  it("records a terminal agent's session id once, and never on an ended row", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const processes = yield* SessionProcessesRepo;
+        const agent = yield* createProcess("agent-pty");
+        const first = yield* processes.claimProviderSessionId(agent.id, SESSION, "thread-a");
+        const second = yield* processes.claimProviderSessionId(agent.id, SESSION, "thread-b");
+        const afterClaims = yield* processes.byId(agent.id);
+        const otherSession = yield* processes.claimProviderSessionId(
+          (yield* createProcess("agent-pty")).id,
+          OTHER_SESSION,
+          "thread-c",
+        );
+        const ended = yield* createProcess("agent-pty");
+        yield* processes.markExited(ended.id, "exited", 0);
+        const late = yield* processes.claimProviderSessionId(ended.id, SESSION, "thread-d");
+        const afterLate = yield* processes.byId(ended.id);
+        yield* processes.markExited(agent.id, "exited", 0);
+        return { first, second, afterClaims, otherSession, late, afterLate };
+      }),
+    );
+    expect(result.first).toBe(true);
+    expect(result.second).toBe(false);
+    expect(result.afterClaims?.providerSessionId).toBe("thread-a");
+    expect(result.otherSession).toBe(false);
+    expect(result.late).toBe(false);
+    expect(result.afterLate?.providerSessionId).toBeNull();
+  });
 });
