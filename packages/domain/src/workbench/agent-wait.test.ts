@@ -6,6 +6,7 @@ import {
   AgentHookReport,
   type AgentSignal,
   AgentWait,
+  agentHookTarget,
   agentSignalOf,
   agentWaitWords,
   nextAgentWait,
@@ -13,7 +14,14 @@ import {
 
 const report = (
   fields: Partial<typeof AgentHookReport.Type> & Pick<typeof AgentHookReport.Type, "event">,
-) => new AgentHookReport({ harness: "claude", notificationType: null, tool: null, ...fields });
+) =>
+  new AgentHookReport({
+    harness: "claude",
+    notificationType: null,
+    tool: null,
+    providerSessionId: "conversation-a",
+    ...fields,
+  });
 
 const at = (ms: number) => new Date(ms);
 
@@ -58,19 +66,81 @@ describe("agentSignalOf", () => {
     expect(agentSignalOf(report({ event: "PreToolUse", tool: "Bash" }))).toBeNull();
     expect(agentSignalOf(report({ harness: "codex", event: "Notification" }))).toBeNull();
   });
+
+  it("reads no wait from a session start, which is wired only so the process can be named", () => {
+    for (const harness of ["claude", "codex"] as const) {
+      expect(AGENT_HOOKS[harness].some((hook) => hook.event === "SessionStart")).toBe(true);
+      expect(agentSignalOf(report({ harness, event: "SessionStart" }))).toBeNull();
+    }
+  });
+});
+
+describe("agentHookTarget", () => {
+  const agent = (name: string, providerSessionId: string | null) => ({ name, providerSessionId });
+
+  it("refuses a report that names no process", () => {
+    expect(
+      agentHookTarget(report({ event: "Stop", providerSessionId: null }), [agent("a", null)]),
+    ).toEqual({ _tag: "unidentified" });
+  });
+
+  it("finds the live agent whose session id the report carries", () => {
+    const named = agent("b", "conversation-a");
+    expect(
+      agentHookTarget(report({ event: "PermissionRequest" }), [
+        agent("a", "conversation-z"),
+        named,
+      ]),
+    ).toEqual({ _tag: "process", process: named });
+  });
+
+  it("lets a session start claim the one agent that does not know its id yet", () => {
+    const fresh = agent("codex", null);
+    expect(agentHookTarget(report({ event: "SessionStart" }), [fresh])).toEqual({
+      _tag: "claim",
+      process: fresh,
+      providerSessionId: "conversation-a",
+    });
+  });
+
+  it("reads any other id as another process", () => {
+    // Before the agent's own SessionStart, a report with an unknown id names nothing.
+    expect(agentHookTarget(report({ event: "Stop" }), [agent("codex", null)])).toEqual({
+      _tag: "other-process",
+    });
+    // A second session start, once the agent knows its id (Claude after /clear).
+    expect(
+      agentHookTarget(report({ event: "SessionStart" }), [agent("claude", "conversation-z")]),
+    ).toEqual({ _tag: "other-process" });
+    // Two agents without an id: which one started is not known.
+    expect(
+      agentHookTarget(report({ event: "SessionStart" }), [agent("a", null), agent("b", null)]),
+    ).toEqual({ _tag: "other-process" });
+    expect(agentHookTarget(report({ event: "SessionStart" }), [])).toEqual({
+      _tag: "other-process",
+    });
+  });
 });
 
 describe("AgentHookReport at the boundary", () => {
   const decode = Schema.decodeUnknownExit(AgentHookReport);
-  const base = { harness: "claude", event: "Stop", notificationType: null, tool: null };
+  const base = {
+    harness: "claude",
+    event: "Stop",
+    notificationType: null,
+    tool: null,
+    providerSessionId: "0f8d5f2c-6c3e-4f63-9a51-2f0c7d4b9e11",
+  };
 
-  it("takes the four fields", () => {
+  it("takes the five fields", () => {
     expect(decode(base)._tag).toBe("Success");
+    expect(decode({ ...base, providerSessionId: null })._tag).toBe("Success");
   });
 
   it("refuses a field that is long, unprintable or names another harness", () => {
     expect(decode({ ...base, tool: "x".repeat(65) })._tag).toBe("Failure");
     expect(decode({ ...base, tool: "Bash\u001b[2J" })._tag).toBe("Failure");
+    expect(decode({ ...base, providerSessionId: "x".repeat(65) })._tag).toBe("Failure");
     expect(decode({ ...base, harness: "opencode" })._tag).toBe("Failure");
   });
 });

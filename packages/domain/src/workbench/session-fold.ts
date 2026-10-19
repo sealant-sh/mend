@@ -75,6 +75,16 @@ export const liveTerminalAgentOf = (
     (process) => process.kind === "agent-pty" && isLiveProcess(process),
   ) ?? null;
 
+/** Every live terminal agent of `harness`: the processes a hook report may be about. */
+export const liveTerminalAgentsOf = (
+  processes: ReadonlyArray<SessionProcess>,
+  harness: string,
+): ReadonlyArray<SessionProcess> =>
+  agentProcessesOf(processes).filter(
+    (process) =>
+      process.kind === "agent-pty" && process.harness === harness && isLiveProcess(process),
+  );
+
 /** The wait a session-level reader means: the newest live terminal agent's. */
 export const agentWaitOf = (processes: ReadonlyArray<SessionProcess>): AgentWait | null =>
   liveTerminalAgentOf(processes)?.waiting ?? null;

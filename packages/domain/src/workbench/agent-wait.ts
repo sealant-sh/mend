@@ -23,13 +23,15 @@ export class AgentWait extends Schema.Class<AgentWait>("AgentWait")({
 export const HOOKED_HARNESSES = ["claude", "codex"] as const;
 export type HookedHarness = (typeof HOOKED_HARNESSES)[number];
 
-/** What the helper forwards from one hook: four small fields, never prompt text, tool input or messages. */
+/** What the helper forwards from one hook: five small fields, never prompt text, tool input or messages. */
 export class AgentHookReport extends Schema.Class<AgentHookReport>("AgentHookReport")({
   harness: Schema.Literals(HOOKED_HARNESSES),
   event: HookField,
   /** Claude's `Notification` only. */
   notificationType: Schema.NullOr(HookField),
   tool: Schema.NullOr(HookField),
+  /** The harness's own session id from the hook payload's `session_id`; null when the payload had none. */
+  providerSessionId: Schema.NullOr(HookField),
 }) {}
 
 export type AgentSignal =
@@ -64,6 +66,7 @@ const CLAUDE_NOTIFICATION_WAITS: Readonly<Record<string, AgentWaitKind>> = {
  */
 export const AGENT_HOOKS: Readonly<Record<HookedHarness, ReadonlyArray<AgentHook>>> = {
   claude: [
+    { event: "SessionStart", signal: () => null },
     { event: "PermissionRequest", signal: (report) => waits("permission", report.tool) },
     {
       event: "Notification",
@@ -81,6 +84,7 @@ export const AGENT_HOOKS: Readonly<Record<HookedHarness, ReadonlyArray<AgentHook
     { event: "PostToolUse", signal: () => CONTINUES },
   ],
   codex: [
+    { event: "SessionStart", signal: () => null },
     { event: "PermissionRequest", signal: (report) => waits("permission", report.tool) },
     { event: "Stop", signal: () => waits("prompt") },
     { event: "UserPromptSubmit", signal: () => CONTINUES },
@@ -90,6 +94,36 @@ export const AGENT_HOOKS: Readonly<Record<HookedHarness, ReadonlyArray<AgentHook
 
 export const agentSignalOf = (report: AgentHookReport): AgentSignal | null =>
   AGENT_HOOKS[report.harness].find((hook) => hook.event === report.event)?.signal(report) ?? null;
+
+/** Which of the session's live terminal agents a report is about, if any. */
+export type AgentHookTarget<P> =
+  | { readonly _tag: "process"; readonly process: P }
+  | { readonly _tag: "claim"; readonly process: P; readonly providerSessionId: string }
+  | { readonly _tag: "other-process" }
+  | { readonly _tag: "unidentified" };
+
+/**
+ * `liveAgents` are the session's live agent-pty rows of the report's harness. A report names its
+ * process by the harness's own session id. A row that does not know its id yet is claimed only by
+ * a `SessionStart`, and only when it is the one such row. Codex's TUI takes no session id on its
+ * command line, so a fresh Codex's id is unknown until it runs; it fires `SessionStart` first
+ * thing, and the agent Mend launched is the first process in its workspace (shells open later,
+ * through the engine), so that agent's `SessionStart` is the first report of its harness the
+ * session can receive. Any id after that (a hand-run `codex`, a `codex exec` the agent starts,
+ * Claude after `/clear`) names another process.
+ */
+export const agentHookTarget = <P extends { readonly providerSessionId: string | null }>(
+  report: AgentHookReport,
+  liveAgents: ReadonlyArray<P>,
+): AgentHookTarget<P> => {
+  if (report.providerSessionId === null) return { _tag: "unidentified" };
+  const named = liveAgents.find((agent) => agent.providerSessionId === report.providerSessionId);
+  if (named !== undefined) return { _tag: "process", process: named };
+  const [unnamed, ...more] = liveAgents.filter((agent) => agent.providerSessionId === null);
+  return report.event === "SessionStart" && unnamed !== undefined && more.length === 0
+    ? { _tag: "claim", process: unnamed, providerSessionId: report.providerSessionId }
+    : { _tag: "other-process" };
+};
 
 /**
  * Idempotent: a repeat of the same kind answers `current` itself, keeping `since` and a known tool
