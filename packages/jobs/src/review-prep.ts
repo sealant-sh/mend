@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { PgClient } from "@effect/sql-pg";
 import {
   ChangePassesRepo,
@@ -36,9 +38,12 @@ import { queueReviewPass } from "./review-passes.ts";
  *
  * Discipline shared with the session notifier:
  * - transition, not state: only a session seen leaving a live phase queues
- *   the passes; the settle event flapping or repeating cannot re-queue, and a
- *   request that races through anyway meets the pass's key while its job is
- *   queued or running (`queueReviewPass`).
+ *   the passes; the settle event flapping or repeating cannot re-queue, and
+ *   `stopping` is a settle in flight, so idle → stopping → completed is one.
+ * - once per diff: the passes are queued for a digest of the change's diff at
+ *   most once (`ChangePassesRepo.claimPrep`), so a restarted worker, another
+ *   session of the worktree, or a resumed turn that wrote nothing queues no
+ *   second spend over the same change.
  * - known baseline only: a session first seen already settled (reconnect,
  *   restart) records silently — prep belongs to the settle moment, and the
  *   review page still offers both passes on demand.
@@ -66,6 +71,23 @@ export const settledForReview = (
   (status === "idle" &&
     agentProcessesOf(processes).length > 0 &&
     !processes.some(isLiveAgentProcess));
+
+/** Where a session stands for review: live work, a settle in flight, or settled. */
+export type ReviewReading = "live" | "stopping" | "settled";
+
+export const reviewReading = (
+  status: SessionStatus,
+  processes: ReadonlyArray<SessionProcess>,
+): ReviewReading =>
+  status === "stopping" ? "stopping" : settledForReview(status, processes) ? "settled" : "live";
+
+/**
+ * Whether the session counts as settled after this reading. `stopping` neither starts a settle
+ * nor leaves one: it keeps what came before, and a session first seen stopping has its settle
+ * still ahead.
+ */
+export const settledAfter = (previous: boolean | undefined, reading: ReviewReading): boolean =>
+  reading === "stopping" ? (previous ?? false) : reading === "settled";
 
 /**
  * Transition, not state: prep runs once, when a session is seen moving from live work to settled
@@ -133,6 +155,7 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
     const sessions = yield* SessionsRepo;
     const processes = yield* SessionProcessesRepo;
     const changes = yield* WorktreeChangesRepo;
+    const passes = yield* ChangePassesRepo;
     const projects = yield* ProjectsRepo;
     const settingsRepo = yield* SettingsRepo;
     const reads = yield* WorktreeReads;
@@ -169,11 +192,11 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
       });
       if (!autoTour && !autoSuggest) return;
 
-      // The passes read worktree-versus-base themselves; this is only the
-      // cheap "is there anything at all" gate before spending inference. A
-      // change git cannot read is logged with git's words and queues nothing:
-      // the review page still offers both passes on demand.
-      const read = yield* reads.changedFiles(project.id, session.worktreeId, change.baseSha).pipe(
+      // The passes read worktree-versus-base themselves; this read is the gate before spending
+      // inference: nothing changed, or this diff was prepared already. A change git cannot read
+      // is logged with git's words and queues nothing: the review page still offers both passes
+      // on demand.
+      const read = yield* reads.diffWorktree(project.id, session.worktreeId, change.baseSha).pipe(
         Effect.catchTag("GitError", (error) =>
           Effect.logWarning("review prep: the change could not be read · no passes queued").pipe(
             Effect.annotateLogs(
@@ -189,8 +212,7 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
         ),
       );
       if (read === null) return;
-      const files = read.value;
-      if (files.length === 0) return;
+      if (read.value === "") return;
 
       // One key per change and pass (`reviewPassKey`), shared with the review page: a pass
       // already queued or running for this change absorbs this request (it reads the change as
@@ -204,6 +226,13 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
         );
         return;
       }
+      const diffDigest = createHash("sha256").update(read.value).digest("hex");
+      if (!(yield* passes.claimPrep(change.id, diffDigest))) {
+        yield* Effect.logInfo(
+          "review prep: this diff was prepared already · no passes queued",
+        ).pipe(Effect.annotateLogs({ sessionId, changeId: change.id, diffDigest }));
+        return;
+      }
       if (autoTour) yield* queueReviewPass("tour", change.id, paidBy);
       if (autoSuggest) yield* queueReviewPass("suggest", change.id, paidBy);
       yield* Effect.annotateLogs(Effect.logInfo("review prep queued"), {
@@ -214,19 +243,19 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
       });
     });
 
-    const settledNow = Effect.fn("ReviewPrep.settledNow")(function* (session: {
+    const readingNow = Effect.fn("ReviewPrep.readingNow")(function* (session: {
       readonly id: SessionId;
       readonly status: SessionStatus;
     }) {
       // Only an `idle` session needs its processes read: every other status answers alone.
-      if (session.status !== "idle") return SETTLED.has(session.status);
-      return settledForReview(session.status, yield* processes.listForSession(session.id));
+      const read = session.status === "idle" ? yield* processes.listForSession(session.id) : [];
+      return reviewReading(session.status, read);
     });
 
     const observe = Effect.fn("ReviewPrep.observe")(function* (sessionId: string) {
       const session = yield* sessions.byId(SessionId.make(sessionId));
-      const settled = yield* settledNow(session);
       const previous = lastSettled.get(session.id);
+      const settled = settledAfter(previous, yield* readingNow(session));
       lastSettled.set(session.id, settled);
       if (!shouldPrepareReview(previous, settled)) return;
       yield* prepare(session.id);
@@ -234,7 +263,9 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
 
     // Baseline: whatever exists right now settled before we were listening.
     const active = yield* sessions.listActive();
-    for (const session of active) lastSettled.set(session.id, yield* settledNow(session));
+    for (const session of active) {
+      lastSettled.set(session.id, settledAfter(undefined, yield* readingNow(session)));
+    }
 
     yield* events.pipe(
       Stream.runForEach((payload) =>

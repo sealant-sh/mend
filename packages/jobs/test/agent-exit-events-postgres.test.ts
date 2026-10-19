@@ -194,11 +194,6 @@ const startWorkers = (diff: () => string = () => BILLING_DIFF) =>
           }),
       }),
       Layer.mock(WorktreeReads, {
-        changedFiles: () =>
-          Effect.succeed({
-            stamp: WORKTREE_STAMP,
-            value: [{ path: "src/billing.ts", additions: 3, deletions: 1 }],
-          }),
         diffWorktree: () => Effect.sync(() => ({ stamp: WORKTREE_STAMP, value: diff() })),
       }),
     );
@@ -433,6 +428,41 @@ describe.skipIf(postgres.skip)("a terminal agent's exit under a live shell, thro
             pushes: pushesFor(observed, seeded.sessionId),
             jobs: jobsFor(observed, seeded.changeId),
           }).toEqual({ pushes: [], jobs: [] });
+        }),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "does not prepare the same change again when the restarted workers first see it stopping",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const sessions = yield* SessionsRepo;
+          const processes = yield* SessionProcessesRepo;
+          const seeded = yield* seedSession("restart-in-stop", "idle", finishedTurn());
+          const marker = yield* seedSession("restart-in-stop-marker", "idle", finishedTurn());
+
+          const first = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const workers = yield* startWorkers();
+              yield* processes.markExited(seeded.agentId, "exited", 0);
+              yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 2);
+              yield* sessions.setStatus(seeded.sessionId, "stopping");
+              return workers.observed();
+            }),
+          );
+          expect(jobsFor(first, seeded.changeId)).toEqual(reviewPasses(seeded.changeId));
+
+          // A stopping session is not in the baseline; the drain's next write is its first event.
+          const restarted = yield* startWorkers();
+          yield* sessions.setStatus(seeded.sessionId, "stopping");
+          yield* sessions.settle(seeded.sessionId, "completed", null);
+          yield* processes.markExited(marker.agentId, "exited", 0);
+
+          yield* eventually(() => jobsFor(restarted.observed(), marker.changeId).length >= 2);
+          expect(jobsFor(restarted.observed(), seeded.changeId)).toEqual([]);
         }),
       );
     },

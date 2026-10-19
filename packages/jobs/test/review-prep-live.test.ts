@@ -204,7 +204,8 @@ const makeWorld = (events: Events, options: Options) => {
   let processes: ReadonlyArray<SessionProcess> = [];
   const jobs: Array<JobSpec> = [];
   const queued: Array<Parameters<ChangePassesRepo["Service"]["queue"]>> = [];
-  const reads: Array<Parameters<WorktreeReads["Service"]["changedFiles"]>> = [];
+  const reads: Array<Parameters<WorktreeReads["Service"]["diffWorktree"]>> = [];
+  const prepared = new Map<ChangeId, string>();
   const memory = makeMemoryCaptureStore(() => BASE);
   const capture = options.captured
     ? CaptureRuntimeLive.pipe(
@@ -238,7 +239,7 @@ const makeWorld = (events: Events, options: Options) => {
     }),
     Layer.mock(SettingsRepo, { forOrganization: () => Effect.succeed(defaultSettings) }),
     Layer.mock(WorktreeReads, {
-      changedFiles: (...args) =>
+      diffWorktree: (...args) =>
         Effect.gen(function* () {
           reads.push(args);
           if (options.read === "git-error")
@@ -251,7 +252,7 @@ const makeWorld = (events: Events, options: Options) => {
           return {
             stamp: WORKTREE_STAMP,
             value:
-              options.read === "empty" ? [] : [{ path: "changed.ts", additions: 1, deletions: 0 }],
+              options.read === "empty" ? "" : "diff --git a/changed.ts b/changed.ts\n+changed\n",
           };
         }),
     }),
@@ -259,6 +260,12 @@ const makeWorld = (events: Events, options: Options) => {
       queue: (...args) =>
         Effect.sync(() => {
           queued.push(args);
+        }),
+      claimPrep: (changeId, diffDigest) =>
+        Effect.sync(() => {
+          if (prepared.get(changeId) === diffDigest) return false;
+          prepared.set(changeId, diffDigest);
+          return true;
         }),
     }),
     Layer.mock(JobRunner, {

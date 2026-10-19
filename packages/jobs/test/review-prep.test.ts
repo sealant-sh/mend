@@ -10,6 +10,9 @@ import { describe, expect, it } from "vitest";
 import {
   readFailureAnnotations,
   reviewPassesFor,
+  reviewReading,
+  type ReviewReading,
+  settledAfter,
   settledForReview,
   shouldPrepareReview,
 } from "../src/review-prep.ts";
@@ -158,5 +161,43 @@ describe("review prep: when a session has settled for review", () => {
     expect(shouldPrepareReview(undefined, true)).toBe(false);
     expect(shouldPrepareReview(false, false)).toBe(false);
     expect(shouldPrepareReview(true, true)).toBe(false);
+  });
+});
+
+/** The readings at which prep runs, folding them as the worker does from `baseline`. */
+const prepsAlong = (
+  baseline: boolean | undefined,
+  readings: ReadonlyArray<ReviewReading>,
+): ReadonlyArray<number> => {
+  let previous = baseline;
+  const preps: Array<number> = [];
+  readings.forEach((reading, at) => {
+    const settled = settledAfter(previous, reading);
+    if (shouldPrepareReview(previous, settled)) preps.push(at);
+    previous = settled;
+  });
+  return preps;
+};
+
+describe("review prep: a stop is one settle", () => {
+  it("reads stopping apart from live work and settled", () => {
+    expect(reviewReading("stopping", [processRow("agent-pty", false)])).toBe("stopping");
+    expect(reviewReading("idle", [processRow("agent-pty", false), processRow("shell", true)])).toBe(
+      "settled",
+    );
+    expect(reviewReading("running", [processRow("agent-pty", true)])).toBe("live");
+  });
+
+  it("prepares once when an idle session whose agent ended settles through stopping", () => {
+    expect(prepsAlong(false, ["settled", "stopping", "settled"])).toEqual([0]);
+    expect(prepsAlong(true, ["stopping", "settled"])).toEqual([]);
+  });
+
+  it("prepares at the settle when live work stops", () => {
+    expect(prepsAlong(false, ["live", "stopping", "settled"])).toEqual([2]);
+  });
+
+  it("holds a settle still ahead for a session first seen stopping", () => {
+    expect(prepsAlong(undefined, ["stopping", "settled"])).toEqual([1]);
   });
 });
