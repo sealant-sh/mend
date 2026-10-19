@@ -5,8 +5,9 @@
 // the next a usable world: Change… (codex and a model, one Back, remembered for the project), the
 // join title, a base Mend's store has not seen (a local commit on a new branch), the base as the
 // ref that proved it (a branch tracking origin/<default> under another name, one pushed without
-// -u, one the store cannot find), a folder named like the project whose origin is not adopted
-// (Adopt this repository, then the prompt), a refused launch (Claude disconnected; the row reads
+// -u, one the store cannot find), a separate repository nested inside the checkout with an origin of
+// its own (Adopt this repository, not the project), a folder named like the project whose origin is
+// not adopted (Adopt this repository, then the prompt), a refused launch (Claude disconnected; the row reads
 // the server's state, one toast with Retry, which relaunches the same session once Claude is
 // back), and Mend going offline while she has typed a prompt (kept, the cursor after it, and there
 // again once Mend is back).
@@ -36,6 +37,8 @@ const PROMPT_FAILS = "write a changelog entry";
 const PROMPT_OFFLINE = "rename the config loader";
 const UNPUSHED = "verify-unpushed";
 const OTHER_REPO = "https://github.com/octocat/Spoon-Knife.git";
+/** Never fetched: the nested repository only needs an origin no project has. */
+const NESTED_ORIGIN = "https://github.com/verify-invalid/nested.git";
 const OPEN = /^Mend: Open$/;
 const OFFLINE = "Mend is offline · retrying";
 /**
@@ -756,6 +759,81 @@ export default async (h) => {
       return git(["branch", "--show-current"]);
     },
     { via: "setup" },
+  );
+
+  // ── a separate repository nested inside the adopted repository's checkout ──
+  const nested = join(state.checkout, "vendor", "nested");
+  await step(
+    `a separate git repository at vendor/nested inside the project's checkout, its own origin ${NESTED_ORIGIN} adopted by no project, excluded from the checkout's status`,
+    async () => {
+      const inNested = (args) =>
+        execFileSync(
+          "git",
+          ["-c", "user.name=Dana", "-c", "user.email=dana@verify.invalid", "-C", nested, ...args],
+          { env, encoding: "utf8" },
+        ).trim();
+      execFileSync("mkdir", ["-p", nested]);
+      inNested(["init", "-q", "-b", "main"]);
+      inNested(["commit", "-q", "--allow-empty", "-m", "nested"]);
+      inNested(["remote", "add", "origin", NESTED_ORIGIN]);
+      execFileSync("sh", [
+        "-c",
+        'printf "vendor/nested/\\n" >> "$1/.git/info/exclude"',
+        "sh",
+        state.checkout,
+      ]);
+      const adopted = (await api("/projects")).map((one) => one.originUrl);
+      expect(!adopted.includes(NESTED_ORIGIN), `already adopted: ${JSON.stringify(adopted)}`);
+      return `git root ${inNested(["rev-parse", "--show-toplevel"])} · origin ${inNested(["remote", "get-url", "origin"])} · the checkout's root ${git(["rev-parse", "--show-toplevel"])}, status "${git(["status", "--porcelain"])}"`;
+    },
+    { via: "setup" },
+  );
+
+  const nestedWindow = await step(
+    "she opens vendor/nested in a new window (code --new-window <folder>)",
+    async () => {
+      const known = await windows();
+      await openFolder(nested);
+      const opened = await waitForWindow(known, 120_000);
+      await useWindow(opened);
+      await view("Mend");
+      await shot("nested-window");
+      return { observed: `title "${await opened.title()}"`, page: opened };
+    },
+  );
+
+  await step(
+    `inside ${project.name}'s checkout but a repository of its own: New session lists Adopt this repository on top, not ${project.name}'s prompt`,
+    async () => {
+      const seen = await newSession();
+      await shot("nested-no-match");
+      await quickInput.cancel();
+      const [adopt, ...rest] = seen.rows;
+      const observed = said(seen);
+      expect(seen.title === "New session", `the title: ${observed}`);
+      expect(seen.placeholder === "Choose a project", `the placeholder: ${observed}`);
+      expect(adopt?.label === "Adopt this repository", `the first row: ${observed}`);
+      expect(adopt.description === NESTED_ORIGIN, `the first row's description: ${observed}`);
+      expect(
+        rest.some((row) => row.label === project.name),
+        `${project.name} is not listed: ${observed}`,
+      );
+      return observed;
+    },
+  );
+
+  await step(
+    "that window closed and vendor/nested removed, back to the project's window",
+    async () => {
+      const result = await closeWindow(nestedWindow.page);
+      execFileSync("rm", ["-rf", nested]);
+      await useWindow(await homeWindow());
+      await mendView();
+      const seen = await newSession();
+      await quickInput.cancel();
+      expect(seen.title === `New session · ${project.name}`, `the checkout itself: ${said(seen)}`);
+      return `${result} · the checkout's own window: title "${seen.title}"`;
+    },
   );
 
   // ── no project matched ──
