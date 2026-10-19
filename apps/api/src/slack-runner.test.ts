@@ -6,6 +6,8 @@ import {
   BudgetExceeded,
   ConnectedAccount,
   NotFound,
+  SessionAgentLive,
+  SessionMovedOn,
   SessionNotSteerable,
   StoreFailure,
   type LaunchRequest,
@@ -110,6 +112,8 @@ import {
   ownerOnly,
   parsePickerRequestKey,
   pickerRequestKey,
+  refusalDetail,
+  refusalWords,
   type SlackRunner,
 } from "./slack-runner.ts";
 
@@ -3189,5 +3193,25 @@ describe("existing-thread authorization and joined-session landing", () => {
     expect(w.audited).toEqual([]);
     expect(posts(w, "postEphemeral")).toMatchObject([{ user: "U-alice" }, { user: "U-bob" }]);
     expect(posts(w, "postMessage")).toEqual([]);
+  });
+});
+
+describe("a thread's launch that raced another (SLNT-167)", () => {
+  it.each([
+    new SessionMovedOn({
+      sessionId: SessionId.make("s-1"),
+      status: "running",
+      settledAt: null,
+      message: "the session moved on · it reads running · nothing launched",
+    }),
+    new SessionAgentLive({
+      sessionId: SessionId.make("s-1"),
+      status: "starting",
+      settledAt: null,
+      message: "starting · a launch of this session is already under way · nothing new started",
+    }),
+  ])("says $_tag in its own words, to the whole thread", (refusal) => {
+    expect(refusalWords(refusal, "the session could not be resumed")).toBe(refusal.message);
+    expect(refusalDetail(refusal)).toBeNull();
   });
 });

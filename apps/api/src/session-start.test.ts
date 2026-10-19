@@ -31,7 +31,13 @@ import {
   type SessionOrigin,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
-import { SessionEngine, SessionLaunchSetupError } from "@mend/sessions";
+import {
+  SessionAgentLiveError,
+  SessionEngine,
+  SessionLaunchSetupError,
+  SessionMovedOnError,
+  type LaunchOver,
+} from "@mend/sessions";
 import { GitError } from "@mend/store";
 import { TestClock } from "@mend/test-ci/effect-vitest";
 import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
@@ -136,7 +142,7 @@ const startWorld = (
     /** The row observable while launch is pending, including a deleted row. */
     readonly initial?: Session | null;
     readonly executorCreate?: string | null;
-    readonly launchFailure?: SessionLaunchSetupError;
+    readonly launchFailure?: SessionLaunchSetupError | SessionMovedOnError | SessionAgentLiveError;
     /** What the store said when provisioning the worktree failed. */
     readonly provisionFailure?: GitError;
     readonly launchEntered?: Deferred.Deferred<void>;
@@ -146,6 +152,11 @@ const startWorld = (
   const effects: Array<string> = [];
   const settlements: Array<Parameters<SessionsRepo["Service"]["settle"]>> = [];
   const fibers: Array<Fiber.Fiber<unknown, unknown>> = [];
+  /** What each engine launch was asked to launch over, and the options it was to record. */
+  const launches: Array<{
+    readonly over: LaunchOver | undefined;
+    readonly options: { readonly model: string | null; readonly effort: string | null } | null;
+  }> = [];
   let current =
     options.initial === undefined
       ? new Session({ ...provisioned("alice"), status: "starting", summary: "booting" })
@@ -246,10 +257,11 @@ const startWorld = (
                   : Effect.fail(options.provisionFailure),
               ),
             ),
-          launchProtocol: (sessionId, start, author) =>
+          launchProtocol: (sessionId, start, author, _correlation, _fresh, over) =>
             note(
               `engine.launchProtocol:${sessionId}:${author}:${start.model ?? "-"}:${start.effort ?? "-"}:${start.prompt}`,
             ).pipe(
+              Effect.tap(() => Effect.sync(() => void launches.push({ over, options: null }))),
               Effect.andThen(
                 options.launchEntered === undefined
                   ? Effect.void
@@ -264,9 +276,16 @@ const startWorld = (
                   : Effect.fail(options.launchFailure),
               ),
             ),
-          launch: (sessionId, argv) =>
+          launch: (sessionId, argv, over, launchOptions) =>
             note(`engine.launch:${sessionId}:${argv.join(" ")}`).pipe(
-              Effect.as(provisioned("alice")),
+              Effect.tap(() =>
+                Effect.sync(() => void launches.push({ over, options: launchOptions ?? null })),
+              ),
+              Effect.andThen(
+                options.launchFailure === undefined
+                  ? Effect.succeed(provisioned("alice"))
+                  : Effect.fail(options.launchFailure),
+              ),
             ),
         }),
         Layer.mock(HarnessModelsRepo, {
@@ -309,6 +328,7 @@ const startWorld = (
     budgets,
     settlements,
     fibers,
+    launches,
     current: () => current,
     cleanup: Effect.forEach(fibers, Fiber.interrupt, { discard: true }),
   };
@@ -388,10 +408,10 @@ describe("SessionStart.startAs", () => {
     const result = await startAs(world, "alice", request({ effort: "high" }));
 
     expect(result._tag).toBe("Success");
-    const recorded = world.effects.indexOf(`sessions.setLaunchOptions:${SESSION}:null:high`);
-    const launchedAt = world.effects.indexOf(`engine.launch:${SESSION}:claude --effort high`);
-    expect(recorded).toBeGreaterThan(-1);
-    expect(launchedAt).toBe(recorded + 1);
+    expect(world.effects).toContain(`engine.launch:${SESSION}:claude --effort high`);
+    expect(world.launches.map((launch) => launch.options)).toEqual([
+      { model: null, effort: "high" },
+    ]);
   });
 
   it("sends opencode no model nobody chose, so the person's own opencode config decides", async () => {
@@ -407,13 +427,17 @@ describe("SessionStart.startAs", () => {
         }).pipe(Effect.provide(world.layer), Effect.result),
       );
       expect(result._tag).toBe("Success");
-      return world.effects;
+      return world;
     };
     const bare = await launch(new LaunchRequest({ prompt: "fix the test" }));
-    expect(bare).toContain(`engine.launch:${SESSION}:opencode --prompt fix the test`);
-    expect(bare).toContain(`sessions.setLaunchOptions:${SESSION}:null:null`);
+    expect(bare.effects).toContain(`engine.launch:${SESSION}:opencode --prompt fix the test`);
+    expect(bare.launches.map((launched) => launched.options)).toEqual([
+      { model: null, effort: null },
+    ]);
     const chosen = await launch(new LaunchRequest({ model: "openai/gpt-6-astra" }));
-    expect(chosen).toContain(`engine.launch:${SESSION}:opencode --model openai/gpt-6-astra`);
+    expect(chosen.effects).toContain(
+      `engine.launch:${SESSION}:opencode --model openai/gpt-6-astra`,
+    );
   });
 
   it("records nothing when the account's launch slots refuse the launch", async () => {
@@ -443,6 +467,7 @@ describe("SessionStart.startAs", () => {
     expect(world.effects.some((entry) => entry.startsWith("sessions.setLaunchOptions"))).toBe(
       false,
     );
+    expect(world.effects.some((entry) => entry.startsWith("engine.launch:"))).toBe(false);
   });
 
   it("resolves nothing for a verbatim argv, and records that: the command names its own model", async () => {
@@ -451,7 +476,7 @@ describe("SessionStart.startAs", () => {
 
     expect(result._tag).toBe("Success");
     expect(world.effects.some((entry) => entry.startsWith("harnessModels."))).toBe(false);
-    expect(world.effects).toContain(`sessions.setLaunchOptions:${SESSION}:null:null`);
+    expect(world.launches.map((launch) => launch.options)).toEqual([{ model: null, effort: null }]);
     expect(world.effects).toContain(`engine.launch:${SESSION}:claude --model opus`);
   });
 
@@ -928,4 +953,98 @@ describe("API-owned pre-workspace launch failure settlement", () => {
       }).pipe(Effect.provide(world.layer), Effect.ensuring(world.cleanup)),
     );
   });
+});
+
+/** One `launchAs` as `alice`, of the provisioned row unless a test brings its own. */
+const launchWith = async (
+  input: LaunchRequest,
+  world = startWorld(),
+  row = provisioned("alice"),
+) => {
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      const start = yield* SessionStart;
+      return yield* start.launchAs("alice", row, input);
+    }).pipe(Effect.provide(world.layer), Effect.ensuring(world.cleanup), Effect.result),
+  );
+  return { result, world };
+};
+
+describe("what a launch may launch over (SLNT-167)", () => {
+  const settledAt = new Date("2026-10-19T08:00:00.123Z");
+  it.each([
+    { name: "neither field", fields: {}, over: { _tag: "NoLiveAgent" } },
+    { name: "restart", fields: { restart: true }, over: { _tag: "Restart" } },
+    { name: "restart false", fields: { restart: false }, over: { _tag: "NoLiveAgent" } },
+    {
+      name: "the attempt seen",
+      fields: { expected: { settledAt } },
+      over: { _tag: "Expected", settledAt },
+    },
+    {
+      name: "a never-settled attempt seen",
+      fields: { expected: { settledAt: null } },
+      over: { _tag: "Expected", settledAt: null },
+    },
+    {
+      name: "both, the attempt seen winning",
+      fields: { expected: { settledAt }, restart: true },
+      over: { _tag: "Expected", settledAt },
+    },
+  ])("parses $name, for a PTY launch and a protocol one", async ({ fields, over }) => {
+    const pty = await launchWith(new LaunchRequest({ ...fields }));
+    const protocol = await launchWith(new LaunchRequest({ ...fields, mode: "protocol" }));
+    expect(pty.result._tag).toBe("Success");
+    expect(protocol.result._tag).toBe("Success");
+    expect(pty.world.launches.map((launch) => launch.over)).toEqual([over]);
+    expect(protocol.world.launches.map((launch) => launch.over)).toEqual([over]);
+  });
+
+  it.each([
+    {
+      engine: new SessionMovedOnError({
+        sessionId: SESSION,
+        status: "running",
+        settledAt: null,
+        message: "the session moved on · it reads running · nothing launched",
+      }),
+      contract: "SessionMovedOn",
+    },
+    {
+      engine: new SessionAgentLiveError({
+        sessionId: SESSION,
+        status: "starting",
+        settledAt,
+        message: "starting · a launch of this session is already under way · nothing new started",
+      }),
+      contract: "SessionAgentLive",
+    },
+  ])(
+    "answers the engine's $engine._tag as $contract, and settles nothing",
+    async ({ engine, contract }) => {
+      for (const mode of [undefined, "protocol"] as const) {
+        const row = unlaunched();
+        const world = startWorld({ initial: row, launchFailure: engine });
+        const { result } = await launchWith(
+          new LaunchRequest({ ...(mode === undefined ? {} : { mode }), expected: { settledAt } }),
+          world,
+          row,
+        );
+        expect(result._tag === "Failure" ? result.failure : null).toEqual(
+          expect.objectContaining({
+            _tag: contract,
+            sessionId: SESSION,
+            status: engine.status,
+            settledAt: engine.settledAt,
+            message: engine.message,
+          }),
+        );
+        expect(world.settlements).toEqual([]);
+        expect(world.current()).toEqual(row);
+        expect(world.effects.some((entry) => entry.startsWith("sessions.setLaunchOptions"))).toBe(
+          false,
+        );
+      }
+    },
+  );
 });
