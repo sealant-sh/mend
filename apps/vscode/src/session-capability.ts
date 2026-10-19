@@ -1,6 +1,6 @@
 import { canSteerSession } from "@mend/domain/workbench";
 
-import type { MemberName } from "./session-lines.js";
+import { displaySession, type MemberName } from "./session-lines.js";
 import type { Session } from "./types.js";
 
 /**
@@ -31,6 +31,21 @@ export const maySteer = (session: SteeringFacts, viewer: string): boolean =>
 export const mayStop = (session: SteeringFacts, viewer: string | null): boolean =>
   viewer !== null && maySteer(session, viewer);
 
+const UNKNOWN_VIEWER = "Mend could not read who you are on this server";
+
+/** Why Stop does nothing for this viewer on the session as read now; null when she may stop it. */
+export const stopRefusal = async (
+  session: SteeringFacts & Pick<Session, "label" | "harness" | "id">,
+  viewer: string | null,
+  ownerName: (userId: string | null) => Promise<string>,
+): Promise<string | null> => {
+  if (mayStop(session, viewer)) return null;
+  const name = displaySession(session);
+  return viewer === null
+    ? `${UNKNOWN_VIEWER}, so it did not stop ${name}.`
+    : `${name} is ${await ownerName(session.ownerUserId)}'s session. Only its owner stops it while shared control is off.`;
+};
+
 /** Whether `viewer` types in the session's terminals: its owner, or anyone when Mend cannot say. */
 export const ownsSession = (
   session: Pick<Session, "ownerUserId">,
@@ -46,12 +61,9 @@ export const rowCapability = (facts: {
   readonly members: ReadonlyArray<MemberName>;
 }): RowCapability => {
   const { session, viewer, members } = facts;
+  if (viewer === null) return { kind: "unknown", why: UNKNOWN_VIEWER };
   const launcher = session.workspaceLauncherUserId;
   if (launcher === null || launcher === viewer) return { kind: "open" };
-  // A launcher is listed, so the viewer was asked for: her identity read failed.
-  if (viewer === null) {
-    return { kind: "unknown", why: "Mend could not read who you are on this server" };
-  }
   const name =
     members.find((member) => member.userId === launcher)?.name ??
     session.livePeople.find((person) => person.accountId === launcher)?.name ??

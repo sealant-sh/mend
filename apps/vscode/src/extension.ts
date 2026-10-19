@@ -21,6 +21,7 @@ import {
   pickDescription,
   rowCapability,
   rowOffer,
+  stopRefusal,
   type RowCapability,
   type RowOffer,
 } from "./session-capability.js";
@@ -505,10 +506,11 @@ class MendCommands {
         this.client.sessionDetail(location.session.id),
         this.client.viewerId(),
       ]);
-      if (viewer !== null && !maySteer(detail.session, viewer)) {
-        void vscode.window.showInformationMessage(
-          `${displaySession(detail.session)} is ${await memberName(this.client, detail.session.ownerUserId)}'s session. Only its owner stops it while shared control is off.`,
-        );
+      const refusal = await stopRefusal(detail.session, viewer, (userId) =>
+        memberName(this.client, userId),
+      );
+      if (refusal !== null) {
+        void vscode.window.showInformationMessage(refusal);
         return;
       }
     } catch (cause) {

@@ -6,6 +6,7 @@ import {
   rowCapability,
   rowContextValue,
   rowOffer,
+  stopRefusal,
 } from "./session-capability.js";
 import type { Session } from "./types.js";
 
@@ -108,7 +109,19 @@ describe("Open", () => {
     expect(rowContextValue(anas, capability, mayStop(anas, null))).toBe("mend.session.live.review");
     expect(pickDescription(anas, capability)).toBe("running · Review");
   });
+
+  it("is not offered when no one launched the workspace and Mend could not read who the viewer is", () => {
+    const unlaunched = { ...anas, workspaceLauncherUserId: null };
+    const capability = rowCapability({ session: unlaunched, viewer: null, members });
+    expect(capability).toEqual({
+      kind: "unknown",
+      why: "Mend could not read who you are on this server",
+    });
+    expect(rowOffer(capability)).toBe("Review");
+  });
 });
+
+const ownerName = async () => "Ana";
 
 describe("Stop", () => {
   it("is the viewer's to use only on a session she may steer", () => {
@@ -118,5 +131,20 @@ describe("Stop", () => {
       true,
     );
     expect(mayStop(anas, null)).toBe(false);
+  });
+
+  const named = { ...anas, id: "session-1", label: "add-rate-limit", harness: "claude" };
+
+  it("refuses at the command when Mend could not read who the viewer is", async () => {
+    expect(await stopRefusal(named, null, ownerName)).toBe(
+      "Mend could not read who you are on this server, so it did not stop add-rate-limit.",
+    );
+  });
+
+  it("refuses at the command on someone else's session, and lets its owner stop it", async () => {
+    expect(await stopRefusal(named, "dana", ownerName)).toBe(
+      "add-rate-limit is Ana's session. Only its owner stops it while shared control is off.",
+    );
+    expect(await stopRefusal(named, "ana", ownerName)).toBeNull();
   });
 });

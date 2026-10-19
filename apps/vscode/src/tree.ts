@@ -109,7 +109,7 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
     this.changed.fire();
   }
 
-  /** The viewer the last snapshot read, without a request; null when it read none. */
+  /** The viewer the last snapshot read, without a request; null when it could not say. */
   knownViewer(): string | null {
     return this.current?.viewer ?? null;
   }
@@ -128,8 +128,7 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
 
   private async load(): Promise<Snapshot> {
     try {
-      // The project view carries who is live and the retirement's state (docs/adr/0016); the
-      // viewer is asked for only when a row has something per-person to say.
+      // The project view carries who is live and the retirement's state (docs/adr/0016).
       const { projects, details, viewer } = await readProjects(this.client);
       this.error = null;
       await vscode.commands.executeCommand("setContext", "mend.hasProjects", projects.length > 0);

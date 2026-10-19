@@ -230,7 +230,7 @@ export interface WorkspaceLineReads {
   workspaceRetirement(sessionId: string): Promise<RetirementView | null>;
 }
 
-/** The projects and their views, and the viewer only when a row has something per-person. */
+/** The projects, their views and the viewer. */
 export const readProjects = async (client: {
   listProjects(): Promise<ReadonlyArray<Project>>;
   projectDetail(projectId: string): Promise<ProjectDetail>;
@@ -240,11 +240,10 @@ export const readProjects = async (client: {
   readonly details: ReadonlyArray<ProjectDetail>;
   readonly viewer: string | null;
 }> => {
-  const projects = await client.listProjects();
+  // Asked for every time, so a null viewer always means Mend could not say who she is: every row's
+  // Open and Stop depend on it, whether or not a row lists anyone.
+  const [projects, viewer] = await Promise.all([client.listProjects(), client.viewerId()]);
   const details = await Promise.all(projects.map((project) => client.projectDetail(project.id)));
-  const viewer = hasPersonFacts(details.flatMap((detail) => detail.sessions))
-    ? await client.viewerId()
-    : null;
   return { projects, details, viewer };
 };
 
