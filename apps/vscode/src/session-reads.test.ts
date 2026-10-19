@@ -107,6 +107,17 @@ describe("why a session waits", () => {
     ).toBe("claude finished its turn");
   });
 
+  it("says an older agent's ask over a newer agent's finished turn", () => {
+    const asking = agent({ id: "a1", waiting: { kind: "permission", tool: "Bash", since } });
+    const finished = agent({ id: "a2", waiting: { kind: "prompt", tool: null, since } });
+    expect(terminalWait(detail([asking, finished]))?.words).toBe(
+      "claude needs your permission to use Bash",
+    );
+    expect(terminalWait(detail([agent({ id: "a1" }), finished]))?.words).toBe(
+      "claude finished its turn",
+    );
+  });
+
   it("reads no wait from an agent that ended", () => {
     const ended = agent({ exitedAt: since, waiting: { kind: "question", tool: null, since } });
     expect(terminalWait(detail([ended]))).toBeNull();

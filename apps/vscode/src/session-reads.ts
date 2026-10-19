@@ -82,9 +82,12 @@ export const limited = async <Item, Result>(
 
 /** Why a session waits, from its detail: a terminal agent's own report, else nothing yet. */
 export const terminalWait = (detail: Pick<SessionDetail, "processes">): WaitFact | null => {
-  const agent = detail.processes.findLast(
-    (process) => process.kind === "agent-pty" && process.exitedAt === null,
+  const reporting = detail.processes.filter(
+    (process) =>
+      process.kind === "agent-pty" && process.exitedAt === null && process.waiting !== null,
   );
+  // An agent that asks outweighs one that only finished its turn, as the session's fold does.
+  const agent = reporting.find((process) => process.waiting?.kind !== "prompt") ?? reporting.at(-1);
   const wait = agent?.waiting ?? null;
   if (agent === undefined || wait === null) return null;
   const harness = agent.harness ?? agent.label ?? "the agent";
