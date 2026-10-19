@@ -43,9 +43,9 @@ import { PushSender } from "./push-sender.ts";
  * discipline is ported from t3code (MIT — pingdotgg/t3code relay), which
  * exists because every guard here is a bug they shipped without:
  *
- * - phase, not status: `waiting`/`idle` collapse to one "attention" phase so
- *   flapping between them can't re-ring; `starting`/`running`/`stopped` never
- *   notify (stopped is the user's own hand).
+ * - phase, not status: only `waiting` is the "attention" phase. `idle` rings only the outcome of
+ *   an agent that ended (`phaseOf`): a terminal agent's finished turn asks nobody anything (decided
+ *   2026-10-19). `starting`/`running`/`stopped` never notify (stopped is the user's own hand).
  * - known baseline only: a session or turn first seen mid-flight records its
  *   state silently — reconnecting or restarting the server must not buzz the
  *   phone. A turn rings only if this process saw it open first.
@@ -412,7 +412,11 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
       Stream.runForEach((payload) =>
         decodeEvent(payload).pipe(
           Effect.flatMap((event) => {
-            if (event.type === "session") return observe(event.sessionId);
+            // The phase reads the agent's process row as well as the session's status: an agent
+            // that exits while a shell keeps the session `idle` changes only its row.
+            if (event.type === "session" || event.type === "session-process") {
+              return observe(event.sessionId);
+            }
             if (event.type === "agent-conversation") return observeTurn(event.sessionId);
             return Effect.void;
           }),

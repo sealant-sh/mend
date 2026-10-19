@@ -239,8 +239,12 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
     yield* events.pipe(
       Stream.runForEach((payload) =>
         decodeEvent(payload).pipe(
+          // Settled for review reads the live agents as well as the status: an agent that exits
+          // while a shell keeps the session `idle` changes only its process row.
           Effect.flatMap((event) =>
-            event.type === "session" ? observe(event.sessionId) : Effect.void,
+            event.type === "session" || event.type === "session-process"
+              ? observe(event.sessionId)
+              : Effect.void,
           ),
           // `Cause.pretty` renders the failure itself (its tag and fields), where
           // `String(cause)` reads `Cause([Fail(GitError)])` and names nothing.
