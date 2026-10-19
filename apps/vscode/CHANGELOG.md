@@ -5,6 +5,12 @@ patch number is the extension's own.
 
 ## Unreleased
 
+- Review happens in VS Code. Selecting a session's row shows its **Change** section: the header
+  `main → now · 4 files · +120 −18 · observed · 40 s ago`, a row per file with its letter, Comments
+  and Checkpoints. A file opens VS Code's diff editor (base ↔ the pinned checkpoint); **Open all
+  changes** opens them all in one multi-diff editor; the header picks **since my last review**,
+  **last turn** or two checkpoints, which read but take no comments. **Mend: Review change** shows
+  the section instead of opening the browser, and **Open in Mend (web)** sits in its `...` menu.
 - The Mend view is **Sessions**: **Needs you**, **Since you last looked**, **Running**, then
   **Projects**, collapsed. Each row reads `<word> · <fact>` as Mend observed it, such as
   `waiting · claude needs your permission to use Bash · since 02:14` or

@@ -128,7 +128,7 @@ else's session reads `read-only · <owner>'s session`.
 | **Mend: Answer**                | A waiting session's agent terminal in this window's panel     |
 | **Mend: Choose a session**      | Pick a session that needs you, finished or runs               |
 | **Mend: Open terminal**         | The session's terminal in a VS Code terminal tab, without SSH |
-| **Mend: Review change**         | The session's change in Mend's review, in your browser        |
+| **Mend: Review change**         | The session's change in the Change section, in VS Code        |
 | **Mend: Open in Mend**          | The session or project in Mend's web app                      |
 | **Mend: Stop session**          | Stop a live session; the worktree and its change remain       |
 | **Mend: Adopt a repository…**   | Adopt a repository from its clone URL                         |
