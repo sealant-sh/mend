@@ -1,13 +1,13 @@
 import { PgClient } from "@effect/sql-pg";
 import { type ChangeId } from "@mend/domain";
 import { ChangePass, type PassKind } from "@mend/domain/workbench";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, ne } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { changePasses, worktreeChanges } from "../schema/workbench.ts";
+import { changePasses, changeReviewPreps, worktreeChanges } from "../schema/workbench.ts";
 
 const decodePass = Schema.decodeUnknownEffect(Schema.Struct(ChangePass.fields));
 
@@ -35,6 +35,12 @@ export class ChangePassesRepo extends Context.Service<
     ) => Effect.Effect<void>;
     readonly fail: (changeId: ChangeId, kind: PassKind, detail: string) => Effect.Effect<void>;
     readonly listForChange: (changeId: ChangeId) => Effect.Effect<ReadonlyArray<ChangePass>>;
+    /**
+     * Review prep's claim on one diff of a change: true, recording it, when prep has not queued
+     * passes for this digest yet; false when it has. One statement, so concurrent claims of the
+     * same diff leave one winner.
+     */
+    readonly claimPrep: (changeId: ChangeId, diffDigest: string) => Effect.Effect<boolean>;
   }
 >()("@mend/db/ChangePassesRepo") {}
 
@@ -161,6 +167,23 @@ export const ChangePassesRepoLive: Layer.Layer<
       return yield* Effect.forEach(rows, decodeRow);
     });
 
-    return { queue, begin, complete, fail, listForChange };
+    const claimPrep = Effect.fn("ChangePassesRepo.claimPrep")(function* (
+      changeId: ChangeId,
+      diffDigest: string,
+    ) {
+      const claimed = yield* db
+        .insert(changeReviewPreps)
+        .values({ changeId, diffDigest })
+        .onConflictDoUpdate({
+          target: changeReviewPreps.changeId,
+          set: { diffDigest, preparedAt: yield* DateTime.nowAsDate },
+          setWhere: ne(changeReviewPreps.diffDigest, diffDigest),
+        })
+        .returning({ changeId: changeReviewPreps.changeId })
+        .pipe(Effect.orDie);
+      return claimed.length > 0;
+    });
+
+    return { queue, begin, complete, fail, listForChange, claimPrep };
   }),
 );

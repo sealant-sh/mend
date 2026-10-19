@@ -3537,6 +3537,21 @@ const sessionProcessWaitingMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE session_processes ADD COLUMN waiting jsonb`;
 });
 
+/**
+ * Review prep spends inference once per diff of a change: the digest it last queued passes for,
+ * so a second settle, a restarted worker or another session in the worktree over the same diff
+ * queues nothing.
+ */
+const changeReviewPrepsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE change_review_preps (
+      change_id text PRIMARY KEY REFERENCES worktree_changes(id) ON DELETE CASCADE,
+      diff_digest text NOT NULL,
+      prepared_at timestamptz NOT NULL DEFAULT now()
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3671,4 +3686,5 @@ export const migrations = {
   "0130_claude_own_default": claudeOwnDefaultMigration,
   "0131_user_agent_logins": userAgentLoginsMigration,
   "0132_session_process_waiting": sessionProcessWaitingMigration,
+  "0133_change_review_preps": changeReviewPrepsMigration,
 };
