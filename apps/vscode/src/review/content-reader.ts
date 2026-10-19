@@ -15,6 +15,8 @@ export interface ChangeAddress {
   readonly path: string;
   readonly at: string;
   readonly absent: boolean;
+  /** The pinned slice whose new side this is; null for any other document. */
+  readonly slice: string | null;
 }
 
 const MIB = 1024 * 1024;

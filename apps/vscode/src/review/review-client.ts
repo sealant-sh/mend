@@ -1,16 +1,21 @@
 import type { MendConnection } from "../config.js";
 import { requestMend } from "../mend-http.js";
 import {
+  parseComment,
   parseComments,
   parseContents,
   parseOpenedReview,
   parseRangeDiff,
+  parseReadPass,
   parseSliceDiff,
+  parseTranscript,
   parseWorktreeChain,
   type FileContents,
   type PinnedSlice,
+  type ReadPass,
   type ServerComment,
   type SliceDiff,
+  type TranscriptEntry,
   type WorktreeChain,
 } from "./review-wire.js";
 
@@ -61,5 +66,30 @@ export class ReviewClient {
   /** Every comment on the change, of every state and every slice. */
   async comments(changeId: string): Promise<ReadonlyArray<ServerComment>> {
     return parseComments(await this.get(`/changes/${segment(changeId)}/comments`));
+  }
+
+  async setCommentState(
+    changeId: string,
+    commentId: string,
+    state: "open" | "addressed" | "dismissed",
+  ): Promise<ServerComment> {
+    return parseComment(
+      await this.post(`/changes/${segment(changeId)}/comments/${segment(commentId)}/state`, {
+        state,
+      }),
+    );
+  }
+
+  /** Mend reads the change: queued at once; its drafts arrive as comments when it ends. */
+  async readChange(changeId: string): Promise<void> {
+    await this.post(`/changes/${segment(changeId)}/read`, {});
+  }
+
+  async readPass(changeId: string): Promise<ReadPass | null> {
+    return parseReadPass(await this.get(`/changes/${segment(changeId)}/passes`));
+  }
+
+  async transcript(sessionId: string): Promise<ReadonlyArray<TranscriptEntry>> {
+    return parseTranscript(await this.get(`/sessions/${segment(sessionId)}/transcript`));
   }
 }

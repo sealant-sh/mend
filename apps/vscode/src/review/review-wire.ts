@@ -319,3 +319,59 @@ export const parseComment = (value: unknown): ServerComment => {
 
 export const parseComments = (value: unknown): ReadonlyArray<ServerComment> =>
   list(value, parseComment, "comments");
+
+/** Mend's last read of the change (`POST /changes/:id/read`), as `GET …/passes` reports it. */
+export type ReadPass =
+  | { readonly kind: "reading"; readonly since: string }
+  | { readonly kind: "read"; readonly at: string; readonly findings: number | null }
+  | { readonly kind: "failed"; readonly at: string; readonly words: string };
+
+/** The `read` pass among a change's passes; null when Mend never read it. */
+export const parseReadPass = (value: unknown): ReadPass | null => {
+  const pass = list(value, (item) => record(item, "pass"), "passes").find(
+    (item) => item["kind"] === "read",
+  );
+  if (pass === undefined) return null;
+  const startedAt = text(pass, "startedAt", "pass");
+  const at = textOrNull(pass, "finishedAt") ?? startedAt;
+  switch (pass["status"]) {
+    case "queued":
+    case "running":
+      return { kind: "reading", since: startedAt };
+    case "failed":
+      return {
+        kind: "failed",
+        at,
+        words: textOrNull(pass, "detail") ?? "Mend could not read this change.",
+      };
+    default:
+      return { kind: "read", at, findings: lineOrNull(pass, "findings") };
+  }
+};
+
+/** One entry of a session's transcript, as the harness recorded it. */
+export interface TranscriptEntry {
+  readonly kind: string;
+  readonly text: string | null;
+  readonly name: string | null;
+  readonly command: string | null;
+  readonly output: string | null;
+}
+
+export const parseTranscript = (value: unknown): ReadonlyArray<TranscriptEntry> => {
+  const raw = record(value, "transcript");
+  return list(
+    raw["events"],
+    (item) => {
+      const entry = record(item, "transcript entry");
+      return {
+        kind: textOrNull(entry, "kind") ?? "event",
+        text: textOrNull(entry, "text"),
+        name: textOrNull(entry, "name"),
+        command: textOrNull(entry, "command"),
+        output: textOrNull(entry, "output"),
+      };
+    },
+    "transcript",
+  );
+};

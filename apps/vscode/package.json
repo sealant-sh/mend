@@ -255,6 +255,60 @@
         "command": "mend.change.readNewer",
         "title": "Read the newer slice",
         "category": "Mend"
+      },
+      {
+        "command": "mend.change.read",
+        "title": "Read this change",
+        "category": "Mend",
+        "icon": "$(sparkle)",
+        "enablement": "!mend.offline"
+      },
+      {
+        "command": "mend.change.showRecord",
+        "title": "Show record",
+        "category": "Mend"
+      },
+      {
+        "command": "mend.change.openComment",
+        "title": "Show the comment",
+        "category": "Mend"
+      },
+      {
+        "command": "mend.review.addComment",
+        "title": "Add comment",
+        "category": "Mend"
+      },
+      {
+        "command": "mend.review.accept",
+        "title": "Accept",
+        "category": "Mend"
+      },
+      {
+        "command": "mend.review.dismiss",
+        "title": "Dismiss",
+        "category": "Mend"
+      },
+      {
+        "command": "mend.review.edit",
+        "title": "Edit",
+        "category": "Mend",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "mend.review.delete",
+        "title": "Delete",
+        "category": "Mend",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "mend.review.save",
+        "title": "Save",
+        "category": "Mend"
+      },
+      {
+        "command": "mend.review.cancel",
+        "title": "Cancel",
+        "category": "Mend"
       }
     ],
     "menus": {
@@ -298,6 +352,46 @@
         {
           "command": "mend.change.readNewer",
           "when": "false"
+        },
+        {
+          "command": "mend.change.read",
+          "when": "mend.change.ready"
+        },
+        {
+          "command": "mend.change.showRecord",
+          "when": "mend.change.ready"
+        },
+        {
+          "command": "mend.change.openComment",
+          "when": "false"
+        },
+        {
+          "command": "mend.review.addComment",
+          "when": "false"
+        },
+        {
+          "command": "mend.review.accept",
+          "when": "false"
+        },
+        {
+          "command": "mend.review.dismiss",
+          "when": "false"
+        },
+        {
+          "command": "mend.review.edit",
+          "when": "false"
+        },
+        {
+          "command": "mend.review.delete",
+          "when": "false"
+        },
+        {
+          "command": "mend.review.save",
+          "when": "false"
+        },
+        {
+          "command": "mend.review.cancel",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -335,6 +429,16 @@
           "command": "mend.change.refresh",
           "when": "view == mend.change",
           "group": "overflow@2"
+        },
+        {
+          "command": "mend.change.read",
+          "when": "view == mend.change && mend.change.ready",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mend.change.showRecord",
+          "when": "view == mend.change && mend.change.ready",
+          "group": "overflow@3"
         }
       ],
       "view/item/context": [
@@ -417,6 +521,47 @@
           "command": "mend.copyWorktreePath",
           "when": "view == mend.sessions && viewItem =~ /^mend\\.session/",
           "group": "2_session@2"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "mend.review.addComment",
+          "group": "inline@1",
+          "when": "commentController == mend.review && commentThreadIsEmpty"
+        },
+        {
+          "command": "mend.review.accept",
+          "group": "inline@1",
+          "when": "commentController == mend.review && commentThread == mend.thread.draft"
+        },
+        {
+          "command": "mend.review.dismiss",
+          "group": "inline@2",
+          "when": "commentController == mend.review && commentThread == mend.thread.draft"
+        }
+      ],
+      "comments/comment/title": [
+        {
+          "command": "mend.review.edit",
+          "group": "inline@1",
+          "when": "commentController == mend.review && comment == mend.comment.pending"
+        },
+        {
+          "command": "mend.review.delete",
+          "group": "inline@2",
+          "when": "commentController == mend.review && comment =~ /^mend\\.comment\\.(pending|accepted)$/"
+        }
+      ],
+      "comments/comment/context": [
+        {
+          "command": "mend.review.save",
+          "group": "inline@1",
+          "when": "commentController == mend.review && comment == mend.comment.pending"
+        },
+        {
+          "command": "mend.review.cancel",
+          "group": "inline@2",
+          "when": "commentController == mend.review && comment == mend.comment.pending"
         }
       ]
     },

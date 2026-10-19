@@ -1,8 +1,10 @@
 import type { ChangeAddress } from "./content-reader.js";
+import type { SessionReview } from "./pending.js";
 import type {
   ChangeFile,
   Checkpoint,
   PinnedSlice,
+  ReadPass,
   ServerComment,
   SliceDiff,
   WorktreeChain,
@@ -19,6 +21,7 @@ import {
   statusLetter,
   type Slice,
 } from "./slices.js";
+import { commentsLine, threadsOf, type ThreadView } from "./threads.js";
 
 /**
  * The Change section as rows, from one read of a session's change (story d, steps 1, 2 and 5).
@@ -44,6 +47,8 @@ export interface ChangeRead {
   readonly drift: { readonly files: number | null } | null;
   /** Why the section shows another slice than she chose: hers could not be read. */
   readonly notice: string | null;
+  /** Mend's last read of the change; null when it never read it. */
+  readonly pass: ReadPass | null;
   readonly readAt: string;
 }
 
@@ -60,6 +65,16 @@ export interface FileRow {
   /** The file where the slice ends: empty, read from nowhere, when the slice deleted it. */
   readonly right: ChangeAddress;
   readonly title: string;
+}
+
+/** One comment under Comments: `Use the shared limiter… · limit.ts:12 · pending`. */
+export interface CommentRow {
+  readonly kind: "comment";
+  readonly id: string;
+  readonly label: string;
+  readonly description: string;
+  readonly mend: boolean;
+  readonly thread: ThreadView | null;
 }
 
 export interface CheckpointRow {
@@ -91,6 +106,7 @@ export type ChangeRow =
       readonly kind: "comments";
       readonly id: string;
       readonly description: string;
+      readonly comments: ReadonlyArray<CommentRow>;
     }
   | {
       readonly kind: "checkpoints";
@@ -114,11 +130,17 @@ const clock = (iso: string): string => {
 
 export const fileRow = (file: ChangeFile, read: ChangeRead): FileRow => {
   const path = filePath(file);
-  const at = (checkpoint: Checkpoint, where: string, absent: boolean): ChangeAddress => ({
+  const at = (
+    checkpoint: Checkpoint,
+    where: string,
+    absent: boolean,
+    slice: string | null,
+  ): ChangeAddress => ({
     worktreeId: read.chain.worktreeId,
     path: where,
     at: checkpoint.id,
     absent,
+    slice,
   });
   const slash = path.lastIndexOf("/");
   return {
@@ -128,33 +150,24 @@ export const fileRow = (file: ChangeFile, read: ChangeRead): FileRow => {
     folder: slash === -1 ? "" : path.slice(0, slash),
     letter: statusLetter(file),
     file,
-    left: at(read.slice.from, file.oldPath ?? path, file.status === "added"),
-    right: at(read.slice.to, file.newPath ?? path, file.status === "deleted"),
+    left: at(read.slice.from, file.oldPath ?? path, file.status === "added", null),
+    right: at(
+      read.slice.to,
+      file.newPath ?? path,
+      file.status === "deleted",
+      read.slice.commentable ? read.pinned.id : null,
+    ),
     title: diffTitle(path, read.slice, read.chain.baseName),
   };
 };
 
-/** `1 Mend draft`, `2 sent · 1 addressed`: what the comments hold, by state, as observed. */
-export const commentsLine = (comments: ReadonlyArray<ServerComment>): string => {
-  const drafts = comments.filter((comment) => comment.state === "draft").length;
-  const sent = comments.filter(
-    (comment) => comment.state === "open" && comment.sentToSessionId !== null,
-  ).length;
-  const open = comments.filter(
-    (comment) => comment.state === "open" && comment.sentToSessionId === null,
-  ).length;
-  const addressed = comments.filter((comment) => comment.state === "addressed").length;
-  const parts = [
-    open > 0 ? `${open} open` : null,
-    sent > 0 ? `${sent} sent` : null,
-    addressed > 0 ? `${addressed} addressed` : null,
-    drafts > 0 ? `${drafts} Mend ${drafts === 1 ? "draft" : "drafts"}` : null,
-  ].flatMap((part) => (part === null ? [] : [part]));
-  return parts.length === 0 ? "none" : parts.join(" · ");
-};
-
 /** The section's rows for one read, at `now`. */
-export const changeRows = (read: ChangeRead, now: Date): ReadonlyArray<ChangeRow> => {
+export const changeRows = (
+  read: ChangeRead,
+  review: SessionReview,
+  you: string,
+  now: Date,
+): ReadonlyArray<ChangeRow> => {
   const base = read.chain.baseName;
   const above: Array<ChangeRow> = [];
   if (read.notice !== null)
@@ -191,22 +204,29 @@ export const changeRows = (read: ChangeRead, now: Date): ReadonlyArray<ChangeRow
       label: `newer checkpoints · read ${sliceSpan(newerSlice, base)}`,
       command: "mend.change.readNewer",
     });
-  const rows: Array<ChangeRow> = [
-    {
-      kind: "slice",
-      id: "slice",
-      label: `${sliceName(read.slice, base)} ▾`,
-      description: headerFact({
-        files: read.diff.files,
-        observation: read.diff.observation,
-        listingCut: read.diff.listingCut,
-        readAt: read.readAt,
-        now,
-      }),
-      above,
-      files: read.diff.files.map((file) => fileRow(file, read)),
-    },
-  ];
+  const { threads, loose } = threadsOf(read, review, you);
+  const rows: Array<ChangeRow> = [];
+  if (read.pass?.kind === "reading")
+    rows.push({
+      kind: "note",
+      id: "note:reading",
+      label: `Mend is reading · ${clock(read.pass.since)}`,
+      icon: "loading~spin",
+    });
+  rows.push({
+    kind: "slice",
+    id: "slice",
+    label: `${sliceName(read.slice, base)} ▾`,
+    description: headerFact({
+      files: read.diff.files,
+      observation: read.diff.observation,
+      listingCut: read.diff.listingCut,
+      readAt: read.readAt,
+      now,
+    }),
+    above,
+    files: read.diff.files.map((file) => fileRow(file, read)),
+  });
   if (!read.slice.commentable)
     rows.push({
       kind: "note",
@@ -215,7 +235,33 @@ export const changeRows = (read: ChangeRead, now: Date): ReadonlyArray<ChangeRow
       icon: "eye",
     });
   rows.push(
-    { kind: "comments", id: "comments", description: commentsLine(read.comments) },
+    {
+      kind: "comments",
+      id: "comments",
+      description: commentsLine(threads, loose),
+      comments: [
+        ...threads.map(
+          (thread): CommentRow => ({
+            kind: "comment",
+            id: thread.key,
+            label: thread.body.split("\n")[0] ?? "",
+            description: `${thread.at.path.split("/").at(-1) ?? thread.at.path}:${thread.line} · ${thread.author === "Mend · draft" ? "Mend · draft" : thread.label}`,
+            mend: thread.kind === "draft",
+            thread,
+          }),
+        ),
+        ...loose.map(
+          (comment): CommentRow => ({
+            kind: "comment",
+            id: comment.key,
+            label: comment.body.split("\n")[0] ?? "",
+            description: `the whole change · ${comment.kind === "draft" ? "Mend · draft" : comment.label}`,
+            mend: comment.kind === "draft",
+            thread: null,
+          }),
+        ),
+      ],
+    },
     {
       kind: "checkpoints",
       id: "checkpoints",
