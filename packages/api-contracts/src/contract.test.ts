@@ -13,6 +13,7 @@ import {
   ProjectInheritUserSkillsRequest,
   ProjectInstallCommandRequest,
   ProjectInstallEnabledRequest,
+  StoreFailure,
 } from "./index.ts";
 
 const conversationEndpointNames = new Set(["submitTurn", "interruptTurn", "respondAgentRequest"]);
@@ -226,5 +227,20 @@ describe("typed HTTP error contracts", () => {
       { name: "main", isDefault: true },
     ]);
     expect(() => Schema.encodeUnknownSync(codec)([fields])).toThrow();
+  });
+
+  it("StoreFailure carries the unknown base on the wire, and reads a body without one", () => {
+    const codec = Schema.toCodecJson(StoreFailure);
+    expect(
+      Schema.encodeUnknownSync(codec)(
+        new StoreFailure({ message: "base unknown", unknownBase: "fix/login" }),
+      ),
+    ).toEqual({ _tag: "StoreFailure", message: "base unknown", unknownBase: "fix/login" });
+    expect(
+      Schema.encodeUnknownSync(codec)(new StoreFailure({ message: "No space left on device" })),
+    ).toEqual({ _tag: "StoreFailure", message: "No space left on device" });
+    expect(
+      Schema.decodeUnknownSync(codec)({ _tag: "StoreFailure", message: "older server" }),
+    ).toMatchObject({ message: "older server" });
   });
 });

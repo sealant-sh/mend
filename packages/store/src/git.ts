@@ -17,6 +17,8 @@ export class GitError extends Schema.TaggedError<GitError>()("GitError", {
    * (git printed more than the buffer holds and was killed), `ENOENT`, `EAGAIN`, `EMFILE`…
    */
   code: Schema.optionalKey(Schema.String),
+  /** The requested base, when this is the refusal of a base the store does not know after a fetch. */
+  unknownBase: Schema.optionalKey(Schema.String),
 }) {}
 
 /**

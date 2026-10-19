@@ -1404,6 +1404,7 @@ export class Store extends Context.Service<
                         cwd: storePath,
                         exitCode: cause.exitCode,
                         stderr: `base "${baseRef}" is not a branch, tag, or commit this project's store knows (origin was fetched and it is still unknown) — push it to the project origin or start from another base`,
+                        unknownBase: baseRef,
                       }),
                 ),
               );

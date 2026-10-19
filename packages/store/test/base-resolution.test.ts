@@ -95,6 +95,7 @@ it("reports the failed origin fetch instead of claiming an unknown base was fetc
       expect(error.args).toEqual(["fetch", "origin"]);
       expect(error.stderr).toContain("synthetic transport refused before network");
       expect(error.stderr).not.toContain("origin was fetched");
+      expect(error.unknownBase).toBeUndefined();
       expect(error.exitCode).toBe(128);
       expect(fs.readFileSync(log, "utf8").trim().split("\n")).toHaveLength(2);
       expect(
@@ -123,6 +124,7 @@ it("reports an unknown base after a successful origin fetch and retains its fetc
       expect(error.args).toEqual(["rev-parse", "missing-base^{commit}"]);
       expect(error.stderr).toContain('base "missing-base" is not a branch, tag, or commit');
       expect(error.stderr).toContain("origin was fetched and it is still unknown");
+      expect(error.unknownBase).toBe("missing-base");
       expect(
         execFileSync("git", ["rev-parse", "refs/remotes/origin/main"], {
           cwd: repository,

@@ -1,4 +1,4 @@
-import { LaunchRequest, NotFound } from "@mend/api-contracts";
+import { LaunchRequest, NotFound, StoreFailure } from "@mend/api-contracts";
 import {
   AgentConversationRepo,
   HarnessModelsRepo,
@@ -32,6 +32,7 @@ import {
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { SessionEngine, SessionLaunchSetupError } from "@mend/sessions";
+import { GitError } from "@mend/store";
 import { TestClock } from "@mend/test-ci/effect-vitest";
 import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
 import { describe, expect, it } from "vitest";
@@ -136,6 +137,8 @@ const startWorld = (
     readonly initial?: Session | null;
     readonly executorCreate?: string | null;
     readonly launchFailure?: SessionLaunchSetupError;
+    /** What the store said when provisioning the worktree failed. */
+    readonly provisionFailure?: GitError;
     readonly launchEntered?: Deferred.Deferred<void>;
     readonly launchFinished?: Deferred.Deferred<void>;
   } = {},
@@ -231,12 +234,16 @@ const startWorld = (
             note(
               `engine.provision:${input.projectId}:${input.ownerUserId}:${input.origin}${input.autoLand === null || input.autoLand === undefined ? "" : `:land=${input.autoLand}`}${input.harnessLayout === undefined ? "" : `:layout=${input.harnessLayout}`}`,
             ).pipe(
-              Effect.as(
-                provisioned(
-                  input.ownerUserId,
-                  options.origin ?? "mend",
-                  options.sessionAutoLand ?? null,
-                ),
+              Effect.andThen(
+                options.provisionFailure === undefined
+                  ? Effect.succeed(
+                      provisioned(
+                        input.ownerUserId,
+                        options.origin ?? "mend",
+                        options.sessionAutoLand ?? null,
+                      ),
+                    )
+                  : Effect.fail(options.provisionFailure),
               ),
             ),
           launchProtocol: (sessionId, start, author) =>
@@ -670,6 +677,58 @@ describe("the prompt guard (docs/adr/0007, Questions do not open pull requests)"
       },
     });
     expect(world.effects).toContain(`engine.provision:${PROJECT}:alice:mend:land=true`);
+  });
+});
+
+describe("SessionStart.createAs when the store refuses the worktree", () => {
+  const createAs = (failure: GitError) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const start = yield* SessionStart;
+        return yield* start.createAs("alice", PROJECT, {
+          harness: "claude",
+          label: null,
+          name: null,
+          base: "fix/login",
+          origin: "mend",
+        });
+      }).pipe(Effect.provide(startWorld({ provisionFailure: failure }).layer), Effect.result),
+    );
+
+  it("names the base it does not know, so a client may start from another", async () => {
+    const result = await createAs(
+      new GitError({
+        args: ["rev-parse", "fix/login^{commit}"],
+        cwd: "/store",
+        exitCode: 128,
+        stderr: 'base "fix/login" is not a branch, tag, or commit this project\'s store knows',
+        unknownBase: "fix/login",
+      }),
+    );
+    expect(result._tag === "Failure" ? result.failure : null).toEqual(
+      new StoreFailure({
+        message: 'base "fix/login" is not a branch, tag, or commit this project\'s store knows',
+        unknownBase: "fix/login",
+      }),
+    );
+  });
+
+  it("names no base for any other failure, which keeps its own reason", async () => {
+    const result = await createAs(
+      new GitError({
+        args: ["worktree", "add"],
+        cwd: "/store",
+        exitCode: 128,
+        stderr: "fatal: could not create work tree dir: No space left on device",
+      }),
+    );
+    const failure = result._tag === "Failure" ? result.failure : null;
+    expect(failure).toEqual(
+      new StoreFailure({
+        message: "fatal: could not create work tree dir: No space left on device",
+      }),
+    );
+    expect(failure !== null && "unknownBase" in failure).toBe(false);
   });
 });
 
