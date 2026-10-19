@@ -3,8 +3,18 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AuthenticationProviderAuthenticationSessionsChangeEvent } from "vscode";
 
+import { MendAuthenticationProvider } from "./auth-provider.js";
+import { MendClient } from "./client.js";
 import { ConnectionStore } from "./config.js";
+import {
+  parseCredentialStore,
+  serializeCredentialStore,
+  withCredential,
+  type CredentialStore,
+} from "./credentials.js";
+import type { MendAccount } from "./first-run-view.js";
 
 const settings = vi.hoisted(() => new Map<string, unknown>());
 
@@ -18,7 +28,8 @@ const ui = vi.hoisted(() => ({
   openExternal: vi.fn(async (_uri: unknown) => true),
 }));
 
-vi.mock("vscode", () => ({
+vi.mock("vscode", async () => ({
+  EventEmitter: (await import("./test-vscode.js")).EventEmitter,
   window: {
     showInputBox: ui.showInputBox,
     showInformationMessage: ui.showInformationMessage,
@@ -81,16 +92,89 @@ const approved = json(200, {
 });
 
 let home = "";
+/** The extension's secret storage, which every window of this VS Code shares. */
 const secrets = new Map<string, string>();
+/** `secrets.onDidChange` in each window. */
+const secretChanged = new Set<() => void>();
 const store = () =>
   new ConnectionStore({
     secrets: {
       get: async (key: string) => secrets.get(key),
       store: async (key: string, value: string) => {
         secrets.set(key, value);
+        for (const listener of secretChanged) listener();
       },
     },
   });
+
+const TOKEN_KEY = "mend.serverToken";
+const EDGE = "https://mend.example.com";
+
+/** The editor signed in through the browser: one device per server, pointed at the first. */
+const signedIn = (
+  ...devices: ReadonlyArray<{ readonly url: string; readonly token: string; readonly id: string }>
+): void => {
+  const kept = devices.reduce<CredentialStore>(
+    (entries, device) =>
+      withCredential(entries, {
+        kind: "token",
+        url: device.url,
+        token: device.token,
+        deviceId: device.id,
+        email: "dana@example.com",
+      }),
+    new Map(),
+  );
+  secrets.set(TOKEN_KEY, serializeCredentialStore(kept));
+  settings.set("mend.serverUrl", devices[0]?.url);
+};
+
+/**
+ * One VS Code window as extension.ts wires it: its connection store and client, and its Accounts
+ * menu, read again on every change of the shared secret (first run's refresh).
+ */
+const editorWindow = () => {
+  const connections = store();
+  let account: MendAccount | null = null;
+  const accounts = new MendAuthenticationProvider({
+    account: () => account,
+    signIn: () => connections.connect(),
+    signOut: async (url) => {
+      await connections.signOut(url);
+    },
+  });
+  const changes: Array<AuthenticationProviderAuthenticationSessionsChangeEvent> = [];
+  accounts.onDidChangeSessions((change) => changes.push(change));
+  const refresh = async (): Promise<void> => {
+    const state = await connections.state();
+    account =
+      state.kind === "connected"
+        ? {
+            url: state.url,
+            token: state.token,
+            email: await connections.signedInEmail(state.url),
+          }
+        : null;
+    accounts.changed();
+  };
+  secretChanged.add(() => void refresh());
+  return { connections, client: new MendClient(connections), accounts, changes, refresh };
+};
+
+/** Every request the editor sent, and Mend's answer to `DELETE /api/me/devices/:id`. */
+const devicesServer = (revoke: () => Response | Promise<Response>, poll: Response = approved) => {
+  const flow = server(poll);
+  return vi.fn<typeof fetch>(async (input, init) =>
+    String(input).includes("/api/me/devices/") && init?.method === "DELETE"
+      ? revoke()
+      : flow(input, init),
+  );
+};
+
+const deletes = (fetcher: ReturnType<typeof devicesServer>) =>
+  fetcher.mock.calls
+    .filter(([, init]) => init?.method === "DELETE")
+    .map(([input, init]) => [String(input), new Headers(init?.headers).get("authorization")]);
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-config-test-"));
@@ -98,6 +182,7 @@ beforeEach(() => {
   vi.stubEnv("XDG_CONFIG_HOME", path.join(home, ".config"));
   settings.clear();
   secrets.clear();
+  secretChanged.clear();
   for (const spy of Object.values(ui)) spy.mockClear();
 });
 
@@ -166,4 +251,134 @@ describe("Use it, as the extension runs it (h1 variant)", () => {
     expect(ui.openExternal).not.toHaveBeenCalled();
     expect(ui.showInformationMessage).not.toHaveBeenCalled();
   });
+});
+
+describe("the Accounts menu (h2c)", () => {
+  const mini = { url: MINI, token: "mdt_mini", id: "device-mini" };
+  const edge = { url: EDGE, token: "mdt_edge", id: "device-edge" };
+
+  it("drops an account Mend refused, in this window and in another one, through the secret", async () => {
+    signedIn(mini);
+    const here = editorWindow();
+    const there = editorWindow();
+    await Promise.all([here.refresh(), there.refresh()]);
+    expect((await there.accounts.getSessions()).map((session) => session.account.label)).toEqual([
+      "dana@example.com @ mend-mini.local",
+    ]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async () => json(401, { _tag: "Unauthorized" })),
+    );
+    await expect(here.client.listProjects()).rejects.toMatchObject({ status: 401 });
+    await vi.waitFor(async () => expect(await there.accounts.getSessions()).toEqual([]));
+    expect(await here.accounts.getSessions()).toEqual([]);
+    for (const window of [here, there]) {
+      expect(window.changes.at(-1)).toMatchObject({ added: [], removed: [{ id: MINI }] });
+    }
+    expect(parseCredentialStore(secrets.get(TOKEN_KEY)).get(MINI)).toEqual({
+      kind: "none",
+      url: MINI,
+    });
+    expect(await there.connections.state()).toMatchObject({ kind: "notConnected" });
+  });
+
+  it("Sign Out of an account signs out of that server, and only it", async () => {
+    signedIn(mini, edge);
+    const fetcher = devicesServer(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetcher);
+    const here = editorWindow();
+    await here.refresh();
+    await here.accounts.removeSession(EDGE);
+    expect(deletes(fetcher)).toEqual([[`${EDGE}/api/me/devices/device-edge`, "Bearer mdt_edge"]]);
+    expect(await here.connections.state()).toMatchObject({ kind: "connected", url: MINI });
+    expect(parseCredentialStore(secrets.get(TOKEN_KEY)).get(EDGE)?.kind).toBe("none");
+
+    await here.accounts.removeSession(MINI);
+    expect(deletes(fetcher)).toHaveLength(2);
+    expect(await here.accounts.getSessions()).toEqual([]);
+  });
+});
+
+describe("signing out says what Mend answered", () => {
+  const mini = { url: MINI, token: "mdt_mini", id: "device-mini" };
+  const cases: ReadonlyArray<readonly [string, () => Response, string]> = [
+    ["revoked", () => new Response(null, { status: 204 }), "and revoked this editor's device."],
+    ["a 401", () => json(401, {}), "This device was already signed out."],
+    ["a 404", () => json(404, {}), "This device was already signed out."],
+    [
+      "a 403",
+      () => json(403, {}),
+      "Mend answered 403 when asked to revoke this editor's device. Revoke it under Settings → Devices.",
+    ],
+    [
+      "no answer",
+      () => {
+        throw new TypeError("fetch failed");
+      },
+      "Mend could not be reached to revoke this editor's device. Revoke it under Settings → Devices.",
+    ],
+  ];
+
+  for (const [answered, revoke, said] of cases) {
+    it(`on ${answered}, and holds no token afterwards`, async () => {
+      signedIn(mini);
+      vi.stubGlobal("fetch", devicesServer(revoke));
+      const message = await store().signOut();
+      expect(message.startsWith(`Signed out of Mend at ${MINI}`), message).toBe(true);
+      expect(message.endsWith(said), message).toBe(true);
+      expect(await store().state()).toMatchObject({ kind: "notConnected" });
+    });
+  }
+});
+
+describe("Connect while connected (h2)", () => {
+  const before = { url: MINI, token: "mdt_before", id: "device-before" };
+
+  it("revokes the device it replaced, with that device's own token, once", async () => {
+    signedIn(before);
+    const fetcher = devicesServer(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetcher);
+    ui.showInputBox.mockResolvedValueOnce(MINI);
+    const connections = store();
+    expect(await connections.connect()).toBe(true);
+    expect(deletes(fetcher)).toEqual([]);
+    await connections.revokeReplaced();
+    await connections.revokeReplaced();
+    expect(deletes(fetcher)).toEqual([
+      [`${MINI}/api/me/devices/device-before`, "Bearer mdt_before"],
+    ]);
+    expect(ui.showWarningMessage).not.toHaveBeenCalled();
+    expect(await connections.state()).toMatchObject({ token: "mdt_editor" });
+  }, 10_000);
+
+  it("says once when Mend could not be reached to revoke it", async () => {
+    signedIn(before);
+    vi.stubGlobal(
+      "fetch",
+      devicesServer(() => {
+        throw new TypeError("fetch failed");
+      }),
+    );
+    ui.showInputBox.mockResolvedValueOnce(MINI);
+    const connections = store();
+    await connections.connect();
+    await connections.revokeReplaced();
+    expect(ui.showWarningMessage.mock.calls).toEqual([
+      [
+        `Signed in again to Mend at ${MINI}; Mend could not be reached to revoke this editor's earlier device. Revoke it under Settings → Devices.`,
+      ],
+    ]);
+  }, 10_000);
+
+  it("a first sign-in replaces nothing, and a second Connect joins the one running", async () => {
+    const fetcher = devicesServer(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetcher);
+    ui.showInputBox.mockResolvedValueOnce(MINI);
+    const connections = store();
+    const [first, second] = await Promise.all([connections.connect(), connections.connect()]);
+    expect([first, second]).toEqual([true, true]);
+    expect(ui.showInputBox).toHaveBeenCalledTimes(1);
+    await connections.revokeReplaced();
+    expect(deletes(fetcher)).toEqual([]);
+  }, 10_000);
 });

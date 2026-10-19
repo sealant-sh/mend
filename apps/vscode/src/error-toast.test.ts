@@ -27,6 +27,16 @@ describe("showErrorToast", () => {
     expect(commands.executeCommand.mock.calls).toEqual([["mend.connect"]]);
   });
 
+  it("says a refused sign-in once while its toast shows, when a read and a click meet it at once", async () => {
+    const toast = Promise.withResolvers<string | undefined>();
+    window.showErrorMessage.mockImplementationOnce(() => toast.promise);
+    const read = showErrorToast(signedOut, "Signed out — sign in again.");
+    const click = showErrorToast(signedOut, "Mend could not create the session · …", "Try again");
+    toast.resolve(undefined);
+    expect(await Promise.all([read, click])).toEqual([false, false]);
+    expect(window.showErrorMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("offers Try again for any other failure, and says whether she picked it", async () => {
     const unreachable = new MendApiError("The Mend server did not answer.", null);
     window.showErrorMessage.mockResolvedValueOnce("Try again");

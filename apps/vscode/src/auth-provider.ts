@@ -40,7 +40,8 @@ export class MendAuthenticationProvider
       readonly account: () => MendAccount | null;
       /** Connect; true once signed in. */
       readonly signIn: () => Promise<boolean>;
-      readonly signOut: () => Promise<void>;
+      /** Signs this editor out of one server, by its URL. */
+      readonly signOut: (url: string) => Promise<void>;
     },
   ) {}
 
@@ -59,8 +60,9 @@ export class MendAuthenticationProvider
     return sessionOf(account);
   }
 
-  async removeSession(): Promise<void> {
-    await this.deps.signOut();
+  /** A session's id is its server's URL: removing it signs out of that server, and only it. */
+  async removeSession(sessionId: string): Promise<void> {
+    await this.deps.signOut(sessionId);
   }
 
   /** The connection moved: tell VS Code what the Accounts menu now holds. */

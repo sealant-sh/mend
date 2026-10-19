@@ -4,6 +4,7 @@ import {
   canonicalServerUrl,
   credentialFor,
   parseCredentialStore,
+  refusedIn,
   serializeCredentialStore,
   signOutOf,
   tokenFor,
@@ -154,5 +155,30 @@ describe("one server, however its URL is spelled", () => {
     expect(serializeCredentialStore(tokens)).toBe(
       JSON.stringify({ entries: [{ url: CANONICAL, token: "mdt_last", deviceId: "d" }] }),
     );
+  });
+});
+
+describe("a token Mend refused", () => {
+  const signedIn = withCredential(new Map(), {
+    kind: "token",
+    url: MINI,
+    token: "mdt_editor",
+    deviceId: "d",
+  });
+
+  it("is replaced by no token, so the CLI's sign-in does not quietly take over", () => {
+    const next = refusedIn(signedIn, { url: MINI, token: "mdt_editor" }, cli);
+    expect(next?.get(MINI)).toEqual({ kind: "none", url: MINI });
+    expect(tokenFor(MINI, next?.get(MINI) ?? null, cli)).toBeNull();
+  });
+
+  it("drops the CLI's refused token for that server too", () => {
+    const next = refusedIn(new Map(), { url: MINI, token: "mdt_cli" }, cli);
+    expect(next?.get(MINI)).toEqual({ kind: "none", url: MINI });
+  });
+
+  it("leaves a newer sign-in, and another server, alone", () => {
+    expect(refusedIn(signedIn, { url: MINI, token: "mdt_before" }, cli)).toBeNull();
+    expect(refusedIn(signedIn, { url: EDGE, token: "mdt_editor" }, cli)).toBeNull();
   });
 });

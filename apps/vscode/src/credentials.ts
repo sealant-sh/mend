@@ -149,3 +149,75 @@ export const signOutOf = (
     next: withCredential(store, { kind: "none", url: server }),
   };
 };
+
+/**
+ * Mend refused `token` at `url` (401): the store with "no token" there, so every window and the
+ * Accounts menu drop the account together. Null when the editor no longer sends that token there
+ * (a sign-in or a sign-out since), so a late refusal never undoes a newer sign-in.
+ */
+export const refusedIn = (
+  store: CredentialStore,
+  refused: { readonly url: string; readonly token: string },
+  cli: CliCredential | null,
+): CredentialStore | null =>
+  tokenFor(refused.url, credentialFor(store, refused.url), cli) === refused.token
+    ? withCredential(store, { kind: "none", url: refused.url })
+    : null;
+
+/** What Mend answered when asked to revoke a device (`DELETE /me/devices/:id`). */
+export type RevokeOutcome =
+  | { readonly kind: "revoked" }
+  /** 401 or 404: the device's token no longer signs in, or the device is gone. */
+  | { readonly kind: "alreadySignedOut" }
+  | { readonly kind: "unreachable" }
+  | { readonly kind: "refused"; readonly status: number };
+
+/** A revoke's outcome from the status Mend answered with; null when nothing answered. */
+export const revokeOutcomeOf = (status: number | null): RevokeOutcome => {
+  if (status === null) return { kind: "unreachable" };
+  if (status === 401 || status === 404) return { kind: "alreadySignedOut" };
+  return { kind: "refused", status };
+};
+
+/** What a sign-out ended: the editor's own device, a pasted token, or only the CLI's fallback. */
+export type SignedOut =
+  | { readonly kind: "device"; readonly outcome: RevokeOutcome }
+  | { readonly kind: "pastedToken" }
+  | { readonly kind: "cliFallback" };
+
+/** The one message of a sign-out she chose, in what Mend answered. */
+export const signOutMessage = (url: string, signedOut: SignedOut): string => {
+  switch (signedOut.kind) {
+    case "cliFallback":
+      return `Signed out of Mend at ${url} in this editor. The Mend CLI on this machine keeps its own sign-in; mend logout ends it.`;
+    case "pastedToken":
+      return `Signed out of Mend at ${url}. The pasted token stays valid until it is revoked under Settings → Devices.`;
+    case "device":
+      switch (signedOut.outcome.kind) {
+        case "revoked":
+          return `Signed out of Mend at ${url}, and revoked this editor's device.`;
+        case "alreadySignedOut":
+          return `Signed out of Mend at ${url}. This device was already signed out.`;
+        case "unreachable":
+          return `Signed out of Mend at ${url}; Mend could not be reached to revoke this editor's device. Revoke it under Settings → Devices.`;
+        case "refused":
+          return `Signed out of Mend at ${url}; Mend answered ${signedOut.outcome.status} when asked to revoke this editor's device. Revoke it under Settings → Devices.`;
+      }
+  }
+};
+
+/**
+ * Said once when a new sign-in replaced this editor's earlier device and Mend did not revoke it;
+ * null when it is gone.
+ */
+export const replacedDeviceWarning = (url: string, outcome: RevokeOutcome): string | null => {
+  switch (outcome.kind) {
+    case "revoked":
+    case "alreadySignedOut":
+      return null;
+    case "unreachable":
+      return `Signed in again to Mend at ${url}; Mend could not be reached to revoke this editor's earlier device. Revoke it under Settings → Devices.`;
+    case "refused":
+      return `Signed in again to Mend at ${url}; Mend answered ${outcome.status} when asked to revoke this editor's earlier device. Revoke it under Settings → Devices.`;
+  }
+};

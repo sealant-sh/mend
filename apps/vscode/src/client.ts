@@ -3,7 +3,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import * as vscode from "vscode";
 
 import type { ConnectionStore, MendConnection } from "./config.js";
-import { requestMend } from "./mend-http.js";
+import { MendApiError, requestMend } from "./mend-http.js";
 import type { CreateRequest } from "./new-session.js";
 import {
   parseLivePeople,
@@ -307,8 +307,17 @@ export class MendClient {
     return this.connections.get();
   }
 
+  /** A refused token is dropped wherever it was met, before its caller says so. */
   private async request(path: string, init?: RequestInit): Promise<unknown> {
-    return requestMend(await this.connections.get(), path, init);
+    const connection = await this.connections.get();
+    try {
+      return await requestMend(connection, path, init);
+    } catch (cause) {
+      const { url, token } = connection;
+      if (cause instanceof MendApiError && cause.status === 401 && token !== null)
+        void this.connections.refused({ url, token });
+      throw cause;
+    }
   }
 
   private post(path: string, payload: unknown): Promise<unknown> {

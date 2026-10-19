@@ -8,13 +8,18 @@ import {
   canonicalServerUrl,
   credentialFor,
   parseCredentialStore,
+  refusedIn,
+  replacedDeviceWarning,
+  revokeOutcomeOf,
   serializeCredentialStore,
+  signOutMessage,
   signOutOf,
   tokenFor,
   withCredential,
   withoutCredential,
   type CliCredential,
   type CredentialStore,
+  type RevokeOutcome,
 } from "./credentials.js";
 import {
   connectionOf,
@@ -24,7 +29,7 @@ import {
   type ConnectEffects,
   type SignInOutcome,
 } from "./first-run.js";
-import { requestMend } from "./mend-http.js";
+import { MendApiError, REQUEST_TIMEOUT_MS, requestMend } from "./mend-http.js";
 import { browserSignIn, finishBrowserSignIn, normalizeServerUrl, urlNotice } from "./sign-in.js";
 
 export interface MendConnection {
@@ -62,6 +67,26 @@ const cliConfig = (): CliCredential | null => {
   }
 };
 
+/** A browser sign-in's device, which signing out or signing in again revokes. */
+interface Device {
+  readonly url: string;
+  readonly token: string;
+  readonly deviceId: string;
+}
+
+/** `DELETE /me/devices/:id` with the device's own token, bounded like a read: a sign-out waits on it. */
+const revokeDevice = async (device: Device): Promise<RevokeOutcome> => {
+  try {
+    await requestMend(device, `/me/devices/${encodeURIComponent(device.deviceId)}`, {
+      method: "DELETE",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    return { kind: "revoked" };
+  } catch (cause) {
+    return revokeOutcomeOf(cause instanceof MendApiError ? cause.status : null);
+  }
+};
+
 const configuredUrl = (): string | null => {
   const configured = vscode.workspace.getConfiguration("mend").get<string>("serverUrl")?.trim();
   return configured === undefined || configured === "" ? null : canonicalServerUrl(configured);
@@ -69,6 +94,11 @@ const configuredUrl = (): string | null => {
 
 /** One connection shared by the tree, status item, URI handler, and commands. */
 export class ConnectionStore {
+  /** The Connect running now: a second one joins it instead of opening another sign-in request. */
+  #connecting: Promise<boolean> | null = null;
+  /** The device a sign-in just replaced, revoked once the editor reads with the new token. */
+  #replaced: Device | null = null;
+
   constructor(
     private readonly context: { readonly secrets: Pick<vscode.SecretStorage, "get" | "store"> },
   ) {}
@@ -145,9 +175,38 @@ export class ConnectionStore {
   }
 
   /** Connect: the server URL, Mend's approve page in the browser, one toast. */
-  async connect(): Promise<boolean> {
-    const state = await this.state();
-    return runConnect(state.kind === "notConnected" ? state.prefill : state.url, this.effects());
+  connect(): Promise<boolean> {
+    this.#connecting ??= this.state()
+      .then((state) =>
+        runConnect(state.kind === "notConnected" ? state.prefill : state.url, this.effects()),
+      )
+      .finally(() => {
+        this.#connecting = null;
+      });
+    return this.#connecting;
+  }
+
+  /**
+   * Revokes the device the last sign-in replaced, best effort, and says once when Mend did not.
+   * Called once the editor reads with the new token: a read still out on the old one would
+   * otherwise come back refused and toast a sign-out.
+   */
+  async revokeReplaced(): Promise<void> {
+    const replaced = this.#replaced;
+    this.#replaced = null;
+    if (replaced === null) return;
+    const warning = replacedDeviceWarning(replaced.url, await revokeDevice(replaced));
+    if (warning !== null) void vscode.window.showWarningMessage(warning);
+  }
+
+  /**
+   * Mend refused `connection`'s token (401): the editor holds no token for that server from now
+   * on, so the Accounts menu, the extensions it was shared with, and every window (through the
+   * secret's change) drop it. A token the editor no longer sends is left alone.
+   */
+  async refused(connection: { readonly url: string; readonly token: string }): Promise<void> {
+    const next = refusedIn(await this.#stored(), connection, cliConfig());
+    if (next !== null) await this.context.secrets.store(TOKEN_KEY, serializeCredentialStore(next));
   }
 
   /**
@@ -197,9 +256,11 @@ export class ConnectionStore {
       );
       const signedIn = await finishBrowserSignIn(result, completion);
       if (signedIn === null) return { kind: "cancelled" };
+      const stored = await this.#stored();
+      const replaced = credentialFor(stored, url);
       await this.#point(
         url,
-        withCredential(await this.#stored(), {
+        withCredential(stored, {
           kind: "token",
           url,
           token: signedIn.token,
@@ -207,6 +268,12 @@ export class ConnectionStore {
           email: signedIn.email,
         }),
       );
+      if (
+        replaced?.kind === "token" &&
+        replaced.deviceId !== null &&
+        replaced.deviceId !== signedIn.deviceId
+      )
+        this.#replaced = { url, token: replaced.token, deviceId: replaced.deviceId };
       return { kind: "signedIn", email: signedIn.email };
     } catch (cause) {
       return {
@@ -220,36 +287,27 @@ export class ConnectionStore {
   }
 
   /**
-   * Sign this editor out of the server it is connected to now, and only that one: its own entry for
-   * that URL is revoked (a browser sign-in's device) and replaced by "no token", so the editor does
-   * not fall back to the CLI's sign-in there. Entries for other servers stay as they were.
+   * Sign this editor out of `url` (by default the server it is connected to now), and only that
+   * one: its own entry there is revoked (a browser sign-in's device) and replaced by "no token", so
+   * the editor does not fall back to the CLI's sign-in there. Other servers' entries stay as they
+   * were.
    */
-  async signOut(): Promise<string> {
-    const current = await this.get();
-    const { own, next } = signOutOf(current.url, await this.#stored());
-    if (own === null && current.token === null) {
-      return `This editor holds no Mend sign-in for ${current.url}.`;
+  async signOut(url?: string): Promise<string> {
+    const server = url === undefined ? (await this.get()).url : canonicalServerUrl(url);
+    const stored = await this.#stored();
+    const { own, next } = signOutOf(server, stored);
+    if (own === null && tokenFor(server, credentialFor(stored, server), cliConfig()) === null) {
+      return `This editor holds no Mend sign-in for ${server}.`;
     }
-    let revoked = false;
-    if (own !== null && own.deviceId !== null) {
-      try {
-        await requestMend(own, `/me/devices/${encodeURIComponent(own.deviceId)}`, {
-          method: "DELETE",
-        });
-        revoked = true;
-      } catch {
-        revoked = false;
-      }
-    }
+    const outcome =
+      own === null || own.deviceId === null
+        ? null
+        : await revokeDevice({ url: server, token: own.token, deviceId: own.deviceId });
     await this.context.secrets.store(TOKEN_KEY, serializeCredentialStore(next));
-    if (own === null) {
-      return `Signed out of Mend at ${current.url} in this editor. The Mend CLI on this machine keeps its own sign-in; mend logout ends it.`;
-    }
-    if (own.deviceId === null) {
-      return `Signed out of Mend at ${current.url}. The pasted token stays valid until it is revoked under Settings → Devices.`;
-    }
-    return revoked
-      ? `Signed out of Mend at ${current.url}, and revoked this editor's device.`
-      : `Signed out of Mend at ${current.url}; Mend could not be reached to revoke this editor's device. Revoke it under Settings → Devices.`;
+    if (own === null) return signOutMessage(server, { kind: "cliFallback" });
+    return signOutMessage(
+      server,
+      outcome === null ? { kind: "pastedToken" } : { kind: "device", outcome },
+    );
   }
 }

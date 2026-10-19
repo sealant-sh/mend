@@ -7,6 +7,7 @@ import { attachTerminal, memberName } from "./agent-terminal.js";
 import { AUTH_PROVIDER_ID, MendAuthenticationProvider } from "./auth-provider.js";
 import { MendClient } from "./client.js";
 import { ConnectionStore } from "./config.js";
+import { canonicalServerUrl } from "./credentials.js";
 import { showErrorToast } from "./error-toast.js";
 import { FirstRunTree, FirstRunView, isOfferRow } from "./first-run-view.js";
 import { offerOf } from "./first-run.js";
@@ -154,6 +155,8 @@ class MendCommands {
         this.client.adoptProject(originProjectName(source), source),
       );
       this.store.refresh();
+      // From the palette the view may be hidden: the adopted project is what says it worked.
+      await vscode.commands.executeCommand("workbench.view.extension.mend");
     } catch (cause) {
       void showError(cause);
     }
@@ -342,9 +345,14 @@ class MendCommands {
     }
   }
 
-  async signOut(): Promise<void> {
-    const said = await this.connections.signOut();
-    this.store.refresh();
+  /**
+   * A sign-out she chose: the store stops reading first, so a read still out on the revoked token
+   * cannot come back refused and toast `Signed out — sign in again.` after it.
+   */
+  async signOut(url?: string): Promise<void> {
+    const current = (await this.client.connection()).url;
+    if (url === undefined || canonicalServerUrl(url) === current) this.store.stop();
+    const said = await this.connections.signOut(url);
     void vscode.window.showInformationMessage(said);
   }
 
@@ -652,10 +660,11 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const connect = async (): Promise<boolean> => {
     const signedIn = await connections.connect();
     await firstRun.refresh();
+    void connections.revokeReplaced();
     return signedIn;
   };
-  const signOut = async (): Promise<void> => {
-    await commands.signOut();
+  const signOut = async (url?: string): Promise<void> => {
+    await commands.signOut(url);
     await firstRun.refresh();
   };
   const accounts = new MendAuthenticationProvider({
@@ -701,7 +710,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     vscode.commands.registerCommand("mend.setupWorkspaceSsh", () => firstRun.setUp()),
     vscode.commands.registerCommand("mend.skipWorkspaceSsh", () => firstRun.skipSetUp()),
     vscode.commands.registerCommand("mend.adoptHere", () => firstRun.adoptHere()),
-    vscode.commands.registerCommand("mend.signOut", signOut),
+    vscode.commands.registerCommand("mend.signOut", () => signOut()),
     store,
     view,
     statusBar,
