@@ -1,12 +1,6 @@
 import * as vscode from "vscode";
 
-import {
-  MendApiError,
-  matchProject,
-  type EventPointer,
-  type MendClient,
-  type StreamSignal,
-} from "./client.js";
+import { MendApiError, matchProject, type MendClient, type StreamSignal } from "./client.js";
 import { repositoryFacts } from "./git.js";
 import type { MemberName } from "./session-lines.js";
 import {
@@ -19,17 +13,63 @@ import {
   type WaitFact,
   type WindowModel,
 } from "./session-model.js";
-import { conversationWait, readPlan, terminalWait, type ReadPlan } from "./session-reads.js";
+import {
+  conversationWait,
+  limited,
+  readPlan,
+  readsAnything,
+  terminalWait,
+  type ReadPlan,
+} from "./session-reads.js";
 import type { Project, ProjectDetail, Session, SessionDetail } from "./types.js";
 import { sessionOfWorkspace, type WindowRole } from "./window-role.js";
 
 /** `globalState` key: `LastSeen` per server URL, on this machine only. */
 const LAST_SEEN_KEY = "mend.lastSeen";
 const DEBOUNCE_MS = 150;
+/** However busy the stream, what it announced is read within this long of its first frame. */
+export const MAX_WAIT_MS = 1_000;
+/** At most this many reads at once: a full read fans out per project and per session. */
+export const FAN_OUT = 6;
+/**
+ * A full read asks for the landings of sessions settled within this long; a session's own frame
+ * asks whatever its age. The reads stay the size of a week's work, not of every session ever run.
+ */
+export const LANDING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 /** While offline, `last seen 2 min ago` is said again each half minute. */
 const OFFLINE_TICK_MS = 30_000;
+/** A read that failed is tried again after this long: no frame may ever come to retry it. */
+const RETRY_MS = 5_000;
 
 const SETTLED: ReadonlySet<string> = new Set(["completed", "failed", "stopped"]);
+
+/** What the store reads from Mend. */
+export type StoreClient = Pick<
+  MendClient,
+  | "connection"
+  | "listProjects"
+  | "projectDetail"
+  | "viewerId"
+  | "memberNames"
+  | "sessionDetail"
+  | "pendingRequests"
+  | "landing"
+  | "subscribe"
+>;
+
+/** Where the store keeps what this VS Code last looked at: the extension's `globalState`. */
+export interface LastSeenMemento {
+  get(key: string): unknown;
+  update(key: string, value: unknown): Thenable<void>;
+}
+
+/** The window's own session, and the session whose agent terminal is in front here. */
+export interface WindowSessions {
+  session(): { readonly session: Session } | null;
+  /** The session whose agent tab is this window's active terminal (Answer shows it there). */
+  terminalSession(): string | null;
+  readonly onDidLocate: vscode.Event<void>;
+}
 
 interface Snapshot {
   readonly projects: ReadonlyArray<Project>;
@@ -49,6 +89,12 @@ const EMPTY: Snapshot = {
   landings: new Map(),
 };
 
+type Facts = {
+  readonly id: string;
+  readonly wait: WaitFact | null;
+  readonly landing: LandingFact | null;
+};
+
 export interface StoreChange {
   readonly prev: WindowModel | null;
   readonly next: WindowModel;
@@ -65,8 +111,9 @@ const isLastSeen = (value: unknown): value is LastSeen => {
   );
 };
 
-/** A read that failed is tried again after this long: no frame may ever come to retry it. */
-const RETRY_MS = 5_000;
+/** Mend refused this sign-in: what it read before is no longer hers to see. */
+const refusedSignIn = (cause: unknown): boolean =>
+  cause instanceof MendApiError && cause.status === 401;
 
 /**
  * Every read the Mend view, status bar, badge and notifier rest on: one snapshot, kept current by
@@ -94,28 +141,33 @@ export class SessionStore implements vscode.Disposable {
   #retry: NodeJS.Timeout | null = null;
   #windowProject: { readonly project: Project; readonly folder: vscode.WorkspaceFolder } | null =
     null;
-  #pending: Array<EventPointer> = [];
-  #pendingAll = false;
+  /** What frames asked for since the last read began: one plan, however many frames. */
+  #wantAll = false;
+  readonly #wantProjects = new Set<string>();
+  readonly #wantSessions = new Set<string>();
+  /** When the oldest wish not yet read arrived: the read starts by `MAX_WAIT_MS` after it. */
+  #wantedSince: number | null = null;
   #timer: NodeJS.Timeout | null = null;
+  /** A read runs: what is asked meanwhile is read right after it, never beside it. */
+  #reading = false;
+  /** The stream was refused: its reconnects are refused alike, and are read again only once. */
+  #refused = false;
   #ticker: NodeJS.Timeout | null = null;
   #subscription: vscode.Disposable | null = null;
-  #reading: Promise<void> = Promise.resolve();
   readonly #disposables: ReadonlyArray<vscode.Disposable>;
 
   constructor(
-    private readonly context: vscode.ExtensionContext,
-    private readonly client: MendClient,
+    private readonly context: { readonly globalState: LastSeenMemento },
+    private readonly client: StoreClient,
     private readonly role: WindowRole,
-    private readonly workspace: {
-      session(): { readonly session: Session } | null;
-      readonly onDidLocate: vscode.Event<void>;
-    },
+    private readonly workspace: WindowSessions,
   ) {
     this.#disposables = [
       this.#changed,
       vscode.window.onDidChangeWindowState((state) => {
         if (state.focused) this.#emit();
       }),
+      vscode.window.onDidChangeActiveTerminal(() => this.#emit()),
       workspace.onDidLocate(() => this.#emit()),
       vscode.workspace.onDidChangeWorkspaceFolders(
         () => void this.#matchWindow().then(() => this.#emit()),
@@ -135,18 +187,18 @@ export class SessionStore implements vscode.Disposable {
   start(): void {
     this.#subscription?.dispose();
     this.#generation += 1;
-    this.#snapshot = EMPTY;
-    this.#read = false;
-    this.#modelRead = false;
+    this.#invalidate();
+    this.#refused = false;
     this.#connection = { state: "connecting" };
+    this.#wantProjects.clear();
+    this.#wantSessions.clear();
     this.#subscription = this.client.subscribe((signal) => this.#signal(signal));
     this.refresh();
   }
 
   /** Read everything again (`Mend: Refresh`). */
   refresh(): void {
-    this.#pendingAll = true;
-    this.#schedule();
+    this.#want({ all: true, projects: new Set(), sessions: new Set() });
   }
 
   /** Whether a read has landed: before it, the view says nothing rather than guess. */
@@ -179,6 +231,30 @@ export class SessionStore implements vscode.Disposable {
     return null;
   }
 
+  /**
+   * The session an id names, from the last read when it has it, else from Mend: a session just
+   * created, or one a link names before the first read lands. Null when Mend has none she sees.
+   */
+  async locate(
+    sessionId: string,
+  ): Promise<{ readonly project: Project; readonly session: Session } | null> {
+    const known = this.find(sessionId);
+    if (known !== null) return known;
+    let session: Session;
+    try {
+      ({ session } = await this.client.sessionDetail(sessionId));
+    } catch (cause) {
+      if (cause instanceof MendApiError && (cause.status === 404 || cause.status === 403))
+        return null;
+      throw cause;
+    }
+    const project =
+      this.#snapshot.projects.find((candidate) => candidate.id === session.projectId) ??
+      (await this.client.projectDetail(session.projectId)).project;
+    this.#want({ all: false, projects: new Set(), sessions: new Set([sessionId]) });
+    return { project, session };
+  }
+
   /** The adopted project this window's folder is a clone of. */
   windowProject(): { readonly project: Project; readonly folder: vscode.WorkspaceFolder } | null {
     return this.#windowProject;
@@ -197,10 +273,18 @@ export class SessionStore implements vscode.Disposable {
     return found.kind === "found" ? found.session.id : null;
   }
 
-  /** Sessions this window shows now: selected in its view while it is on screen, or its own. */
+  /**
+   * Sessions this window shows now: selected in its view while it is on screen, its own, and the
+   * one whose agent terminal is in front here.
+   */
   showing(): ReadonlySet<string> {
-    const own = this.windowSessionId();
-    return new Set([...(this.#visible ? this.#selected : []), ...(own === null ? [] : [own])]);
+    return new Set(
+      [
+        ...(this.#visible ? this.#selected : []),
+        this.windowSessionId(),
+        this.workspace.terminalSession(),
+      ].flatMap((id) => (id === null ? [] : [id])),
+    );
   }
 
   /** The view came on screen or left it. */
@@ -218,16 +302,23 @@ export class SessionStore implements vscode.Disposable {
   #signal(signal: StreamSignal): void {
     switch (signal.kind) {
       case "opened":
+        this.#refused = false;
         this.#heard();
-        this.#pendingAll = true;
-        this.#schedule();
+        this.refresh();
         return;
       case "heard":
         this.#heard();
         return;
-      case "event":
-        this.#pending.push(signal.event);
-        this.#schedule();
+      case "event": {
+        const plan = readPlan([signal.event]);
+        if (readsAnything(plan)) this.#want(plan);
+        return;
+      }
+      case "refused":
+        this.#heard();
+        if (this.#refused) return;
+        this.#refused = true;
+        this.refresh();
         return;
       case "lost":
         this.#offline();
@@ -253,22 +344,41 @@ export class SessionStore implements vscode.Disposable {
     this.#emit();
   }
 
-  #schedule(): void {
+  /** Adds to what the next read reads, and makes sure one comes. */
+  #want(plan: ReadPlan): void {
+    if (plan.all) this.#wantAll = true;
+    for (const id of plan.projects) this.#wantProjects.add(id);
+    for (const id of plan.sessions) this.#wantSessions.add(id);
+    const now = Date.now();
+    this.#wantedSince ??= now;
     if (this.#timer !== null) clearTimeout(this.#timer);
+    const delay = Math.max(0, Math.min(DEBOUNCE_MS, this.#wantedSince + MAX_WAIT_MS - now));
     this.#timer = setTimeout(() => {
       this.#timer = null;
-      const all = this.#pendingAll || !this.#read;
-      const plan = all
-        ? { all: true, projects: new Set<string>(), sessions: new Set<string>() }
-        : readPlan(this.#pending);
-      this.#pendingAll = false;
-      this.#pending = [];
-      // One read at a time: a frame that lands mid-read is read after it, never beside it.
-      const generation = this.#generation;
-      this.#reading = this.#reading
-        .then(() => this.#apply(plan, generation))
-        .catch(() => undefined);
-    }, DEBOUNCE_MS);
+      void this.#readWanted();
+    }, delay);
+  }
+
+  /** Reads what was asked, one plan at a time, until nothing more is asked. */
+  async #readWanted(): Promise<void> {
+    if (this.#reading) return;
+    this.#reading = true;
+    try {
+      while (this.#wantAll || this.#wantProjects.size > 0 || this.#wantSessions.size > 0) {
+        const plan: ReadPlan = {
+          all: this.#wantAll || !this.#read,
+          projects: new Set(this.#wantProjects),
+          sessions: new Set(this.#wantSessions),
+        };
+        this.#wantAll = false;
+        this.#wantProjects.clear();
+        this.#wantSessions.clear();
+        this.#wantedSince = null;
+        await this.#apply(plan, this.#generation);
+      }
+    } finally {
+      this.#reading = false;
+    }
   }
 
   async #apply(plan: ReadPlan, generation: number): Promise<void> {
@@ -285,9 +395,17 @@ export class SessionStore implements vscode.Disposable {
       if (generation !== this.#generation) return;
       if (cause instanceof MendApiError && cause.status === null) this.#offline();
       else this.#error = cause;
+      if (refusedSignIn(cause)) this.#invalidate();
       this.#retryLater();
     }
     this.#emit();
+  }
+
+  /** Forgets what was read: nothing shows until a read lands, and no change of it toasts. */
+  #invalidate(): void {
+    this.#snapshot = EMPTY;
+    this.#read = false;
+    this.#modelRead = false;
   }
 
   #retryLater(): void {
@@ -304,24 +422,25 @@ export class SessionStore implements vscode.Disposable {
       this.#lastSeen = this.#loadLastSeen(connection.url);
     }
     const projects = await this.client.listProjects();
-    const details = await Promise.all(
-      projects.map((project) => this.client.projectDetail(project.id)),
+    const details = await limited(projects, FAN_OUT, (project) =>
+      this.client.projectDetail(project.id),
     );
     // A failed read of who she is keeps the last answer: it must not make every session hers.
     const viewer = (await this.client.viewerId()) ?? this.#snapshot.viewer;
     const named = viewer === null ? [] : await this.client.memberNames();
     const members = named.length === 0 ? this.#snapshot.members : named;
-    const sessions = details.flatMap((detail) => detail.sessions);
-    const waits = new Map<string, WaitFact>();
-    const landings = new Map<string, LandingFact>();
-    await Promise.all(
-      sessions.map(async (session) => {
-        const facts = await this.#factsOf(session);
-        if (facts.wait !== null) waits.set(session.id, facts.wait);
-        if (facts.landing !== null) landings.set(session.id, facts.landing);
-      }),
+    const facts = await limited(
+      details.flatMap((detail) => detail.sessions),
+      FAN_OUT,
+      async (session) => ({ id: session.id, ...(await this.#factsOf(session, "recent")) }),
     );
     if (generation !== this.#generation) return;
+    const waits = new Map<string, WaitFact>();
+    const landings = new Map<string, LandingFact>();
+    for (const { id, wait, landing } of facts) {
+      if (wait !== null) waits.set(id, wait);
+      if (landing !== null) landings.set(id, landing);
+    }
     this.#snapshot = {
       projects,
       details: new Map(details.map((detail) => [detail.project.id, detail])),
@@ -339,8 +458,7 @@ export class SessionStore implements vscode.Disposable {
   async #readProject(projectId: string, generation: number): Promise<void> {
     const known = this.#snapshot.details.get(projectId);
     if (known === undefined) {
-      this.#pendingAll = true;
-      this.#schedule();
+      this.refresh();
       return;
     }
     const detail = await this.client.projectDetail(projectId);
@@ -353,9 +471,10 @@ export class SessionStore implements vscode.Disposable {
         session.status === "waiting"
       );
     });
-    const facts = await Promise.all(
-      changed.map(async (session) => ({ id: session.id, ...(await this.#factsOf(session)) })),
-    );
+    const facts = await limited(changed, FAN_OUT, async (session) => ({
+      id: session.id,
+      ...(await this.#factsOf(session, "recent")),
+    }));
     if (generation !== this.#generation) return;
     const details = new Map(this.#snapshot.details);
     details.set(projectId, detail);
@@ -377,11 +496,11 @@ export class SessionStore implements vscode.Disposable {
     const { session } = detail;
     const project = this.#snapshot.details.get(session.projectId);
     if (project === undefined) {
-      this.#pendingAll = true;
-      this.#schedule();
+      this.refresh();
       return;
     }
-    const facts = { id: session.id, ...(await this.#factsOf(session, detail)) };
+    // Its own frame may be a landing, however long ago the session settled.
+    const facts = { id: session.id, ...(await this.#factsOf(session, "any", detail)) };
     if (generation !== this.#generation) return;
     const sessions = project.sessions.some((candidate) => candidate.id === session.id)
       ? project.sessions.map((candidate) => (candidate.id === session.id ? session : candidate))
@@ -398,19 +517,14 @@ export class SessionStore implements vscode.Disposable {
         { ...detail, sessions: detail.sessions.filter((session) => session.id !== sessionId) },
       ]),
     );
-    this.#snapshot = {
-      ...this.#withFacts([{ id: sessionId, wait: null, landing: null }]),
-      details,
-    };
+    const waits = new Map(this.#snapshot.waits);
+    const landings = new Map(this.#snapshot.landings);
+    waits.delete(sessionId);
+    landings.delete(sessionId);
+    this.#snapshot = { ...this.#snapshot, details, waits, landings };
   }
 
-  #withFacts(
-    facts: ReadonlyArray<{
-      readonly id: string;
-      readonly wait: WaitFact | null;
-      readonly landing: LandingFact | null;
-    }>,
-  ): Snapshot {
+  #withFacts(facts: ReadonlyArray<Facts>): Snapshot {
     const waits = new Map(this.#snapshot.waits);
     const landings = new Map(this.#snapshot.landings);
     for (const { id, wait, landing } of facts) {
@@ -424,31 +538,35 @@ export class SessionStore implements vscode.Disposable {
 
   /**
    * What a row needs beyond the project view: why a waiting session waits (its terminal agent's
-   * report, else its conversation's pending request), and the landing of one that settled since
-   * this VS Code first read the server. Older settled sessions read without their landing, so a
-   * morning's read costs a request per session that is news, not one per session ever run.
+   * report, else its conversation's pending request), and the landing of a settled session. A
+   * full read asks only sessions settled within `LANDING_WINDOW_MS` (`recent`) and keeps what it
+   * knew of older ones; a session's own frame asks whatever its age (`any`). A fact whose read
+   * failed keeps what was known, so the same wait is never raised again as new.
    */
   async #factsOf(
     session: Session,
+    landings: "recent" | "any",
     known?: SessionDetail,
   ): Promise<{ readonly wait: WaitFact | null; readonly landing: LandingFact | null }> {
+    const before = {
+      wait: this.#snapshot.waits.get(session.id) ?? null,
+      landing: this.#snapshot.landings.get(session.id) ?? null,
+    };
     let wait: WaitFact | null = null;
     if (session.status === "waiting") {
       wait = terminalWait(known ?? (await this.client.sessionDetail(session.id)));
       if (wait === null) {
         const requests = await this.client.pendingRequests(session.id).catch(() => null);
-        // A failed read keeps the wait it knew, so the same wait is not raised again as new.
-        wait =
-          requests === null
-            ? (this.#snapshot.waits.get(session.id) ?? null)
-            : conversationWait(requests);
+        wait = requests === null ? before.wait : conversationWait(requests);
       }
     }
-    const news =
-      SETTLED.has(session.status) &&
-      session.settledAt !== null &&
-      Date.parse(session.settledAt) > Date.parse(this.#lastSeen.baseline);
-    const landing = news ? await this.client.landing(session.id).catch(() => null) : null;
+    if (!SETTLED.has(session.status) || session.settledAt === null) return { wait, landing: null };
+    const recent = Date.now() - Date.parse(session.settledAt) < LANDING_WINDOW_MS;
+    if (landings === "recent" && !recent) return { wait, landing: before.landing };
+    const landing = await this.client.landing(session.id).then(
+      (read) => read,
+      () => before.landing,
+    );
     return { wait, landing };
   }
 
@@ -473,7 +591,7 @@ export class SessionStore implements vscode.Disposable {
    * when that moved something.
    */
   #syncLastSeen(url: string, now: Date): LastSeen {
-    const stored = this.context.globalState.get<unknown>(LAST_SEEN_KEY);
+    const stored = this.context.globalState.get(LAST_SEEN_KEY);
     const entry = typeof stored === "object" && stored !== null ? Reflect.get(stored, url) : null;
     const merged = isLastSeen(entry) ? mergeLastSeen(entry, this.#lastSeen) : this.#lastSeen;
     const showing =
@@ -487,7 +605,7 @@ export class SessionStore implements vscode.Disposable {
   }
 
   #loadLastSeen(url: string): LastSeen {
-    const stored = this.context.globalState.get<unknown>(LAST_SEEN_KEY);
+    const stored = this.context.globalState.get(LAST_SEEN_KEY);
     const entry = typeof stored === "object" && stored !== null ? Reflect.get(stored, url) : null;
     if (isLastSeen(entry)) return entry;
     const fresh: LastSeen = { baseline: new Date().toISOString(), sessions: {} };
@@ -496,7 +614,7 @@ export class SessionStore implements vscode.Disposable {
   }
 
   #saveLastSeen(url: string, lastSeen: LastSeen): void {
-    const stored = this.context.globalState.get<unknown>(LAST_SEEN_KEY);
+    const stored = this.context.globalState.get(LAST_SEEN_KEY);
     const all = typeof stored === "object" && stored !== null ? { ...stored } : {};
     void this.context.globalState.update(LAST_SEEN_KEY, { ...all, [url]: lastSeen });
   }

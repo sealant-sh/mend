@@ -270,9 +270,13 @@ class MendCommands {
    * into a terminal, until the Answer flow answers its request in place.
    */
   async answer(argument?: unknown): Promise<void> {
-    const location = await this.sessionLocation(argument);
-    if (location === null) return;
-    await this.workspaceWindow.answer(location.session.id);
+    try {
+      const location = await this.sessionLocation(argument);
+      if (location === null) return;
+      await this.workspaceWindow.answer(location.session.id);
+    } catch (cause) {
+      void showError(cause);
+    }
   }
 
   /**
@@ -906,7 +910,7 @@ class MendCommands {
       };
     }
     if (typeof argument === "string") {
-      const found = this.store.find(argument);
+      const found = await this.store.locate(argument);
       return found === null
         ? null
         : {

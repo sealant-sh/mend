@@ -177,6 +177,13 @@ export class WorkspaceWindow implements vscode.Disposable {
     }
   }
 
+  /** The session whose agent tab is this window's active terminal: the one Answer just showed. */
+  terminalSession(): string | null {
+    const active = vscode.window.activeTerminal;
+    const tab = active === undefined ? undefined : this.#byTerminal.get(active);
+    return tab === undefined ? null : this.#tabs.sessionOf(tab);
+  }
+
   /** The session this window is the workspace of, once the window has found it. */
   session(): { readonly project: Project; readonly session: Session } | null {
     return this.#located;

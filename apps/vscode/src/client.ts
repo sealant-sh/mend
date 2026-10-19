@@ -245,6 +245,8 @@ export interface EventPointer {
   readonly type: string;
   readonly sessionId: string | null;
   readonly projectId: string | null;
+  /** A `user` frame's part of the account: `access` when it was removed or lost its sign-in. */
+  readonly facet: string | null;
 }
 
 const parseEventPointer = (data: string): EventPointer | null => {
@@ -259,6 +261,7 @@ const parseEventPointer = (data: string): EventPointer | null => {
     type: value["type"],
     sessionId: typeof value["sessionId"] === "string" ? value["sessionId"] : null,
     projectId: typeof value["projectId"] === "string" ? value["projectId"] : null,
+    facet: typeof value["facet"] === "string" ? value["facet"] : null,
   };
 };
 
@@ -269,6 +272,8 @@ export type StreamSignal =
   /** Any bytes, the heartbeat included: Mend was heard now. */
   | { readonly kind: "heard" }
   | { readonly kind: "event"; readonly event: EventPointer }
+  /** Mend itself refused the stream's sign-in (401 or 403): it answers, but not to this sign-in. */
+  | { readonly kind: "refused" }
   /** The stream failed or went quiet past the heartbeat; it is tried again. */
   | { readonly kind: "lost" };
 
@@ -563,7 +568,7 @@ export class MendClient {
         if (!response.ok || response.body === null) {
           // A refused token comes from Mend itself; a 502 from an edge in front of it does not.
           refused = response.status === 401 || response.status === 403;
-          if (refused) onSignal({ kind: "heard" });
+          if (refused) onSignal({ kind: "refused" });
           throw new Error(`events responded ${response.status}`);
         }
         delay = 1_000;
