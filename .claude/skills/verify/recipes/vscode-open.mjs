@@ -38,7 +38,7 @@ const world = await import(
 /** The row's open button on either manifest. */
 const OPEN = /^Mend: Open( in VS Code)?$/;
 /** A workspace window lists its own session as one row, its status line (rule 10). */
-const OWN_ROW = /^(starting|running|waiting|idle)/;
+const OWN_ROW = /^(starting|running|waiting|idle|stopping|stopped|completed|failed|landed)/;
 /** What Remote-SSH would refuse, said where Open would have been. */
 const ANA_WHY = "Ana launched this workspace · Remote-SSH opens it only for them";
 
@@ -1304,7 +1304,7 @@ export default async (h) => {
       const resumedBefore = await resumesOf();
       const watching = await watch();
       await view("Mend");
-      await treeItem(second.name).inline(OPEN);
+      await treeItem(OWN_ROW).inline(OPEN);
       const starting = statusBar(`starting ${second.name}'s workspace`);
       const caught = await starting
         .waitFor(60_000)
