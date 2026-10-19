@@ -10,7 +10,7 @@ import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/doma
 import { currentAgentProcess } from "@mend/domain/workbench";
 import { asSealantUser, SealantClient, SealantPlatformError } from "@mend/sealant";
 import { SessionEngine, WorkspaceCaller } from "@mend/sessions";
-import { Clock, Duration, Effect, Option } from "effect";
+import { Duration, Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 
@@ -18,12 +18,11 @@ import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry, guardSocket } from "../connections.ts";
 import { SessionSteering } from "../session-steering.ts";
 import { connectionRefusal, forEachFrame, makeFrameGuard } from "../socket-budgets.ts";
+import { makeKeystrokeClear } from "./tty-typing.ts";
 import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tickets.ts";
 
 /** How long the platform may take to hand over a terminal before the upgrade is answered without one. */
 export const TTY_ATTACH_BOUND = Duration.seconds(20);
-
-const TYPED_CLEAR_EVERY_MS = 2_000;
 
 /** What one client frame asks of the PTY. */
 export type TtyInput =
@@ -338,21 +337,16 @@ export const TtyRoutes = HttpRouter.use((router) =>
               "terminal",
             );
             const frames = makeFrameGuard(budgets.limits.frameBytes, write);
-            const scope = yield* Effect.scope;
             const agentProcessId = target.terminalAgentId;
-            let typedClearAt = Number.NEGATIVE_INFINITY;
             const typed =
               agentProcessId === null
                 ? Effect.void
-                : Effect.gen(function* () {
-                    const now = yield* Clock.currentTimeMillis;
-                    if (now - typedClearAt < TYPED_CLEAR_EVERY_MS) return;
-                    typedClearAt = now;
-                    yield* Effect.forkIn(
-                      engine.personTyped(agentProcessId).pipe(Effect.ignore),
-                      scope,
-                    );
-                  });
+                : makeKeystrokeClear(
+                    engine
+                      .personTyped(agentProcessId)
+                      .pipe(Effect.catchCause(() => Effect.succeed(false))),
+                    yield* Effect.scope,
+                  );
 
             const iterator = attachment.output[Symbol.asyncIterator]();
             const pumpOutput = Effect.gen(function* () {

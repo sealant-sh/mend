@@ -148,6 +148,8 @@ const startServer = async (
   address: "process" | "session",
   privateProject: boolean,
   process: SessionProcessId = CAROL_SHELL_IN_SHARED_A,
+  /** What the engine answers each key: whether it cleared a wait. */
+  clears = true,
 ) => {
   const world = await createTenancyWorld(
     [],
@@ -231,6 +233,7 @@ const startServer = async (
       personTyped: (processId) =>
         Effect.sync(() => {
           typed.push(processId);
+          return clears;
         }),
     }),
   );
