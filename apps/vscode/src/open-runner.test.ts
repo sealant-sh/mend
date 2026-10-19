@@ -95,8 +95,13 @@ const anasFacts = (sharedControlEnabledAt: string | null): Partial<Session> => (
 describe("OpenRunner, a session Ana launched", () => {
   const anas = (sharedControlEnabledAt: string | null) => target(anasFacts(sharedControlEnabledAt));
   /** Dana's world, reading capabilities the way the extension does, the server reading `reads`. */
-  const danas = (reads: ReadonlyArray<Partial<Session>>, viewer: string | null = "dana") =>
+  const danas = (
+    reads: ReadonlyArray<Partial<Session>>,
+    viewer: string | null = "dana",
+    overrides: Partial<OpenEffects> = {},
+  ) =>
     world({
+      ...overrides,
       reads,
       capability: async (opened) =>
         rowCapability({
@@ -150,6 +155,32 @@ describe("OpenRunner, a session Ana launched", () => {
       "Ana launched this workspace · Remote-SSH opens it only for them",
       "Review",
     );
+    expect(effects.openFolder).not.toHaveBeenCalled();
+  });
+
+  it("stops waiting and opens nothing once a later read names Ana as the launcher", async () => {
+    const { effects, runner, states } = danas([
+      { status: "starting", sealantWorkspaceId: null },
+      anasFacts(null),
+    ]);
+    expect(await runner.open(target({ status: "starting" }), "follow-setting")).toBe("refused");
+    expect(effects.refuse).toHaveBeenCalledWith(
+      anas(null),
+      "Ana launched this workspace · Remote-SSH opens it only for them",
+      "Review",
+    );
+    expect(effects.openFolder).not.toHaveBeenCalled();
+    expect(states.at(-1)).toEqual({ kind: "idle" });
+  });
+
+  it("resumes nothing once the read after setting up names Ana as the launcher", async () => {
+    const { effects, runner } = danas(
+      [{ status: "stopped", sealantWorkspaceId: null }, anasFacts(null)],
+      "dana",
+      { remoteSshInstalled: () => false },
+    );
+    expect(await runner.open(target({ status: "stopped" }), "follow-setting")).toBe("refused");
+    expect(effects.resume).not.toHaveBeenCalled();
     expect(effects.openFolder).not.toHaveBeenCalled();
   });
 
@@ -334,6 +365,48 @@ describe("OpenRunner", () => {
     expect(await runner.open(target(), "new-window")).toBe("focused");
     expect(effects.focusAgentTerminal).toHaveBeenCalledWith("session-1");
     expect(effects.openFolder).not.toHaveBeenCalled();
+  });
+
+  it("resumes a stopping session first when this window is its workspace, then focuses its agent", async () => {
+    const order: Array<string> = [];
+    const { effects, runner, states } = world({
+      thisWindow: (): WindowRole => ({ kind: "workspace", workspaceId: WORKSPACE }),
+      reads: [
+        { status: "stopping", sealantWorkspaceId: WORKSPACE },
+        { status: "stopped", sealantWorkspaceId: null },
+        { status: "starting", sealantWorkspaceId: null },
+        { status: "running", sealantWorkspaceId: WORKSPACE },
+      ],
+      resume: vi.fn(async () => {
+        order.push("resume");
+      }),
+      focusAgentTerminal: vi.fn(async () => {
+        order.push("focus");
+      }),
+    });
+    expect(await runner.open(target({ status: "stopping" }), "follow-setting")).toBe("focused");
+    expect(order).toEqual(["resume", "focus"]);
+    expect(effects.sessionNow).toHaveBeenCalledTimes(4);
+    expect(effects.openFolder).not.toHaveBeenCalled();
+    expect(states).toContainEqual({ kind: "preparing", step: { kind: "resuming" }, since: 2000 });
+    expect(states.at(-1)).toEqual({ kind: "done" });
+  });
+
+  it("opens the session's new workspace when its resume moved it out of this window's", async () => {
+    const { effects, runner } = world({
+      thisWindow: (): WindowRole => ({ kind: "workspace", workspaceId: WORKSPACE }),
+      reads: [
+        { status: "stopped", sealantWorkspaceId: null },
+        { status: "running", sealantWorkspaceId: "next-workspace" },
+      ],
+    });
+    expect(await runner.open(target({ status: "stopped" }), "follow-setting")).toBe("opened");
+    expect(effects.resume).toHaveBeenCalledTimes(1);
+    expect(effects.focusAgentTerminal).not.toHaveBeenCalled();
+    expect(effects.openFolder).toHaveBeenCalledWith(
+      { workspaceId: "next-workspace", sessionId: "session-1" },
+      {},
+    );
   });
 
   it("carries the session it opens, not just its workspace, two live sessions sharing it", async () => {

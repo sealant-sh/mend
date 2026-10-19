@@ -75,6 +75,21 @@ interface Settled {
   readonly failure: Failure | null;
 }
 
+interface Denied {
+  readonly kind: "denied";
+  readonly session: Session;
+  readonly capability: Exclude<RowCapability, { readonly kind: "open" }>;
+}
+
+type Read = { readonly kind: "session"; readonly session: Session } | Denied;
+
+type Workspace =
+  | { readonly kind: "have"; readonly workspaceId: string }
+  | { readonly kind: "timedOut" }
+  | Denied;
+
+const RETRY: OpenAction = "Retry";
+
 const reasonOf = (cause: unknown, sessionName: string): string =>
   cause instanceof Error && cause.message !== ""
     ? cause.message
@@ -121,28 +136,20 @@ export class OpenRunner {
       state = reduceOpen(state, event);
       effects.render(id, name, state);
     };
-    let action: OpenAction = "Retry";
-    try {
-      // The row that offered Open may be stale: who launched the workspace is read now.
-      const session = await effects.sessionNow(id);
-      // Remote-SSH would refuse anyone but the launcher; Open stops here instead.
-      const capability = await effects.capability(session);
+    const deny = ({ session, capability }: Denied): Settled => {
+      if (state.kind !== "idle") fire({ kind: "cancelled" });
       if (capability.kind === "notYours") {
         effects.refuse({ ...target, session }, capability.why, notYoursOffer(capability));
         return { outcome: "refused", failure: null };
       }
-      if (capability.kind === "unknown") {
-        const failure = { reason: `${capability.why}, so it did not open ${name}`, action };
-        fire({ kind: "failed", ...failure });
-        return { outcome: "failed", failure };
-      }
-      const role = effects.thisWindow();
-      // VS Code keeps one window per folder: asked for a new window on the folder this window
-      // already holds, Open in New Window included, it would only focus this one.
-      if (role.kind === "workspace" && role.workspaceId === session.sealantWorkspaceId) {
-        await effects.focusAgentTerminal(id);
-        return { outcome: "focused", failure: null };
-      }
+      const failure = { reason: `${capability.why}, so it did not open ${name}`, action: RETRY };
+      fire({ kind: "failed", ...failure });
+      return { outcome: "failed", failure };
+    };
+    let action: OpenAction = RETRY;
+    try {
+      const first = await this.#read(id);
+      if (first.kind === "denied") return deny(first);
       // Setting up can take a while; the session is read again after it.
       let prepared = false;
       if (!effects.remoteSshInstalled()) {
@@ -162,20 +169,31 @@ export class OpenRunner {
         prepared = true;
         action = "Set up";
         await effects.setUpWorkspaceSsh();
-        action = "Retry";
+        action = RETRY;
       }
       await effects.seedRemotePlatform();
-      const workspaceId = await this.#workspace(
-        prepared ? await effects.sessionNow(id) : session,
-        fire,
-      );
-      if (workspaceId === null) {
+      const ready = prepared ? await this.#read(id) : first;
+      if (ready.kind === "denied") return deny(ready);
+      const workspace = await this.#workspace(ready.session, fire);
+      if (workspace.kind === "denied") return deny(workspace);
+      if (workspace.kind === "timedOut") {
         const failure = { reason: `${name}'s workspace did not start in time`, action };
         fire({ kind: "failed", ...failure });
         return { outcome: "failed", failure };
       }
-      fire({ kind: "workspace", workspaceId });
-      await effects.openFolder({ workspaceId, sessionId: id }, openFolderOptions(mode));
+      const role = effects.thisWindow();
+      // VS Code keeps one window per folder: asked for a new window on the folder this window
+      // already holds, Open in New Window included, it would only focus this one.
+      if (role.kind === "workspace" && role.workspaceId === workspace.workspaceId) {
+        fire({ kind: "opened" });
+        await effects.focusAgentTerminal(id);
+        return { outcome: "focused", failure: null };
+      }
+      fire({ kind: "workspace", workspaceId: workspace.workspaceId });
+      await effects.openFolder(
+        { workspaceId: workspace.workspaceId, sessionId: id },
+        openFolderOptions(mode),
+      );
       fire({ kind: "opened" });
       return { outcome: "opened", failure: null };
     } catch (cause) {
@@ -186,11 +204,22 @@ export class OpenRunner {
   }
 
   /**
-   * The session's workspace id, waited for; null when it never came. Each read decides again
-   * whether it needs a resume (a session read as stopping is stopped by a later read), and this
-   * run sends at most one.
+   * The session as the server reads it now, and whether this viewer may still open it: who
+   * launched the workspace can change while an open waits, and Remote-SSH admits only them.
    */
-  async #workspace(first: Session, fire: (event: OpenEvent) => void): Promise<string | null> {
+  async #read(id: string): Promise<Read> {
+    const session = await this.effects.sessionNow(id);
+    const capability = await this.effects.capability(session);
+    return capability.kind === "open"
+      ? { kind: "session", session }
+      : { kind: "denied", session, capability };
+  }
+
+  /**
+   * The session's workspace id, waited for. Each read decides again whether it needs a resume (a
+   * session read as stopping is stopped by a later read), and this run sends at most one.
+   */
+  async #workspace(first: Session, fire: (event: OpenEvent) => void): Promise<Workspace> {
     const { effects } = this;
     let current = first;
     let resumed = false;
@@ -199,7 +228,7 @@ export class OpenRunner {
     for (;;) {
       const need = workspaceNeed(current);
       if (need === "have" && current.sealantWorkspaceId !== null) {
-        return current.sealantWorkspaceId;
+        return { kind: "have", workspaceId: current.sealantWorkspaceId };
       }
       if (need === "resume" && !resumed) {
         fire({ kind: "step", step: { kind: "resuming" }, at: effects.now() });
@@ -211,9 +240,11 @@ export class OpenRunner {
         fire({ kind: "waiting", at: effects.now() });
         waiting = true;
       }
-      if (effects.now() >= deadline) return null;
+      if (effects.now() >= deadline) return { kind: "timedOut" };
       await effects.sleep(this.#pollMs);
-      current = await effects.sessionNow(first.id);
+      const read = await this.#read(first.id);
+      if (read.kind === "denied") return read;
+      current = read.session;
     }
   }
 
