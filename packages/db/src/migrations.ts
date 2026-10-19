@@ -3532,6 +3532,11 @@ const userAgentLoginsMigration = Effect.gen(function* () {
     )`;
 });
 
+const sessionProcessWaitingMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE session_processes ADD COLUMN waiting jsonb`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3665,4 +3670,5 @@ export const migrations = {
   "0129_ambient_removed": ambientRemovedMigration,
   "0130_claude_own_default": claudeOwnDefaultMigration,
   "0131_user_agent_logins": userAgentLoginsMigration,
+  "0132_session_process_waiting": sessionProcessWaitingMigration,
 };

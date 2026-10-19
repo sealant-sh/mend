@@ -70,6 +70,7 @@ import {
   WorktreeId,
 } from "@mend/domain";
 import type {
+  AgentHookReport,
   Checkpoint,
   CheckpointTrigger,
   HotWorkspace,
@@ -119,6 +120,10 @@ import {
   ProtocolHarnessUnsupportedError,
   composeProtocolArgv,
   agentProcessesOf,
+  agentSignalOf,
+  agentHookTarget,
+  liveTerminalAgentsOf,
+  nextAgentWait,
   currentAgentProcess,
   foldSessionLiveness,
   isAgentProcessKind,
@@ -189,6 +194,7 @@ import {
   noResumeLine,
   resumesOwnHarness,
 } from "@mend/domain/workbench";
+import { makeWindowLimiter } from "@mend/network";
 import {
   asSealantUser,
   captureDrainOf,
@@ -305,6 +311,7 @@ import {
   containerTokenRefused,
   pickupOnly,
 } from "./channel-identity.ts";
+import { CLAUDE_AGENT_HOOKS, withClaudeSessionId } from "./claude-settings.ts";
 import {
   CARRIED_INCOMING,
   carryConversationsExec,
@@ -324,7 +331,7 @@ import {
   withholdCodexThreadsExec,
 } from "./codex-memory.ts";
 import {
-  claudeSettingsArgOf,
+  claudeSettingsOf,
   type ConversationHarness,
   conversationArgv,
   foreignReasoningLine,
@@ -574,6 +581,7 @@ import {
   SESSION_SOCKET_MOUNT_PATH,
   SessionSocketHost,
   workspaceScriptStaging,
+  type AgentHookOutcome,
   type SessionSocketApi,
 } from "./session-socket.ts";
 import { loadShellProfile, shellProfileApplies } from "./shell-profile.ts";
@@ -875,6 +883,8 @@ const TakenAheadRef = Context.Reference<TakenAhead | null>("@mend/sessions/Taken
 
 /** How long a hand-over to a sender that failed after its stop is not tried again (review 2, P3-3). */
 const HAND_OVER_BACKOFF_MS = 60_000;
+
+const AGENT_HOOK_REPORTS_PER_MINUTE = 60;
 
 /** A failure's own words, for a session line. */
 const causeWords = (cause: Cause.Cause<unknown>): string => {
@@ -2309,6 +2319,12 @@ export class SessionEngine extends Context.Service<
       label: string,
     ) => Effect.Effect<SessionProcess, ShellProcessNotFoundError | ShellLabelError>;
     /**
+     * The person typed into this process's terminal (G4): a terminal agent that asked for their
+     * permission or answer has it, so that wait clears; true when one did. A finished turn waits
+     * for a submitted prompt (`UserPromptSubmit`), not a key. Keys in a shell clear nothing.
+     */
+    readonly personTyped: (processId: SessionProcessId) => Effect.Effect<boolean>;
+    /**
      * Adopt an already-listening workspace port as a Service
      * (docs/SESSION-SERVICES.md): bind a host listener on the private
      * interfaces and pump each accepted connection over a workspace forward.
@@ -2705,6 +2721,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         restartService: (reference) => owned(sessionId)(api.restartService(reference)),
         stopSession: () => owned(sessionId)(api.stopSession()),
         land: () => owned(sessionId)(api.land()),
+        agentHook: (report) => owned(sessionId)(api.agentHook(report)),
         listRepositories: () => owned(sessionId)(api.listRepositories()),
         addableProjects: () => owned(sessionId)(api.addableProjects()),
         addRepository: (input) => owned(sessionId)(api.addRepository(input)),
@@ -14519,26 +14536,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * only the worktree's change owner's own Claude processes run with crons on (the
        * `personal` settings, the session-state switch only); anyone else's personal Claude
        * processes get the `no-cron` settings, which a repository's `env` cannot turn back on. The
-       * settings go inline on the command line (`claudeSettingsArgOf`), so no file has to exist in
-       * the executor. A launch that names its own `--settings` is left as it is. Null `runsAs`:
-       * root, as before, nothing added.
+       * settings go inline on the command line, so no file has to exist in the executor. A
+       * launch that names its own `--settings` is left as it is. A terminal Claude, root's
+       * included, also gets `CLAUDE_AGENT_HOOKS`.
        */
       const withClaudeSettings = (
         session: Session,
         argv: ReadonlyArray<string>,
         runsAs: string | null,
+        terminal: boolean,
       ): Effect.Effect<ReadonlyArray<string>> =>
         Effect.gen(function* () {
-          if (runsAs === null || argv[0] !== "claude" || argv.includes("--settings")) return argv;
+          if (argv[0] !== "claude" || argv.includes("--settings")) return argv;
+          if (runsAs === null && !terminal) return argv;
+          const hooks = terminal ? { hooks: CLAUDE_AGENT_HOOKS } : {};
+          if (runsAs === null) return [...argv, "--settings", JSON.stringify(hooks)];
           const first = (yield* sessions.listForWorktree(session.worktreeId))
             .filter((member) => member.ownerUserId !== null)
             .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
           const changeOwner = first?.ownerUserId ?? session.ownerUserId;
-          return [
-            ...argv,
-            "--settings",
-            claudeSettingsArgOf(changeOwner === runsAs ? "personal" : "no-cron"),
-          ];
+          const settings = claudeSettingsOf(changeOwner === runsAs ? "personal" : "no-cron");
+          return [...argv, "--settings", JSON.stringify({ ...settings, ...hooks })];
         });
 
       /**
@@ -17608,10 +17626,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         }
 
+        const claudePin =
+          protocolStart === null
+            ? withClaudeSessionId(shapedArgv, crypto.randomUUID())
+            : { argv: shapedArgv, providerSessionId: null };
         const memoryShapedArgv = yield* withClaudeSettings(
           session,
-          codexMemoryOn ? shapedArgv : withCodexMemoryOff(shapedArgv, { join: false }),
+          codexMemoryOn ? claudePin.argv : withCodexMemoryOff(claudePin.argv, { join: false }),
           startAs === null ? null : ownerUserId,
+          protocolStart === null,
         );
         // opencode's conversations as they stand before it starts: what it starts afterwards is its
         // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
@@ -17685,9 +17708,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 harness: conversation.harness,
                 argv:
                   protocolStart === null
-                    ? withPermissionDefaults(session.harness, shapedArgv)
+                    ? withPermissionDefaults(session.harness, claudePin.argv)
                     : shapedArgv,
                 resumePath: inConversation.resumePath,
+                terminal: protocolStart === null,
               });
         const releaseTake = Effect.suspend(() =>
           inConversation === null || inConversation.fence === null
@@ -17763,14 +17787,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             launchCorrelationId: correlationId,
             kind: protocolStart === null ? "agent-pty" : "agent-protocol",
             harness: interactiveShell ? "shell" : session.harness,
-            // Known up front only for a native resume of the same harness; the
-            // harvest fills it when the process ends.
             providerSessionId: interactiveShell
               ? null
               : (nativeImport?.providerSessionId ??
                 (manifest !== null && manifest.harness === session.harness
                   ? manifest.providerSessionId
-                  : (protocolProviderSessionId ?? protocolResumeId))),
+                  : (protocolProviderSessionId ?? protocolResumeId)) ??
+                claudePin.providerSessionId),
             protocolOptions:
               protocolStart === null
                 ? null
@@ -19401,10 +19424,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const codexMemoryOn =
             personStart !== null ||
             (ownHome && (yield* withholdCodexThreads(session, workspace, shapedArgv, [])));
+          const claudePin =
+            protocolStart === null
+              ? withClaudeSessionId(shapedArgv, crypto.randomUUID())
+              : { argv: shapedArgv, providerSessionId: null };
           const memoryShapedArgv = yield* withClaudeSettings(
             session,
-            codexMemoryOn ? shapedArgv : withCodexMemoryOff(shapedArgv, { join: !ownHome }),
+            codexMemoryOn ? claudePin.argv : withCodexMemoryOff(claudePin.argv, { join: !ownHome }),
             personStart === null ? null : sender,
+            protocolStart === null,
           );
           // opencode's conversations as they stand before it starts: what it starts afterwards is its
           // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
@@ -19500,9 +19528,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   harness: conversation.harness,
                   argv:
                     protocolStart === null
-                      ? withPermissionDefaults(session.harness, shapedArgv)
+                      ? withPermissionDefaults(session.harness, claudePin.argv)
                       : shapedArgv,
                   resumePath: inConversation.resumePath,
+                  terminal: protocolStart === null,
                 });
           const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
             Effect.andThen(
@@ -19571,7 +19600,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ? null
                 : (nativeImport?.providerSessionId ??
                   protocolProviderSessionId ??
-                  providerSessionId),
+                  providerSessionId ??
+                  claudePin.providerSessionId),
               protocolOptions:
                 protocolStart === null
                   ? null
@@ -21665,6 +21695,65 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const restartService = (serviceId: ServiceId) =>
         withServiceLifecycle(restartServiceUnlocked(serviceId));
 
+      const agentHookReports = makeWindowLimiter();
+      const agentHook = Effect.fn("SessionEngine.agentHook")(function* (
+        sessionId: SessionId,
+        report: AgentHookReport,
+      ): Effect.fn.Return<AgentHookOutcome> {
+        const retryAfterSeconds = agentHookReports.take(
+          sessionId,
+          AGENT_HOOK_REPORTS_PER_MINUTE,
+          clock.currentTimeMillisUnsafe(),
+        );
+        if (retryAfterSeconds !== null) return { _tag: "too-many", retryAfterSeconds };
+        if (report.providerSessionId === null) return "unidentified";
+        const live = liveTerminalAgentsOf(
+          yield* processes.listForSession(sessionId),
+          report.harness,
+        );
+        if (live.length === 0) return "no-live-agent";
+        const target = agentHookTarget(report, live);
+        if (target._tag === "unidentified" || target._tag === "other-process") return target._tag;
+        if (
+          target._tag === "claim" &&
+          !(yield* processes.claimProviderSessionId(
+            target.process.id,
+            sessionId,
+            target.providerSessionId,
+          ))
+        ) {
+          return "other-process";
+        }
+        const agent = target.process;
+        const signal = agentSignalOf(report);
+        if (signal === null) return "ignored";
+        const next = nextAgentWait(
+          agent.waiting,
+          signal,
+          new Date(clock.currentTimeMillisUnsafe()),
+        );
+        if (next === agent.waiting) return "unchanged";
+        if (!(yield* processes.setWaiting(agent.id, sessionId, next))) return "no-live-agent";
+        yield* reconcileSession(sessionId, { sweep: false }).pipe(Effect.orDie);
+        return "applied";
+      });
+
+      const personTyped = Effect.fn("SessionEngine.personTyped")(function* (
+        processId: SessionProcessId,
+      ) {
+        const process = yield* processes.byId(processId);
+        if (
+          process === null ||
+          process.kind !== "agent-pty" ||
+          (process.waiting?.kind !== "permission" && process.waiting?.kind !== "question")
+        ) {
+          return false;
+        }
+        if (!(yield* processes.setWaiting(process.id, process.sessionId, null))) return false;
+        yield* reconcileSession(process.sessionId, { sweep: false }).pipe(Effect.orDie);
+        return true;
+      });
+
       /**
        * What a session's in-workspace socket serves — every closure scoped to
        * that one session; ownership guards make cross-session ids a 404-shaped
@@ -21765,6 +21854,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The landing worker answers (`WorkspaceGitHooks`): it depends on the engine, so it
         // cannot be one of the engine's dependencies.
         land: () => gitHooks.landRequested(sessionId, actor),
+        agentHook: (report) => agentHook(sessionId, report),
         // Repositories in a session (docs/adr/0010): the helper's `mend repo` verbs. A refusal
         // reaches the helper as its message.
         listRepositories: () =>
@@ -23639,6 +23729,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         openShell: (sessionId, openedBy) => owned(sessionId)(openShell(sessionId, openedBy)),
         stopShell: (processId) => ownedByProcess(processId)(stopShell(processId)),
         renameShell: (processId, label) => ownedByProcess(processId)(renameShell(processId, label)),
+        personTyped,
         addService: (sessionId, ...rest) => owned(sessionId)(addService(sessionId, ...rest)),
         runService: (sessionId, argv, port, name, protocol, browserScheme, startedBy, startId) =>
           owned(sessionId)(

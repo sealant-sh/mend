@@ -9,7 +9,7 @@ import {
 import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/domain";
 import { currentAgentProcess } from "@mend/domain/workbench";
 import { asSealantUser, SealantClient, SealantPlatformError } from "@mend/sealant";
-import { WorkspaceCaller } from "@mend/sessions";
+import { SessionEngine, WorkspaceCaller } from "@mend/sessions";
 import { Duration, Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
@@ -18,6 +18,7 @@ import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry, guardSocket } from "../connections.ts";
 import { SessionSteering } from "../session-steering.ts";
 import { connectionRefusal, forEachFrame, makeFrameGuard } from "../socket-budgets.ts";
+import { isTyping, makeKeystrokeClear } from "./tty-typing.ts";
 import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tickets.ts";
 
 /** How long the platform may take to hand over a terminal before the upgrade is answered without one. */
@@ -103,6 +104,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
     const sealant = yield* SealantClient;
     const workspaces = yield* WorkspaceCaller;
     const controlEvents = yield* SessionControlEventsRepo;
+    const engine = yield* SessionEngine;
 
     yield* router.add("GET", "/api/tty", (request) =>
       Effect.gen(function* () {
@@ -147,6 +149,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
           /** The session the PTY belongs to, and the process when one was named. */
           readonly sessionId: SessionId;
           readonly processId: string | null;
+          readonly terminalAgentId: SessionProcessId | null;
         };
         if (processParam !== null) {
           const process = yield* processes.byId(SessionProcessId.make(processParam));
@@ -184,6 +187,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
             ownerUserId: owner.value.ownerUserId,
             sessionId: owner.value.id,
             processId: process.id,
+            terminalAgentId: process.kind === "agent-pty" ? process.id : null,
           };
         } else if (sessionParam !== null) {
           const session = yield* sessions.byId(SessionId.make(sessionParam)).pipe(Effect.option);
@@ -216,6 +220,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
                   ownerUserId,
                   sessionId: session.value.id,
                   processId: agent.id,
+                  terminalAgentId: agent.kind === "agent-pty" ? agent.id : null,
                 }
               : session.value.sealantWorkspaceId !== null && session.value.sealantSessionId !== null
                 ? {
@@ -224,6 +229,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
                     ownerUserId,
                     sessionId: session.value.id,
                     processId: null,
+                    terminalAgentId: null,
                   }
                 : null;
           if (resolved === null) {
@@ -331,6 +337,16 @@ export const TtyRoutes = HttpRouter.use((router) =>
               "terminal",
             );
             const frames = makeFrameGuard(budgets.limits.frameBytes, write);
+            const agentProcessId = target.terminalAgentId;
+            const typed =
+              agentProcessId === null
+                ? Effect.void
+                : makeKeystrokeClear(
+                    engine
+                      .personTyped(agentProcessId)
+                      .pipe(Effect.catchCause(() => Effect.succeed(false))),
+                    yield* Effect.scope,
+                  );
 
             const iterator = attachment.output[Symbol.asyncIterator]();
             const pumpOutput = Effect.gen(function* () {
@@ -349,9 +365,10 @@ export const TtyRoutes = HttpRouter.use((router) =>
               const overFrame = frames.refuse(data);
               if (overFrame !== null) return overFrame;
               const input = ttyInputOf(data, typing);
-              if (input?.kind === "input") attachment.send(input.data);
               if (input?.kind === "resize") attachment.resize(input.cols, input.rows);
-              return Effect.void;
+              if (input?.kind !== "input") return Effect.void;
+              attachment.send(input.data);
+              return isTyping(input.data) ? typed : Effect.void;
             });
           }),
         );

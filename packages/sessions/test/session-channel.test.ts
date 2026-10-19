@@ -19,6 +19,7 @@ import {
   parseChannelCredentials,
 } from "../src/session-channel.ts";
 import {
+  type AgentHookOutcome,
   SessionSocketHost,
   SessionSocketHostLive,
   type SessionSocketApi,
@@ -102,6 +103,7 @@ const api = (seen: unknown[]): SessionSocketApi => ({
       return {};
     }),
   land: () => Effect.succeed({ landed: false, lines: ["not landed · not in this test"] }),
+  agentHook: () => Effect.succeed("ignored"),
   listRepositories: () => Effect.succeed([]),
   addableProjects: () => Effect.succeed([]),
   addRepository: () => Effect.die("not in this test"),
@@ -183,6 +185,30 @@ const call = (
     request.on("error", reject);
     if (body !== undefined) request.write(JSON.stringify(body));
     request.end();
+  });
+
+const retryAfterOf = (
+  address: string,
+  route: string,
+  headers: Record<string, string>,
+  body: unknown,
+): Promise<{ status: number; retryAfter: string | undefined }> =>
+  new Promise((resolve, reject) => {
+    const [host, port] = address.split(":");
+    const request = http.request(
+      { host, port: Number(port), method: "POST", path: route, headers, agent: false },
+      (response) => {
+        response.resume();
+        response.on("end", () =>
+          resolve({
+            status: response.statusCode ?? 0,
+            retryAfter: response.headers["retry-after"],
+          }),
+        );
+      },
+    );
+    request.on("error", reject);
+    request.end(JSON.stringify(body));
   });
 
 const runScript = (script: string, args: string[], env: Record<string, string>, stdin?: Buffer) =>
@@ -743,6 +769,134 @@ describe("SessionChannelNetworkHost", () => {
           // The usage names the verb.
           const usage = yield* helper(["publish"]);
           expect(usage.stderr).toContain("mend land");
+        }).pipe(
+          Effect.provide(
+            layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+          ),
+        ),
+      ),
+    );
+  });
+
+  it("mend hook forwards five fields of the agent's hook, prints nothing and exits 0 on every path", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const network = yield* SessionChannelNetworkHost;
+          const sockets = yield* SessionSocketHost;
+          const tokens = yield* SessionChannelTokensRepo;
+          const address = network.address ?? "";
+          const seen: unknown[] = [];
+          let outcome: AgentHookOutcome = "applied";
+          const dir = yield* sockets.start(SESSION, {
+            ...api(seen),
+            agentHook: (report) =>
+              Effect.sync(() => {
+                seen.push({ ...report });
+                return outcome;
+              }),
+          });
+          const token = yield* tokens.issue(SESSION, SESSION);
+          const auth = { authorization: `Bearer ${token}`, "x-mend-session-id": SESSION };
+          const env = {
+            MEND_SESSION_ENDPOINT: `http://${address}`,
+            MEND_SESSION_ID: SESSION,
+            MEND_SESSION_TOKEN: token,
+          };
+          const hook = (payload: string, over: Record<string, string> = {}) =>
+            Effect.promise(() =>
+              runScript(
+                path.join(dir, "bin", "mend"),
+                ["hook", "claude"],
+                { ...env, ...over },
+                Buffer.from(payload),
+              ),
+            );
+          const silent = { code: 0, stdout: "", stderr: "" };
+
+          const asked = yield* hook(
+            JSON.stringify({
+              session_id: "abc123",
+              cwd: "/workspace/repo",
+              permission_mode: "default",
+              hook_event_name: "PermissionRequest",
+              tool_name: "Bash",
+              tool_input: { command: "rm -rf node_modules" },
+            }),
+          );
+          expect(asked).toEqual(silent);
+          expect(seen).toEqual([
+            {
+              harness: "claude",
+              event: "PermissionRequest",
+              notificationType: null,
+              tool: "Bash",
+              providerSessionId: "abc123",
+            },
+          ]);
+
+          outcome = "no-live-agent";
+          expect(
+            yield* hook(
+              JSON.stringify({ hook_event_name: "Notification", notification_type: "idle_prompt" }),
+            ),
+          ).toEqual(silent);
+          expect(seen).toHaveLength(2);
+          expect(
+            yield* hook(JSON.stringify({ hook_event_name: "Stop" }), { MEND_SESSION_ID: OTHER }),
+          ).toEqual(silent);
+          expect(yield* hook("not json")).toEqual(silent);
+          expect(yield* hook(JSON.stringify({ prompt: "no event" }))).toEqual(silent);
+          expect(
+            yield* hook(JSON.stringify({ hook_event_name: "Stop" }), { MEND_SESSION_ENDPOINT: "" }),
+          ).toEqual(silent);
+          expect(seen).toHaveLength(2);
+
+          const refused = yield* Effect.promise(() =>
+            call(address, "POST", "/session/agent-hook", auth, {
+              harness: "opencode",
+              event: "Stop",
+            }),
+          );
+          expect(refused.status).toBe(400);
+          const codexStop = {
+            harness: "codex",
+            event: "Stop",
+            notificationType: null,
+            tool: null,
+            providerSessionId: "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b",
+          };
+          const post = (body: unknown) =>
+            Effect.promise(() => call(address, "POST", "/session/agent-hook", auth, body));
+          outcome = "unchanged";
+          expect(yield* post(codexStop)).toEqual({ status: 204, json: null });
+          expect(seen).toHaveLength(3);
+
+          outcome = "other-process";
+          const other = yield* post(codexStop);
+          expect(other.status).toBe(409);
+          expect(JSON.stringify(other.json)).toContain("another process");
+          outcome = "no-live-agent";
+          const none = yield* post(codexStop);
+          expect(none.status).toBe(409);
+          expect(JSON.stringify(none.json)).toContain("no terminal agent");
+          outcome = "unidentified";
+          expect((yield* post({ ...codexStop, providerSessionId: null })).status).toBe(400);
+          expect(seen).toHaveLength(6);
+          const { providerSessionId: _dropped, ...unnamed } = codexStop;
+          expect((yield* post(unnamed)).status).toBe(400);
+          expect(seen).toHaveLength(6);
+
+          outcome = { _tag: "too-many", retryAfterSeconds: 17 };
+          const tooMany = yield* Effect.promise(() =>
+            retryAfterOf(address, "/session/agent-hook", auth, codexStop),
+          );
+          expect(tooMany).toEqual({ status: 429, retryAfter: "17" });
+
+          const usage = yield* Effect.promise(() =>
+            runScript(path.join(dir, "bin", "mend"), ["publish"], env),
+          );
+          expect(usage.stderr).toContain("mend hook <claude|codex>");
         }).pipe(
           Effect.provide(
             layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),

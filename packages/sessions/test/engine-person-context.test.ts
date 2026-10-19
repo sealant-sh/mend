@@ -10,6 +10,7 @@ import {
 } from "@mend/db";
 import { SessionId } from "@mend/domain";
 import {
+  AgentHookReport,
   type GitAuthMode,
   Project,
   ResolvedGitAuthor,
@@ -2519,6 +2520,14 @@ const grantOf = (
     return yield* api.channelFor(scope);
   });
 
+const STOP_HOOK = new AgentHookReport({
+  harness: "claude",
+  event: "Stop",
+  notificationType: null,
+  tool: null,
+  providerSessionId: null,
+});
+
 /** A push to the project's own origin, as git asks the shim for it. */
 const push = (origin: string) => ({
   host: origin,
@@ -2863,6 +2872,9 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           expect(failureText(yield* grant.api.listServices().pipe(Effect.exit))).toContain(
             CONTAINER_TOKEN_REFUSED,
           );
+          expect(failureText(yield* grant.api.agentHook(STOP_HOOK).pipe(Effect.exit))).toContain(
+            CONTAINER_TOKEN_REFUSED,
+          );
         }),
     });
   });
@@ -2978,6 +2990,8 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           expect(Exit.isFailure(landed)).toBe(true);
           const pushed = yield* before.api.gitTransport(push(join.origin)).pipe(Effect.exit);
           expect(Exit.isFailure(pushed)).toBe(true);
+          const reported = yield* before.api.agentHook(STOP_HOOK).pipe(Effect.exit);
+          expect(Exit.isFailure(reported)).toBe(true);
           // Another launch's token, or another person's, reaches nothing there.
           const elsewhere = yield* grantOf(join.joined, {
             launchId: "launch-elsewhere",

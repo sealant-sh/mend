@@ -17,6 +17,7 @@
     "@mend/agent-protocol": "workspace:*",
     "@mend/db": "workspace:*",
     "@mend/domain": "workspace:*",
+    "@mend/network": "workspace:*",
     "@mend/sealant": "workspace:*",
     "@mend/store": "workspace:*",
     "@sealant/sdk": "catalog:",

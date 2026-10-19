@@ -1,3 +1,4 @@
+import { type AgentWait, agentWaitWords } from "./agent-wait.ts";
 import {
   isAgentProcessKind,
   LIVE_PROCESS_STATUSES,
@@ -9,6 +10,7 @@ import {
  * process (docs/SESSION-SERVICES.md, decided 2026-08-21):
  *
  *   pending request on a live protocol agent    → `waiting`
+ *   a live terminal agent reported a wait       → `waiting`
  *   any other agent process live                → `running`
  *   no agent live, shells or Services live      → `idle`
  *   nothing live                                → settled (from the last agent outcome)
@@ -39,6 +41,7 @@ export const foldSessionLiveness = (
     }
   }
   if (protocolAgent && hasPendingAgentRequest) return "waiting";
+  if (agentWaitOf(processes) !== null) return "waiting";
   if (agent) return "running";
   return supporting ? "idle" : "settled";
 };
@@ -62,6 +65,30 @@ export const currentAgentProcess = (
 ): SessionProcess | null => {
   const agents = agentProcessesOf(processes);
   return agents.findLast(isLiveProcess) ?? agents.at(-1) ?? null;
+};
+
+export const liveTerminalAgentOf = (
+  processes: ReadonlyArray<SessionProcess>,
+): SessionProcess | null =>
+  agentProcessesOf(processes).findLast(
+    (process) => process.kind === "agent-pty" && isLiveProcess(process),
+  ) ?? null;
+
+export const liveTerminalAgentsOf = (
+  processes: ReadonlyArray<SessionProcess>,
+  harness: string,
+): ReadonlyArray<SessionProcess> =>
+  agentProcessesOf(processes).filter(
+    (process) =>
+      process.kind === "agent-pty" && process.harness === harness && isLiveProcess(process),
+  );
+
+export const agentWaitOf = (processes: ReadonlyArray<SessionProcess>): AgentWait | null =>
+  liveTerminalAgentOf(processes)?.waiting ?? null;
+
+export const agentWaitLine = (agent: SessionProcess | null): string | null => {
+  if (agent === null || agent.waiting === null || !isLiveProcess(agent)) return null;
+  return `waiting · ${agentWaitWords(agent.harness ?? agent.label ?? "the agent", agent.waiting)}`;
 };
 
 /** What an ended agent process's exit says about the work. Null while it still runs. */

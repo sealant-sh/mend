@@ -29,12 +29,12 @@ import {
   Session,
   type SessionProcess,
 } from "@mend/domain/workbench";
-import { it } from "@mend/test-ci/effect-vitest";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Fiber, Layer, Queue, Redacted, Stream, type Scope } from "effect";
 import { describe, expect } from "vitest";
 
 import { PushSender, PushSendError, type PushMessage } from "../src/push-sender.ts";
-import { sessionNotifier } from "../src/session-notifier.ts";
+import { ATTENTION_RERING_MS, sessionNotifier } from "../src/session-notifier.ts";
 const PROJECT = ProjectId.make("review-project");
 const WORKTREE = WorktreeId.make("review-worktree");
 const SESSION = SessionId.make("later-member-session");
@@ -393,6 +393,7 @@ describe("SessionNotifierLive event worker", () => {
             expect(world.removed).toEqual(["alice-first", "carol-phone"]);
             world.update({ status: "running" });
             yield* world.sessionEvent();
+            yield* TestClock.adjust(ATTENTION_RERING_MS);
             world.update({ status: "waiting" });
             yield* world.sessionEvent();
             expect(deliveries(world)).toEqual([
@@ -505,6 +506,7 @@ describe("SessionNotifierLive event worker", () => {
           world.members.delete("carol");
           world.update({ status: "running" });
           yield* world.sessionEvent();
+          yield* TestClock.adjust(ATTENTION_RERING_MS);
           world.update({ status: "waiting" });
           yield* world.sessionEvent();
           expect(world.sent).toHaveLength(1);
@@ -561,6 +563,29 @@ describe("SessionNotifierLive event worker", () => {
           ]);
         }),
       { failure: true },
+    ),
+  );
+  it.effect("rings attention at most once a minute however often the session flips", () =>
+    runWorld((world) =>
+      Effect.gen(function* () {
+        const flip = Effect.gen(function* () {
+          world.update({ status: "running" });
+          yield* world.sessionEvent();
+          world.update({ status: "waiting" });
+          yield* world.sessionEvent();
+        });
+        yield* flip;
+        expect(world.sent).toHaveLength(1);
+        yield* TestClock.adjust("10 seconds");
+        yield* flip;
+        expect(world.sent).toHaveLength(1);
+        yield* TestClock.adjust("51 seconds");
+        yield* flip;
+        expect(deliveries(world)).toEqual([
+          expected(["alice-first", "alice-last"], "billing-fix is waiting on you"),
+          expected(["alice-first", "alice-last"], "billing-fix is waiting on you"),
+        ]);
+      }),
     ),
   );
   it.effect("never delivers for a null owner or idle-stop housekeeping", () =>

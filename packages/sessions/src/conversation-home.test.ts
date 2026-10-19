@@ -7,11 +7,13 @@ import { DatabaseSync } from "node:sqlite";
 import { LinuxIdentity, MEND_GROUP } from "@mend/domain/workbench";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { CLAUDE_AGENT_HOOKS } from "./claude-settings.ts";
 import {
   CLAUDE_NEUTRAL_ENV,
   CONVERSATION_LINKS,
   type ConversationHarness,
   claudeSettingsArgOf,
+  claudeSettingsOf,
   codexNeutralConfig,
   conversationArgv,
   conversationDirOf,
@@ -270,6 +272,7 @@ const turnBy = (
     harness: input.harness,
     argv: base,
     resumePath: staged.resume,
+    terminal: false,
   });
   const env = conversationProcessEnv({
     harness: input.harness,
@@ -940,6 +943,7 @@ describe("what a conversation home's process gets", () => {
         harness: "claude",
         argv: ["claude", "--print", "--resume", "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11"],
         resumePath: `/run/mend/conv/${SESSION}/.claude/projects/-workspace-repo/8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11.jsonl`,
+        terminal: false,
       }),
     ).toEqual([
       "claude",
@@ -949,6 +953,16 @@ describe("what a conversation home's process gets", () => {
       "--settings",
       claudeSettingsArgOf("neutral"),
     ]);
+    const terminal = conversationArgv({
+      harness: "claude",
+      argv: ["claude", "--session-id", "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11"],
+      resumePath: null,
+      terminal: true,
+    });
+    expect(JSON.parse(terminal.at(-1) ?? "")).toEqual({
+      ...claudeSettingsOf("neutral"),
+      hooks: CLAUDE_AGENT_HOOKS,
+    });
   });
 
   it("Codex: HOME, CODEX_HOME and its index at H, memories and plugins off on the command line too", () => {
@@ -961,7 +975,12 @@ describe("what a conversation home's process gets", () => {
     expect(env["CODEX_HOME"]).toBe(`/run/mend/conv/${SESSION}/.codex`);
     expect(env["CODEX_SQLITE_HOME"]).toBe(`/run/mend/conv/${SESSION}/.codex`);
     expect(
-      conversationArgv({ harness: "codex", argv: ["codex", "app-server"], resumePath: null }),
+      conversationArgv({
+        harness: "codex",
+        argv: ["codex", "app-server"],
+        resumePath: null,
+        terminal: false,
+      }),
     ).toEqual([
       "codex",
       "-c",

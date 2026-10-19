@@ -1368,6 +1368,21 @@ understand the work.
 
 ### Decided
 
+- **2026-10-19: a terminal agent's own hooks say that it waits, and why (G4).** A session also reads
+  `waiting` while its live terminal agent (`agent-pty`) has reported a wait. Claude's `--settings`
+  hooks and Codex's `[hooks]` in `/etc/codex/config.toml` run `mend hook <harness>`, which sends the
+  hook's event, notification type and tool over the session channel; one table (`AGENT_HOOKS`)
+  derives both harnesses' wiring and the server's reading. The fact is on the agent's process row
+  (`session_processes.waiting`: `permission`, `question` or `prompt`, the tool, and since when), and
+  clients show it as `waiting · claude needs your permission to use Bash`. A tool that ran, a
+  submitted prompt, or the end of the process clears it; a keystroke in that terminal clears a
+  permission or question wait (a finished turn waits for the submitted prompt), and the emulator's
+  own replies are not keystrokes. A report names its process by the harness's own session id: Mend
+  pins a fresh terminal Claude with `--session-id` and records it, a fresh Codex's first
+  `SessionStart` claims its row, and a report under any other id changes nothing. A finished turn
+  reads `waiting · claude finished its turn`. This lifts the 2026-08-21 reservation of `waiting` for
+  protocol mode.
+
 - **2026-10-08: the computer-use experiment succeeded; shipping is deferred.** Real Claude and Codex
   terminal sessions operated the same Chromium desktop the human viewed beside the terminal,
   retained recordings, and supported takeover without ending the coding conversation. This validates

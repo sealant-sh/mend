@@ -1439,6 +1439,9 @@ importers:
       '@mend/domain':
         specifier: workspace:*
         version: link:../domain
+      '@mend/network':
+        specifier: workspace:*
+        version: link:../network
       '@mend/sealant':
         specifier: workspace:*
         version: link:../sealant

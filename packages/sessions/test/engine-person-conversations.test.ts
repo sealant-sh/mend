@@ -28,6 +28,7 @@ import type { CreateOptions, SessionOptions, Workspace } from "@sealant/sdk";
 import { Deferred, Effect, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
+import { CLAUDE_AGENT_HOOKS, claudeSettingsOf } from "../src/claude-settings.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import {
   claudeLine,
@@ -795,6 +796,81 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
     expect(holder?.fence).toBeGreaterThan(takesAtStart);
     const ptyAgent = [...state.conversationHolders.values()][0]?.processId ?? null;
     expect(ptyAgent).not.toBeNull();
+  }, 30_000);
+
+  it("a fresh terminal claude in a once-shared conversation's home carries Mend's hooks and is pinned to a session id its row records (G4)", async () => {
+    const spawned: Array<ReadonlyArray<string>> = [];
+    const opened: Array<SessionOptions | PersonSessionOptions> = [];
+    const calls: Array<string> = [];
+    const state = makeHarnessLayoutsMemoryState();
+    const agentRows: Array<SessionProcess> = [];
+    let sessionId: SessionId | null = null;
+    const exec = (argv: ReadonlyArray<string>) => {
+      if (isPrepare(argv)) return { exitCode: 0, stdout: LAYOUT_READY, stderr: "" };
+      if (isStage(argv)) return { exitCode: 0, stdout: "mend-conv empty\n", stderr: "" };
+      if (isExchange(argv)) {
+        return { exitCode: 0, stdout: "mend-conv exchanged renameat2\n", stderr: "" };
+      }
+      return undefined;
+    };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "once-shared",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          sessionId = session.id;
+          const row = world.sessions.get(session.id);
+          if (row === undefined) return yield* Effect.die("no session");
+          world.sessions.set(session.id, new Session({ ...row, sharedControlEverAt: now() }));
+          state.sharedConversations.set(session.id, { owner: "user-fixture", movedAt: now() });
+          yield* engine.launch(session.id, ["claude"]);
+          agentRows.push(
+            ...[...world.processes.values()].filter(
+              (process) =>
+                process.sessionId === session.id &&
+                process.kind === "agent-pty" &&
+                process.exitedAt === null,
+            ),
+          );
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          opened,
+          undefined,
+          [],
+          undefined,
+          { exec },
+        ),
+        harnessLayout: { flag: "person", state, platform: personPlatform(calls, { person: true }) },
+      },
+    );
+    if (sessionId === null) throw new Error("no session");
+    const terminal = spawned.at(-1) ?? [];
+    expect(terminal[0]).toBe("claude");
+    expect(terminal).not.toContain("--resume");
+    const pinned = terminal[terminal.indexOf("--session-id") + 1];
+    expect(pinned).toMatch(/^[0-9a-f-]{36}$/);
+    const settings: unknown = JSON.parse(terminal[terminal.indexOf("--settings") + 1] ?? "{}");
+    expect(settings).toEqual({ ...claudeSettingsOf("neutral"), hooks: CLAUDE_AGENT_HOOKS });
+    expect(opened.at(-1)?.env?.["CLAUDE_CONFIG_DIR"]).toBe(`/run/mend/conv/${sessionId}/.claude`);
+    expect(agentRows.map((row) => row.providerSessionId)).toEqual([pinned]);
   }, 30_000);
 
   it("a takeover that loses the conversation to a waiting turn's hand-over says so (review 2 of mend#572, P3-1)", async () => {
@@ -1955,13 +2031,17 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     // Alice made the worktree: hers keep crons, with only the session-state switch.
     expect(claudes[0]?.slice(-2)).toEqual([
       "--settings",
-      JSON.stringify({ env: { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" } }),
+      JSON.stringify({
+        env: { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" },
+        hooks: CLAUDE_AGENT_HOOKS,
+      }),
     ]);
     // Maria's personal Claude in Alice's worktree: no scheduled prompts, whatever the repository says.
     expect(claudes[1]?.slice(-2)).toEqual([
       "--settings",
       JSON.stringify({
         env: { CLAUDE_CODE_DISABLE_CRON: "1", CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" },
+        hooks: CLAUDE_AGENT_HOOKS,
       }),
     ]);
   }, 30_000);

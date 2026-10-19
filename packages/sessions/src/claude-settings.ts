@@ -7,6 +7,9 @@
  * starts Claude as well (Claude refuses a `--settings` file that is not there; verified
  * 2026-10-07 against 2.1.292, which takes the JSON inline).
  */
+import { AGENT_HOOKS } from "@mend/domain/workbench";
+
+import { MEND_HELPER_PATH } from "./session-socket.ts";
 
 /** Which settings a Claude process gets (`--settings`). */
 export type ClaudeSettingsKind = "neutral" | "no-cron" | "personal";
@@ -43,6 +46,41 @@ export const claudeSettingsOf = (kind: ClaudeSettingsKind): Readonly<Record<stri
   }
 };
 
+/** Claude merges a settings layer's hooks with the others', so a repository's own hooks still run. */
+export const CLAUDE_AGENT_HOOKS: Readonly<Record<string, ReadonlyArray<unknown>>> =
+  Object.fromEntries(
+    AGENT_HOOKS.claude.map((hook) => [
+      hook.event,
+      [
+        {
+          ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
+          hooks: [{ type: "command", command: `${MEND_HELPER_PATH} hook claude`, timeout: 5 }],
+        },
+      ],
+    ]),
+  );
+
 /** The `--settings` argument itself: the settings as one line of JSON. */
 export const claudeSettingsArgOf = (kind: ClaudeSettingsKind): string =>
   JSON.stringify(claudeSettingsOf(kind));
+
+const CLAUDE_SESSION_FLAGS = ["--resume", "-r", "--continue", "-c", "--fork-session"];
+
+/**
+ * A terminal Claude's own session id, so its hook reports name it (`agentHookTarget`). A fresh
+ * Claude is pinned to `fresh` with `--session-id`; a launch that names its id keeps it; one that
+ * resumes or continues a conversation is left alone, with no id here (the resume's id is known
+ * from the conversation it continues).
+ */
+export const withClaudeSessionId = (
+  argv: ReadonlyArray<string>,
+  fresh: string,
+): { readonly argv: ReadonlyArray<string>; readonly providerSessionId: string | null } => {
+  if (argv[0] !== "claude") return { argv, providerSessionId: null };
+  const named = argv.indexOf("--session-id");
+  if (named >= 0) return { argv, providerSessionId: argv.at(named + 1) ?? null };
+  if (CLAUDE_SESSION_FLAGS.some((flag) => argv.includes(flag))) {
+    return { argv, providerSessionId: null };
+  }
+  return { argv: [...argv, "--session-id", fresh], providerSessionId: fresh };
+};

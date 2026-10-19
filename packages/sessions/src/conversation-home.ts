@@ -11,7 +11,7 @@
  */
 import { type LinuxIdentity, MEND_GROUP, linuxHomeOf } from "@mend/domain/workbench";
 
-import { CLAUDE_NEUTRAL_ENV, claudeSettingsArgOf } from "./claude-settings.ts";
+import { CLAUDE_AGENT_HOOKS, CLAUDE_NEUTRAL_ENV, claudeSettingsOf } from "./claude-settings.ts";
 import { assertScriptSafe, PEOPLE_DIR, savedDirOf } from "./harness-layout.ts";
 import { shellQuote } from "./workspace-files.ts";
 
@@ -195,16 +195,19 @@ const CODEX_CONVERSATION_FLAGS = [
 ] as const;
 
 /**
- * A protocol agent's command line in a conversation home: started directly (no seed, no shell
- * profile), Claude with the neutral settings inline and resumed by the full path of its transcript,
- * never by an id another conversation could answer to (decision 6, "Resume never forks").
+ * An agent's command line in a conversation home: started directly (no seed, no shell profile),
+ * Claude with the neutral settings inline and resumed by the full path of its transcript, never by
+ * an id another conversation could answer to (decision 6, "Resume never forks"). A terminal Claude
+ * gets Mend's hooks in those settings, as one outside a conversation home does (G4).
  */
 export const conversationArgv = (input: {
   readonly harness: ConversationHarness;
-  /** The protocol command line as `composeProtocolArgv` made it. */
+  /** The command line as `composeProtocolArgv`, or the terminal launch, made it. */
   readonly argv: ReadonlyArray<string>;
   /** The transcript a resume continues, under `H`; null for a new conversation. */
   readonly resumePath: string | null;
+  /** A terminal agent (`agent-pty`), which reports its waits through its hooks. */
+  readonly terminal: boolean;
 }): ReadonlyArray<string> => {
   if (input.harness === "codex") {
     const [head, ...rest] = input.argv;
@@ -213,7 +216,9 @@ export const conversationArgv = (input: {
   const argv = [...input.argv];
   const resume = argv.indexOf("--resume");
   if (resume >= 0 && input.resumePath !== null) argv[resume + 1] = input.resumePath;
-  return [...argv, "--settings", claudeSettingsArgOf("neutral")];
+  const neutral = claudeSettingsOf("neutral");
+  const settings = input.terminal ? { ...neutral, hooks: CLAUDE_AGENT_HOOKS } : neutral;
+  return [...argv, "--settings", JSON.stringify(settings)];
 };
 
 // ─── the scripts ─────────────────────────────────────────────────────────────

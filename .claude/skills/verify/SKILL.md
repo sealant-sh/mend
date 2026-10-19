@@ -644,7 +644,10 @@ with `via: "api"` or `via: "setup"`, and only ever for setup or for reading what
 never for the action under test. The proven recipe is `recipes/vscode-open-as-built.mjs` (a session
 started from the palette, the row double-clicked and its opens counted, one clean open through to
 the workspace window's files and terminal); the map's [vscode.md](features/vscode.md) has the flows
-by story.
+by story. `recipes/g4-terminal-agent-waits.mjs` drives no editor: it replays claude's hooks through
+`scripts/fixtures/claude-standin.mjs` in a shell beside a real (signed-out) claude agent and reads
+the session's `waiting` from the API and `/api/events`
+([terminal-agent-waits.md](features/terminal-agent-waits.md)).
 
 What cannot be driven, and why: VS Code draws its modals and context menus as GTK windows outside
 the page unless `window.dialogStyle` and `window.titleBarStyle` are `custom` (the driver writes both

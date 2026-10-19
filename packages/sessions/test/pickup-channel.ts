@@ -61,6 +61,7 @@ export const startPickupChannel = async (
     restartService: notHere,
     stopSession: notHere,
     land: notHere,
+    agentHook: notHere,
     listRepositories: notHere,
     addableProjects: notHere,
     addRepository: notHere,

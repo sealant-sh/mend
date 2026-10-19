@@ -1,6 +1,7 @@
-import { OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
+import { AGENT_HOOKS, OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
 
 import { PI_PROFILE_PROGRAM } from "./pi-profile.ts";
+import { MEND_HELPER_PATH } from "./session-socket.ts";
 import { shellQuote } from "./workspace-files.ts";
 
 /**
@@ -218,11 +219,76 @@ export const CODEX_TRUST_SEED =
  */
 export const CODEX_SYSTEM_CONFIG = "/etc/codex/config.toml";
 
-export const CODEX_SYSTEM_CONFIG_TEXT = [
+const CODEX_SANDBOX_LINES = [
   "# Written by Mend. A workspace is the sandbox: Codex's own (bubblewrap) cannot start in one,",
   "# so Codex runs here without it, as the Codex sessions Mend starts do. A sandbox_mode in your",
   "# ~/.codex/config.toml wins over this file.",
   'sandbox_mode = "danger-full-access"',
+];
+
+/**
+ * Every text Mend has written to the system config, oldest first, byte for byte: an executor
+ * still holding one of them is brought up to date; the last is the text written now. Literals,
+ * so a change to what Mend writes cannot change what it recognises on executors in the field.
+ */
+export const CODEX_SYSTEM_CONFIG_TEXT_V1 =
+  "# Written by Mend. A workspace is the sandbox: Codex's own (bubblewrap) cannot start in one,\n" +
+  "# so Codex runs here without it, as the Codex sessions Mend starts do. A sandbox_mode in your\n" +
+  "# ~/.codex/config.toml wins over this file.\n" +
+  'sandbox_mode = "danger-full-access"\n';
+
+export const CODEX_SYSTEM_CONFIG_TEXT_V2 =
+  "# Written by Mend. A workspace is the sandbox: Codex's own (bubblewrap) cannot start in one,\n" +
+  "# so Codex runs here without it, as the Codex sessions Mend starts do. A sandbox_mode in your\n" +
+  "# ~/.codex/config.toml wins over this file.\n" +
+  'sandbox_mode = "danger-full-access"\n' +
+  "\n" +
+  "# Each hook tells Mend when Codex waits for you, and when it goes on.\n" +
+  "[[hooks.PermissionRequest]]\n" +
+  'hooks = [{ type = "command", command = "mend hook codex", timeout = 5 }]\n' +
+  "[[hooks.Stop]]\n" +
+  'hooks = [{ type = "command", command = "mend hook codex", timeout = 5 }]\n' +
+  "[[hooks.UserPromptSubmit]]\n" +
+  'hooks = [{ type = "command", command = "mend hook codex", timeout = 5 }]\n' +
+  "[[hooks.PostToolUse]]\n" +
+  'hooks = [{ type = "command", command = "mend hook codex", timeout = 5 }]\n';
+
+export const CODEX_SYSTEM_CONFIG_TEXT_V3 =
+  "# Written by Mend. A workspace is the sandbox: Codex's own (bubblewrap) cannot start in one,\n" +
+  "# so Codex runs here without it, as the Codex sessions Mend starts do. A sandbox_mode in your\n" +
+  "# ~/.codex/config.toml wins over this file.\n" +
+  'sandbox_mode = "danger-full-access"\n' +
+  "\n" +
+  "# Each hook tells Mend when Codex waits for you, and when it goes on.\n" +
+  "[[hooks.SessionStart]]\n" +
+  'hooks = [{ type = "command", command = "/run/mend/bin/mend hook codex", timeout = 5 }]\n' +
+  "[[hooks.PermissionRequest]]\n" +
+  'hooks = [{ type = "command", command = "/run/mend/bin/mend hook codex", timeout = 5 }]\n' +
+  "[[hooks.Stop]]\n" +
+  'hooks = [{ type = "command", command = "/run/mend/bin/mend hook codex", timeout = 5 }]\n' +
+  "[[hooks.UserPromptSubmit]]\n" +
+  'hooks = [{ type = "command", command = "/run/mend/bin/mend hook codex", timeout = 5 }]\n' +
+  "[[hooks.PostToolUse]]\n" +
+  'hooks = [{ type = "command", command = "/run/mend/bin/mend hook codex", timeout = 5 }]\n';
+
+export const CODEX_SYSTEM_CONFIG_TEXTS_WRITTEN = [
+  CODEX_SYSTEM_CONFIG_TEXT_V1,
+  CODEX_SYSTEM_CONFIG_TEXT_V2,
+  CODEX_SYSTEM_CONFIG_TEXT_V3,
+] as const;
+
+/**
+ * Codex runs a hook only from a layer it trusts; the system layer is one, so these run without
+ * `--dangerously-bypass-hook-trust` (codex-rs hooks discovery, rust-v0.160.0).
+ */
+export const CODEX_SYSTEM_CONFIG_TEXT = [
+  ...CODEX_SANDBOX_LINES,
+  "",
+  "# Each hook tells Mend when Codex waits for you, and when it goes on.",
+  ...AGENT_HOOKS.codex.flatMap((hook) => [
+    `[[hooks.${hook.event}]]`,
+    `hooks = [{ type = "command", command = "${MEND_HELPER_PATH} hook codex", timeout = 5 }]`,
+  ]),
   "",
 ].join("\n");
 
@@ -233,15 +299,25 @@ export const CODEX_SYSTEM_CONFIG_TEXT = [
  * operator, the image's own setup) is kept, and nothing is linked into a directory or through a
  * link. An `ln` without `-T` gets the same refusal from a check made right before it. A
  * `/etc/codex` that is a link is never written through. The temporary goes either way.
+ *
+ * The one file it does replace is Mend's own earlier text, byte for byte (any of
+ * `CODEX_SYSTEM_CONFIG_TEXTS_WRITTEN` but the last), renamed over it in one step; any other
+ * content stays. The new text is written to the temporary first, so the compare runs right before
+ * the rename.
  */
 export const codexSystemConfigScript = (file: string = CODEX_SYSTEM_CONFIG): string => {
   const target = shellQuote(file);
   const text = shellQuote(CODEX_SYSTEM_CONFIG_TEXT);
+  const earlier = CODEX_SYSTEM_CONFIG_TEXTS_WRITTEN.slice(0, -1).map(shellQuote).join(" ");
   return (
-    `( f=${target}; t=; d=$(dirname "$f"); if [ ! -e "$f" ] && [ ! -L "$f" ] && [ ! -L "$d" ]; then umask 022; ` +
+    `( f=${target}; t=; d=$(dirname "$f"); umask 022; if [ ! -L "$d" ]; then ` +
+    `if [ ! -e "$f" ] && [ ! -L "$f" ]; then ` +
     `{ mkdir -p "$d" && [ ! -L "$d" ] && t=$(mktemp "$d/.config.toml.mend-XXXXXX") && printf '%s' ${text} > "$t" && ` +
     `chmod 0644 "$t" && { ln -T "$t" "$f" || { [ ! -e "$f" ] && [ ! -L "$f" ] && ln "$t" "$f"; }; }; } 2>/dev/null; ` +
-    `[ -z "$t" ] || rm -f "$t"; fi; true )`
+    `elif [ -f "$f" ] && [ ! -L "$f" ]; then ` +
+    `{ t=$(mktemp "$d/.config.toml.mend-XXXXXX") && printf '%s' ${text} > "$t" && chmod 0644 "$t" && ` +
+    `{ m=; for p in ${earlier}; do printf '%s' "$p" | cmp -s - "$f" && m=1; done; [ -n "$m" ]; } && ` +
+    `mv -f "$t" "$f"; } 2>/dev/null; fi; fi; [ -z "$t" ] || rm -f "$t"; true )`
   );
 };
 

@@ -7,8 +7,10 @@ import {
   UpgradeTicketsRepo,
   makeUpgradeTicketsMemory,
 } from "@mend/db";
+import { SealantWorkspaceId, SessionProcessId } from "@mend/domain";
+import { SessionProcess } from "@mend/domain/workbench";
 import { SealantClient, SealantPrincipal } from "@mend/sealant";
-import { WorkspaceCaller } from "@mend/sessions";
+import { SessionEngine, WorkspaceCaller } from "@mend/sessions";
 import { Deferred, Effect, Layer, ManagedRuntime } from "effect";
 import { HttpRouter } from "effect/http";
 import { describe, expect, it } from "vitest";
@@ -116,8 +118,43 @@ const platformWorkspace = (id: string): Workspace => ({
 const wait = (signal: Deferred.Deferred<void>) =>
   Effect.runPromise(Deferred.await(signal).pipe(Effect.timeout("3 seconds")));
 
-const startServer = async (address: "process" | "session", privateProject: boolean) => {
-  const world = await createTenancyWorld();
+const CAROL_AGENT_IN_SHARED_A = SessionProcessId.make("process-shared-a-carol-agent");
+const carolAgent = new SessionProcess({
+  id: CAROL_AGENT_IN_SHARED_A,
+  sessionId: CAROL_SESSION_IN_SHARED_A,
+  sealantWorkspaceId: SealantWorkspaceId.make("workspace-shared-a"),
+  sealantSessionId: "platform-process-shared-a-carol-agent",
+  sealantRunId: null,
+  launchCorrelationId: null,
+  serviceId: null,
+  attemptOrdinal: null,
+  kind: "agent-pty",
+  harness: "claude",
+  providerSessionId: null,
+  protocolOptions: null,
+  label: "claude",
+  argv: ["claude"],
+  status: "running",
+  exitCode: null,
+  workspacePort: null,
+  protocol: "tcp",
+  hostPort: null,
+  createdAt: new Date("2026-10-19T09:00:00.000Z"),
+  exitedAt: null,
+  updatedAt: new Date("2026-10-19T09:00:00.000Z"),
+});
+
+const startServer = async (
+  address: "process" | "session",
+  privateProject: boolean,
+  process: SessionProcessId = CAROL_SHELL_IN_SHARED_A,
+  clears = true,
+) => {
+  const world = await createTenancyWorld(
+    [],
+    process === CAROL_AGENT_IN_SHARED_A ? [carolAgent] : [],
+  );
+  const typed: Array<SessionProcessId> = [];
   const pty = makeAttachment();
   const audits: Array<Parameters<SessionControlEventsRepo["Service"]["record"]>[0]> = [];
   const lookups: Array<{
@@ -190,6 +227,14 @@ const startServer = async (address: "process" | "session", privateProject: boole
           audits.push(event);
         }),
     }),
+    Layer.mock(SessionEngine, {
+      launchUnderWay: () => false,
+      personTyped: (processId) =>
+        Effect.sync(() => {
+          typed.push(processId);
+          return clears;
+        }),
+    }),
   );
   const authorization = SessionSteeringLive.pipe(
     Layer.provideMerge(ProjectAccessLive),
@@ -213,12 +258,10 @@ const startServer = async (address: "process" | "session", privateProject: boole
     const listening = server.address();
     if (listening === null || typeof listening === "string")
       throw new Error("no owned HTTP server address");
-    const query =
-      address === "process"
-        ? { process: CAROL_SHELL_IN_SHARED_A }
-        : { session: CAROL_SESSION_IN_SHARED_A };
+    const query = address === "process" ? { process } : { session: CAROL_SESSION_IN_SHARED_A };
     return {
       world,
+      typed,
       pty,
       audits,
       lookups,
@@ -313,6 +356,7 @@ describe("admitted terminal sockets", () => {
           // finalizes the platform attachment and unregisters the connection before negative assertions.
           await socket.close();
           expect(server.pty.inputs).toEqual(scenario.typing ? [INPUT, "pwd\r"] : []);
+          expect(server.typed).toEqual([]);
           expect(server.pty.resizes).toEqual(scenario.typing ? [[132, 47]] : []);
           expect(server.pty.closeCount()).toBe(1);
           expect(
@@ -357,4 +401,52 @@ describe("admitted terminal sockets", () => {
       },
     );
   }
+});
+
+describe("keys in a terminal agent's terminal (G4)", () => {
+  it("tell the engine the person typed there, once per interval, and only for the owner who types", async () => {
+    for (const scenario of [
+      { user: "carol", typed: [CAROL_AGENT_IN_SHARED_A] },
+      { user: "alice", typed: [] },
+    ] as const) {
+      const server = await startServer("process", false, CAROL_AGENT_IN_SHARED_A);
+      try {
+        const socket = await server.connect(scenario.user);
+        socket.client.send(INPUT);
+        socket.client.send(JSON.stringify({ t: "input", data: "y" }));
+        socket.client.send(JSON.stringify({ t: "resize", cols: 132, rows: 47 }));
+        if (scenario.user === "carol") await wait(server.pty.written);
+        server.pty.output(LIVE_OUTPUT);
+        await wait(socket.live);
+        await socket.close();
+        expect(server.typed).toEqual(scenario.typed);
+      } finally {
+        await server.close();
+      }
+    }
+  });
+
+  it("writes the emulator's own replies to the agent but reads only a key as the person typing", async () => {
+    const server = await startServer("process", false, CAROL_AGENT_IN_SHARED_A, false);
+    try {
+      const socket = await server.connect("carol");
+      const replies = "\x1b[?1;2c\x1b[>0;276;0c\x1b[24;1R\x1b[?0u\x1b[I";
+      socket.client.send(new TextEncoder().encode(replies));
+      socket.client.send(JSON.stringify({ t: "input", data: "\x1b[O" }));
+      socket.client.send(JSON.stringify({ t: "input", data: "\r" }));
+      socket.client.send(JSON.stringify({ t: "resize", cols: 132, rows: 47 }));
+      await wait(server.pty.written);
+      server.pty.output(LIVE_OUTPUT);
+      await wait(socket.live);
+      await socket.close();
+      expect(
+        server.pty.inputs.map((input) =>
+          typeof input === "string" ? input : new TextDecoder().decode(input),
+        ),
+      ).toEqual([replies, "\x1b[O", "\r"]);
+      expect(server.typed).toEqual([CAROL_AGENT_IN_SHARED_A]);
+    } finally {
+      await server.close();
+    }
+  });
 });
