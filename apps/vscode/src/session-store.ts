@@ -425,7 +425,7 @@ export class SessionStore implements vscode.Disposable {
         this.#schedule();
       });
     } else {
-      for (const id of [...this.#wantSessions]) {
+      for (const id of this.#wantSessions) {
         if (this.#reading.size >= FAN_OUT) break;
         if (this.#reading.has(id)) continue;
         this.#wantSessions.delete(id);

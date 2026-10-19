@@ -37,12 +37,12 @@ describe("ToastClaims", () => {
       await earlier.claim(`old:${round}`, iso(clock - 8 * DAY - 1_000));
       // This round's wait, and the last round's again: a window that saw it late claims it now.
       const keys = [`s:wait:${round}`, `s:wait:${Math.max(0, round - 1)}`];
-      const claims = Array.from({ length: 8 }, (_, index) => ({
+      const claimants = Array.from({ length: 8 }, (_, index) => ({
         key: keys[index % 2] ?? "",
         claims: new ToastClaims(shared, () => clock),
       }));
       const claimed = await Promise.all(
-        claims.map(async ({ key, claims }) => ({
+        claimants.map(async ({ key, claims }) => ({
           key,
           won: await claims.claim(key, iso(clock - 1_000)),
         })),
@@ -142,22 +142,19 @@ const waitStarts = () => ({ prev: read({ ...waiting, status: "running" }), next:
 
 /** A window's claims whose answer is held until the test lets it through. */
 const heldClaims = (claims: ToastClaims) => {
-  let admit: () => void = () => undefined;
-  const gate = new Promise<void>((resolve) => {
-    admit = resolve;
-  });
+  const gate = Promise.withResolvers<void>();
   const release = vi.fn((key: string, at: string) => claims.release(key, at));
   return {
     claims: {
       claim: async (key: string, at: string) => {
         const won = await claims.claim(key, at);
-        await gate;
+        await gate.promise;
         return won;
       },
       release,
     },
     release,
-    letGo: () => admit(),
+    letGo: () => gate.resolve(),
   };
 };
 
