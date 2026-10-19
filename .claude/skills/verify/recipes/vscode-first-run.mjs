@@ -82,7 +82,11 @@ const sessionsTree = async (h) => {
 const offered = async (h, label) => {
   const { message, rows } = await h.viewRows();
   const labels = rows.map((row) => row.label);
-  return labels.length === 1 && labels[0] === label ? { message, rows: labels } : null;
+  // The row and the message reach the workbench as two updates: a read between them sees the row
+  // alone (fr4a2's step 11).
+  return labels.length === 1 && labels[0] === label && message !== ""
+    ? { message, rows: labels }
+    : null;
 };
 
 /** The warm session's row, under Projects and its project, both collapsed until opened. */
@@ -563,7 +567,6 @@ async function signedOut(h) {
         items.some((item) => item.includes(email)),
         `Accounts menu ${JSON.stringify(items)}`,
       );
-      await notification(signedInToast).dismiss();
       return `URL input "${kept}" · ${shown(seen)} · VS Code devices ${listed.length} · Accounts menu ${JSON.stringify(items)}`;
     },
   );
@@ -593,7 +596,6 @@ async function signedOut(h) {
       expect(kept === origin, `the URL input starts from "${kept}"`);
       expect(successes.length === 1, `success toasts ${JSON.stringify(seen?.toasts)}`);
       expect(warnings.length === 0, `warnings ${JSON.stringify(warnings)}`);
-      await notification(signedInToast).dismiss();
       return `URL input "${kept}" · VS Code devices 1 → ${after.length} (a new device in place of the one replaced) · ${shown(seen)}`;
     },
   );
