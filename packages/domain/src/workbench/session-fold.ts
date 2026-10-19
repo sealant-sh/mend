@@ -1,4 +1,4 @@
-import { type AgentWait, agentWaitWords } from "./agent-wait.ts";
+import { type AgentWait, agentWaitStatus, agentWaitWords } from "./agent-wait.ts";
 import {
   isAgentProcessKind,
   LIVE_PROCESS_STATUSES,
@@ -10,10 +10,16 @@ import {
  * process (docs/SESSION-SERVICES.md, decided 2026-08-21):
  *
  *   pending request on a live protocol agent    → `waiting`
- *   a live terminal agent reported a wait       → `waiting`
+ *   a live terminal agent asks for permission
+ *   or asks a question                          → `waiting`
+ *   the one live agent, a terminal agent,
+ *   finished its turn                           → `idle`
  *   any other agent process live                → `running`
  *   no agent live, shells or Services live      → `idle`
  *   nothing live                                → settled (from the last agent outcome)
+ *
+ * The two `idle`s differ in the agent: live with a `prompt` wait (`agentWaitLine` says
+ * `idle · claude finished its turn`), or ended.
  */
 export type SessionLiveness = "waiting" | "running" | "idle" | "settled";
 
@@ -29,20 +35,23 @@ export const foldSessionLiveness = (
   hasPendingAgentRequest = false,
 ): SessionLiveness => {
   let supporting = false;
-  let agent = false;
+  let liveAgents = 0;
   let protocolAgent = false;
   for (const process of processes) {
     if (!isLiveProcess(process)) continue;
     if (isAgentProcessKind(process.kind)) {
-      agent = true;
+      liveAgents += 1;
       if (process.kind === "agent-protocol") protocolAgent = true;
     } else {
       supporting = true;
     }
   }
   if (protocolAgent && hasPendingAgentRequest) return "waiting";
-  if (agentWaitOf(processes) !== null) return "waiting";
-  if (agent) return "running";
+  const wait = agentWaitOf(processes);
+  const waitStatus = wait === null ? null : agentWaitStatus(wait);
+  if (waitStatus === "waiting") return "waiting";
+  if (waitStatus === "idle" && liveAgents === 1) return "idle";
+  if (liveAgents > 0) return "running";
   return supporting ? "idle" : "settled";
 };
 
@@ -88,7 +97,8 @@ export const agentWaitOf = (processes: ReadonlyArray<SessionProcess>): AgentWait
 
 export const agentWaitLine = (agent: SessionProcess | null): string | null => {
   if (agent === null || agent.waiting === null || !isLiveProcess(agent)) return null;
-  return `waiting · ${agentWaitWords(agent.harness ?? agent.label ?? "the agent", agent.waiting)}`;
+  const words = agentWaitWords(agent.harness ?? agent.label ?? "the agent", agent.waiting);
+  return `${agentWaitStatus(agent.waiting)} · ${words}`;
 };
 
 /** What an ended agent process's exit says about the work. Null while it still runs. */

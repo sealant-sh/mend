@@ -102,8 +102,9 @@ export const makeAttentionRings = (windowMs: number = ATTENTION_RERING_MS): Atte
  * The phase of a session as the phone should hear it. Session status is a fold over EVERY
  * process (docs/SESSION-SERVICES.md): a session whose agent ended while a shell still holds the
  * workspace reads `idle`, so the agent's own outcome comes from its process row. `waiting` is the
- * only attention phase (a protocol-mode agent asking for input); `idle` by itself is nobody's
- * problem — it means no agent is running.
+ * only attention phase: an agent asks the person (a protocol agent's request, a terminal agent's
+ * permission or question). `idle` by itself is nobody's problem: either no agent runs, or a
+ * terminal agent finished its turn and asks nothing (its row has not exited, so no outcome rings).
  */
 export const phaseOf = (status: string, currentAgent: SessionProcess | null): Phase | null => {
   switch (status) {

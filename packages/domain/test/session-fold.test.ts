@@ -41,6 +41,8 @@ const process = (
   });
 
 const permission = new AgentWait({ kind: "permission", tool: "Bash", since: new Date(5) });
+const question = new AgentWait({ kind: "question", tool: null, since: new Date(5) });
+const finished = new AgentWait({ kind: "prompt", tool: null, since: new Date(5) });
 const ended = { exitedAt: new Date(9), status: "exited" } as const;
 
 describe("foldSessionLiveness", () => {
@@ -50,9 +52,25 @@ describe("foldSessionLiveness", () => {
     expect(foldSessionLiveness([process("agent-pty")], true)).toBe("running");
   });
 
-  it("reports waiting for a live terminal agent that reported a wait", () => {
+  it("reports waiting for a live terminal agent that asks the person", () => {
     expect(foldSessionLiveness([process("agent-pty", { waiting: permission })])).toBe("waiting");
+    expect(foldSessionLiveness([process("agent-pty", { waiting: question })])).toBe("waiting");
     expect(foldSessionLiveness([process("agent-pty", { waiting: null })])).toBe("running");
+  });
+
+  it("reports idle, not waiting, for a live terminal agent that finished its turn", () => {
+    expect(foldSessionLiveness([process("agent-pty", { waiting: finished })])).toBe("idle");
+    expect(
+      foldSessionLiveness([process("agent-pty", { waiting: finished }), process("shell")]),
+    ).toBe("idle");
+  });
+
+  it("reports running while another live agent works beside the one that finished its turn", () => {
+    const working = process("agent-pty", { createdAt: new Date(1) });
+    const done = process("agent-pty", { waiting: finished, createdAt: new Date(2) });
+    expect(foldSessionLiveness([working, done])).toBe("running");
+    const asking = process("agent-pty", { waiting: permission, createdAt: new Date(2) });
+    expect(foldSessionLiveness([working, asking])).toBe("waiting");
   });
 
   it("ignores the wait an ended terminal agent carried", () => {
@@ -86,6 +104,21 @@ describe("agentWaitLine", () => {
     expect(agentWaitLine(process("agent-pty", { waiting: permission }))).toBe(
       "waiting · codex needs your permission to use Bash",
     );
+  });
+
+  it("says idle for a live agent that finished its turn", () => {
+    expect(agentWaitLine(process("agent-pty", { waiting: finished }))).toBe(
+      "idle · codex finished its turn",
+    );
+  });
+
+  it("tells a finished turn from an ended agent beside a shell: only the live one has a line", () => {
+    const shell = process("shell");
+    const live = process("agent-pty", { waiting: finished });
+    const gone = process("agent-pty", ended);
+    expect(foldSessionLiveness([live, shell])).toBe(foldSessionLiveness([gone, shell]));
+    expect(agentWaitLine(live)).toBe("idle · codex finished its turn");
+    expect(agentWaitLine(gone)).toBeNull();
   });
 
   it("says nothing for no agent, a working agent, or an ended one", () => {
