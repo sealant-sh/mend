@@ -24,6 +24,13 @@ import {
   storeState,
 } from "./handoff-fixture.ts";
 
+const refusalMessage = (
+  outcome: Result.Result<unknown, { readonly _tag: string; readonly message: string }>,
+): string =>
+  Result.isFailure(outcome) && outcome.failure._tag === "HandoffRefusedError"
+    ? outcome.failure.message
+    : "";
+
 describe("Store.admitHandoff", () => {
   let world: HandoffWorld;
   let storeRoot: string;
@@ -83,11 +90,6 @@ describe("Store.admitHandoff", () => {
     expect(quarantines()).toEqual([]);
     return outcome;
   };
-
-  const refusalMessage = (outcome: Awaited<ReturnType<typeof admit>>): string =>
-    Result.isFailure(outcome) && outcome.failure._tag === "HandoffRefusedError"
-      ? outcome.failure.message
-      : "";
 
   it("admits the snapshot: the facts, the trees, the delta pack that closes with the base", async () => {
     const bundle = buildHandoffBundle(world.checkout);
