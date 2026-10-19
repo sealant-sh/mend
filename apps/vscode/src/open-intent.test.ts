@@ -1,4 +1,4 @@
-import { mkdtemp, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -64,5 +64,31 @@ describe("OpenIntents", () => {
       expect(await destination.take("w")).toBeNull();
     }
     expect(await readdir(shared)).toEqual([]);
+  });
+});
+
+describe("OpenIntents' leftovers", () => {
+  it("removes its temporary file when a write fails", async () => {
+    const shared = await directory();
+    // A directory where the intent's file goes makes the rename fail.
+    await mkdir(join(shared, "w.json"));
+    await writeFile(join(shared, "w.json", "keep"), "");
+    await expect(
+      new OpenIntents(shared).write({ workspaceId: "w", sessionId: "s" }),
+    ).rejects.toThrow();
+    expect((await readdir(shared)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("sweeps abandoned .tmp, .taken and untaken intents past the expiry on a take, and keeps newer ones", async () => {
+    const shared = await directory();
+    const stale = (Date.now() - OPEN_INTENT_TTL_MS - 60_000) / 1000;
+    for (const name of ["a.json.1.tmp", "b.json.2.taken", "c.json"]) {
+      await writeFile(join(shared, name), "{}");
+      await utimes(join(shared, name), stale, stale);
+    }
+    await writeFile(join(shared, "d.json.3.tmp"), "{}");
+    await new OpenIntents(shared).write({ workspaceId: "fresh", sessionId: "s" });
+    expect(await new OpenIntents(shared).take("nobody")).toBeNull();
+    expect((await readdir(shared)).toSorted()).toEqual(["d.json.3.tmp", "fresh.json"]);
   });
 });
