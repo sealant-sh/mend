@@ -391,6 +391,20 @@ describe("how much the store reads (S5)", () => {
     expect(store.hasRead()).toBe(true);
   });
 
+  it("reads at most FAN_OUT sessions' facts at once in a full read", async () => {
+    const { mend, store } = world();
+    const ids = Array.from({ length: 20 }, (_, index) => `w${index}`);
+    mend.add(...ids.map((id) => session({ id, status: "waiting" })));
+    mend.hold("detail");
+    store.start();
+    await tick(300);
+    expect(mend.most.get("detail")).toBe(FAN_OUT);
+    mend.release("detail");
+    await tick(300);
+    expect(ids.every((id) => mend.count(`detail:${id}`) === 1)).toBe(true);
+    expect(store.hasRead()).toBe(true);
+  });
+
   it("asks a full read for the landings of the last week only, and a session's frame for its own", async () => {
     const { mend, store } = world();
     const at = (ago: number) => new Date(START.getTime() - ago).toISOString();
