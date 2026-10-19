@@ -11,6 +11,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const refusing = (body: object) =>
+  vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 422 }));
+
 describe("requestMend", () => {
   it("reports an unreachable server instead of returning fallback state", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("connection refused")));
@@ -63,7 +66,28 @@ describe("requestMend", () => {
         status: 422,
         tag: "StoreFailure",
         message: "No saved harness state to reopen as a terminal — resume the session instead.",
+        unknownBase: null,
       }),
+    );
+  });
+
+  it("carries the base a create named that the store does not know, and only that", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      refusing({ _tag: "StoreFailure", message: "base unknown", unknownBase: "fix/login" }),
+    );
+    await expect(
+      requestMend(connection, "/projects/p1/sessions", { method: "POST", body: "{}" }),
+    ).rejects.toEqual(expect.objectContaining({ unknownBase: "fix/login" }));
+    vi.stubGlobal(
+      "fetch",
+      refusing({ _tag: "StoreFailure", message: "fatal: No space left on device" }),
+    );
+    await expect(
+      requestMend(connection, "/projects/p1/sessions", { method: "POST", body: "{}" }),
+    ).rejects.toEqual(
+      expect.objectContaining({ unknownBase: null, message: "fatal: No space left on device" }),
     );
   });
 

@@ -5,11 +5,13 @@ import {
   DEFAULT_OPTIONS,
   isRememberedOptions,
   keptAfter,
+  movesToDefault,
   openFlow,
   PROMPT_MAX_BYTES,
   promptIssue,
   render,
   step,
+  type BaseChoice,
   type CheckoutFact,
   type FlowEffect,
   type FlowEvent,
@@ -518,7 +520,7 @@ describe("the base", () => {
   it("moves to the default when the store refuses the upstream, said before the next Enter", () => {
     const sent = prompted(PUSHED);
     expect(render(sent.state, sent.facts).busy).toBe(true);
-    const refused = run(sent.state, [{ kind: "baseRefused" }], sent.facts);
+    const refused = run(sent.state, [{ kind: "baseRefused", base: "fix/login" }], sent.facts);
     expect(refused.state.step).toEqual({ kind: "prompt" });
     expect(dim(refused.state, refused.facts)).toBe(
       "claude · default model · from main · Mend's store couldn't find fix/login",
@@ -526,9 +528,27 @@ describe("the base", () => {
     expect(render(refused.state, refused.facts).value).toBe("go");
     const again = run(refused.state, [ENTER], refused.facts);
     expect(starts(again.effects)[0]?.create.base).toBe("main");
-    expect(run(again.state, [{ kind: "baseRefused" }], again.facts).state.step).toEqual({
-      kind: "started",
-    });
+    expect(
+      run(again.state, [{ kind: "baseRefused", base: "main" }], again.facts).state.step,
+    ).toEqual({ kind: "started" });
+  });
+
+  it("moves to the default only when the store names the upstream it sent as unknown", () => {
+    const sent = prompted(PUSHED);
+    const draft = sent.state.draft;
+    expect(draft).not.toBeNull();
+    if (draft === null) return;
+    expect(movesToDefault(draft, "fix/login")).toBe(true);
+    // `git worktree add` or the disk failed: no base is named, so her base stays and the reason shows.
+    expect(movesToDefault(draft, null)).toBe(false);
+    expect(movesToDefault(draft, "another")).toBe(false);
+    expect(
+      run(sent.state, [{ kind: "baseRefused", base: "another" }], sent.facts).state.step,
+    ).toEqual({ kind: "started" });
+    const typed: BaseChoice = { kind: "ref", ref: "fix/login" };
+    expect(
+      movesToDefault({ ...draft, options: { ...draft.options, base: typed } }, "fix/login"),
+    ).toBe(false);
   });
 
   it("is the worktree's own for a join, which sends no base and names the worktree", () => {

@@ -177,8 +177,8 @@ export type FlowEvent =
   | { readonly kind: "adoptFailed" }
   /** `GET /harnesses/models` answered: `facts.catalogs` holds it now. */
   | { readonly kind: "catalogsRead" }
-  /** Create refused the upstream base (`upstreamBase`): the prompt returns, from the default. */
-  | { readonly kind: "baseRefused" };
+  /** The store does not know `base`, sent from the upstream: the prompt returns, from the default. */
+  | { readonly kind: "baseRefused"; readonly base: string };
 
 /** `POST /projects/:id/sessions`, as the start sends it. */
 export interface CreateRequest {
@@ -328,13 +328,21 @@ export const resolveBase = (draft: NewSessionDraft): ResolvedBase => {
 };
 
 /** The base create sends when it came from the window's upstream: the one a refusal moves off. */
-export const upstreamRef = (draft: NewSessionDraft): string | null =>
+const upstreamRef = (draft: NewSessionDraft): string | null =>
   draft.join === null &&
   draft.options.base.kind === "auto" &&
   draft.checkout.kind === "pushed" &&
   draft.refusedBase === null
     ? upstreamBase(draft.checkout).ref
     : null;
+
+/**
+ * Whether create's refusal moves the draft to the default: only when the store named the base it
+ * does not know (`StoreFailure.unknownBase`) and that base came from the window's upstream. Any
+ * other refusal (a fetch, `git worktree add`, the disk) is said as it is, and the base stays.
+ */
+export const movesToDefault = (draft: NewSessionDraft, unknownBase: string | null): boolean =>
+  unknownBase !== null && unknownBase === upstreamRef(draft);
 
 const baseWords = (base: ResolvedBase): string =>
   base.kind === "worktree"
@@ -756,10 +764,9 @@ export const step = (
   const unchanged = { state, effect: NONE };
   const { draft } = state;
   if (state.step.kind === "started") {
-    const refused = draft === null ? null : upstreamRef(draft);
     // The store could not resolve her upstream: the prompt is back, and Enter starts from the default.
-    return event.kind === "baseRefused" && draft !== null && refused !== null
-      ? { state: atPrompt(state, { ...draft, refusedBase: refused }), effect: NONE }
+    return event.kind === "baseRefused" && draft !== null && movesToDefault(draft, event.base)
+      ? { state: atPrompt(state, { ...draft, refusedBase: event.base }), effect: NONE }
       : unchanged;
   }
   switch (event.kind) {

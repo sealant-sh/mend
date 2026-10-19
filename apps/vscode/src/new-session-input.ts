@@ -7,12 +7,12 @@ import {
   isRememberedOptions,
   keptAfter,
   keptPromptKey,
+  movesToDefault,
   openFlow,
   remember,
   render,
   REMEMBERED_OPTIONS_KEY,
   step,
-  upstreamRef,
   type CheckoutFact,
   type FlowEffect,
   type FlowEvent,
@@ -258,10 +258,9 @@ export class NewSessionInput implements vscode.Disposable {
       this.store.showCreated(created);
       void this.launches.launch(created.id, effect.launch);
     } catch (cause) {
-      // The store has no such base (`store.ts` resolveBase): say so, and start from the default.
-      const storeRefused = cause instanceof MendApiError && cause.tag === "StoreFailure";
-      if (storeRefused && upstreamRef(draft) !== null && here.isOpen()) {
-        here.dispatch({ kind: "baseRefused" });
+      const unknownBase = cause instanceof MendApiError ? cause.unknownBase : null;
+      if (unknownBase !== null && movesToDefault(draft, unknownBase) && here.isOpen()) {
+        here.dispatch({ kind: "baseRefused", base: unknownBase });
         return;
       }
       here.hide();
