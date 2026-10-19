@@ -133,6 +133,11 @@ export class SessionStore implements vscode.Disposable {
     this.#schedule();
   }
 
+  /** Whether a read has landed: before it, the view says nothing rather than guess. */
+  hasRead(): boolean {
+    return this.#read;
+  }
+
   model(): WindowModel | null {
     return this.#model;
   }

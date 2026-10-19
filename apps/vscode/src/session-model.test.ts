@@ -347,6 +347,7 @@ describe("a session's workspace window (rule 10)", () => {
     if (model.kind !== "workspace") throw new Error("expected the workspace model");
     expect(model.session?.line).toBe("running · editing src/auth/limit.ts");
     expect(othersLine(model.others)).toBe("2 other sessions · 1 needs you");
+    expect(othersLine({ count: 0, needsYou: 0 })).toBe("no other sessions");
     expect(model.statusBar).toMatchObject({ text: "add-rate-limit · running", dot: "running" });
     expect("groups" in model).toBe(false);
   });

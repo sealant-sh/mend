@@ -357,7 +357,9 @@ export const sessionModel = (input: ModelInput): WindowModel => {
 /** The others line of a workspace window: `2 other sessions · 1 needs you`. */
 export const othersLine = (others: WorkspaceModel["others"]): string =>
   [
-    plural(others.count, "other session", "other sessions"),
+    others.count === 0
+      ? "no other sessions"
+      : plural(others.count, "other session", "other sessions"),
     ...(others.needsYou > 0 ? [`${others.needsYou} needs you`] : []),
   ].join(" · ");
 

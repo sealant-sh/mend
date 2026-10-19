@@ -1021,7 +1021,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     store.onDidChange((change) => {
       const { next } = change;
       tree.changed();
-      statusBar.update(next);
+      if (store.hasRead() || next.offline) statusBar.update(next);
       view.badge =
         next.badge === 0
           ? undefined

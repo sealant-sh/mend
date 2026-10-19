@@ -215,7 +215,10 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
 
   getChildren(element?: MendNode): Array<MendNode> {
     const model = this.store.model();
-    if (element === undefined) return model === null ? this.#notRead() : this.#roots(model);
+    if (element === undefined)
+      return model === null || (!this.store.hasRead() && !model.offline)
+        ? this.#notRead()
+        : this.#roots(model);
     switch (element.kind) {
       case "group": {
         const { group } = element;
