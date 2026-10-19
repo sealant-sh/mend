@@ -1,3 +1,4 @@
+import { AgentWait, keyAnswers } from "@mend/domain/workbench";
 import { describe, expect, it, TestClock } from "@mend/test-ci/effect-vitest";
 import { Clock, Effect } from "effect";
 
@@ -56,11 +57,35 @@ describe("isTyping", () => {
 
 const recordedClear = (answers: ReadonlyArray<boolean>) => {
   const calls: Array<number> = [];
-  const clear = Effect.gen(function* () {
-    calls.push(yield* Clock.currentTimeMillis);
-    return answers[calls.length - 1] ?? false;
-  });
-  return { calls, clear };
+  const typedAts: Array<number> = [];
+  const clear = (typedAt: Date) =>
+    Effect.gen(function* () {
+      calls.push(yield* Clock.currentTimeMillis);
+      typedAts.push(typedAt.getTime());
+      return answers[calls.length - 1] ?? false;
+    });
+  return { calls, typedAts, clear };
+};
+
+/** One agent's wait, cleared the way the engine clears it: only a wait the key came after. */
+const agentWaits = () => {
+  let open: AgentWait | null = null;
+  return {
+    opens: (since: number) =>
+      Effect.sync(() => {
+        open = new AgentWait({ kind: "permission", tool: "Bash", since: new Date(since) });
+      }),
+    continues: Effect.sync(() => {
+      open = null;
+    }),
+    open: () => open,
+    clear: (typedAt: Date) =>
+      Effect.sync(() => {
+        if (!keyAnswers(open, typedAt)) return false;
+        open = null;
+        return true;
+      }),
+  };
 };
 
 describe("makeKeystrokeClear", () => {
@@ -84,7 +109,7 @@ describe("makeKeystrokeClear", () => {
   it.effect("lands an answer typed right after a clear at the window's end, once", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { calls, clear } = recordedClear([true, true]);
+        const { calls, typedAts, clear } = recordedClear([true, true]);
         const typed = makeKeystrokeClear(clear, yield* Effect.scope);
         yield* typed;
         yield* TestClock.adjust(200);
@@ -94,8 +119,53 @@ describe("makeKeystrokeClear", () => {
         expect(calls).toEqual([0]);
         yield* TestClock.adjust(1_700);
         expect(calls).toEqual([0, 2_000]);
+        expect(typedAts).toEqual([0, 300]);
         yield* TestClock.adjust(5_000);
         expect(calls).toEqual([0, 2_000]);
+      }),
+    ),
+  );
+
+  it.effect("keeps a wait that opened after the key the window's end call stands for", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const agent = agentWaits();
+        const typed = makeKeystrokeClear(agent.clear, yield* Effect.scope);
+        yield* agent.opens(0);
+        yield* TestClock.adjust(100);
+        yield* typed;
+        yield* TestClock.adjust(100);
+        expect(agent.open()).toBeNull();
+        yield* agent.opens(200);
+        yield* TestClock.adjust(100);
+        yield* typed;
+        yield* TestClock.adjust(100);
+        yield* agent.continues;
+        yield* TestClock.adjust(100);
+        yield* agent.opens(500);
+        yield* TestClock.adjust(1_600);
+        expect(agent.open()?.since.getTime()).toBe(500);
+      }),
+    ),
+  );
+
+  it.effect("clears at the window's end a wait the window's last key came after", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const agent = agentWaits();
+        const typed = makeKeystrokeClear(agent.clear, yield* Effect.scope);
+        yield* agent.opens(0);
+        yield* TestClock.adjust(100);
+        yield* typed;
+        yield* TestClock.adjust(100);
+        yield* typed;
+        yield* agent.opens(200);
+        yield* TestClock.adjust(100);
+        yield* typed;
+        yield* TestClock.adjust(1_700);
+        expect(agent.open()?.since.getTime()).toBe(200);
+        yield* TestClock.adjust(100);
+        expect(agent.open()).toBeNull();
       }),
     ),
   );

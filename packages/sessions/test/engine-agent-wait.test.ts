@@ -211,14 +211,29 @@ describe("a terminal agent's hooks (G4)", () => {
         const engine = yield* SessionEngine;
         yield* hookOf(sessionId)(own(world, sessionId, "PermissionRequest", { tool: "Bash" }));
         const shell = yield* engine.openShell(sessionId);
-        expect(yield* engine.personTyped(shell.id)).toBe(false);
+        expect(yield* engine.personTyped(shell.id, new Date())).toBe(false);
         expect(statusOf(world, sessionId)).toBe("waiting");
         const agent = agentOf(world, sessionId);
         if (agent === null) throw new Error("no agent");
-        expect(yield* engine.personTyped(agent.id)).toBe(true);
+        expect(yield* engine.personTyped(agent.id, new Date())).toBe(true);
         expect(statusOf(world, sessionId)).toBe("running");
         expect(agentOf(world, sessionId)?.waiting).toBeNull();
-        expect(yield* engine.personTyped(agent.id)).toBe(false);
+        expect(yield* engine.personTyped(agent.id, new Date())).toBe(false);
+      }),
+    );
+  });
+
+  it("keeps a wait that opened after the key", async () => {
+    await withClaudeSession((world, sessionId) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        yield* hookOf(sessionId)(own(world, sessionId, "PermissionRequest", { tool: "Bash" }));
+        const asked = agentOf(world, sessionId);
+        const wait = asked?.waiting ?? null;
+        if (asked === null || wait === null) throw new Error("no wait");
+        expect(yield* engine.personTyped(asked.id, new Date(wait.since.getTime() - 1))).toBe(false);
+        expect(statusOf(world, sessionId)).toBe("waiting");
+        expect(agentOf(world, sessionId)?.waiting).toEqual(wait);
       }),
     );
   });
@@ -230,7 +245,7 @@ describe("a terminal agent's hooks (G4)", () => {
         yield* hookOf(sessionId)(own(world, sessionId, "Stop"));
         const agent = agentOf(world, sessionId);
         if (agent === null) throw new Error("no agent");
-        expect(yield* engine.personTyped(agent.id)).toBe(false);
+        expect(yield* engine.personTyped(agent.id, new Date())).toBe(false);
         expect(statusOf(world, sessionId)).toBe("waiting");
         expect(agentWaitLine(agentOf(world, sessionId))).toBe("waiting · claude finished its turn");
         yield* hookOf(sessionId)(own(world, sessionId, "UserPromptSubmit"));

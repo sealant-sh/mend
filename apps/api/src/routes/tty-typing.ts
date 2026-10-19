@@ -38,47 +38,46 @@ export const isTyping = (bytes: Uint8Array | string): boolean =>
 export const TYPED_CLEAR_EVERY_MS = 2_000;
 
 /**
- * Keys in a terminal agent's terminal, as calls to `clear` (the engine's `personTyped`, true when
- * it cleared a wait). Only a call that cleared something opens the window, so keys typed while
- * nothing waits never hold back the answer to the next ask. A key inside the window schedules one
- * call at the window's end, so an answer typed right after a clear lands late, never dropped.
+ * Keys in a terminal agent's terminal, as calls to `clear` with the key's time (the engine's
+ * `personTyped`, true when it cleared a wait). Only a call that cleared something opens the window,
+ * so keys typed while nothing waits never hold back the answer to the next ask. A key inside the
+ * window schedules one call at the window's end, so an answer typed right after a clear lands late,
+ * never dropped. That call carries the time of the window's last key, not its own: a wait that
+ * opened after that key is an ask nobody answered, and it stays.
  */
 export const makeKeystrokeClear = (
-  clear: Effect.Effect<boolean>,
+  clear: (typedAt: Date) => Effect.Effect<boolean>,
   scope: Scope.Scope,
   windowMs: number = TYPED_CLEAR_EVERY_MS,
 ): Effect.Effect<void> => {
   let windowEndsAt = Number.NEGATIVE_INFINITY;
-  let trailing = false;
-  const call = clear.pipe(
-    Effect.flatMap((cleared) =>
-      cleared
-        ? Clock.currentTimeMillis.pipe(
-            Effect.map((now) => {
-              windowEndsAt = now + windowMs;
-            }),
-          )
-        : Effect.void,
-    ),
-  );
+  let trailingKeyAt: number | null = null;
+  const call = (typedAt: number) =>
+    clear(new Date(typedAt)).pipe(
+      Effect.flatMap((cleared) =>
+        cleared
+          ? Clock.currentTimeMillis.pipe(
+              Effect.map((now) => {
+                windowEndsAt = now + windowMs;
+              }),
+            )
+          : Effect.void,
+      ),
+    );
+  const trailing = Effect.sync(() => {
+    const typedAt = trailingKeyAt;
+    trailingKeyAt = null;
+    return typedAt;
+  }).pipe(Effect.flatMap((typedAt) => (typedAt === null ? Effect.void : call(typedAt))));
   return Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     if (now >= windowEndsAt) {
-      yield* Effect.forkIn(call, scope);
+      yield* Effect.forkIn(call(now), scope);
       return;
     }
-    if (trailing) return;
-    trailing = true;
-    yield* Effect.forkIn(
-      Effect.sleep(windowEndsAt - now).pipe(
-        Effect.andThen(
-          Effect.sync(() => {
-            trailing = false;
-          }),
-        ),
-        Effect.andThen(call),
-      ),
-      scope,
-    );
+    const scheduled = trailingKeyAt !== null;
+    trailingKeyAt = now;
+    if (scheduled) return;
+    yield* Effect.forkIn(Effect.sleep(windowEndsAt - now).pipe(Effect.andThen(trailing)), scope);
   });
 };

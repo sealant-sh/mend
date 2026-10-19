@@ -342,9 +342,10 @@ export const TtyRoutes = HttpRouter.use((router) =>
               agentProcessId === null
                 ? Effect.void
                 : makeKeystrokeClear(
-                    engine
-                      .personTyped(agentProcessId)
-                      .pipe(Effect.catchCause(() => Effect.succeed(false))),
+                    (typedAt) =>
+                      engine
+                        .personTyped(agentProcessId, typedAt)
+                        .pipe(Effect.catchCause(() => Effect.succeed(false))),
                     yield* Effect.scope,
                   );
 

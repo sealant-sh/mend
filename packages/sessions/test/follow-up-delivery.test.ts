@@ -475,6 +475,7 @@ const testLayer = (world: TestWorld) => {
     setSealantSessionId: () => Effect.die("not in test"),
     claimProviderSessionId: () => Effect.die("not in test"),
     setWaiting: () => Effect.die("not in test"),
+    clearWaiting: () => Effect.die("not in test"),
     markExited: () => Effect.die("not in test"),
     reapLiveForWorkspace: () => Effect.die("not in test"),
   });

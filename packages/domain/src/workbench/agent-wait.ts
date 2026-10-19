@@ -148,6 +148,16 @@ export const nextAgentWait = (
   return tool === current.tool ? current : new AgentWait({ ...current, tool });
 };
 
+/**
+ * Whether a key the person typed at `typedAt` answers `wait`: a permission or a question the agent
+ * asked before the key. A wait that opened after the key is a new ask the key never saw. A finished
+ * turn waits for a submitted prompt (`UserPromptSubmit`), not a key.
+ */
+export const keyAnswers = (wait: AgentWait | null, typedAt: Date): wait is AgentWait =>
+  wait !== null &&
+  (wait.kind === "permission" || wait.kind === "question") &&
+  wait.since.getTime() <= typedAt.getTime();
+
 export const agentWaitWords = (harness: string, wait: AgentWait): string => {
   switch (wait.kind) {
     case "permission":

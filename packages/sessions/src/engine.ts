@@ -122,6 +122,7 @@ import {
   agentProcessesOf,
   agentSignalOf,
   agentHookTarget,
+  keyAnswers,
   liveTerminalAgentsOf,
   nextAgentWait,
   currentAgentProcess,
@@ -2324,11 +2325,11 @@ export class SessionEngine extends Context.Service<
       label: string,
     ) => Effect.Effect<SessionProcess, ShellProcessNotFoundError | ShellLabelError>;
     /**
-     * The person typed into this process's terminal (G4): a terminal agent that asked for their
-     * permission or answer has it, so that wait clears; true when one did. A finished turn waits
-     * for a submitted prompt (`UserPromptSubmit`), not a key. Keys in a shell clear nothing.
+     * The person typed into this process's terminal at `typedAt` (G4): a terminal agent that asked
+     * for their permission or answer before then has it, so that wait clears; true when one did
+     * (`keyAnswers`). A wait that opened after the key stays. Keys in a shell clear nothing.
      */
-    readonly personTyped: (processId: SessionProcessId) => Effect.Effect<boolean>;
+    readonly personTyped: (processId: SessionProcessId, typedAt: Date) => Effect.Effect<boolean>;
     /**
      * Adopt an already-listening workspace port as a Service
      * (docs/SESSION-SERVICES.md): bind a host listener on the private
@@ -21745,16 +21746,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       const personTyped = Effect.fn("SessionEngine.personTyped")(function* (
         processId: SessionProcessId,
+        typedAt: Date,
       ) {
         const process = yield* processes.byId(processId);
         if (
           process === null ||
           process.kind !== "agent-pty" ||
-          (process.waiting?.kind !== "permission" && process.waiting?.kind !== "question")
+          !keyAnswers(process.waiting, typedAt)
         ) {
           return false;
         }
-        if (!(yield* processes.setWaiting(process.id, process.sessionId, null))) return false;
+        if (
+          !(yield* processes.clearWaiting(process.id, process.sessionId, process.waiting.since))
+        ) {
+          return false;
+        }
         yield* reconcileSession(process.sessionId, { sweep: false }).pipe(Effect.orDie);
         return true;
       });

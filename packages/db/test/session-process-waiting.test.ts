@@ -176,6 +176,39 @@ describe.skipIf(postgres.skip)("a terminal agent's wait, in Postgres", () => {
     expect(result.next.waiting).toBeNull();
   });
 
+  it("clears a wait only while it is the one that opened at the given time", async () => {
+    const replacement = new AgentWait({
+      kind: "permission",
+      tool: "Edit",
+      since: new Date(WAIT.since.getTime() + 1),
+    });
+    const result = await run(
+      Effect.gen(function* () {
+        const processes = yield* SessionProcessesRepo;
+        const agent = yield* createProcess("agent-pty");
+        yield* processes.setWaiting(agent.id, SESSION, replacement);
+        const replaced = yield* processes.clearWaiting(agent.id, SESSION, WAIT.since);
+        const afterReplaced = yield* processes.byId(agent.id);
+        const otherSession = yield* processes.clearWaiting(
+          agent.id,
+          OTHER_SESSION,
+          replacement.since,
+        );
+        const own = yield* processes.clearWaiting(agent.id, SESSION, replacement.since);
+        const afterOwn = yield* processes.byId(agent.id);
+        const again = yield* processes.clearWaiting(agent.id, SESSION, replacement.since);
+        yield* processes.markExited(agent.id, "exited", 0);
+        return { replaced, afterReplaced, otherSession, own, afterOwn, again };
+      }),
+    );
+    expect(result.replaced).toBe(false);
+    expect(result.afterReplaced?.waiting).toEqual(replacement);
+    expect(result.otherSession).toBe(false);
+    expect(result.own).toBe(true);
+    expect(result.afterOwn?.waiting).toBeNull();
+    expect(result.again).toBe(false);
+  });
+
   it("records a terminal agent's session id once, and never on an ended row", async () => {
     const result = await run(
       Effect.gen(function* () {
