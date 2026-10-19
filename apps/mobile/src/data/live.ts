@@ -498,7 +498,7 @@ export const toneOf = (status: string): StatusTone =>
     ? "observed"
     : status === "failed"
       ? "breakage"
-      : status === "waiting" || status === "idle"
+      : status === "waiting"
         ? "waiting"
         : ACTIVE.has(status)
           ? "live"
