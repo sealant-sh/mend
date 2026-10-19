@@ -19,7 +19,7 @@
 // The editor was started by `up` before the overnight sessions exist, so f1 reloads its window:
 // the extension starts again on sessions that settled while it was not looking.
 
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -124,6 +124,16 @@ export default async (h) => {
   const project = state.project ?? fail("the run's ledger has no project: did up finish?");
   const origin = state.server?.origin ?? fail("the run's ledger has no server origin");
 
+  /** The toast claims every window of this VS Code shares (`toast-claims.ts`), by file name. */
+  const claimFiles = () => {
+    try {
+      return readdirSync(
+        join(state.userData, "User", "globalStorage", "sealant-sh.mend", "toasts"),
+      );
+    } catch {
+      return [];
+    }
+  };
   /** A new window may open on VS Code's own sign-in welcome, over the workbench. */
   const dismissWelcome = async () => {
     const skip = page().getByText("Continue without Signing In");
@@ -740,8 +750,10 @@ export default async (h) => {
       await useWindow(second);
       const secondWatch = await watch();
       const focusAtEvent = await focus();
+      const claimsBefore = claimFiles();
       await rateHooks.fire("PermissionRequest");
       await sleep(8_000);
+      const claimed = claimFiles().filter((name) => !claimsBefore.includes(name));
       const secondSeen = await secondWatch.stop();
       const secondBadge = await badge("Mend");
       await shot("two-windows-second");
@@ -754,13 +766,25 @@ export default async (h) => {
       const toasted = [homeSeen, secondSeen].filter((seen) => toasts(seen) > 0).length;
       const focused = focusAtEvent.filter((one) => one.focused === true).length;
       await rateHooks.fire("PostToolUse");
+      const released = await waitUntil(
+        "the store to see the wait end and give its claim back",
+        () => claimed.every((name) => !claimFiles().includes(name)),
+        15_000,
+      )
+        .then(() => true)
+        .catch(() => false);
       await useWindow(second);
       await closeWindow(second);
       await useWindow(await homeWindow());
-      const said = `VS Code's focus ${JSON.stringify(focusAtEvent)} · home ${shown(homeSeen)} badge "${homeBadge}" · second ${shown(secondSeen)} badge "${secondBadge}" · windows that toasted: ${toasted}`;
+      const said = `VS Code's focus ${JSON.stringify(focusAtEvent)} · home ${shown(homeSeen)} badge "${homeBadge}" · second ${shown(secondSeen)} badge "${secondBadge}" · windows that toasted: ${toasted} · claims made: ${JSON.stringify(claimed)} · given back once the wait ended: ${released}`;
       expect(homeBadge === "1" && secondBadge === "1", `badges: ${said}`);
       expect(toasts(homeSeen) <= 1 && toasts(secondSeen) <= 1, `a window toasted twice: ${said}`);
       expect(toasted === 1, `${toasted} windows toasted the one wait: ${said}`);
+      expect(
+        claimed.length === 1 && /^\d+\..*%3Await%3Apermission%3A/.test(claimed[0] ?? ""),
+        `one claim, named by when the wait began and its kind: ${said}`,
+      );
+      expect(released, `the claim outlived the wait: ${said}`);
       if (focused !== 1)
         note(
           `VS Code held ${focused} windows focused at once (Xvfb runs no window manager, so no window loses focus): which window toasts is not drivable, that one does is`,
