@@ -388,6 +388,25 @@ a step (Connect, Set up, Adopt), the Change section is hidden, and signing out c
 **Mend: Review change**, and a row's **Review** button, bring the section on screen for that
 session.
 
+### Comments
+
+- Hover a changed line of the `main → now` diff, click **+**, write, and **Add comment**. The
+  comment is **pending**: this VS Code holds it, as a pending review in GitHub Pull Requests, and
+  Mend does not have it until you send the review. Edit or delete it until then (its pencil and
+  trash). Pending comments are kept per server and session in VS Code's global state, so they are
+  there after a window reload and in your other windows.
+- The Comments panel lists every comment of the change: yours, Mend's drafts, and the ones Mend
+  already holds, each with the word for its state (`pending`, `draft`, `sent`, `addressed`).
+- **Read this change** (the section's sparkle button) asks Mend to read the change. The section
+  reads `Mend is reading · 10:42` while it does. Its findings arrive as threads authored
+  `Mend · draft`, each with its evidence (`seq 214 · pnpm test auth · never ran`) and **Show
+  record**. **Accept** makes a draft yours, pending like your own comments; **Dismiss** removes it.
+  Mend writes drafts and evidence, never a verdict. Mend reads with your own provider login; when it
+  cannot, one notification says why in Mend's words.
+- **Show record** (also in the section's `...` menu) opens the session's transcript in a read-only
+  editor. Mend cannot open it at a record entry yet, so it opens whole, with the draft's evidence on
+  top.
+
 ## Other commands
 
 | Command                         | What it does                                                  |
