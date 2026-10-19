@@ -1578,6 +1578,24 @@ export const sessionProcessesLayer = (world: World) => {
         );
         return true;
       }),
+    clearWaiting: (id, sessionId, since) =>
+      Effect.sync(() => {
+        const process = world.processes.get(id);
+        if (
+          process === undefined ||
+          process.sessionId !== sessionId ||
+          process.kind !== "agent-pty" ||
+          process.exitedAt !== null ||
+          process.waiting?.since.getTime() !== since.getTime()
+        ) {
+          return false;
+        }
+        world.processes.set(
+          id,
+          new SessionProcess({ ...process, waiting: null, updatedAt: world.clock.now() }),
+        );
+        return true;
+      }),
     markExited: (id, outcome, exitCode) =>
       Effect.sync(() => {
         const process = world.processes.get(id);

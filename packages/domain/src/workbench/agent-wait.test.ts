@@ -9,6 +9,7 @@ import {
   agentHookTarget,
   agentSignalOf,
   agentWaitWords,
+  keyAnswers,
   nextAgentWait,
 } from "./agent-wait.ts";
 
@@ -182,6 +183,25 @@ describe("nextAgentWait", () => {
   it("clears when the agent continues", () => {
     expect(nextAgentWait(nextAgentWait(null, permissionBash, at(1)), continues, at(2))).toBeNull();
     expect(nextAgentWait(null, continues, at(2))).toBeNull();
+  });
+});
+
+describe("keyAnswers", () => {
+  const wait = (kind: AgentWait["kind"], since: number) =>
+    new AgentWait({ kind, tool: null, since: at(since) });
+
+  it("answers a permission or a question the agent asked before the key", () => {
+    expect(keyAnswers(wait("permission", 1_000), at(1_500))).toBe(true);
+    expect(keyAnswers(wait("question", 1_000), at(1_000))).toBe(true);
+  });
+
+  it("never answers a wait that opened after the key", () => {
+    expect(keyAnswers(wait("permission", 1_001), at(1_000))).toBe(false);
+  });
+
+  it("leaves a finished turn, and no wait at all, to the prompt", () => {
+    expect(keyAnswers(wait("prompt", 1_000), at(2_000))).toBe(false);
+    expect(keyAnswers(null, at(2_000))).toBe(false);
   });
 });
 

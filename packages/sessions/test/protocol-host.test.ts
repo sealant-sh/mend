@@ -255,6 +255,7 @@ const processesLayer = Layer.succeed(SessionProcessesRepo, {
   setSealantSessionId: () => Effect.void,
   claimProviderSessionId: () => Effect.die("not in test"),
   setWaiting: () => Effect.die("not in test"),
+  clearWaiting: () => Effect.die("not in test"),
   markExited: () => Effect.die("not in test"),
   reapLiveForWorkspace: () => Effect.succeed([]),
 });

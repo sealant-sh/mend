@@ -13,7 +13,7 @@ import {
   type SessionProcessKind,
   type SessionProcessStatus,
 } from "@mend/domain/workbench";
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -120,6 +120,16 @@ export class SessionProcessesRepo extends Context.Service<
       id: SessionProcessId,
       sessionId: SessionId,
       waiting: AgentWait | null,
+    ) => Effect.Effect<boolean>;
+    /**
+     * Clear the wait on a LIVE agent-pty row of `sessionId` only while it is still the wait that
+     * opened at `since`; true when this call cleared it. A wait replaced or cleared in between is
+     * left as it is.
+     */
+    readonly clearWaiting: (
+      id: SessionProcessId,
+      sessionId: SessionId,
+      since: Date,
     ) => Effect.Effect<boolean>;
     readonly markExited: (
       id: SessionProcessId,
@@ -414,6 +424,30 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return true;
     });
 
+    const clearWaiting = Effect.fn("SessionProcessesRepo.clearWaiting")(function* (
+      id: SessionProcessId,
+      sessionId: SessionId,
+      since: Date,
+    ) {
+      const rows = yield* db
+        .update(sessionProcesses)
+        .set({ waiting: null, updatedAt: yield* DateTime.nowAsDate })
+        .where(
+          and(
+            eq(sessionProcesses.id, id),
+            eq(sessionProcesses.sessionId, sessionId),
+            eq(sessionProcesses.kind, "agent-pty"),
+            isNull(sessionProcesses.exitedAt),
+            sql`(${sessionProcesses.waiting} ->> 'since')::timestamptz = ${since.toISOString()}::timestamptz`,
+          ),
+        )
+        .returning({ sessionId: sessionProcesses.sessionId })
+        .pipe(Effect.orDie);
+      if (rows.length === 0) return false;
+      yield* notify(sessionId);
+      return true;
+    });
+
     const markExited = Effect.fn("SessionProcessesRepo.markExited")(function* (
       id: SessionProcessId,
       outcome: "exited" | "stopped",
@@ -470,6 +504,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       setSealantSessionId,
       claimProviderSessionId,
       setWaiting,
+      clearWaiting,
       markExited,
       reapLiveForWorkspace,
     };

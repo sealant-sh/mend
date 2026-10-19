@@ -173,8 +173,9 @@ export interface SessionSocketApi {
 /**
  * `no-live-agent`: this session has no live terminal agent of the report's harness, or it ended
  * while the report was read. `other-process`: the report names another process of that harness.
- * `unidentified`: the report carries no harness session id. `too-many`: the session sent more
- * reports this minute than a working agent does.
+ * `unidentified`: the report carries no harness session id. `too-many`: the report would change
+ * the wait, and the session's agent already changed it more times this minute than a working
+ * agent does.
  */
 export type AgentHookOutcome =
   | "applied"

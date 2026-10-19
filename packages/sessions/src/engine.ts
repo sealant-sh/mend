@@ -122,6 +122,7 @@ import {
   agentProcessesOf,
   agentSignalOf,
   agentHookTarget,
+  keyAnswers,
   liveTerminalAgentsOf,
   nextAgentWait,
   currentAgentProcess,
@@ -884,7 +885,12 @@ const TakenAheadRef = Context.Reference<TakenAhead | null>("@mend/sessions/Taken
 /** How long a hand-over to a sender that failed after its stop is not tried again (review 2, P3-3). */
 const HAND_OVER_BACKOFF_MS = 60_000;
 
-const AGENT_HOOK_REPORTS_PER_MINUTE = 60;
+/**
+ * Only a report that changes the agent's wait spends from this bound: a burst of no-op reports
+ * (one `PostToolUse` per tool call, subagents included) never starves the `PermissionRequest` or
+ * `Stop` after it. Every write, event, push and Slack edit comes from a counted report.
+ */
+const AGENT_WAIT_CHANGES_PER_MINUTE = 60;
 
 /** A failure's own words, for a session line. */
 const causeWords = (cause: Cause.Cause<unknown>): string => {
@@ -2319,11 +2325,11 @@ export class SessionEngine extends Context.Service<
       label: string,
     ) => Effect.Effect<SessionProcess, ShellProcessNotFoundError | ShellLabelError>;
     /**
-     * The person typed into this process's terminal (G4): a terminal agent that asked for their
-     * permission or answer has it, so that wait clears; true when one did. A finished turn waits
-     * for a submitted prompt (`UserPromptSubmit`), not a key. Keys in a shell clear nothing.
+     * The person typed into this process's terminal at `typedAt` (G4): a terminal agent that asked
+     * for their permission or answer before then has it, so that wait clears; true when one did
+     * (`keyAnswers`). A wait that opened after the key stays. Keys in a shell clear nothing.
      */
-    readonly personTyped: (processId: SessionProcessId) => Effect.Effect<boolean>;
+    readonly personTyped: (processId: SessionProcessId, typedAt: Date) => Effect.Effect<boolean>;
     /**
      * Adopt an already-listening workspace port as a Service
      * (docs/SESSION-SERVICES.md): bind a host listener on the private
@@ -21700,12 +21706,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         report: AgentHookReport,
       ): Effect.fn.Return<AgentHookOutcome> {
-        const retryAfterSeconds = agentHookReports.take(
-          sessionId,
-          AGENT_HOOK_REPORTS_PER_MINUTE,
-          clock.currentTimeMillisUnsafe(),
-        );
-        if (retryAfterSeconds !== null) return { _tag: "too-many", retryAfterSeconds };
         if (report.providerSessionId === null) return "unidentified";
         const live = liveTerminalAgentsOf(
           yield* processes.listForSession(sessionId),
@@ -21733,6 +21733,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           new Date(clock.currentTimeMillisUnsafe()),
         );
         if (next === agent.waiting) return "unchanged";
+        const retryAfterSeconds = agentHookReports.take(
+          sessionId,
+          AGENT_WAIT_CHANGES_PER_MINUTE,
+          clock.currentTimeMillisUnsafe(),
+        );
+        if (retryAfterSeconds !== null) return { _tag: "too-many", retryAfterSeconds };
         if (!(yield* processes.setWaiting(agent.id, sessionId, next))) return "no-live-agent";
         yield* reconcileSession(sessionId, { sweep: false }).pipe(Effect.orDie);
         return "applied";
@@ -21740,16 +21746,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       const personTyped = Effect.fn("SessionEngine.personTyped")(function* (
         processId: SessionProcessId,
+        typedAt: Date,
       ) {
         const process = yield* processes.byId(processId);
         if (
           process === null ||
           process.kind !== "agent-pty" ||
-          (process.waiting?.kind !== "permission" && process.waiting?.kind !== "question")
+          !keyAnswers(process.waiting, typedAt)
         ) {
           return false;
         }
-        if (!(yield* processes.setWaiting(process.id, process.sessionId, null))) return false;
+        if (
+          !(yield* processes.clearWaiting(process.id, process.sessionId, process.waiting.since))
+        ) {
+          return false;
+        }
         yield* reconcileSession(process.sessionId, { sweep: false }).pipe(Effect.orDie);
         return true;
       });
