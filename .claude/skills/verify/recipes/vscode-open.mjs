@@ -1199,7 +1199,7 @@ export default async (h) => {
   );
 
   await step(
-    `in that window, which is the workspace, context menu Open in New Window on ${agent.name}: VS Code keeps one window per folder, so it shows ${agent.name}'s agent here, nothing asks`,
+    `in that window, now ${second.name}'s workspace, context menu Open in New Window on its own row: VS Code keeps one window per folder, so it focuses ${second.name}'s agent here, nothing asks`,
     async () => {
       const url = older.page.url();
       const known = await windows();
@@ -1208,10 +1208,10 @@ export default async (h) => {
       await mendView();
       await treeItem(OWN_ROW).contextMenu("Mend: Open in New Window");
       const tabs = await waitUntil(
-        `the tab "${agent.tab}" active and focused again`,
+        `the tab "${second.tab}" active and focused again`,
         async () => {
           const read = await terminal().tabs();
-          return read.active === agent.tab && read.focused ? read : null;
+          return read.active === second.tab && read.focused ? read : null;
         },
         60_000,
       );
