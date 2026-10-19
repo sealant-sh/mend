@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { matchProject, originKey, originProjectName, redactOrigin } from "./project-match.js";
+import {
+  comparedPaths,
+  matchProject,
+  originKey,
+  originProjectName,
+  redactOrigin,
+} from "./project-match.js";
 import type { Project, RepositoryFacts } from "./types.js";
 
 const project = (id: string, name: string, originUrl: string | null): Project => ({
@@ -25,6 +31,10 @@ const worktree = (path: string): RepositoryFacts => ({
   originUrl: "/var/lib/mend/store/mend/repo",
   originUnknown: false,
 });
+
+/** Paths none of which is a symlink: each resolves to itself. */
+const match = (projects: ReadonlyArray<Project>, facts: RepositoryFacts) =>
+  matchProject(projects, facts, new Map(comparedPaths(projects, facts).map((one) => [one, one])));
 
 describe("originKey", () => {
   it("reads https, ssh and scp forms of one repository as one key", () => {
@@ -108,12 +118,12 @@ describe("matchProject", () => {
 
   it("never takes a project by folder name once the window has an origin", () => {
     expect(
-      matchProject([server, mend], clone("newsroom-api", "git@github.com:other/newsroom-api.git")),
+      match([server, mend], clone("newsroom-api", "git@github.com:other/newsroom-api.git")),
     ).toEqual({ status: "not-found" });
   });
 
   it("takes the folder name only when the window has no origin", () => {
-    expect(matchProject([server, mend], clone("newsroom-api", null))).toEqual({
+    expect(match([server, mend], clone("newsroom-api", null))).toEqual({
       status: "matched",
       project: server,
       matchedBy: "folder-name",
@@ -121,13 +131,13 @@ describe("matchProject", () => {
   });
 
   it("takes no folder name when git did not answer for the origin", () => {
-    expect(
-      matchProject([server, mend], { ...clone("newsroom-api", null), originUnknown: true }),
-    ).toEqual({ status: "not-found" });
+    expect(match([server, mend], { ...clone("newsroom-api", null), originUnknown: true })).toEqual({
+      status: "not-found",
+    });
   });
 
   it("matches the origin in any of git's forms", () => {
-    expect(matchProject([server, mend], clone("work", "ssh://git@github.com/org/server"))).toEqual({
+    expect(match([server, mend], clone("work", "ssh://git@github.com/org/server"))).toEqual({
       status: "matched",
       project: server,
       matchedBy: "origin",
@@ -139,49 +149,51 @@ describe("matchProject", () => {
     const right = project("p4", "api-b", "ssh://git@git.example.com:2223/team/api.git");
     const upper = project("p5", "repo-upper", "git@git.example.com:team/Repo.git");
     const projects = [left, right, upper];
-    expect(
-      matchProject(projects, clone("api", "ssh://git@git.example.com:2223/team/api")),
-    ).toMatchObject({ status: "matched", project: right });
-    expect(matchProject(projects, clone("repo", "git@git.example.com:team/repo.git"))).toEqual({
+    expect(match(projects, clone("api", "ssh://git@git.example.com:2223/team/api"))).toMatchObject({
+      status: "matched",
+      project: right,
+    });
+    expect(match(projects, clone("repo", "git@git.example.com:team/repo.git"))).toEqual({
       status: "not-found",
     });
   });
 
   it("asks when several adopted projects share the window's origin", () => {
     const twin = project("p3", "server-2", "https://github.com/org/server");
-    expect(
-      matchProject([server, mend, twin], clone("server", "git@github.com:org/server.git")),
-    ).toEqual({ status: "ambiguous", candidates: [server, twin], matchedBy: "origin" });
+    expect(match([server, mend, twin], clone("server", "git@github.com:org/server.git"))).toEqual({
+      status: "ambiguous",
+      candidates: [server, twin],
+      matchedBy: "origin",
+    });
   });
 
   it("matches a folder that is the adopted source itself, whatever its origin", () => {
     const local = project("p3", "tool", "/home/dana/src/tool");
-    expect(
-      matchProject([server, local], clone("tool", "git@github.com:dana/tool.git")),
-    ).toMatchObject({ status: "matched", project: local, matchedBy: "path" });
+    expect(match([server, local], clone("tool", "git@github.com:dana/tool.git"))).toMatchObject({
+      status: "matched",
+      project: local,
+      matchedBy: "path",
+    });
   });
 
   it("does not take a separate repository nested inside an adopted source", () => {
     const parent = project("p3", "parent", "/home/dana/src/parent");
     expect(
-      matchProject([server, parent], clone("parent/vendor/other", "git@host:other/repo.git")),
+      match([server, parent], clone("parent/vendor/other", "git@host:other/repo.git")),
     ).toEqual({ status: "not-found" });
-    expect(matchProject([server, parent], clone("parent/vendor/other", null))).toEqual({
+    expect(match([server, parent], clone("parent/vendor/other", null))).toEqual({
       status: "not-found",
     });
   });
 
   it("matches one of the project's worktrees in the store, and nothing nested inside one", () => {
+    expect(match([server, mend], worktree("/var/lib/mend/store/mend/worktrees/fix-login"))).toEqual(
+      { status: "matched", project: mend, matchedBy: "path" },
+    );
     expect(
-      matchProject([server, mend], worktree("/var/lib/mend/store/mend/worktrees/fix-login")),
-    ).toEqual({ status: "matched", project: mend, matchedBy: "path" });
-    expect(
-      matchProject(
-        [server, mend],
-        worktree("/var/lib/mend/store/mend/worktrees/fix-login/vendor/other"),
-      ),
+      match([server, mend], worktree("/var/lib/mend/store/mend/worktrees/fix-login/vendor/other")),
     ).toEqual({ status: "not-found" });
-    expect(matchProject([server, mend], worktree("/var/lib/mend/store/mend/worktrees/"))).toEqual({
+    expect(match([server, mend], worktree("/var/lib/mend/store/mend/worktrees/"))).toEqual({
       status: "not-found",
     });
   });

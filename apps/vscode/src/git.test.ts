@@ -1,12 +1,22 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import { gitRunner, localRepositoryFacts, readCheckout, type Git } from "./git.js";
+import {
+  canonicalPaths,
+  gitRunner,
+  localRepositoryFacts,
+  readCheckout,
+  type Git,
+  type RealPath,
+} from "./git.js";
 import { DEFAULT_OPTIONS, resolveBase } from "./new-session.js";
+import { comparedPaths, matchProject } from "./project-match.js";
+import type { Project } from "./types.js";
 
 const scratch = mkdtempSync(path.join(tmpdir(), "mend-vscode-git-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -168,5 +178,56 @@ describe("localRepositoryFacts", () => {
       originUrl: null,
       originUnknown: false,
     });
+  });
+});
+
+const tool = (originUrl: string, storePath: string): Project => ({
+  id: "p1",
+  name: "tool",
+  originUrl,
+  storePath,
+  defaultBranch: "main",
+});
+const matchAt = async (projects: ReadonlyArray<Project>, cwd: string, resolve: RealPath) => {
+  const facts = await localRepositoryFacts(cwd, git);
+  const real = await canonicalPaths(comparedPaths(projects, facts), resolve, 200);
+  return matchProject(projects, facts, real);
+};
+const onDisk: RealPath = (one) => realpath(one);
+const refused: RealPath = async () => {
+  throw new Error("EACCES");
+};
+const hung: RealPath = () => new Promise(() => {});
+
+describe("a window matched to its project by path (B1)", () => {
+  it("matches a source adopted through a symlink, and a worktree under a store reached through one", async () => {
+    const { clone } = cloned("linked");
+    const alias = path.join(scratch, "alias");
+    symlinkSync(scratch, alias);
+    const adopted = tool(path.join(alias, "linked"), "/var/lib/mend/store/tool/repo");
+    expect(await matchAt([adopted], clone, onDisk)).toEqual({
+      status: "matched",
+      project: adopted,
+      matchedBy: "path",
+    });
+    const fix = path.join(scratch, "store", "tool", "worktrees", "fix");
+    execFileSync("mkdir", ["-p", path.dirname(fix)]);
+    sh(scratch, "clone", "--quiet", clone, fix);
+    const stored = tool("git@github.com:dana/tool.git", path.join(alias, "store", "tool", "repo"));
+    expect(await matchAt([stored], fix, onDisk)).toEqual({
+      status: "matched",
+      project: stored,
+      matchedBy: "path",
+    });
+  });
+
+  it("matches nothing by path when a path does not resolve, or not within the bound", async () => {
+    const { clone } = cloned("unresolved");
+    const adopted = tool(clone, "/var/lib/mend/store/tool/repo");
+    expect(await matchAt([adopted], clone, onDisk)).toMatchObject({ status: "matched" });
+    expect(await matchAt([adopted], clone, refused)).toEqual({ status: "not-found" });
+    const started = Date.now();
+    expect(await matchAt([adopted], clone, hung)).toEqual({ status: "not-found" });
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 });

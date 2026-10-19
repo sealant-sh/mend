@@ -106,10 +106,10 @@ the same host and path: `https://`, `ssh://` and `git@host:path` forms are alike
 compared without case, the path exactly, a trailing `.git` is dropped, and a port other than the
 scheme's default counts. A folder with an origin never matches a project by its folder name. Where
 the folder sits matches only when its Git root is the adopted source itself or one of the project's
-worktrees: a separate repository nested inside the source, with an origin of its own, is matched by
-that origin, and gets **Adopt this repository** when it is not adopted. Type what the agent should
-do and press Enter. The prompt is an input box, so a pasted log of any length reaches Mend whole.
-One line under it says what Enter starts:
+worktrees, with symlinks resolved on both sides: a separate repository nested inside the source,
+with an origin of its own, is matched by that origin, and gets **Adopt this repository** when it is
+not adopted. Type what the agent should do and press Enter. The prompt is an input box, so a pasted
+log of any length reaches Mend whole. One line under it says what Enter starts:
 
 ```text
 claude · default model · from main

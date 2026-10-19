@@ -1,9 +1,11 @@
 import { execFile } from "node:child_process";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import type * as vscode from "vscode";
 
 import type { CheckoutFact } from "./new-session.js";
+import type { CanonicalPaths } from "./project-match.js";
 import type { Project, RepositoryFacts, Session } from "./types.js";
 
 /** What one git command said: its output, a non-zero exit, or nothing within the bound. */
@@ -58,6 +60,39 @@ export const localRepositoryFacts = async (cwd: string, git: Git): Promise<Repos
     originUrl: origin.kind === "out" && origin.stdout !== "" ? origin.stdout : null,
     originUnknown: origin.kind === "unanswered",
   };
+};
+
+export type RealPath = (path: string) => Promise<string>;
+
+/** How this extension host resolves a folder's paths: one on another machine compares as written. */
+export const realPathFor = (folder: vscode.WorkspaceFolder): RealPath =>
+  folder.uri.scheme === "file" ? (one) => fs.realpath(one) : async (one) => one;
+
+/**
+ * Each path through its symlinks, within the probe bound. A path that does not resolve in time, or
+ * at all, is left out, so it matches nothing.
+ */
+export const canonicalPaths = async (
+  paths: ReadonlyArray<string>,
+  realpath: RealPath,
+  timeoutMs = GIT_PROBE_MS,
+): Promise<CanonicalPaths> => {
+  const resolved = await Promise.all(
+    paths.map(async (one): Promise<ReadonlyArray<[string, string]>> => {
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<null>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs, null);
+      });
+      const real = await Promise.race([
+        Promise.resolve()
+          .then(() => realpath(one))
+          .catch(() => null),
+        late,
+      ]).finally(() => clearTimeout(timer));
+      return real === null ? [] : [[one, real]];
+    }),
+  );
+  return new Map(resolved.flat());
 };
 
 /**

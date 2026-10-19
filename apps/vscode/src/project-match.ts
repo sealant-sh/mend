@@ -27,6 +27,7 @@ const URL_FORM =
   /^([a-z][a-z0-9+.-]*):\/\/(?:[^@/]*@)?(\[[^\]/]+\]|[^/:]+)(?::(\d*))?(?:\/(.*))?$/i;
 const SCP_FORM = /^(?:[^@/\s]+@)?(\[[^\]/]+\]|[^/:\s]+):(?!\/\/)(.+)$/;
 const LOCAL_FORM = /^(?:\/|\.{1,2}\/|~\/|[a-z]:[\\/]|\\\\)/i;
+const ABSOLUTE_FORM = /^(?:\/|[a-z]:[\\/]|\\\\)/i;
 
 const remotePath = (raw: string): string =>
   raw
@@ -87,20 +88,48 @@ const normalizePath = (value: string): string | null => {
   return trimmed === "" || trimmed.includes("://") ? null : trimmed;
 };
 
-/**
- * The window's git root is the adopted source itself, or one of the project's worktrees in Mend's
- * store. Only the root counts: a separate repository nested inside the source has a root of its
- * own, and its own origin decides.
- */
-const isProjectRoot = (project: Project, root: string): boolean => {
-  const folder = normalizePath(root);
-  if (folder === null) return false;
-  if (project.originUrl !== null && normalizePath(project.originUrl) === folder) return true;
+/** Each path a path match compares, as the filesystem resolves it; one that did not resolve is absent. */
+export type CanonicalPaths = ReadonlyMap<string, string>;
+
+/** The directory holding the project's worktrees in Mend's store, beside its source. */
+const worktreesOf = (project: Project): string | null => {
   const store = normalizePath(project.storePath);
   const separator = store?.lastIndexOf("/") ?? -1;
-  if (store === null || separator <= 0) return false;
-  const worktrees = `${store.slice(0, separator)}/worktrees/`;
-  const name = folder.startsWith(worktrees) ? folder.slice(worktrees.length) : "";
+  return store === null || separator <= 0 ? null : `${store.slice(0, separator)}/worktrees`;
+};
+
+/** What a path match compares: the window's git root, and each project's source and worktrees. */
+export const comparedPaths = (
+  projects: ReadonlyArray<Project>,
+  facts: RepositoryFacts,
+): ReadonlyArray<string> => [
+  ...new Set(
+    [
+      facts.path,
+      ...projects.flatMap((project) => [project.originUrl, worktreesOf(project)]),
+    ].filter((one): one is string => one !== null && ABSOLUTE_FORM.test(one)),
+  ),
+];
+
+const canonical = (real: CanonicalPaths, raw: string | null): string | null => {
+  const resolved = raw === null ? undefined : real.get(raw);
+  return resolved === undefined ? null : normalizePath(resolved);
+};
+
+/**
+ * The window's git root is the adopted source itself, or one of the project's worktrees in Mend's
+ * store, each compared through its symlinks. Only the root counts: a separate repository nested
+ * inside the source has a root of its own, and its own origin decides.
+ */
+const isProjectRoot = (project: Project, root: string, real: CanonicalPaths): boolean => {
+  const folder = canonical(real, root);
+  if (folder === null) return false;
+  if (canonical(real, project.originUrl) === folder) return true;
+  const worktrees = canonical(real, worktreesOf(project));
+  const name =
+    worktrees !== null && folder.startsWith(`${worktrees}/`)
+      ? folder.slice(worktrees.length + 1)
+      : "";
   return name !== "" && !name.includes("/");
 };
 
@@ -123,6 +152,7 @@ const resolved = (
 export const matchProject = (
   projects: ReadonlyArray<Project>,
   facts: RepositoryFacts,
+  real: CanonicalPaths,
 ): ProjectResolution => {
   const origin = originKey(facts.originUrl);
   return (
@@ -133,7 +163,7 @@ export const matchProject = (
           "origin",
         )) ??
     resolved(
-      projects.filter((project) => isProjectRoot(project, facts.path)),
+      projects.filter((project) => isProjectRoot(project, facts.path, real)),
       "path",
     ) ??
     (facts.originUrl === null && !facts.originUnknown

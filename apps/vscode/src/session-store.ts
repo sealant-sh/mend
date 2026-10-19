@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
 
 import { MendApiError, type MendClient, type StreamSignal } from "./client.js";
-import { repositoryFacts } from "./git.js";
-import { matchProject } from "./project-match.js";
+import { canonicalPaths, realPathFor, repositoryFacts } from "./git.js";
+import { comparedPaths, matchProject } from "./project-match.js";
 import type { MemberName } from "./session-lines.js";
 import {
   mergeLastSeen,
@@ -683,7 +683,9 @@ export class SessionStore implements vscode.Disposable {
       ? []
       : (vscode.workspace.workspaceFolders ?? [])) {
       const facts = await repositoryFacts(folder);
-      const resolution = matchProject(this.#snapshot.projects, facts);
+      const { projects } = this.#snapshot;
+      const real = await canonicalPaths(comparedPaths(projects, facts), realPathFor(folder));
+      const resolution = matchProject(projects, facts, real);
       if (resolution.status === "matched") {
         this.#windowProject = { project: resolution.project, folder };
         this.#unmatched = null;
