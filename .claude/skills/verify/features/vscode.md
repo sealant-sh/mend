@@ -88,7 +88,8 @@ logs, and a video of the display. The flows below follow the stories in
   platform, and records the consent, so no Open asks. **Skip for now** records that she skipped; the
   first Open then asks once, the modal
   `Set up workspace SSH to open sessions (one Host block in ~/.ssh/config)` [Set up].
-- `vscode-review` opens the session's change in Mend's web review.
+- `vscode-review` is review in the editor (story d): the **Change** section under Sessions, VS
+  Code's diff and multi-diff editors over read-only `mend-change:` documents, and the slice picker.
 - `vscode-stop` stops a live session; the worktree and change remain.
 - `vscode-uri` opens a session from `vscode://sealant-sh.mend/open?session=<id>`.
 - `vscode-bring-my-editor` installs the person's local extensions into a Mend workspace window
@@ -519,20 +520,33 @@ the row takes the job's name.
     `SSH:` and README. The gallery install completed inside the Extension Development Host.
   - Offline (`Mend is offline`) is not driven: the world has no way to take the server away from the
     editor alone. `not run`.
-- **d. Dana reviews what the agent changed, entirely in VS Code.** From the default `up`, after
-  story c's workspace window wrote a file with
-  `terminal().type("printf 'verified\\n' > VERIFY.md")`.
-  - The story's **Change** section, diff editors, Mend's draft comments, pending comments and the
-    Comments panel are not in today's manifest. Report `not run · not built`.
-  - Commenting on a slice other than `base → now` (since my last review, last turn, between two
-    checkpoints) is `not run · G10`.
-  - **Send review** into a live terminal agent is `not run · G12`.
-  - Today's review is `Mend: Review change`, which opens Mend's web review.
-    `treeItem(<label>).contextMenu("Mend: Review change")`. Record `dialogs()` and
-    `shot("review-link")`. When VS Code asks before opening the external link, its dialog names
-    `<web>/changes/<changeId>`; compare the id with `api("/sessions/<id>")`'s `changeId`
-    (`via: "api"`), then dismiss the dialog with its cancel button. A session without a change shows
-    the toast `<label> has no change to review yet.`.
+- **d. Dana reviews what the agent changed, entirely in VS Code.** `recipes/vscode-review-diff.mjs`
+  (steps 1, 2 and 5), from the default `up`. It shares `recipes/vscode-review.lib.mjs` with the
+  other review recipes: a claude terminal agent under the fake token in its own worktree
+  (`name: <label>`), and a shell beside it that writes the change in two rounds, each followed by
+  `POST /sessions/:id/checkpoints {"trigger":"user-mark"}` (`via: "setup"`). The world's base is
+  Hello-World's `master`, so the slice reads `master → now`.
+  - Read the section with `changeRows(h)` (the lib): the `Change` pane's rows with the letter its
+    file decoration draws (`::after` on `.monaco-icon-label`; it lands a beat after the row, so wait
+    for every file row to carry one). `viewRows("Sessions")` and
+    `treeItem(<text>, { pane: "Sessions" | "Change" })` scope to one view: the container now has
+    two. With two views each view's buttons sit in its own pane header, drawn only under the pointer
+    (New session and `Mend is offline` included), so `viewAction` and `viewActions` rest the pointer
+    on a header first.
+  - Observed (runs `rdiffa`, `rdiffb`): `master → now ▾ · 4 files · +26 −1 · observed · 0 s ago`,
+    `README [D]`, `rate-limit.md · docs [A]`, `limit.test.ts · src/auth [A]`,
+    `limit.ts · src/auth [A]`, `Comments · none`, `Checkpoints · 5`; the newest checkpoint is
+    `review-open`, the one the section pinned. `limit.ts` opens the tab
+    `limit.ts (master ↔ checkpoint 4)`, its left side empty (`diffSides(h)`); **Open all changes**
+    opens `Changes · <label> (4 files)` (VS Code adds the count). The picker
+    `Review which slice? · <label>` lists `master → now · base → checkpoint 4 · 4 files · current`,
+    `last turn`, and `between two checkpoints… · pick two of 5 checkpoints`; `since my last review`
+    shows only once a review was sent. Between the two marks the files read `limit.ts [M]`,
+    `throttle.ts [D]`, and the row `viewing · comments go on master → now`. The `...` menu offers
+    `Open in Mend (web)`; no title button opens the browser. A stopped session shows the same
+    change; its workspace window shows it with nothing selected.
+  - Wait for a quick pick's own title before each pick (`Between two checkpoints · from which?`):
+    the second pick reuses the widget, and a pick made early lands in the first list.
 - **e. Dana wants to drive by hand.** `recipes/vscode-open.mjs`, from the default `up`.
   - The gesture is Open; typing into the attached `claude · add-rate-limit` is story c's last lane.
   - **Continue here.** `contextMenu("Mend: Open in New Window")` on `from-phone`: the tab
