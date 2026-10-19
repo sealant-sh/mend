@@ -18,8 +18,16 @@ logs, and a video of the display. The flows below follow the stories in
 
 - `vscode-install` builds the extension from source (`dist/extension.js`) and packages
   `mend-<version>.vsix` (`<version>` is `apps/vscode/package.json`'s).
-- `vscode-connect` reads the CLI's connection, or `Mend: Connect to server` signs in through the
-  browser, with a pasted device token, or with none. `Mend: Sign out` ends it.
+- `vscode-connect` is first run's sign-in (story h). Until `mend.serverUrl` names a server with a
+  token for it, the view's welcome reads `Connect VS Code to your Mend server.` [Connect]: one URL
+  input (a plain-http server elsewhere warns
+  `Plain http: anyone on this network can read the token`), Mend's approve page in the browser, one
+  cancellable notification `Approve in the browser if it shows <code>` with the code kept in the
+  status bar, then one toast `Signed in to <host> as <email>`; a denial, an expiry or an unreachable
+  server ends in one error with [Try again]. With the Mend CLI signed in, the view's message reads
+  `Mend at <host:port> · signed in as <email> (from the Mend CLI)` over one row, **Use it**. The
+  account shows in VS Code's Accounts menu as `<email> @ <host> (Mend)`; its **Sign Out** (after VS
+  Code's `Sign out of '<account>'?`) and `Mend: Sign out` revoke the editor's device.
 - `vscode-view` groups `Needs you`, `Since you last looked` and `Running` in any window that is not
   a session's workspace, always, an empty one reading `nothing`, then `Projects` (collapsed) once a
   project exists; a workspace window shows its own session as a row like any other (its name, its
@@ -36,7 +44,10 @@ logs, and a video of the display. The flows below follow the stories in
   [Connect to server] once.
 - `vscode-answer` is `Mend: Answer` on a waiting row or toast: the agent's terminal attaches in this
   window's panel, and no window opens.
-- `vscode-adopt` adopts a project from a clone URL and a name.
+- `vscode-adopt`: with no project yet, the view's message `Adopt <repo> from <origin>` over one row,
+  **Adopt**, adopts the window's repository in one click; a window with no repository shows the
+  welcome `Nothing adopted yet.` [Adopt a repository…], one input for a clone URL. The project takes
+  the repository's name.
 - `vscode-new-session` is `Mend: New session`: one quick input on the project the window's origin
   matched (else a project step with `Adopt this repository` on top), her prompt typed into an input
   box (an `InputBox`, which filters nothing, so a prompt of any length reaches the extension), one
@@ -68,8 +79,13 @@ logs, and a video of the display. The flows below follow the stories in
 - `vscode-watch-terminal` is `Mend: Watch terminal` on a session whose workspace another person
   launched, offered while they have shared control on. The tab is read-only and its banner reads
   `read-only · <owner>'s session`.
-- `vscode-ssh-setup` registers this machine's key and writes the `Host` block (see
-  [Workspace SSH](./workspace-ssh.md)).
+- `vscode-ssh-setup` is first run's **Set up**, the welcome after Connect
+  (`Open sessions in VS Code: needs Remote-SSH and an SSH key for Mend`) and
+  `Mend: Set up workspace SSH`: it installs Remote-SSH if it is missing, registers this machine's
+  key, writes one `Host` block (see [Workspace SSH](./workspace-ssh.md)), seeds Remote-SSH's
+  platform, and records the consent, so no Open asks. **Skip for now** records that she skipped; the
+  first Open then asks once, the modal
+  `Set up workspace SSH to open sessions (one Host block in ~/.ssh/config)` [Set up].
 - `vscode-review` opens the session's change in Mend's web review.
 - `vscode-stop` stops a live session; the worktree and change remain.
 - `vscode-uri` opens a session from `vscode://sealant-sh.mend/open?session=<id>`.
@@ -80,9 +96,14 @@ logs, and a video of the display. The flows below follow the stories in
 
 - VS Code: the Mend icon in the Activity Bar opens the view `Sessions`. Its title bar holds
   `Mend: New session` (while Mend is unreachable a disabled twin, `Mend is offline · retrying`),
-  `Mend: Refresh` and `Mend: Adopt a project…`. With nothing adopted it shows `Nothing adopted yet.`
-  and the link `Adopt a project…`. When the view cannot read Mend, it shows one row naming the
-  error, with the description `Run Mend: Connect to server`.
+  `Mend: Refresh` and `Mend: Adopt a repository…`. Until first run is done it shows one step: the
+  welcome `Connect VS Code to your Mend server.` [Connect], or the CLI's **Use it**; the welcome
+  `Open sessions in VS Code: needs Remote-SSH and an SSH key for Mend` [Set up] with the link
+  `Skip for now`; with no project, **Adopt** for the window's repository or the welcome
+  `Nothing adopted yet.` [Adopt a repository…]. When the view cannot read Mend, it shows one row
+  naming the error, with the description `Run Mend: Connect to server`.
+- VS Code: the Accounts menu in the Activity Bar lists `<email> @ <host> (Mend)` while connected;
+  its submenu holds `Manage Trusted Extensions` and `Sign Out`.
 - VS Code: on a project row, inline `Mend: New session`; its context menu holds it too.
 - VS Code: on a session row whose workspace this person may open, inline `Mend: Open` and
   `Mend: Open in Mend`. Its context menu holds `Mend: Open`, `Mend: Open in New Window`,
@@ -99,12 +120,14 @@ logs, and a video of the display. The flows below follow the stories in
   `installing Remote-SSH · <n> s`, `setting up workspace SSH · <n> s`,
   `starting <session>'s workspace · <n> s` or `opening <session>`.
 - VS Code: the Command Palette lists every command, titles verbatim: `Mend: Refresh`,
-  `Mend: Connect to server`, `Mend: Sign out`, `Mend: Adopt a project…`, `Mend: Open`,
-  `Mend: Open in New Window`, `Mend: Answer`, `Mend: Choose a session`, `Mend: Open terminal`,
-  `Mend: Watch terminal`, `Mend: Review change`, `Mend: New session in this worktree…`,
-  `Mend: Open in Mend`, `Mend: Copy worktree path`, `Mend: Set up workspace SSH`,
-  `Mend: Stop session`, `Mend: New session` (left out while Mend is unreachable),
-  `Mend: Show project sessions`, `Mend: Bring my editor into this workspace`,
+  `Mend: Connect to server`, `Mend: Use the Mend CLI's sign-in` (while the view offers it),
+  `Mend: Sign out`, `Mend: Skip workspace SSH setup for now` (while the view offers Set up),
+  `Mend: Adopt this repository` (while the view offers it), `Mend: Adopt a repository…`,
+  `Mend: Open`, `Mend: Open in New Window`, `Mend: Answer`, `Mend: Choose a session`,
+  `Mend: Open terminal`, `Mend: Watch terminal`, `Mend: Review change`,
+  `Mend: New session in this worktree…`, `Mend: Open in Mend`, `Mend: Copy worktree path`,
+  `Mend: Set up workspace SSH`, `Mend: Stop session`, `Mend: New session` (left out while Mend is
+  unreachable), `Mend: Show project sessions`, `Mend: Bring my editor into this workspace`,
   `Mend: Show workspace editor log`.
 - VS Code: the status bar item `Mend · <n> needs you · <n> finished · <n> running` (only the parts
   that are not zero; `Mend` alone otherwise), which shows the Mend view; offline
@@ -114,8 +137,8 @@ logs, and a video of the display. The flows below follow the stories in
 - VS Code settings: `mend.serverUrl`, `mend.workspaceSshHost` and `mend.workspaces.bringMyEditor`.
 - URI: `vscode://sealant-sh.mend/open?session=<session-id>`; without `session` it shows the Mend
   view.
-- CLI: `mend login` writes the connection the extension reads; `mend ssh setup` is the terminal's
-  `Mend: Set up workspace SSH`.
+- CLI: `mend login` writes the connection the extension offers as **Use it**; `mend ssh setup` is
+  the terminal's half of `Mend: Set up workspace SSH` (the key and the `Host` block).
 - Docs: `apps/docs/src/content/docs/clients/vscode.md`.
 
 ## Driving it with verify
@@ -133,6 +156,9 @@ module whose default export is `async (helpers) => {}`. The recipes:
   launch that fails and its Retry, and New session offline.
 - `recipes/vscode-open-first.mjs` drives the first open on a machine without Remote-SSH, from
   `up --no-remote-ssh`.
+- `recipes/vscode-first-run.mjs` drives story h. Which half runs is the world's: from
+  `up --signed-out --no-ssh-setup --no-remote-ssh`, Connect through Sign Out; from
+  `up --cli-only --no-ssh-setup`, Use it, a skipped Set up and Open's one question.
 - `recipes/vscode-open-as-built.mjs` drives #1080's extension as built: a session started from the
   palette, its row double-clicked with what that shows and opens counted, one open through to the
   workspace window's files and terminal. It needs the `Mend: Open in VS Code` manifest. Run `trunk2`
@@ -161,10 +187,12 @@ The commands, from the repository root:
   `VSCODE_BIN=$(dirname "$(readlink -f "$(which code)")")/../lib/vscode/code node .claude/skills/verify/scripts/drive-vscode.mjs up --version <v>`.
   In place of `--version <v>` (a preloaded `ghcr.io/sealant-sh/mend:<v>`), pass `--image <ref>` (any
   image on this machine's Docker) or `--build` (one built now from the checkout's Dockerfile).
-  `--extension <checkout>` runs another checkout's `apps/vscode`. `--signed-out` leaves no CLI
-  connection; `--no-ssh-setup` leaves workspace SSH and Remote-SSH's platform unset;
-  `--no-remote-ssh` leaves Microsoft Remote-SSH uninstalled, so the first open installs it from the
-  gallery (the ledger's `remoteSsh` is `false`); `--no-video` records no video. `up` prints
+  `--extension <checkout>` runs another checkout's `apps/vscode`. By default the CLI is signed in
+  and `mend.serverUrl` names its server, as after **Use it**. `--signed-out` leaves no CLI
+  connection and no setting; `--cli-only` leaves the CLI signed in and the editor not connected;
+  `--no-ssh-setup` leaves workspace SSH and Remote-SSH's platform unset; `--no-remote-ssh` leaves
+  Microsoft Remote-SSH uninstalled, so the first open installs it from the gallery (the ledger's
+  `remoteSsh` is `false`); `--no-video` records no video. `up` prints
   `export MEND_VERIFY_VSCODE_RUN=<run>`; run that line.
 - **Run a recipe.**
   `node .claude/skills/verify/scripts/drive-vscode.mjs run <recipe.mjs> --out "$E_vscode/vscode-<letter>"`.
@@ -585,37 +613,71 @@ the row takes the job's name.
     public GitHub repository nobody can push to. The model's unit tests cover the words.
 - **g. mend handoff: Dana's local branch becomes a session.** `not run · G6`. The command **Hand off
   to Mend…** is not in today's manifest either.
-- **h. First run.** From `up --signed-out --no-ssh-setup`.
-  - `view("Mend")`, `treeItem("Run Mend: Connect to server").waitFor()`, `shot("signed-out")`.
-    Record the row's `text()`. The story expects the welcome `Connect VS Code to your Mend server.`
-    with [Connect]. Today the view shows one row naming the error.
-  - `palette("Mend: Connect to server")`. The input titled `Connect Mend` asks
-    `Mend server URL, as this machine reaches it (http://mend-mini.local:3105)`.
-    `quickInput.type(state.server.origin)`, `quickInput.accept()`.
-  - The quick pick titled `Connect Mend · <url>` offers `Sign in with the browser`,
-    `Paste a device token` and `No token`. `quickInput.pick("Sign in with the browser")`.
-  - When VS Code asks before opening `<url>/authorize`, record `dialogs()` and dismiss it. Read the
-    code from `statusBar("Mend sign-in").text()` (`Mend sign-in · <code>`). The progress
-    notification reads `approve in the browser if it shows <code>`, beside the toast
-    `Mend sign-in: open <page> and approve if it shows <code>. …` with `Copy link` and
-    `Paste a device token instead`. `shot("sign-in-code")`.
-  - Approve as the web's approve page does, `api("/me/cli-auth/<code>/approve", { method: "POST" })`
-    (`via: "api"`). The approval is the browser's half; the editor's half is under test.
-  - `notifications()` after the walk. Today's source shows
-    `Signed in to Mend at <url> as <email>. Revoke this editor under Settings → Devices.` and
-    `Connected to Mend at <url>.` (two success toasts, Divergences item 6). The story expects one.
-  - `treeItem(<project>).waitFor()`, `shot("signed-in")`. The story's Accounts menu entry is not
-    built. Report `not run · not built`.
-  - SSH setup. The story's welcome step [Set up] is not built. The first open asks once, the modal
-    `Set up workspace SSH to open sessions (one Host block in ~/.ssh/config)` with [Set up], only
-    when this machine never set workspace SSH up; then the open seeds Remote-SSH's platform and
-    resumes a stopped session as steps of its progress, with no further question. Not driven since
-    the redesign; record `dialogs()` and `newWindows(<recorded>)` when it is.
-  - Adopting. `palette("Mend: Adopt a project…")`; the input titled `Adopt a project` asks
-    `Git clone URL`, then `Project name`. Type the world's source URL and `<project>-h`. Record
-    `notification("Adopting").text()`, then `notification("Adopted").text()` (`Adopted <name>.`),
-    and `treeItem("<project>-h").waitFor()`. The story's one-click `Adopt <name> from <origin>`
-    [Adopt] is not built. `Nothing adopted yet.` is not reachable here, since `up` adopts a project.
+- **h. First run.** `recipes/vscode-first-run.mjs` with flow 4, on two worlds.
+  - From `up --signed-out --no-ssh-setup --no-remote-ssh`:
+    - h1: `welcome()` reads `["Connect VS Code to your Mend server."]` with the button `Connect`; no
+      `Mend` item in the status bar.
+    - h2a: `welcomeAction("Connect").click()`. One input, titled `Connect to your Mend server`,
+      empty with no CLI. `quickInput.validation()` reads null for `http://localhost:3105` and
+      `{ message: "Plain http: anyone on this network can read the token", severity: "warning" }`
+      for the world's `http://<dind ip>:3105`.
+    - The approve page. Enter shows one notification, `Approve in the browser if it shows <code>`,
+      and the status bar `Mend sign-in · <code>`. VS Code asks
+      `Do you want Code to open the external website? <url>/authorize?code=…`;
+      `dialog("external website").click("Open")`. The editor's external browser is `up`'s recorder,
+      so `browserOpened()` holds the URL, and `browser()` (Playwright's chromium) opens it: the web
+      sends it through its sign-in page, `signIn()` signs in as the run's account, and the page
+      reads `Authorize VS Code?` with the same code. A screenshot of the dialog is withheld (it
+      shows the approve link), so the shot is taken after it.
+    - Edge, denied: `click("Deny")` in the browser. One error toast,
+      `Sign-in denied in the browser.` [Try again]; the progress is gone.
+    - h2b and h2c: `[Try again]` asks the URL again with hers in it; the second walk, `Authorize` in
+      the browser, ends in exactly one toast `Signed in to <host> as <email>` (the watch catches no
+      `Connected to`), and the status bar's code is gone. `accounts()` lists
+      `<email> @ <host> (Mend)`.
+    - h3: `welcome()` reads `Open sessions in VS Code: needs Remote-SSH and an SSH key for Mend`
+      [Set up] and the link `Skip for now`. `welcomeAction("Set up").click()`: the notification
+      `Setting up: Remote-SSH · an SSH key for Mend · one Host block in ~/.ssh/config`, then the
+      sessions tree. Remote-SSH is in the extensions directory, `~/.ssh/config` in the scratch HOME
+      holds one `Host mend-ws-…` block, `remote.SSH.remotePlatform` maps it to `linux`, and
+      `GET /workspace-ssh` lists one more key.
+    - Then `treeItem("fresh worktree").contextMenu("Mend: Open in New Window")`: one window,
+      `opens()` +1, no dialog and no quick input (no platform question, no consent).
+    - h4: the project's sessions stopped and the project removed (`via: "api"`), so the server has
+      none. No project matches the window's origin (New session's origin matcher; a folder name
+      never counts), so the view's message reads
+      `Adopt hello-world from github.com/octocat/Hello-World` over one row, `Adopt`; one click
+      adopts it (no input) and the sessions tree shows. With the project removed again, a new window
+      (`palette("New Window")`) has no folder: `welcome()` reads `Nothing adopted yet.` [Adopt a
+      repository…], one input titled `Adopt a repository`.
+    - `accounts({ signOut: <email> })`: VS Code asks `Sign out of '<email> @ <host>'?`;
+      `dialog("Sign out of").click("Sign Out")`. `GET /me/devices` lists no `VS Code on …` device
+      after it, the Accounts menu holds no Mend account, and the welcome reads Connect again.
+  - From `up --cli-only --no-ssh-setup`:
+    - h1 variant: the view's message reads
+      `Mend at <host:port> · signed in as <email> (from the Mend CLI)` over one row, `Use it`.
+      `treeItem("Use it").click()`: no input, no dialog, no toast, `browserOpened()` unchanged,
+      `mend.serverUrl` written; the next step is Set up, and the account is in the Accounts menu.
+    - Edge, skipped: `welcomeAction("Skip for now").click()` shows the sessions tree; no Host block.
+      `Running` reads `nothing` and is drawn expanded.
+    - Then Open in New Window on `fresh worktree`: the modal
+      `Set up workspace SSH to open sessions (one Host block in ~/.ssh/config)` [Set up] shows once;
+      `Set up` opens one window, and `~/.ssh/config` holds one Mend `Host` block.
+    - Back in the first window, `Running` (drawn empty when the welcome gave way) reads `1`, still
+      expanded, its first row `fresh worktree · running`.
+  - Runs (2026-10-19, flow 4 at `547a8be6a`, server `0.0.0-dev.sha7a79816ce884`), each world from a
+    cold `up`: `fr2a` and `fr3a` passed all 14 steps of the signed-out half, `fr2b` and `fr3b` all 5
+    of the CLI half. On the same head, `vscode-open.mjs` (`rgopen`) and `vscode-view.mjs` (`rgview`,
+    S9 included) passed from a default `up`.
+  - Runs after the rebase onto #1092's `c4a47cf70` (2026-10-19, server `0.0.0-dev.shaa48dfa2beb00`),
+    each world from a cold `up`: `frr1` and `frr2` passed all 15 step lines of the signed-out half;
+    `frrb` passed the CLI half, and `frrb2` passed it again with the `Running` steps (7 lines). On
+    the same head, `vscode-new-session.mjs` (`frns`, 37 lines) passed from a default `up`, and
+    `vscode-view.mjs` (29, S9 included) then `vscode-open.mjs` (53) passed in one world (`frvo`).
+  - Why some steps are not a welcome: VS Code fixes a welcome's words in the manifest, and a view
+    container with one view merges its title (`Mend: Sessions`) and drops the view's description.
+    The two steps whose words carry facts (the CLI's server and account; the window's repository)
+    are the view's message and one row instead.
 
 Commands outside the stories, one gesture each:
 
