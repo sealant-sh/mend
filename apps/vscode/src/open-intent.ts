@@ -67,15 +67,17 @@ export class OpenIntents {
   }
 
   /**
-   * What a crash or a window that never came left behind: a `.tmp` a write never renamed, a
-   * `.taken` a take never removed, an intent nobody took. Each is past use once older than the
-   * expiry, so it goes; a newer one may belong to an open in flight and stays. Best effort.
+   * What a crash left behind: a `.tmp` a write never renamed, a `.taken` a take never removed.
+   * Each is past use once older than the expiry, so it goes; a newer one may belong to an open in
+   * flight and stays. Best effort. An intent nobody took stays for its workspace's next take,
+   * which refuses it as stale: another window may rename a fresh intent onto that name between
+   * any look at it here and its removal.
    */
   async #sweep(): Promise<void> {
     const names = await readdir(this.directory).catch(() => []);
     await Promise.all(
       names
-        .filter((name) => /\.(tmp|taken|json)$/.test(name))
+        .filter((name) => /\.(tmp|taken)$/.test(name))
         .map(async (name) => {
           const path = join(this.directory, name);
           const changed = await stat(path).then(

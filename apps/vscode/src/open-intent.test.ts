@@ -1,3 +1,4 @@
+import { renameSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,10 +80,10 @@ describe("OpenIntents' leftovers", () => {
     expect((await readdir(shared)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 
-  it("sweeps abandoned .tmp, .taken and untaken intents past the expiry on a take, and keeps newer ones", async () => {
+  it("sweeps abandoned .tmp and .taken files past the expiry on a take, and keeps newer ones", async () => {
     const shared = await directory();
     const stale = (Date.now() - OPEN_INTENT_TTL_MS - 60_000) / 1000;
-    for (const name of ["a.json.1.tmp", "b.json.2.taken", "c.json"]) {
+    for (const name of ["a.json.1.tmp", "b.json.2.taken"]) {
       await writeFile(join(shared, name), "{}");
       await utimes(join(shared, name), stale, stale);
     }
@@ -90,5 +91,28 @@ describe("OpenIntents' leftovers", () => {
     await new OpenIntents(shared).write({ workspaceId: "fresh", sessionId: "s" });
     expect(await new OpenIntents(shared).take("nobody")).toBeNull();
     expect((await readdir(shared)).toSorted()).toEqual(["d.json.3.tmp", "fresh.json"]);
+  });
+
+  it("keeps an intent another window publishes over an expired one while a take sweeps", async () => {
+    const shared = await directory();
+    const stale = (Date.now() - OPEN_INTENT_TTL_MS - 60_000) / 1000;
+    for (const name of ["w.json", "x.json.1.tmp"]) {
+      await writeFile(join(shared, name), JSON.stringify({ sessionId: "old", at: 0 }));
+      await utimes(join(shared, name), stale, stale);
+    }
+    let published = false;
+    // The sweep reads the clock once it has looked at a file: another window's Open lands then.
+    const sweeping = new OpenIntents(shared, () => {
+      if (!published) {
+        published = true;
+        const written = join(shared, "w.json.2.tmp");
+        writeFileSync(written, JSON.stringify({ sessionId: "new", at: Date.now() }));
+        renameSync(written, join(shared, "w.json"));
+      }
+      return Date.now();
+    });
+    expect(await sweeping.take("nobody")).toBeNull();
+    expect(published).toBe(true);
+    expect(await new OpenIntents(shared).take("w")).toBe("new");
   });
 });
