@@ -1,5 +1,6 @@
 import {
   agentProcessOutcome,
+  agentWaitStatus,
   type AgentTurn,
   type SessionProcess,
   type SessionStatus,
@@ -14,8 +15,9 @@ import {
  * `idle`), so the request's outcome is its latest turn's: a completed turn is `completed` and
  * carries ✅, and the next turn puts the thread back to `running`. An agent process that ended
  * speaks for itself. Nothing here is a verdict: `completed` says the turn ended as the harness
- * reported it. A stop Mend made because the agent sat idle reads `idle-stopped` (💤), and a reply
- * in the thread resumes the session. A session still saving its workspace after a stop
+ * reported it. A terminal agent records no turns: one that finished its turn reads `idle`, as its
+ * hooks reported it. A stop Mend made because the agent sat idle reads `idle-stopped` (💤), and a
+ * reply in the thread resumes the session. A session still saving its workspace after a stop
  * (`stopping`) reads as its agent ended.
  */
 export const slackSessionState = (input: {
@@ -45,6 +47,8 @@ export const slackSessionState = (input: {
       }
       const outcome = input.currentAgent === null ? null : agentProcessOutcome(input.currentAgent);
       if (outcome !== null) return outcome;
+      const wait = input.currentAgent?.waiting ?? null;
+      if (wait !== null && agentWaitStatus(wait) === "idle") return "idle";
       const latest = input.turns.reduce<Pick<AgentTurn, "ordinal" | "status"> | null>(
         (last, turn) => (last === null || turn.ordinal > last.ordinal ? turn : last),
         null,

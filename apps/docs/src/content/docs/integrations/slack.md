@@ -197,7 +197,8 @@ A follow-up in a channel is refused when the session's project has been made pri
 Mend posts only into the thread the request came from.
 
 - A reaction on the request: ⏳ while the session runs, ✅ when it completes, ❌ when it fails or
-  the request is refused.
+  the request is refused. A terminal agent that finished its turn reads
+  `idle · claude finished its turn` and carries no reaction.
 - One status message, edited in place, with an **Open in Mend** button. It reads, for example,
   `billing-api · from the thread · claude · running · mend/flaky-login-test`, and later
   `billing-api · from the thread · claude · completed · observed · mend/flaky-login-test · 4 files · +120 −30`.

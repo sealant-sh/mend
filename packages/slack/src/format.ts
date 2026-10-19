@@ -121,6 +121,8 @@ export const stateWords = (state: SlackSessionState, recorded: boolean): string 
       return "running";
     case "waiting":
       return "waiting for input";
+    case "idle":
+      return "idle";
     case "completed":
       return recorded ? "completed · observed" : "completed";
     case "failed":
@@ -153,6 +155,11 @@ export interface StatusInput {
   readonly branch: string;
   readonly state: SlackSessionState;
   readonly recorded: boolean;
+  /**
+   * What a live terminal agent's hooks last reported (`agentWaitLine`), which words a `waiting` or
+   * `idle` state: `idle · claude finished its turn`. Absent or null leaves the state's own words.
+   */
+  readonly agent?: string | null;
   /** The change against its base, once there is one. */
   readonly change: ChangeCounts | null;
   /** The session in Mend. */
@@ -180,6 +187,20 @@ export interface StatusInput {
   readonly capture?: string | null;
 }
 
+const stateLine = (input: StatusInput): string => {
+  if (input.state === "idle-stopped" && input.summary !== undefined && input.summary !== null) {
+    return input.summary;
+  }
+  if (
+    (input.state === "waiting" || input.state === "idle") &&
+    input.agent !== undefined &&
+    input.agent !== null
+  ) {
+    return input.agent;
+  }
+  return stateWords(input.state, input.recorded);
+};
+
 /**
  * `billing-api · from the thread · claude · running · mend/flaky-login-test`, and while a stop
  * drains the workspace `… · stopped · saving · 3 left · mend/flaky-login-test`.
@@ -189,9 +210,7 @@ export const statusLine = (input: StatusInput): string =>
     input.project,
     PROJECT_SOURCE_WORDS[input.source],
     input.harness,
-    input.state === "idle-stopped" && input.summary !== undefined && input.summary !== null
-      ? input.summary
-      : stateWords(input.state, input.recorded),
+    stateLine(input),
     ...(input.capture === undefined || input.capture === null ? [] : [input.capture]),
     input.branch,
     ...(input.change === null ? [] : [changeWords(input.change)]),
@@ -246,7 +265,8 @@ export type SlackReaction = (typeof SLACK_REACTIONS)[number];
 
 /**
  * The reaction on the request: ⏳ while the session runs, ✅ when it completes, ❌ when it fails or
- * the request is refused. A stopped session is the person's own hand and carries none. 💤 marks
+ * the request is refused. A stopped session is the person's own hand and carries none, and a
+ * terminal agent that finished its turn asks and claims nothing, so it carries none either. 💤 marks
  * a session Mend stopped because its agent sat idle: no verdict, and a reply resumes it.
  */
 export const reactionFor = (state: SlackSessionState | "refused"): SlackReaction | null => {
@@ -260,6 +280,7 @@ export const reactionFor = (state: SlackSessionState | "refused"): SlackReaction
     case "failed":
     case "refused":
       return "x";
+    case "idle":
     case "stopped":
       return null;
     case "idle-stopped":
