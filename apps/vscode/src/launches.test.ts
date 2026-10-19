@@ -80,12 +80,18 @@ const sink = () => {
 describe("Launches", () => {
   it("says each attempt to the store, and a refusal in the server's words", async () => {
     const store = sink();
-    await new Launches(fakeServer(["refused"], []), store).launch("s1", START);
+    await new Launches(fakeServer(["refused"], [session("starting")]), store).launch("s1", START);
     expect(store.said.at(-1)?.attempt).toMatchObject({
       n: 1,
       after: null,
-      refusal: { line: "launch refused · Over the organization's budget." },
+      refusal: { line: "launch refused · Over the organization's budget.", confirmed: true },
     });
+  });
+
+  it("says a refusal whose confirming read failed as unconfirmed: whether it settled is unknown", async () => {
+    const store = sink();
+    await new Launches(fakeServer(["refused"], []), store).launch("s1", START);
+    expect(store.said.at(-1)?.attempt.refusal).toMatchObject({ confirmed: false });
   });
 
   it("says no refusal for one the server settled failed before it answered: that failure says it", async () => {

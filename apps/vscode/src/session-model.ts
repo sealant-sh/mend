@@ -36,6 +36,12 @@ export interface LandingFact {
 export interface Refusal {
   readonly line: string;
   readonly at: string;
+  /**
+   * A read after the refusal found the server had not settled it, so only this window can say it.
+   * False when that read failed: whether the server settled it is unknown, so it raises nothing of
+   * its own, and a settlement read later is its one toast in every window.
+   */
+  readonly confirmed: boolean;
 }
 
 /**
@@ -116,8 +122,8 @@ export interface SessionView {
 
 /**
  * `failed`: the server settled it failed since it was sent. `refused`: the server answered it
- * with a refusal it had not settled (`Launches` reads it first), whatever it settles later.
- * `pending`: neither yet, or it ran.
+ * with a refusal a read found it had not settled (`Launches` reads it first), whatever it settles
+ * later. `pending`: neither yet, or it ran.
  */
 export type LaunchOutcome =
   | { readonly kind: "pending" }
@@ -242,7 +248,7 @@ const withRefusal = (session: Session, attempt: LaunchAttempt | undefined): Sess
 
 /** How this window's latest attempt ended, as far as the reads and its answer say. */
 const attemptOutcome = (read: Session, attempt: LaunchAttempt): LaunchOutcome =>
-  attempt.refusal !== null && (read.status === "starting" || read.status === "failed")
+  attempt.refusal?.confirmed === true && (read.status === "starting" || read.status === "failed")
     ? { kind: "refused", at: attempt.refusal.at }
     : read.status === "failed" && read.settledAt !== attempt.after
       ? { kind: "failed", at: settledFailureAt(read) }

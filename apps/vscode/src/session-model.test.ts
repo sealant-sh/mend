@@ -504,11 +504,16 @@ describe("a launch that fails (story a)", () => {
     n: number,
     after: string | null,
     refusal: string | null = null,
+    confirmed = true,
   ): ReadonlyMap<string, LaunchAttempt> =>
     new Map([
       [
         starting.id,
-        { n, after, refusal: refusal === null ? null : { line: refusal, at: NOW.toISOString() } },
+        {
+          n,
+          after,
+          refusal: refusal === null ? null : { line: refusal, at: NOW.toISOString(), confirmed },
+        },
       ],
     ]);
   const read = (one: Session, launches: ReadonlyMap<string, LaunchAttempt> = new Map()) =>
@@ -551,6 +556,19 @@ describe("a launch that fails (story a)", () => {
         read(failed(S1), attempt(1, null, BUDGET)),
       ]),
     ).toEqual([{ kind: "launchFailed", text: `add-rate-limit · ${BUDGET}` }]);
+  });
+
+  it("raises nothing for a refusal it could not confirm, then the server's settlement once", () => {
+    const unconfirmed = read(starting, attempt(1, null, BUDGET, false));
+    expect(unconfirmed.sessions.get(starting.id)?.line).toBe(`starting · ${BUDGET}`);
+    expect(
+      across([
+        read(starting, attempt(1, null)),
+        unconfirmed,
+        read(failed(S1), attempt(1, null, BUDGET, false)),
+        read(failed(S1), attempt(1, null, BUDGET, false)),
+      ]),
+    ).toEqual([{ kind: "launchFailed", text: `add-rate-limit failed · ${LOGIN}` }]);
   });
 
   it("raises a Retry that fails before any read sees it starting: failed to failed", () => {

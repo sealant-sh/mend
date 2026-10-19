@@ -132,20 +132,30 @@ export class Launches {
         return attempt;
       // The server settles most refusals failed before it answers: then that failure, keyed by
       // its `settledAt` in every window, is the one toast, and the refusal is not said apart.
-      if (await this.#settledSince(sessionId, after)) return attempt;
+      const settled = await this.#settledSince(sessionId, after);
+      if (settled === "settled") return attempt;
       return {
         ...attempt,
-        refusal: { line: `launch refused · ${cause.message}`, at: new Date().toISOString() },
+        refusal: {
+          line: `launch refused · ${cause.message}`,
+          at: new Date().toISOString(),
+          confirmed: settled === "unsettled",
+        },
       };
     }
   }
 
-  async #settledSince(sessionId: string, after: string | null): Promise<boolean> {
+  /** Whether the server settled the session failed since `after`; unknown when the read fails. */
+  async #settledSince(
+    sessionId: string,
+    after: string | null,
+  ): Promise<"settled" | "unsettled" | "unknown"> {
     const read = await this.client.sessionDetail(sessionId).then(
       ({ session }) => session,
       () => null,
     );
-    return read !== null && read.status === "failed" && read.settledAt !== after;
+    if (read === null) return "unknown";
+    return read.status === "failed" && read.settledAt !== after ? "settled" : "unsettled";
   }
 
   #say(sessionId: string, attempt: LaunchAttempt): void {
