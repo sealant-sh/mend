@@ -1,3 +1,5 @@
+import { AgentWait, agentWaitWords } from "@mend/domain/workbench";
+
 import type { EventPointer, PendingRequest } from "./client.js";
 import type { WaitFact } from "./session-model.js";
 import type { SessionDetail } from "./types.js";
@@ -46,15 +48,10 @@ export const terminalWait = (detail: Pick<SessionDetail, "processes">): WaitFact
   const wait = agent?.waiting ?? null;
   if (agent === undefined || wait === null) return null;
   const harness = agent.harness ?? agent.label ?? "the agent";
-  // The words of `agentWaitWords` in @mend/domain (G4); taken from there once #1082 lands.
-  const words =
-    wait.kind === "permission"
-      ? wait.tool === null
-        ? `${harness} needs your permission`
-        : `${harness} needs your permission to use ${wait.tool}`
-      : wait.kind === "question"
-        ? `${harness} asks you a question`
-        : `${harness} finished its turn`;
+  const words = agentWaitWords(
+    harness,
+    new AgentWait({ kind: wait.kind, tool: wait.tool, since: new Date(wait.since) }),
+  );
   return { key: wait.since, words, since: wait.since, via: "terminal" };
 };
 
