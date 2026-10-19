@@ -28,13 +28,16 @@ patch number is the extension's own.
   **Change…** steps through harness, model, thinking, permissions and base in the same input, with a
   step counter and Back, and remembers each choice per project. This replaces the pick between
   Workbench, Claude agent, Codex agent and Agent with options…, and its separate prompts.
-- A new session starts from the window's branch when origin has its commits. When it does not, it
-  starts from the default branch, and the line says so before Enter:
-  `from main · your branch fix/login isn't pushed`.
-- When no project matches the window, New session lists the projects, with **Adopt this repository**
-  on top when the window's origin URL is not adopted.
-- A launch that fails reads `failed · <the launch's line>` on its row, and its error notification
-  offers **Retry**, which launches the same session again.
+- A new session starts from the window's branch on origin when origin has its commits, sent as the
+  ref that proved it. When it does not, it starts from the default branch, and the line says so
+  before Enter: `from main · your branch fix/login isn't pushed`, or
+  `from main · couldn't read your branch` when git does not answer.
+- When no project matches the window's origin, New session lists the projects, with **Adopt this
+  repository** on top. A folder with an origin is never matched by its name.
+- A launch that fails reads `failed · <the launch's line>` on its row, and a refused one reads
+  `starting · launch refused · …` while the server still reads it starting. Its error notification
+  offers **Retry** when a read says it failed or never started. Retry launches the same session
+  again.
 - **Mend: New worktree without an agent…** is removed: choose the `shell` harness in **Change…**.
 - **Mend: New session in this worktree…** opens the same input. Who else runs in the worktree is on
   its line instead of a dialog.

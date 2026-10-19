@@ -88,8 +88,10 @@ Only the focused VS Code window shows a notification, and only when a session wa
 session you started finished, and that window is not already showing it: selected in the view, the
 window's own session, or the session whose agent terminal is in front after **Answer**. One wait
 shows one notification across all your VS Code windows, and none once it is a week old. Other
-windows show the badge. When Mend cannot be reached, the view reads `last heard from Mend at 23:10`,
-the rows keep the last words Mend reported with `· last seen 2 min ago`, and **New session** and
+windows show the badge. A launch you started that fails, or that the server refuses, is the
+exception: its notification shows even while its row is on screen, because only the notification
+offers **Retry**. When Mend cannot be reached, the view reads `last heard from Mend at 23:10`, the
+rows keep the last words Mend reported with `· last seen 2 min ago`, and **New session** and
 **Answer** are disabled.
 
 With no project adopted, the view offers **Adopt a project…**, which asks for a Git clone URL and a
@@ -99,8 +101,11 @@ project name.
 
 Click **+** in the view, or run **Mend: New session**. One quick input opens. When the window's
 folder is a clone of an adopted project, matched by its origin URL, the input is that project's,
-titled `New session · <project>`, and nothing asks which project. Type what the agent should do and
-press Enter. One dim line under the prompt says what Enter starts:
+titled `New session · <project>`, and nothing asks which project. Two origins match when they name
+the same host and path: `https://`, `ssh://` and `git@host:path` forms are alike, the host is
+compared without case, the path exactly, a trailing `.git` is dropped, and a port other than the
+scheme's default counts. A folder with an origin never matches a project by its folder name. Type
+what the agent should do and press Enter. One dim line under the prompt says what Enter starts:
 
 ```text
 claude · default model · from main
@@ -118,13 +123,22 @@ you chose: `default model` until you choose one, `high thinking`, and `asks befo
 
 ### The base
 
-A new worktree starts from the window's branch when origin has every commit of it. Mend checks the
-branch's upstream, else `origin/<branch>`, with `git merge-base --is-ancestor HEAD`, against what
-this machine last fetched; it does not fetch. When origin lacks commits of the branch, or the branch
-has no remote-tracking ref, the session starts from the project's default branch and the line says
-so before you press Enter: `from main · your branch fix/login isn't pushed`, or
-`from main · your commits on main aren't pushed` on the default branch itself. A window on another
-repository, or on a detached HEAD, starts from the default branch.
+A new worktree starts from the window's branch when origin has every commit of it. Mend checks
+`origin/<branch>`, else the branch's upstream, with `git merge-base --is-ancestor HEAD`, against
+what this machine last fetched; it does not fetch. The session starts from the ref that check
+proved. A branch on origin is sent by its name there, so `fix/login` tracking `origin/main` starts
+from `main`, and the line reads `from main`. An upstream on another remote is sent as the commit it
+pointed at, and the line reads `from upstream/main`.
+
+When origin lacks commits of the branch, or the branch has no remote-tracking ref, the session
+starts from the project's default branch and the line says so before you press Enter:
+`from main · your branch fix/login isn't pushed`, or
+`from main · your commits on main aren't pushed` on the default branch itself. When git does not
+answer within 3 seconds, or fails other than by saying no (a shallow clone's history), the line
+reads `from main · couldn't read your branch`. When the server's store cannot find the ref at
+create, the input stays open with your prompt and the line reads
+`from main · Mend's store couldn't find fix/login`; Enter then starts from the default branch. A
+window on another repository, or on a detached HEAD, starts from the default branch.
 
 ### Change…
 
@@ -134,11 +148,12 @@ and Back:
 - **Harness**: claude, codex, opencode, pi, or shell. A `shell` session runs no agent: what you type
   names it, and its shell holds the workspace. Mend observes and records what you run there, within
   the limits under [Agents you run yourself](#agents-you-run-yourself).
-- **Model**: the server's list, the same one every other client offers, with the server's default
-  listed first. For Claude and opencode the list leads with the harness's own choice
-  (`claude's own choice`, `opencode's own choice`), which sends no model: Claude Code runs the model
-  your Claude settings name, else its own default, as a `claude` you run yourself does, and
-  opencode's config decides. A harness the server lists no models for has no model step.
+- **Model**: `default model` first, then the server's list, the same one every other client offers.
+  `default model` sends no model: Claude Code runs the model your Claude settings name, else its own
+  default, as a `claude` you run yourself does, and opencode's config decides. The step shows before
+  the list arrives, with `default model` and your remembered model. Once the list is read, a
+  remembered model it no longer has is dropped, and the line says so once:
+  `· the server no longer lists <model>`.
 - **Thinking**: the levels the model takes, or the harness's default. A model that takes none has no
   thinking step.
 - **Permissions**: skip permission prompts, or ask before acting. A shell has no permissions step.
@@ -157,16 +172,25 @@ with what you typed, and the line reads your choices.
 - **Mend is offline.** **New session** is disabled; the view's **+** reads
   `Mend is offline · retrying`. An input already open says the same on its line, and Enter does
   nothing. What you typed is kept, per project, for the next **New session** in this window.
-- **The launch fails.** The row reads `failed · <the launch's line>`, such as
-  `failed · launch refused · Connect Claude to start a session here. …`, and an error notification
-  offers **Retry**, which launches the same session again. Retry shows only in the window that
-  launched it.
+- **More than one project has the window's origin.** The first step lists those projects only.
+- **The prompt can't be one argument.** A prompt with a NUL, one that starts with `-`, or one over
+  120,000 UTF-8 bytes is not sent, and the line says why. The prompt reaches the agent as one
+  argument, and Linux takes at most 131,072 bytes per argument.
+- **The launch fails.** The row reads what the server holds. A launch the server refused while it
+  still reads the session `starting` reads `starting · launch refused · <its words>`, such as
+  `starting · launch refused · Connect Claude to start a session here. …`. One that failed reads
+  `failed · <the launch's line>`. An error notification says so and offers **Retry** when a read of
+  the session just then says it failed, or that the refused launch never started. Retry reads it
+  again before it sends, and launches the same session again. A session that reads `starting` under
+  another launch, or runs, is never sent again: a launch whose answer was lost may be running. Retry
+  shows only in the window that launched it.
 
 **Mend: New session in this worktree…** on a session opens the same input for a second session in
 the same worktree: the same files and branch, with a new conversation. Its title ends
-`· in <worktree>`, its line reads `in <worktree>`, and when another person's session runs there the
-line says so. Each session keeps its own harness state, so the new session does not see the first
-session's conversation. To continue that conversation, open that session.
+`· in <worktree>`, or `· in <session>'s worktree` for a worktree with no name of its own, its line
+reads the same, and when another person's session runs there the line says so. Each session keeps
+its own harness state, so the new session does not see the first session's conversation. To continue
+that conversation, open that session.
 
 ## Open a session
 
