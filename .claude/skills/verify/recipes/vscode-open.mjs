@@ -6,8 +6,14 @@
 // makes one, the workspace window attaches the session's live terminal, a stopped session opens
 // through its resume, a conversation's tab offers Continue here and becomes claude's TUI, Ana's
 // session is never opened from the row, the palette or a deep link (each offers what Dana may do
-// instead), and Open with VS Code's default setting turns the window itself into the workspace of a
-// claude terminal agent, attached and focused, that she types into.
+// instead, the status bar's pick too), two live sessions in one worktree each open to their own
+// agent (and Open in New Window from inside that workspace opens a window), a session caught
+// stopping is resumed once it has stopped, and Open with VS Code's default setting turns the window
+// itself into the workspace of a claude terminal agent, attached and focused, that she types into,
+// though a newer session shares its worktree.
+//
+// A double-click is judged by the server's reads: an open's first act is `GET /api/sessions/<id>`
+// (today's extension makes one per click, two per double-click), and selecting a row reads nothing.
 //
 //   node .claude/skills/verify/scripts/drive-vscode.mjs run .claude/skills/verify/recipes/vscode-open.mjs --out <dir>
 //
@@ -331,11 +337,14 @@ export default async (h) => {
    * One gesture on a row that must open nothing and ask nothing. Everything seen is in the
    * failure's message too, so a failing line names what showed.
    */
-  const selectsOnly = async (rowName, gesture, slug) => {
+  const sessionReads = async (id) => linesMatching(await serverLogs(), `'/api/sessions/${id}'`);
+
+  const selectsOnly = async (rowName, id, gesture, slug) => {
     const row = treeItem(rowName);
     await row.waitFor();
     const known = await windows();
     const before = await counts();
+    const readsBefore = await sessionReads(id);
     const watching = await watch();
     await gesture(row);
     await sleep(3_000);
@@ -345,10 +354,21 @@ export default async (h) => {
     const seen = await watching.stop();
     const selected = await row.selected().catch(() => false);
     const after = await counts();
-    const observed = `opens ${before.opens} → ${after.opens} · windows opened ${opened.length} · quick input left open ${leftOpen === null ? "none" : `"${leftOpen}"`} · row selected ${selected} · ${shown(seen)} · ${delta(before, after)}`;
+    const readsAfter = await sessionReads(id);
+    const observed = `GET /api/sessions/${id.slice(0, 8)}… ${readsBefore} → ${readsAfter} · opens ${before.opens} → ${after.opens} · windows opened ${opened.length} · quick input left open ${leftOpen === null ? "none" : `"${leftOpen}"`} · row selected ${selected} · ${shown(seen)} · ${delta(before, after)}`;
     if (leftOpen !== null) await quickInput.cancel();
-    const asked =
-      seen === null ? [] : [...seen.dialogs, ...seen.quickInputs, ...(leftOpen ? [leftOpen] : [])];
+    // The watch lists each distinct title once, and the pick left open is one of them.
+    const asked = [
+      ...new Set(
+        seen === null
+          ? []
+          : [...seen.dialogs, ...seen.quickInputs, ...(leftOpen ? [leftOpen] : [])],
+      ),
+    ];
+    expect(
+      readsAfter === readsBefore,
+      `${readsAfter - readsBefore} open(s) ran, by the session reads: ${observed}`,
+    );
     expect(after.opens === before.opens, `an open ran: ${observed}`);
     expect(opened.length === 0, `a window opened: ${observed}`);
     expect(asked.length === 0, `it asked ${JSON.stringify(asked)}: ${observed}`);
@@ -360,14 +380,20 @@ export default async (h) => {
 
   await step(
     "double-click the running session's row: it selects, nothing opens, nothing asks",
-    () => selectsOnly(session.name, (row) => row.dblclick(), "after-double-click"),
+    () => selectsOnly(session.name, session.id, (row) => row.dblclick(), "after-double-click"),
   );
   await step("click the running session's row once: it selects, nothing opens, nothing asks", () =>
-    selectsOnly(session.name, (row) => row.click(), "after-click"),
+    selectsOnly(session.name, session.id, (row) => row.click(), "after-click"),
   );
   await step(
     `double-click the stopped ${stoppedName} row: it selects, nothing opens, nothing resumes`,
-    () => selectsOnly(stoppedName, (row) => row.dblclick(), "after-double-click-stopped"),
+    () =>
+      selectsOnly(
+        stoppedName,
+        state.warmSession,
+        (row) => row.dblclick(),
+        "after-double-click-stopped",
+      ),
   );
 
   const twice = await step(
@@ -578,6 +604,53 @@ export default async (h) => {
 
   await step("that window closed", async () => {
     const result = await closeWindow(stopped.page);
+    await useWindow(await homeWindow());
+    await view("Mend");
+    return result;
+  });
+
+  const caughtStopping = await step(
+    `the open button on ${stoppedName} while it stops: the open waits it out, resumes it once, one window, nothing asks`,
+    async () => {
+      await useWindow(await homeWindow());
+      await view("Mend");
+      const known = await windows();
+      const opensBefore = await opens();
+      const resumesBefore = await resumes();
+      // The stop is the setup; Open is clicked as soon as the server reads it stopping.
+      const stopping = api(`/sessions/${state.warmSession}/stop`, { method: "POST", body: "{}" });
+      const atClick = await waitUntil(
+        "the server to read it stopping",
+        async () => {
+          const { session: read } = await api(`/sessions/${state.warmSession}`);
+          return read.status === "running" ? null : read.status;
+        },
+        60_000,
+      );
+      const watching = await watch();
+      await treeItem(stoppedName).inline(OPEN);
+      await stopping;
+      const opened = await newWindows(known, { settle: 10_000, limit: 600_000 });
+      const seen = await watching.stop();
+      expect(opened.length === 1, `${opened.length} window(s) opened · ${shown(seen)}`);
+      await useWindow(opened[0]);
+      await statusBar(/SSH:/).waitFor(600_000);
+      await waitForText("README", { timeout: 120_000 });
+      const opensAfter = await opens();
+      await sleep(5_000);
+      const resumesAfter = await resumes();
+      await shot("stopping-opened");
+      const observed = `the server read "${atClick}" at the click · windows opened ${opened.length} · opens ${opensBefore} → ${opensAfter} · resumes ${resumesBefore} → ${resumesAfter} · ${shown(seen)}`;
+      expect(seen !== null && seen.dialogs.length === 0, `dialogs: ${observed}`);
+      expect(seen.quickInputs.length === 0, `quick inputs: ${observed}`);
+      expect(opensAfter - opensBefore === 1, `opens: ${observed}`);
+      expect(resumesAfter - resumesBefore === 1, `resumes: ${observed}`);
+      return { observed, page: opened[0] };
+    },
+  );
+
+  await step("that window closed", async () => {
+    const result = await closeWindow(caughtStopping.page);
     await useWindow(await homeWindow());
     await view("Mend");
     return result;
@@ -951,6 +1024,173 @@ export default async (h) => {
   );
 
   await step(
+    "the status bar's Mend item, shared control off: its pick lists Ana's session with Review, not Open; nothing opens",
+    async () => {
+      await useWindow(await homeWindow());
+      const before = await openCounts();
+      const item = statusBar("Mend:");
+      const itemText = await item.text();
+      await item.click();
+      await quickInput.waitFor();
+      const title = await quickInput.title();
+      const items = (await quickInput.items()).map((entry) => entry.replace(/\s+/g, " ").trim());
+      const anas = items.find((entry) => entry.includes(ANA_WHY)) ?? null;
+      await shot("status-bar-pick-ana");
+      await quickInput.cancel();
+      const after = await openCounts();
+      const observed = `status bar "${itemText}" · pick "${title}" · Ana's item "${anas}" · items ${JSON.stringify(items)} · ${delta(before, after)}`;
+      expect(anas !== null && anas.includes("running · Review"), observed);
+      expect(!anas.includes("Watch terminal"), observed);
+      expect(after.opens === before.opens && after.windows === before.windows, observed);
+      return observed;
+    },
+  );
+
+  const second = await step(
+    `a second claude session joins ${agent.name}'s worktree, launched in a PTY: two live sessions in one workspace, the second the newer`,
+    async () => {
+      const { session: first } = await api(`/sessions/${agent.id}`);
+      const created = await api(`/projects/${project.id}/sessions`, {
+        method: "POST",
+        body: JSON.stringify({
+          harness: "claude",
+          label: "second-look",
+          base: null,
+          name: first.worktree,
+        }),
+      });
+      await api(`/sessions/${created.id}/launch`, {
+        method: "POST",
+        body: JSON.stringify({ permissionMode: "ask" }),
+      });
+      const pty = await waitUntil(
+        "the second session running in the same workspace with a live agent-pty",
+        async () => {
+          const read = await api(`/sessions/${created.id}`);
+          return read.session.status === "running" &&
+            read.session.sealantWorkspaceId === first.sealantWorkspaceId
+            ? (liveProcess(read.processes, "agent-pty") ?? null)
+            : null;
+        },
+        600_000,
+      );
+      const { session: now } = await api(`/sessions/${created.id}`);
+      const firstNow = await api(`/sessions/${agent.id}`);
+      expect(
+        liveProcess(firstNow.processes, "agent-pty") !== undefined,
+        `${agent.name}'s agent is no longer live: ${JSON.stringify(firstNow.processes)}`,
+      );
+      expect(now.createdAt > first.createdAt, `created ${first.createdAt} then ${now.createdAt}`);
+      return {
+        observed: `worktree "${first.worktree}" · workspace ${first.sealantWorkspaceId} · ${agent.name} ${agent.id.slice(0, 8)} created ${first.createdAt}, agent-pty live · second-look ${created.id.slice(0, 8)} created ${now.createdAt}, agent-pty ${pty.id.slice(0, 8)} live`,
+        id: created.id,
+        name: "second-look",
+        tab: "claude · second-look",
+      };
+    },
+    { via: "api" },
+  );
+
+  const older = await step(
+    `the open button on ${agent.name}, the older of the two (the setting is on, so a new window): its claude is attached and focused, not second-look's`,
+    async () => {
+      await useWindow(await homeWindow());
+      await view("Mend");
+      await palette("Mend: Refresh");
+      await treeItem(second.name).waitFor(60_000);
+      const known = await windows();
+      const before = await openCounts();
+      await treeItem(agent.name).inline(OPEN);
+      const opened = await newWindows(known, { settle: 10_000, limit: 120_000 });
+      expect(opened.length === 1, `${opened.length} window(s) opened`);
+      await useWindow(opened[0]);
+      await statusBar(/SSH:/).waitFor(600_000);
+      const tabs = await waitUntil(
+        `the tab "${agent.tab}" attached, active and focused`,
+        async () => {
+          const read = await terminal().tabs();
+          return read.active === agent.tab && read.focused ? read : null;
+        },
+        120_000,
+      ).catch(async () => {
+        throw new Error(`the attached tabs are ${JSON.stringify(await terminal().tabs())}`);
+      });
+      await sleep(5_000);
+      const later = await terminal().tabs();
+      await shot("older-of-two-attached");
+      const after = await openCounts();
+      const observed = `tabs ${JSON.stringify(later.names)} · active "${later.active}" · focused ${tabs.focused} · ${delta(before, after)}`;
+      expect(!later.names.includes(second.tab), `second-look's tab attached: ${observed}`);
+      expect(later.active === agent.tab, observed);
+      return { observed, page: opened[0] };
+    },
+  );
+
+  await step(
+    `in ${agent.name}'s window, the open button on second-look, which shares the workspace: its own claude attached and focused, nothing opens`,
+    async () => {
+      const url = older.page.url();
+      const before = await openCounts();
+      const watching = await watch();
+      await view("Mend");
+      await treeItem(second.name).inline(OPEN);
+      const tabs = await waitUntil(
+        `the tab "${second.tab}" attached, active and focused`,
+        async () => {
+          const read = await terminal().tabs();
+          return read.active === second.tab && read.focused ? read : null;
+        },
+        120_000,
+      );
+      const rows = await terminal().waitForText("❯", 120_000);
+      await sleep(3_000);
+      const seen = await watching.stop();
+      const after = await openCounts();
+      await shot("second-of-two-focused");
+      const observed = `tabs ${JSON.stringify(tabs.names)} · active "${tabs.active}" · focused ${tabs.focused} · prompt "${(rows.split("\n").findLast((row) => row.includes("❯")) ?? "").trim()}" · page unchanged ${older.page.url() === url} · ${shown(seen)} · ${delta(before, after)}`;
+      expect(seen !== null && older.page.url() === url, `the window reloaded: ${observed}`);
+      expect(after.opens === before.opens && after.windows === before.windows, observed);
+      return observed;
+    },
+  );
+
+  await step(
+    `in that window, which is the workspace, context menu Open in New Window on ${agent.name}: VS Code keeps one window per folder, so it shows ${agent.name}'s agent here, nothing asks`,
+    async () => {
+      const url = older.page.url();
+      const known = await windows();
+      const before = await openCounts();
+      const watching = await watch();
+      await view("Mend");
+      await treeItem(agent.name).contextMenu("Mend: Open in New Window");
+      const tabs = await waitUntil(
+        `the tab "${agent.tab}" active and focused again`,
+        async () => {
+          const read = await terminal().tabs();
+          return read.active === agent.tab && read.focused ? read : null;
+        },
+        60_000,
+      );
+      const opened = await newWindows(known, { settle: 10_000, limit: 30_000 });
+      const seen = await watching.stop();
+      const after = await openCounts();
+      await shot("new-window-from-inside");
+      const observed = `windows opened ${opened.length} · tabs ${JSON.stringify(tabs.names)} · active "${tabs.active}" · focused ${tabs.focused} · page unchanged ${older.page.url() === url} · ${shown(seen)} · ${delta(before, after)}`;
+      expect(opened.length === 0, `windows: ${observed}`);
+      expect(after.opens === before.opens, `opens: ${observed}`);
+      expect(seen !== null && seen.dialogs.length === 0 && seen.quickInputs.length === 0, observed);
+      return observed;
+    },
+  );
+
+  await step("that workspace window closed, back to the local window", async () => {
+    const result = await closeWindow(older.page);
+    await useWindow(await homeWindow());
+    await view("Mend");
+    return result;
+  });
+
+  await step(
     "window.openFoldersInNewWindow removed from settings.json: VS Code's default again",
     async () => {
       const written = userSettings({ "window.openFoldersInNewWindow": undefined });
@@ -991,7 +1231,7 @@ export default async (h) => {
   );
 
   const typedAt = await step(
-    `the window that became the workspace: "${agent.tab}" attached and focused, claude's TUI at its prompt, before any gesture`,
+    `the window that became the workspace: "${agent.tab}" attached and focused, claude's TUI at its prompt, before any gesture; the newer second-look sharing the worktree is not the one attached`,
     async () => {
       const tabs = await waitUntil(
         `the tab "${agent.tab}" attached, active and focused`,
@@ -1004,6 +1244,10 @@ export default async (h) => {
       const rows = await terminal().waitForText("❯", 120_000);
       await shot("window-becomes-workspace");
       const prompt = rows.split("\n").findLast((row) => row.includes("❯")) ?? "";
+      expect(
+        !tabs.names.includes(second.tab),
+        `second-look's tab attached: ${JSON.stringify(tabs)}`,
+      );
       return {
         observed: `window title "${await page().title()}" (the story wants "${agent.name} — ${project.name}") · tabs ${JSON.stringify(tabs.names)} · active "${tabs.active}" · focused ${tabs.focused} · prompt "${prompt.trim()}"`,
         prompt: prompt.trim(),
@@ -1048,7 +1292,7 @@ export default async (h) => {
         const processes = await api(`/sessions/${id}/processes`);
         return `${id.slice(0, 8)} ${detail.status} ${JSON.stringify(processes.map((process) => [process.kind, process.status]))}`;
       };
-      return `workbench ${await read(session.id)} · ${stoppedName} ${await read(state.warmSession)} · ${agent.name} ${await read(agent.id)} · ${conversation.name} ${await read(conversation.id)} · ana ${await read(ana.id)}`;
+      return `workbench ${await read(session.id)} · ${stoppedName} ${await read(state.warmSession)} · ${agent.name} ${await read(agent.id)} · ${second.name} ${await read(second.id)} · ${conversation.name} ${await read(conversation.id)} · ana ${await read(ana.id)}`;
     },
     { via: "api" },
   );
