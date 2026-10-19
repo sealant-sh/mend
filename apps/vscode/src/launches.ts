@@ -38,8 +38,8 @@ const UNDER_WAY = /already under way/;
 export class Launches {
   readonly #sent = new Map<string, LaunchRequest>();
   readonly #attempts = new Map<string, LaunchAttempt>();
-  /** Sessions with a launch or a Retry on its way: a second click sends nothing. */
-  readonly #busy = new Set<string>();
+  /** Sessions with a launch or a Retry on its way, until it is answered: a second click sends nothing. */
+  readonly #busy = new Map<string, Promise<void>>();
 
   constructor(
     private readonly client: LaunchClient,
@@ -54,33 +54,42 @@ export class Launches {
   /** The first launch of a session this window created. */
   async launch(sessionId: string, start: LaunchRequest): Promise<void> {
     if (this.#busy.has(sessionId)) return;
-    this.#busy.add(sessionId);
-    const answered = await this.#send(sessionId, start, null).finally(() =>
-      this.#busy.delete(sessionId),
-    );
+    const answered = await this.#hold(sessionId, () => this.#send(sessionId, start, null));
     // Said once nothing is on its way, so the toast it raises may offer Retry.
     this.#say(sessionId, answered);
   }
 
-  /** Read the session now: Retry is offered only for a launch that failed or never started. */
+  /**
+   * Read the session once nothing is on its way: Retry is offered only for a launch that failed or
+   * never started. A read that lands before the launch is answered waits for the answer, so the
+   * toast it raised still offers Retry when that launch failed.
+   */
   async offer(sessionId: string): Promise<RetryOffer> {
-    return this.#busy.has(sessionId) ? { kind: "moved" } : this.#check(sessionId);
+    for (let busy = this.#busy.get(sessionId); busy !== undefined; busy = this.#busy.get(sessionId))
+      await busy;
+    return this.#check(sessionId);
   }
 
   /** Retry: the same launch on the same session, once a read just now says it may be sent. */
   async relaunch(sessionId: string): Promise<void> {
     const start = this.#sent.get(sessionId);
     if (start === undefined || this.#busy.has(sessionId)) return;
-    this.#busy.add(sessionId);
-    let answered: LaunchAttempt | null = null;
-    try {
+    const answered = await this.#hold(sessionId, async () => {
       const offer = await this.#check(sessionId);
-      if (offer.kind === "retry")
-        answered = await this.#send(sessionId, start, offer.read.settledAt);
+      return offer.kind === "retry" ? this.#send(sessionId, start, offer.read.settledAt) : null;
+    });
+    if (answered !== null) this.#say(sessionId, answered);
+  }
+
+  async #hold<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
+    const done = Promise.withResolvers<void>();
+    this.#busy.set(sessionId, done.promise);
+    try {
+      return await work();
     } finally {
       this.#busy.delete(sessionId);
+      done.resolve();
     }
-    if (answered !== null) this.#say(sessionId, answered);
   }
 
   async #check(sessionId: string): Promise<RetryOffer> {
@@ -118,11 +127,22 @@ export class Launches {
     } catch (cause) {
       // No answer: it may be running. Saying it again reads the session, and the reads say.
       if (!(cause instanceof MendApiError) || cause.status === null) return attempt;
+      // The server settles most refusals failed before it answers: then that failure, keyed by
+      // its `settledAt` in every window, is the one toast, and the refusal is not said apart.
+      if (await this.#settledSince(sessionId, after)) return attempt;
       return {
         ...attempt,
         refusal: { line: `launch refused · ${cause.message}`, at: new Date().toISOString() },
       };
     }
+  }
+
+  async #settledSince(sessionId: string, after: string | null): Promise<boolean> {
+    const read = await this.client.sessionDetail(sessionId).then(
+      ({ session }) => session,
+      () => null,
+    );
+    return read !== null && read.status === "failed" && read.settledAt !== after;
   }
 
   #say(sessionId: string, attempt: LaunchAttempt): void {

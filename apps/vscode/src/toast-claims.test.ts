@@ -4,7 +4,8 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { RetryOffer } from "./launches.js";
+import { Launches, type RetryOffer } from "./launches.js";
+import { MendApiError } from "./mend-http.js";
 import { sessionModel, type LaunchAttempt, type WindowModel } from "./session-model.js";
 import { Notifier } from "./session-surfaces.js";
 import { fake, window } from "./test-vscode.js";
@@ -262,6 +263,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
   const starting: Session = { ...waiting, status: "starting" };
   const refusedAt = iso(Date.now() - 1_000);
   const refusal = { line: "launch refused · Claude is not connected", at: refusedAt };
+  const settledAt = iso(Date.now() - 2_000);
   const refused = () => ({
     prev: read(starting, new Map([["s", { n: 1, after: null, refusal: null }]])),
     next: read(starting, new Map([["s", { n: 1, after: null, refusal }]])),
@@ -283,7 +285,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
       "Retry",
     );
     expect(await readdir(shared)).toEqual([
-      `${Date.parse(refusedAt)}.${encodeURIComponent("s:launchFailed:1")}`,
+      `${Date.parse(refusedAt)}.${encodeURIComponent("s:launchRefused:1")}`,
     ]);
   });
 
@@ -297,6 +299,68 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     await vi.waitFor(() => expect(moved.offer).toHaveBeenCalledTimes(1));
     await vi.waitFor(async () => expect(await readdir(shared)).toEqual([]));
     expect(window.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  it("still offers Retry, once, for a failure read before its launch was answered", async () => {
+    fake.reset();
+    const shared = await directory();
+    const failed: Session = { ...waiting, status: "failed", settledAt };
+    const answer = Promise.withResolvers<void>();
+    const attempts = new Map<string, LaunchAttempt>();
+    const sender = new Launches(
+      {
+        launchSession: async () => {
+          await answer.promise;
+          throw new MendApiError("Connect Claude to start a session here.", 422, "StoreFailure");
+        },
+        sessionDetail: async () => ({ session: failed }),
+      },
+      { attempted: (sessionId, attempt) => attempts.set(sessionId, attempt) },
+    );
+    const sent = sender.launch("s", { mode: "pty", prompt: "add rate limiting" });
+    const early = {
+      prev: read(starting, new Map(attempts)),
+      next: read(failed, new Map(attempts)),
+    };
+    const store = { showing: () => new Set<string>(), model: () => early.next, error: () => null };
+    const notifier = new Notifier(store, new ToastClaims(shared), sender);
+    notifier.changed(early);
+    await vi.waitFor(async () => expect(await readdir(shared)).toHaveLength(1));
+    answer.resolve();
+    await sent;
+    notifier.changed({ prev: early.next, next: read(failed, new Map(attempts)) });
+    await vi.waitFor(() => expect(window.showErrorMessage).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(window.showErrorMessage).toHaveBeenCalledTimes(1);
+    expect(window.showErrorMessage).toHaveBeenCalledWith(expect.any(String), "Retry");
+    expect(await readdir(shared)).toEqual([
+      `${Date.parse(settledAt)}.${encodeURIComponent(`s:launchFailed:${settledAt}`)}`,
+    ]);
+  });
+
+  it("toasts one failure the server settled once across two windows, the launching one included", async () => {
+    fake.reset();
+    const shared = await directory();
+    const failed: Session = { ...waiting, status: "failed", settledAt };
+    const sent = new Map([["s", { n: 1, after: null, refusal: null }]]);
+    const launching = { prev: read(starting, sent), next: read(failed, sent) };
+    const other = { prev: read(starting), next: read(failed) };
+    const here = new Notifier(
+      { showing: () => new Set<string>(), model: () => launching.next, error: () => null },
+      new ToastClaims(shared),
+      offering({ kind: "retry", read: failed }),
+    );
+    const there = new Notifier(
+      { showing: () => new Set<string>(), model: () => other.next, error: () => null },
+      new ToastClaims(shared),
+      offering({ kind: "none" }),
+    );
+    here.changed(launching);
+    await vi.waitFor(() => expect(window.showErrorMessage).toHaveBeenCalledTimes(1));
+    there.changed(other);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(window.showErrorMessage).toHaveBeenCalledTimes(1);
+    expect(await readdir(shared)).toHaveLength(1);
   });
 
   it("gives its claim back and reads nothing once she looked away while it claimed", async () => {

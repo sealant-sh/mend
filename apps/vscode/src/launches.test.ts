@@ -83,6 +83,12 @@ describe("Launches", () => {
     });
   });
 
+  it("says no refusal for one the server settled failed before it answered: that failure says it", async () => {
+    const store = sink();
+    await new Launches(fakeServer(["refused"], [session("failed", S1)]), store).launch("s1", START);
+    expect(store.said.at(-1)?.attempt).toEqual({ n: 1, after: null, refusal: null });
+  });
+
   it("says no refusal for a launch with no answer: it may be running", async () => {
     const store = sink();
     await new Launches(fakeServer(["unanswered"], []), store).launch("s1", START);

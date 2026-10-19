@@ -116,7 +116,8 @@ export interface SessionView {
 
 /**
  * `failed`: the server settled it failed since it was sent. `refused`: the server answered it
- * with a refusal and has said nothing since. `pending`: neither yet, or it ran.
+ * with a refusal it had not settled (`Launches` reads it first), whatever it settles later.
+ * `pending`: neither yet, or it ran.
  */
 export type LaunchOutcome =
   | { readonly kind: "pending" }
@@ -241,11 +242,17 @@ const withRefusal = (session: Session, attempt: LaunchAttempt | undefined): Sess
 
 /** How this window's latest attempt ended, as far as the reads and its answer say. */
 const attemptOutcome = (read: Session, attempt: LaunchAttempt): LaunchOutcome =>
-  read.status === "failed" && read.settledAt !== attempt.after
-    ? { kind: "failed", at: read.settledAt ?? read.createdAt }
-    : attempt.refusal !== null && unsettledSince(read, attempt)
-      ? { kind: "refused", at: attempt.refusal.at }
+  attempt.refusal !== null && (read.status === "starting" || read.status === "failed")
+    ? { kind: "refused", at: attempt.refusal.at }
+    : read.status === "failed" && read.settledAt !== attempt.after
+      ? { kind: "failed", at: settledFailureAt(read) }
       : { kind: "pending" };
+
+const settledFailureAt = (session: Session): string => session.settledAt ?? session.createdAt;
+
+/** A failure the server settled: one key in every window, the launching one included. */
+const settledFailureKey = (session: Session): string =>
+  `${session.id}:launchFailed:${settledFailureAt(session)}`;
 
 const sessionView = (
   input: ModelInput,
@@ -532,21 +539,19 @@ export const transitions = (
   const finished = [...next.sessions.values()].flatMap((view): ReadonlyArray<Notification> => {
     if (!view.mine) return [];
     // Each attempt this window sent ends once, whatever reads came between: failed to failed too.
+    // A refusal the server never settled is this window's alone, so only it is keyed by attempt.
     if (view.launch !== null && (view.word === "failed" || view.word === "starting")) {
       const { attempt, outcome } = view.launch;
-      return outcome.kind === "pending"
-        ? []
-        : launchFailed(view, `${view.session.id}:launchFailed:${attempt}`, outcome.at);
+      if (outcome.kind === "pending") return [];
+      return outcome.kind === "refused"
+        ? launchFailed(view, `${view.session.id}:launchRefused:${attempt}`, outcome.at)
+        : launchFailed(view, settledFailureKey(view.session), outcome.at);
     }
     if (view.word !== "completed" && view.word !== "failed") return [];
     const earlier = prev?.sessions.get(view.session.id);
     if (earlier === undefined || !earlier.live) return [];
     if (earlier.word === "starting" && view.word === "failed")
-      return launchFailed(
-        view,
-        `${view.session.id}:launchFailed:${view.settledAt ?? ""}`,
-        view.settledAt ?? view.session.createdAt,
-      );
+      return launchFailed(view, settledFailureKey(view.session), settledFailureAt(view.session));
     const key = `${view.session.id}:settled:${view.settledAt ?? view.word}`;
     if (attention.raised.has(key)) return [];
     const fact = view.word === "completed" ? firstLine(view.session.summary) : view.fact;
