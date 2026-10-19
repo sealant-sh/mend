@@ -5,8 +5,8 @@
 // it. The world outlives one call, like drive-desktop.sh's app:
 //
 //   node .claude/skills/verify/scripts/drive-vscode.mjs up (--version <v> | --image <ref> | --build)
-//       [--extension <checkout>] [--repo <url>] [--run <name>] [--signed-out] [--no-ssh-setup]
-//       [--no-remote-ssh] [--no-video]
+//       [--extension <checkout>] [--repo <url>] [--run <name>] [--signed-out | --cli-only]
+//       [--no-ssh-setup] [--no-remote-ssh] [--no-video]
 //   node .claude/skills/verify/scripts/drive-vscode.mjs run <recipe.mjs> --out <dir> [--run <name>] [--timeout <ms>]
 //   node .claude/skills/verify/scripts/drive-vscode.mjs logs [--out <dir>] [--run <name>]
 //   node .claude/skills/verify/scripts/drive-vscode.mjs down [--run <name>]
@@ -20,9 +20,10 @@
 // extensions directory, then VS Code (VSCODE_BIN, the Electron binary; VSCODE_CLI, the `code`
 // launcher, for installs) with `--extensionDevelopmentPath <checkout>/apps/vscode`, a remote
 // debugging port, a scratch user data directory, on an Xvfb display, with a local clone of the
-// adopted repository open in its first window. Signed in by default (the CLI connection the
-// extension reads, written as `mend login` writes it), with workspace SSH set up (`mend ssh setup`
-// in the scratch HOME, and Remote-SSH's platform seeded for the alias); `--signed-out` and
+// adopted repository open in its first window. Signed in by default (the CLI connection written
+// as `mend login` writes it, and `mend.serverUrl` naming its server, as after story h's Use it),
+// with workspace SSH set up (`mend ssh setup` in the scratch HOME, and Remote-SSH's platform seeded
+// for the alias); `--signed-out`, `--cli-only` (the CLI signed in, the editor not connected) and
 // `--no-ssh-setup` start the first-run stories instead; `--no-remote-ssh` leaves Remote-SSH
 // uninstalled, so the first open installs it. The display is recorded with ffmpeg
 // (x11grab) when ffmpeg is on PATH and `--no-video` is not given. Every name is run-scoped, so two
@@ -50,6 +51,7 @@
 // crash, converges.
 
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -245,8 +247,16 @@ const up = async () => {
   const userData = join(scratch, "user-data");
   const extensions = join(scratch, "extensions");
   const checkout = join(scratch, "checkout");
-  state({ scratch, home, configHome, sshDir, userData, extensions, checkout });
+  // The editor's "external browser" only records what it was asked to open: a link the editor opens
+  // never reaches a browser on this machine's own desktop, and a recipe opens it in its own.
+  const browserLog = join(scratch, "browser-opened.log");
+  const browserStub = join(scratch, "browser");
+  writeFileSync(browserStub, `#!/bin/sh\nprintf '%s\\n' "$@" >> '${browserLog}'\n`, {
+    mode: 0o755,
+  });
+  state({ scratch, home, configHome, sshDir, userData, extensions, checkout, browserLog });
   world.writeUserSettings(userData, sshDir, {
+    "workbench.externalBrowser": browserStub,
     // Modals and menus in the DOM, where the helpers reach them; the terminal drawn as text.
     "window.dialogStyle": "custom",
     "window.titleBarStyle": "custom",
@@ -307,7 +317,11 @@ const up = async () => {
   });
 
   const email = `${names.world}@verify.invalid`;
-  const token = await world.signUp(origin, { email, name: "verify vscode" });
+  // Kept for the web's sign-in page: story h approves the editor in a browser signed in as her.
+  const password = randomBytes(24).toString("hex");
+  register(names.privateDir, "password", password);
+  writeFileSync(join(names.privateDir, "password.secret"), password, { mode: 0o600 });
+  const token = await world.signUp(origin, { email, name: "verify vscode", password });
   register(names.privateDir, "token", token);
   writeFileSync(join(names.privateDir, "token.secret"), token, { mode: 0o600 });
   const api = world.makeApi(origin, token);
@@ -339,7 +353,16 @@ const up = async () => {
     say(`workspace SSH set up · Host ${alias}`);
   }
   if (options["signed-out"]) rmSync(join(cliDir, "cli.json"));
-  state({ signedIn: !options["signed-out"], sshSetup });
+  // The editor connects once it names the server (story h): signed in by default as if Use it was
+  // pressed; `--cli-only` leaves that click to the recipe, `--signed-out` leaves everything.
+  const editorConnected = !options["signed-out"] && !options["cli-only"];
+  if (editorConnected) {
+    const settingsFile = join(userData, "User", "settings.json");
+    const settings = JSON.parse(readFileSync(settingsFile, "utf8"));
+    settings["mend.serverUrl"] = origin;
+    writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+  }
+  state({ signedIn: !options["signed-out"], editorConnected, sshSetup });
 
   const { display, xvfb } = await world.startXvfb();
   const editorEnv = world.editorEnv(clientEnv, display);
@@ -409,7 +432,7 @@ const up = async () => {
     `VS Code ${browser.Browser} on ${display} · CDP http://127.0.0.1:${cdpPort}${video ? ` · recording ${video}` : ""}`,
   );
   say(
-    `signed ${options["signed-out"] ? "out" : "in"} · workspace SSH ${sshSetup ? `set up (${sshSetup.alias})` : "not set up"} · Remote-SSH ${remoteSsh ? "installed" : "not installed"}`,
+    `CLI signed ${options["signed-out"] ? "out" : "in"} · editor ${editorConnected ? "connected" : "not connected"} · workspace SSH ${sshSetup ? `set up (${sshSetup.alias})` : "not set up"} · Remote-SSH ${remoteSsh ? "installed" : "not installed"}`,
   );
   process.stdout.write(`export MEND_VERIFY_VSCODE_RUN=${run}\n`);
 };
@@ -488,6 +511,7 @@ const runRecipe = async () => {
   const { chromium } = require(join(playwrightHome, "node_modules", "playwright-core"));
   const browser = await chromium.connectOverCDP(state.cdp.url);
   const context = browser.contexts()[0];
+  const passwordFile = join(names.privateDir, "password.secret");
   const helpers = await workbenchHelpers(context, {
     out,
     secrets,
@@ -497,6 +521,11 @@ const runRecipe = async () => {
     timeout,
     log: say,
     serverLogs: () => serverLogs(state),
+    launchBrowser: () => chromium.launch(),
+    account: {
+      email: state.account?.email ?? null,
+      password: existsSync(passwordFile) ? readFileSync(passwordFile, "utf8").trim() : null,
+    },
   });
   const recipe = (await import(pathToFileURL(resolve(positional[0])).href)).default;
   let failed = false;

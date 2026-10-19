@@ -36,6 +36,10 @@ export const FLAGS = {
     repo: { value: true, help: "the Git URL to adopt and clone (default: octocat/Hello-World)" },
     run: { value: true, help: "the run's name (default: <MMDD-HHMM>-<4 hex>)" },
     "signed-out": { value: false, help: "no CLI connection seeded: the editor starts signed out" },
+    "cli-only": {
+      value: false,
+      help: "the CLI is signed in but the editor has not used it: the welcome offers Use it",
+    },
     "no-ssh-setup": { value: false, help: "leave workspace SSH and Remote-SSH's platform unset" },
     "no-remote-ssh": {
       value: false,
