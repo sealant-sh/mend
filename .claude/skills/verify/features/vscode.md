@@ -208,8 +208,12 @@ the row takes the job's name.
   agree. Runs `nsr1` and `nsr2` (flow 3 rebased onto #1088's round 2, server
   `0.0.0-dev.shae93b27a70513`, each from a fresh `up`) passed all 29 steps. Runs `nsq1` and `nsq2`
   (#1092's round 2, server `0.0.0-dev.sha7a79816ce884`, each from a fresh `up`) passed all 37 steps;
-  `recipes/vscode-open.mjs` then passed its 53 on `nsq1`'s world. The lanes, in an order where each
-  leaves the next a usable world:
+  `recipes/vscode-open.mjs` then passed its 53 on `nsq1`'s world. Runs `ns3r1` and `ns3r2` (#1092
+  rebased onto #1088's round 3, server `0.0.0-dev.shad6ba271e66a9`, each from a fresh `up`) passed
+  all 37 steps. In the server's log the created session's first read of its own began about 480 ms
+  after the create answered: the stream's project read came first, about 230 ms after, and the
+  session read waited the 250 ms batch gap behind it. The row itself shows when the create answers.
+  The lanes, in an order where each leaves the next a usable world:
   - a1. `palette("Mend: New session")`: one quick input, `quickInput.step()` reads the title
     `New session · <project>` with no counter, placeholder `What should claude do?`, and one row
     whose description is the dim line `claude · default model · from <base>` and whose buttons read
@@ -524,7 +528,8 @@ the row takes the job's name.
   server with G4 (`--build`, or `--image` of one built from a checkout that has #1082). Runs `nsv2`
   (#1088 at `74e70040c`) and `nsr4` (flow 3 rebased onto it) passed all 28 steps; in both, S9's
   watch caught one toast `Signed out — sign in again.` with [Connect to server], and no second in 30
-  s.
+  s. Run `ns3r3` (#1092 rebased onto #1088's round 3, server `0.0.0-dev.shad6ba271e66a9`) passed all
+  29 steps, then `recipes/vscode-open.mjs` passed its 53 in the same world.
   - Setup over the API: three claude terminal agents; `migrate-orders` waits (the G4 stand-in fires
     `PermissionRequest` in a shell beside it, with the agent's `--session-id`), `docs-typos` is told
     `/exit` (`completed`, `exited with code 0`), `flaky-auth-test` gets SIGTERM (`failed`,
