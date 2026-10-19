@@ -424,7 +424,15 @@ session.
   exits. VS Code then attaches the agent's terminal in your panel, as **Answer** does, and pastes
   the review into its input without pressing Enter. The threads read
   `follow-up pending · in claude's terminal`; press Enter in claude to send it.
-- A stopped session starts on the review as its prompt.
+- Once that agent exits, a review Mend still holds `pending` offers **Retry delivery**, in its
+  threads and the section's title: the same key starts the stopped session on the review. Comments a
+  held review carries also go out with your next **Send review**, and Mend then replaces the held
+  one.
+- **Send to session** sends the comments the editor lists. If your comments changed after it opened,
+  nothing is sent and your text stays in the editor; open **Send review** again to compose the
+  review anew.
+- A stopped session starts on the review as its prompt. The threads read `sent` once Mend reads each
+  comment back as sent to the session.
 - When delivery fails, the threads read `delivery failed · retryable`, one notification says why,
   and **Retry delivery** sends the same key and text again.
 - When the agent's next round moves the worktree on, the slice stays pinned and the section adds

@@ -24,9 +24,10 @@ patch number is the extension's own.
   for you to edit; **Send to session** records the follow-up under one idempotency key. A terminal
   agent's follow-up waits `pending` in Mend, so VS Code attaches its terminal and pastes the review
   there without Enter (`follow-up pending · in claude's terminal`). A failed delivery reads
-  `delivery failed · retryable` with **Retry delivery** on the same key. When the worktree moves on
-  the slice stays pinned and the section says so; you mark each sent comment **Addressed** or
-  **Reopen**. Offline, **Send review** is disabled and your comments stay.
+  `delivery failed · retryable` with **Retry delivery** on the same key, and a review Mend holds
+  `pending` offers **Retry delivery** once the agent exits. When the worktree moves on the slice
+  stays pinned and the section says so; you mark each sent comment **Addressed** or **Reopen**.
+  Offline, **Send review** is disabled and your comments stay.
 - The Mend view is **Sessions**: **Needs you**, **Since you last looked**, **Running**, then
   **Projects**, collapsed. Each row reads `<word> · <fact>` as Mend observed it, such as
   `waiting · claude needs your permission to use Bash · since 02:14` or
