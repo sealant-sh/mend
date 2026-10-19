@@ -170,10 +170,6 @@
         "enablement": "!mend.offline"
       },
       {
-        "command": "mend.newManualWorktree",
-        "title": "Mend: New worktree without an agent…"
-      },
-      {
         "command": "mend.showQuickPick",
         "title": "Mend: Show project sessions"
       },
@@ -224,11 +220,6 @@
           "command": "mend.newSession",
           "when": "view == mend.sessions && viewItem == mend.project",
           "group": "navigation@1"
-        },
-        {
-          "command": "mend.newManualWorktree",
-          "when": "view == mend.sessions && viewItem == mend.project",
-          "group": "navigation@2"
         },
         {
           "command": "mend.open",
