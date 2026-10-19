@@ -102,6 +102,7 @@ export default async (h) => {
     page,
     sleep,
     viewRows,
+    statusBarItems,
   } = h;
   const project = state.project;
   const stoppedName = "fresh worktree";
@@ -145,7 +146,7 @@ export default async (h) => {
     await mendView();
     await treeItem(project.name).waitFor();
     await shot("mend-view");
-    return `row "${await treeItem(project.name).text()}" · status bar "${await statusBar(/^Mend/).text()}" · opens ${await opens()} · windows ${(await windows()).length}`;
+    return `row "${await treeItem(project.name).text()}" · status bar "${(await statusBarItems()).filter((text) => text.includes("Mend")).join(" | ")}" · opens ${await opens()} · windows ${(await windows()).length}`;
   });
 
   const listedBefore = await api(`/projects/${project.id}`);
@@ -1110,7 +1111,7 @@ export default async (h) => {
     async () => {
       await useWindow(await homeWindow());
       const before = await openCounts();
-      const itemText = await statusBar(/^Mend/).text();
+      const itemText = (await statusBarItems()).filter((text) => text.includes("Mend")).join(" | ");
       await palette("Mend: Choose a session");
       await quickInput.waitFor();
       const title = await quickInput.title();
