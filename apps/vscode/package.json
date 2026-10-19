@@ -80,7 +80,8 @@
         },
         {
           "id": "mend.change",
-          "name": "Change"
+          "name": "Change",
+          "when": "mend.welcome == none"
         }
       ]
     },

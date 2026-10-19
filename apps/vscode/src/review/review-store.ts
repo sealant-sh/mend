@@ -79,6 +79,13 @@ export class ReviewStore implements vscode.Disposable {
     void this.#read();
   }
 
+  /** First run took the view back (a sign-out, a refused token): the section follows nothing. */
+  forget(): void {
+    if (this.#state.kind === "idle") return;
+    this.#generation++;
+    this.#set({ kind: "idle" });
+  }
+
   /** A frame of the event stream: one about the followed change reads it again. */
   heard(event: EventPointer): void {
     const followed = this.followed();

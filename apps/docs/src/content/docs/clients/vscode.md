@@ -355,7 +355,8 @@ the fully supported path.
 
 Review happens in VS Code. Select a session's row and the **Change** section under the Sessions view
 shows its change; in a session's workspace window it shows that session's change with nothing
-selected. A stopped session reviews the same way: no live workspace is needed.
+selected. A stopped session reviews the same way: no live workspace is needed. While first run shows
+a step (Connect, Set up, Adopt), the Change section is hidden, and signing out clears it.
 
 - The header reads the slice and what Mend observed of it, for example
   `main → now · 4 files · +120 −18 · observed · 40 s ago`. Mend pins the slice when you first select

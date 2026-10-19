@@ -674,6 +674,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     const offer = mode.kind === "welcome" ? offerOf(mode.welcome) : null;
     viewTree.show(offer);
     tree.changed(mode.kind === "tree" ? store.model() : null);
+    if (mode.kind !== "tree") review.forget();
     view.message = offer?.message ?? (mode.kind === "tree" ? (store.model()?.message ?? "") : "");
   };
   let reading: string | null = null;
@@ -739,7 +740,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     store.onDidHearEvent((event) => review.heard(event)),
     // A workspace window's Change section is its own session's, selected or not (rule 10).
     store.onDidChange(({ next }) => {
-      if (next.kind === "workspace" && next.session !== null)
+      if (firstRun.mode().kind === "tree" && next.kind === "workspace" && next.session !== null)
         review.follow(next.session.project, next.session.session);
     }),
     vscode.commands.registerCommand("mend.refresh", () => store.refresh()),

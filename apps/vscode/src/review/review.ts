@@ -15,6 +15,8 @@ export interface Review extends vscode.Disposable {
   /** `Mend: Review change`: follow the session and bring the Change section on screen. */
   show(project: Project, session: Session): Promise<void>;
   heard(event: EventPointer): void;
+  /** First run holds the view: drop what the section shows. */
+  forget(): void;
 }
 
 export const startReview = (deps: {
@@ -40,6 +42,7 @@ export const startReview = (deps: {
       await view.reveal();
     },
     heard: (event) => store.heard(event),
+    forget: () => store.forget(),
     dispose: () => {
       content.dispose();
       view.dispose();

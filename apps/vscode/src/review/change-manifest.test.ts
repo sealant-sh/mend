@@ -44,6 +44,16 @@ describe("the Change section (story d)", () => {
     expect(ids).toEqual(["mend.sessions", "mend.change"]);
   });
 
+  it("is hidden while a first-run welcome holds the Mend view", () => {
+    const views = contributed("views");
+    const mend: unknown =
+      typeof views === "object" && views !== null ? Reflect.get(views, "mend") : [];
+    const change = Array.isArray(mend)
+      ? mend.find((view: unknown) => Reflect.get(Object(view), "id") === "mend.change")
+      : undefined;
+    expect(Reflect.get(Object(change), "when")).toBe("mend.welcome == none");
+  });
+
   it("offers Open all changes as a title button", () => {
     expect(onChangeTitle("mend.change.openAll")).toEqual(["navigation@2"]);
   });
