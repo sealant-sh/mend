@@ -176,7 +176,7 @@ export class WorkspaceWindow implements vscode.Disposable {
       await this.client.handoff(session.id, "pty");
     } catch (cause) {
       if (cause instanceof MendApiError && cause.status === 422) {
-        tab.say(handoffRefusedLine(harness));
+        tab.say(handoffRefusedLine(harness, { tag: cause.tag, words: cause.message }));
         return;
       }
       this.onError(cause);

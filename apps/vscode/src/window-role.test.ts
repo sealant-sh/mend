@@ -128,9 +128,18 @@ describe("agentTab", () => {
 });
 
 describe("handoffRefusedLine", () => {
-  it("says the harness cannot continue in a terminal", () => {
-    expect(handoffRefusedLine("opencode")).toBe(
-      "opencode can't continue in a terminal yet · open the terminal to watch",
-    );
+  it("says the harness cannot continue in a terminal when the server says HandoffUnsupported", () => {
+    expect(
+      handoffRefusedLine("opencode", {
+        tag: "HandoffUnsupported",
+        words: "This session's agent cannot hand off to that one.",
+      }),
+    ).toBe("opencode can't continue in a terminal yet · open the terminal to watch");
+  });
+
+  it("says the server's own sentence for any other refusal, never that claude cannot continue", () => {
+    const words = "No saved harness state to reopen as a terminal — resume the session instead.";
+    expect(handoffRefusedLine("claude", { tag: "StoreFailure", words })).toBe(words);
+    expect(handoffRefusedLine("claude", { tag: null, words })).toBe(words);
   });
 });

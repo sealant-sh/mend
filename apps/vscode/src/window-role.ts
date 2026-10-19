@@ -97,6 +97,15 @@ export const agentTab = (
     : { kind: "pty", processId: shell.id, name: terminalTabName(session, shell) };
 };
 
-/** What a conversation's tab says when Mend's mode handoff refuses its harness. */
-export const handoffRefusedLine = (harness: string): string =>
-  `${harness} can't continue in a terminal yet · open the terminal to watch`;
+/**
+ * What a conversation's tab says when Mend's mode handoff says no. Only `HandoffUnsupported` means
+ * the harness cannot continue in a terminal; any other refusal (a conversation with no saved turn
+ * yet answers 422 too) is the server's own sentence.
+ */
+export const handoffRefusedLine = (
+  harness: string,
+  refusal: { readonly tag: string | null; readonly words: string },
+): string =>
+  refusal.tag === "HandoffUnsupported"
+    ? `${harness} can't continue in a terminal yet · open the terminal to watch`
+    : refusal.words;

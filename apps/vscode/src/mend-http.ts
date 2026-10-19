@@ -16,6 +16,8 @@ export class MendApiError extends Error {
   constructor(
     message: string,
     readonly status: number | null,
+    /** The refusal's `_tag`, for code that branches on what the server said. */
+    readonly tag: string | null = null,
   ) {
     super(message);
     this.name = "MendApiError";
@@ -77,7 +79,8 @@ export const requestMend = async (
   }
   if (!response.ok) {
     console.warn(failureLogLine(`${method} /api${requestPath}`, response.status, body));
-    throw new MendApiError(failureWords(response.status, body).words, response.status);
+    const failure = failureWords(response.status, body);
+    throw new MendApiError(failure.words, response.status, failure.tag);
   }
   return body;
 };
