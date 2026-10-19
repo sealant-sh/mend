@@ -47,8 +47,10 @@ _Dana is fixing a bug in `newsroom-api` and wants an agent to add rate limiting 
 3. **She keeps working.** She goes back to her bug in her own files. The status bar item reads
    `Mend · 1 running`.
 4. **It finishes.** An hour later the agent completes a turn.
-   - The row reads `completed · observed · 4 files`.
-   - A toast appears only if her window is focused and she is not already looking at that session:
+   - The row reads `idle · claude finished its turn`. A finished turn asks nothing of her: no
+     **Needs you**, no badge, no toast (decided 2026-10-19).
+   - When the session ends, the row reads `completed · observed · 4 files`, and a toast appears only
+     if her window is focused and she is not already looking at that session:
      `add-rate-limit finished · 4 files changed` with [Review] [Open].
 
 **Edge cases**
@@ -485,16 +487,16 @@ Exists today:
 
 Gaps, numbered as in `vscode-extension-redesign.md`:
 
-| Gap       | What the story needs                                                                                                                      | Story              | Without it                                                                                                                                  |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| G1        | Edit or delete a sent comment                                                                                                             | d                  | Pending comments are edited before **Send**; after that, Dismiss and write a new one                                                        |
-| G4        | A terminal agent reports that it waits, and why (harness `Notification` / `notify` hooks posting to Mend, so the session reads `waiting`) | b, f               | Built 2026-10-19: claude's and codex's hooks run `mend hook`, and the session reads `waiting · <what it waits for>`                         |
-| G6        | Hand off a branch with a git bundle plus uncommitted files                                                                                | g                  | Story g can't ship                                                                                                                          |
-| G8        | VS Code extensions and machine settings in workspaces                                                                                     | (separate feature) | —                                                                                                                                           |
-| G9        | Open the record at a sequence                                                                                                             | d                  | The comment's excerpt shows inline; **Show record** opens the full transcript, not the exact line                                           |
-| G10 (new) | Open a review slice between any two checkpoints (today `reviews/open` is always base → now)                                               | d                  | "Since my last review", "last turn" and "between two checkpoints" can be viewed but not commented on                                        |
-| G11 (new) | Mend's proposed checks as data (a command to run, with its observed result)                                                               | d                  | Drafts carry evidence links but no runnable check                                                                                           |
-| G12 (new) | Deliver a review follow-up into a live terminal agent (typed as the owner, recorded as delivered)                                         | d                  | The follow-up waits `pending` until the agent exits; the extension pastes the instruction into the attached terminal for her to press Enter |
+| Gap       | What the story needs                                                                                                                      | Story              | Without it                                                                                                                                                                   |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G1        | Edit or delete a sent comment                                                                                                             | d                  | Pending comments are edited before **Send**; after that, Dismiss and write a new one                                                                                         |
+| G4        | A terminal agent reports that it waits, and why (harness `Notification` / `notify` hooks posting to Mend, so the session reads `waiting`) | b, f               | Built 2026-10-19: claude's and codex's hooks run `mend hook`, and the session reads `waiting · <what it waits for>`; a finished turn reads `idle · claude finished its turn` |
+| G6        | Hand off a branch with a git bundle plus uncommitted files                                                                                | g                  | Story g can't ship                                                                                                                                                           |
+| G8        | VS Code extensions and machine settings in workspaces                                                                                     | (separate feature) | —                                                                                                                                                                            |
+| G9        | Open the record at a sequence                                                                                                             | d                  | The comment's excerpt shows inline; **Show record** opens the full transcript, not the exact line                                                                            |
+| G10 (new) | Open a review slice between any two checkpoints (today `reviews/open` is always base → now)                                               | d                  | "Since my last review", "last turn" and "between two checkpoints" can be viewed but not commented on                                                                         |
+| G11 (new) | Mend's proposed checks as data (a command to run, with its observed result)                                                               | d                  | Drafts carry evidence links but no runnable check                                                                                                                            |
+| G12 (new) | Deliver a review follow-up into a live terminal agent (typed as the owner, recorded as delivered)                                         | d                  | The follow-up waits `pending` until the agent exits; the extension pastes the instruction into the attached terminal for her to press Enter                                  |
 
 G5 (a server takeover verb) is no longer needed: the mode handoff covers story e.
 

@@ -34,7 +34,9 @@ once per 60 s per session; the Slack status line moves between non-settled state
   its `since`.
 - `wait-question`: claude's `Notification` of type `elicitation_dialog` sets a question wait.
 - `wait-prompt`: `Stop` (and claude's `idle_prompt`) sets a prompt wait: the agent finished its
-  turn.
+  turn. It asks the person nothing, so the session reads `idle · claude finished its turn`, not
+  `waiting`: no Needs you, no badge, no push. The agent stays live; the `idle` of an ended agent
+  beside a shell has no live agent and no wait.
 - `wait-clears`: `PostToolUse` and `UserPromptSubmit` clear the wait. A key the person types in the
   agent's terminal clears a `permission` or `question` wait that opened before the key (an answer
   within 2 s of an earlier clear lands at the end of that window, never dropped, and never clears a
@@ -47,9 +49,10 @@ once per 60 s per session; the Slack status line moves between non-settled state
 
 ## How to get to it (user POV)
 
-- Every surface that shows `Needs you`, a badge or a push keys on the session's status `waiting`:
-  web (the Now page), mobile, the VS Code tree, the CLI dashboard, the push notifier. A terminal
-  agent's wait reaches all of them with no client change.
+- Every surface that shows `Needs you`, a badge or a push keys on the session's status `waiting` (a
+  permission or a question; a finished turn reads `idle`): web (the Now page), mobile, the VS Code
+  tree, the CLI dashboard, the push notifier. A terminal agent's wait reaches all of them with no
+  client change.
 - The reason is `currentAgent.waiting` (`{ kind, tool, since }`) on `GET /api/sessions/<id>` and on
   the list views that carry `currentAgent`; `/api/events` sends `session-process` and `session`
   pointer frames when it changes. The words (`waiting · claude needs your permission to use Bash`)
@@ -98,8 +101,8 @@ every state must be read within it. Each step is one line of `steps.jsonl` with 
   `Notification:permission_prompt`, `PostToolUse`, `Stop`, `UserPromptSubmit`, `PermissionRequest`,
   each through the real helper. After each: every hook exited 0 and printed nothing; the session
   reads, in order, `running`, `waiting · permission · Bash`, the same wait with the same `since`,
-  `running` with `waiting` null, `waiting · prompt`, `running`, `waiting · permission · Bash`; and
-  for each change `/api/events` sent a `session-process` and a `session` frame for the session.
+  `running` with `waiting` null, `idle · prompt`, `running`, `waiting · permission · Bash`; and for
+  each change `/api/events` sent a `session-process` and a `session` frame for the session.
 - **Another process.** A `PermissionRequest` under a fresh random session id, from the shell: the
   hook exits 0 silently, 6 s of reads keep `waiting · permission · Bash` with the same `since`, and
   `/api/events` sends no `session-process` frame.

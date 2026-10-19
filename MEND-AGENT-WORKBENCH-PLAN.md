@@ -1368,6 +1368,14 @@ understand the work.
 
 ### Decided
 
+- **2026-10-19: a finished terminal turn is idle, not Needs you.** A terminal agent that finished
+  its turn (`Stop`, claude's `idle_prompt`) keeps its `prompt` wait on the process row, and the
+  session reads `idle · claude finished its turn` while the agent stays live. It asks nothing of the
+  person, so it gets no Needs you, no badge and no push. Only a permission or a question reads
+  `waiting`. The other `idle`, an ended agent beside a shell or Services, has no live agent and no
+  wait. A session that ends still rings "finished". This replaces the G4 entry's `waiting` for a
+  finished turn below.
+
 - **2026-10-19: a terminal agent's own hooks say that it waits, and why (G4).** A session also reads
   `waiting` while its live terminal agent (`agent-pty`) has reported a wait. Claude's `--settings`
   hooks and Codex's `[hooks]` in `/etc/codex/config.toml` run `mend hook <harness>`, which sends the
