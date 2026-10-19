@@ -36,9 +36,7 @@ export type HandoffMachine = typeof HandoffMachine.Type;
 export const HandoffBranch = Schema.String.pipe(
   Schema.check(
     Schema.makeFilter((value: string) =>
-      isTrailerValue(value)
-        ? undefined
-        : "a branch name of printable characters",
+      isTrailerValue(value) ? undefined : "a branch name of printable characters",
     ),
   ),
   Schema.brand("HandoffBranch"),
@@ -96,11 +94,7 @@ export const formatHandoffMessage = (trailers: HandoffTrailers): string =>
 
 /** Why a commit message is not a handoff's: the reason, and the words naming what was found. */
 export interface HandoffMessageFault {
-  readonly reason:
-    | "not-a-handoff"
-    | "garbled-trailer"
-    | "duplicate-trailer"
-    | "missing-trailer";
+  readonly reason: "not-a-handoff" | "garbled-trailer" | "duplicate-trailer" | "missing-trailer";
   readonly detail: string;
 }
 
@@ -144,41 +138,21 @@ export const parseHandoffMessage = (
     const separator = line.indexOf(": ");
     const key = line.slice(0, separator);
     if (separator === -1 || !knownKeys.has(key)) {
-      return fault(
-        "garbled-trailer",
-        `${JSON.stringify(line)} is not a Mend trailer`,
-      );
+      return fault("garbled-trailer", `${JSON.stringify(line)} is not a Mend trailer`);
     }
-    if (found.has(key))
-      return fault("duplicate-trailer", `${key} appears more than once`);
+    if (found.has(key)) return fault("duplicate-trailer", `${key} appears more than once`);
     found.set(key, line.slice(separator + 2));
   }
   const branch = found.get(TRAILER_KEYS.localBranch);
   return Result.all({
-    machine: decodeTrailer(
-      HandoffMachine,
-      TRAILER_KEYS.machine,
-      found.get(TRAILER_KEYS.machine),
-    ),
+    machine: decodeTrailer(HandoffMachine, TRAILER_KEYS.machine, found.get(TRAILER_KEYS.machine)),
     localBranch:
       branch === undefined
         ? Result.succeed(null)
         : decodeTrailer(HandoffBranch, TRAILER_KEYS.localBranch, branch),
-    cutAt: decodeTrailer(
-      HandoffCutAt,
-      TRAILER_KEYS.cutAt,
-      found.get(TRAILER_KEYS.cutAt),
-    ),
-    defaultTip: decodeTrailer(
-      HexSha,
-      TRAILER_KEYS.defaultTip,
-      found.get(TRAILER_KEYS.defaultTip),
-    ),
-    mergeBase: decodeTrailer(
-      HexSha,
-      TRAILER_KEYS.mergeBase,
-      found.get(TRAILER_KEYS.mergeBase),
-    ),
+    cutAt: decodeTrailer(HandoffCutAt, TRAILER_KEYS.cutAt, found.get(TRAILER_KEYS.cutAt)),
+    defaultTip: decodeTrailer(HexSha, TRAILER_KEYS.defaultTip, found.get(TRAILER_KEYS.defaultTip)),
+    mergeBase: decodeTrailer(HexSha, TRAILER_KEYS.mergeBase, found.get(TRAILER_KEYS.mergeBase)),
   });
 };
 
@@ -214,9 +188,7 @@ const WORKTREE_NAME_MAX = 64;
 /** git check-ref-format refuses a ref component ending in `.lock`. */
 const tidyName = (name: string, max: number): string => {
   const trimmed = name.slice(0, max).replace(/[^a-z0-9]+$/u, "");
-  return trimmed.endsWith(".lock")
-    ? `${trimmed.slice(0, -".lock".length)}-lock`
-    : trimmed;
+  return trimmed.endsWith(".lock") ? `${trimmed.slice(0, -".lock".length)}-lock` : trimmed;
 };
 
 const slugOf = (branch: string): string =>

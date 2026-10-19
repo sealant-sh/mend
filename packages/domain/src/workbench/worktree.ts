@@ -54,9 +54,7 @@ export class Worktree extends Schema.Class<Worktree>("Worktree")({
    * cut time and the snapshot its capture 0 was laid down from. Null for a worktree that
    * started from a base, and for one a server from before handoffs lists.
    */
-  handoff: Schema.NullOr(WorktreeHandoff).pipe(
-    Schema.withDecodingDefaultKey(Effect.succeed(null)),
-  ),
+  handoff: Schema.NullOr(WorktreeHandoff).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}

@@ -43,9 +43,7 @@ export const HandoffBundleBytes = Schema.Uint8Array.pipe(
   HttpApiSchema.asUint8Array({ contentType: GIT_BUNDLE_CONTENT_TYPE }),
 );
 
-export class HandoffReceived extends Schema.Class<HandoffReceived>(
-  "HandoffReceived",
-)({
+export class HandoffReceived extends Schema.Class<HandoffReceived>("HandoffReceived")({
   session: Session,
   worktree: Worktree,
   commitsAhead: Schema.Int,

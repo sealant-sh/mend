@@ -30,8 +30,7 @@ const trailers = (localBranch: string | null): HandoffTrailers => ({
   mergeBase: HexSha.make(BASE),
 });
 
-const message = (...lines: ReadonlyArray<string>) =>
-  `mend handoff\n\n${lines.join("\n")}\n`;
+const message = (...lines: ReadonlyArray<string>) => `mend handoff\n\n${lines.join("\n")}\n`;
 
 const faultOf = (text: string) => {
   const parsed = parseHandoffMessage(text);
@@ -59,14 +58,8 @@ describe("handoff message", () => {
   });
 
   it("round-trips attached and detached trailers", () => {
-    for (const value of [
-      trailers("fix/login"),
-      trailers(null),
-      trailers("Ünïcode/brånch"),
-    ]) {
-      expect(parseHandoffMessage(formatHandoffMessage(value))).toEqual(
-        Result.succeed(value),
-      );
+    for (const value of [trailers("fix/login"), trailers(null), trailers("Ünïcode/brånch")]) {
+      expect(parseHandoffMessage(formatHandoffMessage(value))).toEqual(Result.succeed(value));
     }
   });
 
@@ -93,9 +86,7 @@ describe("handoff message", () => {
             defaultTip: HexSha.make(tip),
             mergeBase: HexSha.make(base),
           };
-          expect(parseHandoffMessage(formatHandoffMessage(value))).toEqual(
-            Result.succeed(value),
-          );
+          expect(parseHandoffMessage(formatHandoffMessage(value))).toEqual(Result.succeed(value));
         },
       ),
     );
@@ -144,22 +135,13 @@ describe("handoff message", () => {
   });
 
   it("refuses a missing required trailer", () => {
+    expect(faultOf(message("Mend-Machine: a", "Mend-Cut-At: 2026-10-18T07:42:05.000Z"))).toBe(
+      "missing-trailer",
+    );
     expect(
-      faultOf(
-        message("Mend-Machine: a", "Mend-Cut-At: 2026-10-18T07:42:05.000Z"),
-      ),
+      faultOf(message("Mend-Cut-At: 2026-10-18T07:42:05.000Z", `Mend-Default-Tip: ${TIP}`)),
     ).toBe("missing-trailer");
-    expect(
-      faultOf(
-        message(
-          "Mend-Cut-At: 2026-10-18T07:42:05.000Z",
-          `Mend-Default-Tip: ${TIP}`,
-        ),
-      ),
-    ).toBe("missing-trailer");
-    expect(
-      faultOf(message("Mend-Machine: a", `Mend-Default-Tip: ${TIP}`)),
-    ).toBe("missing-trailer");
+    expect(faultOf(message("Mend-Machine: a", `Mend-Default-Tip: ${TIP}`))).toBe("missing-trailer");
     expect(
       faultOf(
         message(
@@ -179,70 +161,21 @@ describe("handoff message", () => {
       base: `Mend-Merge-Base: ${BASE}`,
     };
     const garbled = [
-      message(
-        valid.machine,
-        valid.cutAt,
-        valid.tip,
-        valid.base,
-        "Signed-off-by: someone",
-      ),
-      message(
-        valid.machine,
-        valid.cutAt,
-        valid.tip,
-        valid.base,
-        "Mend-Branch:fix",
-      ),
+      message(valid.machine, valid.cutAt, valid.tip, valid.base, "Signed-off-by: someone"),
+      message(valid.machine, valid.cutAt, valid.tip, valid.base, "Mend-Branch:fix"),
       message(valid.machine, valid.cutAt, valid.tip, valid.base, ""),
-      message(
-        valid.machine,
-        valid.cutAt,
-        "Mend-Default-Tip: 3E73DA3",
-        valid.base,
-      ),
-      message(
-        valid.machine,
-        valid.cutAt,
-        `Mend-Default-Tip: ${TIP.toUpperCase()}`,
-        valid.base,
-      ),
-      message(
-        valid.machine,
-        valid.cutAt,
-        valid.tip,
-        "Mend-Merge-Base: 1a2b3c4",
-      ),
-      message(
-        valid.machine,
-        "Mend-Cut-At: 2026-10-18T07:42:05Z",
-        valid.tip,
-        valid.base,
-      ),
-      message(
-        valid.machine,
-        "Mend-Cut-At: 2026-10-18T10:42:05+03:00",
-        valid.tip,
-        valid.base,
-      ),
+      message(valid.machine, valid.cutAt, "Mend-Default-Tip: 3E73DA3", valid.base),
+      message(valid.machine, valid.cutAt, `Mend-Default-Tip: ${TIP.toUpperCase()}`, valid.base),
+      message(valid.machine, valid.cutAt, valid.tip, "Mend-Merge-Base: 1a2b3c4"),
+      message(valid.machine, "Mend-Cut-At: 2026-10-18T07:42:05Z", valid.tip, valid.base),
+      message(valid.machine, "Mend-Cut-At: 2026-10-18T10:42:05+03:00", valid.tip, valid.base),
       message(valid.machine, "Mend-Cut-At: yesterday", valid.tip, valid.base),
-      message(
-        `Mend-Machine: ${"m".repeat(65)}`,
-        valid.cutAt,
-        valid.tip,
-        valid.base,
-      ),
+      message(`Mend-Machine: ${"m".repeat(65)}`, valid.cutAt, valid.tip, valid.base),
       message("Mend-Machine:  padded", valid.cutAt, valid.tip, valid.base),
       message("Mend-Machine: tab\there", valid.cutAt, valid.tip, valid.base),
-      message(
-        valid.machine,
-        "Mend-Branch: fix\r",
-        valid.cutAt,
-        valid.tip,
-        valid.base,
-      ),
+      message(valid.machine, "Mend-Branch: fix\r", valid.cutAt, valid.tip, valid.base),
     ];
-    for (const text of garbled)
-      expect(faultOf(text), text).toBe("garbled-trailer");
+    for (const text of garbled) expect(faultOf(text), text).toBe("garbled-trailer");
   });
 
   it("admits a 64-character machine name and refuses an empty one", () => {
@@ -271,16 +204,13 @@ describe("WorktreeHandoff", () => {
     const decoded = Schema.decodeUnknownSync(WorktreeHandoff)(row);
     expect(Schema.encodeSync(WorktreeHandoff)(decoded)).toEqual(row);
     expect(
-      Schema.decodeUnknownSync(WorktreeHandoff)({ ...row, localBranch: null })
-        .localBranch,
+      Schema.decodeUnknownSync(WorktreeHandoff)({ ...row, localBranch: null }).localBranch,
     ).toBe(null);
   });
 
   it("refuses a short sha and an empty pack key", () => {
     expect(Schema.is(WorktreeHandoff)({ ...row, head: "abc1234" })).toBe(false);
-    expect(
-      Schema.is(WorktreeHandoff)({ ...row, worktreeTree: "abc1234" }),
-    ).toBe(false);
+    expect(Schema.is(WorktreeHandoff)({ ...row, worktreeTree: "abc1234" })).toBe(false);
     expect(Schema.is(WorktreeHandoff)({ ...row, deltaPack: "" })).toBe(false);
   });
 
@@ -297,12 +227,10 @@ describe("WorktreeHandoff", () => {
       updatedAt: "2026-10-18T07:42:05.000Z",
     };
     expect(Schema.decodeUnknownSync(Worktree)(listed).handoff).toBe(null);
-    expect(
-      Schema.decodeUnknownSync(Worktree)({ ...listed, handoff: null }).handoff,
-    ).toBe(null);
-    expect(
-      Schema.decodeUnknownSync(Worktree)({ ...listed, handoff: row }).handoff,
-    ).toEqual(Schema.decodeUnknownSync(WorktreeHandoff)(row));
+    expect(Schema.decodeUnknownSync(Worktree)({ ...listed, handoff: null }).handoff).toBe(null);
+    expect(Schema.decodeUnknownSync(Worktree)({ ...listed, handoff: row }).handoff).toEqual(
+      Schema.decodeUnknownSync(WorktreeHandoff)(row),
+    );
   });
 });
 
@@ -317,13 +245,9 @@ const isGitComponent = (name: string) =>
 describe("handoffWorktreeName", () => {
   it("slugs the branch", () => {
     expect(handoffWorktreeName("fix/login", HEAD, none)).toBe("fix-login");
-    expect(handoffWorktreeName("Feature/Big_Thing", HEAD, none)).toBe(
-      "feature-big_thing",
-    );
+    expect(handoffWorktreeName("Feature/Big_Thing", HEAD, none)).toBe("feature-big_thing");
     expect(handoffWorktreeName("a//b  c", HEAD, none)).toBe("a-b-c");
-    expect(handoffWorktreeName("-_.release/1.2", HEAD, none)).toBe(
-      "release-1.2",
-    );
+    expect(handoffWorktreeName("-_.release/1.2", HEAD, none)).toBe("release-1.2");
     expect(handoffWorktreeName("wip..again", HEAD, none)).toBe("wip.again");
     expect(handoffWorktreeName("topic/", HEAD, none)).toBe("topic");
     expect(handoffWorktreeName("topic.", HEAD, none)).toBe("topic");
@@ -341,23 +265,17 @@ describe("handoffWorktreeName", () => {
   it("cuts a long branch to 64 characters", () => {
     const name = handoffWorktreeName(`${"x".repeat(63)}.lock`, HEAD, none);
     expect(name).toBe("x".repeat(63));
-    expect(handoffWorktreeName("y".repeat(100), HEAD, none)).toBe(
-      "y".repeat(64),
-    );
+    expect(handoffWorktreeName("y".repeat(100), HEAD, none)).toBe("y".repeat(64));
   });
 
   it("counts up past taken names and stays within 64 characters", () => {
     const taken = new Set(["fix-login", "fix-login-2"]);
-    expect(
-      handoffWorktreeName("fix/login", HEAD, (name) => taken.has(name)),
-    ).toBe("fix-login-3");
-    expect(
-      handoffWorktreeName(null, HEAD, (name) => name === "handoff-9c1e2f3"),
-    ).toBe("handoff-9c1e2f3-2");
-    const long = "z".repeat(64);
-    expect(handoffWorktreeName(long, HEAD, (name) => name === long)).toBe(
-      `${"z".repeat(62)}-2`,
+    expect(handoffWorktreeName("fix/login", HEAD, (name) => taken.has(name))).toBe("fix-login-3");
+    expect(handoffWorktreeName(null, HEAD, (name) => name === "handoff-9c1e2f3")).toBe(
+      "handoff-9c1e2f3-2",
     );
+    const long = "z".repeat(64);
+    expect(handoffWorktreeName(long, HEAD, (name) => name === long)).toBe(`${"z".repeat(62)}-2`);
     const dotted = `${"z".repeat(61)}.ab`;
     expect(handoffWorktreeName(dotted, HEAD, (name) => name === dotted)).toBe(
       `${"z".repeat(61)}-2`,
@@ -377,9 +295,7 @@ describe("handoffWorktreeName", () => {
           let current = first;
           for (let i = 0; i < preTaken; i++) {
             taken.add(current);
-            current = handoffWorktreeName(branch, Sha.make(head), (name) =>
-              taken.has(name),
-            );
+            current = handoffWorktreeName(branch, Sha.make(head), (name) => taken.has(name));
           }
           expect(Schema.is(WorktreeName)(current), current).toBe(true);
           expect(isGitComponent(current), current).toBe(true);
