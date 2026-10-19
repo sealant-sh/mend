@@ -19,6 +19,19 @@ describe("the sliding window limiter", () => {
     expect(limiter.take("a", 1, 60_000)).toBeNull();
   });
 
+  it("admits again once a unit is given back, and gives back only that subject's unit", () => {
+    const limiter = makeWindowLimiter(60_000);
+    expect(limiter.take("a", 2, 0)).toBeNull();
+    expect(limiter.take("a", 2, 1_000)).toBeNull();
+    expect(limiter.take("b", 1, 1_000)).toBeNull();
+    expect(limiter.take("a", 2, 2_000)).not.toBeNull();
+    limiter.release("a", 1_000);
+    expect(limiter.take("b", 1, 2_000)).not.toBeNull();
+    expect(limiter.take("a", 2, 2_000)).toBeNull();
+    // The unit at 0 is still the oldest: it, not the one given back, decides the wait.
+    expect(limiter.take("a", 2, 3_000)).toBe(57);
+  });
+
   it("keeps subjects apart and admits everything at 0", () => {
     const limiter = makeWindowLimiter();
     expect(limiter.take("a", 1, 0)).toBeNull();

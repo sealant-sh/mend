@@ -892,6 +892,19 @@ const HAND_OVER_BACKOFF_MS = 60_000;
  */
 const AGENT_WAIT_CHANGES_PER_MINUTE = 60;
 
+/**
+ * Every report that changes nothing spends from this bound instead. It is read only once a report
+ * is known to change nothing, so it can never refuse a change, and refusing a no-op loses nothing.
+ */
+const AGENT_HOOK_NO_OPS_PER_MINUTE = 600;
+
+/**
+ * A report reads the wait, then moves it only while the row still holds what it read. Each lost
+ * move is another writer's change landing in between, so a report is read again a few times and
+ * then counts as overtaken by those changes.
+ */
+const AGENT_WAIT_MOVE_ATTEMPTS = 3;
+
 /** A failure's own words, for a session line. */
 const causeWords = (cause: Cause.Cause<unknown>): string => {
   const squashed = Cause.squash(cause);
@@ -21701,47 +21714,67 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const restartService = (serviceId: ServiceId) =>
         withServiceLifecycle(restartServiceUnlocked(serviceId));
 
-      const agentHookReports = makeWindowLimiter();
+      const agentWaitChanges = makeWindowLimiter();
+      const agentHookNoOps = makeWindowLimiter();
+      const noOp = (
+        sessionId: SessionId,
+        outcome: "unchanged" | "ignored" | "no-live-agent" | "other-process" | "unidentified",
+      ): AgentHookOutcome => {
+        const retryAfterSeconds = agentHookNoOps.take(
+          sessionId,
+          AGENT_HOOK_NO_OPS_PER_MINUTE,
+          clock.currentTimeMillisUnsafe(),
+        );
+        return retryAfterSeconds === null ? outcome : { _tag: "too-many", retryAfterSeconds };
+      };
       const agentHook = Effect.fn("SessionEngine.agentHook")(function* (
         sessionId: SessionId,
         report: AgentHookReport,
       ): Effect.fn.Return<AgentHookOutcome> {
-        if (report.providerSessionId === null) return "unidentified";
-        const live = liveTerminalAgentsOf(
-          yield* processes.listForSession(sessionId),
-          report.harness,
-        );
-        if (live.length === 0) return "no-live-agent";
-        const target = agentHookTarget(report, live);
-        if (target._tag === "unidentified" || target._tag === "other-process") return target._tag;
-        if (
-          target._tag === "claim" &&
-          !(yield* processes.claimProviderSessionId(
-            target.process.id,
+        if (report.providerSessionId === null) return noOp(sessionId, "unidentified");
+        for (let attempt = 0; attempt < AGENT_WAIT_MOVE_ATTEMPTS; attempt++) {
+          const live = liveTerminalAgentsOf(
+            yield* processes.listForSession(sessionId),
+            report.harness,
+          );
+          if (live.length === 0) return noOp(sessionId, "no-live-agent");
+          const target = agentHookTarget(report, live);
+          if (target._tag === "unidentified" || target._tag === "other-process") {
+            return noOp(sessionId, target._tag);
+          }
+          if (
+            target._tag === "claim" &&
+            !(yield* processes.claimProviderSessionId(
+              target.process.id,
+              sessionId,
+              target.providerSessionId,
+            ))
+          ) {
+            return noOp(sessionId, "other-process");
+          }
+          const agent = target.process;
+          const signal = agentSignalOf(report);
+          if (signal === null) {
+            return target._tag === "claim" ? "ignored" : noOp(sessionId, "ignored");
+          }
+          const now = clock.currentTimeMillisUnsafe();
+          const next = nextAgentWait(agent.waiting, signal, new Date(now));
+          if (next === agent.waiting) return noOp(sessionId, "unchanged");
+          // Spent before the move so concurrent reports cannot all pass the bound, and given
+          // back when the move finds the wait moved or the agent gone.
+          const retryAfterSeconds = agentWaitChanges.take(
             sessionId,
-            target.providerSessionId,
-          ))
-        ) {
-          return "other-process";
+            AGENT_WAIT_CHANGES_PER_MINUTE,
+            now,
+          );
+          if (retryAfterSeconds !== null) return { _tag: "too-many", retryAfterSeconds };
+          if (yield* processes.setWaiting(agent.id, sessionId, agent.waiting, next)) {
+            yield* reconcileSession(sessionId, { sweep: false }).pipe(Effect.orDie);
+            return "applied";
+          }
+          agentWaitChanges.release(sessionId, now);
         }
-        const agent = target.process;
-        const signal = agentSignalOf(report);
-        if (signal === null) return "ignored";
-        const next = nextAgentWait(
-          agent.waiting,
-          signal,
-          new Date(clock.currentTimeMillisUnsafe()),
-        );
-        if (next === agent.waiting) return "unchanged";
-        const retryAfterSeconds = agentHookReports.take(
-          sessionId,
-          AGENT_WAIT_CHANGES_PER_MINUTE,
-          clock.currentTimeMillisUnsafe(),
-        );
-        if (retryAfterSeconds !== null) return { _tag: "too-many", retryAfterSeconds };
-        if (!(yield* processes.setWaiting(agent.id, sessionId, next))) return "no-live-agent";
-        yield* reconcileSession(sessionId, { sweep: false }).pipe(Effect.orDie);
-        return "applied";
+        return "unchanged";
       });
 
       const personTyped = Effect.fn("SessionEngine.personTyped")(function* (
@@ -21756,9 +21789,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ) {
           return false;
         }
-        if (
-          !(yield* processes.clearWaiting(process.id, process.sessionId, process.waiting.since))
-        ) {
+        if (!(yield* processes.setWaiting(process.id, process.sessionId, process.waiting, null))) {
           return false;
         }
         yield* reconcileSession(process.sessionId, { sweep: false }).pipe(Effect.orDie);

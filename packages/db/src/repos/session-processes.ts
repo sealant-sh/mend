@@ -113,23 +113,17 @@ export class SessionProcessesRepo extends Context.Service<
       sealantRunId: SealantRunId | null,
     ) => Effect.Effect<void>;
     /**
-     * Set or clear the wait on a LIVE agent-pty row of `sessionId`; true when a row changed. The
-     * ended-row guard is what keeps a report that arrives after the exit from bringing a wait back.
+     * Move the wait on a LIVE agent-pty row of `sessionId` from `from` to `to`, only while the row
+     * still holds `from`; true when this call moved it. A wait is its kind, tool and `since`: every
+     * decision about a wait reads only those, so two waits equal in all three are the same wait.
+     * The ended-row guard is what keeps a report that arrives after the exit from bringing a wait
+     * back.
      */
     readonly setWaiting: (
       id: SessionProcessId,
       sessionId: SessionId,
-      waiting: AgentWait | null,
-    ) => Effect.Effect<boolean>;
-    /**
-     * Clear the wait on a LIVE agent-pty row of `sessionId` only while it is still the wait that
-     * opened at `since`; true when this call cleared it. A wait replaced or cleared in between is
-     * left as it is.
-     */
-    readonly clearWaiting: (
-      id: SessionProcessId,
-      sessionId: SessionId,
-      since: Date,
+      from: AgentWait | null,
+      to: AgentWait | null,
     ) => Effect.Effect<boolean>;
     readonly markExited: (
       id: SessionProcessId,
@@ -401,12 +395,14 @@ export const SessionProcessesRepoLive: Layer.Layer<
     const setWaiting = Effect.fn("SessionProcessesRepo.setWaiting")(function* (
       id: SessionProcessId,
       sessionId: SessionId,
-      waiting: AgentWait | null,
+      from: AgentWait | null,
+      to: AgentWait | null,
     ) {
+      const held = sessionProcesses.waiting;
       const rows = yield* db
         .update(sessionProcesses)
         .set({
-          waiting: waiting === null ? null : encodeWaiting(waiting),
+          waiting: to === null ? null : encodeWaiting(to),
           updatedAt: yield* DateTime.nowAsDate,
         })
         .where(
@@ -415,30 +411,11 @@ export const SessionProcessesRepoLive: Layer.Layer<
             eq(sessionProcesses.sessionId, sessionId),
             eq(sessionProcesses.kind, "agent-pty"),
             isNull(sessionProcesses.exitedAt),
-          ),
-        )
-        .returning({ sessionId: sessionProcesses.sessionId })
-        .pipe(Effect.orDie);
-      if (rows.length === 0) return false;
-      yield* notify(sessionId);
-      return true;
-    });
-
-    const clearWaiting = Effect.fn("SessionProcessesRepo.clearWaiting")(function* (
-      id: SessionProcessId,
-      sessionId: SessionId,
-      since: Date,
-    ) {
-      const rows = yield* db
-        .update(sessionProcesses)
-        .set({ waiting: null, updatedAt: yield* DateTime.nowAsDate })
-        .where(
-          and(
-            eq(sessionProcesses.id, id),
-            eq(sessionProcesses.sessionId, sessionId),
-            eq(sessionProcesses.kind, "agent-pty"),
-            isNull(sessionProcesses.exitedAt),
-            sql`(${sessionProcesses.waiting} ->> 'since')::timestamptz = ${since.toISOString()}::timestamptz`,
+            from === null
+              ? isNull(held)
+              : sql`${held} ->> 'kind' = ${from.kind}
+                  AND (${held} ->> 'tool') IS NOT DISTINCT FROM ${from.tool}::text
+                  AND (${held} ->> 'since')::timestamptz = ${from.since.toISOString()}::timestamptz`,
           ),
         )
         .returning({ sessionId: sessionProcesses.sessionId })
@@ -504,7 +481,6 @@ export const SessionProcessesRepoLive: Layer.Layer<
       setSealantSessionId,
       claimProviderSessionId,
       setWaiting,
-      clearWaiting,
       markExited,
       reapLiveForWorkspace,
     };

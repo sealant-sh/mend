@@ -175,7 +175,8 @@ export interface SessionSocketApi {
  * while the report was read. `other-process`: the report names another process of that harness.
  * `unidentified`: the report carries no harness session id. `too-many`: the report would change
  * the wait, and the session's agent already changed it more times this minute than a working
- * agent does.
+ * agent does; or it would change nothing, and the session already sent more such reports this
+ * minute than a working agent does.
  */
 export type AgentHookOutcome =
   | "applied"

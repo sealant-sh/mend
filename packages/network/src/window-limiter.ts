@@ -9,6 +9,8 @@
 export interface WindowLimiter {
   /** Null when admitted; otherwise whole seconds to wait. A `limit` of 0 or less admits everything. */
   readonly take: (subject: string, limit: number, now: number) => number | null;
+  /** Give back the unit an admitted `take` at `at` spent, for work that then did not happen. */
+  readonly release: (subject: string, at: number) => void;
   /** Subjects remembered right now. */
   readonly subjects: () => number;
 }
@@ -53,6 +55,11 @@ export const makeWindowLimiter = (windowMs = 60_000, maxSubjects = MAX_SUBJECTS)
       times.push(now);
       spent.set(key, times);
       return null;
+    },
+    release: (subject, at) => {
+      const times = spent.get(spent.has(subject) ? subject : OVERFLOW);
+      const index = times?.lastIndexOf(at) ?? -1;
+      if (index !== -1) times?.splice(index, 1);
     },
     subjects: () => spent.size,
   };
