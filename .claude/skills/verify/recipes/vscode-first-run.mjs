@@ -575,11 +575,21 @@ async function signedOut(h) {
     "h2: Connect again while connected revokes the device it replaced; Settings → Devices keeps one",
     async () => {
       const [before] = await devices();
+      // The watch names a toast once per window, and this one reads as the last step's did: count
+      // what shows instead, from a screen where the last one has hidden.
+      const visibleSuccesses = async () =>
+        (await notifications()).filter((text) => text.includes(signedInToast)).length;
+      await waitUntil(
+        "the last sign-in's toast hidden",
+        async () => ((await visibleSuccesses()) === 0 ? true : null),
+        120_000,
+      );
       const watching = await watch();
       await palette("Mend: Connect to server");
       await quickInput.waitFor();
       const kept = await quickInput.value();
       await authorize();
+      const successes = await visibleSuccesses();
       const after = await waitUntil(
         "the replaced device revoked",
         async () => {
@@ -591,12 +601,11 @@ async function signedOut(h) {
       await sleep(3_000);
       const seen = await watching.stop();
       await shot("h2-connect-again");
-      const successes = (seen?.toasts ?? []).filter((text) => text.startsWith("Signed in to"));
       const warnings = (seen?.toasts ?? []).filter((text) => text.includes("earlier device"));
       expect(kept === origin, `the URL input starts from "${kept}"`);
-      expect(successes.length === 1, `success toasts ${JSON.stringify(seen?.toasts)}`);
+      expect(successes === 1, `success toasts showing ${successes}`);
       expect(warnings.length === 0, `warnings ${JSON.stringify(warnings)}`);
-      return `URL input "${kept}" · VS Code devices 1 → ${after.length} (a new device in place of the one replaced) · ${shown(seen)}`;
+      return `URL input "${kept}" · success toasts showing ${successes} · VS Code devices 1 → ${after.length} (a new device in place of the one replaced) · ${shown(seen)}`;
     },
   );
 
