@@ -38,6 +38,7 @@ const run = <A, E>(
 const PROJECT = ProjectId.make("p-web");
 const WORKTREE = WorktreeId.make("wt-1");
 const SESSION = SessionId.make("s-retried");
+const RETRIED = SessionId.make("s-failed-retry");
 
 const wire = Schema.toCodecJson(Session);
 
@@ -46,16 +47,18 @@ const asClientReads = (session: Session) =>
   Schema.decodeUnknownSync(wire)(JSON.parse(JSON.stringify(Schema.encodeSync(wire)(session))));
 
 /** The session as the launch gate observes it, read fresh. */
-const observed = Effect.gen(function* () {
-  const session = yield* (yield* SessionsRepo).byId(SESSION);
-  const rows = yield* (yield* SessionProcessesRepo).listForSession(SESSION);
-  return {
-    status: session.status,
-    settledAt: session.settledAt,
-    agentLive: session.settledAt === null && rows.some(isLiveAgentProcess),
-    underWay: false,
-  };
-});
+const observedOf = (id: SessionId) =>
+  Effect.gen(function* () {
+    const session = yield* (yield* SessionsRepo).byId(id);
+    const rows = yield* (yield* SessionProcessesRepo).listForSession(id);
+    return {
+      status: session.status,
+      settledAt: session.settledAt,
+      agentLive: session.settledAt === null && rows.some(isLiveAgentProcess),
+      underWay: false,
+    };
+  });
+const observed = observedOf(SESSION);
 
 describe.skipIf(postgres.skip)("the attempt a client saw, through Postgres and the wire", () => {
   beforeAll(async () => {
@@ -77,20 +80,22 @@ describe.skipIf(postgres.skip)("the attempt a client saw, through Postgres and t
         yield* sql`
           INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
           VALUES (${WORKTREE}, ${PROJECT}, 'wt-1', 'wt-1', 'mend/wt-1', 'abc')`;
-        yield* (yield* SessionsRepo).create({
-          id: SESSION,
-          projectId: PROJECT,
-          worktreeId: WORKTREE,
-          harness: "codex",
-          label: null,
-          worktree: "wt-1",
-          branch: "mend/wt-1",
-          baseSha: Sha.make("abc"),
-          baseRef: "main",
-          contextSnapshotId: null,
-          ownerUserId: "alice",
-          origin: "mend",
-        });
+        for (const id of [SESSION, RETRIED]) {
+          yield* (yield* SessionsRepo).create({
+            id,
+            projectId: PROJECT,
+            worktreeId: WORKTREE,
+            harness: "codex",
+            label: null,
+            worktree: "wt-1",
+            branch: "mend/wt-1",
+            baseSha: Sha.make("abc"),
+            baseRef: "main",
+            contextSnapshotId: null,
+            ownerUserId: "alice",
+            origin: "mend",
+          });
+        }
       }),
     );
   });
@@ -168,5 +173,28 @@ describe.skipIf(postgres.skip)("the attempt a client saw, through Postgres and t
     expect(result.afterSecondRefusal).toMatchObject({ _tag: "MovedOn", status: "failed" });
     expect(result.afterSecond.settledAt?.getTime()).not.toBe(result.seen.settledAt?.getTime());
     expect(result.secondSeen).toBeNull();
+  });
+  it("keeps the attempt a client saw when a retry fails before its agent starts: the precondition admits it again", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        yield* sessions.settle(RETRIED, "failed", "launch failed: the platform did not answer");
+        const seen = asClientReads(yield* sessions.byId(RETRIED));
+        // The retry the precondition admitted: it fails before any agent runs, so nothing
+        // reopens the session, and its settle finds the first one in place.
+        yield* sessions.settle(RETRIED, "failed", "launch failed: again");
+        const after = yield* sessions.byId(RETRIED);
+        return {
+          seen,
+          after,
+          again: refusalOf(Expected(seen.settledAt), yield* observedOf(RETRIED)),
+        };
+      }),
+    );
+
+    expect(result.seen.settledAt).not.toBeNull();
+    expect(result.after.settledAt?.getTime()).toBe(result.seen.settledAt?.getTime());
+    expect(result.after.summary).toBe("launch failed: the platform did not answer");
+    expect(result.again).toBeNull();
   });
 });

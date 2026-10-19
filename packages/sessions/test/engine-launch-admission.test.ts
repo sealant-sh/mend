@@ -169,7 +169,7 @@ describe("SessionEngine launch admission (SLNT-167)", () => {
     );
   });
 
-  it("refuses the attempt it saw once the session settled again", async () => {
+  it("admits the attempt it saw again after a retry that failed before its agent started", async () => {
     const seen = platform();
     await withEngine(
       (world, tmp) =>
@@ -178,13 +178,42 @@ describe("SessionEngine launch admission (SLNT-167)", () => {
           const { session } = yield* provisioned(tmp, world);
           seen.knobs.openFails = true;
           yield* engine.launch(session.id, ["codex"]).pipe(Effect.exit);
-          const stale = world.sessions.get(session.id)?.settledAt ?? null;
+          const seenAt = world.sessions.get(session.id)?.settledAt ?? null;
           yield* Effect.sleep("5 millis");
-          yield* engine.launch(session.id, ["codex"]).pipe(Effect.exit);
-          const settledAgain = world.sessions.get(session.id)?.settledAt ?? null;
-          expect(settledAgain?.getTime()).not.toBe(stale?.getTime());
+          yield* engine.launch(session.id, ["codex"], { over: Expected(seenAt) }).pipe(Effect.exit);
+          // As Postgres keeps it: the first settle wins, and no agent ran in between.
+          expect(world.sessions.get(session.id)?.settledAt?.getTime()).toBe(seenAt?.getTime());
           seen.knobs.openFails = false;
-          const before = footprint(world, session.id, seen);
+
+          yield* engine.launch(session.id, ["codex"], { over: Expected(seenAt) });
+
+          expect(world.sessions.get(session.id)?.status).toBe("running");
+          expect(liveAgents(world, session.id)).toHaveLength(1);
+        }),
+      { sealantLayer: seen.layer },
+    );
+  });
+
+  it("refuses the attempt it saw once an agent ran and the session settled again", async () => {
+    const seen = platform();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const engine = yield* SessionEngine;
+          const { session, harvested } = yield* provisioned(tmp, world);
+          seen.knobs.openFails = true;
+          yield* engine.launch(session.id, ["codex"]).pipe(Effect.exit);
+          seen.knobs.openFails = false;
+          const stale = world.sessions.get(session.id)?.settledAt ?? null;
+          harvested();
+          yield* Effect.sleep("5 millis");
+          yield* engine.resumeSession(session.id, null);
+          yield* engine.stop(session.id);
+          const settledAgain = world.sessions.get(session.id)?.settledAt ?? null;
+          expect(settledAgain).not.toBeNull();
+          expect(settledAgain?.getTime()).not.toBe(stale?.getTime());
+          // The stop's tail still runs: what this launch would have done is create and open.
+          const before = { creates: seen.created.length, opens: seen.spawned.length };
 
           const refused = yield* engine
             .launch(session.id, ["codex"], { over: Expected(stale) })
@@ -192,10 +221,10 @@ describe("SessionEngine launch admission (SLNT-167)", () => {
 
           expect(refused).toMatchObject({
             _tag: "SessionMovedOnError",
-            status: "failed",
+            status: world.sessions.get(session.id)?.status,
             settledAt: settledAgain,
           });
-          expect(footprint(world, session.id, seen)).toEqual(before);
+          expect({ creates: seen.created.length, opens: seen.spawned.length }).toEqual(before);
         }),
       { sealantLayer: seen.layer },
     );

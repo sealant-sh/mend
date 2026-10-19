@@ -2315,12 +2315,15 @@ export const sessionsLayer = (world: World) => {
       Effect.sync(() => update(id, { lastSeenSequence: sequence })),
     notifyProgress: () => Effect.void,
     settle: (id, outcome, summary) =>
-      Effect.sync(() =>
+      Effect.sync(() => {
+        const current = world.sessions.get(id);
+        // As SessionsRepo.settle: the first settle wins, until `reopen` clears it.
+        if (current?.settledAt != null) return;
         // A stop drain holds the workspace: `stopping`, not settled (SessionsRepo.settle).
-        world.sessions.get(id)?.captureDrain === "stop"
-          ? update(id, { status: "stopping", summary, settledAt: null })
-          : update(id, { status: outcome, summary, settledAt: world.clock.now() }),
-      ),
+        if (current?.captureDrain === "stop") {
+          update(id, { status: "stopping", summary, settledAt: null });
+        } else update(id, { status: outcome, summary, settledAt: world.clock.now() });
+      }),
     reopen: (id, status) =>
       Effect.sync(() =>
         update(id, {
