@@ -3,12 +3,12 @@ import { ChangeId } from "@mend/domain";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { type JobSpec, JobRunner } from "../src/job-runner.ts";
+import { type Enqueued, type JobSpec, JobRunner } from "../src/job-runner.ts";
 import { queueReviewPass, reviewPassKey } from "../src/review-passes.ts";
 
 const CHANGE = ChangeId.make("change-1");
 
-const queueWith = (answer: string | null) => {
+const queueWith = (answer: Enqueued) => {
   const sent: Array<JobSpec> = [];
   const rows: Array<string> = [];
   const events: Array<string> = [];
@@ -42,8 +42,8 @@ describe("queueReviewPass", () => {
   });
 
   it("marks the pass queued, then enqueues its job on the asker's login", async () => {
-    const { queued, sent, rows, events } = await queueWith("job-1");
-    expect(queued).toBe(true);
+    const { queued, sent, rows, events } = await queueWith({ _tag: "Queued", id: "job-1" });
+    expect(queued).toEqual({ _tag: "Queued", id: "job-1" });
     expect(events).toEqual(["queued:tour", "enqueue"]);
     expect(rows).toEqual(["queued:tour"]);
     expect(sent).toEqual([
@@ -55,9 +55,9 @@ describe("queueReviewPass", () => {
     ]);
   });
 
-  it("answers false when a job for the pass is already live", async () => {
-    const { queued, rows } = await queueWith(null);
-    expect(queued).toBe(false);
+  it("answers which live job for the pass absorbed the request", async () => {
+    const { queued, rows } = await queueWith({ _tag: "Absorbed", running: true });
+    expect(queued).toEqual({ _tag: "Absorbed", running: true });
     // The row write keeps a queued or running pass as it is (ChangePassesRepo.queue).
     expect(rows).toEqual(["queued:tour"]);
   });

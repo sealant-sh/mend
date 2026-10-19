@@ -34,7 +34,7 @@ import { buildManifest } from "@mend/store/testing";
 import { Deferred, Effect, Fiber, Layer, Queue, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { JobRunner, type JobSpec } from "../src/job-runner.ts";
+import { type Enqueued, JobRunner, type JobSpec } from "../src/job-runner.ts";
 import { reviewPrep } from "../src/review-prep.ts";
 
 const PROJECT = ProjectId.make("review-project");
@@ -204,7 +204,8 @@ const makeWorld = (events: Events, options: Options) => {
   let processes: ReadonlyArray<SessionProcess> = [];
   const jobs: Array<JobSpec> = [];
   const queued: Array<Parameters<ChangePassesRepo["Service"]["queue"]>> = [];
-  const reads: Array<Parameters<WorktreeReads["Service"]["changedFiles"]>> = [];
+  const reads: Array<Parameters<WorktreeReads["Service"]["diffWorktree"]>> = [];
+  const prepared = new Map<string, string>();
   const memory = makeMemoryCaptureStore(() => BASE);
   const capture = options.captured
     ? CaptureRuntimeLive.pipe(
@@ -238,7 +239,7 @@ const makeWorld = (events: Events, options: Options) => {
     }),
     Layer.mock(SettingsRepo, { forOrganization: () => Effect.succeed(defaultSettings) }),
     Layer.mock(WorktreeReads, {
-      changedFiles: (...args) =>
+      diffWorktree: (...args) =>
         Effect.gen(function* () {
           reads.push(args);
           if (options.read === "git-error")
@@ -251,7 +252,7 @@ const makeWorld = (events: Events, options: Options) => {
           return {
             stamp: WORKTREE_STAMP,
             value:
-              options.read === "empty" ? [] : [{ path: "changed.ts", additions: 1, deletions: 0 }],
+              options.read === "empty" ? "" : "diff --git a/changed.ts b/changed.ts\n+changed\n",
           };
         }),
     }),
@@ -260,6 +261,10 @@ const makeWorld = (events: Events, options: Options) => {
         Effect.sync(() => {
           queued.push(args);
         }),
+      preparedDigest: (changeId, kind) =>
+        Effect.sync(() => prepared.get(`${changeId}:${kind}`) ?? null),
+      recordPrep: (changeId, kind, diffDigest) =>
+        Effect.sync(() => void prepared.set(`${changeId}:${kind}`, diffDigest)),
     }),
     Layer.mock(JobRunner, {
       enqueue: (job) =>
@@ -269,7 +274,7 @@ const makeWorld = (events: Events, options: Options) => {
             yield* Deferred.succeed(options.blockedJob.entered, undefined);
             yield* Deferred.await(options.blockedJob.release);
           }
-          return `job-${jobs.length}`;
+          return { _tag: "Queued", id: `job-${jobs.length}` } satisfies Enqueued;
         }),
     }),
   );

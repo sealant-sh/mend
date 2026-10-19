@@ -24,7 +24,7 @@ export const reviewPassKey = (kind: PassKind, changeId: ChangeId): string =>
 /**
  * Queue one machine pass over a change. The pass row reads `queued` first (unless the pass is
  * already queued or running), so the review page says so instead of spinning, and the worker's
- * `begin` replaces it. True when this call queued a job; false when one was already live.
+ * `begin` replaces it. Answers whether this call queued a job, or which live job absorbed it.
  *
  * `requestedBy` is the Mend user whose login pays for the pass: the person who asked, or the owner
  * of the session whose settle or landing queued it (docs/adr/0008-one-refresher-for-provider-
@@ -38,7 +38,7 @@ export const queueReviewPass = Effect.fn("queueReviewPass")(function* (
   const jobs = yield* JobRunner;
   const passes = yield* ChangePassesRepo;
   yield* passes.queue(changeId, kind);
-  const queued = yield* jobs
+  return yield* jobs
     .enqueue({
       name: REVIEW_PASS_JOBS[kind],
       payload: { changeId, requestedBy },
@@ -49,5 +49,4 @@ export const queueReviewPass = Effect.fn("queueReviewPass")(function* (
         passes.fail(changeId, kind, `the pass could not be queued: ${String(error.cause)}`),
       ),
     );
-  return queued !== null;
 });

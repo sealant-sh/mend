@@ -2034,6 +2034,21 @@ export const changePasses = pgTable(
   (table) => [primaryKey({ columns: [table.changeId, table.kind] })],
 );
 
+/** The diff of a change review prep last queued each pass for (`ChangePassesRepo.recordPrep`). */
+export const changeReviewPreps = pgTable(
+  "change_review_preps",
+  {
+    changeId: text()
+      .$type<ChangeId>()
+      .notNull()
+      .references(() => worktreeChanges.id, { onDelete: "cascade" }),
+    kind: text().$type<PassKind>().notNull(),
+    diffDigest: text().notNull(),
+    preparedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.changeId, table.kind] })],
+);
+
 export const checkpoints = pgTable(
   "checkpoints",
   {

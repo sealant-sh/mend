@@ -21,7 +21,7 @@ const request = (fails: boolean) => {
               enqueued.push(job);
               return fails
                 ? Effect.fail(new JobEnqueueError({ job: job.name, cause: new Error("boss down") }))
-                : Effect.succeed("job-1");
+                : Effect.succeed({ _tag: "Queued", id: "job-1" });
             }),
         }),
         Layer.mock(ChangePassesRepo, {

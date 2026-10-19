@@ -6,6 +6,7 @@ import { test } from "node:test";
 import {
   HELPER,
   claudeHookCheck,
+  claudeLoginOf,
   codexHookCheck,
   sessionIdOfArgv,
   settingsOfArgv,
@@ -150,4 +151,37 @@ test("codex: arrays of tables, nested handler tables and inline keys of [hooks] 
     wired: [],
     missing: ["SessionStart", "PermissionRequest", "Stop", "UserPromptSubmit", "PostToolUse"],
   });
+});
+
+const account = (provider, status, name = "default") => ({ provider, name, status });
+
+test("the claude login reads missing when no claude account is named default", () => {
+  assert.equal(claudeLoginOf([]), "missing");
+  assert.equal(claudeLoginOf([account("codex", "active"), account("github", "active")]), "missing");
+  assert.equal(claudeLoginOf([account("claude", "active", "work")]), "missing");
+});
+
+test("the claude login reads active for a freshly connected default, beside an archived one", () => {
+  assert.equal(claudeLoginOf([account("codex", "invalid"), account("claude", "active")]), "active");
+  assert.equal(
+    claudeLoginOf([account("claude", "archived"), account("claude", "active")]),
+    "active",
+  );
+});
+
+test("a spent fake reads invalid, not connected, so the step reconnects it", () => {
+  assert.equal(claudeLoginOf([account("claude", "invalid")]), "invalid");
+  assert.equal(
+    claudeLoginOf([account("claude", "archived"), account("claude", "invalid")]),
+    "invalid",
+  );
+  assert.equal(
+    claudeLoginOf([account("claude", "invalid"), account("claude", "active", "work")]),
+    "invalid",
+  );
+});
+
+test("any other status is read back as it is, never as active", () => {
+  assert.equal(claudeLoginOf([account("claude", "archived")]), "archived");
+  assert.equal(claudeLoginOf([account("claude", "suspended")]), "suspended");
 });

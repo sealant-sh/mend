@@ -7,7 +7,7 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { changePasses, worktreeChanges } from "../schema/workbench.ts";
+import { changePasses, changeReviewPreps, worktreeChanges } from "../schema/workbench.ts";
 
 const decodePass = Schema.decodeUnknownEffect(Schema.Struct(ChangePass.fields));
 
@@ -35,6 +35,17 @@ export class ChangePassesRepo extends Context.Service<
     ) => Effect.Effect<void>;
     readonly fail: (changeId: ChangeId, kind: PassKind, detail: string) => Effect.Effect<void>;
     readonly listForChange: (changeId: ChangeId) => Effect.Effect<ReadonlyArray<ChangePass>>;
+    /** The digest of the diff review prep last queued this pass for; null before the first. */
+    readonly preparedDigest: (changeId: ChangeId, kind: PassKind) => Effect.Effect<string | null>;
+    /**
+     * Record that review prep queued this pass for this diff, once a job is queued to read it.
+     * Only the last digest per pass is kept, so a diff that comes back is prepared again.
+     */
+    readonly recordPrep: (
+      changeId: ChangeId,
+      kind: PassKind,
+      diffDigest: string,
+    ) => Effect.Effect<void>;
   }
 >()("@mend/db/ChangePassesRepo") {}
 
@@ -161,6 +172,34 @@ export const ChangePassesRepoLive: Layer.Layer<
       return yield* Effect.forEach(rows, decodeRow);
     });
 
-    return { queue, begin, complete, fail, listForChange };
+    const preparedDigest = Effect.fn("ChangePassesRepo.preparedDigest")(function* (
+      changeId: ChangeId,
+      kind: PassKind,
+    ) {
+      const [row] = yield* db
+        .select({ diffDigest: changeReviewPreps.diffDigest })
+        .from(changeReviewPreps)
+        .where(and(eq(changeReviewPreps.changeId, changeId), eq(changeReviewPreps.kind, kind)))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row?.diffDigest ?? null;
+    });
+
+    const recordPrep = Effect.fn("ChangePassesRepo.recordPrep")(function* (
+      changeId: ChangeId,
+      kind: PassKind,
+      diffDigest: string,
+    ) {
+      yield* db
+        .insert(changeReviewPreps)
+        .values({ changeId, kind, diffDigest })
+        .onConflictDoUpdate({
+          target: [changeReviewPreps.changeId, changeReviewPreps.kind],
+          set: { diffDigest, preparedAt: yield* DateTime.nowAsDate },
+        })
+        .pipe(Effect.orDie);
+    });
+
+    return { queue, begin, complete, fail, listForChange, preparedDigest, recordPrep };
   }),
 );

@@ -1,15 +1,25 @@
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
 import { SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
 import {
   type AutomationChoice,
   SessionProcess,
   type SessionProcessKind,
 } from "@mend/domain/workbench";
-import { GitError } from "@mend/store";
+import { GitError, Store, StoreConfig } from "@mend/store";
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  diffDigest,
   readFailureAnnotations,
   reviewPassesFor,
+  reviewReading,
+  type ReviewReading,
+  settledAfter,
   settledForReview,
   shouldPrepareReview,
 } from "../src/review-prep.ts";
@@ -158,5 +168,85 @@ describe("review prep: when a session has settled for review", () => {
     expect(shouldPrepareReview(undefined, true)).toBe(false);
     expect(shouldPrepareReview(false, false)).toBe(false);
     expect(shouldPrepareReview(true, true)).toBe(false);
+  });
+});
+
+/** The readings at which prep runs, folding them as the worker does from `baseline`. */
+const prepsAlong = (
+  baseline: boolean | undefined,
+  readings: ReadonlyArray<ReviewReading>,
+): ReadonlyArray<number> => {
+  let previous = baseline;
+  const preps: Array<number> = [];
+  readings.forEach((reading, at) => {
+    const settled = settledAfter(previous, reading);
+    if (shouldPrepareReview(previous, settled)) preps.push(at);
+    previous = settled;
+  });
+  return preps;
+};
+
+describe("review prep: a stop is one settle", () => {
+  it("reads stopping apart from live work and settled", () => {
+    expect(reviewReading("stopping", [processRow("agent-pty", false)])).toBe("stopping");
+    expect(reviewReading("idle", [processRow("agent-pty", false), processRow("shell", true)])).toBe(
+      "settled",
+    );
+    expect(reviewReading("running", [processRow("agent-pty", true)])).toBe("live");
+  });
+
+  it("prepares once when an idle session whose agent ended settles through stopping", () => {
+    expect(prepsAlong(false, ["settled", "stopping", "settled"])).toEqual([0]);
+    expect(prepsAlong(true, ["stopping", "settled"])).toEqual([]);
+  });
+
+  it("prepares at the settle when live work stops", () => {
+    expect(prepsAlong(false, ["live", "stopping", "settled"])).toEqual([2]);
+  });
+
+  it("holds a settle still ahead for a session first seen stopping", () => {
+    expect(prepsAlong(undefined, ["stopping", "settled"])).toEqual([1]);
+  });
+});
+
+describe("diffDigest", () => {
+  it("reads the same content the same, staged or not, and new content as new", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-review-digest-"));
+    const git = (...args: string[]) =>
+      execFileSync("git", args, {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+      });
+    const write = (file: string, content: string) =>
+      fs.writeFileSync(path.join(root, file), content);
+    const read = () =>
+      Effect.runPromise(
+        Effect.flatMap(Store, (store) => store.diffWorktree(root, "HEAD")).pipe(
+          Effect.provide(Store.layer),
+          Effect.provide(StoreConfig.layerFor(root)),
+        ),
+      );
+    try {
+      git("init", "-q");
+      git("config", "user.email", "review@mend.test");
+      git("config", "user.name", "review");
+      write("z.txt", "one\ntwo\n");
+      git("add", ".");
+      git("commit", "-qm", "base");
+      write("z.txt", "one\nTWO\n");
+      write("a.txt", "new\n");
+
+      const unstaged = await read();
+      git("add", "a.txt");
+      const staged = await read();
+      expect(staged, "staging moved a.txt ahead of z.txt in the read").not.toBe(unstaged);
+      expect(diffDigest(staged)).toBe(diffDigest(unstaged));
+
+      write("a.txt", "newer\n");
+      expect(diffDigest(await read())).not.toBe(diffDigest(staged));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

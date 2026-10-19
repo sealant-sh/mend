@@ -289,7 +289,9 @@ const startWorld = (
         }),
         Layer.mock(JobRunner, {
           enqueue: (job) =>
-            note(`jobs.enqueue:${job.name}:${job.startAfterSeconds}`).pipe(Effect.as("job")),
+            note(`jobs.enqueue:${job.name}:${job.startAfterSeconds}`).pipe(
+              Effect.as({ _tag: "Queued", id: "job" }),
+            ),
         }),
       ),
     ),

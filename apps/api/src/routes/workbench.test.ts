@@ -804,7 +804,7 @@ const recordingJobs = (enqueued: Array<EnqueuedJob>) =>
     enqueue: (job) =>
       Effect.sync(() => {
         enqueued.push(job);
-        return null;
+        return { _tag: "Absorbed", running: false };
       }),
   });
 const put = (body: unknown): RequestInit => ({ method: "PUT", body: JSON.stringify(body) });
