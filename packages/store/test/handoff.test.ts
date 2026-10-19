@@ -3,12 +3,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "@mend/test-ci/effect-vitest";
-import { Effect, Layer, Result } from "effect";
+import { Duration, Effect, Layer, Result } from "effect";
 
 import {
+  admitHandoff,
   HANDOFF_QUARANTINE_PREFIX,
   type HandoffRefusedError,
   parseBundleHeader,
+  skippedFreshen,
   sweepHandoffQuarantines,
 } from "../src/handoff.ts";
 import { Store, StoreConfig } from "../src/store.ts";
@@ -17,6 +19,7 @@ import {
   damage,
   type HandoffWorld,
   makeHandoffWorld,
+  makeMergedMainCheckout,
   sh,
   storeState,
 } from "./handoff-fixture.ts";
@@ -33,11 +36,21 @@ describe("Store.admitHandoff", () => {
     fs.rmSync(world.tmp, { recursive: true, force: true });
   });
 
-  const admit = (bytes: Uint8Array, remoteEnv: Record<string, string> | null = null) =>
+  const admit = (
+    bytes: Uint8Array,
+    remoteEnv: Record<string, string> | null = null,
+    fileBytes = 0,
+  ) =>
     Effect.gen(function* () {
       const store = yield* Store;
       return yield* store
-        .admitHandoff(world.storePath, "main", bytes, remoteEnv)
+        .admitHandoff(world.storePath, "main", bytes, {
+          freshen:
+            remoteEnv === null
+              ? Effect.succeed(skippedFreshen("no credential in this test"))
+              : store.freshenBase(world.storePath, "main", remoteEnv),
+          fileBytes,
+        })
         .pipe(Effect.result);
     }).pipe(
       Effect.provide(Store.layer.pipe(Layer.provide(StoreConfig.layerFor(storeRoot)))),
@@ -70,6 +83,11 @@ describe("Store.admitHandoff", () => {
     expect(quarantines()).toEqual([]);
     return outcome;
   };
+
+  const refusalMessage = (outcome: Awaited<ReturnType<typeof admit>>): string =>
+    Result.isFailure(outcome) && outcome.failure._tag === "HandoffRefusedError"
+      ? outcome.failure.message
+      : "";
 
   it("admits the snapshot: the facts, the trees, the delta pack that closes with the base", async () => {
     const bundle = buildHandoffBundle(world.checkout);
@@ -183,17 +201,133 @@ describe("Store.admitHandoff", () => {
     const bundle = buildHandoffBundle(world.checkout, {
       defaultTip: world.sideTip,
       cut: { kind: "at", sha: world.mainRoot },
+      mergeBase: world.mainRoot,
     });
     await expectRefusal(bundle.bytes, "base-off-default-branch", {});
   });
 
   it("refuses a bundle whose base is not the merge base with its default tip as not-a-handoff", async () => {
-    const bundle = buildHandoffBundle(world.checkout, { cut: { kind: "at", sha: world.mainRoot } });
+    const bundle = buildHandoffBundle(world.checkout, {
+      cut: { kind: "at", sha: world.mainRoot },
+      mergeBase: world.mainRoot,
+    });
     expect(bundle.defaultTip).toBe(world.mainTip);
     const outcome = await expectRefusal(bundle.bytes, "not-a-handoff");
-    if (Result.isFailure(outcome) && outcome.failure._tag === "HandoffRefusedError") {
-      expect(outcome.failure.message).toMatch(/is not the merge base/);
+    expect(refusalMessage(outcome)).toMatch(/is not the merge base/);
+  });
+
+  it("refuses a bundle that was not cut at the base its trailer names as not-a-handoff", async () => {
+    const bundle = buildHandoffBundle(world.checkout, { cut: { kind: "at", sha: world.mainRoot } });
+    expect(bundle.mergeBase).toBe(world.mainTip);
+    const outcome = await expectRefusal(bundle.bytes, "not-a-handoff");
+    expect(refusalMessage(outcome)).toMatch(/was not cut at its base/);
+  });
+
+  it("admits a branch that merged main: the bundle names the fork point beside the merge base", async () => {
+    const checkout = makeMergedMainCheckout(world);
+    const bundle = buildHandoffBundle(checkout, { localBranch: "fix/merge" });
+    expect(bundle.mergeBase).toBe(world.mainTip);
+    expect(parseBundleHeader(bundle.bytes)?.prerequisites.toSorted()).toEqual(
+      [world.mainTip, world.mainRoot].toSorted(),
+    );
+    const before = storeState(world.storePath);
+    const outcome = await admit(bundle.bytes);
+    expect(Result.isSuccess(outcome)).toBe(true);
+    if (!Result.isSuccess(outcome)) return;
+    expect(outcome.success).toMatchObject({
+      head: bundle.head,
+      mergeBase: world.mainTip,
+      commitsAhead: 3,
+      trailers: { localBranch: "fix/merge", mergeBase: world.mainTip },
+    });
+    expect(storeState(world.storePath)).toEqual(before);
+    const probe = path.join(world.tmp, "probe-merged.git");
+    sh(world.tmp, ["init", "-q", "--bare", probe]);
+    fs.writeFileSync(
+      path.join(probe, "objects", "info", "alternates"),
+      `${path.join(world.storePath, "objects")}\n`,
+    );
+    sh(probe, ["index-pack", "--strict", "--stdin"], { input: outcome.success.deltaPack.pack });
+    expect(sh(probe, ["rev-list", "--objects", "--missing=error", bundle.checkpoint])).toContain(
+      bundle.checkpoint,
+    );
+  });
+
+  it("words base-unknown from the freshen: not fetched, fetched and still unknown, or git's own words", async () => {
+    sh(world.storePath, ["fetch", "-q", "origin", "main"]);
+    const bundle = buildHandoffBundle(world.checkout, {
+      defaultTip: "0123456789abcdef0123456789abcdef01234567",
+      cut: { kind: "at", sha: world.mainTip },
+    });
+    const notFetched = await expectRefusal(bundle.bytes, "base-unknown");
+    expect(refusalMessage(notFetched)).toMatch(
+      /origin was not fetched · no credential in this test/,
+    );
+    expect(refusalMessage(notFetched)).not.toMatch(/push main/);
+    const fetched = await expectRefusal(bundle.bytes, "base-unknown", {});
+    expect(refusalMessage(fetched)).toMatch(
+      /origin's main was fetched and it is still unknown · push main/,
+    );
+    sh(world.storePath, ["remote", "set-url", "origin", path.join(world.tmp, "no-such-origin")]);
+    const failed = await expectRefusal(bundle.bytes, "base-unknown", {});
+    expect(refusalMessage(failed)).toMatch(/this server could not fetch origin · git said: /);
+    expect(refusalMessage(failed)).not.toMatch(/push main/);
+  });
+
+  it("refuses a blob new in W or I over the file budget, naming it, and admits under no budget", async () => {
+    fs.mkdirSync(path.join(world.checkout, "assets"));
+    fs.writeFileSync(path.join(world.checkout, "assets", "demo.bin"), Buffer.alloc(100 * 1024, 7));
+    const bundle = buildHandoffBundle(world.checkout);
+    const before = storeState(world.storePath);
+    const refused = await admit(bundle.bytes, null, 64 * 1024);
+    expect(Result.isFailure(refused)).toBe(true);
+    if (Result.isFailure(refused)) {
+      expect(refused.failure).toMatchObject({
+        _tag: "HandoffFileOverBudgetError",
+        path: "assets/demo.bin",
+        bytes: 100 * 1024,
+        limit: 64 * 1024,
+      });
     }
+    expect(storeState(world.storePath)).toEqual(before);
+    expect(quarantines()).toEqual([]);
+    expect(Result.isSuccess(await admit(bundle.bytes, null, 128 * 1024))).toBe(true);
+    expect(Result.isSuccess(await admit(bundle.bytes, null, 0))).toBe(true);
+  });
+
+  it("refuses a bundle whose branch continues from the store's tip past an old base before walking it", async () => {
+    sh(world.storePath, ["fetch", "-q", "origin", "main"]);
+    const bundle = buildHandoffBundle(world.checkout, {
+      cut: { kind: "at", sha: world.mainRoot },
+      mergeBase: world.mainRoot,
+    });
+    const outcome = await expectRefusal(bundle.bytes, "not-a-handoff");
+    expect(refusalMessage(outcome)).toMatch(/is not the merge base/);
+  });
+
+  it("ends a git call that outlives the timeout as a host failure, and removes the quarantine", async () => {
+    const bundle = buildHandoffBundle(world.checkout);
+    const tmp = path.join(storeRoot, "tmp");
+    const outcome = await Effect.runPromise(
+      admitHandoff({
+        storePath: world.storePath,
+        defaultBranch: "main",
+        bundle: bundle.bytes,
+        quarantineRoot: tmp,
+        fileBytes: 0,
+        defaultTip: Effect.succeed(world.mainTip),
+        freshenDefault: Effect.succeed(skippedFreshen("none")),
+        gitTimeout: Duration.zero,
+      }).pipe(Effect.result),
+    );
+    expect(Result.isFailure(outcome)).toBe(true);
+    if (Result.isFailure(outcome)) {
+      expect(outcome.failure._tag).toBe("GitError");
+      if (outcome.failure._tag === "GitError") {
+        expect(outcome.failure.stderr).toMatch(/did not finish within/);
+      }
+    }
+    expect(quarantines()).toEqual([]);
   });
 
   it("refuses a snapshot that is a merge commit, or a root, as not-a-handoff", async () => {

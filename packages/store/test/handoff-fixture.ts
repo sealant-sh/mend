@@ -97,6 +97,8 @@ export interface HandoffBundleKnobs {
   readonly defaultTip?: string;
   /** At the merge base with `origin/main` when absent. */
   readonly cut?: HandoffCut;
+  /** The `Mend-Merge-Base` trailer; the merge base with `origin/main` when absent. */
+  readonly mergeBase?: string;
   readonly message?: string;
   readonly shape?: "linear" | "merge" | "root";
   readonly extraRefs?: ReadonlyArray<string>;
@@ -148,6 +150,7 @@ export const buildHandoffBundle = (
         knobs.localBranch === null ? null : HandoffBranch.make(knobs.localBranch ?? "fix/login"),
       cutAt: HandoffCutAt.make(knobs.cutAt ?? "2026-10-18T07:42:05.000Z"),
       defaultTip: HexSha.make(defaultTip),
+      mergeBase: HexSha.make(knobs.mergeBase ?? mergeBase),
     });
   const checkpoint = sh(checkout, ["commit-tree", worktreeTree, ...parents], { input: message });
   sh(checkout, ["update-ref", HANDOFF_SNAPSHOT_REF, checkpoint]);
@@ -164,6 +167,24 @@ export const buildHandoffBundle = (
   const bytes = new Uint8Array(fs.readFileSync(file));
   fs.rmSync(scratch, { recursive: true, force: true });
   return { bytes, head, index, checkpoint, mergeBase, cut, defaultTip, worktreeTree, indexTree };
+};
+
+/**
+ * A checkout whose branch forked at main's root and merged main's tip back in: its bundle names
+ * two prerequisites, the fork point and the merge base.
+ */
+export const makeMergedMainCheckout = (world: HandoffWorld): string => {
+  const checkout = path.join(world.tmp, "merged");
+  sh(world.tmp, ["clone", "-q", world.origin, checkout]);
+  sh(checkout, ["checkout", "-q", "-b", "fix/merge", world.mainRoot]);
+  fs.writeFileSync(path.join(checkout, "merge.ts"), "export const merge = 1;\n");
+  sh(checkout, ["add", "-A"]);
+  sh(checkout, ["commit", "-q", "-m", "before the merge"]);
+  sh(checkout, ["merge", "-q", "--no-edit", "origin/main"]);
+  fs.appendFileSync(path.join(checkout, "merge.ts"), "export const after = 2;\n");
+  sh(checkout, ["commit", "-q", "-am", "after the merge"]);
+  fs.writeFileSync(path.join(checkout, "notes.txt"), "untracked\n");
+  return checkout;
 };
 
 export const damage = (bytes: Uint8Array): Uint8Array => {

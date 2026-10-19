@@ -19,8 +19,14 @@ import {
 } from "./git.ts";
 import {
   type AdmittedHandoff,
+  type AdmitHandoffOptions,
   admitHandoff as admitHandoffIn,
+  failedFreshen,
+  fetchedFreshen,
+  type FreshenOutcome,
+  type HandoffFileOverBudgetError,
   type HandoffRefusedError,
+  skippedFreshen,
   sweepHandoffQuarantines as sweepQuarantinesUnder,
 } from "./handoff.ts";
 import {
@@ -1261,17 +1267,31 @@ export class Store extends Context.Service<
       GitError | InvalidBranchError | BundleTooLargeError | BundleEmptyError
     >;
     /**
+     * Freshen one base ref from the project origin, best-effort: what was done is answered,
+     * never failed. `remoteEnv` null means the caller could not resolve credentials; nothing is
+     * fetched. The store's own base resolution freshens the same way before it resolves.
+     */
+    readonly freshenBase: (
+      storePath: string,
+      baseRef: string,
+      remoteEnv: GitRemoteEnvironment | null,
+    ) => Effect.Effect<FreshenOutcome>;
+    /**
      * Admit a `mend handoff` bundle against the project's store (`handoff.ts`): verified in a
-     * quarantine under the store root, never fetched into the store. The one store write
-     * is one freshen of the default branch with `remoteEnv`, spent when the store lacks the
-     * bundle's base or the client's default tip. The only constructor of `AdmittedHandoff`.
+     * quarantine under the store root, never fetched into the store. The one store write is
+     * `options.freshen`, spent at most once when the store lacks the bundle's base or the
+     * client's default tip; `options.fileBytes` bounds the blobs new in W or I (0: no bound).
+     * The only constructor of `AdmittedHandoff`.
      */
     readonly admitHandoff: (
       storePath: string,
       defaultBranch: string,
       bundle: Uint8Array,
-      remoteEnv: GitRemoteEnvironment | null,
-    ) => Effect.Effect<AdmittedHandoff, HandoffRefusedError | GitError>;
+      options: AdmitHandoffOptions,
+    ) => Effect.Effect<
+      AdmittedHandoff,
+      HandoffRefusedError | HandoffFileOverBudgetError | GitError
+    >;
     /** Remove handoff quarantines older than an hour (a crash mid-admission); for boot. */
     readonly sweepHandoffQuarantines: () => Effect.Effect<ReadonlyArray<string>>;
   }
@@ -1382,8 +1402,10 @@ export class Store extends Context.Service<
         baseRef: string,
         remoteEnv: GitRemoteEnvironment | null,
       ) {
-        if (remoteEnv === null) return;
-        yield* refuseRemoteCredentials(storePath).pipe(
+        if (remoteEnv === null) {
+          return skippedFreshen("this server has no credential of yours for origin");
+        }
+        const fetched = yield* refuseRemoteCredentials(storePath).pipe(
           Effect.andThen(
             gitRemoteEnvironment(remoteEnv, {
               direction: "read",
@@ -1393,13 +1415,13 @@ export class Store extends Context.Service<
             }),
           ),
           Effect.flatMap((env) => git(["fetch", "origin", baseRef], storePath, env)),
-          Effect.tapError((error) =>
-            Effect.logDebug("store: base freshen skipped").pipe(
-              Effect.annotateLogs({ storePath, baseRef, stderr: error.stderr }),
-            ),
-          ),
-          Effect.ignore,
+          Effect.result,
         );
+        if (Result.isSuccess(fetched)) return fetchedFreshen;
+        yield* Effect.logDebug("store: base freshen skipped").pipe(
+          Effect.annotateLogs({ storePath, baseRef, stderr: fetched.failure.stderr }),
+        );
+        return failedFreshen(fetched.failure.stderr);
       }, Effect.scoped);
 
       /**
@@ -1512,18 +1534,19 @@ export class Store extends Context.Service<
         storePath,
         defaultBranch,
         bundle,
-        remoteEnv,
+        options,
       ) =>
         admitHandoffIn({
           storePath,
           defaultBranch,
           bundle,
           quarantineRoot,
+          fileBytes: options.fileBytes,
           defaultTip: knownBaseSha(storePath, defaultBranch).pipe(
             Effect.map((tip): string | null => tip),
             Effect.catch(() => Effect.succeed<string | null>(null)),
           ),
-          freshenDefault: freshenBase(storePath, defaultBranch, remoteEnv),
+          freshenDefault: options.freshen,
         });
 
       const sweepHandoffQuarantines: Store["Service"]["sweepHandoffQuarantines"] = () =>
@@ -2196,6 +2219,7 @@ export class Store extends Context.Service<
         adopt,
         createWorktree,
         resolveBase,
+        freshenBase,
         admitHandoff,
         sweepHandoffQuarantines,
         renameBranch,

@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { SessionEngine } from "@mend/sessions";
-import { Store } from "@mend/store";
+import { skippedFreshen, Store } from "@mend/store";
 import { buildHandoffBundle, sh } from "@mend/store/testing/handoff";
 import { it } from "@mend/test-ci/effect-vitest";
 import { Effect, Result } from "effect";
@@ -35,7 +35,7 @@ describe("SessionEngine handoff", () => {
             project.storePath,
             project.defaultBranch,
             bundle.bytes,
-            null,
+            { freshen: Effect.succeed(skippedFreshen("no credential in this test")), fileBytes: 0 },
           );
           const taken = yield* engine.ensureWorktree(
             project.id,

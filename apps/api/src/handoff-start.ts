@@ -25,7 +25,7 @@ import { Deferred, Effect, Fiber, Option } from "effect";
 import * as Context from "effect/Context";
 
 import { ProjectAccess } from "./access.ts";
-import { Budgets } from "./budgets.ts";
+import { budgetMessage, Budgets } from "./budgets.ts";
 import { requireSessionRoom } from "./session-budgets.ts";
 import { LAUNCH_ANSWER_WINDOW, settleIfUnlaunched } from "./session-start.ts";
 
@@ -133,11 +133,23 @@ export const makeHandoffStart = Effect.gen(function* () {
   ) {
     const remoteEnv = yield* remoteEnvFor(project, userId);
     return yield* store
-      .admitHandoff(project.storePath, project.defaultBranch, bytes, remoteEnv)
+      .admitHandoff(project.storePath, project.defaultBranch, bytes, {
+        freshen: store.freshenBase(project.storePath, project.defaultBranch, remoteEnv),
+        fileBytes: budgets.limits.handoffFileBytes,
+      })
       .pipe(
         Effect.catchTags({
           HandoffRefusedError: (error) =>
             Effect.fail(new HandoffRefused({ reason: error.reason, message: error.message })),
+          HandoffFileOverBudgetError: (error) =>
+            Effect.fail(
+              new BudgetExceeded({
+                budget: "handoffFileBytes",
+                limit: error.limit,
+                retryAfterSeconds: null,
+                message: `${error.path} is ${error.bytes} bytes, over the ${budgetMessage("handoffFileBytes", error.limit)} · leave it out and hand off again · nothing was created`,
+              }),
+            ),
           GitError: (error) => Effect.fail(new StoreFailure({ message: error.stderr })),
         }),
       );

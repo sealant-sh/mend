@@ -13,7 +13,7 @@ import {
   type WorktreeHandoff,
 } from "@mend/domain/workbench";
 import type { SessionEngine } from "@mend/sessions";
-import { Store, StoreConfig } from "@mend/store";
+import { skippedFreshen, Store, StoreConfig } from "@mend/store";
 import { buildHandoffBundle, makeHandoffWorld, sh } from "@mend/store/testing/handoff";
 import { Effect, Layer } from "effect";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -119,8 +119,9 @@ const worldWith = async (limits: Parameters<typeof createTenancyApi>[0] = {}, se
   return createTenancyApi(limits, {
     implement: {
       store: {
-        admitHandoff: (_storePath, defaultBranch, bytes) =>
-          realStore.admitHandoff(world.storePath, defaultBranch, bytes, null),
+        freshenBase: () => Effect.succeed(skippedFreshen("no credential in this test")),
+        admitHandoff: (_storePath, defaultBranch, bytes, options) =>
+          realStore.admitHandoff(world.storePath, defaultBranch, bytes, options),
       },
       engine: {
         launchUnderWay: () => false,

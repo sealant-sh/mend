@@ -2,7 +2,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { CaptureStoreRepo, StoreRefsRepo, WorktreesRepo } from "@mend/db";
-import { BlobStore, decodeManifest, INDEX_TREE_REF, Store, WORKTREE_TREE_REF } from "@mend/store";
+import {
+  BlobStore,
+  decodeManifest,
+  INDEX_TREE_REF,
+  skippedFreshen,
+  Store,
+  WORKTREE_TREE_REF,
+} from "@mend/store";
 import { buildHandoffBundle, sh } from "@mend/store/testing/handoff";
 import { Effect, Exit, Layer, Result, Scope } from "effect";
 import type * as Context from "effect/Context";
@@ -14,6 +21,11 @@ import { SessionRepositoryCapturedLive } from "../src/session-repository-capture
 import { SessionRepository } from "../src/session-repository.ts";
 import { WorktreeReads, WorktreeReadsCapturedLive } from "../src/worktree-reads.ts";
 import { makeCaptureWorld, newWorktreeId } from "./capture-world.ts";
+
+const noFreshen = {
+  freshen: Effect.succeed(skippedFreshen("no credential in this test")),
+  fileBytes: 0,
+};
 
 describe("SessionRepositoryCapturedLive with a handoff", () => {
   const world = makeCaptureWorld();
@@ -74,7 +86,12 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
         const refs = yield* StoreRefsRepo;
         const captures = yield* CaptureStoreRepo;
         const blobs = yield* BlobStore;
-        const admitted = yield* store.admitHandoff(world.storePath, "main", bundle.bytes, null);
+        const admitted = yield* store.admitHandoff(
+          world.storePath,
+          "main",
+          bundle.bytes,
+          noFreshen,
+        );
         const created = yield* repo.createWorktree(
           world.project.id,
           { directory: worktreeId, branch },
@@ -156,7 +173,12 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
       Effect.gen(function* () {
         const store = yield* Store;
         const repo = yield* SessionRepository;
-        const admitted = yield* store.admitHandoff(world.storePath, "main", bundle.bytes, null);
+        const admitted = yield* store.admitHandoff(
+          world.storePath,
+          "main",
+          bundle.bytes,
+          noFreshen,
+        );
         const first = yield* repo.createWorktree(
           world.project.id,
           { directory: worktreeId, branch },
@@ -169,7 +191,12 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
           { kind: "handoff", admitted },
           null,
         );
-        const otherAdmitted = yield* store.admitHandoff(world.storePath, "main", other.bytes, null);
+        const otherAdmitted = yield* store.admitHandoff(
+          world.storePath,
+          "main",
+          other.bytes,
+          noFreshen,
+        );
         const taken = yield* repo
           .createWorktree(
             world.project.id,
