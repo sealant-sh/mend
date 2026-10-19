@@ -226,25 +226,31 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
   - The story's signal (the row in `Needs you`, the badge `1`, the toast with [Answer]) is
     `recipes/vscode-view.mjs` on a server with G4: the stand-in's `PermissionRequest` moves the row
     to `Needs you` as `waiting · claude needs your permission to use Bash · since <hh:mm>`, badge
-    `1`, one toast `add-rate-limit is waiting · claude needs your permission to use Bash` [Answer];
-    `notification(...).click("Answer")` attaches `claude · add-rate-limit` in this window, `opens`
+    `1`, one toast `view-rate-limit is waiting · claude needs your permission to use Bash` [Answer];
+    `notification(...).click("Answer")` attaches `claude · view-rate-limit` in this window, `opens`
     and windows unchanged; `PostToolUse` returns the row to `running` and clears the badge.
   - a4 (the same recipe, on a server with #1089): `Terminal: Create New Terminal` puts her own
     terminal in front (Answer left the agent's tab there, and a window whose active terminal is the
     agent's tab toasts nothing for it). Claude's `Stop` then reads `idle · claude finished its turn`
     under `Running`: no `Needs you`, no badge, no toast. Claude's `/exit` reads `completed` and
-    toasts `add-rate-limit finished · …` [Review] [Open].
+    toasts `view-rate-limit finished · …` [Review] [Open].
   - Another window: `palette("New Window")`. Under Xvfb, with no window manager, VS Code holds both
     windows focused (each custom title bar active, `xdotool windowfocus` changes nothing). One wait
     toasts in one window of this VS Code (a claim in global storage), so the recipe checks exactly
-    one window toasted it and both show badge `1`; which window it is stays not drivable.
+    one window toasted it and both show badge `1`; which window it is stays not drivable. First
+    `Terminal: Create New Terminal` in the home window: b1's Answer left the agent's tab in front
+    there, which alone keeps that window quiet, so with it in front the step could not tell the
+    claim from that. The step also lists the claim files in the run's
+    `User/globalStorage/sealant-sh.mend/toasts`: one new file, named by when the wait began and its
+    kind (`<ms>.<session>%3Await%3Apermission%3A<since>`), gone once `PostToolUse` ends the wait.
   - S3, someone else's wait: Ana (a second account, invited over the API, her claude connected with
-    the fake token through a scratch CLI config) starts `ana` as a claude terminal agent in the
+    the fake token through a scratch CLI config) starts `view-ana` as a claude terminal agent in the
     shared project, shared control off, and her own shell fires the stand-in's `PermissionRequest`.
-    Mend reads it `waiting`; Dana's view reads `ana · waiting · Ana's session` outside `Needs you`,
-    `Needs you` reads `nothing`, the badge stays empty and nothing toasts. Then her shell exits and
-    she stops it; in one run of four (`r2v4`) Mend still read it `waiting` minutes after the stop,
-    both processes exited and the workspace stopped, so the recipe notes that instead of failing.
+    Mend reads it `waiting`; Dana's view reads `view-ana · waiting · Ana's session` outside
+    `Needs you`, `Needs you` reads `nothing`, the badge stays empty and nothing toasts. Then her
+    shell exits and she stops it; in one run of four (`r2v4`) Mend still read it `waiting` minutes
+    after the stop, both processes exited and the workspace stopped, so the recipe notes that
+    instead of failing.
   - A conversation's question in a toast with [Allow] [Deny] needs a conversation session, which
     needs a provider login. Report `verified-unreachable · provider login`.
   - The answer's mechanics are drivable today. Record `windows()`, then
@@ -379,10 +385,10 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     person who clicks Open just as the list changes would get the session pick. Not reproduced since
     the recipe waits.
   - The workspace window's Mend view (`recipes/vscode-view.mjs`): `Open in New Window` on a running
-    session; the view's first row reads `add-rate-limit · running`, then `<n> other sessions`, the
-    status bar `● add-rate-limit · running`; clicking it opens the picker `Mend sessions`. While it
+    session; the view's first row reads `view-rate-limit · running`, then `<n> other sessions`, the
+    status bar `● view-rate-limit · running`; clicking it opens the picker `Mend sessions`. While it
     waits (`PermissionRequest`), the first row reads
-    `add-rate-limit · waiting · claude needs your permission to use Bash`, offers `Mend: Answer`,
+    `view-rate-limit · waiting · claude needs your permission to use Bash`, offers `Mend: Answer`,
     and no `Needs you` group shows.
   - First open on a machine without Remote-SSH: `recipes/vscode-open-first.mjs` from
     `up --no-remote-ssh`. `contextMenu("Mend: Open in New Window")` on the stopped `fresh worktree`
@@ -471,14 +477,16 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     `Projects`.
   - f3: `treeItem(<row>).click()` takes each out of `Since you last looked`, which then reads
     `nothing`; after `Developer: Reload Window` they stay out.
-  - S9, last (the editor is signed out after it): `POST /me/devices` mints a device token as
-    Settings does (`via: "api"`), written to the run's `cli.json` as `mend login` writes it, and the
-    window reloads; then `DELETE /me/devices/<id>` revokes it as Settings does. The recipe waits 30
-    s for the view to empty by itself and, if it has not, makes a frame by creating a session row
-    over the API (observed, runs `r2v6`, `r3v1` and `r3v2`: it emptied by itself within a second).
-    The view shows one row, `Signed out — sign in again.` · `Run Mend: Connect to server`; one error
-    toast reads `Signed out — sign in again.` [Connect to server], and no second one shows over the
-    next 30 s, another frame in between.
+  - S9, near the end: `POST /me/devices` mints a device token as Settings does (`via: "api"`),
+    written to the run's `cli.json` as `mend login` writes it, and the window reloads; then
+    `DELETE /me/devices/<id>` revokes it as Settings does. The recipe waits 30 s for the view to
+    empty by itself and, if it has not, makes a frame by creating a session row over the API
+    (observed, runs `r2v6`, `r3v1` and `r3v2`: it emptied by itself within a second). The view shows
+    one row, `Signed out — sign in again.` · `Run Mend: Connect to server`; one error toast reads
+    `Signed out — sign in again.` [Connect to server], and no second one shows over the next 30 s,
+    another frame in between. Last, the recipe writes back the `cli.json` that `up` wrote and
+    reloads, so the editor is signed in again. Its sessions are named `view-…` where
+    `recipes/vscode-open.mjs` uses the same name, so open can follow view in one world.
   - A landing (`landed · pull request #412 · open · observed`) is `not run`: the world's origin is a
     public GitHub repository nobody can push to. The model's unit tests cover the words.
 - **g. mend handoff: Dana's local branch becomes a session.** `not run · G6`. The command **Hand off

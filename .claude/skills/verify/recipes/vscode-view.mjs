@@ -3,7 +3,9 @@
 // session she starts that runs (a2, a3), a terminal agent that waits and the Answer that attaches
 // it here (b1), Ana's terminal agent waiting, which is not Dana's to answer (S3), two windows of
 // which one toasts a wait, a session's workspace window and its own row while it waits, the turn
-// that ends (a4), Mend unreachable for a moment, and last the editor's device revoked (S9).
+// that ends (a4), Mend unreachable for a moment, and last the editor's device revoked (S9), then
+// signed in again. Its sessions are named apart from recipes/vscode-open.mjs's, which can follow
+// it in the same world.
 //
 //   node .claude/skills/verify/scripts/drive-vscode.mjs run \
 //     .claude/skills/verify/recipes/vscode-view.mjs --out <dir>
@@ -488,20 +490,20 @@ export default async (h) => {
   // ── a2, a3 ──
   let rate;
   await step(
-    "a2/a3: add-rate-limit started as a terminal agent: its row reads starting then running, no toast, the status bar Mend · 1 running",
+    "a2/a3: view-rate-limit started as a terminal agent: its row reads starting then running, no toast, the status bar Mend · 1 running",
     async () => {
       const watching = await watch();
-      const started = startClaude("add-rate-limit");
+      const started = startClaude("view-rate-limit");
       const starting = await until(
-        "add-rate-limit starting",
-        (now) => rowIn(now, "Running", "add-rate-limit")?.includes("· starting") === true,
+        "view-rate-limit starting",
+        (now) => rowIn(now, "Running", "view-rate-limit")?.includes("· starting") === true,
         120_000,
       );
       await shot("a2-starting");
       rate = await started;
       const running = await until(
-        "add-rate-limit running",
-        (now) => rowIn(now, "Running", "add-rate-limit")?.includes("· running") === true,
+        "view-rate-limit running",
+        (now) => rowIn(now, "Running", "view-rate-limit")?.includes("· running") === true,
         120_000,
       );
       await shot("a3-running");
@@ -511,13 +513,13 @@ export default async (h) => {
         running.statusBar.includes("Mend · 1 running"),
         `status bar ${JSON.stringify(running.statusBar)}`,
       );
-      return `starting "${rowIn(starting, "Running", "add-rate-limit")}" · running "${rowIn(running, "Running", "add-rate-limit")}" · status bar ${JSON.stringify(running.statusBar)} · ${shown(caught)}`;
+      return `starting "${rowIn(starting, "Running", "view-rate-limit")}" · running "${rowIn(running, "Running", "view-rate-limit")}" · status bar ${JSON.stringify(running.statusBar)} · ${shown(caught)}`;
     },
   );
 
   // ── b1 ──
   const rateHooks = await step(
-    "b1 setup: a shell beside add-rate-limit with claude's hooks",
+    "b1 setup: a shell beside view-rate-limit with claude's hooks",
     async () => ({
       observed: "the stand-in and the agent's --settings in $D",
       ...(await hooksBeside(rate)),
@@ -530,18 +532,18 @@ export default async (h) => {
     async () => {
       await rateHooks.fire("PermissionRequest");
       const seen = await until(
-        "add-rate-limit in Needs you",
+        "view-rate-limit in Needs you",
         (now) =>
-          rowIn(now, "Needs you", "add-rate-limit")?.includes(
+          rowIn(now, "Needs you", "view-rate-limit")?.includes(
             "waiting · claude needs your permission to use Bash",
           ) === true && now.badge === "1",
         30_000,
       );
-      const toast = notification("add-rate-limit is waiting");
+      const toast = notification("view-rate-limit is waiting");
       await toast.waitFor(15_000);
       const words = await toast.text();
       expect(
-        words.includes("add-rate-limit is waiting · claude needs your permission to use Bash"),
+        words.includes("view-rate-limit is waiting · claude needs your permission to use Bash"),
         `the toast reads ${words}`,
       );
       await shot("b1-told");
@@ -550,16 +552,16 @@ export default async (h) => {
   );
 
   await step(
-    "b1: Answer attaches claude · add-rate-limit in this window's panel and opens no window",
+    "b1: Answer attaches claude · view-rate-limit in this window's panel and opens no window",
     async () => {
       const known = await windows();
       const before = await opens();
-      await notification("add-rate-limit is waiting").click("Answer");
+      await notification("view-rate-limit is waiting").click("Answer");
       const tabs = await waitUntil(
         "the agent's tab in this window",
         async () => {
           const now = await terminal().tabs();
-          return now?.names?.includes("claude · add-rate-limit") ? now : null;
+          return now?.names?.includes("claude · view-rate-limit") ? now : null;
         },
         30_000,
       );
@@ -578,9 +580,9 @@ export default async (h) => {
     async () => {
       await rateHooks.fire("PostToolUse");
       const seen = await until(
-        "add-rate-limit running, badge cleared",
+        "view-rate-limit running, badge cleared",
         (now) =>
-          rowIn(now, "Running", "add-rate-limit")?.includes("· running") === true &&
+          rowIn(now, "Running", "view-rate-limit")?.includes("· running") === true &&
           now.badge === "",
         30_000,
       );
@@ -594,7 +596,7 @@ export default async (h) => {
   // observation; the CLI that connects her claude reads it from a scratch config, removed after.
   let asAna = null;
   const ana = await step(
-    "S3 setup: Ana joins, the project is shared, her claude is connected and she starts ana as a terminal agent, shared control off",
+    "S3 setup: Ana joins, the project is shared, her claude is connected and she starts view-ana as a terminal agent, shared control off",
     async () => {
       const { token: invitation } = await api("/organization/invitations", {
         method: "POST",
@@ -641,11 +643,11 @@ export default async (h) => {
       } finally {
         rmSync(scratch, { recursive: true, force: true });
       }
-      const started = await startClaude("ana", asAna);
+      const started = await startClaude("view-ana", asAna);
       const { session: read } = await sessionRead(started.id, asAna);
       expect(read.sharedControlEnabledAt === null, "shared control is on");
       return {
-        observed: `ana ${started.id.slice(0, 8)} · ${read.status} · launcher is Ana ${read.workspaceLauncherUserId === read.ownerUserId} · shared control off`,
+        observed: `view-ana ${started.id.slice(0, 8)} · ${read.status} · launcher is Ana ${read.workspaceLauncherUserId === read.ownerUserId} · shared control off`,
         ...started,
       };
     },
@@ -667,9 +669,11 @@ export default async (h) => {
         30_000,
       );
       const seen = await until(
-        "ana to read waiting in the view",
+        "view-ana to read waiting in the view",
         (now) =>
-          now.groups.some((group) => group.rows.some((row) => row.startsWith("ana · waiting"))),
+          now.groups.some((group) =>
+            group.rows.some((row) => row.startsWith("view-ana · waiting")),
+          ),
         30_000,
       );
       await sleep(5_000);
@@ -677,12 +681,12 @@ export default async (h) => {
       const caught = await watching.stop();
       await shot("s3-ana-waits");
       const where = after.groups.find((group) =>
-        group.rows.some((row) => row.startsWith("ana · ")),
+        group.rows.some((row) => row.startsWith("view-ana · ")),
       );
-      const row = where?.rows.find((one) => one.startsWith("ana · ")) ?? null;
+      const row = where?.rows.find((one) => one.startsWith("view-ana · ")) ?? null;
       const agent = waiting.processes.find((one) => one.id === ana.agent);
-      const observed = `Mend read ana ${waiting.session.status}, agent waiting ${JSON.stringify(agent?.waiting ?? null)} · in ${where?.group ?? "no group"} "${row}" · ${summary(after)} · ${shown(caught)}`;
-      expect(row?.startsWith("ana · waiting · Ana's session") === true, `row: ${observed}`);
+      const observed = `Mend read view-ana ${waiting.session.status}, agent waiting ${JSON.stringify(agent?.waiting ?? null)} · in ${where?.group ?? "no group"} "${row}" · ${summary(after)} · ${shown(caught)}`;
+      expect(row?.startsWith("view-ana · waiting · Ana's session") === true, `row: ${observed}`);
       expect(where?.group !== "Needs you" && empty(after, "Needs you"), `Needs you: ${observed}`);
       expect(seen.badge === "" && after.badge === "", `badge: ${observed}`);
       expect(
@@ -690,7 +694,7 @@ export default async (h) => {
         `status bar: ${observed}`,
       );
       expect(
-        caught === null || !caught.toasts.some((text) => text.includes("ana")),
+        caught === null || !caught.toasts.some((text) => text.includes("view-ana")),
         `toasted: ${observed}`,
       );
       // Her shell holds the workspace too: it leaves first, so her stop settles it.
@@ -699,7 +703,7 @@ export default async (h) => {
       hooks.shell.close();
       await asAna(`/sessions/${ana.id}/stop`, { method: "POST", body: "{}" });
       const settled = await waitUntil(
-        "Mend to read ana settled",
+        "Mend to read view-ana settled",
         async () => {
           const one = await sessionRead(ana.id, asAna);
           return one.session.status === "waiting" ? null : one.session.status;
@@ -711,7 +715,7 @@ export default async (h) => {
         // session `waiting`. The view follows Mend; the steps after this one do not rest on it.
         const one = await sessionRead(ana.id, asAna);
         note(
-          `Mend still reads ana ${one.session.status} 60 s after her stop · processes ${JSON.stringify(one.processes.map((row) => [row.kind, row.exitedAt]))}`,
+          `Mend still reads view-ana ${one.session.status} 60 s after her stop · processes ${JSON.stringify(one.processes.map((row) => [row.kind, row.exitedAt]))}`,
         );
       }
       return `${observed} · then Ana stopped it (api): Mend reads ${settled ?? "waiting, see the note"}`;
@@ -721,9 +725,20 @@ export default async (h) => {
 
   // ── another VS Code window ──
   await step(
-    "another VS Code window: one wait toasts in one window of this VS Code, both show the badge",
+    "another VS Code window: one wait toasts in one window of this VS Code, both show the badge; neither window shows the session, so only the shared claim keeps it to one",
     async () => {
       const home = await homeWindow();
+      await useWindow(home);
+      // b1's Answer left the agent's tab in front here, which alone would keep this window quiet.
+      await palette("Terminal: Create New Terminal");
+      const homeTabs = await waitUntil(
+        "her own terminal in front in the home window",
+        async () => {
+          const now = await terminal().tabs();
+          return now.active !== null && !now.active.includes("view-rate-limit") ? now : null;
+        },
+        30_000,
+      );
       const known = await windows();
       await palette("New Window");
       const second = await waitForWindow(known);
@@ -762,7 +777,7 @@ export default async (h) => {
       const homeBadge = await badge("Mend");
       await shot("two-windows-home");
       const toasts = (seen) =>
-        seen === null ? 0 : seen.toasts.filter((text) => text.includes("add-rate-limit")).length;
+        seen === null ? 0 : seen.toasts.filter((text) => text.includes("view-rate-limit")).length;
       const toasted = [homeSeen, secondSeen].filter((seen) => toasts(seen) > 0).length;
       const focused = focusAtEvent.filter((one) => one.focused === true).length;
       await rateHooks.fire("PostToolUse");
@@ -776,7 +791,7 @@ export default async (h) => {
       await useWindow(second);
       await closeWindow(second);
       await useWindow(await homeWindow());
-      const said = `VS Code's focus ${JSON.stringify(focusAtEvent)} · home ${shown(homeSeen)} badge "${homeBadge}" · second ${shown(secondSeen)} badge "${secondBadge}" · windows that toasted: ${toasted} · claims made: ${JSON.stringify(claimed)} · given back once the wait ended: ${released}`;
+      const said = `VS Code's focus ${JSON.stringify(focusAtEvent)} · home active terminal "${homeTabs.active}" · home ${shown(homeSeen)} badge "${homeBadge}" · second ${shown(secondSeen)} badge "${secondBadge}" · windows that toasted: ${toasted} · claims made: ${JSON.stringify(claimed)} · given back once the wait ended: ${released}`;
       expect(homeBadge === "1" && secondBadge === "1", `badges: ${said}`);
       expect(toasts(homeSeen) <= 1 && toasts(secondSeen) <= 1, `a window toasted twice: ${said}`);
       expect(toasted === 1, `${toasted} windows toasted the one wait: ${said}`);
@@ -808,7 +823,7 @@ export default async (h) => {
         120_000,
       );
       const known = await windows();
-      await treeItem("add-rate-limit").contextMenu("Mend: Open in New Window");
+      await treeItem("view-rate-limit").contextMenu("Mend: Open in New Window");
       const workspace = await waitForWindow(known, 180_000);
       await useWindow(workspace);
       await waitUntil(
@@ -826,7 +841,7 @@ export default async (h) => {
         "the workspace view: its own row on top, then the others line",
         async () => {
           const now = await flat();
-          return now[0]?.startsWith("add-rate-limit · running") &&
+          return now[0]?.startsWith("view-rate-limit · running") &&
             now.some((row) => /other sessions?/.test(row))
             ? now
             : null;
@@ -836,7 +851,7 @@ export default async (h) => {
       const seen = await observe();
       await shot("c3-workspace-view");
       expect(
-        rows[0].startsWith("add-rate-limit · running") &&
+        rows[0].startsWith("view-rate-limit · running") &&
           rows.some((row) => /other sessions?/.test(row)),
         `rows ${JSON.stringify(rows)}`,
       );
@@ -861,7 +876,7 @@ export default async (h) => {
       await rateHooks.fire("PermissionRequest");
       const mendRead = [];
       await waitUntil(
-        "Mend to read add-rate-limit waiting",
+        "Mend to read view-rate-limit waiting",
         async () => {
           const one = await sessionRead(rate.id);
           const agent = one.processes.find((row) => row.id === rate.agent);
@@ -871,7 +886,7 @@ export default async (h) => {
         30_000,
       ).catch(() => {
         throw new Error(
-          `Mend never read add-rate-limit waiting after the hook: ${[...new Set(mendRead)].join(" → ")}`,
+          `Mend never read view-rate-limit waiting after the hook: ${[...new Set(mendRead)].join(" → ")}`,
         );
       });
       const rows = await waitUntil(
@@ -879,21 +894,21 @@ export default async (h) => {
         async () => {
           const now = await flat();
           return now[0]?.startsWith(
-            "add-rate-limit · waiting · claude needs your permission to use Bash",
+            "view-rate-limit · waiting · claude needs your permission to use Bash",
           )
             ? now
             : null;
         },
         30_000,
       );
-      const actions = await treeItem("add-rate-limit").actions();
+      const actions = await treeItem("view-rate-limit").actions();
       await shot("c3-workspace-waits");
       await rateHooks.fire("PostToolUse");
       const back = await waitUntil(
         "the own row to read running again",
         async () => {
           const now = await flat();
-          return now[0]?.startsWith("add-rate-limit · running") ? now : null;
+          return now[0]?.startsWith("view-rate-limit · running") ? now : null;
         },
         30_000,
       );
@@ -907,7 +922,7 @@ export default async (h) => {
 
   await step("the workspace window's status bar opens the session picker", async () => {
     const item = page()
-      .locator(".part.statusbar .statusbar-item", { hasText: "add-rate-limit · " })
+      .locator(".part.statusbar .statusbar-item", { hasText: "view-rate-limit · " })
       .first();
     await item.click();
     const picker = await waitUntil(
@@ -954,17 +969,17 @@ export default async (h) => {
         "her own terminal in front",
         async () => {
           const now = await terminal().tabs();
-          return now.active !== null && !now.active.includes("add-rate-limit") ? now : null;
+          return now.active !== null && !now.active.includes("view-rate-limit") ? now : null;
         },
         30_000,
       );
       const watching = await watch();
       await rateHooks.fire("Stop");
       const seen = await until(
-        "add-rate-limit idle · claude finished its turn",
+        "view-rate-limit idle · claude finished its turn",
         (now) =>
-          rowIn(now, "Running", "add-rate-limit")?.startsWith(
-            "add-rate-limit · idle · claude finished its turn",
+          rowIn(now, "Running", "view-rate-limit")?.startsWith(
+            "view-rate-limit · idle · claude finished its turn",
           ) === true,
         30_000,
       );
@@ -974,8 +989,8 @@ export default async (h) => {
       await shot("a4-turn-ended");
       const observed = `active terminal "${tabs.active}" · ${summary(after)} · ${shown(caught)}`;
       expect(
-        rowIn(after, "Running", "add-rate-limit")?.startsWith(
-          "add-rate-limit · idle · claude finished its turn",
+        rowIn(after, "Running", "view-rate-limit")?.startsWith(
+          "view-rate-limit · idle · claude finished its turn",
         ) === true,
         `the row: ${observed}`,
       );
@@ -984,7 +999,7 @@ export default async (h) => {
         `badge: ${observed}`,
       );
       expect(
-        caught !== null && !caught.toasts.some((text) => text.includes("add-rate-limit")),
+        caught !== null && !caught.toasts.some((text) => text.includes("view-rate-limit")),
         `toasted: ${observed}`,
       );
       return observed;
@@ -992,7 +1007,7 @@ export default async (h) => {
   );
 
   await step(
-    "a4: claude exits: the row reads completed, and the focused window toasts add-rate-limit finished with Review and Open",
+    "a4: claude exits: the row reads completed, and the focused window toasts view-rate-limit finished with Review and Open",
     async () => {
       const tabs = await terminal().tabs();
       // The hooks' shell holds the workspace too: it leaves first, so the agent's exit settles it.
@@ -1001,12 +1016,12 @@ export default async (h) => {
       await sleep(1_500);
       agent.send("/exit\r");
       const seen = await until(
-        "add-rate-limit in Since you last looked",
+        "view-rate-limit in Since you last looked",
         (now) =>
-          rowIn(now, "Since you last looked", "add-rate-limit")?.includes("completed") === true,
+          rowIn(now, "Since you last looked", "view-rate-limit")?.includes("completed") === true,
         60_000,
       );
-      const toast = notification("add-rate-limit finished");
+      const toast = notification("view-rate-limit finished");
       await toast.waitFor(15_000);
       const words = await toast.text();
       expect(/Review/.test(words) && /Open/.test(words), `the toast reads ${words}`);
@@ -1076,8 +1091,10 @@ export default async (h) => {
     { via: "setup" },
   );
 
-  // ── S9: the editor's device revoked; last, since the editor is signed out after it ──
+  // ── S9: the editor's device revoked, then signed in again as `up` left it ──
+  const cliConfig = join(state.configHome, "mend", "cli.json");
   let device;
+  let signedIn = null;
   await step(
     "S9 setup: the editor signs in with a device token of its own (minted as Settings mints one, written as mend login writes it), the window reloaded",
     async () => {
@@ -1087,11 +1104,10 @@ export default async (h) => {
       });
       register(state.privateDir, "s9-device-token", minted.token);
       device = minted.device;
-      writeFileSync(
-        join(state.configHome, "mend", "cli.json"),
-        JSON.stringify({ url: origin, token: minted.token }),
-        { mode: 0o600 },
-      );
+      signedIn = readFileSync(cliConfig, "utf8");
+      writeFileSync(cliConfig, JSON.stringify({ url: origin, token: minted.token }), {
+        mode: 0o600,
+      });
       await reload();
       const seen = await until("the view to read on the device", (now) =>
         GROUPS.every((name) => groupOf(now, name) !== null),
@@ -1119,7 +1135,7 @@ export default async (h) => {
       let seen = await until("the view to empty by itself", gone, 30_000).catch(() => null);
       const byItself = seen !== null;
       if (seen === null) {
-        await frame("s9-frame");
+        await frame("view-s9-frame");
         seen = await until("the view to empty after a frame", gone, 60_000);
       }
       const emptiedIn = Date.now() - revokedAt;
@@ -1141,7 +1157,7 @@ export default async (h) => {
     "S9: no second toast over the next 30 s, a frame in between",
     async () => {
       await sleep(10_000);
-      await frame("s9-frame-2");
+      await frame("view-s9-frame-2");
       await sleep(20_000);
       const caught = await revoked.watching.stop();
       const told =
@@ -1154,6 +1170,21 @@ export default async (h) => {
       return observed;
     },
     { via: "api" },
+  );
+
+  await step(
+    "S9 teardown: the editor signed in again as up left it, the window reloaded, so another recipe can follow in this world",
+    async () => {
+      writeFileSync(cliConfig, signedIn ?? fail("S9 setup kept no sign-in to restore"), {
+        mode: 0o600,
+      });
+      await reload();
+      const seen = await until("the view to read again", (now) =>
+        GROUPS.every((name) => groupOf(now, name) !== null),
+      );
+      return summary(seen);
+    },
+    { via: "setup" },
   );
 
   note(
