@@ -492,6 +492,22 @@ export const workbenchHelpers = async (context, options) => {
       page()
         .locator(`${QUICK_INPUT} .quick-input-progress`)
         .evaluate((bar) => !bar.classList.contains("done") && bar.offsetParent !== null),
+    /**
+     * The line under the input box (an InputBox's `prompt`, or its validation message in its
+     * place): `{ text, severity }`, severity `warning`, `error` or `info` as the box is decorated,
+     * else `none`; null while none shows.
+     */
+    message: async () =>
+      page()
+        .locator(QUICK_INPUT)
+        .evaluate((widget) => {
+          const line = widget.querySelector(".quick-input-message");
+          if (line === null || line.offsetParent === null) return null;
+          const box = widget.querySelector(".quick-input-box .monaco-inputbox");
+          const severity =
+            ["error", "warning", "info"].find((name) => box?.classList.contains(name)) ?? "none";
+          return { text: (line.textContent ?? "").trim(), severity };
+        }),
     /** Every row: `{ label, icons, description, detail, buttons, focused }`, icons by codicon name. */
     rows: async () =>
       Promise.all(

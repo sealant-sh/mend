@@ -202,16 +202,13 @@ export default async (h) => {
           async () => {
             const key = await keyOf();
             const rows = await quickInput.rows();
+            const counter = (await quickInput.step())?.step ?? null;
             const sample = `${key}|${rows.map((row) => row.label).join(",")}`;
             const settled = sample === sampled;
             sampled = sample;
-            return settled && key !== last && rows.length > 0
-              ? {
-                  key,
-                  step: (await quickInput.step())?.step ?? null,
-                  rows,
-                  placeholder: await quickInput.placeholder(),
-                }
+            // Change…'s steps are lists; the prompt step is an input box with no rows.
+            return settled && key !== last && (rows.length > 0 || counter === null)
+              ? { key, step: counter, rows, placeholder: await quickInput.placeholder() }
               : null;
           },
           30_000,
@@ -219,7 +216,7 @@ export default async (h) => {
         last = seen.key;
         if (seen.step === null) {
           await shot("new-session-shell");
-          const line = seen.rows[0]?.description ?? "";
+          const line = (await quickInput.message())?.text ?? "";
           expect(line.startsWith("shell · "), `the dim line reads "${line}"`);
           await quickInput.accept();
           return `${trail.join(" · ")} · prompt step "${seen.placeholder}", value "${await quickInput.value().catch(() => "")}", dim line "${line}"`;

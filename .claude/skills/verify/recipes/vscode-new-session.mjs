@@ -35,6 +35,10 @@ const PROMPT = "add rate limiting to the login route";
 const PROMPT_CODEX = "list the files in this repository";
 const PROMPT_FAILS = "write a changelog entry";
 const PROMPT_OFFLINE = "rename the config loader";
+/** Pasted whole: 100,000 and 130,000 ASCII characters, so as many bytes; the cap is 120,000. */
+const pasted = (length) => "summarize this build log line by line. ".repeat(4_000).slice(0, length);
+const LONG_PROMPT = pasted(100_000);
+const OVER_PROMPT = pasted(130_000);
 const UNPUSHED = "verify-unpushed";
 const OTHER_REPO = "https://github.com/octocat/Spoon-Knife.git";
 /** Never fetched: the nested repository only needs an origin no project has. */
@@ -60,7 +64,7 @@ const liveAgent = (processes) =>
 
 /** A quick input as one line: title, step, placeholder, value, each row. */
 const said = (seen) =>
-  `title "${seen.title}"${seen.step === null ? "" : ` · step ${seen.step}/${seen.total}`} · placeholder "${seen.placeholder}" · value "${seen.value}" · rows ${JSON.stringify(seen.rows.map(({ label, icons, description, buttons }) => ({ label, icons, description, buttons })))}`;
+  `title "${seen.title}"${seen.step === null ? "" : ` · step ${seen.step}/${seen.total}`} · placeholder "${seen.placeholder}" · value "${seen.value.length > 200 ? `<${seen.value.length} characters>` : seen.value}"${seen.rows.length === 0 ? "" : ` · rows ${JSON.stringify(seen.rows.map(({ label, icons, description, buttons }) => ({ label, icons, description, buttons })))}`}${seen.line === "" ? "" : ` · line "${seen.line}"${seen.warned ? " (warning)" : ""} · buttons ${JSON.stringify(seen.buttons)}`}`;
 
 const shown = (seen) =>
   seen === null
@@ -171,6 +175,17 @@ export default async (h) => {
     }
   };
 
+  /** The line under the input box, `warned` when it is decorated, and the title bar's buttons. */
+  const promptLine = async () => {
+    const message = await quickInput.message();
+    const bar = (await quickInput.buttons()).filter((button) => button.where === "title bar");
+    return {
+      line: message?.text ?? "",
+      warned: message?.severity === "warning" || message?.severity === "error",
+      buttons: bar.map((button) => button.tooltip),
+    };
+  };
+
   /** The quick input as she reads it. */
   const read = async () => {
     const counter = await quickInput.step();
@@ -181,6 +196,9 @@ export default async (h) => {
       placeholder: await quickInput.placeholder(),
       value: await quickInput.value(),
       rows: await quickInput.rows(),
+      // The prompt step is an InputBox: its dim line is the line under the box, Change… a title
+      // bar button, and a warning decorates the box.
+      ...(await promptLine()),
     };
   };
 
@@ -316,15 +334,14 @@ export default async (h) => {
     async () => {
       const seen = await newSession();
       await shot("a1-new-session");
-      const [row] = seen.rows;
       expect(seen.title === `New session · ${project.name}`, `the title: ${said(seen)}`);
       expect(seen.step === null, `a step counter shows: ${said(seen)}`);
-      expect(seen.rows.length === 1, `${seen.rows.length} rows: ${said(seen)}`);
+      expect(seen.rows.length === 0, `${seen.rows.length} rows under the prompt: ${said(seen)}`);
       expect(
-        row.description === `claude · default model · from ${base}`,
+        seen.line === `claude · default model · from ${base}` && !seen.warned,
         `the dim line: ${said(seen)}`,
       );
-      expect(row.buttons.includes("Change…"), `no Change… on the row: ${said(seen)}`);
+      expect(seen.buttons.includes("Change…"), `no Change… on the title bar: ${said(seen)}`);
       expect(seen.placeholder === "What should claude do?", `the placeholder: ${said(seen)}`);
       return said(seen);
     },
@@ -456,7 +473,6 @@ export default async (h) => {
         return { keep: true };
       });
       await shot("change-done");
-      const [row] = prompt.rows;
       const steps = trail.map((line) => line.split(" ")[0]);
       expect(backed, `Back was never offered a model step: ${trail.join(" · ")}`);
       expect(
@@ -466,7 +482,7 @@ export default async (h) => {
       expect(prompt.title === `New session · ${project.name}`, `the title: ${said(prompt)}`);
       expect(prompt.value === PROMPT_CODEX, `the prompt: ${said(prompt)}`);
       expect(
-        row.description.startsWith(`codex · ${codexModel.label} · `),
+        prompt.line.startsWith(`codex · ${codexModel.label} · `),
         `the dim line: ${said(prompt)}`,
       );
       return `steps ${steps.join(" → ")} · ${trail.join(" · ")} · then ${said(prompt)}`;
@@ -520,10 +536,7 @@ export default async (h) => {
       await quickInput.cancel();
       const codex = harness.rows.find((row) => row.label.toLowerCase() === "codex");
       const observed = `prompt step ${said(seen)} · harness step ${said(harness)}`;
-      expect(
-        seen.rows[0].description.startsWith(`codex · ${codexModel.label} · `),
-        `the dim line: ${observed}`,
-      );
+      expect(seen.line.startsWith(`codex · ${codexModel.label} · `), `the dim line: ${observed}`);
       expect(
         codex?.icons.includes("check") && codex.description === `remembered for ${project.name}`,
         `codex is not marked remembered: ${observed}`,
@@ -555,7 +568,7 @@ export default async (h) => {
             !/wt-[0-9a-f-]{36}/.test(seen.title)),
         `the title: ${observed}`,
       );
-      expect(!/wt-[0-9a-f-]{36}/.test(seen.rows[0]?.description ?? ""), observed);
+      expect(!/wt-[0-9a-f-]{36}/.test(seen.line), observed);
       return observed;
     },
   );
@@ -578,7 +591,7 @@ export default async (h) => {
         "the dim line to name the unpushed branch",
         async () => {
           const now = await newSession();
-          if (now.rows[0]?.description.includes(UNPUSHED)) return now;
+          if (now.line.includes(UNPUSHED)) return now;
           await quickInput.cancel();
           return null;
         },
@@ -586,12 +599,11 @@ export default async (h) => {
       );
       await shot("base-unpushed");
       await quickInput.cancel();
-      const [row] = seen.rows;
       expect(
-        row.description.endsWith(`from ${base} · your branch ${UNPUSHED} isn't pushed`),
+        seen.line.endsWith(`from ${base} · your branch ${UNPUSHED} isn't pushed`),
         `the dim line: ${said(seen)}`,
       );
-      expect(row.icons.includes("warning"), `no warning on the row: ${said(seen)}`);
+      expect(seen.warned, `the line is not a warning: ${said(seen)}`);
       return said(seen);
     },
   );
@@ -639,14 +651,14 @@ export default async (h) => {
         "the dim line to read the upstream",
         async () => {
           const now = await newSession();
-          if (now.rows[0]?.description.endsWith(`from ${base}`)) return now;
+          if (now.line.endsWith(`from ${base}`)) return now;
           await quickInput.cancel();
           return null;
         },
         60_000,
       );
       await shot("base-upstream");
-      expect(!seen.rows[0].icons.includes("warning"), `a warning: ${said(seen)}`);
+      expect(!seen.warned, `a warning: ${said(seen)}`);
       const { session, worktree, created } = await startAndReadBase("check the base");
       const upstream = git(["rev-parse", `origin/${base}`]);
       const observed = `${said(seen)} · ${created} session ${session.id.slice(0, 8)} · worktree ${worktree.name} baseRef ${worktree.baseRef} baseSha ${worktree.baseSha} · origin/${base} ${upstream}`;
@@ -684,14 +696,14 @@ export default async (h) => {
           "the dim line to read test",
           async () => {
             const now = await newSession();
-            if (now.rows[0]?.description.endsWith("from test")) return now;
+            if (now.line.endsWith("from test")) return now;
             await quickInput.cancel();
             return null;
           },
           60_000,
         );
         await shot("base-pushed-without-u");
-        expect(!seen.rows[0].icons.includes("warning"), `a warning: ${said(seen)}`);
+        expect(!seen.warned, `a warning: ${said(seen)}`);
         const { session, worktree, created } = await startAndReadBase("check the pushed branch");
         const observed = `${said(seen)} · ${created} session ${session.id.slice(0, 8)} · worktree baseRef ${worktree.baseRef} baseSha ${worktree.baseSha} · origin/test ${remoteTest}`;
         expect(worktree.baseRef === "test" && worktree.baseSha === remoteTest, observed);
@@ -719,7 +731,7 @@ export default async (h) => {
         "the dim line to read verify-gone",
         async () => {
           const now = await newSession();
-          if (now.rows[0]?.description.endsWith("from verify-gone")) return now;
+          if (now.line.endsWith("from verify-gone")) return now;
           await quickInput.cancel();
           return null;
         },
@@ -731,7 +743,7 @@ export default async (h) => {
         "the store's refusal on the line",
         async () => {
           const now = await read();
-          return now.rows[0]?.description.includes("couldn't find") ? now : null;
+          return now.line.includes("couldn't find") ? now : null;
         },
         180_000,
       );
@@ -740,9 +752,8 @@ export default async (h) => {
       const { worktree, created } = await startAndReadBase("check the missing base");
       const observed = `${said(refused)} · sessions created by the refused Enter ${between} · after Enter again ${created}, worktree baseRef ${worktree.baseRef}`;
       expect(
-        refused.rows[0].description.endsWith(
-          `from ${base} · Mend's store couldn't find verify-gone`,
-        ) && refused.value === "check the missing base",
+        refused.line.endsWith(`from ${base} · Mend's store couldn't find verify-gone`) &&
+          refused.value === "check the missing base",
         observed,
       );
       expect(between === 0 && created === 1 && worktree.baseRef === base, observed);
@@ -904,7 +915,7 @@ export default async (h) => {
     const observed = `${busyLine} · ${said(prompt)} · new projects ${JSON.stringify(adopted.map((one) => ({ name: one.name, originUrl: one.originUrl })))}`;
     expect(adopted.length === 1 && adopted[0].originUrl === OTHER_REPO, observed);
     expect(prompt.title === `New session · ${adopted[0].name}`, `the title: ${observed}`);
-    expect(prompt.rows.length === 1 && prompt.rows[0].description !== "", observed);
+    expect(prompt.rows.length === 0 && prompt.line !== "", observed);
     return observed;
   });
 
@@ -939,7 +950,7 @@ export default async (h) => {
       const { trail, prompt } = await change((seen) =>
         seen.placeholder === "Harness" ? { pick: labelOf(seen, "claude") } : { keep: true },
       );
-      expect(prompt.rows[0].description.startsWith("claude · "), `the dim line: ${said(prompt)}`);
+      expect(prompt.line.startsWith("claude · "), `the dim line: ${said(prompt)}`);
       await quickInput.accept();
       const { row, seen } = await followNewRow(beforeFail.labels, REFUSED_ROW, 120_000);
       const toast = await waitUntil(
@@ -955,7 +966,7 @@ export default async (h) => {
       await shot("launch-failed");
       const created = await createdSince(beforeFail.ids);
       const server = await api(`/sessions/${created[0]?.id}`);
-      const observed = `Change… ${trail.join(" · ")} · dim line "${prompt.rows[0].description}" · rows sampled ${JSON.stringify(seen)} · the server reads ${server.session.status} · "${server.session.summary}" · toast "${toast}" · ${shown(caught)} · sessions created ${created.length}`;
+      const observed = `Change… ${trail.join(" · ")} · dim line "${prompt.line}" · rows sampled ${JSON.stringify(seen)} · the server reads ${server.session.status} · "${server.session.summary}" · toast "${toast}" · ${shown(caught)} · sessions created ${created.length}`;
       const failures = (caught?.toasts ?? []).filter((text) => REFUSED_TOAST.test(text));
       expect(created.length === 1, observed);
       expect(
@@ -1010,6 +1021,77 @@ export default async (h) => {
     },
   );
 
+  // ── a long prompt pasted ──
+  // A QuickPick matched its value against its rows as a regular expression the renderer could not
+  // build past about 32,000 characters: the extension never heard the prompt and started claude
+  // without one. The prompt is an InputBox now.
+  const beforeLong = await sessionIds();
+  await step(
+    `a prompt of ${LONG_PROMPT.length.toLocaleString("en")} characters pasted: Enter starts one claude whose argv carries it whole`,
+    async () => {
+      const seen = await newSession();
+      expect(seen.line.startsWith("claude · "), `the dim line: ${said(seen)}`);
+      await quickInput.type(LONG_PROMPT);
+      const typed = await read();
+      await shot("long-prompt-typed");
+      expect(typed.value === LONG_PROMPT, `the box holds ${typed.value.length} characters`);
+      expect(!typed.warned, `the line warns: ${said(typed)}`);
+      await quickInput.accept();
+      await waitUntil("the input to close", async () => !(await quickInput.isOpen()), 120_000);
+      const created = await waitUntil(
+        "the session it started",
+        async () => {
+          const now = (await api(`/projects/${project.id}`)).sessions.filter(
+            (one) => !beforeLong.has(one.id),
+          );
+          return now.length > 0 ? now : null;
+        },
+        120_000,
+      );
+      const [session] = created;
+      const detail = await waitUntil(
+        "a live agent-pty",
+        async () => {
+          const now = await api(`/sessions/${session.id}`);
+          return liveAgent(now.processes) === undefined ? null : now;
+        },
+        300_000,
+      );
+      const argv = liveAgent(detail.processes).argv;
+      const sent = argv.at(-1) ?? "";
+      const observed = `${said(typed)} · sessions created ${created.length} · ${session.id.slice(0, 8)} argv ${JSON.stringify(argv.slice(0, -1))} + a last word of ${sent.length} characters, ${sent === LONG_PROMPT ? "equal to" : "not"} what she pasted`;
+      expect(created.length === 1, observed);
+      expect(argv.length === 2 && sent === LONG_PROMPT, observed);
+      return observed;
+    },
+    { via: "api" },
+  );
+
+  await step(
+    `a prompt of ${OVER_PROMPT.length.toLocaleString("en")} characters: the line says it is too long, and Enter sends nothing`,
+    async () => {
+      const ids = await sessionIds();
+      await newSession();
+      await quickInput.type(OVER_PROMPT);
+      await quickInput.accept();
+      await sleep(3_000);
+      const seen = await read();
+      await shot("over-prompt-refused");
+      const open = await quickInput.isOpen();
+      const created = [...(await sessionIds())].filter((id) => !ids.has(id));
+      const observed = `${said(seen)} · open ${open} · sessions created ${created.length}`;
+      expect(
+        seen.line === "the prompt is 130,000 bytes · claude takes at most 120,000" && seen.warned,
+        `the line: ${observed}`,
+      );
+      expect(open && seen.value === OVER_PROMPT && created.length === 0, observed);
+      // Cleared, so the next New session does not keep it.
+      await quickInput.type("");
+      await quickInput.cancel();
+      return observed;
+    },
+  );
+
   // ── offline with a typed prompt ──
   await step("offline: she opens New session and types a prompt", async () => {
     const seen = await newSession();
@@ -1034,9 +1116,7 @@ export default async (h) => {
         "the offline line",
         async () => {
           const now = await read();
-          return now.rows[0]?.description === OFFLINE || now.rows[0]?.label === OFFLINE
-            ? now
-            : null;
+          return now.line === OFFLINE ? now : null;
         },
         120_000,
       );
@@ -1105,7 +1185,7 @@ export default async (h) => {
       await quickInput.cancel();
       const observed = `${said(seen)} · selection ${JSON.stringify(selection)} · after typing " now" "${typed}"`;
       expect(seen.value === PROMPT_OFFLINE, `the prompt: ${observed}`);
-      expect(seen.rows[0]?.description !== OFFLINE, `still offline: ${observed}`);
+      expect(seen.line !== OFFLINE, `still offline: ${observed}`);
       expect(typed === `${PROMPT_OFFLINE} now`, `the kept prompt was replaced: ${observed}`);
       return observed;
     },
