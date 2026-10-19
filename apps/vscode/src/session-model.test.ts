@@ -11,6 +11,7 @@ import {
   type Attention,
   type LandingFact,
   type ModelInput,
+  type Refusal,
   type Notification,
   type WaitFact,
   type WindowModel,
@@ -75,6 +76,7 @@ const input = (
     ],
     waits: new Map(),
     landings: new Map(),
+    refusals: new Map(),
     lastSeen: { baseline: YESTERDAY, sessions: {} },
     connection: { state: "online", lastHeardAt: NOW.toISOString() },
     window: { kind: "local" },
@@ -487,6 +489,84 @@ describe("toasts (rules 12-14)", () => {
       [],
     );
     expect(transitions(asRead(completed), asRead(completed), looking)).toEqual([]);
+  });
+});
+
+describe("a launch that fails (story a)", () => {
+  const LOGIN = "launch refused · Connect Claude to start a session here.";
+  const starting = session({ id: "add-rate-limit", status: "starting", summary: "booting" });
+  const failed = (settledAt: string, summary = LOGIN) =>
+    session({ id: "add-rate-limit", status: "failed", summary, settledAt });
+  const read = (one: Session, refusals = new Map<string, Refusal>()) =>
+    sessionModel(input([one], { refusals }));
+  const refused = (at: string, line = "launch refused · over the organization's budget") =>
+    new Map([[starting.id, { line, at }]]);
+
+  /** Each read in turn, with what this window already raised: the toasts and their kinds. */
+  const across = (reads: ReadonlyArray<WindowModel>) => {
+    const raised = new Set<string>();
+    const out: Array<{ readonly kind: string; readonly text: string }> = [];
+    for (const [index, next] of reads.entries()) {
+      const prev = index === 0 ? null : (reads[index - 1] ?? null);
+      if (prev === null) continue;
+      for (const one of transitions(prev, next, { ...looking, raised })) {
+        if (one.kind === "withdrawn") continue;
+        raised.add(one.key);
+        if (one.quiet === null) out.push({ kind: one.kind, text: one.text });
+      }
+    }
+    return out;
+  };
+
+  it("raises launchFailed once when her starting session reads failed", () => {
+    expect(
+      across([read(starting), read(failed(NOW.toISOString())), read(failed(NOW.toISOString()))]),
+    ).toEqual([{ kind: "launchFailed", text: `add-rate-limit failed · ${LOGIN}` }]);
+  });
+
+  it("reads a refused launch failed while the server still reads it starting, then raises one", () => {
+    const overlaid = read(starting, refused("2026-10-19T09:00:05.000Z"));
+    expect(overlaid.sessions.get(starting.id)?.line).toBe(
+      "failed · launch refused · over the organization's budget",
+    );
+    expect(
+      across([
+        read(starting),
+        overlaid,
+        read(failed("2026-10-19T09:00:06.000Z"), refused("2026-10-19T09:00:05.000Z")),
+      ]),
+    ).toEqual([
+      {
+        kind: "launchFailed",
+        text: "add-rate-limit failed · launch refused · over the organization's budget",
+      },
+    ]);
+  });
+
+  it("raises a new one when a retried launch fails again", () => {
+    expect(
+      across([
+        read(starting),
+        read(starting, refused("2026-10-19T09:00:05.000Z")),
+        read(starting),
+        read(starting, refused("2026-10-19T09:01:05.000Z")),
+      ]).map((one) => one.kind),
+    ).toEqual(["launchFailed", "launchFailed"]);
+  });
+
+  it("toasts it even while her row is on screen, since only the toast offers Retry", () => {
+    const shown = transitions(read(starting), read(failed(NOW.toISOString())), {
+      ...looking,
+      showing: new Set([starting.id]),
+    });
+    expect(shown.map((one) => one.kind !== "withdrawn" && one.quiet)).toEqual([null]);
+  });
+
+  it("still raises finished for a session that ran and then failed", () => {
+    const running = session({ id: "add-rate-limit", status: "running" });
+    expect(across([read(running), read(failed(NOW.toISOString(), "exit 1"))])).toEqual([
+      { kind: "finished", text: "add-rate-limit failed · exit 1" },
+    ]);
   });
 });
 

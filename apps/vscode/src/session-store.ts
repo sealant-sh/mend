@@ -10,6 +10,7 @@ import {
   type Connection,
   type LandingFact,
   type LastSeen,
+  type Refusal,
   type WaitFact,
   type WindowModel,
 } from "./session-model.js";
@@ -151,6 +152,8 @@ export class SessionStore implements vscode.Disposable {
   #wantedSince: number | null = null;
   #lastWantAt = 0;
   #lastBatchAt = Number.NEGATIVE_INFINITY;
+  /** Launches this VS Code sent that the server refused, by session (`refused`). */
+  readonly #refusals = new Map<string, Refusal>();
   #timer: NodeJS.Timeout | null = null;
   /** Sessions read now, one read each: a frame meanwhile reads that session again after it. */
   readonly #reading = new Set<string>();
@@ -305,6 +308,16 @@ export class SessionStore implements vscode.Disposable {
   /** The view's selection changed: a selected session is looked at now. */
   select(sessionIds: ReadonlyArray<string>): void {
     this.#selected = sessionIds;
+    this.#emit();
+  }
+
+  /**
+   * A launch the server refused over HTTP: while it still reads the session `starting`, the model
+   * reads it failed with `line`. Null when the launch is sent again.
+   */
+  refused(sessionId: string, line: string | null): void {
+    if (line === null) this.#refusals.delete(sessionId);
+    else this.#refusals.set(sessionId, { line, at: new Date().toISOString() });
     this.#emit();
   }
 
@@ -699,6 +712,10 @@ export class SessionStore implements vscode.Disposable {
 
   #emit(): void {
     const now = new Date();
+    // A read that moved the session past `starting` says more than the refusal did.
+    for (const sessionId of this.#refusals.keys())
+      if ((this.find(sessionId)?.session.status ?? "starting") !== "starting")
+        this.#refusals.delete(sessionId);
     if (this.#serverUrl !== null) this.#lastSeen = this.#syncLastSeen(this.#serverUrl, now);
     const prev = this.#modelRead ? this.#model : null;
     const next = sessionModel({
@@ -708,6 +725,7 @@ export class SessionStore implements vscode.Disposable {
       members: this.#snapshot.members,
       waits: this.#snapshot.waits,
       landings: this.#snapshot.landings,
+      refusals: this.#refusals,
       lastSeen: this.#lastSeen,
       connection: this.#connection,
       window:

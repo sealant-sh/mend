@@ -204,7 +204,11 @@ const world = () => {
   const mend = new FakeMend();
   const here = new FakeWindow();
   const store = new SessionStore({ globalState: memento() }, mend, { kind: "local" }, here);
-  const notifier = new Notifier(store, { claim: async () => true, release: async () => undefined });
+  const notifier = new Notifier(
+    store,
+    { claim: async () => true, release: async () => undefined },
+    { has: () => false, relaunch: async () => {} },
+  );
   store.onDidChange((change) => notifier.changed(change));
   return { mend, here, store };
 };

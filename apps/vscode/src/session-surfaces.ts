@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import { MendApiError } from "./client.js";
+import type { Launches } from "./launches.js";
 import { transitions, waitsOf, type Notification, type WindowModel } from "./session-model.js";
 import type { SessionStore, StoreChange } from "./session-store.js";
 import type { ToastClaims } from "./toast-claims.js";
@@ -67,6 +68,7 @@ export class Notifier {
   constructor(
     private readonly store: Pick<SessionStore, "showing" | "model" | "error">,
     private readonly claims: Pick<ToastClaims, "claim" | "release">,
+    private readonly launches: Pick<Launches, "has" | "relaunch">,
   ) {}
 
   changed({ prev, next }: StoreChange): void {
@@ -96,6 +98,17 @@ export class Notifier {
       await this.claims.release(notification.key, notification.at);
       return;
     }
+    if (notification.kind === "launchFailed") {
+      // Retry only where this window holds what the launch sent.
+      const { sessionId } = notification;
+      if (!this.launches.has(sessionId)) {
+        void vscode.window.showErrorMessage(notification.text);
+        return;
+      }
+      const picked = await vscode.window.showErrorMessage(notification.text, "Retry");
+      if (picked === "Retry") await this.launches.relaunch(sessionId);
+      return;
+    }
     const actions = notification.kind === "waits" ? ["Answer"] : ["Review", "Open"];
     const picked = await vscode.window.showInformationMessage(notification.text, ...actions);
     if (picked === undefined) return;
@@ -112,7 +125,8 @@ export class Notifier {
   #stillToasts(notification: Exclude<Notification, { readonly kind: "withdrawn" }>): boolean {
     return (
       vscode.window.state.focused &&
-      !this.store.showing().has(notification.sessionId) &&
+      // Rule 14: a failed launch's toast carries Retry, which its row does not.
+      (notification.kind === "launchFailed" || !this.store.showing().has(notification.sessionId)) &&
       (notification.kind !== "waits" || waitsOf(this.store.model()).has(notification.key))
     );
   }

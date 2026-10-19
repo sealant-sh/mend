@@ -7,6 +7,7 @@ import { attachTerminal, memberName } from "./agent-terminal.js";
 import { MendApiError, MendClient, normalizeProjectName } from "./client.js";
 import { ConnectionStore } from "./config.js";
 import { currentBranch, worktreePath } from "./git.js";
+import { Launches } from "./launches.js";
 import { OFFER_COMMANDS, openRunner, setUpWorkspaceSsh } from "./open-command.js";
 import type { OpenMode } from "./open-flow.js";
 import { OpenIntents } from "./open-intent.js";
@@ -35,13 +36,7 @@ import {
   type SessionNode,
 } from "./tree.js";
 import { attachableProcesses, type TtyAddress } from "./tty-protocol.js";
-import type {
-  Project,
-  ProjectDetail,
-  Session,
-  SessionLocation,
-  WorktreeJoin,
-} from "./types.js";
+import type { Project, ProjectDetail, Session, SessionLocation, WorktreeJoin } from "./types.js";
 import { terminalTabName, windowRole } from "./window-role.js";
 import { startWorkspaceEditor, type WorkspaceEditorReport } from "./workspace-editor.js";
 import { WorkspaceWindow } from "./workspace-window.js";
@@ -732,9 +727,11 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const store = new SessionStore(context, client, role, workspaceWindow);
   const tree = new MendTreeProvider(store, client);
   const statusBar = new MendStatusBar();
+  const launches = new Launches(client, store);
   const notifier = new Notifier(
     store,
     new ToastClaims(path.join(context.globalStorageUri.fsPath, "toasts")),
+    launches,
   );
   const opens = openRunner({
     context,

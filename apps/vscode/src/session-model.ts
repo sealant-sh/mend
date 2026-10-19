@@ -32,6 +32,15 @@ export interface LandingFact {
   } | null;
 }
 
+/**
+ * A launch the server refused over HTTP (`POST /sessions/:id/launch`): until a read moves the
+ * session past `starting`, it reads `failed · <line>` as of `at`.
+ */
+export interface Refusal {
+  readonly line: string;
+  readonly at: string;
+}
+
 /** What `globalState` keeps per server URL, on this machine only (Decided 3). */
 export interface LastSeen {
   /** When this VS Code first read the server: what settled before it is not news. */
@@ -57,6 +66,7 @@ export interface ModelInput {
   readonly members: ReadonlyArray<MemberName>;
   readonly waits: ReadonlyMap<string, WaitFact>;
   readonly landings: ReadonlyMap<string, LandingFact>;
+  readonly refusals: ReadonlyMap<string, Refusal>;
   readonly lastSeen: LastSeen;
   readonly connection: Connection;
   readonly window: WindowFacts;
@@ -189,13 +199,22 @@ export const ownLine = (session: Pick<Session, "status" | "summary">): string =>
   return fact === null ? session.status : `${session.status} · ${fact}`;
 };
 
+/** The session as it reads: a refused launch the server still reads `starting` has failed. */
+const withRefusal = (session: Session, refusals: ReadonlyMap<string, Refusal>): Session => {
+  const refusal = session.status === "starting" ? refusals.get(session.id) : undefined;
+  return refusal === undefined
+    ? session
+    : { ...session, status: "failed", summary: refusal.line, settledAt: refusal.at };
+};
+
 const sessionView = (
   input: ModelInput,
   project: Project,
-  session: Session,
+  read: Session,
   offline: boolean,
 ): SessionView => {
   const { viewer, members } = input;
+  const session = withRefusal(read, input.refusals);
   const live = LIVE.has(session.status);
   const mine = viewer !== null && session.ownerUserId === viewer;
   const waiting = session.status === "waiting";
@@ -392,6 +411,8 @@ interface Raised {
 export type Notification =
   | (Raised & { readonly kind: "waits"; readonly text: string; readonly quiet: Quiet })
   | (Raised & { readonly kind: "finished"; readonly text: string; readonly quiet: Quiet })
+  /** A session she started failed before it ran: its error toast offers Retry. */
+  | (Raised & { readonly kind: "launchFailed"; readonly text: string; readonly quiet: Quiet })
   /** A wait that ended (answered here or elsewhere): its toast, if one shows, no longer holds. */
   | (Raised & { readonly kind: "withdrawn" });
 
@@ -417,7 +438,7 @@ export const waitsOf = (model: WindowModel | null): ReadonlyMap<string, Raised> 
 
 /**
  * What a change from `prev` to `next` raises (rules 12-14): a session that now waits for her, a
- * session she started that finished, and waits that ended. A first read raises its waits as
+ * session she started that finished, one whose launch failed, and waits that ended. A first read raises its waits as
  * `already-there`, so they never toast later.
  */
 export const transitions = (
@@ -451,6 +472,22 @@ export const transitions = (
     if (!view.mine || (view.word !== "completed" && view.word !== "failed")) return [];
     const earlier = prev?.sessions.get(view.session.id);
     if (earlier === undefined || !earlier.live) return [];
+    if (earlier.word === "starting" && view.word === "failed") {
+      // Each attempt settles at its own time, so a Retry that fails again is raised again.
+      const key = `${view.session.id}:launchFailed:${view.settledAt ?? view.fact ?? ""}`;
+      if (attention.raised.has(key)) return [];
+      return [
+        {
+          kind: "launchFailed",
+          key,
+          sessionId: view.session.id,
+          at: view.settledAt ?? view.session.createdAt,
+          text: [`${view.name} failed`, ...(view.fact === null ? [] : [view.fact])].join(" · "),
+          // Rule 14: the toast carries Retry, which the row does not, so a row on screen keeps it.
+          quiet: prev === null ? "already-there" : attention.focused ? null : "unfocused",
+        },
+      ];
+    }
     const key = `${view.session.id}:settled:${view.settledAt ?? view.word}`;
     if (attention.raised.has(key)) return [];
     const fact = view.word === "completed" ? firstLine(view.session.summary) : view.fact;

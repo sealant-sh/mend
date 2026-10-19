@@ -132,6 +132,7 @@ const read = (session: Session): WindowModel =>
       ],
     ]),
     landings: new Map(),
+    refusals: new Map(),
     lastSeen: { baseline: waiting.createdAt, sessions: {} },
     connection: { state: "connecting" },
     window: { kind: "local" },
@@ -158,6 +159,8 @@ const heldClaims = (claims: ToastClaims) => {
   };
 };
 
+const launches = { has: () => false, relaunch: async () => {} };
+
 describe("two windows, each focused when its own read lands (B4)", () => {
   it("toasts one wait once", async () => {
     const shared = await directory();
@@ -169,8 +172,8 @@ describe("two windows, each focused when its own read lands (B4)", () => {
     const change = waitStarts();
     window.showInformationMessage.mockClear();
     for (const notifier of [
-      new Notifier(store, new ToastClaims(shared)),
-      new Notifier(store, new ToastClaims(shared)),
+      new Notifier(store, new ToastClaims(shared), launches),
+      new Notifier(store, new ToastClaims(shared), launches),
     ])
       notifier.changed(change);
     await vi.waitFor(async () => expect(await readdir(shared)).toHaveLength(1));
@@ -188,7 +191,7 @@ describe("a wait the store saw end", () => {
       model: () => read(waiting),
       error: () => null,
     };
-    const notifier = new Notifier(store, new ToastClaims(shared));
+    const notifier = new Notifier(store, new ToastClaims(shared), launches);
     const { prev, next } = waitStarts();
     notifier.changed({ prev, next });
     await vi.waitFor(async () => expect(await readdir(shared)).toHaveLength(1));
@@ -209,7 +212,7 @@ describe("what changed while a window claimed its toast", () => {
     const change = waitStarts();
     window.showInformationMessage.mockClear();
     const here = heldClaims(new ToastClaims(shared));
-    new Notifier(store, here.claims).changed(change);
+    new Notifier(store, here.claims, launches).changed(change);
     await vi.waitFor(async () => expect(await readdir(shared)).toHaveLength(1));
     fake.focus(false);
     here.letGo();
@@ -217,7 +220,7 @@ describe("what changed while a window claimed its toast", () => {
     await vi.waitFor(async () => expect(await readdir(shared)).toEqual([]));
     expect(window.showInformationMessage).not.toHaveBeenCalled();
     fake.focus(true);
-    new Notifier(store, new ToastClaims(shared)).changed(change);
+    new Notifier(store, new ToastClaims(shared), launches).changed(change);
     await vi.waitFor(() => expect(window.showInformationMessage).toHaveBeenCalledTimes(1));
     expect(window.showInformationMessage).toHaveBeenCalledWith(
       expect.stringContaining("add-rate-limit is waiting"),
@@ -232,13 +235,13 @@ describe("what changed while a window claimed its toast", () => {
     let showing = new Set<string>();
     const store = { showing: () => showing, model: () => model, error: () => null };
     const ended = heldClaims(new ToastClaims(await directory()));
-    new Notifier(store, ended.claims).changed(waitStarts());
+    new Notifier(store, ended.claims, launches).changed(waitStarts());
     model = read({ ...waiting, status: "running" });
     ended.letGo();
     await vi.waitFor(() => expect(ended.release).toHaveBeenCalledTimes(1));
     model = read(waiting);
     const opened = heldClaims(new ToastClaims(await directory()));
-    new Notifier(store, opened.claims).changed(waitStarts());
+    new Notifier(store, opened.claims, launches).changed(waitStarts());
     showing = new Set(["s"]);
     opened.letGo();
     await vi.waitFor(() => expect(opened.release).toHaveBeenCalledTimes(1));
