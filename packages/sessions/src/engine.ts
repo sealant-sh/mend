@@ -423,7 +423,16 @@ import {
   standbyEpochOf,
   standbyWorktreeAlias,
 } from "./hot-pool.ts";
-import { makeLaunchGate } from "./launch-gate.ts";
+import {
+  Restart,
+  refusalError,
+  refusalOf,
+  underWayRefusal,
+  type LaunchOver,
+  type SessionAgentLiveError,
+  type SessionMovedOnError,
+} from "./launch-admission.ts";
+import { LAUNCH_UNDER_WAY_WORDS, makeLaunchGate } from "./launch-gate.ts";
 import { backfillFromNative, cursorAtEndOf } from "./native-backfill.ts";
 import {
   convertNativeSession,
@@ -2070,7 +2079,8 @@ export class SessionEngine extends Context.Service<
     /**
      * Whether a launch verb (launch, resume, handoff, follow-up) is under way for the session in
      * this process. A resumed session keeps its settled row until its agent runs; the API reads
-     * it as `starting` meanwhile, and a second launch verb is refused (`session_starting`).
+     * it as `starting` meanwhile, and a second launch verb is refused (`session_starting`; a
+     * public launch, in its own terms: `launch-admission.ts`).
      */
     readonly launchUnderWay: (sessionId: SessionId) => boolean;
     /**
@@ -2083,6 +2093,13 @@ export class SessionEngine extends Context.Service<
     readonly launch: (
       sessionId: SessionId,
       argv: ReadonlyArray<string>,
+      /**
+       * What it may launch over (SLNT-167), checked once the launch holds the gate. Omitted:
+       * `Restart`, a live agent's workspace stopped and replaced as it always was.
+       */
+      over?: LaunchOver,
+      /** Written to the session once the launch is admitted, never for one refused. */
+      launchOptions?: { readonly model: string | null; readonly effort: EffortLevel | null },
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
@@ -2092,6 +2109,8 @@ export class SessionEngine extends Context.Service<
       | HarnessStateError
       | SessionLaunchSetupError
       | DotfilesResolveError
+      | SessionMovedOnError
+      | SessionAgentLiveError
     >;
     /** Launch a supported harness as a structured byte protocol over a Sealant pipe session. */
     readonly launchProtocol: (
@@ -2100,6 +2119,8 @@ export class SessionEngine extends Context.Service<
       author: string | null,
       launchCorrelationId?: string | null,
       forceFreshWorkspace?: boolean,
+      /** As `launch`'s; a live protocol agent is refused even on `Restart` (`session_active`). */
+      over?: LaunchOver,
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
@@ -2110,6 +2131,8 @@ export class SessionEngine extends Context.Service<
       | SessionLaunchSetupError
       | DotfilesResolveError
       | ProtocolHarnessUnsupportedError
+      | SessionMovedOnError
+      | SessionAgentLiveError
     >;
     /**
      * Cross-mode pickup (mode handoff): end the live agent in the OTHER mode,
@@ -23732,16 +23755,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * mode does not wait: its relaunch is planned durably while the Stop's drain saves, and waits
        * on that drain itself (`launchInternal`).
        */
-      const oneLaunch =
-        (sessionId: SessionId) =>
+      const gatedLaunch =
+        <E2, R2>(sessionId: SessionId, refused: Effect.Effect<never, E2, R2>) =>
         <A, E, R>(effect: Effect.Effect<A, E, R>) =>
           Effect.suspend(() =>
             launchGate.underWay(sessionId)
-              ? launchGate.run(sessionId)(effect)
+              ? refused
               : launchGate
-                  .run(sessionId)(
-                    capture === null ? Effect.andThen(stopTailsSettled(sessionId), effect) : effect,
-                  )
+                  .runOr(
+                    sessionId,
+                    refused,
+                  )(capture === null ? Effect.andThen(stopTailsSettled(sessionId), effect) : effect)
                   .pipe(
                     Effect.ensuring(
                       Effect.suspend(() =>
@@ -23759,6 +23783,50 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       ),
                     ),
                   ),
+          );
+      const oneLaunch = (sessionId: SessionId) =>
+        gatedLaunch(
+          sessionId,
+          Effect.fail(
+            new SealantPlatformError({
+              code: "session_starting",
+              status: 409,
+              message: LAUNCH_UNDER_WAY_WORDS,
+              cause: null,
+            }),
+          ),
+        );
+
+      /**
+       * The public launch verbs only (SLNT-167): the launch runs over what its caller named, as
+       * the session reads once the launch holds the gate, after any Stop queued ahead of it. A
+       * refusal tears nothing down and writes nothing; while another launch verb holds the gate,
+       * the refusal says so in the same terms. Resume, handoff and follow-up keep `oneLaunch`.
+       */
+      const admittedLaunch =
+        (sessionId: SessionId, over: LaunchOver) =>
+        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          gatedLaunch(
+            sessionId,
+            sessions
+              .byId(sessionId)
+              .pipe(
+                Effect.flatMap((session) =>
+                  Effect.fail(refusalError(sessionId, underWayRefusal(over, session.settledAt))),
+                ),
+              ),
+          )(
+            Effect.gen(function* () {
+              const session = yield* sessions.byId(sessionId);
+              const refusal = refusalOf(over, {
+                status: session.status,
+                settledAt: session.settledAt,
+                agentLive: yield* agentIsLive(session),
+                underWay: false,
+              });
+              if (refusal !== null) return yield* refusalError(sessionId, refusal);
+              return yield* effect;
+            }),
           );
 
       // Every public verb about a session runs AS ITS OWNER (docs/SEALANT-IDENTITY.md): the
@@ -23785,10 +23853,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // its image build ran on).
         launchUnderWay: (sessionId) =>
           launchGate.underWay(sessionId) && !stoppedDuringLaunch.has(sessionId),
-        launch: (sessionId, argv) =>
-          detached(owned(sessionId)(oneLaunch(sessionId)(launch(sessionId, argv)))),
-        launchProtocol: (sessionId, ...rest) =>
-          detached(owned(sessionId)(oneLaunch(sessionId)(launchProtocol(sessionId, ...rest)))),
+        launch: (sessionId, argv, over = Restart, launchOptions) =>
+          detached(
+            owned(sessionId)(
+              admittedLaunch(
+                sessionId,
+                over,
+              )(
+                (launchOptions === undefined
+                  ? Effect.void
+                  : sessions.setLaunchOptions(sessionId, launchOptions)
+                ).pipe(Effect.andThen(launch(sessionId, argv))),
+              ),
+            ),
+          ),
+        launchProtocol: (
+          sessionId,
+          start,
+          author,
+          launchCorrelationId,
+          forceFreshWorkspace,
+          over = Restart,
+        ) =>
+          detached(
+            owned(sessionId)(
+              admittedLaunch(
+                sessionId,
+                over,
+              )(launchProtocol(sessionId, start, author, launchCorrelationId, forceFreshWorkspace)),
+            ),
+          ),
         submitTurn: (sessionId, input, author) =>
           owned(sessionId)(submitTurn(sessionId, input, author)),
         interruptTurn,
