@@ -355,6 +355,24 @@ describe("wait facts and toasts (S1, S2)", () => {
     expect(store.model()?.sessions.get("s")?.needsYou).toBe(true);
   });
 
+  it("toasts only while this window is focused, and not later for the same wait", async () => {
+    const { mend, store } = world();
+    mend.add(session({ id: "s" }), session({ id: "t" }));
+    store.start();
+    await tick(200);
+    fake.focus(false);
+    mend.add(session({ id: "s", status: "waiting" }));
+    mend.requests.set("s", [request]);
+    mend.signal({ kind: "event", event: event("agent-conversation", "s") });
+    await tick(200);
+    fake.focus(true);
+    mend.add(session({ id: "t", status: "waiting" }));
+    mend.requests.set("t", [{ ...request, id: "r-t" }]);
+    mend.signal({ kind: "event", event: event("agent-conversation", "t") });
+    await tick(200);
+    expect(toasts()).toEqual(["t is waiting · run pnpm db:migrate?"]);
+  });
+
   it("does not toast a wait whose agent terminal is in front in this window", async () => {
     const { mend, here, store } = world();
     mend.add(session({ id: "s" }), session({ id: "t" }));
