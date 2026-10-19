@@ -128,6 +128,7 @@ export const agentHookTarget = <P extends { readonly providerSessionId: string |
 /**
  * Idempotent: a repeat of the same kind answers `current` itself, keeping `since` and a known tool
  * the repeat lacks (Claude's `permission_prompt` follows `PermissionRequest` by ~6 s without one).
+ * A permission for another known tool is a new wait: the first one's `PostToolUse` never came.
  */
 export const nextAgentWait = (
   current: AgentWait | null,
@@ -135,7 +136,11 @@ export const nextAgentWait = (
   now: Date,
 ): AgentWait | null => {
   if (signal._tag === "continues") return null;
-  if (current === null || current.kind !== signal.kind) {
+  if (
+    current === null ||
+    current.kind !== signal.kind ||
+    (signal.tool !== null && current.tool !== null && signal.tool !== current.tool)
+  ) {
     return new AgentWait({ kind: signal.kind, tool: signal.tool, since: now });
   }
   const tool = signal.tool ?? current.tool;

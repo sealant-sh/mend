@@ -175,6 +175,13 @@ describe("nextAgentWait", () => {
     );
   });
 
+  it("starts over for a permission about another known tool", () => {
+    const bash = nextAgentWait(null, permissionBash, at(1));
+    expect(nextAgentWait(bash, { _tag: "waits", kind: "permission", tool: "Edit" }, at(4))).toEqual(
+      new AgentWait({ kind: "permission", tool: "Edit", since: at(4) }),
+    );
+  });
+
   it("clears when the agent continues", () => {
     expect(nextAgentWait(nextAgentWait(null, permissionBash, at(1)), continues, at(2))).toBeNull();
     expect(nextAgentWait(null, continues, at(2))).toBeNull();
