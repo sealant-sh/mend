@@ -364,14 +364,16 @@ export default async (h) => {
    * One gesture on a row that must open nothing and ask nothing. Everything seen is in the
    * failure's message too, so a failing line names what showed.
    */
-  const sessionReads = async (id) => linesMatching(await serverLogs(), `'/api/sessions/${id}'`);
+  // Every open reads the workspace SSH facts first; the Mend view never does. (The view reads a
+  // session whenever an event names it, so its reads say nothing about an open.)
+  const openReads = async () => linesMatching(await serverLogs(), `'/api/workspace-ssh'`);
 
   const selectsOnly = async (rowName, id, gesture, slug) => {
     const row = treeItem(rowName);
     await row.waitFor();
     const known = await windows();
     const before = await counts();
-    const readsBefore = await sessionReads(id);
+    const readsBefore = await openReads();
     const watching = await watch();
     await gesture(row);
     await sleep(3_000);
@@ -381,8 +383,8 @@ export default async (h) => {
     const seen = await watching.stop();
     const selected = await row.selected().catch(() => false);
     const after = await counts();
-    const readsAfter = await sessionReads(id);
-    const observed = `GET /api/sessions/${id.slice(0, 8)}… ${readsBefore} → ${readsAfter} · opens ${before.opens} → ${after.opens} · windows opened ${opened.length} · quick input left open ${leftOpen === null ? "none" : `"${leftOpen}"`} · row selected ${selected} · ${shown(seen)} · ${delta(before, after)}`;
+    const readsAfter = await openReads();
+    const observed = `GET /api/workspace-ssh ${readsBefore} → ${readsAfter} (session ${id.slice(0, 8)}) · opens ${before.opens} → ${after.opens} · windows opened ${opened.length} · quick input left open ${leftOpen === null ? "none" : `"${leftOpen}"`} · row selected ${selected} · ${shown(seen)} · ${delta(before, after)}`;
     if (leftOpen !== null) await quickInput.cancel();
     // The watch lists each distinct title once, and the pick left open is one of them.
     const asked = [
@@ -394,7 +396,7 @@ export default async (h) => {
     ];
     expect(
       readsAfter === readsBefore,
-      `${readsAfter - readsBefore} open(s) ran, by the session reads: ${observed}`,
+      `${readsAfter - readsBefore} open(s) ran, by the workspace SSH reads: ${observed}`,
     );
     expect(after.opens === before.opens, `an open ran: ${observed}`);
     expect(opened.length === 0, `a window opened: ${observed}`);
