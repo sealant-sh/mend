@@ -261,17 +261,20 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
   - Setup (`via: "setup"`): `userSettings({ "window.openFoldersInNewWindow": "on" })`, so every open
     keeps the local window until the last lane.
   - Calibration. The open button twice with a gap, each window connected and closed: `opens` +1,
-    then +2 (`1 → 2 → 3` on all three runs). Main's button `Mend: Open in VS Code` asked
-    `<session> is running` each time (answered `Open alongside`); the redesign's `Mend: Open` asked
-    nothing.
-  - Double-click the running row: the story expects it to select only. An open's first act is
-    `GET /api/sessions/<id>` (both builds), so the server's `'/api/sessions/<id>'` lines count the
-    opens that ran; the watch lists each distinct quick input title once, so it cannot tell one pick
-    from two. The redesign: the reads unchanged (`9 → 9` in `r2b`, `13 → 13` in `r2c`): no open ran,
-    so no read, which is also what a click makes. `opens 3 → 3`, 0 windows, 0 dialogs, 0 quick
-    inputs, 0 toasts, the row selected. Main fails here on the reads (the recipe exits 1; `r2t`:
-    `6 → 8`, `2 open(s) ran`): a click makes one read and a double-click two, each showing the pick
-    `claude · <id8> is running`, the second replacing the first in place.
+    then +2 (`1 → 2 → 3`). Main's button `Mend: Open in VS Code` asked `<session> is running` each
+    time (answered `Open alongside`); the redesign's `Mend: Open` asked nothing. The same step
+    calibrates the open-attempts counter: `open attempts 2 → 3 → 4` on both builds (runs `view30`,
+    `view34`).
+  - The open-attempts counter. The redesign's Mend view reads a session whenever an event names it,
+    so a session read no longer means an open ran. An attempt is a burst (reads under 3 s apart) of
+    the reads only an open makes: `GET /api/workspace-ssh`, which every open makes, plus on main's
+    extension `GET /api/sessions/<id>`, which its open makes before its takeover question (and
+    main's view never makes). A double-click's two runs land in one burst: the counter says an open
+    ran, not how many.
+  - Double-click the running row: the story expects it to select only. The redesign:
+    `open attempts 4 → 4`, `opens 3 → 3`, 0 windows, 0 dialogs, 0 quick inputs, 0 toasts, the row
+    selected (`view30`). Main fails here on the counter (the recipe exits 1; `view34`:
+    `open attempts 4 → 5`, `1 open(s) ran`), with the pick `claude · <id8> is running` left open.
   - Click the running row once, then double-click the stopped `fresh worktree` row: on the redesign
     each reads `opens` unchanged, 0 windows, nothing shown, the row selected, and the stopped
     session's resume count on the server unchanged.
