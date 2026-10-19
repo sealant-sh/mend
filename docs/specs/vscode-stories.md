@@ -375,7 +375,7 @@ _Dana installs the extension for the first time. Her Mend server is the Mac mini
 **Edge cases**
 
 - **Plain-http server on a network she doesn't control.** The URL input warns,
-  `Plain http: anyone on this network can read the token`, before anything is sent.
+  `Plain http: the token travels unencrypted`, before anything is sent.
 - **Denied, expired or unreachable.** The progress notification ends in one error toast with the
   reason and [Try again].
 - **She skips SSH setup.** Everything except **Open** works: review, answer, terminal, start.

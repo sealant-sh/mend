@@ -235,15 +235,15 @@ not use the person's home and logins.
 
 ### Workspace SSH setup
 
-Right after you connect, the view offers **Set up**, the only consent the extension asks for. One
-click installs Microsoft's Remote-SSH if it is missing, registers this machine's SSH key, writes one
-`Host` block to `~/.ssh/config`, and sets Remote-SSH's platform for that host to Linux. No open asks
-again after it. If you skip it, everything but **Open** works, and the first open asks once: **Set
-up workspace SSH to open sessions (one Host block in ~/.ssh/config)**. Setup registers this
-machine's SSH public key with Mend and adds one server-specific `Host` block at the start of
-`~/.ssh/config`, before any wildcard entries. It keeps hand-written configuration and blocks for
-other Mend servers. On later runs it reuses the key it chose. On first setup it can use a key from
-your SSH agent or create a dedicated key under `~/.config/mend/ssh`. It never prompts for a
+Right after you connect, the view offers **Set up**, the only consent the extension asks for, once
+per server. One click installs Microsoft's Remote-SSH if it is missing, registers this machine's SSH
+key, writes one `Host` block to `~/.ssh/config`, and sets Remote-SSH's platform for that host to
+Linux. No open asks again after it. If you skip it, everything but **Open** works, and the first
+open asks once: **Set up workspace SSH to open sessions (one Host block in ~/.ssh/config)**. Setup
+registers this machine's SSH public key with Mend and adds one server-specific `Host` block at the
+start of `~/.ssh/config`, before any wildcard entries. It keeps hand-written configuration and
+blocks for other Mend servers. On later runs it reuses the key it chose. On first setup it can use a
+key from your SSH agent or create a dedicated key under `~/.config/mend/ssh`. It never prompts for a
 passphrase: an encrypted or missing private key has to be loaded in an unlocked agent.
 
 Setup writes configuration and registers the key. It does not test the connection or check the
@@ -387,9 +387,9 @@ Until it is connected, the Mend view shows one step at a time.
 2. **Connect** asks one thing: the server URL as this machine reaches it
    (`http://mend-mini.local:3105`, a tailnet name, or your edge's `https://` origin), prefilled from
    the CLI's configuration when there is one. For a plain `http://` URL on another machine the input
-   says `Plain http: anyone on this network can read the token` before anything is sent; you can
-   still go on. It says nothing for this machine, a tailnet address (`100.64.0.0/10`) or a `.ts.net`
-   name, since the tailnet encrypts the connection.
+   says `Plain http: the token travels unencrypted` before anything is sent; you can still go on. It
+   says nothing for this machine, a tailnet address (`100.64.0.0/10`) or a `.ts.net` name, since the
+   tailnet encrypts the connection.
 3. The browser opens the server's `<server>/authorize` page, which asks **Authorize VS Code?**. VS
    Code shows one notification, `Approve in the browser if it shows ABCD-EFGH`, which you can
    cancel, and the status bar keeps `Mend sign-in · ABCD-EFGH` until the sign-in ends; clicking it
@@ -407,9 +407,16 @@ from this machine's (a Mac's Docker VM after sleep) does not expire it early. Th
 the `mend.serverUrl` setting and the token in VS Code's secret storage (encrypted, with its key in
 the macOS Keychain on a Mac). The CLI's token is used only while `mend.serverUrl` points at the same
 URL as the CLI's configuration. **Mend: Sign out** revokes the device the browser sign-in created
-and forgets its token. Signed out stays signed out: the editor does not fall back to the CLI's
-sign-in for that server until you connect again or press **Use it**, and the CLI keeps its own
-(`mend logout` ends it).
+and forgets its token, and says what Mend answered: the device revoked, already signed out, or Mend
+not reached (then revoke it under **Settings → Devices** yourself). Signed out stays signed out: the
+editor does not fall back to the CLI's sign-in for that server until you connect again or press
+**Use it**, and the CLI keeps its own (`mend logout` ends it).
+
+When Mend refuses the editor's token, for example after you revoke its device under **Settings →
+Devices**, the editor forgets the token: the account leaves the Accounts menu in every VS Code
+window, and one notification says `Signed out — sign in again.` with **Connect to server**.
+Connecting again while connected revokes the device the new sign-in replaces, so Settings → Devices
+keeps one `VS Code on <machine>`.
 
 Next, the view offers `Open sessions in VS Code: needs Remote-SSH and an SSH key for Mend` with
 **Set up** (see [Workspace SSH setup](#workspace-ssh-setup)), or **Skip for now**. With no project

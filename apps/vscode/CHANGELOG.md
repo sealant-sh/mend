@@ -44,7 +44,16 @@ patch number is the extension's own.
   sign-in (before, two did). A denial, an expired request or an unreachable server ends in one error
   with **Try again**. The token and no-token choices are gone. When the Mend CLI on this machine is
   signed in, the view offers **Use it** with its server and account: one click.
+- Upgrading with the Mend CLI signed in and no `mend.serverUrl` set: the editor no longer connects
+  on the CLI's sign-in by itself. The Mend view offers **Use it** first, one click.
 - The account shows in VS Code's Accounts menu, and **Sign Out** there revokes the editor's device.
+  When Mend refuses the editor's token (the device was revoked under Settings → Devices), the
+  account leaves the Accounts menu in every window and one notification says
+  `Signed out — sign in again.` with **Connect to server**. Connecting again while connected revokes
+  the device it replaces. A sign-out says what Mend answered: the device revoked, already signed
+  out, or Mend not reached.
+- Consent to workspace SSH is kept per server: consenting for one server never writes another
+  server's `Host` block.
 - After you connect, **Set up** installs Remote-SSH if it is missing, registers an SSH key, writes
   one `Host` block to `~/.ssh/config` and sets its Remote-SSH platform, once; no open asks after it.
   **Skip for now** leaves the one question to the first open.

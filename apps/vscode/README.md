@@ -33,8 +33,10 @@ confirms it, `Signed in to <server> as <you>`, and the account shows in VS Code'
 editor gets its own device token, listed under **Settings → Devices** as `VS Code on <machine>`.
 
 The token is kept in VS Code's secret storage. For a plain `http://` URL on another machine the URL
-input says `Plain http: anyone on this network can read the token` before anything is sent. **Sign
-Out** in the Accounts menu, or **Mend: Sign out**, revokes the editor's device and forgets it.
+input says `Plain http: the token travels unencrypted` before anything is sent. **Sign Out** in the
+Accounts menu, or **Mend: Sign out**, revokes the editor's device and forgets it. When Mend refuses
+the token (its device revoked under **Settings → Devices**), the editor forgets it too, and one
+notification offers **Connect to server**.
 
 Next, **Set up** installs Remote-SSH if it is missing, registers an SSH key and writes one `Host`
 block to `~/.ssh/config`, once; no open asks again. **Skip for now** leaves it to the first open,
