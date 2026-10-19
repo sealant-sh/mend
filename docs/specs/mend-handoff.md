@@ -1,8 +1,8 @@
 # `mend handoff`
 
 - **Release:** 0.36
-- **Status:** designed. The shared types and the HTTP contract are in review on `handoff/2-server`;
-  the server and the CLI are not built.
+- **Status:** built. The server half is on `handoff/2-server` and the CLI half on `handoff/3-cli`,
+  both in review after fix round 1 (2026-10-19) of the interrogate verdict.
 - **PRs:** stacked as `handoff/1-vocabulary`, `handoff/2-server`, `handoff/3-cli`.
 - **Decision records:** none. Yiannis's decisions are listed below with their dates.
 - **Written:** 2026-10-18, against mend main `ed9f782aa`.
@@ -35,9 +35,10 @@ $ mend handoff "finish the tests"
   watch · http://localhost:3105/sessions/3f2a1c0d
 ```
 
-Without a prompt, the last block reads `✓ held · idle, no agent`, and the session row reads
-`idle · handed off from dana-mbp`. A detached HEAD reads `✓ detached at 9c1e2f3 · …`, and the
-worktree is named `handoff-9c1e2f3`.
+Without a prompt, the last block reads `✓ held · <status>, no agent` with the status the server
+answered (`idle` once the hold took; `starting` when it outlived the answer window; `failed` with
+the hold's words), and the session row reads `idle · handed off from dana-mbp`. A detached HEAD
+reads `✓ detached at 9c1e2f3 · …`, and the worktree is named `handoff-9c1e2f3`.
 
 When the checkout's repository is not adopted, the CLI asks
 `adopt github.com/acme/newsroom-api as newsroom-api and hand off? [y/N]`. `--yes` answers yes.
@@ -87,12 +88,13 @@ identifies the whole state.
 
 `W`'s message is the subject `mend handoff`, a blank line, and these trailers in this order:
 
-| Trailer            | Value                                                       |
-| ------------------ | ----------------------------------------------------------- |
-| `Mend-Machine`     | the machine's name, printable, 1 to 64 characters           |
-| `Mend-Branch`      | the local branch; absent when HEAD is detached              |
-| `Mend-Cut-At`      | the cut time, as `Date.prototype.toISOString` writes it     |
-| `Mend-Default-Tip` | the client's `origin/<default>` sha, 40 or 64 lowercase hex |
+| Trailer            | Value                                                            |
+| ------------------ | ---------------------------------------------------------------- |
+| `Mend-Machine`     | the machine's name, printable, 1 to 64 characters                |
+| `Mend-Branch`      | the local branch; absent when HEAD is detached                   |
+| `Mend-Cut-At`      | the cut time, as `Date.prototype.toISOString` writes it          |
+| `Mend-Default-Tip` | the client's `origin/<default>` sha, 40 or 64 lowercase hex      |
+| `Mend-Merge-Base`  | M, the merge base of HEAD with that tip, where the bundle is cut |
 
 Author and committer are `mend`, dated at the cut. The bundle has one ref,
 `refs/mend/handoff/snapshot`, pointing at `W`, and is cut at `^M`, where `M` is the merge base. The
@@ -113,23 +115,35 @@ config and hooks. It covers bytes, mode, size and mtime, and no new file appears
 atime is outside the promise. The procedure:
 
 1. Drop every `GIT_*` variable, which also drops `GIT_CONFIG_COUNT` and `GIT_CONFIG_PARAMETERS`. Set
-   `GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0` and `LC_ALL=C`. Every call gets
+   `GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0`, `GIT_NO_LAZY_FETCH=1` (a partial clone fetches
+   nothing on the CLI's behalf), `GIT_NO_REPLACE_OBJECTS=1` (replace refs are ignored, so the
+   snapshot is of the objects as they are) and `LC_ALL=C`. Every call gets
    `-c core.fsmonitor=false -c core.splitIndex=false -c core.untrackedCache=false -c gc.auto=0 -c core.hooksPath=/dev/null`.
    Every configured `filter.<name>` gets `clean=` and `process=` emptied and `required=false`, so no
-   clean filter ever runs.
-2. A shadow git dir holds byte copies of HEAD, `index`, `sharedindex.*` and `config.worktree`.
-   `GIT_COMMON_DIR` points at the real common dir. Git only reads, refreshes or locks the copies.
+   clean filter ever runs. A partial clone that is missing an object the snapshot needs is refused,
+   naming the `git fetch` that brings it. Scratch files go under `TMPDIR`; a `TMPDIR` inside the
+   work tree, the git dir or the common dir is refused, so nothing of the snapshot lands in the
+   checkout.
+2. A shadow git dir holds byte copies of HEAD, `index`, `sharedindex.*`, `config.worktree` and
+   `info/sparse-checkout`. `GIT_COMMON_DIR` points at the real common dir. Git only reads, refreshes
+   or locks the copies. The assume-unchanged and skip-worktree bits are cleared on the shadow index
+   for paths present on disk, so edits those bits hide from `status` still travel. A sparse index is
+   read with `--sparse`, and its sparse directories are listed from their trees.
 3. Two environments work over a scratch bare repository. Reads see the checkout's objects as an
    alternate. Writes see only the scratch objects (`write-tree --missing-ok`,
    `hash-object -t commit`), so git freshens no object of the checkout.
 4. Status comes from the copy (`--porcelain=v2 -z --untracked-files=all --no-renames`). Unmerged
-   entries refuse.
+   entries refuse. Paths are handled as the bytes git prints, never decoded on the way, so a name
+   that is not UTF-8 travels as it is.
 5. Some files are left out. Each is pinned to HEAD's entry in both trees, or absent when HEAD has
-   none, and named with a reason. They are `.env*` basenames (`isEnvPath`), blobs over the file
-   limit in the index or the working copy, and paths with a `filter` attribute (`check-attr` over
-   `ls-files` output, which runs no filter). Review then shows no change for them, never a deletion.
-6. The ref and `bundle create <file> refs/mend/handoff/snapshot ^M` live in the scratch repository.
-   The bundle goes to a file, never to stdout.
+   none, and named with a reason. They are `.env*` basenames (`isEnvPath`), gitignored `.env*` files
+   included (named, though they never travelled), blobs over the file limit in the index or the
+   working copy, and paths with a `filter` attribute (`check-attr` over `ls-files` output, which
+   runs no filter). Review then shows no change for them, never a deletion. A committed `.env*` in
+   `M..HEAD` is named too; merge commits are inspected with `--cc`, so one a merge introduced is
+   named as well.
+6. The ref and `bundle create <file> refs/mend/handoff/snapshot ^M` live in the scratch repository,
+   with `Mend-Merge-Base: M` among W's trailers. The bundle goes to a file, never to stdout.
 
 The project comes from `matchProjectByCwd`. The checkout's actual `origin` remote must then equal
 the project's origin through `normalizeRemoteUrl`. Neither the directory-name fallback nor
@@ -173,7 +187,10 @@ checkout with nothing ahead and nothing uncommitted still hands off, as a held w
   `NotFound` and `HandoffRefused`.
 - `POST /projects/:id/handoffs?harness=&hold=` takes `HandoffBundleBytes`
   (`application/x-git-bundle`) and answers
-  `HandoffReceived {session, worktree, commitsAhead, replayed}`. Errors are `NotFound` (404),
+  `HandoffReceived {session, worktree, commitsAhead, replayed, previous}`. `previous` names the
+  caller's earlier handoff of the same local branch among the names this one passed over
+  (`fix-login` when this one became `fix-login-2`), or is null: the CLI says
+  `fix-login is your earlier handoff` only on that evidence. Errors are `NotFound` (404),
   `HandoffRefused` (422, `{reason, message}`), `BudgetExceeded` (429) and `StoreFailure`.
 - `HandoffRefused.reason` is one of `store-co-located`, `unsupported-repository`, `not-a-handoff`,
   `damaged`, `base-unknown` and `base-off-default-branch`.
@@ -183,61 +200,88 @@ the branded `AdmittedHandoff` (a unique-symbol brand, not a private constructor)
 quarantine bare repository on the store's filesystem whose alternates are the store's objects, in
 this order:
 
-1. A pure header parse. The bundle must have one ref and one prerequisite.
+1. A pure header parse. The bundle must have one ref and one prerequisite or more:
+   `git bundle create W ^M` writes one per boundary commit, so a branch that merged main names the
+   fork point beside M.
 2. `bundle verify`. A missing prerequisite triggers one `freshenBase(default)`, then refuses
-   `base-unknown`.
-3. `fetch -c fetch.fsckObjects=true`, then `rev-list --objects --missing=error`.
+   `base-unknown`, worded from what the freshen did: fetched and still unknown (push), not fetched
+   (no credential, or the account's origin-checks window is spent), or git's own words.
+3. `fetch -c fetch.fsckObjects=true`.
 4. The shape. `W^` is `I` and `I^` is `H`.
-5. The trailers, through `parseHandoffMessage`.
-6. The merge base, recomputed. `merge-base H <Default-Tip>` must equal `M`, and `Default-Tip` must
-   be in the store's `origin/<default>` history. The store resolves those shas and passes them in,
-   because the quarantine has objects and no refs.
-7. The delta pack, `pack-objects --revs W ^M` (not thin), built from the quarantine.
+5. The trailers, through `parseHandoffMessage`. M is the `Mend-Merge-Base` trailer; it must be among
+   the prerequisites.
+6. The merge base, recomputed. M must be among `merge-base --all H <Default-Tip>`, `Default-Tip`
+   must be in the store's `origin/<default>` history, and so must every prerequisite. The store
+   resolves those shas and passes them in, because the quarantine has objects and no refs.
+7. The closure, `rev-list --objects --missing=error W ^M`, last of the checks, so the walk is
+   bounded by a branch the merge base already vouches for.
+8. The file budget: a blob reachable from W or I but not from H that is larger than
+   `handoffFileBytes` is refused by path, as `BudgetExceeded {budget: "handoffFileBytes"}`.
+9. The delta pack, `pack-objects --revs W ^M` (not thin), built from the quarantine.
 
-Content rejections are `damaged`. Host failures are `StoreFailure`. A refusal writes nothing of the
-handoff. The only store write on any path is the origin freshen, which is ordinary store behaviour.
-Nothing is fetched into the bare store, so there are no anchor refs to keep and none to sweep.
+Every git call in the quarantine is bounded by a timeout (five minutes); one that outlives it is a
+host failure. Content rejections are `damaged`. Host failures are `StoreFailure`. A refusal writes
+nothing of the handoff. The only store write on any path is the origin freshen, which is ordinary
+store behaviour and is counted under the account's origin-checks window. Nothing is fetched into the
+bare store, so there are no anchor refs to keep and none to sweep.
 
 **One creation path.** `WorktreeStart = Base{base: string | null} | Handoff{admitted}` replaces
 `base` in `ProvisionInput`, `ensureWorktreeIn`, `createWorktreeIn` and
 `SessionRepository.createWorktree`. Every existing caller passes `Base`. A handoff never joins an
-existing worktree. Captured `createWorktree(Handoff)` uploads the delta pack (content-addressed,
-`recordPacks`), inserts `refs/heads/mend/<name>` at `H`, and returns `baseSha = M` and
+existing worktree. Captured `createWorktree(Handoff)` uploads the delta pack under the worktree's
+own capture prefix (`captures/<worktree>/0/packs/<sha256>`, `recordPacks`), so capture retention
+keeps it while the chain lives and reclaims it after the grace when the row never came or once the
+worktree is gone; inserts `refs/heads/mend/<name>` at `H`; and returns `baseSha = M` and
 `baseRef = project.defaultBranch`. The branch ref insert is create-only, so it must start at `H`.
 Inserting it at the base and moving it later would silently leave it at the base. An existing ref
 already at `H` is a crash replay. The co-located adapter refuses.
 
 **Provenance, replay key and seed in one place.** Migration 0135 adds `worktrees.handoff jsonb`,
 nullable and decoded by `WorktreeHandoff`:
-`{machine, localBranch, cutAt, head, index, checkpoint, mergeBase, deltaPack}`. A unique index
-covers `(project_id, (handoff->>'checkpoint'))`. The column rides the `ExactKeys` seam, `Worktree`
-and its DTOs. `worktreesRepo.create` writes it in the same insert as the row. It is the replay key,
-the provenance and the capture-0 seed.
+`{machine, localBranch, cutAt, head, index, checkpoint, mergeBase, worktreeTree, indexTree, ownerUserId, deltaPack}`.
+A unique index covers `(project_id, (handoff->>'checkpoint'))`. The column rides the `ExactKeys`
+seam, `Worktree` and its DTOs; a server from before handoffs leaves the key out, and clients decode
+that as null. `worktreesRepo.create` writes it in the same insert as the row. It is the replay key,
+the provenance (the receiving account included) and the capture-0 seed.
 
 **Capture 0.** `attachWorktree` derives `captureZeroSource(row)`:
 
-- branch `H`, and checkpoint 0 is `W`;
-- `WORKTREE_TREE_REF` is `W^{tree}` and `INDEX_TREE_REF` is `I^{tree}`;
+- branch `H`, and checkpoint ordinal 0 is `M`, the base Review anchors at;
+- `WORKTREE_TREE_REF` is `W^{tree}` and `INDEX_TREE_REF` is `I^{tree}`, read off the seed, never
+  from the packs;
 - packs `[uploadBasePack(M), deltaPack]`;
 - `refs/mend/base/<wt>` is `M`;
 - `fsck: verified`, which admission earned.
 
-Base and legacy worktrees fold into the same function. `ensureForWorktree(M)` makes review the
-worktree tree minus `M`. Capture 0 exists before `provisionInWorktree`, so a hot claim keeps it.
-`capture-verify.ts` walks the listed packs together, so a multi-pack capture 0 verifies.
+Base and legacy worktrees fold into the same function. While capture 0 is alone on the chain, every
+checkpoint past ordinal 0 (the first session-start, a Review open) is `W` itself, so Review reads
+`M..W`, exactly the local diff. `ensureForWorktree(M)` makes the change's base `M`. Capture 0 exists
+before `provisionInWorktree`, so a hot claim keeps it. `capture-verify.ts` walks the listed packs
+together, so a multi-pack capture 0 verifies. The creation tail (capture 0, ordinal 0, the change
+row) is idempotent and runs again when a session is provisioned in a handed-off worktree.
 
-**Engine verb.** `SessionStart.handoffAs(caller, projectId, query, bytes)` runs:
+**Engine verb.** `HandoffStart.receiveAs(caller, projectId, query, bytes)`
+(`apps/api/src/handoff-start.ts`, provided once as `HandoffStartLive`) runs:
 
 1. access;
 2. co-located store or unsupported repository refusals;
-3. the replay lookup by `W`. A replay returns the worktree and its first session, provisions a
-   session if there is none, and re-applies the hold. It runs before the session budget;
-4. `requireSessionRoom`;
-5. `admitHandoff`;
-6. `engine.provision({start: Handoff})`;
-7. the audit event `worktree.handed_off`;
-8. with `hold`, `resumeSession(id, "shell")`, forked past the answer. This is the VS Code
-   held-workspace pattern on the server side, so a client that dies cannot strand `launching`.
+3. the receive itself, detached from the request and keyed by the caller, the project and the sha256
+   of the bytes: a dropped connection ends only its wait, and a retry of the same bytes by the same
+   account joins the work under way. The caller's in-flight handoffs are bounded by
+   `accountHandoffsInFlight`; past it the upload is refused as a budget. Inside:
+4. the replay lookup by `W`. A replay belongs to the account the seed records; it finishes the
+   creation tail, returns the worktree and its first session (provisioned if there is none), and
+   re-applies the hold to a session still `starting`. It runs before the session budget;
+5. `requireSessionRoom`;
+6. `admitHandoff`, once;
+7. `engine.provision({start: Handoff})` under the branch's name. Taken names are the worktree rows
+   and the store's `mend/<name>` branch refs; a name lost between the look and the create (the
+   name's unique key, or the branch ref) takes the next suffix, a bounded number of times;
+8. the audit event `worktree.handed_off`;
+9. with `hold`, `engine.holdWorkspace(id, caller)`, forked past the answer: the workspace a shell
+   resume opens, a shell process of the caller's in it, and the resume's own shell ended, so the
+   fold reads `idle`. The answer carries the session as it stands afterwards: `idle`, still
+   `starting` when the hold outlived the answer window, or `failed · hold failed: …`.
 
 **Rows.** `handed off from <machine>` is a fact of the worktree and shows on every session line in
 it. The CLI shows it in `sessionRowFacts` (`idle · handed off from dana-mbp · claude · 1 shell`) and
@@ -245,14 +289,14 @@ it. The CLI shows it in `sessionRowFacts` (`idle · handed off from dana-mbp · 
 
 ### Crashes
 
-| Crash after       | Residue                          | Repair                                                                           |
-| ----------------- | -------------------------------- | -------------------------------------------------------------------------------- |
-| admission         | quarantine dir                   | `ensuring` removes it; boot removes `handoff-q-*` older than 1 h                 |
-| delta pack upload | an unreferenced recorded pack    | the retry re-puts the same key; capture retention owns bucket cleanup            |
-| branch ref        | `store_refs` branch at H, no row | the retry accepts a ref already at H                                             |
-| row               | worktree with seed, no capture 0 | replay, or the next launch's `ensureCaptureZero`, builds capture 0 from the seed |
-| capture 0         | worktree, no session             | replay provisions the session                                                    |
-| session           | `starting`                       | replay re-applies the hold; otherwise `mend attach` resumes it                   |
+| Crash after       | Residue                                                            | Repair                                                                                                                   |
+| ----------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| admission         | quarantine dir                                                     | `ensuring` removes it; boot removes `handoff-q-*` older than 1 h                                                         |
+| delta pack upload | an unreferenced recorded pack under `captures/<worktree>/0/packs/` | the retry re-puts the same key; capture retention retires the orphan after the grace                                     |
+| branch ref        | `store_refs` branch at H, no row                                   | the retry accepts a ref already at H; any other handoff of the branch finds the name taken and takes the next suffix     |
+| row               | worktree with seed, no capture 0                                   | the replay finishes the creation tail (capture 0, ordinal 0, the change row), as does the next session provisioned in it |
+| capture 0         | worktree, no session                                               | replay provisions the session                                                                                            |
+| session           | `starting`                                                         | replay re-applies the hold; otherwise `mend attach` resumes it                                                           |
 
 ## Known limits
 
@@ -264,6 +308,10 @@ it. The CLI shows it in `sessionRowFacts` (`idle · handed off from dana-mbp · 
   payload.
 - Install detection still reads `session.baseSha`, so a lockfile added on the branch is not seen
   until the first install. This is a follow-up.
+- A replay by another account of the project is refused as `StoreFailure` with the words
+  `received before, for another account`; the contract has no closer refusal.
+- A base worktree whose creation died after its row is not finished by the next session in it; only
+  a handed-off worktree's creation tail runs again. Pre-existing, outside this feature.
 
 These alternatives were weighed and not taken, so a reviewer should not report their absence.
 
@@ -304,4 +352,24 @@ Each PR in the stack is green on `pnpm exec turbo typecheck --force` and
 
 ## Divergences found while writing
 
-None. The server and the CLI are not built yet.
+Found by the interrogate review of the first build and fixed in round 1 (2026-10-19):
+
+- Review opened on an empty diff: capture 0 recorded `W` as ordinal 0. Ordinal 0 is now `M`.
+- A branch that merged main was refused: the bundle names one prerequisite per boundary commit.
+  Admission takes one or more, and M travels as `Mend-Merge-Base`.
+- The in-flight join keyed on an unverified header sha and ran on the request fiber. It keys on the
+  caller and the bytes, and runs detached.
+- A removed worktree's branch ref dead-ended the next handoff of that branch; a name race answered
+  "made elsewhere". Taken names include the refs, and a lost name takes the next suffix.
+- A failed hold answered as held. The answer is the session as observed, and a replay re-holds.
+- A held session read `running`: the hold ran the login shell as the agent. `holdWorkspace` leaves a
+  shell process holding the workspace and no agent, which folds to `idle`.
+- Capture 0 downloaded the whole base pack to read two tree shas; the seed carries them.
+- Replay ownership was read from the first session; the seed records the receiving account.
+- Delta packs under `projects/<id>/packs/` were never reclaimed; they live under the worktree's
+  capture prefix, where retention owns them.
+- No per-account bound on admissions, no timeout on quarantine git calls, the origin freshen outside
+  the origin-checks window, the expensive walk before the cheap checks, the file budget only
+  advertised, and `base-unknown` telling a person to push when the server had not fetched.
+- `HandoffStart` was a dead service tag rebuilt per request; it is provided once.
+- `Worktree.handoff` failed to decode from a server without the key; it decodes as null.
