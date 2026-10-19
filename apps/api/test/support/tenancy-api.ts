@@ -36,6 +36,7 @@ import {
   SessionGitOpsRepo,
   SessionRepositoriesRepo,
   SettingsRepo,
+  StoreRefsRepo,
   SlackDefaultsRepo,
   SlackInstallsRepo,
   SlackLinksRepo,
@@ -108,6 +109,7 @@ import {
 import { EventBus, makeEventBus } from "../../src/events-bus.ts";
 import { ExposureConfig, type ExposureOutcome } from "../../src/exposure.ts";
 import { GithubIdentityLive } from "../../src/github-identity.ts";
+import { HandoffStartLive } from "../../src/handoff-start.ts";
 import { MemberRemovalLive } from "../../src/member-removal.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
@@ -137,6 +139,8 @@ export interface TenancyApi {
     path: string,
     body: Uint8Array,
     contentType: string,
+    /** Abort the request mid-way, as a dropped connection would. */
+    signal?: AbortSignal,
   ) => Promise<Response>;
   /** Publish one NOTIFY payload into the in-memory event bus, as Postgres would. */
   readonly notify: (event: MendEvent) => Promise<void>;
@@ -206,6 +210,7 @@ export const createTenancyApi = async (
     /** How long a request that takes a checkpoint may run (`CheckpointRequestLimit`). */
     readonly checkpointRequestLimit?: Duration.Duration;
     readonly implement?: {
+      readonly storeRefs?: Layer.PartialEffectful<StoreRefsRepo["Service"]>;
       readonly slices?: Layer.PartialEffectful<ReviewSlicesRepo["Service"]>;
       readonly workspaceCaller?: Partial<WorkspaceCaller["Service"]>;
       readonly audit?: Layer.PartialEffectful<AuditEventsRepo["Service"]>;
@@ -416,6 +421,7 @@ export const createTenancyApi = async (
     ),
     Layer.mergeAll(
       recording(Store, "store", options.implement?.store ?? {}, calls),
+      recording(StoreRefsRepo, "storeRefs", options.implement?.storeRefs ?? {}, calls),
       recording(Gh, "gh", {}, calls),
       recording(SlackApi, "slackApi", {}, calls),
       recording(SlackDefaultsRepo, "slackDefaults", {}, calls),
@@ -491,6 +497,7 @@ export const createTenancyApi = async (
     SessionSteeringLive,
     GithubIdentityLive,
     MemberRemovalLive,
+    HandoffStartLive,
   ).pipe(
     Layer.provideMerge(ProjectAccessLive),
     Layer.provideMerge(connections),
@@ -577,7 +584,7 @@ export const createTenancyApi = async (
         context,
       );
     },
-    postBytes: (user, path, body, contentType) => {
+    postBytes: (user, path, body, contentType, signal) => {
       const headers = new Headers({ "content-type": contentType });
       if (user !== null) headers.set("authorization", `Bearer ${user}`);
       return handler(
@@ -585,6 +592,7 @@ export const createTenancyApi = async (
           method: "POST",
           headers,
           body: new Uint8Array(body),
+          ...(signal === undefined ? {} : { signal }),
         }),
         context,
       );

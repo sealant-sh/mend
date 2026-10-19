@@ -169,6 +169,7 @@ See [Exposure and the public gate](/operate/exposure/) for what each item means.
 | `MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT`       | `4`        |
 | `MEND_BUDGET_BUNDLE_BYTES`                     | `67108864` |
 | `MEND_BUDGET_HANDOFF_FILE_BYTES`               | `8388608`  |
+| `MEND_BUDGET_ACCOUNT_HANDOFFS_IN_FLIGHT`       | `2`        |
 | `MEND_BUDGET_ACCOUNT_ORIGIN_CHECKS_PER_MINUTE` | `30`       |
 | `MEND_BUDGET_ACCOUNT_EVENT_STREAMS`            | `12`       |
 | `MEND_BUDGET_ACCOUNT_TERMINALS`                | `24`       |

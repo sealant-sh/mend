@@ -37,6 +37,8 @@ export interface BudgetLimits {
   readonly bundleBytes: number;
   /** Largest file `mend handoff` carries; the CLI names a larger one and leaves it behind. */
   readonly handoffFileBytes: number;
+  /** Handoffs one account may have admitted at once: each holds a bundle in memory and git work. */
+  readonly accountHandoffsInFlight: number;
   /** Fetches of origin's branch one account asks for per minute ("Check origin"). */
   readonly accountOriginChecksPerMinute: number;
   /** Open long-lived connections one account may hold, by kind. */
@@ -61,6 +63,7 @@ export const DEFAULT_BUDGET_LIMITS: BudgetLimits = {
   accountLaunchesInFlight: 4,
   bundleBytes: 64 * 1024 * 1024,
   handoffFileBytes: HANDOFF_FILE_BYTES_DEFAULT,
+  accountHandoffsInFlight: 2,
   accountOriginChecksPerMinute: 30,
   accountEventStreams: 12,
   accountTerminals: 24,
@@ -80,6 +83,7 @@ const ENV: Readonly<Record<BudgetName, string>> = {
   accountLaunchesInFlight: "MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT",
   bundleBytes: "MEND_BUDGET_BUNDLE_BYTES",
   handoffFileBytes: "MEND_BUDGET_HANDOFF_FILE_BYTES",
+  accountHandoffsInFlight: "MEND_BUDGET_ACCOUNT_HANDOFFS_IN_FLIGHT",
   accountOriginChecksPerMinute: "MEND_BUDGET_ACCOUNT_ORIGIN_CHECKS_PER_MINUTE",
   accountEventStreams: "MEND_BUDGET_ACCOUNT_EVENT_STREAMS",
   accountTerminals: "MEND_BUDGET_ACCOUNT_TERMINALS",
@@ -101,6 +105,7 @@ const WORDS: Readonly<Record<BudgetName, string>> = {
   accountLaunchesInFlight: "launches starting at once for one account",
   bundleBytes: "bytes in one git bundle",
   handoffFileBytes: "bytes in one handed-off file",
+  accountHandoffsInFlight: "handoffs admitted at once for one account",
   accountOriginChecksPerMinute: "fetches of origin per minute for one account",
   accountEventStreams: "open event streams for one account",
   accountTerminals: "open terminals for one account",
@@ -142,34 +147,46 @@ export class Budgets extends Context.Service<
       userId: string,
       effect: Effect.Effect<A, E, R>,
     ) => Effect.Effect<A | null, E, R>;
+    /**
+     * Hold one handoff slot for the account while `effect` runs (its admission, worktree and
+     * hold), or null when the account has `accountHandoffsInFlight` under way already.
+     */
+    readonly withHandoffSlot: <A, E, R>(
+      userId: string,
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A | null, E, R>;
   }
 >()("@mend/api/Budgets") {}
 
-export const makeBudgets = (limits: BudgetLimits) => {
-  const launching = new Map<string, number>();
-  return {
-    limits,
-    addresses: makeWindowLimiter(),
-    credentials: makeWindowLimiter(),
-    signIns: makeWindowLimiter(),
-    originChecks: makeWindowLimiter(),
-    withLaunchSlot: <A, E, R>(userId: string, effect: Effect.Effect<A, E, R>) =>
-      Effect.suspend(() => {
-        const held = launching.get(userId) ?? 0;
-        if (overCeiling(held, limits.accountLaunchesInFlight)) return Effect.succeed(null);
-        launching.set(userId, held + 1);
-        return effect.pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              const now = (launching.get(userId) ?? 1) - 1;
-              if (now <= 0) launching.delete(userId);
-              else launching.set(userId, now);
-            }),
-          ),
-        );
-      }),
-  };
+/** One ceiling on what an account has under way at once, held for an effect's whole course. */
+const makeSlots = (ceiling: () => number) => {
+  const held = new Map<string, number>();
+  return <A, E, R>(userId: string, effect: Effect.Effect<A, E, R>) =>
+    Effect.suspend(() => {
+      const current = held.get(userId) ?? 0;
+      if (overCeiling(current, ceiling())) return Effect.succeed(null);
+      held.set(userId, current + 1);
+      return effect.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            const now = (held.get(userId) ?? 1) - 1;
+            if (now <= 0) held.delete(userId);
+            else held.set(userId, now);
+          }),
+        ),
+      );
+    });
 };
+
+export const makeBudgets = (limits: BudgetLimits) => ({
+  limits,
+  addresses: makeWindowLimiter(),
+  credentials: makeWindowLimiter(),
+  signIns: makeWindowLimiter(),
+  originChecks: makeWindowLimiter(),
+  withLaunchSlot: makeSlots(() => limits.accountLaunchesInFlight),
+  withHandoffSlot: makeSlots(() => limits.accountHandoffsInFlight),
+});
 
 const limit = (name: BudgetName) =>
   Config.Int(ENV[name]).pipe(Config.withDefault(DEFAULT_BUDGET_LIMITS[name]));
@@ -186,6 +203,7 @@ export const budgetLimitsConfig = Config.all({
   accountLaunchesInFlight: limit("accountLaunchesInFlight"),
   bundleBytes: limit("bundleBytes"),
   handoffFileBytes: limit("handoffFileBytes"),
+  accountHandoffsInFlight: limit("accountHandoffsInFlight"),
   accountOriginChecksPerMinute: limit("accountOriginChecksPerMinute"),
   accountEventStreams: limit("accountEventStreams"),
   accountTerminals: limit("accountTerminals"),

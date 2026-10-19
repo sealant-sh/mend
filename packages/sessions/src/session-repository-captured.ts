@@ -69,6 +69,12 @@ const checkpointRef = (worktreeId: string, index: number) =>
 const gitFailure = (cwd: string, what: string, detail: string) =>
   new GitError({ args: ["capture", what], cwd, exitCode: null, stderr: detail });
 
+const NAME_TAKEN = "already exists in this project";
+
+/** `createWorktree` refused the name: its branch is another worktree's (or a removed one's). */
+export const isWorktreeNameTaken = (error: GitError): boolean =>
+  error.args[0] === "capture" && error.args[1] === "create" && error.stderr.includes(NAME_TAKEN);
+
 export interface CaptureZeroSource {
   /** The commit the worktree's branch ref names. */
   readonly head: Sha;
@@ -258,7 +264,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         const taken = gitFailure(
           project.storePath,
           "create",
-          `branch "${identity.branch}" already exists in this project — pick another worktree name`,
+          `branch "${identity.branch}" ${NAME_TAKEN} — pick another worktree name`,
         );
         if (start.kind === "handoff") {
           const { admitted, ownerUserId } = start;
