@@ -49,7 +49,7 @@ const layout = (
       members: [],
       waits: options.waits ?? new Map(),
       landings: new Map(),
-      refusals: new Map(),
+      launches: new Map(),
       lastSeen: { baseline: NOW.toISOString(), sessions: {} },
       connection: { state: "online", lastHeardAt: NOW.toISOString() },
       window: options.window ?? { kind: "local" },

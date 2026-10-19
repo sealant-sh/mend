@@ -68,7 +68,7 @@ export class Notifier {
   constructor(
     private readonly store: Pick<SessionStore, "showing" | "model" | "error">,
     private readonly claims: Pick<ToastClaims, "claim" | "release">,
-    private readonly launches: Pick<Launches, "has" | "relaunch">,
+    private readonly launches: Pick<Launches, "offer" | "relaunch">,
   ) {}
 
   changed({ prev, next }: StoreChange): void {
@@ -99,9 +99,14 @@ export class Notifier {
       return;
     }
     if (notification.kind === "launchFailed") {
-      // Retry only where this window holds what the launch sent.
+      // A read just now decides: Retry only for a launch that failed or never started.
       const { sessionId } = notification;
-      if (!this.launches.has(sessionId)) {
+      const offer = await this.launches.offer(sessionId);
+      if (offer.kind === "moved") {
+        await this.claims.release(notification.key, notification.at);
+        return;
+      }
+      if (offer.kind === "none") {
         void vscode.window.showErrorMessage(notification.text);
         return;
       }

@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
 
-import { MendApiError, matchProject, type MendClient, type StreamSignal } from "./client.js";
+import { MendApiError, type MendClient, type StreamSignal } from "./client.js";
 import { repositoryFacts } from "./git.js";
+import { matchProject } from "./project-match.js";
 import type { MemberName } from "./session-lines.js";
 import {
   mergeLastSeen,
@@ -10,7 +11,7 @@ import {
   type Connection,
   type LandingFact,
   type LastSeen,
-  type Refusal,
+  type LaunchAttempt,
   type WaitFact,
   type WindowModel,
 } from "./session-model.js";
@@ -98,10 +99,12 @@ type Facts = {
   readonly landing: LandingFact | null;
 };
 
-/** A window folder that is a git clone no adopted project matched. */
+/** A window folder that is a git clone no one adopted project matched. */
 export interface UnmatchedRepository {
   readonly folder: vscode.WorkspaceFolder;
-  readonly originUrl: string;
+  readonly originUrl: string | null;
+  /** Adopted projects that match it equally (one origin, several projects): New session asks which. */
+  readonly candidates: ReadonlyArray<Project>;
 }
 
 export interface StoreChange {
@@ -159,8 +162,8 @@ export class SessionStore implements vscode.Disposable {
   #lastWantAt = 0;
   #lastBatchAt = Number.NEGATIVE_INFINITY;
   #unmatched: UnmatchedRepository | null = null;
-  /** Launches this VS Code sent that the server refused, by session (`refused`). */
-  readonly #refusals = new Map<string, Refusal>();
+  /** Launches this VS Code sent, by session: the latest attempt, until a read shows it ran. */
+  readonly #launches = new Map<string, LaunchAttempt>();
   #timer: NodeJS.Timeout | null = null;
   /** Sessions read now, one read each: a frame meanwhile reads that session again after it. */
   readonly #reading = new Set<string>();
@@ -338,13 +341,10 @@ export class SessionStore implements vscode.Disposable {
     this.#emit();
   }
 
-  /**
-   * A launch the server refused over HTTP: while it still reads the session `starting`, the model
-   * reads it failed with `line`. Null when the launch is sent again.
-   */
-  refused(sessionId: string, line: string | null): void {
-    if (line === null) this.#refusals.delete(sessionId);
-    else this.#refusals.set(sessionId, { line, at: new Date().toISOString() });
+  /** A launch this window sent, or what its server answered: the session is read again. */
+  attempted(sessionId: string, attempt: LaunchAttempt): void {
+    this.#launches.set(sessionId, attempt);
+    this.#want({ all: false, projects: new Set(), sessions: new Set([sessionId]) });
     this.#emit();
   }
 
@@ -689,7 +689,12 @@ export class SessionStore implements vscode.Disposable {
         this.#unmatched = null;
         return;
       }
-      unmatched ??= facts.originUrl === null ? null : { folder, originUrl: facts.originUrl };
+      unmatched ??=
+        resolution.status === "ambiguous"
+          ? { folder, originUrl: facts.originUrl, candidates: resolution.candidates }
+          : facts.originUrl === null
+            ? null
+            : { folder, originUrl: facts.originUrl, candidates: [] };
     }
     this.#windowProject = null;
     this.#unmatched = unmatched;
@@ -742,10 +747,11 @@ export class SessionStore implements vscode.Disposable {
 
   #emit(): void {
     const now = new Date();
-    // A read that moved the session past `starting` says more than the refusal did.
-    for (const sessionId of this.#refusals.keys())
-      if ((this.find(sessionId)?.session.status ?? "starting") !== "starting")
-        this.#refusals.delete(sessionId);
+    // A launch that ran is over: a failure after it is the run's, not the launch's.
+    for (const sessionId of this.#launches.keys()) {
+      const status = this.find(sessionId)?.session.status ?? "starting";
+      if (status !== "starting" && status !== "failed") this.#launches.delete(sessionId);
+    }
     if (this.#serverUrl !== null) this.#lastSeen = this.#syncLastSeen(this.#serverUrl, now);
     const prev = this.#modelRead ? this.#model : null;
     const next = sessionModel({
@@ -755,7 +761,7 @@ export class SessionStore implements vscode.Disposable {
       members: this.#snapshot.members,
       waits: this.#snapshot.waits,
       landings: this.#snapshot.landings,
-      refusals: this.#refusals,
+      launches: this.#launches,
       lastSeen: this.#lastSeen,
       connection: this.#connection,
       window:

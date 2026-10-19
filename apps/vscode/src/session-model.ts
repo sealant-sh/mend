@@ -32,13 +32,27 @@ export interface LandingFact {
   } | null;
 }
 
-/**
- * A launch the server refused over HTTP (`POST /sessions/:id/launch`): until a read moves the
- * session past `starting`, it reads `failed · <line>` as of `at`.
- */
+/** The server refused a launch over HTTP (`POST /sessions/:id/launch`) with `line`, at `at`. */
 export interface Refusal {
   readonly line: string;
   readonly at: string;
+}
+
+/**
+ * The latest launch this window sent of a session: the first, or a Retry. Each is told apart from
+ * the one before by the server's own `settledAt`, never by comparing clocks, so a Retry that fails
+ * before any read sees it `starting` is still its own failure.
+ */
+export interface LaunchAttempt {
+  /** 1 for the first launch, one more per Retry. */
+  readonly n: number;
+  /** The session's `settledAt` when this attempt was sent: a failure settled since is this one's. */
+  readonly after: string | null;
+  /**
+   * The server refused this attempt over HTTP. Until a read shows the server settled it, the
+   * session reads `failed · <line>`.
+   */
+  readonly refusal: Refusal | null;
 }
 
 /** What `globalState` keeps per server URL, on this machine only (Decided 3). */
@@ -66,7 +80,8 @@ export interface ModelInput {
   readonly members: ReadonlyArray<MemberName>;
   readonly waits: ReadonlyMap<string, WaitFact>;
   readonly landings: ReadonlyMap<string, LandingFact>;
-  readonly refusals: ReadonlyMap<string, Refusal>;
+  /** Launches this window sent, by session: their latest attempt. */
+  readonly launches: ReadonlyMap<string, LaunchAttempt>;
   readonly lastSeen: LastSeen;
   readonly connection: Connection;
   readonly window: WindowFacts;
@@ -95,7 +110,18 @@ export interface SessionView {
   /** When it settled or landed; null while it is live. */
   readonly settledAt: string | null;
   readonly capability: RowCapability;
+  /** This window launched it: which attempt is the latest, and how it ended. */
+  readonly launch: { readonly attempt: number; readonly outcome: LaunchOutcome } | null;
 }
+
+/**
+ * `failed`: the server settled it failed since it was sent. `refused`: the server answered it
+ * with a refusal and has said nothing since. `pending`: neither yet, or it ran.
+ */
+export type LaunchOutcome =
+  | { readonly kind: "pending" }
+  /** `at`: when it settled failed, or was refused; how old its toast's claim is. */
+  | { readonly kind: "refused" | "failed"; readonly at: string };
 
 export interface ProjectRows {
   readonly project: Project;
@@ -199,13 +225,27 @@ export const ownLine = (session: Pick<Session, "status" | "summary">): string =>
   return fact === null ? session.status : `${session.status} · ${fact}`;
 };
 
-/** The session as it reads: a refused launch the server still reads `starting` has failed. */
-const withRefusal = (session: Session, refusals: ReadonlyMap<string, Refusal>): Session => {
-  const refusal = session.status === "starting" ? refusals.get(session.id) : undefined;
-  return refusal === undefined
+/** The read has not settled since the attempt was sent: the server has said nothing of it yet. */
+const unsettledSince = (session: Session, attempt: LaunchAttempt): boolean =>
+  session.status === "starting" ||
+  (session.status === "failed" && session.settledAt === attempt.after);
+
+/**
+ * The session as it reads: its status is the server's, and a refused attempt the server has said
+ * nothing of since gives its words (`starting · launch refused · …`).
+ */
+const withRefusal = (session: Session, attempt: LaunchAttempt | undefined): Session =>
+  attempt === undefined || attempt.refusal === null || !unsettledSince(session, attempt)
     ? session
-    : { ...session, status: "failed", summary: refusal.line, settledAt: refusal.at };
-};
+    : { ...session, summary: attempt.refusal.line };
+
+/** How this window's latest attempt ended, as far as the reads and its answer say. */
+const attemptOutcome = (read: Session, attempt: LaunchAttempt): LaunchOutcome =>
+  read.status === "failed" && read.settledAt !== attempt.after
+    ? { kind: "failed", at: read.settledAt ?? read.createdAt }
+    : attempt.refusal !== null && unsettledSince(read, attempt)
+      ? { kind: "refused", at: attempt.refusal.at }
+      : { kind: "pending" };
 
 const sessionView = (
   input: ModelInput,
@@ -214,7 +254,8 @@ const sessionView = (
   offline: boolean,
 ): SessionView => {
   const { viewer, members } = input;
-  const session = withRefusal(read, input.refusals);
+  const attempt = input.launches.get(read.id);
+  const session = withRefusal(read, attempt);
   const live = LIVE.has(session.status);
   const mine = viewer !== null && session.ownerUserId === viewer;
   const waiting = session.status === "waiting";
@@ -271,6 +312,8 @@ const sessionView = (
     mine,
     settledAt,
     capability: rowCapability({ session, viewer, members }),
+    launch:
+      attempt === undefined ? null : { attempt: attempt.n, outcome: attemptOutcome(read, attempt) },
   };
 };
 
@@ -411,7 +454,7 @@ interface Raised {
 export type Notification =
   | (Raised & { readonly kind: "waits"; readonly text: string; readonly quiet: Quiet })
   | (Raised & { readonly kind: "finished"; readonly text: string; readonly quiet: Quiet })
-  /** A session she started failed before it ran: its error toast offers Retry. */
+  /** A launch she sent failed, or the server refused it: its error toast may offer Retry. */
   | (Raised & { readonly kind: "launchFailed"; readonly text: string; readonly quiet: Quiet })
   /** A wait that ended (answered here or elsewhere): its toast, if one shows, no longer holds. */
   | (Raised & { readonly kind: "withdrawn" });
@@ -468,26 +511,42 @@ export const transitions = (
       },
     ];
   });
+  const launchFailed = (view: SessionView, key: string, at: string): ReadonlyArray<Notification> =>
+    attention.raised.has(key)
+      ? []
+      : [
+          {
+            kind: "launchFailed",
+            key,
+            sessionId: view.session.id,
+            at,
+            // A refusal the server still reads `starting` is said as the refusal, not as failed.
+            text: [
+              view.word === "failed" ? `${view.name} failed` : view.name,
+              ...(view.fact === null ? [] : [view.fact]),
+            ].join(" · "),
+            // Rule 14: the toast carries Retry, which the row does not, so a row on screen keeps it.
+            quiet: prev === null ? "already-there" : attention.focused ? null : "unfocused",
+          },
+        ];
   const finished = [...next.sessions.values()].flatMap((view): ReadonlyArray<Notification> => {
-    if (!view.mine || (view.word !== "completed" && view.word !== "failed")) return [];
+    if (!view.mine) return [];
+    // Each attempt this window sent ends once, whatever reads came between: failed to failed too.
+    if (view.launch !== null && (view.word === "failed" || view.word === "starting")) {
+      const { attempt, outcome } = view.launch;
+      return outcome.kind === "pending"
+        ? []
+        : launchFailed(view, `${view.session.id}:launchFailed:${attempt}`, outcome.at);
+    }
+    if (view.word !== "completed" && view.word !== "failed") return [];
     const earlier = prev?.sessions.get(view.session.id);
     if (earlier === undefined || !earlier.live) return [];
-    if (earlier.word === "starting" && view.word === "failed") {
-      // Each attempt settles at its own time, so a Retry that fails again is raised again.
-      const key = `${view.session.id}:launchFailed:${view.settledAt ?? view.fact ?? ""}`;
-      if (attention.raised.has(key)) return [];
-      return [
-        {
-          kind: "launchFailed",
-          key,
-          sessionId: view.session.id,
-          at: view.settledAt ?? view.session.createdAt,
-          text: [`${view.name} failed`, ...(view.fact === null ? [] : [view.fact])].join(" · "),
-          // Rule 14: the toast carries Retry, which the row does not, so a row on screen keeps it.
-          quiet: prev === null ? "already-there" : attention.focused ? null : "unfocused",
-        },
-      ];
-    }
+    if (earlier.word === "starting" && view.word === "failed")
+      return launchFailed(
+        view,
+        `${view.session.id}:launchFailed:${view.settledAt ?? ""}`,
+        view.settledAt ?? view.session.createdAt,
+      );
     const key = `${view.session.id}:settled:${view.settledAt ?? view.word}`;
     if (attention.raised.has(key)) return [];
     const fact = view.word === "completed" ? firstLine(view.session.summary) : view.fact;

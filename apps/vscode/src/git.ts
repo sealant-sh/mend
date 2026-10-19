@@ -1,68 +1,99 @@
 import { execFile } from "node:child_process";
 import * as path from "node:path";
-import { promisify } from "node:util";
 
 import type * as vscode from "vscode";
 
 import type { CheckoutFact } from "./new-session.js";
 import type { Project, RepositoryFacts, Session } from "./types.js";
 
-const execFileAsync = promisify(execFile);
+/** What one git command said: its output, a non-zero exit, or nothing within the bound. */
+export type GitAnswer =
+  | { readonly kind: "out"; readonly stdout: string }
+  | { readonly kind: "exit"; readonly code: number }
+  | { readonly kind: "unanswered" };
 
-const git = async (cwd: string, args: ReadonlyArray<string>): Promise<string | null> => {
-  try {
-    const result = await execFileAsync("git", args, { cwd, encoding: "utf8" });
-    const output = result.stdout.trim();
-    return output === "" ? null : output;
-  } catch {
-    return null;
-  }
-};
+export type Git = (cwd: string, args: ReadonlyArray<string>) => Promise<GitAnswer>;
+
+/** A probe's bound: a hung git or filesystem leaves the fact unknown, never New session hidden. */
+export const GIT_PROBE_MS = 3_000;
+
+export const gitRunner =
+  ({ timeoutMs = GIT_PROBE_MS, binary = "git" } = {}): Git =>
+  (cwd, args) =>
+    new Promise((resolve) => {
+      execFile(binary, args, { cwd, encoding: "utf8", timeout: timeoutMs }, (error, stdout) => {
+        if (error === null) resolve({ kind: "out", stdout: stdout.trim() });
+        else if (typeof error.code === "number" && error.killed !== true)
+          resolve({ kind: "exit", code: error.code });
+        else resolve({ kind: "unanswered" });
+      });
+    });
+
+const defaultGit = gitRunner();
 
 /** Repository identity available from a VS Code workspace folder. */
-export const repositoryFacts = async (folder: vscode.WorkspaceFolder): Promise<RepositoryFacts> => {
+export const repositoryFacts = async (
+  folder: vscode.WorkspaceFolder,
+  git: Git = defaultGit,
+): Promise<RepositoryFacts> => {
   if (folder.uri.scheme !== "file") {
     const remotePath = folder.uri.path.replace(/\/$/, "");
     return {
       path: remotePath,
       folder: path.posix.basename(remotePath),
       originUrl: null,
+      originUnknown: false,
     };
   }
-  const root =
-    (await git(folder.uri.fsPath, ["rev-parse", "--show-toplevel"])) ?? folder.uri.fsPath;
+  return localRepositoryFacts(folder.uri.fsPath, git);
+};
+
+export const localRepositoryFacts = async (cwd: string, git: Git): Promise<RepositoryFacts> => {
+  const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
+  const root = top.kind === "out" && top.stdout !== "" ? top.stdout : cwd;
+  const origin = top.kind === "unanswered" ? top : await git(root, ["remote", "get-url", "origin"]);
   return {
     path: root,
     folder: path.basename(root),
-    originUrl: await git(root, ["remote", "get-url", "origin"]),
+    originUrl: origin.kind === "out" && origin.stdout !== "" ? origin.stdout : null,
+    originUnknown: origin.kind === "unanswered",
   };
 };
 
-const succeeds = async (cwd: string, args: ReadonlyArray<string>): Promise<boolean> => {
-  try {
-    await execFileAsync("git", args, { cwd });
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 /**
- * Whether the folder's commits are on origin, so the server's store can start from its branch:
- * the branch, its upstream (else `origin/<branch>`), and whether HEAD is an ancestor of it. Read
- * from what this machine last fetched; nothing is fetched.
+ * Whether the folder's commits are on origin, so the server's store can start from them: the
+ * branch, `origin/<branch>` (else its upstream), and whether HEAD is an ancestor of it. Read from
+ * what this machine last fetched; nothing is fetched. A probe that hangs, or fails in a way git
+ * does not use for "no" (a shallow clone's missing history), reads unknown, never unpushed.
  */
-export const checkoutFact = async (folder: vscode.WorkspaceFolder): Promise<CheckoutFact> => {
-  if (folder.uri.scheme !== "file") return { kind: "elsewhere" };
-  const cwd = folder.uri.fsPath;
-  const branch = await git(cwd, ["branch", "--show-current"]);
-  if (branch === null) return { kind: "elsewhere" };
-  const tracking =
-    (await git(cwd, ["rev-parse", "--verify", "--quiet", "@{upstream}"])) ??
-    (await git(cwd, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`]));
-  const pushed =
-    tracking !== null && (await succeeds(cwd, ["merge-base", "--is-ancestor", "HEAD", tracking]));
-  return { kind: pushed ? "pushed" : "unpushed", branch };
+export const checkoutFact = async (
+  folder: vscode.WorkspaceFolder,
+  git: Git = defaultGit,
+): Promise<CheckoutFact> =>
+  folder.uri.scheme === "file" ? readCheckout(folder.uri.fsPath, git) : { kind: "elsewhere" };
+
+export const readCheckout = async (cwd: string, git: Git): Promise<CheckoutFact> => {
+  const current = await git(cwd, ["branch", "--show-current"]);
+  if (current.kind === "unanswered") return { kind: "unknown", branch: null };
+  if (current.kind !== "out" || current.stdout === "") return { kind: "elsewhere" };
+  const branch = current.stdout;
+  const upstreamOf = (spec: string): Promise<GitAnswer> =>
+    git(cwd, ["rev-parse", "--verify", "--quiet", "--symbolic-full-name", spec]);
+  // Her branch on origin first: pushed without `-u`, it is there while `@{upstream}` still names
+  // the branch it was cut from.
+  let upstream = await upstreamOf(`refs/remotes/origin/${branch}`);
+  if (upstream.kind === "exit") upstream = await upstreamOf("@{upstream}");
+  if (upstream.kind === "unanswered") return { kind: "unknown", branch };
+  if (upstream.kind !== "out" || !upstream.stdout.startsWith("refs/remotes/"))
+    return { kind: "unpushed", branch };
+  const ref = upstream.stdout;
+  const commit = await git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  if (commit.kind !== "out" || commit.stdout === "") return { kind: "unknown", branch };
+  const ancestry = await git(cwd, ["merge-base", "--is-ancestor", "HEAD", ref]);
+  if (ancestry.kind === "out")
+    return { kind: "pushed", branch, upstream: ref, commit: commit.stdout };
+  if (ancestry.kind === "exit" && ancestry.code === 1) return { kind: "unpushed", branch };
+  return { kind: "unknown", branch };
 };
 
 const pathFlavor = (value: string): typeof path.posix | typeof path.win32 =>

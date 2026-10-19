@@ -6,6 +6,8 @@ import {
   isRememberedOptions,
   keptAfter,
   openFlow,
+  PROMPT_MAX_BYTES,
+  promptIssue,
   render,
   step,
   type CheckoutFact,
@@ -29,6 +31,16 @@ const project = (id: string, name: string): Project => ({
 const newsroom = project("p1", "newsroom-api");
 const mend = project("p2", "mend");
 
+const SHA = "3f9c2a1b7e4d5c6f8091a2b3c4d5e6f708192a3b";
+
+/** `fix/login`, pushed to origin under its own name. */
+const PUSHED: CheckoutFact = {
+  kind: "pushed",
+  branch: "fix/login",
+  upstream: "refs/remotes/origin/fix/login",
+  commit: SHA,
+};
+
 const seeded = (harness: string) =>
   harnessModelCatalog(
     harness,
@@ -46,6 +58,7 @@ const seeded = (harness: string) =>
 const facts = (overrides: Partial<FlowFacts> = {}): FlowFacts => ({
   projects: [newsroom, mend],
   adoptable: null,
+  candidates: [],
   checkout: { kind: "elsewhere" },
   catalogs: [seeded("claude"), seeded("codex"), seeded("opencode")],
   remembered: {},
@@ -169,6 +182,24 @@ describe("Enter on the prompt", () => {
     expect(starts(effects)).toHaveLength(0);
     expect(dim(state)).toBe("claude would read a prompt that starts with - as a flag");
   });
+
+  it("refuses a prompt with a NUL, which no argument can carry", () => {
+    const { effects, state } = run(opened(), [{ kind: "typed", value: "fix\0this" }, ENTER]);
+    expect(starts(effects)).toHaveLength(0);
+    expect(dim(state)).toBe("the prompt has a NUL character, which no argument can carry");
+    expect(render(state, facts()).items[0]?.label).toBe("$(warning)");
+  });
+
+  it("takes a prompt of 120,000 UTF-8 bytes and refuses one byte more, counting bytes not characters", () => {
+    const most = "é".repeat(PROMPT_MAX_BYTES / 2);
+    expect(starts(run(opened(), [{ kind: "typed", value: most }, ENTER]).effects)).toHaveLength(1);
+    const over = run(opened(), [{ kind: "typed", value: `${most}a` }, ENTER]);
+    expect(starts(over.effects)).toHaveLength(0);
+    expect(dim(over.state)).toBe("the prompt is 120,001 bytes · claude takes at most 120,000");
+    expect(promptIssue(`${most}a`, "codex")).toBe(
+      "the prompt is 120,001 bytes · codex takes at most 120,000",
+    );
+  });
 });
 
 describe("the project", () => {
@@ -211,7 +242,7 @@ describe("the project", () => {
     const web = project("p3", "newsroom-web");
     const given = facts({
       adoptable: { origin, name: "newsroom-web" },
-      checkout: { kind: "pushed", branch: "fix/login" },
+      checkout: PUSHED,
     });
     const adopting = run(
       opened({ project: null }, given),
@@ -232,6 +263,44 @@ describe("the project", () => {
     expect(render(picked.state, facts()).title).toBe("New session · mend");
     const back = run(picked.state, [{ kind: "back" }]);
     expect(render(back.state, facts()).placeholder).toBe("Choose a project");
+  });
+
+  it("shows Adopt's origin without its userinfo, and adopts the origin as git has it", () => {
+    const origin = "https://dana:ghp_secret@github.com/sealant-sh/newsroom-web.git";
+    const given = facts({ adoptable: { origin, name: "newsroom-web" } });
+    const asked = render(opened({ project: null }, given), given);
+    expect(asked.items[0]?.description).toBe("https://github.com/sealant-sh/newsroom-web.git");
+    expect(JSON.stringify(asked)).not.toContain("ghp_secret");
+    const { effects } = run(
+      opened({ project: null }, given),
+      [{ kind: "accept", item: "adopt" }],
+      given,
+    );
+    expect(effects).toEqual([{ kind: "adopt", origin, name: "newsroom-web" }]);
+  });
+
+  it("asks among the projects one origin names, without Adopt, and the pick keeps the window's checkout", () => {
+    const twin = project("p3", "newsroom-api-2");
+    const given = facts({
+      projects: [newsroom, mend, twin],
+      adoptable: null,
+      candidates: [newsroom, twin],
+      checkout: PUSHED,
+    });
+    const asked = render(opened({ project: null }, given), given);
+    expect(asked.items.map((item) => item.label)).toEqual(["newsroom-api", "newsroom-api-2"]);
+    expect(asked.placeholder).toBe("Several projects have this repository's origin: choose one");
+    expect(
+      run(opened({ project: null }, given), [{ kind: "accept", item: "project:p2" }], given).state
+        .step,
+    ).toEqual({ kind: "project" });
+    const { state } = run(
+      opened({ project: null }, given),
+      [{ kind: "accept", item: "project:p3" }],
+      given,
+    );
+    expect(render(state, given).title).toBe("New session · newsroom-api-2");
+    expect(state.draft?.checkout).toEqual(given.checkout);
   });
 });
 
@@ -306,13 +375,72 @@ describe("Change…", () => {
     const shell = run(harness.state, [{ kind: "accept", item: "harness:shell" }], harness.facts);
     expect(counter(shell.state, shell.facts)).toEqual({ n: 2, total: 2 });
     expect(render(shell.state, shell.facts).placeholder).toBe("Base: a branch or commit");
-    const join = run(opened({ join: { worktree: "add-rate-limit", worktreeId: "wt-1" } }), [
-      { kind: "change" },
-    ]);
+    const join = run(
+      opened({ join: { worktree: "add-rate-limit", worktreeId: "wt-1", shown: "add-rate-limit" } }),
+      [{ kind: "change" }],
+    );
     expect(counter(join.state, join.facts)).toEqual({ n: 1, total: 4 });
     const pi = run(join.state, [{ kind: "accept", item: "harness:pi" }], join.facts);
-    expect(render(pi.state, pi.facts).placeholder).toBe("Thinking for default model");
-    expect(counter(pi.state, pi.facts)).toEqual({ n: 2, total: 3 });
+    expect(render(pi.state, pi.facts).placeholder).toBe("Model for pi");
+    expect(render(pi.state, pi.facts).items.map((item) => item.label)).toEqual([
+      "$(check) default model",
+    ]);
+    expect(counter(pi.state, pi.facts)).toEqual({ n: 2, total: 4 });
+  });
+
+  it("keeps the model step before the catalog is read, with default model and the remembered one", () => {
+    const remembered: SessionOptions = { ...DEFAULT_OPTIONS, model: "claude-retired" };
+    const given = facts({ catalogs: null, remembered: { [newsroom.id]: remembered } });
+    const { state } = run(
+      opened({}, given),
+      [{ kind: "change" }, { kind: "accept", item: "harness:claude" }],
+      given,
+    );
+    const view = render(state, given);
+    expect(view.placeholder).toBe("Model for claude · the server's models aren't read yet");
+    expect(view.items.map((item) => item.label)).toEqual([
+      "default model",
+      "$(check) claude-retired",
+    ]);
+  });
+});
+
+describe("a remembered model the catalog no longer lists", () => {
+  const remembered: SessionOptions = { ...DEFAULT_OPTIONS, model: "claude-retired" };
+  const unread = facts({ catalogs: null, remembered: { [newsroom.id]: remembered } });
+  const read = { ...unread, catalogs: facts().catalogs };
+
+  it("is dropped once the catalog is read, said once on the dim line, and remembered dropped", () => {
+    const opening = opened({}, unread);
+    expect(dim(opening, unread)).toBe("claude · claude-retired · from main");
+    const checked = run(opening, [{ kind: "catalogsRead" }], read);
+    expect(checked.effects).toEqual([
+      { kind: "remember", projectId: newsroom.id, options: DEFAULT_OPTIONS },
+    ]);
+    expect(dim(checked.state, checked.facts)).toBe(
+      "claude · default model · from main · the server no longer lists claude-retired",
+    );
+    const started = run(checked.state, [{ kind: "typed", value: "go" }, ENTER], checked.facts);
+    expect(starts(started.effects)[0]?.launch).toEqual({ mode: "pty", prompt: "go" });
+  });
+
+  it("is dropped for a project picked after the catalog is read", () => {
+    const given = { ...read, remembered: { [mend.id]: remembered } };
+    const picked = run(
+      opened({ project: null }, given),
+      [{ kind: "accept", item: "project:p2" }],
+      given,
+    );
+    expect(picked.effects).toEqual([
+      { kind: "remember", projectId: mend.id, options: DEFAULT_OPTIONS },
+    ]);
+    expect(picked.state.draft?.options.model).toBeNull();
+  });
+
+  it("leaves a model the catalog lists alone", () => {
+    const listed: SessionOptions = { ...DEFAULT_OPTIONS, model: "opus" };
+    const given = { ...read, remembered: { [newsroom.id]: listed } };
+    expect(run(opened({}, given), [{ kind: "catalogsRead" }], given).effects).toEqual([]);
   });
 
   it("takes a typed branch or commit as the base", () => {
@@ -352,14 +480,63 @@ describe("the base", () => {
     );
   });
 
-  it("is her branch when it is pushed", () => {
-    const pushed: CheckoutFact = { kind: "pushed", branch: "fix/login" };
-    expect(dim(opened({ checkout: pushed }))).toBe("claude · default model · from fix/login");
-    expect(starts(prompted(pushed).effects)[0]?.create.base).toBe("fix/login");
+  it("is her branch on origin when it is pushed", () => {
+    expect(dim(opened({ checkout: PUSHED }))).toBe("claude · default model · from fix/login");
+    expect(starts(prompted(PUSHED).effects)[0]?.create.base).toBe("fix/login");
+  });
+
+  it("is the upstream that proved it, not her local branch's name", () => {
+    const tracksMain: CheckoutFact = {
+      kind: "pushed",
+      branch: "fix/login",
+      upstream: "refs/remotes/origin/main",
+      commit: SHA,
+    };
+    expect(dim(opened({ checkout: tracksMain }))).toBe("claude · default model · from main");
+    expect(starts(prompted(tracksMain).effects)[0]?.create.base).toBe("main");
+  });
+
+  it("is the commit an upstream on another remote pointed at", () => {
+    const fork: CheckoutFact = {
+      kind: "pushed",
+      branch: "fix/login",
+      upstream: "refs/remotes/upstream/main",
+      commit: SHA,
+    };
+    expect(dim(opened({ checkout: fork }))).toBe("claude · default model · from upstream/main");
+    expect(starts(prompted(fork).effects)[0]?.create.base).toBe(SHA);
+  });
+
+  it("is the default, said apart from not pushed, when git did not answer", () => {
+    const unknown: CheckoutFact = { kind: "unknown", branch: null };
+    expect(dim(opened({ checkout: unknown }))).toBe(
+      "claude · default model · from main · couldn't read your branch",
+    );
+    expect(starts(prompted(unknown).effects)[0]?.create.base).toBe("main");
+  });
+
+  it("moves to the default when the store refuses the upstream, said before the next Enter", () => {
+    const sent = prompted(PUSHED);
+    expect(render(sent.state, sent.facts).busy).toBe(true);
+    const refused = run(sent.state, [{ kind: "baseRefused" }], sent.facts);
+    expect(refused.state.step).toEqual({ kind: "prompt" });
+    expect(dim(refused.state, refused.facts)).toBe(
+      "claude · default model · from main · Mend's store couldn't find fix/login",
+    );
+    expect(render(refused.state, refused.facts).value).toBe("go");
+    const again = run(refused.state, [ENTER], refused.facts);
+    expect(starts(again.effects)[0]?.create.base).toBe("main");
+    expect(run(again.state, [{ kind: "baseRefused" }], again.facts).state.step).toEqual({
+      kind: "started",
+    });
   });
 
   it("is the worktree's own for a join, which sends no base and names the worktree", () => {
-    const join: JoinTarget = { worktree: "add-rate-limit", worktreeId: "wt-1" };
+    const join: JoinTarget = {
+      worktree: "add-rate-limit",
+      worktreeId: "wt-1",
+      shown: "add-rate-limit",
+    };
     const given = facts({ joinLine: "Ana's session runs here" });
     const state = opened({ join }, given);
     expect(render(state, given).title).toBe("New session · newsroom-api · in add-rate-limit");

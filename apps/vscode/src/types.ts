@@ -87,6 +87,8 @@ export interface RepositoryFacts {
   readonly path: string;
   readonly folder: string;
   readonly originUrl: string | null;
+  /** Git did not answer in time: the folder may have an origin, so its name proves nothing. */
+  readonly originUnknown: boolean;
 }
 
 export type ProjectResolution =

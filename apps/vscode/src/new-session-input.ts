@@ -1,8 +1,6 @@
-import * as path from "node:path";
-
 import * as vscode from "vscode";
 
-import { MendApiError, normalizeProjectName, type MendClient } from "./client.js";
+import { MendApiError, type MendClient } from "./client.js";
 import { checkoutFact } from "./git.js";
 import type { Launches } from "./launches.js";
 import {
@@ -14,6 +12,7 @@ import {
   render,
   REMEMBERED_OPTIONS_KEY,
   step,
+  upstreamRef,
   type CheckoutFact,
   type FlowEffect,
   type FlowEvent,
@@ -23,6 +22,7 @@ import {
   type QuickInputView,
   type RememberedOptions,
 } from "./new-session.js";
+import { originProjectName } from "./project-match.js";
 import { joinLineOf } from "./session-lines.js";
 import type { SessionStore } from "./session-store.js";
 import type { Project } from "./types.js";
@@ -37,6 +37,13 @@ const CHANGE_BUTTON: vscode.QuickInputButton = {
 };
 
 const ELSEWHERE: CheckoutFact = { kind: "elsewhere" };
+
+/** The quick input an effect works on, while it may still be open. */
+interface OpenInput {
+  readonly dispatch: (event: FlowEvent) => void;
+  readonly hide: () => void;
+  readonly isOpen: () => boolean;
+}
 
 const words = (cause: unknown): string =>
   cause instanceof MendApiError || cause instanceof Error
@@ -79,6 +86,7 @@ export class NewSessionInput implements vscode.Disposable {
     const server = (await this.client.connection()).url;
     const matched = this.store.windowProject();
     const unmatched = this.store.unmatchedRepository();
+    const origin = unmatched?.originUrl ?? null;
     const project = opening.project ?? matched?.project ?? null;
     const windowCheckout =
       matched !== null
@@ -94,16 +102,12 @@ export class NewSessionInput implements vscode.Disposable {
     let facts: FlowFacts = {
       projects: details.map((detail) => detail.project),
       adoptable:
-        project === null && unmatched !== null
-          ? {
-              origin: unmatched.originUrl,
-              name: normalizeProjectName(
-                path.posix.basename(unmatched.originUrl.replace(/\.git$/, "").replace(/:/g, "/")),
-              ),
-            }
+        project === null && origin !== null && unmatched?.candidates.length === 0
+          ? { origin, name: originProjectName(origin) }
           : null,
+      candidates: project === null ? (unmatched?.candidates ?? []) : [],
       checkout: windowCheckout,
-      catalogs: [],
+      catalogs: null,
       remembered: this.#remembered()[server] ?? {},
       kept: this.#kept.get(server) ?? new Map(),
       joinLine:
@@ -135,7 +139,12 @@ export class NewSessionInput implements vscode.Disposable {
       input.busy = view.busy;
       input.enabled = !view.busy;
       input.buttons = view.back ? [vscode.QuickInputButtons.Back] : [];
-      if (input.value !== view.value) input.value = view.value;
+      if (input.value !== view.value) {
+        input.value = view.value;
+        // A kept prompt is not selected, so her next keystroke adds to it. The QuickPick carries
+        // `valueSelection` at runtime (`ExtHostQuickInput`), though @types/vscode types it on InputBox only.
+        Reflect.set(input, "valueSelection", [view.value.length, view.value.length]);
+      }
       const items = JSON.stringify(view.items);
       if (items === shownItems) return;
       shownItems = items;
@@ -156,9 +165,13 @@ export class NewSessionInput implements vscode.Disposable {
       const kept = keptAfter(facts.kept, state, next.effect);
       this.#kept.set(server, kept);
       facts = { ...facts, kept };
-      facts = this.#carryOut(next.effect, facts, server, dispatch);
-      if (next.effect.kind === "start") input.hide();
-      else show(render(state, facts));
+      facts = this.#carryOut(next.effect, facts, server, here);
+      show(render(state, facts));
+    };
+    const here: OpenInput = {
+      dispatch,
+      hide: () => input.hide(),
+      isOpen: () => this.#open === close,
     };
 
     const subscriptions = [
@@ -188,20 +201,15 @@ export class NewSessionInput implements vscode.Disposable {
     this.#open = close;
     show(render(state, facts));
     input.show();
-    // The model and thinking steps wait for the catalog; the prompt does not.
+    // The catalog checks the remembered model and fills the model step; the prompt does not wait.
     const catalogs = await this.client.harnessModels().catch(() => null);
     if (catalogs === null || this.#open !== close) return;
     facts = { ...facts, catalogs };
-    show(render(state, facts));
+    dispatch({ kind: "catalogsRead" });
   }
 
   /** The effect's work; the facts it changed come back. */
-  #carryOut(
-    effect: FlowEffect,
-    facts: FlowFacts,
-    server: string,
-    dispatch: (event: FlowEvent) => void,
-  ): FlowFacts {
+  #carryOut(effect: FlowEffect, facts: FlowFacts, server: string, here: OpenInput): FlowFacts {
     switch (effect.kind) {
       case "none":
         return facts;
@@ -211,10 +219,10 @@ export class NewSessionInput implements vscode.Disposable {
         return { ...facts, remembered: all[server] ?? {} };
       }
       case "adopt":
-        void this.#adopt(effect, dispatch);
+        void this.#adopt(effect, here.dispatch);
         return facts;
       case "start":
-        void this.#start(effect, server);
+        void this.#start(effect, server, here);
         return facts;
     }
   }
@@ -234,17 +242,29 @@ export class NewSessionInput implements vscode.Disposable {
     }
   }
 
-  /** Create, show the row, launch without waiting: the server holds a launch up to 30 s. */
+  /**
+   * Create while the input waits, then show the row and launch without waiting: the server holds
+   * a launch up to 30 s.
+   */
   async #start(
     effect: Extract<FlowEffect, { readonly kind: "start" }>,
     server: string,
+    here: OpenInput,
   ): Promise<void> {
     const { draft } = effect;
     try {
       const created = await this.client.createSession(draft.project.id, effect.create);
+      here.hide();
       this.store.showCreated(created);
       void this.launches.launch(created.id, effect.launch);
     } catch (cause) {
+      // The store has no such base (`store.ts` resolveBase): say so, and start from the default.
+      const storeRefused = cause instanceof MendApiError && cause.tag === "StoreFailure";
+      if (storeRefused && upstreamRef(draft) !== null && here.isOpen()) {
+        here.dispatch({ kind: "baseRefused" });
+        return;
+      }
+      here.hide();
       // Nothing started: her prompt waits for the next New session.
       const kept = new Map(this.#kept.get(server) ?? []);
       kept.set(keptPromptKey(draft.project.id, draft.join), draft.prompt);

@@ -29,8 +29,6 @@ import {
   type AgentWaitView,
   type WorkspaceSshView,
   type Worktree,
-  type ProjectResolution,
-  type RepositoryFacts,
 } from "./types.js";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -570,79 +568,3 @@ export class MendClient {
     }
   }
 }
-
-const normalizeRemoteUrl = (raw: string | null): string | null => {
-  if (raw === null) return null;
-  const trimmed = raw.trim();
-  const scp = /^(?:[^@\s/]+@)?([^:/\s]+):(?!\/)(.+)$/.exec(trimmed);
-  const url = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]+@)?([^/\s:]+)(?::\d+)?\/(.+)$/i.exec(trimmed);
-  const parts = url ?? scp;
-  if (parts === null) return null;
-  const host = parts[1];
-  const rest = parts[2];
-  if (host === undefined || rest === undefined) return null;
-  return `${host.toLowerCase()}/${rest
-    .replace(/\/+$/, "")
-    .replace(/\.git$/i, "")
-    .toLowerCase()}`;
-};
-
-export const normalizeProjectName = (raw: string): string => {
-  const slug = raw
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^[^a-z0-9]+/, "")
-    .replace(/-+$/, "");
-  return slug === "" ? "project" : slug.slice(0, 64);
-};
-
-const normalizePath = (value: string): string | null => {
-  const trimmed = value.trim().replaceAll("\\", "/").replace(/\/+$/, "");
-  return trimmed === "" || trimmed.includes("://") ? null : trimmed;
-};
-
-const sameOrInside = (candidate: string, root: string): boolean => {
-  const normalizedCandidate = normalizePath(candidate);
-  const normalizedRoot = normalizePath(root);
-  return (
-    normalizedCandidate !== null &&
-    normalizedRoot !== null &&
-    (normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}/`))
-  );
-};
-
-/** Which adopted project a local folder is a clone of: its origin URL, then its name, then its path. */
-export const matchProject = (
-  projects: ReadonlyArray<Project>,
-  facts: RepositoryFacts,
-): ProjectResolution => {
-  const normalizedOrigin = normalizeRemoteUrl(facts.originUrl);
-  const byRemote =
-    normalizedOrigin === null
-      ? undefined
-      : projects.find((project) => normalizeRemoteUrl(project.originUrl) === normalizedOrigin);
-  if (byRemote !== undefined) return { status: "matched", project: byRemote, matchedBy: "origin" };
-
-  const normalizedName = normalizeProjectName(facts.folder);
-  const byName = projects.find((project) => project.name === normalizedName);
-  if (byName !== undefined) return { status: "matched", project: byName, matchedBy: "folder-name" };
-
-  const byPath = projects.filter((project) => {
-    if (
-      project.originUrl !== null &&
-      normalizePath(project.originUrl) !== null &&
-      sameOrInside(facts.path, project.originUrl)
-    ) {
-      return true;
-    }
-    const store = normalizePath(project.storePath);
-    if (store === null) return false;
-    const separator = store.lastIndexOf("/");
-    return separator > 0 && sameOrInside(facts.path, store.slice(0, separator));
-  });
-  if (byPath.length === 1 && byPath[0] !== undefined) {
-    return { status: "matched", project: byPath[0], matchedBy: "path" };
-  }
-  if (byPath.length > 1) return { status: "ambiguous", candidates: byPath, matchedBy: "path" };
-  return { status: "not-found" };
-};

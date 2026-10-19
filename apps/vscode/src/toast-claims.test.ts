@@ -132,7 +132,7 @@ const read = (session: Session): WindowModel =>
       ],
     ]),
     landings: new Map(),
-    refusals: new Map(),
+    launches: new Map(),
     lastSeen: { baseline: waiting.createdAt, sessions: {} },
     connection: { state: "connecting" },
     window: { kind: "local" },
@@ -159,7 +159,7 @@ const heldClaims = (claims: ToastClaims) => {
   };
 };
 
-const launches = { has: () => false, relaunch: async () => {} };
+const launches = { offer: async () => ({ kind: "none" as const }), relaunch: async () => {} };
 
 describe("two windows, each focused when its own read lands (B4)", () => {
   it("toasts one wait once", async () => {

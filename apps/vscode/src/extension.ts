@@ -4,7 +4,7 @@ import { repositoryCloneUrlIssue } from "@mend/domain/workbench";
 import * as vscode from "vscode";
 
 import { attachTerminal, memberName } from "./agent-terminal.js";
-import { MendApiError, MendClient, normalizeProjectName } from "./client.js";
+import { MendApiError, MendClient } from "./client.js";
 import { ConnectionStore } from "./config.js";
 import { worktreePath } from "./git.js";
 import { Launches } from "./launches.js";
@@ -13,6 +13,7 @@ import { OFFER_COMMANDS, openRunner, setUpWorkspaceSsh } from "./open-command.js
 import type { OpenMode } from "./open-flow.js";
 import { OpenIntents } from "./open-intent.js";
 import type { OpenRunner } from "./open-runner.js";
+import { originProjectName } from "./project-match.js";
 import {
   maySteer,
   ownsSession,
@@ -171,7 +172,7 @@ class MendCommands {
         void vscode.window.showErrorMessage(issue);
         return;
       }
-      const inferred = normalizeProjectName(path.basename(source.replace(/\.git$/, "")));
+      const inferred = originProjectName(source);
       const name = await vscode.window.showInputBox({
         title: "Adopt a project",
         prompt: "Project name",
@@ -478,7 +479,14 @@ class MendCommands {
       }
       await this.newSessionInput.open({
         project: location.project,
-        join: { worktree: worktree.name, worktreeId: worktree.id },
+        join: {
+          worktree: worktree.name,
+          worktreeId: worktree.id,
+          // An anonymous worktree's name is `wt-<uuid>`: it goes by the session it was joined from.
+          shown: /^wt-[0-9a-f-]{36}$/.test(worktree.name)
+            ? `${displaySession(location.session)}'s worktree`
+            : worktree.name,
+        },
       });
     } catch (cause) {
       void showError(cause);

@@ -1,4 +1,5 @@
 import {
+  emptyHarnessModelCatalog,
   HARNESS_MODEL_SEED,
   HarnessModel,
   harnessModelCatalog,
@@ -23,21 +24,29 @@ const seeded = (harness: string) =>
   );
 
 describe("the new-session model rows", () => {
-  it("lead with opencode's own choice, which sends no model, then its catalog", () => {
+  it("lead with default model, which sends no model, for opencode's own choice", () => {
     const rows = modelPickRows(seeded("opencode"), "opencode");
     expect(rows[0]).toEqual({
-      label: "opencode's own choice",
-      description: "default · its own config decides",
+      label: "default model",
+      description: "sends no model · opencode's own config decides",
       model: null,
     });
     expect(rows.slice(1).map((row) => row.model)).toContain(OPENCODE_DEFAULT_MODEL);
     expect(rows.slice(1).some((row) => row.description.includes("default"))).toBe(false);
   });
 
-  it("lead with the catalog's default for a harness that has one, with no own-choice row", () => {
+  it("lead with default model before the catalog's default, which is listed by its id too", () => {
     const rows = modelPickRows(seeded("codex"), "codex");
-    expect(rows[0]?.model).toBe("gpt-6.1-sol");
-    expect(rows[0]?.description).toBe("gpt-6.1-sol · default");
-    expect(rows.some((row) => row.model === null)).toBe(false);
+    expect(rows[0]?.model).toBeNull();
+    expect(rows[0]?.label).toBe("default model");
+    expect(rows[1]?.model).toBe("gpt-6.1-sol");
+    expect(rows[1]?.description).toBe("gpt-6.1-sol · the catalog's default");
+    expect(rows.filter((row) => row.model === null)).toHaveLength(1);
+  });
+
+  it("offer default model even when the catalog lists nothing", () => {
+    expect(modelPickRows(emptyHarnessModelCatalog("pi"), "pi").map((row) => row.model)).toEqual([
+      null,
+    ]);
   });
 });

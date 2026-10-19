@@ -7,6 +7,7 @@ import {
 } from "@mend/domain/workbench";
 
 import { modelPickRows } from "./model-picks.js";
+import { redactOrigin } from "./project-match.js";
 import type { Effort, LaunchStart, Project } from "./types.js";
 
 /**
@@ -59,15 +60,29 @@ export const REMEMBERED_OPTIONS_KEY = "mend.newSession";
 export type CheckoutFact =
   /** Not this project's checkout, not a git folder, or a detached HEAD: nothing to say. */
   | { readonly kind: "elsewhere" }
-  /** HEAD is on origin: the server's store can have every commit of it. */
-  | { readonly kind: "pushed"; readonly branch: string }
+  /**
+   * HEAD is an ancestor of `upstream` (`refs/remotes/<remote>/<branch>`), which pointed at
+   * `commit` when read: the server's store can have every commit of it. The upstream's branch may
+   * be named unlike the local one.
+   */
+  | {
+      readonly kind: "pushed";
+      readonly branch: string;
+      readonly upstream: string;
+      readonly commit: string;
+    }
   /** HEAD has commits origin lacks (or the branch has no remote-tracking ref). */
-  | { readonly kind: "unpushed"; readonly branch: string };
+  | { readonly kind: "unpushed"; readonly branch: string }
+  /** Git did not answer in time, or failed other than "no" (a shallow clone's history). */
+  | { readonly kind: "unknown"; readonly branch: string | null };
 
 /** Joining an existing worktree: its base is fixed. */
 export interface JoinTarget {
+  /** The server's name for it, which create sends. */
   readonly worktree: string;
   readonly worktreeId: string;
+  /** What the title and dim line call it: its name, or whose it is when the name is `wt-<uuid>`. */
+  readonly shown: string;
 }
 
 /** The new session as the quick input holds it. */
@@ -78,12 +93,22 @@ export interface NewSessionDraft {
   readonly prompt: string;
   readonly options: SessionOptions;
   readonly checkout: CheckoutFact;
+  /** The upstream base the store refused at create: the draft starts from the default instead. */
+  readonly refusedBase: string | null;
 }
 
-/** Where the session starts, resolved from the draft: what the create request sends and the dim line says. */
+/**
+ * Where the session starts, resolved from the draft: `ref` is what the create request sends,
+ * `shown` what the dim line says, and `note` what Mend observed that moved it to the default.
+ */
 export type ResolvedBase =
-  | { readonly kind: "ref"; readonly ref: string; readonly unpushed: string | null }
-  | { readonly kind: "worktree"; readonly worktree: string };
+  | {
+      readonly kind: "ref";
+      readonly ref: string;
+      readonly shown: string;
+      readonly note: string | null;
+    }
+  | { readonly kind: "worktree"; readonly worktree: string; readonly shown: string };
 
 /** What the flow reads beside its own state; the extension owns each and passes them in. */
 export interface FlowFacts {
@@ -91,10 +116,18 @@ export interface FlowFacts {
   readonly projects: ReadonlyArray<Project>;
   /** This window's repository when no project matched it: what Adopt this repository adopts. */
   readonly adoptable: { readonly origin: string; readonly name: string } | null;
+  /**
+   * The projects the window's repository matches equally (one origin, several projects): the
+   * project step lists only them, and the one she picks starts from the window's checkout.
+   */
+  readonly candidates: ReadonlyArray<Project>;
   /** The window folder's checkout: the draft's once its project is the folder's (matched or adopted). */
   readonly checkout: CheckoutFact;
-  /** `GET /harnesses/models`; a harness it does not list has no model step. */
-  readonly catalogs: ReadonlyArray<HarnessModelCatalogView>;
+  /**
+   * `GET /harnesses/models`, null until it is read. Once read, a remembered model it does not
+   * list is dropped; until then the model step offers `default model` and the remembered one.
+   */
+  readonly catalogs: ReadonlyArray<HarnessModelCatalogView> | null;
   /** This server's remembered options, by project id. */
   readonly remembered: Readonly<Record<string, SessionOptions>>;
   /** Prompts typed and not started, by `keptPromptKey`, for this server. */
@@ -129,6 +162,8 @@ export interface FlowState {
   readonly adopting: boolean;
   /** Whether Back from the prompt returns to the project step. */
   readonly cameFromProjects: boolean;
+  /** What the catalog read dropped from the remembered options: the dim line says it once. */
+  readonly dropped: string | null;
 }
 
 export type FlowEvent =
@@ -139,7 +174,11 @@ export type FlowEvent =
   | { readonly kind: "back" }
   | { readonly kind: "connection"; readonly offline: boolean }
   | { readonly kind: "adopted"; readonly project: Project }
-  | { readonly kind: "adoptFailed" };
+  | { readonly kind: "adoptFailed" }
+  /** `GET /harnesses/models` answered: `facts.catalogs` holds it now. */
+  | { readonly kind: "catalogsRead" }
+  /** Create refused the upstream base (`upstreamBase`): the prompt returns, from the default. */
+  | { readonly kind: "baseRefused" };
 
 /** `POST /projects/:id/sessions`, as the start sends it. */
 export interface CreateRequest {
@@ -198,48 +237,147 @@ export const OFFLINE_LINE = "Mend is offline · retrying";
 const START_ITEM = "start";
 const ADOPT_ITEM = "adopt";
 
-const catalogOf = (facts: FlowFacts, harness: string): HarnessModelCatalogView =>
-  facts.catalogs.find((catalog) => catalog.harness === harness) ??
-  emptyHarnessModelCatalog(harness);
+const catalogOf = (
+  catalogs: ReadonlyArray<HarnessModelCatalogView> | null,
+  harness: string,
+): HarnessModelCatalogView =>
+  catalogs?.find((catalog) => catalog.harness === harness) ?? emptyHarnessModelCatalog(harness);
 
 /** `default model`, or the catalog's label for the chosen one. */
 const modelWords = (facts: FlowFacts, options: SessionOptions): string =>
   options.model === null
     ? "default model"
-    : catalogModelLabel(catalogOf(facts, options.harness), options.model);
+    : catalogModelLabel(catalogOf(facts.catalogs, options.harness), options.model);
+
+/**
+ * Remembered options against the catalog just read: a model it no longer lists, and an effort the
+ * model no longer takes, are dropped, and `dropped` says which.
+ */
+export const reconcileOptions = (
+  options: SessionOptions,
+  catalogs: ReadonlyArray<HarnessModelCatalogView>,
+): { readonly options: SessionOptions; readonly dropped: string | null } => {
+  if (options.harness === SHELL) return { options, dropped: null };
+  const catalog = catalogOf(catalogs, options.harness);
+  const model =
+    options.model !== null && !catalog.models.some((entry) => entry.id === options.model)
+      ? null
+      : options.model;
+  const effort =
+    options.effort !== null && !catalogEfforts(catalog, model).includes(options.effort)
+      ? null
+      : options.effort;
+  const dropped = [
+    ...(model === options.model ? [] : [`the server no longer lists ${options.model}`]),
+    ...(effort === options.effort ? [] : [`${options.effort} thinking isn't offered`]),
+  ];
+  return dropped.length === 0
+    ? { options, dropped: null }
+    : { options: { ...options, model, effort }, dropped: dropped.join(" · ") };
+};
+
+/**
+ * The base the window's upstream gives the create route. A branch of the project's origin goes by
+ * its name, which the store fetches and resolves on origin and records for landing; an upstream on
+ * another remote goes by the commit it pointed at.
+ */
+const upstreamBase = (
+  checkout: Extract<CheckoutFact, { readonly kind: "pushed" }>,
+): { readonly ref: string; readonly shown: string } => {
+  const ORIGIN = "refs/remotes/origin/";
+  if (checkout.upstream.startsWith(ORIGIN)) {
+    const branch = checkout.upstream.slice(ORIGIN.length);
+    return { ref: branch, shown: branch };
+  }
+  return { ref: checkout.commit, shown: checkout.upstream.replace(/^refs\/remotes\//, "") };
+};
 
 export const resolveBase = (draft: NewSessionDraft): ResolvedBase => {
-  if (draft.join !== null) return { kind: "worktree", worktree: draft.join.worktree };
+  if (draft.join !== null)
+    return { kind: "worktree", worktree: draft.join.worktree, shown: draft.join.shown };
   const { base } = draft.options;
   const fallback = draft.project.defaultBranch;
-  if (base.kind === "ref") return { kind: "ref", ref: base.ref, unpushed: null };
-  if (base.kind === "default") return { kind: "ref", ref: fallback, unpushed: null };
-  const { checkout } = draft;
-  if (checkout.kind === "pushed") return { kind: "ref", ref: checkout.branch, unpushed: null };
-  if (checkout.kind === "elsewhere") return { kind: "ref", ref: fallback, unpushed: null };
-  return {
+  const fromDefault = (note: string | null): ResolvedBase => ({
     kind: "ref",
     ref: fallback,
-    unpushed:
-      checkout.branch === fallback
-        ? `your commits on ${fallback} aren't pushed`
-        : `your branch ${checkout.branch} isn't pushed`,
-  };
+    shown: fallback,
+    note,
+  });
+  if (base.kind === "ref") return { kind: "ref", ref: base.ref, shown: base.ref, note: null };
+  if (base.kind === "default") return fromDefault(null);
+  const { checkout } = draft;
+  switch (checkout.kind) {
+    case "elsewhere":
+      return fromDefault(null);
+    case "unknown":
+      return fromDefault("couldn't read your branch");
+    case "unpushed":
+      return fromDefault(
+        checkout.branch === fallback
+          ? `your commits on ${fallback} aren't pushed`
+          : `your branch ${checkout.branch} isn't pushed`,
+      );
+    case "pushed": {
+      const upstream = upstreamBase(checkout);
+      return draft.refusedBase === upstream.ref
+        ? fromDefault(`Mend's store couldn't find ${upstream.shown}`)
+        : { kind: "ref", ...upstream, note: null };
+    }
+  }
 };
+
+/** The base create sends when it came from the window's upstream: the one a refusal moves off. */
+export const upstreamRef = (draft: NewSessionDraft): string | null =>
+  draft.join === null &&
+  draft.options.base.kind === "auto" &&
+  draft.checkout.kind === "pushed" &&
+  draft.refusedBase === null
+    ? upstreamBase(draft.checkout).ref
+    : null;
 
 const baseWords = (base: ResolvedBase): string =>
   base.kind === "worktree"
-    ? `in ${base.worktree}`
-    : [`from ${base.ref}`, ...(base.unpushed === null ? [] : [base.unpushed])].join(" · ");
+    ? `in ${base.shown}`
+    : [`from ${base.shown}`, ...(base.note === null ? [] : [base.note])].join(" · ");
 
-const flagLike = (draft: NewSessionDraft): boolean =>
-  draft.options.harness !== SHELL && draft.prompt.trim().startsWith("-");
+/**
+ * The most UTF-8 bytes a prompt may have. The prompt reaches the harness as one argv word, and
+ * Linux takes at most 131,072 bytes per word with its NUL (`MAX_ARG_STRLEN`), which the Sealant
+ * SDK enforces as 131,071 (`SESSION_ARGV_MAX_WORD_BYTES`). The rest is headroom.
+ */
+export const PROMPT_MAX_BYTES = 120_000;
+
+const BYTES = new Intl.NumberFormat("en-US");
+
+/** Why the trimmed prompt cannot be the harness's argument; null when it can. */
+export const promptIssue = (prompt: string, harness: string): string | null => {
+  if (prompt.includes("\0")) return "the prompt has a NUL character, which no argument can carry";
+  if (!prompt.isWellFormed()) return "the prompt has a broken character (a lone surrogate)";
+  if (prompt.startsWith("-")) return `${harness} would read a prompt that starts with - as a flag`;
+  const bytes = Buffer.byteLength(prompt, "utf8");
+  return bytes > PROMPT_MAX_BYTES
+    ? `the prompt is ${BYTES.format(bytes)} bytes · ${harness} takes at most ${BYTES.format(PROMPT_MAX_BYTES)}`
+    : null;
+};
+
+/** Why Enter starts nothing for this draft; null when it starts. A shell's text is its label. */
+const draftIssue = (draft: NewSessionDraft): string | null => {
+  const typed = draft.prompt.trim();
+  if (draft.options.harness !== SHELL) return promptIssue(typed, draft.options.harness);
+  return typed.includes("\0") ? "the name has a NUL character" : null;
+};
 
 /** `claude · default model · high thinking · asks before acting · from main`. */
-export const dimLine = (draft: NewSessionDraft, facts: FlowFacts, offline: boolean): string => {
+export const dimLine = (
+  draft: NewSessionDraft,
+  facts: FlowFacts,
+  offline: boolean,
+  dropped: string | null = null,
+): string => {
   if (offline) return OFFLINE_LINE;
   const { options } = draft;
-  if (flagLike(draft)) return `${options.harness} would read a prompt that starts with - as a flag`;
+  const issue = draftIssue(draft);
+  if (issue !== null) return issue;
   const base = resolveBase(draft);
   const agent =
     options.harness === SHELL
@@ -254,6 +392,7 @@ export const dimLine = (draft: NewSessionDraft, facts: FlowFacts, offline: boole
     ...agent,
     baseWords(base),
     ...(base.kind === "worktree" && facts.joinLine !== null ? [facts.joinLine] : []),
+    ...(dropped === null ? [] : [dropped]),
   ].join(" · ");
 };
 
@@ -331,12 +470,20 @@ const OPTION_STEPS: Readonly<Record<OptionStep, OptionStepSpec>> = {
       })),
   },
   model: {
-    applies: ({ options }, facts) =>
-      options.harness !== SHELL && catalogOf(facts, options.harness).models.length > 0,
-    placeholder: ({ options }) => `Model for ${options.harness}`,
+    // Every harness but the shell has this step, catalog read or not: `default model` is always here.
+    applies: ({ options }) => options.harness !== SHELL,
+    placeholder: ({ options }, facts) =>
+      facts.catalogs === null
+        ? `Model for ${options.harness} · the server's models aren't read yet`
+        : `Model for ${options.harness}`,
     rows: ({ options }, facts) => {
-      const catalog = catalogOf(facts, options.harness);
-      return modelPickRows(catalog, options.harness).map((row) => ({
+      const catalog = catalogOf(facts.catalogs, options.harness);
+      const listed = modelPickRows(catalog, options.harness);
+      const remembered =
+        options.model !== null && !listed.some((row) => row.model === options.model)
+          ? [{ label: options.model, description: "remembered", model: options.model }]
+          : [];
+      return [...listed, ...remembered].map((row) => ({
         id: `model:${row.model ?? ""}`,
         label: row.label,
         description: row.description,
@@ -347,7 +494,9 @@ const OPTION_STEPS: Readonly<Record<OptionStep, OptionStepSpec>> = {
             ...current,
             model: row.model,
             effort:
-              current.effort !== null && takes.includes(current.effort) ? current.effort : null,
+              current.effort !== null && (facts.catalogs === null || takes.includes(current.effort))
+                ? current.effort
+                : null,
           };
         },
       }));
@@ -356,15 +505,23 @@ const OPTION_STEPS: Readonly<Record<OptionStep, OptionStepSpec>> = {
   effort: {
     applies: ({ options }, facts) =>
       options.harness !== SHELL &&
-      catalogEfforts(catalogOf(facts, options.harness), options.model).length > 0,
+      (facts.catalogs === null ||
+        catalogEfforts(catalogOf(facts.catalogs, options.harness), options.model).length > 0),
     placeholder: ({ options }, facts) => `Thinking for ${modelWords(facts, options)}`,
-    rows: ({ options }, facts) =>
-      [null, ...catalogEfforts(catalogOf(facts, options.harness), options.model)].map((effort) => ({
+    rows: ({ options }, facts) => {
+      const takes = catalogEfforts(catalogOf(facts.catalogs, options.harness), options.model);
+      const efforts = [
+        null,
+        ...takes,
+        ...(options.effort !== null && !takes.includes(options.effort) ? [options.effort] : []),
+      ];
+      return efforts.map((effort) => ({
         id: `effort:${effort ?? ""}`,
         label: effort ?? "default",
         current: options.effort === effort,
         apply: (current) => ({ ...current, effort }),
-      })),
+      }));
+    },
   },
   permission: {
     applies: ({ options }) => options.harness !== SHELL,
@@ -445,6 +602,7 @@ const draftFor = (
   prompt: facts.kept.get(keptPromptKey(project.id, join)) ?? "",
   options: facts.remembered[project.id] ?? DEFAULT_OPTIONS,
   checkout,
+  refusedBase: null,
 });
 
 /**
@@ -469,21 +627,46 @@ export const openFlow = (
   offline: opening.offline,
   adopting: false,
   cameFromProjects: false,
+  dropped: null,
 });
 
 const NONE: FlowEffect = { kind: "none" };
 
+/**
+ * The prompt step on `draft`, its options checked against the catalog once it is read: what the
+ * check dropped is said on the dim line and remembered, so a retired model is never sent again.
+ */
+const atCheckedPrompt = (
+  state: FlowState,
+  draft: NewSessionDraft,
+  facts: FlowFacts,
+): { readonly state: FlowState; readonly effect: FlowEffect } => {
+  const checked =
+    facts.catalogs === null
+      ? { options: draft.options, dropped: null }
+      : reconcileOptions(draft.options, facts.catalogs);
+  const next = { ...draft, options: checked.options };
+  return {
+    state: { ...atPrompt(state, next), dropped: checked.dropped },
+    effect:
+      checked.dropped === null
+        ? NONE
+        : { kind: "remember", projectId: next.project.id, options: next.options },
+  };
+};
+const ELSEWHERE: CheckoutFact = { kind: "elsewhere" };
+
 const projectItems = (facts: FlowFacts): ReadonlyArray<QuickInputItem> => [
-  ...(facts.adoptable === null
+  ...(facts.adoptable === null || facts.candidates.length > 0
     ? []
     : [
         {
           id: ADOPT_ITEM,
           label: "$(repo-clone) Adopt this repository",
-          description: facts.adoptable.origin,
+          description: redactOrigin(facts.adoptable.origin),
         },
       ]),
-  ...facts.projects.map((project) => ({
+  ...(facts.candidates.length > 0 ? facts.candidates : facts.projects).map((project) => ({
     id: `project:${project.id}`,
     label: project.name,
     description: project.defaultBranch,
@@ -511,21 +694,22 @@ const acceptProject = (
 ): { readonly state: FlowState; readonly effect: FlowEffect } => {
   if (state.adopting) return { state, effect: NONE };
   if (item === ADOPT_ITEM) {
-    if (facts.adoptable === null || state.offline) return { state, effect: NONE };
+    if (facts.adoptable === null || facts.candidates.length > 0 || state.offline)
+      return { state, effect: NONE };
     return {
       state: { ...state, adopting: true },
       effect: { kind: "adopt", ...facts.adoptable },
     };
   }
-  const project = facts.projects.find((candidate) => `project:${candidate.id}` === item);
+  const listed = facts.candidates.length > 0 ? facts.candidates : facts.projects;
+  const project = listed.find((candidate) => `project:${candidate.id}` === item);
   if (project === undefined) return { state, effect: NONE };
-  return {
-    state: {
-      ...atPrompt(state, draftFor(project, null, { kind: "elsewhere" }, facts)),
-      cameFromProjects: true,
-    },
-    effect: NONE,
-  };
+  const checkout = facts.candidates.includes(project) ? facts.checkout : ELSEWHERE;
+  return atCheckedPrompt(
+    { ...state, cameFromProjects: true },
+    draftFor(project, null, checkout, facts),
+    facts,
+  );
 };
 
 const acceptOption = (
@@ -569,8 +753,14 @@ export const step = (
   facts: FlowFacts,
 ): { readonly state: FlowState; readonly effect: FlowEffect } => {
   const unchanged = { state, effect: NONE };
-  if (state.step.kind === "started") return unchanged;
   const { draft } = state;
+  if (state.step.kind === "started") {
+    const refused = draft === null ? null : upstreamRef(draft);
+    // The store could not resolve her upstream: the prompt is back, and Enter starts from the default.
+    return event.kind === "baseRefused" && draft !== null && refused !== null
+      ? { state: atPrompt(state, { ...draft, refusedBase: refused }), effect: NONE }
+      : unchanged;
+  }
   switch (event.kind) {
     case "connection":
       return { state: { ...state, offline: event.offline }, effect: NONE };
@@ -580,14 +770,24 @@ export const step = (
         : { state: { ...state, query: event.value }, effect: NONE };
     case "adopted":
       if (!state.adopting) return unchanged;
-      return {
-        state: {
-          ...atPrompt(state, draftFor(event.project, null, facts.checkout, facts)),
-          adopting: false,
-          cameFromProjects: true,
-        },
-        effect: NONE,
-      };
+      return atCheckedPrompt(
+        { ...state, adopting: false, cameFromProjects: true },
+        draftFor(event.project, null, facts.checkout, facts),
+        facts,
+      );
+    case "catalogsRead": {
+      if (draft === null) return unchanged;
+      const checked = atCheckedPrompt(state, draft, facts);
+      const at = state.step;
+      // On one of Change…'s steps she stays there, unless the catalog took that step away.
+      return at.kind === "option" &&
+        checked.state.draft !== null &&
+        applicableSteps(checked.state.draft, facts).includes(at.option)
+        ? { ...checked, state: { ...checked.state, step: at, query: state.query } }
+        : checked;
+    }
+    case "baseRefused":
+      return unchanged;
     case "adoptFailed":
       return { state: { ...state, adopting: false }, effect: NONE };
     case "back":
@@ -604,7 +804,7 @@ export const step = (
       if (draft === null) return unchanged;
       if (state.step.kind === "option")
         return acceptOption(state, draft, state.step.option, event.item, facts);
-      if (state.offline || flagLike(draft)) return unchanged;
+      if (state.offline || draftIssue(draft) !== null) return unchanged;
       return {
         state: { ...state, step: { kind: "started" } },
         effect: { kind: "start", draft, ...startRequests(draft) },
@@ -636,7 +836,7 @@ const titleOf = (draft: NewSessionDraft | null): string =>
     ? "New session"
     : draft.join === null
       ? `New session · ${draft.project.name}`
-      : `New session · ${draft.project.name} · in ${draft.join.worktree}`;
+      : `New session · ${draft.project.name} · in ${draft.join.shown}`;
 
 export const render = (state: FlowState, facts: FlowFacts): QuickInputView => {
   const { step: at, draft } = state;
@@ -645,7 +845,10 @@ export const render = (state: FlowState, facts: FlowFacts): QuickInputView => {
       title: "New session",
       step: null,
       back: false,
-      placeholder: "Choose a project",
+      placeholder:
+        facts.candidates.length > 0
+          ? "Several projects have this repository's origin: choose one"
+          : "Choose a project",
       value: state.query,
       busy: state.adopting,
       items: projectItems(facts),
@@ -675,7 +878,8 @@ export const render = (state: FlowState, facts: FlowFacts): QuickInputView => {
     };
   }
   const base = resolveBase(draft);
-  const unpushed = !state.offline && base.kind === "ref" && base.unpushed !== null;
+  const warned =
+    !state.offline && ((base.kind === "ref" && base.note !== null) || draftIssue(draft) !== null);
   return {
     title: titleOf(draft),
     step: null,
@@ -689,8 +893,8 @@ export const render = (state: FlowState, facts: FlowFacts): QuickInputView => {
     items: [
       {
         id: START_ITEM,
-        label: unpushed ? "$(warning)" : "",
-        description: dimLine(draft, facts, state.offline),
+        label: warned ? "$(warning)" : "",
+        description: dimLine(draft, facts, state.offline, state.dropped),
         change: true,
         alwaysShow: true,
       },
