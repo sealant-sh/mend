@@ -213,6 +213,7 @@ describe("with per-person homes off, no request beyond the project view", () => 
     sealantWorkspaceId: null,
     summary: null,
     createdAt: "2026-10-08T12:00:00.000Z",
+    settledAt: null,
     ownerUserId: "anna",
     livePeople: [],
     sharedControlEnabledAt: "2026-10-08T12:00:00.000Z",

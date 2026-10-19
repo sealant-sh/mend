@@ -46,6 +46,8 @@ export interface Session {
   /** What the session line says after its status (`building the workspace image …`); older servers omit it. */
   readonly summary: string | null;
   readonly createdAt: string;
+  /** When it last settled; null while live, and from older servers. */
+  readonly settledAt: string | null;
   /** Who started the session; null on older rows and from older servers. */
   readonly ownerUserId: string | null;
   /**

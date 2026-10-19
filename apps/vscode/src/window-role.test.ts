@@ -26,6 +26,7 @@ const session = (overrides: Partial<Session>): Session => ({
   sealantWorkspaceId: WORKSPACE,
   summary: null,
   createdAt: "2026-10-19T09:00:00.000Z",
+  settledAt: null,
   ownerUserId: "dana",
   livePeople: [],
   sharedControlEnabledAt: null,

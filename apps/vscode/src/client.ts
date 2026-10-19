@@ -82,6 +82,7 @@ const parseSession = (value: unknown): Session => {
       typeof value["sealantWorkspaceId"] === "string" ? value["sealantWorkspaceId"] : null,
     summary: typeof value["summary"] === "string" ? value["summary"] : null,
     createdAt: stringField(value, "createdAt"),
+    settledAt: typeof value["settledAt"] === "string" ? value["settledAt"] : null,
     ownerUserId: typeof value["ownerUserId"] === "string" ? value["ownerUserId"] : null,
     livePeople: parseLivePeople(value["livePeople"]),
     sharedControlEnabledAt:
