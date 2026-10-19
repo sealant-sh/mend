@@ -57,10 +57,10 @@ that server-side path for your own use.
 The Mend icon in the Activity Bar opens **Sessions**. In any window that is not a session's
 workspace it has four groups, in this order:
 
-- **Needs you**: sessions that wait for you and that **Answer** lets you answer. Each waits for
-  its owner alone, even with shared control on. Only the owner types in a terminal agent's
-  terminal, and only the owner gets **Continue here** on a conversation, which is how **Answer**
-  answers its request for now. A row says what the session waits for, as Mend observed it:
+- **Needs you**: sessions that wait for you and that **Answer** lets you answer. Each waits for its
+  owner alone, even with shared control on. Only the owner types in a terminal agent's terminal, and
+  only the owner gets **Continue here** on a conversation, which is how **Answer** answers its
+  request for now. A row says what the session waits for, as Mend observed it:
   `waiting · claude needs your permission to use Bash · since 02:14`. A session that waits for a
   reason Mend has not read yet, or that waits for someone else, stays under **Running**.
 - **Since you last looked**: sessions that completed, failed or landed since this VS Code last
@@ -87,9 +87,10 @@ the status bar both open the session picker.
 Only the focused VS Code window shows a notification, and only when a session waits for you or a
 session you started finished, and that window is not already showing it: selected in the view, the
 window's own session, or the session whose agent terminal is in front after **Answer**. One wait
-shows one notification across all your VS Code windows. Other windows show the badge. When Mend
-cannot be reached, the view reads `last heard from Mend at 23:10`, the rows keep the last words Mend
-reported with `· last seen 2 min ago`, and **New session** and **Answer** are disabled.
+shows one notification across all your VS Code windows, and none once it is a week old. Other
+windows show the badge. When Mend cannot be reached, the view reads `last heard from Mend at 23:10`,
+the rows keep the last words Mend reported with `· last seen 2 min ago`, and **New session** and
+**Answer** are disabled.
 
 With no project adopted, the view offers **Adopt a project…**, which asks for a Git clone URL and a
 project name.

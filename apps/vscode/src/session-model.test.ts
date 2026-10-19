@@ -460,7 +460,12 @@ describe("toasts (rules 12-14)", () => {
 
   it("withdraws a wait answered elsewhere", () => {
     expect(transitions(waitingRead, asRead(running), looking)).toEqual([
-      { kind: "withdrawn", key: `${waiting.id}:wait:${wait.key}`, sessionId: waiting.id },
+      {
+        kind: "withdrawn",
+        key: `${waiting.id}:wait:${wait.key}`,
+        sessionId: waiting.id,
+        at: wait.since,
+      },
     ]);
   });
 

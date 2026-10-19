@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 
 import { MendApiError } from "./client.js";
-import { transitions, type Notification, type WindowModel } from "./session-model.js";
+import { transitions, waitsOf, type Notification, type WindowModel } from "./session-model.js";
 import type { SessionStore, StoreChange } from "./session-store.js";
 import type { ToastClaims } from "./toast-claims.js";
 import { statusColor } from "./tree.js";
@@ -66,7 +66,7 @@ export class Notifier {
 
   constructor(
     private readonly store: Pick<SessionStore, "showing" | "model" | "error">,
-    private readonly claims: Pick<ToastClaims, "claim">,
+    private readonly claims: Pick<ToastClaims, "claim" | "release">,
   ) {}
 
   changed({ prev, next }: StoreChange): void {
@@ -78,6 +78,7 @@ export class Notifier {
     for (const notification of notified) {
       if (notification.kind === "withdrawn") {
         this.#withdrawn.add(notification.key);
+        void this.claims.release(notification.key, notification.at);
         continue;
       }
       this.#raised.add(notification.key);
@@ -89,7 +90,12 @@ export class Notifier {
 
   async #toast(notification: Exclude<Notification, { readonly kind: "withdrawn" }>): Promise<void> {
     // Another window may have toasted it already, focused when its own read landed.
-    if (!(await this.claims.claim(notification.key))) return;
+    if (!(await this.claims.claim(notification.key, notification.at))) return;
+    // Claiming took a while: she may have looked away, or at the session, or the wait ended.
+    if (!this.#stillToasts(notification)) {
+      await this.claims.release(notification.key, notification.at);
+      return;
+    }
     const actions = notification.kind === "waits" ? ["Answer"] : ["Review", "Open"];
     const picked = await vscode.window.showInformationMessage(notification.text, ...actions);
     if (picked === undefined) return;
@@ -101,6 +107,14 @@ export class Notifier {
     const command =
       picked === "Answer" ? "mend.answer" : picked === "Review" ? "mend.reviewChange" : "mend.open";
     await vscode.commands.executeCommand(command, notification.sessionId);
+  }
+
+  #stillToasts(notification: Exclude<Notification, { readonly kind: "withdrawn" }>): boolean {
+    return (
+      vscode.window.state.focused &&
+      !this.store.showing().has(notification.sessionId) &&
+      (notification.kind !== "waits" || waitsOf(this.store.model()).has(notification.key))
+    );
   }
 
   /** A refused sign-in toasts once, with the one action that helps; going offline never toasts. */

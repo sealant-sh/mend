@@ -11,7 +11,7 @@ import type { Project, ProjectDetail, Session, SessionStatus } from "./types.js"
 
 /** Why a session waits for a person, as Mend observed it. */
 export interface WaitFact {
-  /** The same for one wait: a terminal agent's `since`, or a conversation's request id. */
+  /** The same for one wait: a terminal agent's kind and `since`, or a conversation's request id. */
   readonly key: string;
   /** `claude needs your permission to use Bash`, or the request's own title. */
   readonly words: string;
@@ -380,23 +380,20 @@ export const othersLine = (others: WorkspaceModel["others"]): string =>
 /** Why a notification stays quiet in this window; null when it toasts. */
 export type Quiet = "already-there" | "unfocused" | "showing" | null;
 
+/** What every notification carries: which one it is, and when what it says began. */
+interface Raised {
+  /** One per wait or finish: what it names never toasts twice. */
+  readonly key: string;
+  readonly sessionId: string;
+  /** When the wait began, or the session settled: how old the claim on `key` is. */
+  readonly at: string;
+}
+
 export type Notification =
-  | {
-      readonly kind: "waits";
-      readonly key: string;
-      readonly sessionId: string;
-      readonly text: string;
-      readonly quiet: Quiet;
-    }
-  | {
-      readonly kind: "finished";
-      readonly key: string;
-      readonly sessionId: string;
-      readonly text: string;
-      readonly quiet: Quiet;
-    }
+  | (Raised & { readonly kind: "waits"; readonly text: string; readonly quiet: Quiet })
+  | (Raised & { readonly kind: "finished"; readonly text: string; readonly quiet: Quiet })
   /** A wait that ended (answered here or elsewhere): its toast, if one shows, no longer holds. */
-  | { readonly kind: "withdrawn"; readonly key: string; readonly sessionId: string };
+  | (Raised & { readonly kind: "withdrawn" });
 
 /** What this window is doing when a read lands. */
 export interface Attention {
@@ -407,14 +404,16 @@ export interface Attention {
   readonly raised: ReadonlySet<string>;
 }
 
-/** One key per wait, for as long as it lasts: what it is never toasts twice. */
-const waitKey = (view: SessionView): string | null =>
-  view.needsYou && view.wait !== null ? `${view.session.id}:wait:${view.wait.key}` : null;
-
-const needsKeys = (model: WindowModel | null): ReadonlySet<string> =>
-  new Set(
-    model === null ? [] : [...model.sessions.values()].flatMap((view) => waitKey(view) ?? []),
-  );
+/** The waits that need her in `model`, by key: one key per wait, for as long as it lasts. */
+export const waitsOf = (model: WindowModel | null): ReadonlyMap<string, Raised> => {
+  const waits = new Map<string, Raised>();
+  for (const view of model?.sessions.values() ?? []) {
+    if (!view.needsYou || view.wait === null) continue;
+    const key = `${view.session.id}:wait:${view.wait.key}`;
+    waits.set(key, { key, sessionId: view.session.id, at: view.wait.since });
+  }
+  return waits;
+};
 
 /**
  * What a change from `prev` to `next` raises (rules 12-14): a session that now waits for her, a
@@ -426,7 +425,8 @@ export const transitions = (
   next: WindowModel,
   attention: Attention,
 ): ReadonlyArray<Notification> => {
-  const before = needsKeys(prev);
+  const before = waitsOf(prev);
+  const now = waitsOf(next);
   const quietFor = (sessionId: string): Quiet =>
     prev === null
       ? "already-there"
@@ -435,21 +435,19 @@ export const transitions = (
         : attention.showing.has(sessionId)
           ? "showing"
           : null;
-  const after = [...next.sessions.values()];
-  const waits = after.flatMap((view): ReadonlyArray<Notification> => {
-    const key = waitKey(view);
-    if (key === null || before.has(key) || attention.raised.has(key)) return [];
+  const waits = [...now.values()].flatMap((wait): ReadonlyArray<Notification> => {
+    const view = next.sessions.get(wait.sessionId);
+    if (view === undefined || before.has(wait.key) || attention.raised.has(wait.key)) return [];
     return [
       {
         kind: "waits",
-        key,
-        sessionId: view.session.id,
+        ...wait,
         text: [`${view.name} is waiting`, ...(view.fact === null ? [] : [view.fact])].join(" · "),
-        quiet: quietFor(view.session.id),
+        quiet: quietFor(wait.sessionId),
       },
     ];
   });
-  const finished = after.flatMap((view): ReadonlyArray<Notification> => {
+  const finished = [...next.sessions.values()].flatMap((view): ReadonlyArray<Notification> => {
     if (!view.mine || (view.word !== "completed" && view.word !== "failed")) return [];
     const earlier = prev?.sessions.get(view.session.id);
     if (earlier === undefined || !earlier.live) return [];
@@ -461,6 +459,7 @@ export const transitions = (
         kind: "finished",
         key,
         sessionId: view.session.id,
+        at: view.settledAt ?? view.session.createdAt,
         text: [
           view.word === "completed" ? `${view.name} finished` : `${view.name} failed`,
           ...(fact === null ? [] : [fact]),
@@ -469,16 +468,9 @@ export const transitions = (
       },
     ];
   });
-  const now = needsKeys(next);
-  const withdrawn = [...before]
-    .filter((key) => !now.has(key))
-    .map(
-      (key): Notification => ({
-        kind: "withdrawn",
-        key,
-        sessionId: key.slice(0, key.indexOf(":wait:")),
-      }),
-    );
+  const withdrawn = [...before.values()]
+    .filter((wait) => !now.has(wait.key))
+    .map((wait): Notification => ({ kind: "withdrawn", ...wait }));
   return [...waits, ...finished, ...withdrawn];
 };
 

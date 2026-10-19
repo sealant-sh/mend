@@ -94,10 +94,10 @@ const detail = (processes: ReadonlyArray<SessionProcess>): Pick<SessionDetail, "
 describe("why a session waits", () => {
   const since = "2026-10-19T02:14:00.000Z";
 
-  it("says a terminal agent's wait in G4's words, keyed by when it began", () => {
+  it("says a terminal agent's wait in G4's words, keyed by its kind and when it began", () => {
     const waiting = agent({ waiting: { kind: "permission", tool: "Bash", since } });
     expect(terminalWait(detail([waiting]))).toEqual({
-      key: since,
+      key: `permission:${since}`,
       words: "claude needs your permission to use Bash",
       since,
       via: "terminal",

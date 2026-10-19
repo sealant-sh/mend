@@ -95,7 +95,7 @@ export const terminalWait = (detail: Pick<SessionDetail, "processes">): WaitFact
     harness,
     new AgentWait({ kind: wait.kind, tool: wait.tool, since: new Date(wait.since) }),
   );
-  return { key: wait.since, words, since: wait.since, via: "terminal" };
+  return { key: `${wait.kind}:${wait.since}`, words, since: wait.since, via: "terminal" };
 };
 
 /** A conversation's wait: its oldest pending request, in the request's own title. */
