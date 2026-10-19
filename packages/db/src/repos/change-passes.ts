@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { type ChangeId } from "@mend/domain";
 import { ChangePass, type PassKind } from "@mend/domain/workbench";
-import { and, asc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -35,12 +35,17 @@ export class ChangePassesRepo extends Context.Service<
     ) => Effect.Effect<void>;
     readonly fail: (changeId: ChangeId, kind: PassKind, detail: string) => Effect.Effect<void>;
     readonly listForChange: (changeId: ChangeId) => Effect.Effect<ReadonlyArray<ChangePass>>;
+    /** The digest of the diff review prep last queued this pass for; null before the first. */
+    readonly preparedDigest: (changeId: ChangeId, kind: PassKind) => Effect.Effect<string | null>;
     /**
-     * Review prep's claim on one diff of a change: true, recording it, when prep has not queued
-     * passes for this digest yet; false when it has. One statement, so concurrent claims of the
-     * same diff leave one winner.
+     * Record that review prep queued this pass for this diff, once a job is queued to read it.
+     * Only the last digest per pass is kept, so a diff that comes back is prepared again.
      */
-    readonly claimPrep: (changeId: ChangeId, diffDigest: string) => Effect.Effect<boolean>;
+    readonly recordPrep: (
+      changeId: ChangeId,
+      kind: PassKind,
+      diffDigest: string,
+    ) => Effect.Effect<void>;
   }
 >()("@mend/db/ChangePassesRepo") {}
 
@@ -167,23 +172,34 @@ export const ChangePassesRepoLive: Layer.Layer<
       return yield* Effect.forEach(rows, decodeRow);
     });
 
-    const claimPrep = Effect.fn("ChangePassesRepo.claimPrep")(function* (
+    const preparedDigest = Effect.fn("ChangePassesRepo.preparedDigest")(function* (
       changeId: ChangeId,
-      diffDigest: string,
+      kind: PassKind,
     ) {
-      const claimed = yield* db
-        .insert(changeReviewPreps)
-        .values({ changeId, diffDigest })
-        .onConflictDoUpdate({
-          target: changeReviewPreps.changeId,
-          set: { diffDigest, preparedAt: yield* DateTime.nowAsDate },
-          setWhere: ne(changeReviewPreps.diffDigest, diffDigest),
-        })
-        .returning({ changeId: changeReviewPreps.changeId })
+      const [row] = yield* db
+        .select({ diffDigest: changeReviewPreps.diffDigest })
+        .from(changeReviewPreps)
+        .where(and(eq(changeReviewPreps.changeId, changeId), eq(changeReviewPreps.kind, kind)))
+        .limit(1)
         .pipe(Effect.orDie);
-      return claimed.length > 0;
+      return row?.diffDigest ?? null;
     });
 
-    return { queue, begin, complete, fail, listForChange, claimPrep };
+    const recordPrep = Effect.fn("ChangePassesRepo.recordPrep")(function* (
+      changeId: ChangeId,
+      kind: PassKind,
+      diffDigest: string,
+    ) {
+      yield* db
+        .insert(changeReviewPreps)
+        .values({ changeId, kind, diffDigest })
+        .onConflictDoUpdate({
+          target: [changeReviewPreps.changeId, changeReviewPreps.kind],
+          set: { diffDigest, preparedAt: yield* DateTime.nowAsDate },
+        })
+        .pipe(Effect.orDie);
+    });
+
+    return { queue, begin, complete, fail, listForChange, preparedDigest, recordPrep };
   }),
 );

@@ -3538,17 +3538,19 @@ const sessionProcessWaitingMigration = Effect.gen(function* () {
 });
 
 /**
- * Review prep spends inference once per diff of a change: the digest it last queued passes for,
- * so a second settle, a restarted worker or another session in the worktree over the same diff
- * queues nothing.
+ * The diff review prep last queued each pass for, per change and pass kind: a second settle, a
+ * restarted worker or another session in the worktree over that same diff queues that pass again
+ * for nothing.
  */
 const changeReviewPrepsMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
     CREATE TABLE change_review_preps (
-      change_id text PRIMARY KEY REFERENCES worktree_changes(id) ON DELETE CASCADE,
+      change_id text NOT NULL REFERENCES worktree_changes(id) ON DELETE CASCADE,
+      kind text NOT NULL,
       diff_digest text NOT NULL,
-      prepared_at timestamptz NOT NULL DEFAULT now()
+      prepared_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (change_id, kind)
     )`;
 });
 

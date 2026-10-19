@@ -1,6 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import {
   AgentConversationRepoLive,
+  ChangePassesRepo,
   ChangePassesRepoLive,
   listenEvents,
   MendDBLive,
@@ -33,13 +34,14 @@ import {
 } from "@mend/domain";
 import { AgentWait, type SessionProcessKind, type SessionStatus } from "@mend/domain/workbench";
 import { CaptureRuntimeOff, WorktreeReads, WORKTREE_STAMP } from "@mend/sessions";
-import { Effect, Layer, Redacted, Schedule, type Scope, Stream } from "effect";
+import { ConfigProvider, Effect, Layer, Redacted, Schedule, type Scope, Stream } from "effect";
 import { SqlClient } from "effect/sql";
+import { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { JobRunner, type JobSpec } from "../src/job-runner.ts";
 import { PushSender, type PushMessage } from "../src/push-sender.ts";
-import { reviewPrep } from "../src/review-prep.ts";
+import { diffDigest, reviewPrep } from "../src/review-prep.ts";
 import { sessionNotifier } from "../src/session-notifier.ts";
 
 const postgres = postgresTestConfig();
@@ -72,6 +74,8 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
 
 const PROJECT = ProjectId.make("p-web");
+/** Tour on, suggestions off, until a case switches them on. */
+const TOUR_ONLY = ProjectId.make("p-docs");
 const OWNER = "alice";
 const PHONE = "alice-phone";
 const BASE = Sha.make("a".repeat(40));
@@ -100,7 +104,12 @@ const finishedTurn = () =>
  * One session in its own worktree, with its change, a live terminal agent and a live shell. The
  * agent holds `wait` when it is given one: a finished turn.
  */
-const seedSession = (name: string, status: SessionStatus, wait: AgentWait | null) =>
+const seedSession = (
+  name: string,
+  status: SessionStatus,
+  wait: AgentWait | null,
+  project: ProjectId = PROJECT,
+) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const sessions = yield* SessionsRepo;
@@ -111,11 +120,11 @@ const seedSession = (name: string, status: SessionStatus, wait: AgentWait | null
     const workspaceId = SealantWorkspaceId.make(`ws-${name}`);
     yield* sql`
       INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
-      VALUES (${worktreeId}, ${PROJECT}, ${name}, ${name}, ${`mend/${name}`}, ${BASE})`;
-    const change = yield* changes.ensureForWorktree(PROJECT, worktreeId, `mend/${name}`, BASE);
+      VALUES (${worktreeId}, ${project}, ${name}, ${name}, ${`mend/${name}`}, ${BASE})`;
+    const change = yield* changes.ensureForWorktree(project, worktreeId, `mend/${name}`, BASE);
     yield* sessions.create({
       id: sessionId,
-      projectId: PROJECT,
+      projectId: project,
       worktreeId,
       harness: "claude",
       label: name,
@@ -127,6 +136,8 @@ const seedSession = (name: string, status: SessionStatus, wait: AgentWait | null
       ownerUserId: OWNER,
       origin: "mend",
     });
+    // The change's mirror, as the engine records it: a pass row's write notifies through it.
+    yield* sql`UPDATE worktree_changes SET session_id = ${sessionId} WHERE id = ${change.id}`;
     yield* sessions.setStatus(sessionId, status);
     const create = (kind: SessionProcessKind) =>
       processes.create({
@@ -171,8 +182,9 @@ interface Observed {
  * Starts the session notifier and review prep on their own `listenEvents` streams over the
  * scratch database, with only the push transport, the job queue and the git read faked. Returns
  * once both streams have heard a NOTIFY, so the LISTEN is in place before the caller triggers.
+ * Given `queue`, review prep queues on it instead of the fake.
  */
-const startWorkers = (diff: () => string = () => BILLING_DIFF) =>
+const startWorkers = (diff: () => string = () => BILLING_DIFF, queue?: Layer.Layer<JobRunner>) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     const pushes: Array<PushMessage> = [];
@@ -186,13 +198,14 @@ const startWorkers = (diff: () => string = () => BILLING_DIFF) =>
             return [];
           }),
       }),
-      Layer.mock(JobRunner, {
-        enqueue: (job) =>
-          Effect.sync(() => {
-            jobs.push(job);
-            return { _tag: "Queued", id: `job-${jobs.length}` };
-          }),
-      }),
+      queue ??
+        Layer.mock(JobRunner, {
+          enqueue: (job) =>
+            Effect.sync(() => {
+              jobs.push(job);
+              return { _tag: "Queued", id: `job-${jobs.length}` };
+            }),
+        }),
       Layer.mock(WorktreeReads, {
         diffWorktree: () => Effect.sync(() => ({ stamp: WORKTREE_STAMP, value: diff() })),
       }),
@@ -244,6 +257,39 @@ const pushesFor = (observed: Observed, sessionId: SessionId) =>
 const run = <A, E>(effect: Effect.Effect<A, E, Repos | Scope.Scope>) =>
   Effect.runPromise(effect.pipe(Effect.scoped, Effect.provide(reposLayer)));
 
+/** A resumed turn whose agent exits, leaving the session idle with its shell. */
+const turnThatEnds = Effect.fn("turnThatEnds")(function* (seeded: Seeded, turn: string) {
+  const sessions = yield* SessionsRepo;
+  const processes = yield* SessionProcessesRepo;
+  yield* sessions.reopen(seeded.sessionId, "running");
+  const agent = yield* processes.create({
+    sessionId: seeded.sessionId,
+    sealantWorkspaceId: SealantWorkspaceId.make(`ws-${seeded.sessionId}`),
+    sealantSessionId: `pty-${seeded.sessionId}-${turn}`,
+    kind: "agent-pty",
+    harness: "claude",
+    label: turn,
+    argv: ["claude", "--resume"],
+  });
+  yield* processes.markExited(agent.id, "exited", 0);
+  yield* sessions.setStatus(seeded.sessionId, "idle");
+});
+
+/** Polls `ready` until it holds or ten seconds pass. */
+const eventuallyEffect = <E, R>(ready: Effect.Effect<boolean, E, R>) =>
+  ready.pipe(
+    Effect.repeat({ until: (ok) => ok, schedule: Schedule.spaced("100 millis") }),
+    Effect.timeoutOption("10 seconds"),
+  );
+
+/** pg-boss on the scratch database, as the server runs it. */
+const pgBossQueue = Layer.build(
+  JobRunner.pgBossLayer.pipe(
+    Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ DATABASE_URL: scratchUrl }))),
+    Layer.orDie,
+  ),
+).pipe(Effect.map(Layer.succeedContext));
+
 describe.skipIf(postgres.skip)("a terminal agent's exit under a live shell, through LISTEN", () => {
   beforeAll(async () => {
     await withAdmin(
@@ -265,7 +311,9 @@ describe.skipIf(postgres.skip)("a terminal agent's exit under a live shell, thro
           INSERT INTO projects
             (id, name, store_path, default_branch, organization_id, auto_tour, auto_suggest)
           VALUES (${PROJECT}, 'web', '/store/p-web/repo.git', 'main',
-                  (SELECT id FROM organizations LIMIT 1), 'on', 'on')`;
+                  (SELECT id FROM organizations LIMIT 1), 'on', 'on'),
+                 (${TOUR_ONLY}, 'docs', '/store/p-docs/repo.git', 'main',
+                  (SELECT id FROM organizations LIMIT 1), 'on', 'off')`;
         yield* devices.register(OWNER, PHONE, "ios");
       }),
     );
@@ -474,36 +522,21 @@ describe.skipIf(postgres.skip)("a terminal agent's exit under a live shell, thro
     async () => {
       await run(
         Effect.gen(function* () {
-          const sessions = yield* SessionsRepo;
           const processes = yield* SessionProcessesRepo;
           const seeded = yield* seedSession("follow-up", "idle", finishedTurn());
           const asked = yield* seedSession("follow-up-asked", "idle", finishedTurn());
           const edited = yield* seedSession("follow-up-edited", "idle", finishedTurn());
           let diff = BILLING_DIFF;
           const workers = yield* startWorkers(() => diff);
-          const turnThatEnds = Effect.fn("turnThatEnds")(function* (turn: string) {
-            yield* sessions.reopen(seeded.sessionId, "running");
-            const agent = yield* processes.create({
-              sessionId: seeded.sessionId,
-              sealantWorkspaceId: SealantWorkspaceId.make("ws-follow-up"),
-              sealantSessionId: `pty-follow-up-${turn}`,
-              kind: "agent-pty",
-              harness: "claude",
-              label: turn,
-              argv: ["claude", "--resume"],
-            });
-            yield* processes.markExited(agent.id, "exited", 0);
-            yield* sessions.setStatus(seeded.sessionId, "idle");
-          });
 
           yield* processes.markExited(seeded.agentId, "exited", 0);
           yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 2);
-          yield* turnThatEnds("a question, nothing written");
+          yield* turnThatEnds(seeded, "a question, nothing written");
           // Handled in NOTIFY order: once a marker is prepared, every settle before it has been.
           yield* processes.markExited(asked.agentId, "exited", 0);
           yield* eventually(() => jobsFor(workers.observed(), asked.changeId).length >= 2);
           diff = `${BILLING_DIFF}+export const ceiling = 99;\n`;
-          yield* turnThatEnds("an edit");
+          yield* turnThatEnds(seeded, "an edit");
           yield* processes.markExited(edited.agentId, "exited", 0);
 
           yield* eventually(() => jobsFor(workers.observed(), edited.changeId).length >= 2);
@@ -516,4 +549,165 @@ describe.skipIf(postgres.skip)("a terminal agent's exit under a live shell, thro
     },
     TEST_TIMEOUT_MS,
   );
+
+  it(
+    "does not prepare again when the diff moves while a settled session stops",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const sessions = yield* SessionsRepo;
+          const processes = yield* SessionProcessesRepo;
+          const seeded = yield* seedSession("moves-while-stopping", "idle", finishedTurn());
+          const marker = yield* seedSession("moves-while-stopping-marker", "idle", finishedTurn());
+          let diff = BILLING_DIFF;
+          const workers = yield* startWorkers(() => diff);
+
+          yield* processes.markExited(seeded.agentId, "exited", 0);
+          yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 2);
+          diff = `${BILLING_DIFF}+export const ceiling = 99;\n`;
+          yield* turnThatEnds(seeded, "an edit");
+          yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 4);
+          // The Stop: a Service writes while the session drains. Its settle is the idle one before.
+          yield* sessions.setStatus(seeded.sessionId, "stopping");
+          diff = `${diff}+export const drained = true;\n`;
+          yield* sessions.settle(seeded.sessionId, "completed", null);
+          yield* processes.markExited(marker.agentId, "exited", 0);
+
+          yield* eventually(() => jobsFor(workers.observed(), marker.changeId).length >= 2);
+          expect(jobsFor(workers.observed(), seeded.changeId)).toEqual([
+            ...reviewPasses(seeded.changeId),
+            ...reviewPasses(seeded.changeId),
+          ]);
+        }),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "queues suggestions switched on after a tour-only prep, over the same diff, once",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const processes = yield* SessionProcessesRepo;
+          const seeded = yield* seedSession("tour-first", "idle", finishedTurn(), TOUR_ONLY);
+          const marker = yield* seedSession("tour-first-marker", "idle", finishedTurn());
+          const workers = yield* startWorkers();
+          const [tour, suggest] = reviewPasses(seeded.changeId);
+
+          yield* processes.markExited(seeded.agentId, "exited", 0);
+          yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 1);
+          expect(jobsFor(workers.observed(), seeded.changeId)).toEqual([tour]);
+          yield* sql`UPDATE projects SET auto_suggest = 'on' WHERE id = ${TOUR_ONLY}`;
+          yield* turnThatEnds(seeded, "a question, nothing written");
+          yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 2);
+          yield* turnThatEnds(seeded, "another question");
+          yield* processes.markExited(marker.agentId, "exited", 0);
+
+          yield* eventually(() => jobsFor(workers.observed(), marker.changeId).length >= 2);
+          expect(jobsFor(workers.observed(), seeded.changeId)).toEqual([tour, suggest]);
+        }),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it("queues a diff a running pass absorbed once that pass ends, exactly once", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const passes = yield* ChangePassesRepo;
+        const processes = yield* SessionProcessesRepo;
+        const seeded = yield* seedSession("behind-running", "idle", finishedTurn());
+        const marker = yield* seedSession("behind-running-marker", "idle", finishedTurn());
+        const control = yield* Effect.acquireRelease(
+          Effect.promise(async () => {
+            const boss = new PgBoss({
+              connectionString: scratchUrl,
+              supervise: false,
+              schedule: false,
+            });
+            boss.on("error", (error) => console.error(error.message));
+            await boss.start();
+            return boss;
+          }),
+          (boss) => Effect.promise(() => boss.stop({ close: true })),
+        );
+        const keys = [`compose-tour:${seeded.changeId}`, `suggest-change:${seeded.changeId}`];
+        const queued = sql<{ id: string; name: string; state: string }>`
+            SELECT id, name, state FROM pgboss.job WHERE singleton_key IN ${sql.in(keys)}
+            ORDER BY created_on, name`;
+        const recorded = Effect.all([
+          passes.preparedDigest(seeded.changeId, "tour"),
+          passes.preparedDigest(seeded.changeId, "suggest"),
+        ]);
+        let diff = BILLING_DIFF;
+        const before = diffDigest(BILLING_DIFF);
+        // Two workers, as two replicas run it: each hears every settle and queues on its own pool.
+        yield* startWorkers(() => diff, yield* pgBossQueue);
+        yield* startWorkers(() => diff, yield* pgBossQueue);
+
+        yield* processes.markExited(seeded.agentId, "exited", 0);
+        yield* eventuallyEffect(
+          recorded.pipe(Effect.map((digests) => digests.every((digest) => digest === before))),
+        );
+        const first = yield* queued;
+        expect(first.map((job) => [job.name, job.state])).toEqual([
+          ["compose-tour", "created"],
+          ["suggest-change", "created"],
+        ]);
+        // Both passes start, as the inference worker would run them.
+        for (const job of first) {
+          expect(yield* Effect.promise(() => control.fetch(job.name))).toHaveLength(1);
+        }
+        yield* passes.begin(seeded.changeId, "tour");
+        yield* passes.begin(seeded.changeId, "suggest");
+
+        diff = `${BILLING_DIFF}+export const ceiling = 99;\n`;
+        yield* turnThatEnds(seeded, "an edit while the passes run");
+        yield* processes.markExited(marker.agentId, "exited", 0);
+        yield* eventuallyEffect(
+          passes
+            .preparedDigest(marker.changeId, "suggest")
+            .pipe(Effect.map((digest) => digest !== null)),
+        );
+        yield* Effect.sleep("500 millis");
+        expect(
+          {
+            jobs: (yield* queued).map((job) => [job.name, job.state]),
+            recorded: yield* recorded,
+          },
+          "the running passes read the old diff: the new one is neither queued nor recorded",
+        ).toEqual({
+          jobs: [
+            ["compose-tour", "active"],
+            ["suggest-change", "active"],
+          ],
+          recorded: [before, before],
+        });
+
+        // The passes end: their rows first, then their jobs a moment later, as the worker does.
+        yield* passes.complete(seeded.changeId, "tour", null);
+        yield* passes.complete(seeded.changeId, "suggest", 0);
+        yield* Effect.sleep("300 millis");
+        for (const job of first) {
+          yield* Effect.promise(() => control.complete(job.name, job.id));
+        }
+        const after = diffDigest(diff);
+        yield* eventuallyEffect(
+          recorded.pipe(Effect.map((digests) => digests.every((digest) => digest === after))),
+        );
+        // Past every retry either worker would still make.
+        yield* Effect.sleep("4 seconds");
+        expect((yield* queued).map((job) => [job.name, job.state])).toEqual([
+          ["compose-tour", "completed"],
+          ["suggest-change", "completed"],
+          ["compose-tour", "created"],
+          ["suggest-change", "created"],
+        ]);
+        expect(yield* recorded).toEqual([after, after]);
+      }),
+    );
+  }, 45_000);
 });

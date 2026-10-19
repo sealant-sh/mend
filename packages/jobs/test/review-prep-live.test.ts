@@ -205,7 +205,7 @@ const makeWorld = (events: Events, options: Options) => {
   const jobs: Array<JobSpec> = [];
   const queued: Array<Parameters<ChangePassesRepo["Service"]["queue"]>> = [];
   const reads: Array<Parameters<WorktreeReads["Service"]["diffWorktree"]>> = [];
-  const prepared = new Map<ChangeId, string>();
+  const prepared = new Map<string, string>();
   const memory = makeMemoryCaptureStore(() => BASE);
   const capture = options.captured
     ? CaptureRuntimeLive.pipe(
@@ -261,12 +261,10 @@ const makeWorld = (events: Events, options: Options) => {
         Effect.sync(() => {
           queued.push(args);
         }),
-      claimPrep: (changeId, diffDigest) =>
-        Effect.sync(() => {
-          if (prepared.get(changeId) === diffDigest) return false;
-          prepared.set(changeId, diffDigest);
-          return true;
-        }),
+      preparedDigest: (changeId, kind) =>
+        Effect.sync(() => prepared.get(`${changeId}:${kind}`) ?? null),
+      recordPrep: (changeId, kind, diffDigest) =>
+        Effect.sync(() => void prepared.set(`${changeId}:${kind}`, diffDigest)),
     }),
     Layer.mock(JobRunner, {
       enqueue: (job) =>
