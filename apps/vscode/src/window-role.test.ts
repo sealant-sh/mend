@@ -117,10 +117,13 @@ describe("agentTab", () => {
     expect(agentTab(owner, [process({ kind: "service" })])).toEqual({ kind: "none" });
   });
 
-  it("names an unlabelled session by its harness and short id", () => {
+  it("names an unlabelled session's tab by what runs in it and the short id, said once", () => {
     expect(agentTab(session({ label: null }), [process({ id: "claude" })])).toMatchObject({
-      name: "claude · claude · 0a1b2c3d",
+      name: "claude · 0a1b2c3d",
     });
+    expect(
+      agentTab(session({ label: null }), [process({ id: "shell", harness: "shell" })]),
+    ).toMatchObject({ name: "shell · 0a1b2c3d" });
   });
 });
 

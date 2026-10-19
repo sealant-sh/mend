@@ -1,5 +1,4 @@
 import { MendWorkspace } from "./editor-home.js";
-import { displaySession } from "./session-lines.js";
 import type { Project, ProjectDetail, Session, SessionProcess } from "./types.js";
 
 /** What this VS Code window is to Mend: a session's workspace, or anything else. */
@@ -53,14 +52,17 @@ export type AgentTab =
 
 const PROCESS_LIVE: ReadonlySet<string> = new Set(["starting", "running"]);
 
-/** A terminal tab's name: what runs in it, then the session. */
+/**
+ * A terminal tab's name: what runs in it, then the session. An unlabelled session goes by its
+ * short id, since its row name already leads with the harness the tab names first.
+ */
 export const terminalTabName = (
   session: Pick<Session, "harness" | "label" | "id">,
   process: Pick<SessionProcess, "kind" | "harness"> | null,
 ): string => {
   const runs =
     process === null || process.kind === "shell" ? "shell" : (process.harness ?? session.harness);
-  return `${runs} · ${displaySession(session)}`;
+  return `${runs} · ${session.label ?? session.id.slice(0, 8)}`;
 };
 
 export const agentTab = (
