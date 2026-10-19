@@ -18,6 +18,14 @@ const clone = (folder: string, originUrl: string | null): RepositoryFacts => ({
   originUnknown: false,
 });
 
+/** A window on a folder under Mend's store, whose origin no project has. */
+const worktree = (path: string): RepositoryFacts => ({
+  path,
+  folder: path.split("/").at(-1) ?? "",
+  originUrl: "/var/lib/mend/store/mend/repo",
+  originUnknown: false,
+});
+
 describe("originKey", () => {
   it("reads https, ssh and scp forms of one repository as one key", () => {
     const forms = [
@@ -151,5 +159,30 @@ describe("matchProject", () => {
     expect(
       matchProject([server, local], clone("tool", "git@github.com:dana/tool.git")),
     ).toMatchObject({ status: "matched", project: local, matchedBy: "path" });
+  });
+
+  it("does not take a separate repository nested inside an adopted source", () => {
+    const parent = project("p3", "parent", "/home/dana/src/parent");
+    expect(
+      matchProject([server, parent], clone("parent/vendor/other", "git@host:other/repo.git")),
+    ).toEqual({ status: "not-found" });
+    expect(matchProject([server, parent], clone("parent/vendor/other", null))).toEqual({
+      status: "not-found",
+    });
+  });
+
+  it("matches one of the project's worktrees in the store, and nothing nested inside one", () => {
+    expect(
+      matchProject([server, mend], worktree("/var/lib/mend/store/mend/worktrees/fix-login")),
+    ).toEqual({ status: "matched", project: mend, matchedBy: "path" });
+    expect(
+      matchProject(
+        [server, mend],
+        worktree("/var/lib/mend/store/mend/worktrees/fix-login/vendor/other"),
+      ),
+    ).toEqual({ status: "not-found" });
+    expect(matchProject([server, mend], worktree("/var/lib/mend/store/mend/worktrees/"))).toEqual({
+      status: "not-found",
+    });
   });
 });

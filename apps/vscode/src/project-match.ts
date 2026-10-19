@@ -87,29 +87,21 @@ const normalizePath = (value: string): string | null => {
   return trimmed === "" || trimmed.includes("://") ? null : trimmed;
 };
 
-const sameOrInside = (candidate: string, root: string): boolean => {
-  const normalizedCandidate = normalizePath(candidate);
-  const normalizedRoot = normalizePath(root);
-  return (
-    normalizedCandidate !== null &&
-    normalizedRoot !== null &&
-    (normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}/`))
-  );
-};
-
-/** The folder is the adopted source itself, or sits in the project's store. */
-const holdsFolder = (project: Project, folder: string): boolean => {
-  if (
-    project.originUrl !== null &&
-    normalizePath(project.originUrl) !== null &&
-    sameOrInside(folder, project.originUrl)
-  ) {
-    return true;
-  }
+/**
+ * The window's git root is the adopted source itself, or one of the project's worktrees in Mend's
+ * store. Only the root counts: a separate repository nested inside the source has a root of its
+ * own, and its own origin decides.
+ */
+const isProjectRoot = (project: Project, root: string): boolean => {
+  const folder = normalizePath(root);
+  if (folder === null) return false;
+  if (project.originUrl !== null && normalizePath(project.originUrl) === folder) return true;
   const store = normalizePath(project.storePath);
-  if (store === null) return false;
-  const separator = store.lastIndexOf("/");
-  return separator > 0 && sameOrInside(folder, store.slice(0, separator));
+  const separator = store?.lastIndexOf("/") ?? -1;
+  if (store === null || separator <= 0) return false;
+  const worktrees = `${store.slice(0, separator)}/worktrees/`;
+  const name = folder.startsWith(worktrees) ? folder.slice(worktrees.length) : "";
+  return name !== "" && !name.includes("/");
 };
 
 const resolved = (
@@ -124,8 +116,9 @@ const resolved = (
 };
 
 /**
- * Its origin, then where it sits, and its folder name only when it has no origin: a clone of
- * another repository that shares an adopted project's name is not that project.
+ * Its origin, then whether its git root is the project's source or one of its worktrees, and its
+ * folder name only when it has no origin: a clone of another repository that shares an adopted
+ * project's name, or sits inside its source, is not that project.
  */
 export const matchProject = (
   projects: ReadonlyArray<Project>,
@@ -140,7 +133,7 @@ export const matchProject = (
           "origin",
         )) ??
     resolved(
-      projects.filter((project) => holdsFolder(project, facts.path)),
+      projects.filter((project) => isProjectRoot(project, facts.path)),
       "path",
     ) ??
     (facts.originUrl === null && !facts.originUnknown
