@@ -903,11 +903,9 @@ class MendCommands {
     ) => this.chooseSession(project, sessions),
   ): Promise<SessionLocation | null> {
     if (isSessionNode(argument)) {
-      return {
-        project: argument.project,
-        session: argument.session,
-        worktreePath: worktreePath(argument.project, argument.session),
-      };
+      // A row VS Code kept from an earlier read: the session as the store read it last.
+      const { project, session } = this.store.find(argument.session.id) ?? argument;
+      return { project, session, worktreePath: worktreePath(project, session) };
     }
     if (typeof argument === "string") {
       const found = await this.store.locate(argument);
@@ -1039,8 +1037,6 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
               tooltip: `${next.badge} ${next.badge === 1 ? "session needs" : "sessions need"} you`,
             };
       view.message = next.message ?? "";
-      view.description =
-        next.kind === "workspace" && next.session !== null ? next.session.name : "";
       notifier.changed(change);
     }),
     view.onDidChangeVisibility((event) => store.setVisible(event.visible)),
