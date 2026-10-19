@@ -101,7 +101,7 @@ class FakeMend implements StoreClient {
           const key = this.#holding.has(call) ? call : kind;
           this.#held.set(key, [...(this.#held.get(key) ?? []), resume]);
         });
-      if (this.refusing) throw new MendApiError("Mend refused this sign-in.", 401);
+      if (this.refusing) throw new MendApiError("Signed out — sign in again.", 401);
       return answer();
     } finally {
       this.#running.set(kind, (this.#running.get(kind) ?? 1) - 1);
@@ -440,7 +440,7 @@ describe("access lost (S9)", () => {
     }
     expect(window.showErrorMessage).toHaveBeenCalledTimes(1);
     expect(window.showErrorMessage).toHaveBeenCalledWith(
-      "Mend refused this sign-in. Sign in again to read your sessions.",
+      "Signed out — sign in again.",
       "Connect to server",
     );
   });

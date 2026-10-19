@@ -115,10 +115,7 @@ export class Notifier {
   }
 
   async #offerConnect(words: string): Promise<void> {
-    const picked = await vscode.window.showErrorMessage(
-      `${words} Sign in again to read your sessions.`,
-      "Connect to server",
-    );
+    const picked = await vscode.window.showErrorMessage(words, "Connect to server");
     if (picked === "Connect to server") await vscode.commands.executeCommand("mend.connect");
   }
 }

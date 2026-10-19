@@ -32,7 +32,7 @@ in `docs/specs/vscode-stories.md` (a to h) and say, per story, where today's ext
   (`<session> is waiting · <fact>` [Answer]), and only a focused one toasts a finished session
   (`<session> finished · <fact>` [Review] [Open]); neither toasts a session the window shows (its
   own, one selected in the view, or one whose agent tab is the active terminal). A sign-in Mend
-  refuses (401) empties the view and toasts `<server's words> Sign in again to read your sessions.`
+  refuses (401) empties the view and toasts the server's words, `Signed out — sign in again.`
   [Connect to server] once.
 - `vscode-answer` is `Mend: Answer` on a waiting row or toast: the agent's terminal attaches in this
   window's panel, and no window opens.
@@ -477,8 +477,8 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     s for the view to empty by itself and, if it has not, makes a frame by creating a session row
     over the API (observed, runs `r2v6`, `r3v1` and `r3v2`: it emptied by itself within a second).
     The view shows one row, `Signed out — sign in again.` · `Run Mend: Connect to server`; one error
-    toast reads `Signed out — sign in again. Sign in again to read your sessions.` [Connect to
-    server], and no second one shows over the next 30 s, another frame in between.
+    toast reads `Signed out — sign in again.` [Connect to server], and no second one shows over the
+    next 30 s, another frame in between.
   - A landing (`landed · pull request #412 · open · observed`) is `not run`: the world's origin is a
     public GitHub repository nobody can push to. The model's unit tests cover the words.
 - **g. mend handoff: Dana's local branch becomes a session.** `not run · G6`. The command **Hand off

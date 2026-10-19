@@ -1087,7 +1087,7 @@ export default async (h) => {
   const gone = (now) => !now.groups.some((group) => GROUPS.includes(group.group));
 
   const revoked = await step(
-    "S9: the device revoked as Settings revokes it: the view empties and one error toast says Sign in again with Connect to server",
+    "S9: the device revoked as Settings revokes it: the view empties and one error toast says sign in again with Connect to server",
     async () => {
       const watching = await watch();
       const revokedAt = Date.now();
@@ -1099,12 +1099,15 @@ export default async (h) => {
         seen = await until("the view to empty after a frame", gone, 60_000);
       }
       const emptiedIn = Date.now() - revokedAt;
-      const toast = notification("Sign in again to read your sessions");
+      const toast = notification("sign in again");
       await toast.waitFor(30_000);
       const words = await toast.text();
       await shot("s9-revoked");
       const observed = `emptied ${byItself ? "by itself" : "only after a frame"} in ${Math.round(emptiedIn / 1000)} s · ${summary(seen)} · toast "${words}"`;
-      expect(words.includes("Connect to server"), `the toast: ${observed}`);
+      expect(
+        words.includes("Connect to server") && words.split("sign in again").length === 2,
+        `the toast says sign in again once, with Connect to server: ${observed}`,
+      );
       return { observed, watching };
     },
     { via: "api" },
@@ -1118,10 +1121,10 @@ export default async (h) => {
       await sleep(20_000);
       const caught = await revoked.watching.stop();
       const told =
-        caught === null ? [] : caught.toasts.filter((text) => text.includes("Sign in again"));
+        caught === null ? [] : caught.toasts.filter((text) => text.includes("sign in again"));
       const seen = await observe();
       await shot("s9-after-30s");
-      const observed = `toasts saying Sign in again: ${told.length} · ${shown(caught)} · ${summary(seen)}`;
+      const observed = `toasts saying sign in again: ${told.length} · ${shown(caught)} · ${summary(seen)}`;
       expect(caught !== null && told.length === 1, observed);
       expect(gone(seen), `the view read again: ${observed}`);
       return observed;
