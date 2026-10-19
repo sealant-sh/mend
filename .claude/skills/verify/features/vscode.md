@@ -3,16 +3,16 @@
 The Mend extension for VS Code (`apps/vscode`) lists a person's sessions in a `Sessions` view and
 opens a session inside its workspace over Remote-SSH. The editor's files are then the session's
 worktree, and its integrated terminal runs in the workspace, where Mend observes a `claude` or
-`codex` started there. From the view a person starts a session (a Workbench shell, a Claude or Codex
-agent, or an agent with options), starts another session in the same worktree, makes a worktree
-without an agent, attaches a session's terminal in the current window, watches another person's
-session read-only, stops a session, and opens it or its change in Mend's web app. The extension is
-published as `sealant-sh.mend`. A verify run drives it live in a real VS Code with
-`scripts/drive-vscode.mjs`. The driver builds the extension from a checkout, runs it with
-Microsoft's Remote-SSH on an Xvfb display, and clicks the workbench DOM over CDP against a packaged
-Mend server in Docker-in-Docker. Its evidence is numbered screenshots, a step log (`steps.jsonl`),
-the editor's and the server's logs, and a video of the display. The flows below follow the stories
-in `docs/specs/vscode-stories.md` (a to h) and say, per story, where today's extension differs.
+`codex` started there. From the view a person starts a session (one quick input: her prompt, and the
+harness, model, thinking, permissions and base behind its Change…), starts another session in the
+same worktree, attaches a session's terminal in the current window, watches another person's session
+read-only, stops a session, and opens it or its change in Mend's web app. The extension is published
+as `sealant-sh.mend`. A verify run drives it live in a real VS Code with `scripts/drive-vscode.mjs`.
+The driver builds the extension from a checkout, runs it with Microsoft's Remote-SSH on an Xvfb
+display, and clicks the workbench DOM over CDP against a packaged Mend server in Docker-in-Docker.
+Its evidence is numbered screenshots, a step log (`steps.jsonl`), the editor's and the server's
+logs, and a video of the display. The flows below follow the stories in
+`docs/specs/vscode-stories.md` (a to h) and say, per story, where today's extension differs.
 
 ## Sub-features
 
@@ -37,9 +37,13 @@ in `docs/specs/vscode-stories.md` (a to h) and say, per story, where today's ext
 - `vscode-answer` is `Mend: Answer` on a waiting row or toast: the agent's terminal attaches in this
   window's panel, and no window opens.
 - `vscode-adopt` adopts a project from a clone URL and a name.
-- `vscode-new-session` starts a Workbench shell, a Claude or Codex agent, or an agent with options.
-- `vscode-new-in-worktree` starts another session in a session's worktree.
-- `vscode-manual-worktree` creates a worktree without an agent and opens it.
+- `vscode-new-session` is `Mend: New session`: one quick input on the project the window's origin
+  matched (else a project step with `Adopt this repository` on top), her prompt as its value, one
+  dim line `<harness> · <model> · … · from <base>` with **Change…** (harness, model, thinking,
+  permissions, base, remembered per project). Enter starts a terminal agent and opens no window; a
+  shell (Change… → `shell`) takes the typed text as its name and covers a worktree without an agent.
+- `vscode-new-in-worktree` is the same quick input joined to a session's worktree
+  (`New session · <project> · in <worktree>`).
 - `vscode-open` is the session row's **Open** button (`Mend: Open`). It opens the session's
   workspace over Remote-SSH and follows VS Code's `window.openFoldersInNewWindow`: the default turns
   the current window into the workspace, `on` opens a new one. It never asks: a stopped session
@@ -49,9 +53,9 @@ in `docs/specs/vscode-stories.md` (a to h) and say, per story, where today's ext
 - `vscode-open-new-window` is `Mend: Open in New Window` in the row's context menu: the same open,
   always in a new window.
 - `vscode-attached-tab`: a session's workspace window attaches the session's live terminal as a tab
-  named `<harness> · <session>` (`shell · <session>` for a Workbench session's shell; an unlabelled
-  session goes by its short id, `shell · d4355821`, though its row reads `claude · d4355821`),
-  active and focused, with the banner
+  named `<harness> · <session>` (`shell · <session>` for a shell session; an unlabelled session goes
+  by its short id, `shell · d4355821`, though its row reads `claude · d4355821`), active and
+  focused, with the banner
   `Mend · <session> · closing this tab detaches; the process keeps running`. Open in a window that
   already is the workspace focuses that tab and does nothing else.
 - `vscode-continue-here`: a conversation's tab reads
@@ -73,12 +77,11 @@ in `docs/specs/vscode-stories.md` (a to h) and say, per story, where today's ext
 ## How to get to it (user POV)
 
 - VS Code: the Mend icon in the Activity Bar opens the view `Sessions`. Its title bar holds
-  `Mend: New Session…` (disabled while Mend is unreachable), `Mend: Refresh` and
-  `Mend: Adopt a project…`. With nothing adopted it shows `Nothing adopted yet.` and the link
-  `Adopt a project…`. When the view cannot read Mend, it shows one row naming the error, with the
-  description `Run Mend: Connect to server`.
-- VS Code: on a project row, inline `Mend: New Session…`. Its context menu holds
-  `Mend: New Session…` and `Mend: New worktree without an agent…`.
+  `Mend: New session` (while Mend is unreachable a disabled twin, `Mend is offline · retrying`),
+  `Mend: Refresh` and `Mend: Adopt a project…`. With nothing adopted it shows `Nothing adopted yet.`
+  and the link `Adopt a project…`. When the view cannot read Mend, it shows one row naming the
+  error, with the description `Run Mend: Connect to server`.
+- VS Code: on a project row, inline `Mend: New session`; its context menu holds it too.
 - VS Code: on a session row whose workspace this person may open, inline `Mend: Open` and
   `Mend: Open in Mend`. Its context menu holds `Mend: Open`, `Mend: Open in New Window`,
   `Mend: New session in this worktree…`, `Mend: Review change` and `Mend: Copy worktree path`, and
@@ -98,7 +101,7 @@ in `docs/specs/vscode-stories.md` (a to h) and say, per story, where today's ext
   `Mend: Open in New Window`, `Mend: Answer`, `Mend: Choose a session`, `Mend: Open terminal`,
   `Mend: Watch terminal`, `Mend: Review change`, `Mend: New session in this worktree…`,
   `Mend: Open in Mend`, `Mend: Copy worktree path`, `Mend: Set up workspace SSH`,
-  `Mend: Stop session`, `Mend: New Session…`, `Mend: New worktree without an agent…`,
+  `Mend: Stop session`, `Mend: New session` (left out while Mend is unreachable),
   `Mend: Show project sessions`, `Mend: Bring my editor into this workspace`,
   `Mend: Show workspace editor log`.
 - VS Code: the status bar item `Mend · <n> needs you · <n> finished · <n> running` (only the parts
@@ -123,6 +126,9 @@ module whose default export is `async (helpers) => {}`. The recipes:
   open button is found by `inline(/^Mend: Open( in VS Code)?$/)`. It calibrates `opens()` (two opens
   with a gap: +1, then +2), then asserts the story at every step. Today's extension fails it at the
   double-click; the redesign passes.
+- `recipes/vscode-new-session.mjs` drives story a on an extension with flow 3: New session's quick
+  input, a start that opens nothing, Change…, an unpushed base, a folder no project matched, a
+  launch that fails and its Retry, and New session offline.
 - `recipes/vscode-open-first.mjs` drives the first open on a machine without Remote-SSH, from
   `up --no-remote-ssh`.
 - `recipes/vscode-open-as-built.mjs` drives #1080's extension as built: a session started from the
@@ -186,43 +192,61 @@ Proof rules:
 The flows. Each story is one recipe; a `<label>` is a session row's visible label, the session's
 label or `<harness> · <id8>` when it has none (the as-built recipe reads it with `api`).
 
-- **a. Start a session and keep working.** From the default `up`.
-  - `view("Mend")`, `treeItem(<project>).waitFor()`, `shot("mend-view")`. The row reads
-    `<project> <default branch>`; `statusBar("Mend:").text()` reads
-    `Mend: <project> · <n> sessions`.
-  - `api("/projects/<id>")` (`via: "api"`) records the session ids, and `windows()` the windows.
-  - `palette("Mend: New Session…")`, `quickInput.waitFor()`. When `quickInput.title()` is
-    `Choose a Mend project`, `quickInput.pick(<project>)`. Record `quickInput.title()` and
-    `quickInput.items()`, then `shot("new-session-kinds")`. The story expects one input titled
-    `New session · <project>` with a dim line `claude · default model · from main` and a **Change…**
-    button. Today it is a quick pick titled `New session · <project>` offering `Workbench`,
-    `Claude agent`, `Codex agent` and `Agent with options…`.
-  - `quickInput.pick("Workbench")`. Record `notification("Preparing workbench").text()` and
-    `shot("preparing-workbench")`. Today's source shows `Preparing workbench · <project>…`; the
-    story expects no toast.
-  - `waitUntil` the new session in `api("/projects/<id>")` (`via: "api"`), then the row
-    `treeItem(<label>)` until `.description()` reads `running`, and `shot("row-running")`. The
-    story's row reads `<word> · <fact>` (`running · reading src/auth`); today the description is the
-    status word alone.
-  - `newWindows(<the windows recorded before the start>)`. Record
-    `<n> window(s) opened by the start`. The story expects 0 (the person keeps working in her
-    window); today's source opens the workspace in a new window right after the start (observed: 1
-    window, no quick pick, no toast beyond `Preparing workbench`).
-  - `Claude agent` and `Codex agent` ask
-    `What should the agent do? Empty opens the harness without a prompt.`, then show
-    `Starting <harness>…`. The world's server has no provider login, so a run reports both
-    `verified-unreachable · provider login`.
-  - `Agent with options…` asks
-    `What should the session do? Leave empty to open the harness without a prompt.`, then the
-    harness (`quickInput.items()` reads `Claude`, `Codex`, `opencode`, `pi`), `Model` only when the
-    catalog offers models, `Thinking` only when the model offers more than one effort, `Permissions`
-    (`Skip permission prompts`, `Ask before acting`) and `Base branch or commit`. Walk each with
-    `quickInput.pick(...)` and `quickInput.accept()`, record each step's `quickInput.title()`
-    (`New <harness> session` after the first), and `quickInput.cancel()` at the base. The start
-    itself is `verified-unreachable · provider login`. The story's **Change…** keeps these in one
-    input with a step counter and Back; today each is its own prompt.
+- **a. Start a session and keep working.** `recipes/vscode-new-session.mjs`, from the default `up`,
+  on an extension with flow 3 (`Mend: New session` is one quick input). Claude is connected with
+  `FAKES.claude` and, for Change…, Codex with `FAKES.codexAuth`
+  (`mend connect <provider> --from-stdin`, `via: "setup"`); `window.openFoldersInNewWindow` is `on`,
+  so Open keeps the local window. `<base>` is the project's default branch (`master` for
+  octocat/Hello-World). The lanes, in an order where each leaves the next a usable world:
+  - a1. `palette("Mend: New session")`: one quick input, `quickInput.step()` reads the title
+    `New session · <project>` with no counter, placeholder `What should claude do?`, and one row
+    whose description is the dim line `claude · default model · from <base>` and whose buttons read
+    `["Change…"]` (`quickInput.rows()`).
+  - a2. `watch()`, then `quickInput.type(<prompt>)` and Enter. The input closes; `viewRows()` is
+    sampled every 150 ms for rows that were not there before: the first one's delay after Enter, a
+    `<label> · starting · …` sample (`shot("row-starting")`), then `running`. Over the API
+    (`via: "api"`): exactly one new session, harness `claude`, its live process `agent-pty` (a PTY
+    launch) with `argv` ending in the prompt.
+  - a2, a3. `opens()` and `windows()` unchanged, the watch caught no toast and no dialog, and
+    `statusBarItems()` holds `Mend · 1 running`.
+  - Flow 1 on it: the row's `inline(/^Mend: Open$/)`: one window, `opens` +1 (which also shows the
+    counter that read unchanged above works), the tab `claude · <label>` active, and the terminal
+    shows the prompt or claude's `401`.
+  - Change…: a second prompt typed, `quickInput.button("Change…")`; each step reads `(<n>/<total>)`
+    after the title and its placeholder: `Harness` (`codex` picked), `Model for codex`
+    (`quickInput.back()`: back to `Harness`), `codex` again, `Model for codex` (a non-default model
+    of `/harnesses/models` with no efforts of its own picked), then each later step
+    (`Thinking for <model>`, `Permissions`, `Base: a branch or commit`) keeps the row marked
+    `check`. The prompt step returns with the second prompt typed and the dim line
+    `codex · <model> · …`. Enter: one session, harness `codex`, `model` that id, `argv` holding it
+    and ending in the prompt. New session again: the dim line starts `codex · <model> · `, and
+    Change…'s `Harness` step marks `codex` with `check` and `remembered for <project>`.
+  - Base not in the store (`via: "setup"`): `git switch -c verify-unpushed` and an empty commit in
+    the window's checkout. New session's dim line ends
+    `from <base> · your branch verify-unpushed isn't pushed` and the row's icon is `warning`. The
+    checkout goes back to `<base>`.
+  - No project matched (`via: "setup"`): `git clone https://github.com/octocat/Spoon-Knife.git` into
+    the scratch, then `openFolder(<it>)` and `waitForWindow`. There New session's first step reads
+    `New session`, placeholder `Choose a project`, `Adopt this repository` (icon `repo-clone`,
+    description the origin URL) on top, then the projects. Picking it: the input busy, then the
+    prompt step `New session · <adopted>`; `GET /projects` lists one new project from that URL. The
+    window closes.
+  - Launch fails: `mend connect claude --remove` (`via: "setup"`). New session, a prompt, Change… →
+    `claude`, the rest kept, Enter. The server refuses the launch (observed over the API on
+    `0.0.0-dev.shab2a748d64120`, 2026-10-19: `422 Connect Claude to start a session here. …`, the
+    session `failed` at once). The row reads `failed · …`, the watch caught exactly one toast
+    `<label> failed · …` with [Retry], and one session was created. Claude reconnected
+    (`via: "setup"`), `notification(/ failed · /).click("Retry")`: no new session, the server's
+    `'/api/sessions/<id>/launch'` lines +1, the session `running` with a live agent, the row
+    `running`.
+  - Offline: New session with a prompt typed; the server container stopped (`via: "setup"`). The row
+    reads `Mend is offline · retrying`; Enter leaves the input open with the prompt. Escape, then
+    what VS Code shows: `paletteRows("Mend: New session")` (VS Code leaves a command whose
+    enablement is false out of the palette), `viewActions()`, and the title bar button
+    (`viewAction(/^(Mend: New session|Mend is offline)/)`) disabled with its tooltip. The server
+    started again: New session opens with the prompt typed before.
 - **b. The agent needs Dana; she answers without leaving VS Code.** From the default `up`, with the
-  Workbench session of story a live.
+  shell session of story a live.
   - The story's signal (the row in `Needs you`, the badge `1`, the toast with [Answer]) is
     `recipes/vscode-view.mjs` on a server with G4: the stand-in's `PermissionRequest` moves the row
     to `Needs you` as `waiting · claude needs your permission to use Bash · since <hh:mm>`, badge
@@ -280,10 +304,12 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
   lane, the status bar's pick and the two sessions in one worktree; round 3 (`r3d`, `r3e` on main
   `de6d1b5`, the trunk lane `r3t` on `ec101e4`, whose `apps/vscode` is main's) added the stopped
   session opened from its own window and the unreachable lost-session step:
-  - The start. `palette("Mend: New Session…")`, `Workbench`; the row reads `running`. The start
-    opens one window on both builds (story a is not built): `opens 0 → 1`, the signal's first check.
-    Its terminal is recorded, not asserted: the redesign attached `shell · <session>`, focused,
-    banner shown; main's attached nothing.
+  - The start. With flow 3: `palette("Mend: New session")`, `workbench` typed (a shell's name),
+    `quickInput.button("Change…")`, `Harness` → `shell`, the later steps kept, Enter; the row
+    `workbench` reads `running`, and the start opens no window (`opens` and windows unchanged; the
+    calibration next is the counter's first +1). On main's extension (the palette lists
+    `Mend: New Session…`): `Workbench` picked, and the start opens one window: `opens 0 → 1`, the
+    signal's first check, its terminal recorded, not asserted (main attached nothing).
   - Setup (`via: "setup"`): `userSettings({ "window.openFoldersInNewWindow": "on" })`, so every open
     keeps the local window until the last lane.
   - Calibration. The open button twice with a gap, each window connected and closed: `opens` +1,
@@ -526,13 +552,10 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
 Commands outside the stories, one gesture each:
 
 - **New session in this worktree.**
-  `treeItem(<label>).contextMenu("Mend: New session in this worktree…")`, then
-  `quickInput.pick("Workbench")`. The quick pick is titled `New session · <project> › <worktree>`.
-  `api("/projects/<id>")` (`via: "api"`) lists two sessions in one worktree.
-- **New worktree without an agent.**
-  `treeItem(<project>).contextMenu("Mend: New worktree without an agent…")`. The inputs titled
-  `New worktree · <project>` ask `Name this manual change`, then `Base branch or commit`. The
-  worktree opens as story c's stopped session does.
+  `treeItem(<label>).contextMenu("Mend: New session in this worktree…")` opens New session's quick
+  input titled `New session · <project> · in <worktree>`, its dim line ending `in <worktree>`;
+  Enter, then `api("/projects/<id>")` (`via: "api"`) lists two sessions in one worktree. No recipe
+  drives it yet.
 - **Stop.** `treeItem(<label>).contextMenu("Mend: Stop session")`. The modal `Stop <label>?`
   (`The worktree and reviewable change remain.`); `dialog("Stop").click("Stop session")`. The row's
   description turns to its settled word, and `api("/projects/<id>")` (`via: "api"`) agrees.
@@ -575,10 +598,10 @@ Commands outside the stories, one gesture each:
 - Signed out, the extension falls back to the CLI's configuration, then `http://localhost:3105` (the
   manifest's `mend.serverUrl` description). On a machine where a Mend answers there, the view reads
   that server. Never run `--signed-out` on a machine whose own Mend listens on 3105.
-- An input's placeholder is not in the text the helpers read. The Connect quick pick's plain-http
-  warning is its placeholder, so no step can observe it.
-- A Workbench session is created with the `claude` harness and resumed as a shell, so its row reads
-  `claude · <id8>` until it has a label.
+- An input's placeholder is not in the window's text (`text()`, `waitForText`); read it with
+  `quickInput.placeholder()`. The Connect quick pick's plain-http warning is its placeholder.
+- On main's extension a Workbench session is created with the `claude` harness and resumed as a
+  shell, so its row reads `claude · <id8>` until it has a label.
 - Opening an external link (`Mend: Open in Mend`, `Mend: Review change`, the browser sign-in) goes
   through VS Code's `openExternal`. When VS Code asks first, its prompt is a DOM dialog under the
   custom style; read the URL from it and dismiss it. When it does not ask, the host's opener runs in

@@ -612,15 +612,26 @@ Remote-SSH uninstalled, so the first open installs it from the gallery (`state.r
 A recipe is a module whose default export is `async (helpers) => {}`. The helpers act like a person;
 each is a gesture on the real workbench DOM:
 
-- `palette(title)` (F1, the command's title typed, its row clicked), `quickInput.type(text)`,
-  `.pick(label)`, `.accept()`, `.cancel()`, `.title()`, `.items()`, `.isOpen()`, `.watch()` (every
-  time the widget is shown from now, until `stop()`);
-- `view(name)` (the Activity Bar entry), `treeItem(label)` with `.click()`, `.dblclick()`,
-  `.hover()`, `.inline(title | pattern, { clicks })` (the row's hover action, by its title or a
-  RegExp its title matches; `clicks: 2` clicks it again at once; returns the title found),
-  `.contextMenu(item)` (the whole label; the pointer rests on it before the click), `.menu()` (every
-  context menu item, then Escape), `.actions()` (the inline action titles), `.tooltip()`,
-  `.selected()`, `.text()`, `.description()` (a session row's status);
+- `palette(title)` (F1, the command's title typed, its row clicked), `paletteRows(query)` (what the
+  palette lists for the text before she picks, each row's label and whether it reads disabled, then
+  Escape: a command whose enablement is false is not listed), `quickInput.type(text)`,
+  `.pick(label, { exact })` (a row holding the text; `exact: true`, the row whose label is it),
+  `.accept()`, `.cancel()`, `.title()` (as VS Code draws it, a step counter `(2/5)` appended),
+  `.step()` (`{ title, step, total }`, the counter split off, null without one), `.value()`,
+  `.placeholder()`, `.rows()` (each row's `label`, `icons` by codicon name, `description`, `detail`,
+  `buttons` by tooltip, `focused`), `.buttons()` (every button by tooltip and where: the title bar,
+  the input box, a row), `.button(tooltip)` (one clicked: the title bar's or the input box's, else a
+  row's with the pointer on its row), `.back()` (the title bar's Back), `.busy()`, `.items()`,
+  `.isOpen()`, `.watch()` (every time the widget is shown from now, until `stop()`);
+- `view(name)` (the Activity Bar entry), `viewActions()` (the view's title bar buttons, each
+  `{ title, disabled }`), `viewAction(title | pattern)` with `.disabled()`, `.title()`, `.tooltip()`
+  (the pointer rests on it until the hover shows; a disabled button too) and `.click()`,
+  `treeItem(label)` with `.click()`, `.dblclick()`, `.hover()`,
+  `.inline(title | pattern, { clicks })` (the row's hover action, by its title or a RegExp its title
+  matches; `clicks: 2` clicks it again at once; returns the title found), `.contextMenu(item)` (the
+  whole label; the pointer rests on it before the click), `.menu()` (every context menu item, then
+  Escape), `.actions()` (the inline action titles), `.tooltip()`, `.selected()`, `.text()`,
+  `.description()` (a session row's status);
 - `notification(text)` with `.click(button)`, `.text()`, `.dismiss()`; `notifications()`;
   `dialog(text)` with `.click(button)`; `dialogs()`; `statusBar(text)`; `statusBarItems()` (every
   item's text, left to right); `viewRows()` (the sidebar tree's rows with their depth, label,
@@ -636,6 +647,9 @@ each is a gesture on the real workbench DOM:
   `openUrl(url)` (a `vscode://` link followed as the OS URL handler follows one: `code --open-url`
   with the run's user data; VS Code first asks `Allow '<extension>' extension to open this URI?` in
   a dialog of its own, which the recipe answers with `dialog("open this URI").click("Open")`);
+  `openFolder(folder)` (a folder opened from a terminal: `code --new-window --skip-welcome <folder>`
+  with the run's user data, as `up` started the editor; the window has the extension under test, and
+  `waitForWindow(known)` finds it);
 - `windows()` (every workbench window), `newWindows(known)` (what one gesture opened, once it has
   settled), `waitForWindow(known)`, `useWindow(page)`, `homeWindow()` (the local window, not a
   Remote-SSH one), `closeWindow(page)` (`Close Window` from that window's palette); a Remote-SSH
@@ -662,7 +676,9 @@ never for the action under test. The recipes: `recipes/vscode-open.mjs` (stories
 either build of the extension: today's fails at the double-click, the redesign passes),
 `recipes/vscode-open-first.mjs` (the first open without Remote-SSH, from `up --no-remote-ssh`) and
 `recipes/vscode-open-as-built.mjs` (#1080's extension as built), `recipes/vscode-view.mjs` (the Mend
-view, badge, status bar and toasts: stories f, a4 and b on a server with G4); the map's
+view, badge, status bar and toasts: stories f, a4 and b on a server with G4),
+`recipes/vscode-new-session.mjs` (story a with flow 3: New session's one quick input, Change…, an
+unpushed base, a folder no project matched, a launch that fails and Retry, offline); the map's
 [vscode.md](features/vscode.md) has the flows by story. `recipes/g4-terminal-agent-waits.mjs` drives
 no editor: it replays claude's hooks through `scripts/fixtures/claude-standin.mjs` in a shell beside
 a real (signed-out) claude agent and reads the session's `waiting` from the API and `/api/events`
