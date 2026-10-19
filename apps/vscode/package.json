@@ -77,6 +77,10 @@
         {
           "id": "mend.sessions",
           "name": "Sessions"
+        },
+        {
+          "id": "mend.change",
+          "name": "Change"
         }
       ]
     },
@@ -214,6 +218,32 @@
       {
         "command": "mend.showWorkspaceEditorLog",
         "title": "Mend: Show workspace editor log"
+      },
+      {
+        "command": "mend.change.openAll",
+        "title": "Open all changes",
+        "category": "Mend",
+        "icon": "$(diff-multiple)"
+      },
+      {
+        "command": "mend.change.pickSlice",
+        "title": "Choose what to review",
+        "category": "Mend"
+      },
+      {
+        "command": "mend.change.openInWeb",
+        "title": "Open in Mend (web)",
+        "category": "Mend"
+      },
+      {
+        "command": "mend.change.refresh",
+        "title": "Read the change again",
+        "category": "Mend"
+      },
+      {
+        "command": "mend.change.openFile",
+        "title": "Open the file's diff",
+        "category": "Mend"
       }
     ],
     "menus": {
@@ -233,6 +263,22 @@
         {
           "command": "mend.adoptHere",
           "when": "mend.welcome == adopt"
+        },
+        {
+          "command": "mend.change.openFile",
+          "when": "false"
+        },
+        {
+          "command": "mend.change.openAll",
+          "when": "mend.change.files"
+        },
+        {
+          "command": "mend.change.pickSlice",
+          "when": "mend.change.ready"
+        },
+        {
+          "command": "mend.change.openInWeb",
+          "when": "mend.change.ready"
         }
       ],
       "view/title": [
@@ -255,6 +301,21 @@
           "command": "mend.adoptProject",
           "when": "view == mend.sessions",
           "group": "navigation"
+        },
+        {
+          "command": "mend.change.openAll",
+          "when": "view == mend.change && mend.change.files",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mend.change.openInWeb",
+          "when": "view == mend.change && mend.change.ready",
+          "group": "overflow@1"
+        },
+        {
+          "command": "mend.change.refresh",
+          "when": "view == mend.change",
+          "group": "overflow@2"
         }
       ],
       "view/item/context": [

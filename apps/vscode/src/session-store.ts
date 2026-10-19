@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 
-import { MendApiError, type MendClient, type StreamSignal } from "./client.js";
+import { MendApiError, type EventPointer, type MendClient, type StreamSignal } from "./client.js";
 import { refusedSignIn } from "./error-toast.js";
 import { canonicalPaths, realPathFor, repositoryFacts } from "./git.js";
 import { comparedPaths, matchProject } from "./project-match.js";
@@ -132,6 +132,9 @@ const isLastSeen = (value: unknown): value is LastSeen => {
 export class SessionStore implements vscode.Disposable {
   readonly #changed = new vscode.EventEmitter<StoreChange>();
   readonly onDidChange = this.#changed.event;
+  readonly #heardEvent = new vscode.EventEmitter<EventPointer>();
+  /** Each frame of the event stream, as it came: the review re-reads its change on its own. */
+  readonly onDidHearEvent = this.#heardEvent.event;
   #snapshot: Snapshot = EMPTY;
   #read = false;
   #error: unknown = null;
@@ -183,6 +186,7 @@ export class SessionStore implements vscode.Disposable {
   ) {
     this.#disposables = [
       this.#changed,
+      this.#heardEvent,
       vscode.window.onDidChangeWindowState((state) => {
         if (state.focused) this.#emit();
       }),
@@ -381,6 +385,7 @@ export class SessionStore implements vscode.Disposable {
         this.#heard();
         return;
       case "event": {
+        this.#heardEvent.fire(signal.event);
         const plan = readPlan([signal.event]);
         if (readsAnything(plan)) this.#want(plan);
         return;

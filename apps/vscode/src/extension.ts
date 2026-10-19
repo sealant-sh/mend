@@ -19,6 +19,7 @@ import type { OpenMode } from "./open-flow.js";
 import { OpenIntents } from "./open-intent.js";
 import type { OpenRunner } from "./open-runner.js";
 import { originProjectName } from "./project-match.js";
+import { startReview, type Review } from "./review/review.js";
 import {
   maySteer,
   ownsSession,
@@ -137,6 +138,7 @@ class MendCommands {
     private readonly workspaceWindow: WorkspaceWindow,
     private readonly runner: OpenRunner,
     private readonly newSessionInput: NewSessionInput,
+    private readonly review: Review,
   ) {}
 
   /** Adopt a repository…: one input for its clone URL; the project takes the repository's name. */
@@ -324,22 +326,12 @@ class MendCommands {
     }
   }
 
-  /** The session's change in Mend's review, in the browser. */
+  /** The session's change in the Change section, here in the editor (rule 11). */
   async reviewChange(argument?: unknown): Promise<void> {
     try {
       const location = await this.sessionLocation(argument);
       if (location === null) return;
-      const detail = await this.client.sessionDetail(location.session.id);
-      const connection = await this.client.connection();
-      if (detail.changeId === null) {
-        void vscode.window.showInformationMessage(
-          `${displaySession(detail.session)} has no change to review yet.`,
-        );
-        return;
-      }
-      await vscode.env.openExternal(
-        vscode.Uri.parse(`${connection.url}/changes/${encodeURIComponent(detail.changeId)}`),
-      );
+      await this.review.show(location.project, location.session);
     } catch (cause) {
       void showError(cause);
     }
@@ -602,9 +594,6 @@ export interface MendExtensionApi {
   readonly workspaceEditor: () => Promise<WorkspaceEditorReport>;
 }
 
-/** A session row was selected: the review PR hangs the Change section off this. */
-export const onSessionSelected = (_node: SessionNode): void => {};
-
 export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const connections = new ConnectionStore(context);
   const client = new MendClient(connections);
@@ -643,6 +632,11 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     },
   });
   const newSessionInput = new NewSessionInput(context, client, store, launches);
+  const review = startReview({
+    client,
+    memento: context.globalState,
+    onError: (cause) => void showError(cause),
+  });
   const commands = new MendCommands(
     connections,
     client,
@@ -650,6 +644,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     workspaceWindow,
     opens.runner,
     newSessionInput,
+    review,
   );
   const viewTree = new FirstRunTree(tree);
   const view = vscode.window.createTreeView("mend.sessions", {
@@ -737,7 +732,15 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
         event.selection.flatMap((node) => (isOfferRow(node) ? [] : (sessionIdOf(node) ?? []))),
       );
       const [node] = event.selection;
-      if (event.selection.length === 1 && isSessionNode(node)) onSessionSelected(node);
+      if (event.selection.length === 1 && isSessionNode(node))
+        review.follow(node.project, node.session);
+    }),
+    review,
+    store.onDidHearEvent((event) => review.heard(event)),
+    // A workspace window's Change section is its own session's, selected or not (rule 10).
+    store.onDidChange(({ next }) => {
+      if (next.kind === "workspace" && next.session !== null)
+        review.follow(next.session.project, next.session.session);
     }),
     vscode.commands.registerCommand("mend.refresh", () => store.refresh()),
     vscode.commands.registerCommand("mend.adoptProject", () => commands.adoptProject()),

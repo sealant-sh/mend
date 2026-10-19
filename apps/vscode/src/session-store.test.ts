@@ -54,7 +54,7 @@ const event = (
   type: string,
   sessionId: string | null,
   facet: string | null = null,
-): EventPointer => ({ type, sessionId, projectId: newsroom.id, facet });
+): EventPointer => ({ type, sessionId, projectId: newsroom.id, changeId: null, facet });
 
 /** A Mend server in memory: what it holds now, what it was asked, and reads held back on demand. */
 class FakeMend implements StoreClient {

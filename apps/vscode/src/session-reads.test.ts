@@ -9,7 +9,7 @@ const event = (
   sessionId: string | null,
   projectId: string | null = "p1",
   facet: string | null = null,
-): EventPointer => ({ type, sessionId, projectId, facet });
+): EventPointer => ({ type, sessionId, projectId, changeId: null, facet });
 
 describe("what a run of event frames re-reads", () => {
   it("re-reads each session a frame names once, and the projects of project frames", () => {
