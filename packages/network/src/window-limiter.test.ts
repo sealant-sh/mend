@@ -28,7 +28,8 @@ describe("the sliding window limiter", () => {
     limiter.release("a", 1_000);
     expect(limiter.take("b", 1, 2_000)).not.toBeNull();
     expect(limiter.take("a", 2, 2_000)).toBeNull();
-    expect(limiter.take("a", 2, 3_000)).not.toBeNull();
+    // The unit at 0 is still the oldest: it, not the one given back, decides the wait.
+    expect(limiter.take("a", 2, 3_000)).toBe(57);
   });
 
   it("keeps subjects apart and admits everything at 0", () => {
