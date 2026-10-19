@@ -1,6 +1,7 @@
 import { AGENT_HOOKS, OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
 
 import { PI_PROFILE_PROGRAM } from "./pi-profile.ts";
+import { MEND_HELPER_PATH } from "./session-socket.ts";
 import { shellQuote } from "./workspace-files.ts";
 
 /**
@@ -237,7 +238,7 @@ export const CODEX_SYSTEM_CONFIG_TEXT = [
   "# Each hook tells Mend when Codex waits for you, and when it goes on.",
   ...AGENT_HOOKS.codex.flatMap((hook) => [
     `[[hooks.${hook.event}]]`,
-    'hooks = [{ type = "command", command = "mend hook codex", timeout = 5 }]',
+    `hooks = [{ type = "command", command = "${MEND_HELPER_PATH} hook codex", timeout = 5 }]`,
   ]),
   "",
 ].join("\n");

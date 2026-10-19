@@ -9,6 +9,8 @@
  */
 import { AGENT_HOOKS } from "@mend/domain/workbench";
 
+import { MEND_HELPER_PATH } from "./session-socket.ts";
+
 /** Which settings a Claude process gets (`--settings`). */
 export type ClaudeSettingsKind = "neutral" | "no-cron" | "personal";
 
@@ -46,7 +48,8 @@ export const claudeSettingsOf = (kind: ClaudeSettingsKind): Readonly<Record<stri
 
 /**
  * The `hooks` a terminal Claude gets, in every layout: each event `AGENT_HOOKS` reads runs
- * `mend hook claude`, which tells Mend that Claude waits for the person, and why, or goes on.
+ * the helper by its absolute path (`MEND_HELPER_PATH hook claude`), which tells Mend that Claude
+ * waits for the person, and why, or goes on.
  * Claude merges a settings layer's hooks with the others', so a repository's own hooks still run.
  */
 export const CLAUDE_AGENT_HOOKS: Readonly<Record<string, ReadonlyArray<unknown>>> =
@@ -56,7 +59,7 @@ export const CLAUDE_AGENT_HOOKS: Readonly<Record<string, ReadonlyArray<unknown>>
       [
         {
           ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
-          hooks: [{ type: "command", command: "mend hook claude", timeout: 5 }],
+          hooks: [{ type: "command", command: `${MEND_HELPER_PATH} hook claude`, timeout: 5 }],
         },
       ],
     ]),

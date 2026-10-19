@@ -730,7 +730,7 @@ describe("Codex's system default: no sandbox of its own in a workspace", () => {
     expect(tables.map((table) => table.event)).toEqual(AGENT_HOOKS.codex.map((hook) => hook.event));
     for (const table of tables) {
       expect(table.handler).toBe(
-        'hooks = [{ type = "command", command = "mend hook codex", timeout = 5 }]',
+        'hooks = [{ type = "command", command = "/run/mend/bin/mend hook codex", timeout = 5 }]',
       );
     }
   });

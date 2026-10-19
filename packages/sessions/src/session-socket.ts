@@ -216,6 +216,9 @@ export const sessionRunRoot = (storeRoot: string): string =>
 /** In-container path of the mount — the helper hardcodes it. */
 export const SESSION_SOCKET_MOUNT_PATH = "/run/mend";
 
+/** The workspace helper, by the path the mount gives it: a `mend` earlier on PATH never answers. */
+export const MEND_HELPER_PATH = `${SESSION_SOCKET_MOUNT_PATH}/bin/mend`;
+
 /**
  * The helper staged beside the socket. Dependency-free node, talking HTTP
  * over the unix socket (or the network endpoint); the wire is the private

@@ -12,7 +12,7 @@ describe("Claude's hooks for a terminal agent", () => {
           [
             {
               ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
-              hooks: [{ type: "command", command: "mend hook claude", timeout: 5 }],
+              hooks: [{ type: "command", command: "/run/mend/bin/mend hook claude", timeout: 5 }],
             },
           ],
         ]),
@@ -24,11 +24,11 @@ describe("Claude's hooks for a terminal agent", () => {
     expect(CLAUDE_AGENT_HOOKS["Notification"]).toEqual([
       {
         matcher: "permission_prompt|elicitation_dialog|idle_prompt",
-        hooks: [{ type: "command", command: "mend hook claude", timeout: 5 }],
+        hooks: [{ type: "command", command: "/run/mend/bin/mend hook claude", timeout: 5 }],
       },
     ]);
     expect(CLAUDE_AGENT_HOOKS["SessionStart"]).toEqual([
-      { hooks: [{ type: "command", command: "mend hook claude", timeout: 5 }] },
+      { hooks: [{ type: "command", command: "/run/mend/bin/mend hook claude", timeout: 5 }] },
     ]);
     expect(Object.keys(CLAUDE_AGENT_HOOKS)).toEqual([
       "SessionStart",
