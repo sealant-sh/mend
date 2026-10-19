@@ -349,13 +349,56 @@ export default async (h) => {
     return { title, asked, before, after };
   };
 
-  await step("calibration: the row's open button twice with a gap, opens +1 then +2", async () => {
-    const first = await openOnce(session.name);
-    expect(first.after - first.before === 1, `first open: opens ${first.before} → ${first.after}`);
-    const second = await openOnce(session.name);
-    expect(second.after - first.before === 2, `two opens: opens ${first.before} → ${second.after}`);
-    return `button "${first.title}" · first ${answered(first)}, opens ${first.before} → ${first.after} · second ${answered(second)}, opens ${second.before} → ${second.after}`;
-  });
+  /**
+   * Open attempts by the server's log: bursts of the reads only an open makes, a burst being reads
+   * less than 3 s apart. Every open reads the workspace SSH facts; today's extension (its button is
+   * `Mend: Open in VS Code`) reads the session first and may stop at its takeover question before
+   * that, so on it the session's reads count too. The redesign's Mend view reads a session
+   * whenever an event names it, so on it only the workspace SSH reads tell an open.
+   */
+  let asBuilt = false;
+  const openAttempts = async (id) => {
+    const needles = [`'/api/workspace-ssh'`, ...(asBuilt ? [`'/api/sessions/${id}'`] : [])];
+    const times = (await serverLogs())
+      .split("\n")
+      .filter((line) => needles.some((needle) => line.includes(needle)))
+      .map((line) => Date.parse(`${line.slice(0, 23)}Z`))
+      .filter((at) => Number.isFinite(at))
+      .toSorted((left, right) => left - right);
+    let bursts = 0;
+    let last = Number.NEGATIVE_INFINITY;
+    for (const at of times) {
+      if (at - last > 3_000) bursts += 1;
+      last = at;
+    }
+    return bursts;
+  };
+
+  await step(
+    "calibration: the row's open button twice with a gap, opens +1 then +2, and open attempts +1 then +2",
+    async () => {
+      asBuilt = (await treeItem(session.name).actions()).includes("Mend: Open in VS Code");
+      const attemptsBefore = await openAttempts(session.id);
+      const first = await openOnce(session.name);
+      const attemptsFirst = await openAttempts(session.id);
+      expect(
+        first.after - first.before === 1,
+        `first open: opens ${first.before} → ${first.after}`,
+      );
+      const second = await openOnce(session.name);
+      const attemptsSecond = await openAttempts(session.id);
+      expect(
+        second.after - first.before === 2,
+        `two opens: opens ${first.before} → ${second.after}`,
+      );
+      const said = `button "${first.title}" · first ${answered(first)}, opens ${first.before} → ${first.after} · second ${answered(second)}, opens ${second.before} → ${second.after} · open attempts ${attemptsBefore} → ${attemptsFirst} → ${attemptsSecond}`;
+      expect(
+        attemptsFirst - attemptsBefore === 1 && attemptsSecond - attemptsBefore === 2,
+        `the open attempts counter is not calibrated: ${said}`,
+      );
+      return said;
+    },
+  );
 
   const resumes = async () =>
     linesMatching(await serverLogs(), `'/api/sessions/${state.warmSession}/resume'`);
@@ -377,16 +420,13 @@ export default async (h) => {
    * One gesture on a row that must open nothing and ask nothing. Everything seen is in the
    * failure's message too, so a failing line names what showed.
    */
-  // Every open reads the workspace SSH facts first; the Mend view never does. (The view reads a
-  // session whenever an event names it, so its reads say nothing about an open.)
-  const openReads = async () => linesMatching(await serverLogs(), `'/api/workspace-ssh'`);
 
   const selectsOnly = async (rowName, id, gesture, slug) => {
     const row = treeItem(rowName);
     await row.waitFor();
     const known = await windows();
     const before = await counts();
-    const readsBefore = await openReads();
+    const readsBefore = await openAttempts(id);
     const watching = await watch();
     await gesture(row);
     await sleep(3_000);
@@ -396,8 +436,8 @@ export default async (h) => {
     const seen = await watching.stop();
     const selected = await row.selected().catch(() => false);
     const after = await counts();
-    const readsAfter = await openReads();
-    const observed = `GET /api/workspace-ssh ${readsBefore} → ${readsAfter} (session ${id.slice(0, 8)}) · opens ${before.opens} → ${after.opens} · windows opened ${opened.length} · quick input left open ${leftOpen === null ? "none" : `"${leftOpen}"`} · row selected ${selected} · ${shown(seen)} · ${delta(before, after)}`;
+    const readsAfter = await openAttempts(id);
+    const observed = `open attempts ${readsBefore} → ${readsAfter} (session ${id.slice(0, 8)}) · opens ${before.opens} → ${after.opens} · windows opened ${opened.length} · quick input left open ${leftOpen === null ? "none" : `"${leftOpen}"`} · row selected ${selected} · ${shown(seen)} · ${delta(before, after)}`;
     if (leftOpen !== null) await quickInput.cancel();
     // The watch lists each distinct title once, and the pick left open is one of them.
     const asked = [
@@ -409,7 +449,7 @@ export default async (h) => {
     ];
     expect(
       readsAfter === readsBefore,
-      `${readsAfter - readsBefore} open(s) ran, by the workspace SSH reads: ${observed}`,
+      `${readsAfter - readsBefore} open(s) ran, by the server's reads: ${observed}`,
     );
     expect(after.opens === before.opens, `an open ran: ${observed}`);
     expect(opened.length === 0, `a window opened: ${observed}`);
