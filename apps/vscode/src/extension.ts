@@ -4,12 +4,15 @@ import { repositoryCloneUrlIssue } from "@mend/domain/workbench";
 import * as vscode from "vscode";
 
 import { attachTerminal, memberName } from "./agent-terminal.js";
+import { AUTH_PROVIDER_ID, MendAuthenticationProvider } from "./auth-provider.js";
 import { MendApiError, MendClient } from "./client.js";
 import { ConnectionStore } from "./config.js";
+import { FirstRunTree, FirstRunView, isOfferRow } from "./first-run-view.js";
+import { offerOf } from "./first-run.js";
 import { worktreePath } from "./git.js";
 import { Launches } from "./launches.js";
 import { NewSessionInput } from "./new-session-input.js";
-import { OFFER_COMMANDS, openRunner, setUpWorkspaceSsh } from "./open-command.js";
+import { OFFER_COMMANDS, openRunner } from "./open-command.js";
 import type { OpenMode } from "./open-flow.js";
 import { OpenIntents } from "./open-intent.js";
 import type { OpenRunner } from "./open-runner.js";
@@ -134,7 +137,6 @@ const pickOrder = (view: SessionView): number =>
 
 class MendCommands {
   constructor(
-    private readonly context: vscode.ExtensionContext,
     private readonly connections: ConnectionStore,
     private readonly client: MendClient,
     private readonly store: SessionStore,
@@ -143,23 +145,11 @@ class MendCommands {
     private readonly newSessionInput: NewSessionInput,
   ) {}
 
-  async connect(): Promise<boolean> {
-    if (!(await this.connections.configure())) return false;
-    this.store.refresh();
-    try {
-      const connection = await this.client.connection();
-      await this.client.listProjects();
-      void vscode.window.showInformationMessage(`Connected to Mend at ${connection.url}.`);
-    } catch (cause) {
-      void showError(cause);
-    }
-    return true;
-  }
-
+  /** Adopt a repository…: one input for its clone URL; the project takes the repository's name. */
   async adoptProject(): Promise<void> {
     try {
       const typed = await vscode.window.showInputBox({
-        title: "Adopt a project",
+        title: "Adopt a repository",
         prompt: "Git clone URL",
         placeHolder: "https://github.com/owner/repository.git",
         ignoreFocusOut: true,
@@ -167,25 +157,10 @@ class MendCommands {
       });
       if (typed === undefined || typed.trim() === "") return;
       const source = typed.trim();
-      const issue = repositoryCloneUrlIssue(source);
-      if (issue !== null) {
-        void vscode.window.showErrorMessage(issue);
-        return;
-      }
-      const inferred = originProjectName(source);
-      const name = await vscode.window.showInputBox({
-        title: "Adopt a project",
-        prompt: "Project name",
-        value: inferred,
-        ignoreFocusOut: true,
-      });
-      if (name === undefined || name.trim() === "") return;
-      const project = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Adopting ${name.trim()}…` },
-        () => this.client.adoptProject(name.trim(), source),
+      await vscode.window.withProgress({ location: { viewId: "mend.sessions" } }, () =>
+        this.client.adoptProject(originProjectName(source), source),
       );
       this.store.refresh();
-      void vscode.window.showInformationMessage(`Adopted ${project.name}.`);
     } catch (cause) {
       void showError(cause);
     }
@@ -613,19 +588,6 @@ class MendCommands {
     );
     return picked?.session ?? null;
   }
-
-  /** Set up workspace SSH for this client and its configured Mend server, from the palette. */
-  async setupWorkspaceSsh(): Promise<void> {
-    try {
-      await setUpWorkspaceSsh(this.context, this.client);
-      void vscode.window.setStatusBarMessage(
-        "Mend SSH config saved; client key registered. Host trust not checked.",
-        7_000,
-      );
-    } catch (cause) {
-      void showError(cause);
-    }
-  }
 }
 
 /**
@@ -681,7 +643,6 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   });
   const newSessionInput = new NewSessionInput(context, client, store, launches);
   const commands = new MendCommands(
-    context,
     connections,
     client,
     store,
@@ -689,12 +650,65 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     opens.runner,
     newSessionInput,
   );
+  const viewTree = new FirstRunTree(tree);
   const view = vscode.window.createTreeView("mend.sessions", {
-    treeDataProvider: tree,
+    treeDataProvider: viewTree,
     showCollapseAll: true,
   });
+  const firstRun = new FirstRunView({ context, connections, client, store, role });
+  const connect = async (): Promise<boolean> => {
+    const signedIn = await connections.connect();
+    await firstRun.refresh();
+    return signedIn;
+  };
+  const signOut = async (): Promise<void> => {
+    await commands.signOut();
+    await firstRun.refresh();
+  };
+  const accounts = new MendAuthenticationProvider({
+    account: () => firstRun.account(),
+    signIn: connect,
+    signOut,
+  });
+  // VS Code draws a welcome only over an empty tree, and none while the view has a message: until
+  // first run is done the sessions tree stays empty, and an offer is a message and one row.
+  const drawTree = (): void => {
+    const mode = firstRun.mode();
+    const offer = mode.kind === "welcome" ? offerOf(mode.welcome) : null;
+    viewTree.show(offer);
+    tree.changed(mode.kind === "tree" ? store.model() : null);
+    view.message = offer?.message ?? (mode.kind === "tree" ? (store.model()?.message ?? "") : "");
+  };
+  let reading: string | null = null;
+  const followFirstRun = (): void => {
+    const connected = firstRun.connected();
+    const key = connected === null ? null : JSON.stringify(connected);
+    if (key !== reading) {
+      reading = key;
+      if (connected === null) {
+        store.stop();
+        statusBar.hide();
+        view.badge = undefined;
+      } else store.start();
+    }
+    drawTree();
+    accounts.changed();
+  };
 
   context.subscriptions.push(
+    firstRun,
+    viewTree,
+    accounts,
+    firstRun.onDidChange(followFirstRun),
+    vscode.authentication.registerAuthenticationProvider(AUTH_PROVIDER_ID, "Mend", accounts),
+    context.secrets.onDidChange(() => void firstRun.refresh()),
+    vscode.extensions.onDidChange(() => void firstRun.refresh()),
+    vscode.commands.registerCommand("mend.connect", connect),
+    vscode.commands.registerCommand("mend.useCli", () => firstRun.useCli()),
+    vscode.commands.registerCommand("mend.setupWorkspaceSsh", () => firstRun.setUp()),
+    vscode.commands.registerCommand("mend.skipWorkspaceSsh", () => firstRun.skipSetUp()),
+    vscode.commands.registerCommand("mend.adoptHere", () => firstRun.adoptHere()),
+    vscode.commands.registerCommand("mend.signOut", signOut),
     store,
     view,
     statusBar,
@@ -703,7 +717,8 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     newSessionInput,
     store.onDidChange((change) => {
       const { next } = change;
-      tree.changed(next);
+      firstRun.render();
+      drawTree();
       if (store.hasRead() || next.offline || store.error() !== null) statusBar.update(next);
       view.badge =
         next.badge === 0
@@ -712,19 +727,17 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
               value: next.badge,
               tooltip: `${next.badge} ${next.badge === 1 ? "session needs" : "sessions need"} you`,
             };
-      view.message = next.message ?? "";
       notifier.changed(change);
     }),
     view.onDidChangeVisibility((event) => store.setVisible(event.visible)),
     view.onDidChangeSelection((event) => {
-      store.select(event.selection.flatMap((node) => sessionIdOf(node) ?? []));
+      store.select(
+        event.selection.flatMap((node) => (isOfferRow(node) ? [] : (sessionIdOf(node) ?? []))),
+      );
       const [node] = event.selection;
       if (event.selection.length === 1 && isSessionNode(node)) onSessionSelected(node);
     }),
     vscode.commands.registerCommand("mend.refresh", () => store.refresh()),
-    vscode.commands.registerCommand("mend.connect", async () => {
-      if (await commands.connect()) store.start();
-    }),
     vscode.commands.registerCommand("mend.adoptProject", () => commands.adoptProject()),
     vscode.commands.registerCommand("mend.open", (argument?: unknown) =>
       commands.open(argument, "follow-setting"),
@@ -742,7 +755,6 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     vscode.commands.registerCommand("mend.openInMend", (argument?: unknown) =>
       commands.openInMend(argument),
     ),
-    vscode.commands.registerCommand("mend.setupWorkspaceSsh", () => commands.setupWorkspaceSsh()),
     vscode.commands.registerCommand("mend.copyWorktreePath", (argument?: unknown) =>
       commands.copyWorktreePath(argument),
     ),
@@ -762,19 +774,20 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     vscode.commands.registerCommand("mend.reviewChange", (argument?: unknown) =>
       commands.reviewChange(argument),
     ),
-    vscode.commands.registerCommand("mend.signOut", async () => {
-      await commands.signOut();
-      store.start();
-    }),
     vscode.window.registerUriHandler({ handleUri: (uri) => commands.openFromUri(uri) }),
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration("mend.serverUrl")) store.start();
+      if (
+        event.affectsConfiguration("mend.serverUrl") ||
+        event.affectsConfiguration("mend.workspaceSshHost") ||
+        event.affectsConfiguration("remote.SSH.remotePlatform")
+      )
+        void firstRun.refresh();
       else if (event.affectsConfiguration("mend")) store.refresh();
     }),
   );
 
   store.setVisible(view.visible);
-  store.start();
+  void firstRun.refresh();
   workspaceWindow.start();
   const editor = startWorkspaceEditor(context);
   return {

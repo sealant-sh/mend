@@ -4,6 +4,7 @@ import { parseWorkspaceSshTarget, type WorkspaceSshTarget } from "@mend/workspac
 import * as vscode from "vscode";
 
 import type { MendClient } from "./client.js";
+import { openConsent, parseSshConsent } from "./first-run.js";
 import { statusText, type OpenAction, type OpenState } from "./open-flow.js";
 import type { OpenIntents } from "./open-intent.js";
 import { OpenRunner, type OpenEffects } from "./open-runner.js";
@@ -16,8 +17,24 @@ import type { WorkspaceWindow } from "./workspace-window.js";
 
 const REMOTE_SSH = "ms-vscode-remote.remote-ssh";
 const REMOTE_SSH_INSTALL_MS = 60_000;
-/** Set once workspace SSH was set up on this machine: an open then never asks again. */
-const CONSENT_KEY = "mend.workspaceSsh.consent";
+/** The consent record (`SshConsent`): given by Set up or by Open's one question, or skipped. */
+export const CONSENT_KEY = "mend.workspaceSsh.consent";
+
+export const remoteSshInstalled = (): boolean =>
+  vscode.extensions.getExtension(REMOTE_SSH) !== undefined;
+
+/** Installs Remote-SSH from the gallery; resolves once it is present and active. */
+export const installRemoteSsh = async (): Promise<void> => {
+  await vscode.commands.executeCommand("workbench.extensions.installExtension", REMOTE_SSH);
+  const deadline = Date.now() + REMOTE_SSH_INSTALL_MS;
+  let extension = vscode.extensions.getExtension(REMOTE_SSH);
+  while (extension === undefined) {
+    if (Date.now() >= deadline) throw new Error("Remote-SSH did not finish installing in 60 s.");
+    await wait(500);
+    extension = vscode.extensions.getExtension(REMOTE_SSH);
+  }
+  await extension.activate();
+};
 
 /**
  * The Remote-SSH authority of one workspace through the gateway: the authority the workspace
@@ -35,7 +52,7 @@ interface WorkspaceSshFacts {
 }
 
 /** This client's workspace SSH target for the configured Mend server. */
-const workspaceSshFacts = async (client: MendClient): Promise<WorkspaceSshFacts> => {
+export const workspaceSshFacts = async (client: MendClient): Promise<WorkspaceSshFacts> => {
   const view = await client.workspaceSsh();
   if (view.gateway === null) {
     throw new Error("This Mend deployment exposes no workspace SSH gateway.");
@@ -54,11 +71,18 @@ const workspaceSshFacts = async (client: MendClient): Promise<WorkspaceSshFacts>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const remotePlatforms = (): Record<string, unknown> => {
+  const current = vscode.workspace.getConfiguration("remote.SSH").get<unknown>("remotePlatform");
+  return isRecord(current) ? current : {};
+};
+
+export const remotePlatformSeeded = (alias: string): boolean =>
+  remotePlatforms()[alias] !== undefined;
+
 /** Remote-SSH asks for a host's platform on first connect unless it is already set. */
-const seedRemotePlatform = async (alias: string): Promise<void> => {
+export const seedRemotePlatform = async (alias: string): Promise<void> => {
   const config = vscode.workspace.getConfiguration("remote.SSH");
-  const current = config.get<unknown>("remotePlatform");
-  const platforms = isRecord(current) ? current : {};
+  const platforms = remotePlatforms();
   if (platforms[alias] !== undefined) return;
   await config.update(
     "remotePlatform",
@@ -167,24 +191,13 @@ export const openRunner = (deps: {
       ),
     focusAgentTerminal: (sessionId) => workspaceWindow.focusAgentTerminal(sessionId),
     focusProgress: () => progress.focus(),
-    remoteSshInstalled: () => vscode.extensions.getExtension(REMOTE_SSH) !== undefined,
-    installRemoteSsh: async () => {
-      await vscode.commands.executeCommand("workbench.extensions.installExtension", REMOTE_SSH);
-      const deadline = Date.now() + REMOTE_SSH_INSTALL_MS;
-      let extension = vscode.extensions.getExtension(REMOTE_SSH);
-      while (extension === undefined) {
-        if (Date.now() >= deadline)
-          throw new Error("Remote-SSH did not finish installing in 60 s.");
-        await wait(500);
-        extension = vscode.extensions.getExtension(REMOTE_SSH);
-      }
-      await extension.activate();
-    },
+    remoteSshInstalled,
+    installRemoteSsh,
     workspaceSsh: async () => {
       const { view, target } = await workspaceSshFacts(client);
       return workspaceSshReadiness(view, target).ready ? "ready" : "needsSetup";
     },
-    sshConsent: () => (context.globalState.get(CONSENT_KEY) === "given" ? "given" : "never"),
+    sshConsent: () => openConsent(parseSshConsent(context.globalState.get(CONSENT_KEY))),
     askSshConsent: async () =>
       (await vscode.window.showInformationMessage(
         "Set up workspace SSH to open sessions (one Host block in ~/.ssh/config)",

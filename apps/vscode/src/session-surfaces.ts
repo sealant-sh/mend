@@ -34,6 +34,12 @@ export class MendStatusBar implements vscode.Disposable {
     this.#text.dispose();
   }
 
+  /** Not connected: no status to say. */
+  hide(): void {
+    this.#dot.hide();
+    this.#text.hide();
+  }
+
   update(model: WindowModel): void {
     const { statusBar } = model;
     const command =

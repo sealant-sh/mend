@@ -218,6 +218,26 @@ export class SessionStore implements vscode.Disposable {
     this.refresh();
   }
 
+  /** Not connected (story h): no stream, no reads, nothing remembered of the last sign-in. */
+  stop(): void {
+    this.#subscription?.dispose();
+    this.#subscription = null;
+    this.#generation += 1;
+    this.#invalidate();
+    this.#refused = false;
+    this.#error = null;
+    for (const timer of [this.#timer, this.#retry]) if (timer !== null) clearTimeout(timer);
+    if (this.#ticker !== null) clearInterval(this.#ticker);
+    this.#timer = null;
+    this.#retry = null;
+    this.#ticker = null;
+    this.#wantAll = false;
+    this.#wantProjects.clear();
+    this.#wantSessions.clear();
+    this.#wantedSince = null;
+    this.#connection = { state: "connecting" };
+  }
+
   /** Read everything again (`Mend: Refresh`). */
   refresh(): void {
     this.#want({ all: true, projects: new Set(), sessions: new Set() });
@@ -556,7 +576,6 @@ export class SessionStore implements vscode.Disposable {
     this.#read = true;
     await this.#matchWindow();
     this.#prune();
-    void vscode.commands.executeCommand("setContext", "mend.hasProjects", projects.length > 0);
   }
 
   async #readProject(projectId: string, generation: number): Promise<void> {
