@@ -17627,16 +17627,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         }
 
-        const memoryArgv = codexMemoryOn
-          ? shapedArgv
-          : withCodexMemoryOff(shapedArgv, { join: false });
         const claudePin =
           protocolStart === null
-            ? withClaudeSessionId(memoryArgv, crypto.randomUUID())
-            : { argv: memoryArgv, providerSessionId: null };
+            ? withClaudeSessionId(shapedArgv, crypto.randomUUID())
+            : { argv: shapedArgv, providerSessionId: null };
         const memoryShapedArgv = yield* withClaudeSettings(
           session,
-          claudePin.argv,
+          codexMemoryOn ? claudePin.argv : withCodexMemoryOff(claudePin.argv, { join: false }),
           startAs === null ? null : ownerUserId,
           protocolStart === null,
         );
@@ -17712,9 +17709,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 harness: conversation.harness,
                 argv:
                   protocolStart === null
-                    ? withPermissionDefaults(session.harness, shapedArgv)
+                    ? withPermissionDefaults(session.harness, claudePin.argv)
                     : shapedArgv,
                 resumePath: inConversation.resumePath,
+                terminal: protocolStart === null,
               });
         const releaseTake = Effect.suspend(() =>
           inConversation === null || inConversation.fence === null
@@ -17798,9 +17796,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 (manifest !== null && manifest.harness === session.harness
                   ? manifest.providerSessionId
                   : (protocolProviderSessionId ?? protocolResumeId)) ??
-                (conversation === null || inConversation === null
-                  ? claudePin.providerSessionId
-                  : null)),
+                claudePin.providerSessionId),
             protocolOptions:
               protocolStart === null
                 ? null
@@ -19431,16 +19427,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const codexMemoryOn =
             personStart !== null ||
             (ownHome && (yield* withholdCodexThreads(session, workspace, shapedArgv, [])));
-          const memoryArgv = codexMemoryOn
-            ? shapedArgv
-            : withCodexMemoryOff(shapedArgv, { join: !ownHome });
           const claudePin =
             protocolStart === null
-              ? withClaudeSessionId(memoryArgv, crypto.randomUUID())
-              : { argv: memoryArgv, providerSessionId: null };
+              ? withClaudeSessionId(shapedArgv, crypto.randomUUID())
+              : { argv: shapedArgv, providerSessionId: null };
           const memoryShapedArgv = yield* withClaudeSettings(
             session,
-            claudePin.argv,
+            codexMemoryOn ? claudePin.argv : withCodexMemoryOff(claudePin.argv, { join: !ownHome }),
             personStart === null ? null : sender,
             protocolStart === null,
           );
@@ -19538,9 +19531,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   harness: conversation.harness,
                   argv:
                     protocolStart === null
-                      ? withPermissionDefaults(session.harness, shapedArgv)
+                      ? withPermissionDefaults(session.harness, claudePin.argv)
                       : shapedArgv,
                   resumePath: inConversation.resumePath,
+                  terminal: protocolStart === null,
                 });
           const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
             Effect.andThen(
@@ -19610,9 +19604,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 : (nativeImport?.providerSessionId ??
                   protocolProviderSessionId ??
                   providerSessionId ??
-                  (conversation === null || inConversation === null
-                    ? claudePin.providerSessionId
-                    : null)),
+                  claudePin.providerSessionId),
               protocolOptions:
                 protocolStart === null
                   ? null
