@@ -212,13 +212,30 @@ describe("a terminal agent's hooks (G4)", () => {
         const engine = yield* SessionEngine;
         yield* hookOf(sessionId)(own(world, sessionId, "PermissionRequest", { tool: "Bash" }));
         const shell = yield* engine.openShell(sessionId);
-        yield* engine.personTyped(shell.id);
+        expect(yield* engine.personTyped(shell.id)).toBe(false);
         expect(statusOf(world, sessionId)).toBe("waiting");
         const agent = agentOf(world, sessionId);
         if (agent === null) throw new Error("no agent");
-        yield* engine.personTyped(agent.id);
+        expect(yield* engine.personTyped(agent.id)).toBe(true);
         expect(statusOf(world, sessionId)).toBe("running");
         expect(agentOf(world, sessionId)?.waiting).toBeNull();
+        expect(yield* engine.personTyped(agent.id)).toBe(false);
+      }),
+    );
+  });
+
+  it("keeps a finished turn waiting through keys, until a prompt is submitted", async () => {
+    await withClaudeSession((world, sessionId) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        yield* hookOf(sessionId)(own(world, sessionId, "Stop"));
+        const agent = agentOf(world, sessionId);
+        if (agent === null) throw new Error("no agent");
+        expect(yield* engine.personTyped(agent.id)).toBe(false);
+        expect(statusOf(world, sessionId)).toBe("waiting");
+        expect(agentWaitLine(agentOf(world, sessionId))).toBe("waiting · claude finished its turn");
+        yield* hookOf(sessionId)(own(world, sessionId, "UserPromptSubmit"));
+        expect(statusOf(world, sessionId)).toBe("running");
       }),
     );
   });
