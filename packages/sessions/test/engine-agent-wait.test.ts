@@ -489,6 +489,26 @@ describe("a terminal agent's hooks (G4)", () => {
       }),
     );
   });
+
+  it("refuses the 601st report in a minute that changes nothing, and still applies a change after it", async () => {
+    await withClaudeSession((world, sessionId) =>
+      Effect.gen(function* () {
+        const hook = hookOf(sessionId);
+        for (let sent = 0; sent < 600; sent++) {
+          expect(yield* hook(own(world, sessionId, "PostToolUse", { tool: "Bash" }))).toBe(
+            "unchanged",
+          );
+        }
+        expect(yield* hook(own(world, sessionId, "PostToolUse", { tool: "Bash" }))).toMatchObject({
+          _tag: "too-many",
+        });
+        expect(yield* hook(own(world, sessionId, "PermissionRequest", { tool: "Bash" }))).toBe(
+          "applied",
+        );
+        expect(statusOf(world, sessionId)).toBe("waiting");
+      }),
+    );
+  });
 });
 
 const refusalOf = <A, E>(effect: Effect.Effect<A, E>) => {
