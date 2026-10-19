@@ -6,9 +6,34 @@ import type { EventPointer, MendClient } from "../client.js";
 import { MendApiError } from "../mend-http.js";
 import { displaySession } from "../session-lines.js";
 import { accessChanged } from "../session-reads.js";
-import type { Project, Session } from "../types.js";
+import type { Project, Session, SessionDetail } from "../types.js";
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
+import {
+  commentIds,
+  commentTarget,
+  handedOver,
+  heldIds,
+  holdsComments,
+  mayRetry,
+  nextAction,
+  openRecord,
+  postedComment,
+  retryRecord,
+  startSend,
+  step,
+  stepReview,
+  type LiveAgent,
+  type SendEvent,
+  type SendRecord,
+} from "./delivery.js";
+import {
+  composeInstruction,
+  sendOffer,
+  textToSend,
+  type InstructionComment,
+  type SendOffer,
+} from "./instruction.js";
 import { samePlace, type KeptReviews, type ReviewPlace } from "./kept-reviews.js";
 import {
   addPending,
@@ -23,6 +48,8 @@ import type { ReviewClient } from "./review-client.js";
 import type { ReviewMemory } from "./review-memory.js";
 import {
   passStart,
+  type ChangeFile,
+  type Checkpoint,
   type ServerComment,
   type SliceDiff,
   type TranscriptEntry,
@@ -32,6 +59,7 @@ import {
   lastReviewHead,
   newerChoice,
   resolveSlice,
+  type SentReview,
   type Slice,
   type SliceChoice,
 } from "./slices.js";
@@ -70,7 +98,62 @@ export interface ReviewFailure {
   readonly words: string;
   /** The error behind it when a call failed; null when Mend answered the failure itself. */
   readonly cause: unknown;
+  /** The send record a failed delivery belongs to: its toast offers Retry delivery. */
+  readonly retry: RetryTarget | null;
 }
+
+/** A send record, by the person, server and session it is kept for, and its key. */
+export interface RetryTarget {
+  readonly place: ReviewPlace;
+  readonly key: string;
+}
+
+/** What Send review composed: the text, and exactly the comments it lists. */
+export interface Composed {
+  readonly sessionId: string;
+  readonly sessionName: string;
+  readonly text: string;
+  /** Her pending comments, by id. */
+  readonly pending: ReadonlyArray<string>;
+  /** The comments open on Mend, by id. */
+  readonly open: ReadonlyArray<string>;
+}
+
+/** Whether Send to session recorded the review; when not, why, in Mend's words. */
+export type Sent = { readonly sent: true } | { readonly sent: false; readonly words: string };
+
+/** What a send record's drive reads Mend with, whichever session the section follows. */
+interface SendContext {
+  readonly place: ReviewPlace;
+  readonly changeId: string;
+  readonly viewer: string | null;
+  readonly author: string | null;
+}
+
+const driveId = (context: SendContext, key: string): string =>
+  JSON.stringify([context.place.url, context.place.viewer, context.place.sessionId, key]);
+
+const sameIds = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean =>
+  left.length === right.length && new Set([...left, ...right]).size === left.length;
+
+const TEXT_STAYS = "Your text stays in this editor.";
+
+const COMMENTS_CHANGED = `Your comments changed since this review was composed, so nothing was sent. ${TEXT_STAYS} Close it and choose Send review again to compose the review with your comments as they are now.`;
+
+const offerWords = (offer: SendOffer): string => {
+  switch (offer.kind) {
+    case "disabled":
+    case "hidden":
+      return offer.why;
+    case "busy":
+      return "Mend is still sending your last review";
+    case "retry":
+      return "Your last review was not delivered: Retry delivery sends it before another";
+    case "nothing":
+    case "ready":
+      return "There is no comment to send";
+  }
+};
 
 /** A transcript Show record opens: the session whose record the evidence cites. */
 export type ShownRecord =
@@ -87,6 +170,10 @@ const TOO_MANY = `This session's review already holds ${MAX_PENDING} pending com
 /** Frames come in bursts while an agent works: the change is read again at most this often. */
 const REREAD_MS = 1_500;
 
+/** How often a launch is watched, and for how many steps before it reads failed. */
+const WATCH_MS = 3_000;
+const MAX_TURNS = 400;
+
 const errorWords = (cause: unknown): string =>
   cause instanceof Error ? cause.message : "Mend could not read this change.";
 
@@ -102,12 +189,18 @@ export class ReviewStore implements vscode.Disposable {
   #state: ReviewState = { kind: "idle" };
   /** What she chose to read, per session; the pinned slice until she picks another. */
   readonly #choices = new Map<string, SliceChoice>();
+  /** A re-pin after a sent review: since my last review opens from this head once Mend pins. */
+  readonly #sinceAfterRepin = new Map<string, Checkpoint>();
   #review: SessionReview = EMPTY_REVIEW;
   /** Where `#review` is kept: her account on the server, and the session. */
   #place: ReviewPlace | null = null;
   /** Who she is on each server, as Mend last said: a read that cannot say keeps her place. */
   readonly #viewers = new Map<string, string>();
   #you = "You";
+  /** Her name as Mend writes it on her comments; null when it is not known. */
+  #author: string | null = null;
+  /** A session whose kept reviews were read but not yet loaded: see `#load`. */
+  #unloaded: ReviewPlace | null = null;
   /**
    * The read of a change she asked for, until it ends: its failure toasts once. `before` is when
    * the pass Mend held before she asked started, by Mend's clock: a pass that started at another
@@ -120,6 +213,9 @@ export class ReviewStore implements vscode.Disposable {
   #reading = false;
   #again = false;
   #disposed = false;
+  #offline = false;
+  /** Each record's drive, by server, session and key: one at a time per record. */
+  readonly #driving = new Map<string, Promise<void>>();
 
   constructor(
     private readonly sessions: Pick<
@@ -129,8 +225,10 @@ export class ReviewStore implements vscode.Disposable {
     private readonly client: ReviewClient,
     /** The keys pinning each change's slice. */
     private readonly memory: ReviewMemory,
-    /** Her pending comments, per person and session, shared by every window. */
+    /** Her pending comments and the reviews she sent, per person and session, for every window. */
     private readonly kept: KeptReviews,
+    /** G12 fallback: the session's agent terminal attached here, the text pasted, no Enter. */
+    private readonly paste: (sessionId: string, text: string) => Promise<boolean>,
   ) {}
 
   /** How many files a choice reads, for the picker, and whether Mend cut the listing. */
@@ -250,14 +348,17 @@ export class ReviewStore implements vscode.Disposable {
 
   /**
    * Review the newer change: a new key, so the next `reviews/open` pins the worktree as it is now.
-   * The key is kept, so a reload shows the newer slice too.
+   * The key is kept, so a reload shows the newer slice too. Offered after a review she sent, it
+   * opens on since my last review: from the head she sent to the head now pinned.
    */
-  async repin(): Promise<void> {
+  async repin(sinceLastReview: boolean): Promise<void> {
     const read = this.ready();
     if (read === null) return;
     const { url } = await this.sessions.connection();
     await this.memory.repin(url, read.changeId);
     this.#choices.delete(read.sessionId);
+    if (sinceLastReview) this.#sinceAfterRepin.set(read.sessionId, read.pinned.head);
+    else this.#sinceAfterRepin.delete(read.sessionId);
     this.reread();
   }
 
@@ -356,7 +457,7 @@ export class ReviewStore implements vscode.Disposable {
     try {
       await this.client.setCommentState(read.changeId, draftId, "dismissed");
     } catch (cause) {
-      this.#fail("error", cause);
+      this.#fail("error", errorWords(cause), cause);
       return;
     }
     if (reply.trim() !== "")
@@ -376,7 +477,7 @@ export class ReviewStore implements vscode.Disposable {
       await this.client.readChange(read.changeId);
     } catch (cause) {
       this.#asked = null;
-      this.#fail("error", cause);
+      this.#fail("error", errorWords(cause), cause);
       return;
     }
     this.reread();
@@ -423,21 +524,452 @@ export class ReviewStore implements vscode.Disposable {
     };
   }
 
-  #fail(what: string, cause: unknown): void {
-    const at = new Date().toISOString();
-    this.#failed.fire({ key: `review-${what}:${at}`, at, words: errorWords(cause), cause });
+  /** The window's connection to Mend: offline, Send review waits and her comments stay. */
+  setOffline(offline: boolean): void {
+    if (offline === this.#offline) return;
+    this.#offline = offline;
+    this.#changed.fire();
   }
 
   /**
-   * Whether a failure still says something true when its toast is about to show: a read Mend has
-   * begun again since is not failed any more.
+   * The comments on Mend that go out with the next review: open and never sent, unless a review
+   * being sent or delivered holds them. One Mend holds pending goes too: a new key supersedes it.
    */
-  stillFails(failure: ReviewFailure): boolean {
-    return !(failure.key.startsWith("review-read:") && this.ready()?.pass?.kind === "reading");
+  #openOnMend(read: ChangeRead): ReadonlyArray<ServerComment> {
+    const inRecords = new Set(
+      this.#review.sends.flatMap((record) =>
+        !holdsComments(record)
+          ? []
+          : record.items.flatMap((item) =>
+              item.kind === "open"
+                ? [item.commentId]
+                : item.kind === "accepted"
+                  ? [item.draftId]
+                  : item.post.kind === "posted"
+                    ? [item.post.commentId]
+                    : [],
+            ),
+      ),
+    );
+    return read.comments.filter(
+      (comment) =>
+        comment.state === "open" && comment.sentToSessionId === null && !inRecords.has(comment.id),
+    );
+  }
+
+  /** Whether Send review is offered here, and why not (story d, step 6 and its edge cases). */
+  offer(): SendOffer {
+    const read = this.ready();
+    if (read === null) return { kind: "nothing" };
+    const open = openRecord(this.#review.sends);
+    const held = heldIds(this.#review.sends);
+    const retry = retryRecord(this.#review.sends, read.facts.agent);
+    return sendOffer({
+      session: read.facts.session,
+      viewer: read.facts.viewer,
+      ownerName: read.facts.ownerName,
+      agent: read.facts.agent,
+      offline: this.#offline,
+      count:
+        this.#review.pending.length +
+        this.#openOnMend(read).filter((comment) => !held.has(comment.id)).length,
+      open: open?.phase.kind === "sending" ? "sending" : retry === null ? null : "failed",
+    });
+  }
+
+  /**
+   * Send review: the instruction Mend will send, her comments in order with file and line, and
+   * which comments it lists: Send to session sends exactly those.
+   */
+  compose(): Composed | null {
+    const read = this.ready();
+    if (read === null) return null;
+    const open = this.#openOnMend(read);
+    const comments: ReadonlyArray<InstructionComment> = [
+      ...this.#review.pending.map((pending) => ({
+        path: pending.path,
+        line: pending.line,
+        endLine: pending.endLine,
+        body: pending.body,
+        evidence: pending.origin.kind === "accepted" ? pending.origin.evidence : [],
+        createdAt: pending.createdAt,
+      })),
+      ...open.map((comment) => ({
+        path: comment.file,
+        line: comment.line,
+        endLine: comment.endLine,
+        body: comment.body,
+        evidence: comment.evidence,
+        createdAt: comment.createdAt,
+      })),
+    ];
+    return {
+      sessionId: read.sessionId,
+      sessionName: read.sessionName,
+      pending: this.#review.pending.map((pending) => pending.id),
+      open: open.map((comment) => comment.id),
+      text: composeInstruction({
+        sessionName: read.sessionName,
+        baseName: read.chain.baseName,
+        headOrdinal: read.pinned.head.ordinal,
+        files: read.pinnedDiff.files,
+        comments,
+      }),
+    };
+  }
+
+  /**
+   * Send to session: the text she sent, with exactly the comments it was composed with, under one
+   * new idempotency key kept in the record; the record is then driven until Mend answers. Says
+   * whether the send was recorded, and why not in Mend's words.
+   */
+  async send(composed: Omit<Composed, "sessionName" | "text">, text: string): Promise<Sent> {
+    const read = this.ready();
+    const place = this.#place;
+    if (read === null || place === null || read.sessionId !== composed.sessionId)
+      return {
+        sent: false,
+        words: `The Change section no longer shows this review's session, so nothing was sent. ${TEXT_STAYS}`,
+      };
+    const offer = this.offer();
+    if (offer.kind !== "ready")
+      return { sent: false, words: `${offerWords(offer)}. ${TEXT_STAYS}` };
+    const composedNow =
+      sameIds(
+        this.#review.pending.map((pending) => pending.id),
+        composed.pending,
+      ) &&
+      sameIds(
+        this.#openOnMend(read).map((comment) => comment.id),
+        composed.open,
+      );
+    if (!composedNow) return { sent: false, words: COMMENTS_CHANGED };
+    const key = `vscode-follow-up:${read.changeId}:${randomUUID()}`;
+    let next: SessionReview;
+    try {
+      next = await this.#keepAt(
+        place,
+        (review) =>
+          startSend(review, {
+            key,
+            slice: {
+              id: read.pinned.id,
+              baseId: read.pinned.base.id,
+              headId: read.pinned.head.id,
+              diffDigest: read.pinned.diffDigest,
+            },
+            instruction: textToSend(text, read.sessionName),
+            pending: composed.pending,
+            open: composed.open,
+            now: new Date().toISOString(),
+          }) ?? review,
+      );
+    } catch (cause) {
+      return {
+        sent: false,
+        words: `VS Code could not keep the review: ${errorWords(cause)} ${TEXT_STAYS}`,
+      };
+    }
+    if (!next.sends.some((record) => record.key === key))
+      return { sent: false, words: COMMENTS_CHANGED };
+    void this.#drive(this.#context(read, place), key);
+    return { sent: true };
+  }
+
+  /** The review of the followed session that offers Retry delivery from the title, if any. */
+  retryTarget(): RetryTarget | null {
+    const place = this.#place;
+    const read = this.ready();
+    const record = read === null ? null : retryRecord(this.#review.sends, read.facts.agent);
+    return place === null || record === null ? null : { place, key: record.key };
+  }
+
+  /** The followed session's review a thread's Retry delivery names, by its key. */
+  retryOf(key: string): RetryTarget | null {
+    const place = this.#place;
+    return place === null ? null : { place, key };
+  }
+
+  /**
+   * Retry delivery: the same key, the same text, the comments already on Mend kept. Only a record
+   * of that session with that key, failed, or held pending by Mend once the session has no live
+   * agent (the route then launches the stopped session on the review).
+   */
+  async retry(target: RetryTarget): Promise<void> {
+    if (this.#offline) return;
+    const record = (await this.kept.read(target.place)).review.sends.find(
+      (candidate) => candidate.key === target.key,
+    );
+    if (record === undefined) return;
+    const [detail, viewer] = await Promise.all([
+      this.sessions.sessionDetail(target.place.sessionId),
+      this.sessions.viewerId(),
+    ]);
+    const agent = liveAgent(detail, viewer);
+    if (detail.changeId === null || !mayRetry(record, agent)) return;
+    const context: SendContext = {
+      place: target.place,
+      changeId: detail.changeId,
+      viewer,
+      author: this.#author,
+    };
+    const retried = await this.#step(context, target.key, {
+      kind: "retry",
+      at: new Date().toISOString(),
+      agent,
+    });
+    if (retried?.phase.kind === "sending") await this.#drive(context, target.key);
+  }
+
+  /** Addressed or Reopen (story d, step 7): her call on a sent comment, never Mend's. */
+  async mark(commentId: string, state: "addressed" | "open"): Promise<void> {
+    const read = this.ready();
+    if (read === null) return;
+    try {
+      await this.client.setCommentState(read.changeId, commentId, state);
+    } catch (cause) {
+      this.#fail("error", errorWords(cause), cause);
+      return;
+    }
+    this.reread();
+  }
+
+  /**
+   * The reviews she sent from this VS Code, by the head each was pinned to and when: with her
+   * comments Mend reads back as sent, where since my last review starts.
+   */
+  #sentReviews(): ReadonlyArray<SentReview> {
+    return this.#review.sends
+      .filter(handedOver)
+      .map((record) => ({ headId: record.headId, at: record.createdAt }));
+  }
+
+  /**
+   * A window that loads a send it did not see end does not know it was sent: it says so, in what
+   * it keeps. One Mend was launching goes on being watched, by reads only.
+   */
+  async #load(context: SendContext): Promise<void> {
+    const now = new Date().toISOString();
+    const loaded = await this.#keepAt(context.place, (review) => ({
+      ...review,
+      sends: review.sends.map((record) =>
+        this.#driving.has(driveId(context, record.key))
+          ? record
+          : step(record, { kind: "loaded" }, now),
+      ),
+    }));
+    for (const record of loaded.sends)
+      if (record.phase.kind === "delivering") void this.#drive(context, record.key);
+  }
+
+  #context(read: ChangeRead, place: ReviewPlace): SendContext {
+    return {
+      place,
+      changeId: read.changeId,
+      viewer: read.facts.viewer,
+      author: this.#author,
+    };
+  }
+
+  /** A record's next step, kept for its own session whichever session the section follows. */
+  async #step(context: SendContext, key: string, event: SendEvent): Promise<SendRecord | null> {
+    const now = new Date().toISOString();
+    const next = await this.#keepAt(context.place, (review) => stepReview(review, key, event, now));
+    return next.sends.find((record) => record.key === key) ?? null;
+  }
+
+  /**
+   * One drive per record, by server, session and key: a second Send or Retry while one runs goes
+   * after it, so a record put back to sending is always driven.
+   */
+  async #drive(context: SendContext, key: string): Promise<void> {
+    const id = driveId(context, key);
+    const before = this.#driving.get(id) ?? Promise.resolve();
+    const run: Promise<void> = before
+      .then(() => this.#run(context, key))
+      .catch((cause: unknown) => this.#fail("error", errorWords(cause), cause))
+      .finally(() => {
+        if (this.#driving.get(id) === run) this.#driving.delete(id);
+      });
+    this.#driving.set(id, run);
+    return run;
+  }
+
+  async #run(context: SendContext, key: string): Promise<void> {
+    const { changeId } = context;
+    const { sessionId } = context.place;
+    const retry: RetryTarget = { place: context.place, key };
+    const files = new Map<string, ReadonlyArray<ChangeFile>>();
+    const sliceFiles = async (sliceId: string): Promise<ReadonlyArray<ChangeFile>> => {
+      const known = files.get(sliceId);
+      if (known !== undefined) return known;
+      const read = (await this.client.sliceDiff(changeId, sliceId)).files;
+      files.set(sliceId, read);
+      return read;
+    };
+    for (let turns = 0; turns < MAX_TURNS; turns += 1) {
+      const record = (await this.kept.read(context.place)).review.sends.find(
+        (candidate) => candidate.key === key,
+      );
+      if (record === undefined) return;
+      const action = nextAction(record);
+      try {
+        switch (action.kind) {
+          case "idle":
+            // A delivery Mend answered as failed (a launch it could not make) says so once.
+            if (record.phase.kind === "failed")
+              this.#fail(
+                `delivery:${key}`,
+                `Mend could not deliver the review: ${record.phase.words}`,
+                null,
+                retry,
+              );
+            this.#rereadIfFollowed(sessionId);
+            return;
+          case "reconcile": {
+            const comments = await this.client.comments(changeId);
+            const claimed = new Set(
+              record.items.flatMap((item) =>
+                item.kind === "own" && item.post.kind === "posted" ? [item.post.commentId] : [],
+              ),
+            );
+            for (const item of record.items) {
+              if (item.kind !== "own" || item.post.kind !== "posting") continue;
+              const found = postedComment(item.post, item.pending.sliceId, comments, claimed);
+              if (found !== null) claimed.add(found);
+              await this.#step(
+                context,
+                key,
+                found === null
+                  ? { kind: "not-posted", pendingId: item.pending.id }
+                  : { kind: "posted", pendingId: item.pending.id, commentId: found },
+              );
+            }
+            break;
+          }
+          case "post": {
+            const { pending } = action;
+            const { target, body } = commentTarget(await sliceFiles(pending.sliceId), pending);
+            const before = (await this.client.comments(changeId)).map((comment) => comment.id);
+            await this.#step(context, key, {
+              kind: "post-started",
+              pendingId: pending.id,
+              attempt: { body, target, author: context.author, before },
+            });
+            const posted = await this.client.postComment(changeId, pending.sliceId, target, body);
+            await this.#step(context, key, {
+              kind: "posted",
+              pendingId: pending.id,
+              commentId: posted.id,
+            });
+            break;
+          }
+          case "open": {
+            // A draft dismissed since she accepted it, here or anywhere, is never opened again.
+            const draft = (await this.client.comments(changeId)).find(
+              (comment) => comment.id === action.draftId,
+            );
+            if (draft === undefined || draft.state === "dismissed") {
+              await this.#step(context, key, { kind: "draft-gone", draftId: action.draftId });
+              break;
+            }
+            if (draft.state === "draft")
+              await this.client.setCommentState(changeId, action.draftId, "open");
+            await this.#step(context, key, { kind: "opened", draftId: action.draftId });
+            break;
+          }
+          case "deliver": {
+            const detail = await this.sessions.sessionDetail(sessionId);
+            const answered = await this.client.deliver(sessionId, action.request);
+            await this.#step(context, key, {
+              kind: "answered",
+              status: answered.status,
+              error: answered.error,
+              agent: liveAgent(detail, context.viewer) ?? { kind: "other" },
+            });
+            break;
+          }
+          case "paste": {
+            const pasted = await this.paste(sessionId, action.text);
+            await this.#step(context, key, pasted ? { kind: "pasted" } : { kind: "paste-failed" });
+            break;
+          }
+          case "watch": {
+            await new Promise((resolve) => setTimeout(resolve, WATCH_MS));
+            const [followUp, comments] = await Promise.all([
+              this.client.followUp(sessionId),
+              this.client.comments(changeId),
+            ]);
+            const ours = followUp !== null && followUp.key === key ? followUp : null;
+            const ids = commentIds(record) ?? [];
+            const sent =
+              ids.length > 0 &&
+              ids.every(
+                (id) =>
+                  comments.find((comment) => comment.id === id)?.sentToSessionId === sessionId,
+              );
+            await this.#step(context, key, {
+              kind: "follow-up",
+              status: ours?.status ?? null,
+              error: ours?.error ?? null,
+              others: followUp !== null && ours === null,
+              sent,
+            });
+            break;
+          }
+        }
+      } catch (cause) {
+        // Unreachable or failing on Mend's side is worth a retry with the same key; a refusal is not.
+        const retryable =
+          !(cause instanceof MendApiError) || cause.status === null || cause.status >= 500;
+        await this.#step(context, key, { kind: "failed", words: errorWords(cause), retryable });
+        this.#fail(
+          `delivery:${key}`,
+          `Mend could not deliver the review: ${errorWords(cause)}`,
+          cause,
+          retryable ? retry : null,
+        );
+        this.#rereadIfFollowed(sessionId);
+        return;
+      }
+    }
+    // Mend has not answered in all this time: the review reads failed, so Retry is offered.
+    const words = "Mend has not said the review was delivered";
+    await this.#step(context, key, { kind: "failed", words, retryable: true });
+    this.#fail(
+      `delivery:${key}`,
+      `${words}. Retry delivery asks again with the same key.`,
+      null,
+      retry,
+    );
+    this.#rereadIfFollowed(sessionId);
   }
 
   #rereadIfFollowed(sessionId: string): void {
     if (this.followed()?.session.id === sessionId) this.reread();
+  }
+
+  #fail(
+    what: string,
+    words: string,
+    cause: unknown = null,
+    retry: RetryTarget | null = null,
+  ): void {
+    const at = new Date().toISOString();
+    this.#failed.fire({ key: `review-${what}:${at}`, at, words, cause, retry });
+  }
+
+  /**
+   * Whether a failure still says something true when its toast is about to show: a delivery that
+   * was retried meanwhile, in this window or another, is not failed any more.
+   */
+  async stillFails(failure: ReviewFailure): Promise<boolean> {
+    const { retry } = failure;
+    if (retry === null) return true;
+    void this.reloadReview();
+    return (await this.kept.read(retry.place)).review.sends.some(
+      (record) => record.key === retry.key && record.phase.kind === "failed",
+    );
   }
 
   /**
@@ -493,7 +1025,14 @@ export class ReviewStore implements vscode.Disposable {
       const next = await this.#readChange(followed);
       if (generation !== this.#generation) return;
       this.#set(next);
-      if (next.kind === "ready") this.#tellFailure(next.read);
+      if (next.kind === "ready") {
+        this.#tellFailure(next.read);
+        const unloaded = this.#unloaded;
+        if (unloaded !== null && unloaded === this.#place) {
+          this.#unloaded = null;
+          await this.#load(this.#context(next.read, unloaded));
+        }
+      }
     } catch (cause) {
       if (generation !== this.#generation) return;
       // Offline, what was read stays: the diff is readable from the last read (story d).
@@ -516,6 +1055,7 @@ export class ReviewStore implements vscode.Disposable {
       at: pass.at,
       words: `Mend could not read this change: ${pass.words}`,
       cause: null,
+      retry: null,
     });
   }
 
@@ -539,6 +1079,7 @@ export class ReviewStore implements vscode.Disposable {
       const { review } = await this.kept.read(place);
       if (this.followed()?.session.id === session.id && !samePlace(this.#place, place)) {
         this.#place = place;
+        this.#unloaded = place;
         this.#review = review;
       }
     }
@@ -566,10 +1107,16 @@ export class ReviewStore implements vscode.Disposable {
       this.client.readPass(changeId),
       this.sessions.memberNames(),
     ]);
-    // Mend writes her name on her comments, or her email when her name is empty.
     const name = members.find((member) => member.userId === viewer)?.name ?? "";
     this.#you = name === "" ? "You" : name;
-    const reviewedHead = lastReviewHead(chain.checkpoints, comments, name === "" ? null : name, []);
+    // Mend writes her name on her comments, or her email when her name is empty.
+    this.#author = name === "" ? null : name;
+    const reviewedHead = lastReviewHead(
+      chain.checkpoints,
+      comments,
+      this.#author,
+      this.#sentReviews(),
+    );
     const newest = chain.checkpoints.at(-1) ?? pinned.head;
     const [shown, since] = await Promise.all([
       this.#readChosen(session.id, { worktreeId, chain, pinned, pinnedDiff }),
@@ -583,6 +1130,7 @@ export class ReviewStore implements vscode.Disposable {
         : since?.listingCut === true || pinnedDiff.worktreeChangedSinceSnapshot
           ? { files: null }
           : null;
+    const owner = detail.session.ownerUserId;
     return {
       kind: "ready",
       followed,
@@ -600,6 +1148,12 @@ export class ReviewStore implements vscode.Disposable {
         drift,
         notice: shown.notice,
         pass,
+        facts: {
+          session: detail.session,
+          viewer,
+          ownerName: members.find((member) => member.userId === owner)?.name ?? "its owner",
+          agent: liveAgent(detail, viewer),
+        },
         readAt: new Date().toISOString(),
       },
     };
@@ -615,6 +1169,11 @@ export class ReviewStore implements vscode.Disposable {
     read: Pick<ChangeRead, "chain" | "pinned" | "pinnedDiff"> & { readonly worktreeId: string },
   ): Promise<{ slice: Slice; diff: SliceDiff; notice: string | null }> {
     const { chain, pinned, pinnedDiff } = read;
+    const from = this.#sinceAfterRepin.get(sessionId);
+    if (from !== undefined && from.ordinal < pinned.head.ordinal) {
+      this.#sinceAfterRepin.delete(sessionId);
+      this.#choices.set(sessionId, { kind: "since-last-review", from, to: pinned.head });
+    }
     const chosen = this.#choices.get(sessionId) ?? { kind: "pinned" };
     const main = resolveSlice({ kind: "pinned" }, pinned, chain.checkpoints);
     if (main === null) throw new Error("Mend returned a review slice it cannot resolve.");
@@ -639,6 +1198,18 @@ export class ReviewStore implements vscode.Disposable {
     }
   }
 }
+
+/** The session's live agent, when it is a terminal one: Mend holds its follow-ups pending. */
+const liveAgent = (detail: SessionDetail, viewer: string | null): LiveAgent | null => {
+  const agent = detail.currentAgent;
+  if (agent === null || agent.exitedAt !== null) return null;
+  if (agent.kind !== "agent-pty") return { kind: "other" };
+  return {
+    kind: "terminal",
+    name: agent.label ?? agent.harness ?? detail.session.harness,
+    hers: viewer !== null && detail.session.ownerUserId === viewer,
+  };
+};
 
 /** A pending comment on a Mend draft's place: its lines where the draft hangs, or the whole change. */
 const onDraft = (

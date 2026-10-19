@@ -1,9 +1,12 @@
 import type { MendConnection } from "../config.js";
 import { MendApiError, requestMend } from "../mend-http.js";
+import type { CommentTarget, DeliverRequest } from "./delivery.js";
 import {
   parseComment,
   parseComments,
   parseContents,
+  parseFollowUp,
+  type FollowUp,
   parseOpenedReview,
   parseRangeDiff,
   parseReadPass,
@@ -102,5 +105,34 @@ export class ReviewClient {
 
   async transcript(sessionId: string): Promise<ReadonlyArray<TranscriptEntry>> {
     return parseTranscript(await this.get(`/sessions/${segment(sessionId)}/transcript`));
+  }
+
+  /** A comment on Mend, on the slice it was written on: open, not yet sent. */
+  async postComment(
+    changeId: string,
+    sliceId: string,
+    target: CommentTarget,
+    body: string,
+  ): Promise<ServerComment> {
+    return parseComment(
+      await this.post(`/changes/${segment(changeId)}/reviews/${segment(sliceId)}/comments`, {
+        target,
+        body,
+      }),
+    );
+  }
+
+  /** The follow-up, by its idempotency key: the same key and inputs answer the same row. */
+  async deliver(sessionId: string, request: DeliverRequest): Promise<FollowUp> {
+    const answered = parseFollowUp(
+      await this.post(`/sessions/${segment(sessionId)}/follow-up/deliver`, request),
+    );
+    if (answered === null) throw new Error("Mend returned no follow-up.");
+    return answered;
+  }
+
+  /** The session's newest follow-up Mend has not delivered yet; null when none is left. */
+  async followUp(sessionId: string): Promise<FollowUp | null> {
+    return parseFollowUp(await this.get(`/sessions/${segment(sessionId)}/follow-up`));
   }
 }

@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { repositoryCloneUrlIssue } from "@mend/domain/workbench";
 import * as vscode from "vscode";
 
-import { attachTerminal, memberName } from "./agent-terminal.js";
+import { attachTerminal, memberName, pasteInto } from "./agent-terminal.js";
 import { AUTH_PROVIDER_ID, MendAuthenticationProvider } from "./auth-provider.js";
 import { MendClient } from "./client.js";
 import { ConnectionStore } from "./config.js";
@@ -635,6 +635,19 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     keptDirectory: path.join(context.globalStorageUri.fsPath, "reviews"),
     onError: (cause) => void showError(cause),
     claims,
+    // G12 fallback: her agent's terminal attached here, as Answer attaches it, and the review
+    // pasted into it for her to press Enter.
+    paste: async (sessionId, text) => {
+      await workspaceWindow.answer(sessionId);
+      // VS Code makes the attached tab the active terminal a moment after Answer shows it.
+      for (let waited = 0; waited < 10_000; waited += 100) {
+        const terminal = vscode.window.activeTerminal;
+        if (terminal !== undefined && workspaceWindow.terminalSession() === sessionId)
+          return pasteInto(terminal, text);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return false;
+    },
   });
   const commands = new MendCommands(
     connections,
@@ -739,6 +752,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     store.onDidHearEvent((event) => review.heard(event)),
     // A workspace window's Change section is its own session's, selected or not (rule 10).
     store.onDidChange(({ next }) => {
+      review.setOffline(next.offline);
       if (firstRun.mode().kind === "tree" && next.kind === "workspace" && next.session !== null)
         review.follow(next.session.project, next.session.session);
     }),

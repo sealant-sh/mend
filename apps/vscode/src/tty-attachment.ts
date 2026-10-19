@@ -97,6 +97,11 @@ export class TtyAttachment {
     return this.closed;
   }
 
+  /** Whether the socket is open: what `input` sends goes through only then. */
+  isOpen(): boolean {
+    return this.socket !== null && this.socket.readyState === OPEN;
+  }
+
   input(data: string): void {
     const socket = this.socket;
     if (socket === null || socket.readyState !== OPEN) return;

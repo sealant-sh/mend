@@ -58,6 +58,19 @@ export class MendTtyTerminal implements vscode.Pseudoterminal {
     this.attachment.input(data);
   }
 
+  /**
+   * Text pasted into the terminal once its socket is open, as a bracketed paste (the TUI takes it
+   * as one paste, its newlines without Enter). False when the socket never opened.
+   */
+  async paste(text: string, waitMs = 15_000): Promise<boolean> {
+    for (let waited = 0; !this.attachment.isOpen(); waited += 100) {
+      if (waited >= waitMs || this.attachment.isClosed()) return false;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    this.attachment.input(`\u001b[200~${text.replaceAll("\u001b", "")}\u001b[201~`);
+    return true;
+  }
+
   setDimensions(dimensions: vscode.TerminalDimensions): void {
     this.attachment.resize(dimensions.columns, dimensions.rows);
   }

@@ -209,6 +209,7 @@ const storeOver = (
     world,
     new ReviewMemory(options.kept ?? memento()),
     keptIn("/global-storage/reviews", memoryFiles()),
+    async () => false,
   );
   return { store, reads };
 };
@@ -277,7 +278,7 @@ describe("the worktree moved on past the pinned slice (story d, edge case)", () 
     expect(moved.pinned.id).toBe(first.pinned.id);
     expect(moved.drift).toEqual({ files: 3 });
 
-    await store.repin();
+    await store.repin(false);
     const newer = await nextRead(store, moved);
     expect(newer.pinned.id).not.toBe(first.pinned.id);
     expect(newer.diff.files).toHaveLength(3);

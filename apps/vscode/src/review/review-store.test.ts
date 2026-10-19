@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MendApiError } from "../mend-http.js";
 import type { Session, SessionDetail } from "../types.js";
@@ -13,6 +13,7 @@ import {
   comment,
   FakeMend,
   keptIn,
+  memoryFiles,
   PINNED,
   PROJECT,
   pending,
@@ -43,7 +44,13 @@ const readyStore = async (
   kept: KeptReviews,
   mend: FakeMend = new FakeMend(),
 ): Promise<ReviewStore> => {
-  const store = new ReviewStore(sessionReads("change-1"), mend, new ReviewMemory(memento()), kept);
+  const store = new ReviewStore(
+    sessionReads("change-1"),
+    mend,
+    new ReviewMemory(memento()),
+    kept,
+    async () => false,
+  );
   store.follow(PROJECT, session("s1"));
   await vi.waitFor(() => expect(store.ready()).not.toBeNull());
   return store;
@@ -95,6 +102,7 @@ describe("the review store, as it follows one session after another", () => {
       ),
       new ReviewMemory(memento()),
       kept,
+      async () => false,
     );
     store.follow(PROJECT, session("ana"));
     store.follow(PROJECT, session("dana"));
@@ -133,6 +141,7 @@ describe("ReviewStore.forget", () => {
       new FakeMend(),
       new ReviewMemory(memento()),
       keptIn(await storage()),
+      async () => false,
     );
     store.follow(PROJECT, session("s1"));
     store.forget();
@@ -209,6 +218,7 @@ describe("a comment she submits", () => {
       new FakeMend(),
       new ReviewMemory(memento()),
       keptIn(await storage()),
+      async () => false,
     );
     const kept = await store.comment(onLine(3, "Use the shared limiter"));
     expect(kept).toEqual({ kept: false, words: expect.stringMatching(/not kept/) });
@@ -242,6 +252,7 @@ describe("a call Mend refuses", () => {
       new Refusing(),
       new ReviewMemory(memento()),
       keptIn(await storage()),
+      async () => false,
     );
     store.follow(PROJECT, session("s1"));
     await settle();
@@ -362,6 +373,7 @@ describe("Show record", () => {
       mend,
       new ReviewMemory(memento()),
       keptIn(await storage()),
+      async () => false,
     );
     store.follow(PROJECT, session("s1"));
     await settle();
@@ -381,6 +393,7 @@ describe("Show record", () => {
       mend,
       new ReviewMemory(memento()),
       keptIn(await storage()),
+      async () => false,
     );
     store.follow(PROJECT, session("s1"));
     await settle();
@@ -458,6 +471,7 @@ describe("a comment VS Code could not keep", () => {
     const directory = await storage();
     await keptIn(directory).update(DANA_S1, () => ({
       pending: Array.from({ length: MAX_PENDING }, (_, index) => pending({ id: `p${index}` })),
+      sends: [],
     }));
     const store = await readyStore(keptIn(directory));
     expect(await store.comment(onLine(3, "one more"))).toEqual({
@@ -465,5 +479,158 @@ describe("a comment VS Code could not keep", () => {
       words: expect.stringMatching(/already holds 200 pending comments/),
     });
     expect(store.review().pending).toHaveLength(MAX_PENDING);
+  });
+});
+
+/** Mend with one comment open on the change and not sent: what Send review sends. */
+const mendWithOpen = (): FakeMend => {
+  const mend = new FakeMend();
+  mend.serverComments = [comment({ id: "c1" })];
+  return mend;
+};
+
+/** Composes and sends the followed session's review as she wrote it. */
+const sendAll = async (store: ReviewStore): Promise<string> => {
+  const composed = store.compose();
+  if (composed === null) throw new Error("nothing composed");
+  expect(await store.send(composed, composed.text)).toEqual({ sent: true });
+  const record = store.review().sends.at(-1);
+  if (record === undefined) throw new Error("no review kept");
+  return record.key;
+};
+
+const phaseOf = async (
+  kept: KeptReviews,
+  key: string,
+  sessionId = "s1",
+): Promise<string | undefined> =>
+  (await kept.read({ ...DANA_S1, sessionId })).review.sends.find((record) => record.key === key)
+    ?.phase.kind;
+
+/** One machine's kept reviews in memory, so a test on fake timers drives every read and write. */
+const inMemory = (): KeptReviews => keptIn("/global-storage/reviews", memoryFiles());
+
+describe("sending a review from the store", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("sends her held review's comments with her next Send, and Retry relaunches it once the agent is gone", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    mend.answer = "pending";
+    const store = await readyStore(kept, mend);
+    const key = await sendAll(store);
+    await settle();
+    expect(await phaseOf(kept, key)).toBe("pending");
+    // Held with no live agent: the title offers Retry delivery on it, not a second Send review.
+    expect(store.offer()).toEqual({ kind: "retry" });
+    expect(store.retryTarget()?.key).toBe(key);
+    // Mend supersedes a held follow-up when a new key arrives: its comments are hers to send again.
+    expect(store.compose()?.open).toEqual(["c1"]);
+    const target = store.retryOf(key);
+    if (target === null) throw new Error("no retry target");
+    await store.retry(target);
+    expect(mend.writes.filter((write) => write === `deliver s1 ${key}`)).toHaveLength(2);
+  });
+
+  it("sends exactly what it composed, and keeps her text when her comments changed", async () => {
+    const store = await readyStore(inMemory());
+    await store.comment(onLine(3, "first"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    await store.comment(onLine(4, "written after the editor opened"));
+    const refused = await store.send(composed, composed.text);
+    expect(refused).toEqual({ sent: false, words: expect.stringMatching(/changed/) });
+    expect(await store.send({ ...composed, sessionId: "s2" }, composed.text)).toMatchObject({
+      sent: false,
+    });
+    expect(store.review().sends).toEqual([]);
+    expect(store.review().pending.map(({ body }) => body)).toEqual([
+      "first",
+      "written after the editor opened",
+    ]);
+  });
+
+  it("reads delivered only when Mend reads the comments back as sent", async () => {
+    vi.useFakeTimers();
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    mend.answer = "delivered";
+    const storeReady = readyStore(kept, mend);
+    await vi.advanceTimersByTimeAsync(20);
+    const key = await sendAll(await storeReady);
+    await vi.advanceTimersByTimeAsync(3_100);
+    // Mend lists no follow-up, and the comment is not sent: not delivered.
+    expect(await phaseOf(kept, key)).toBe("failed");
+  });
+
+  it("goes on watching a launch after a reload, by reads only, until the comments read sent", async () => {
+    vi.useFakeTimers();
+    const files = memoryFiles();
+    const kept = keptIn("/global-storage/reviews", files);
+    const mend = mendWithOpen();
+    const first = readyStore(kept, mend);
+    await vi.advanceTimersByTimeAsync(20);
+    const key = await sendAll(await first);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await phaseOf(kept, key)).toBe("delivering");
+    const writes = mend.writes.length;
+    // A second window, as after a reload: it finds the launch and watches it.
+    mend.listed = { key, status: "delivering", error: null };
+    const reloaded = readyStore(keptIn("/global-storage/reviews", files), mend);
+    await vi.advanceTimersByTimeAsync(20);
+    await reloaded;
+    mend.listed = null;
+    mend.markSent("s1");
+    await vi.advanceTimersByTimeAsync(3_100);
+    expect(await phaseOf(kept, key)).toBe("delivered");
+    expect(mend.writes).toHaveLength(writes);
+  });
+
+  it("ends a launch Mend never finishes as failed, so Retry is offered", async () => {
+    vi.useFakeTimers();
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    const store = readyStore(kept, mend);
+    await vi.advanceTimersByTimeAsync(20);
+    const key = await sendAll(await store);
+    mend.listed = { key: "someone-else", status: "pending", error: null };
+    await vi.advanceTimersByTimeAsync(400 * 3_000 + 100);
+    expect(await phaseOf(kept, key)).toBe("failed");
+  });
+
+  it("goes on while she reads another session, and Retry acts only on its own session's review", async () => {
+    vi.useFakeTimers();
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    const ready = readyStore(kept, mend);
+    await vi.advanceTimersByTimeAsync(20);
+    const store = await ready;
+    const key = await sendAll(store);
+    store.follow(PROJECT, session("s2"));
+    await vi.advanceTimersByTimeAsync(20);
+    mend.markSent("s1");
+    await vi.advanceTimersByTimeAsync(3_100);
+    expect(await phaseOf(kept, key)).toBe("delivered");
+    const writes = mend.writes.length;
+    await store.retry({ place: { ...DANA_S1, sessionId: "s2" }, key });
+    expect(mend.writes).toHaveLength(writes);
+  });
+
+  it("never opens again a draft dismissed after she accepted it", async () => {
+    const kept = inMemory();
+    const mend = new FakeMend();
+    mend.serverComments = [
+      comment({ id: "d1", state: "draft", author: { kind: "mend", name: "Mend" } }),
+    ];
+    const store = await readyStore(kept, mend);
+    await store.accept("d1", "");
+    // Dismissed on Mend, in another window or on the web, before the review reaches it.
+    mend.serverComments = mend.serverComments.map((draft) => ({ ...draft, state: "dismissed" }));
+    const key = await sendAll(store);
+    await settle();
+    expect(mend.writes).not.toContain("state d1 open");
+    expect(await phaseOf(kept, key)).toBe("refused");
   });
 });

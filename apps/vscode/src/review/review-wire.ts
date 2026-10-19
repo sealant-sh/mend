@@ -370,6 +370,33 @@ export const parseReadPass = (value: unknown): ReadPass | null => {
   }
 };
 
+const FOLLOW_UP_STATUSES = [
+  "pending",
+  "delivering",
+  "delivered",
+  "delivery_failed",
+  "superseded",
+] as const;
+
+/** A follow-up Mend recorded for a session: where its delivery is, by its key. */
+export interface FollowUp {
+  readonly key: string | null;
+  readonly status: (typeof FOLLOW_UP_STATUSES)[number];
+  readonly error: string | null;
+}
+
+export const parseFollowUp = (value: unknown): FollowUp | null => {
+  if (value === null) return null;
+  const raw = record(value, "follow-up");
+  const status = FOLLOW_UP_STATUSES.find((candidate) => candidate === raw["status"]);
+  if (status === undefined) throw new Error("Mend returned an invalid follow-up status.");
+  return {
+    key: textOrNull(raw, "idempotencyKey"),
+    status,
+    error: textOrNull(raw, "deliveryError"),
+  };
+};
+
 /** One entry of a session's transcript, as the harness recorded it. */
 export interface TranscriptEntry {
   readonly kind: string;

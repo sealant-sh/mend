@@ -132,6 +132,23 @@ export class ReviewComments implements vscode.Disposable {
           ? store.remove(comment.thread.pendingId)
           : undefined,
       ),
+      vscode.commands.registerCommand("mend.review.addressed", (comment: unknown) =>
+        comment instanceof ShownComment && comment.thread.commentId !== null
+          ? store.mark(comment.thread.commentId, "addressed")
+          : undefined,
+      ),
+      vscode.commands.registerCommand("mend.review.reopen", (comment: unknown) =>
+        comment instanceof ShownComment && comment.thread.commentId !== null
+          ? store.mark(comment.thread.commentId, "open")
+          : undefined,
+      ),
+      vscode.commands.registerCommand("mend.review.retry", (comment: unknown) => {
+        const target =
+          comment instanceof ShownComment && comment.thread.sendKey !== null
+            ? store.retryOf(comment.thread.sendKey)
+            : null;
+        return target === null ? undefined : store.retry(target);
+      }),
     ];
     this.#draw();
   }

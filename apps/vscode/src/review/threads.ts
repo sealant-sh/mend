@@ -1,5 +1,6 @@
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
+import { mayRetry, recordLabel, type LiveAgent, type SendRecord } from "./delivery.js";
 import { acceptedDrafts, type PendingComment, type SessionReview } from "./pending.js";
 import type { CommentAnchor, RecordLink, ServerComment } from "./review-wire.js";
 
@@ -20,7 +21,15 @@ export type ThreadKind =
   | "draft"
   /** Open on Mend and not sent: accepted or written elsewhere. */
   | "open"
+  /** In a review on its way: posting, delivering, or a stopped session being launched. */
+  | "sending"
+  /** In a review whose delivery failed: [Retry delivery]. */
+  | "failed"
+  /** In a review Mend holds pending while the session has no live agent: [Retry delivery]. */
+  | "held"
+  /** Handed to the session, as Mend observed it: [Addressed]. */
   | "sent"
+  /** She marked it addressed: [Reopen]. Mend never says so itself. */
   | "addressed";
 
 export interface ThreadView {
@@ -40,6 +49,8 @@ export interface ThreadView {
   readonly pendingId: string | null;
   /** The comment on Mend it shows; for an accepted draft, the draft. */
   readonly commentId: string | null;
+  /** The key of the review it went out in, for Retry delivery; null for one not sent. */
+  readonly sendKey: string | null;
 }
 
 const pinnedAt = (read: ChangeRead, path: string): ChangeAddress => ({
@@ -77,6 +88,7 @@ const pendingThread = (read: ChangeRead, comment: PendingComment, you: string): 
   createdAt: comment.createdAt,
   pendingId: comment.id,
   commentId: comment.origin.kind === "accepted" ? comment.origin.draftId : null,
+  sendKey: null,
 });
 
 const serverKind = (comment: ServerComment): ThreadKind | null => {
@@ -97,6 +109,9 @@ const LABELS: Readonly<Record<ThreadKind, string>> = {
   accepted: "pending",
   draft: "draft",
   open: "open",
+  sending: "sending",
+  failed: "delivery failed · retryable",
+  held: "follow-up pending",
   sent: "sent",
   addressed: "addressed",
 };
@@ -122,20 +137,70 @@ const anchoredAt = (read: ChangeRead, anchor: CommentAnchor, file: string): Chan
   return at(anchor.headId);
 };
 
+/**
+ * The kind and words a comment in a send record reads, from where its follow-up is. A follow-up
+ * Mend holds pending offers Retry delivery once the session's agent is gone.
+ */
+const fromRecord = (
+  record: SendRecord,
+  agent: LiveAgent | null,
+): { readonly kind: ThreadKind; readonly label: string; readonly sendKey: string } => {
+  const label = recordLabel(record.phase);
+  const sendKey = record.key;
+  switch (record.phase.kind) {
+    case "sending":
+    case "delivering":
+    case "refused":
+      return { kind: "sending", label, sendKey };
+    case "failed":
+      return { kind: "failed", label, sendKey };
+    case "in-terminal":
+    case "pending":
+      return { kind: mayRetry(record, agent) ? "held" : "sent", label, sendKey };
+    case "delivered":
+      return { kind: "sent", label, sendKey };
+  }
+};
+
 export const threadsOf = (
   read: ChangeRead,
   review: SessionReview,
   you: string,
 ): ReadonlyArray<ThreadView> => {
   const accepted = acceptedDrafts(review);
+  // A comment in a review she sent reads where that follow-up is; a refused one, as Mend holds it.
+  const sentIn = new Map<string, SendRecord>();
+  const acceptedIn = new Set<string>();
   const threads: Array<ThreadView> = review.pending.map((comment) =>
     pendingThread(read, comment, you),
   );
+  for (const record of review.sends) {
+    if (record.phase.kind === "refused") continue;
+    for (const item of record.items) {
+      if (item.kind === "open") sentIn.set(item.commentId, record);
+      else if (item.kind === "accepted" && item.opened) {
+        sentIn.set(item.draftId, record);
+        acceptedIn.add(item.draftId);
+      } else if (item.kind === "own" && item.post.kind === "posted")
+        sentIn.set(item.post.commentId, record);
+      else
+        threads.push({
+          ...pendingThread(read, item.pending, you),
+          ...fromRecord(record, read.facts.agent),
+        });
+    }
+  }
   for (const comment of read.comments) {
-    const kind = serverKind(comment);
-    if (kind === null || (kind === "draft" && accepted.has(comment.id))) continue;
-    const author =
-      comment.author.kind === "mend"
+    const state = serverKind(comment);
+    if (state === null || (state === "draft" && accepted.has(comment.id))) continue;
+    const record = sentIn.get(comment.id);
+    const { kind, label, sendKey } =
+      record === undefined || state === "addressed"
+        ? { kind: state, label: LABELS[state], sendKey: null }
+        : fromRecord(record, read.facts.agent);
+    const author = acceptedIn.has(comment.id)
+      ? `${you} · accepted from Mend`
+      : comment.author.kind === "mend"
         ? kind === "draft"
           ? "Mend · draft"
           : "Mend"
@@ -150,12 +215,13 @@ export const threadsOf = (
       line,
       endLine: Math.max(line, comment.endLine ?? line),
       author,
-      label: LABELS[kind],
+      label,
       body: comment.body,
       evidence: comment.evidence,
       createdAt: comment.createdAt,
       pendingId: null,
       commentId: comment.id,
+      sendKey,
     });
   }
   return threads;
@@ -181,19 +247,31 @@ export const commentableLines = (
     .map((hunk) => ({ start: hunk.newStart, end: hunk.newStart + hunk.newLines - 1 }));
 };
 
-/** `2 pending · 1 Mend draft`: the change's comments by the word each reads. */
-export const commentsLine = (threads: ReadonlyArray<Pick<ThreadView, "kind">>): string => {
+/**
+ * `2 pending · 1 Mend draft`, `2 sent · follow-up pending · in claude's terminal`: the change's
+ * comments by the word each reads, and where her last review's follow-up is until it is delivered.
+ */
+export const commentsLine = (
+  threads: ReadonlyArray<Pick<ThreadView, "kind">>,
+  sends: ReadonlyArray<SendRecord> = [],
+): string => {
   const count = (kinds: ReadonlyArray<ThreadKind>): number =>
     threads.filter((thread) => kinds.includes(thread.kind)).length;
   const pending = count(["pending", "accepted"]);
   const open = count(["open"]);
-  const sent = count(["sent"]);
+  const sent = count(["sent", "sending", "failed", "held"]);
   const addressed = count(["addressed"]);
   const drafts = count(["draft"]);
+  const latest = sends.findLast((record) => record.phase.kind !== "refused");
+  const where =
+    latest === undefined || latest.phase.kind === "delivered" || sent === 0
+      ? null
+      : recordLabel(latest.phase);
   const parts = [
     pending > 0 ? `${pending} pending` : null,
     open > 0 ? `${open} open` : null,
     sent > 0 ? `${sent} sent` : null,
+    where,
     addressed > 0 ? `${addressed} addressed` : null,
     drafts > 0 ? `${drafts} Mend ${drafts === 1 ? "draft" : "drafts"}` : null,
   ].flatMap((part) => (part === null ? [] : [part]));

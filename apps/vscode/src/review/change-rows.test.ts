@@ -96,6 +96,7 @@ describe("the Change section's rows (story d, step 1)", () => {
         id: "action:read-newer",
         label: "newer checkpoints · read checkpoint 1 → checkpoint 3",
         command: "mend.change.readNewer",
+        sinceLastReview: false,
       },
     ]);
     expect(slice.files[0]?.right.at).toBe("cp1");
@@ -145,7 +146,7 @@ describe("the Change section's rows (story d, step 1)", () => {
           ],
         },
       ),
-      { pending: [pending({})] },
+      { pending: [pending({})], sends: [] },
       "Dana",
       NOW,
     );

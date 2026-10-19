@@ -4,12 +4,14 @@ import { join } from "node:path";
 
 import type { Project, ProjectDetail, Session, SessionDetail } from "../types.js";
 import type { ChangeRead } from "./change-rows.js";
+import type { CommentTarget, DeliverRequest } from "./delivery.js";
 import { KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
 import type { PendingComment } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
 import type {
   ChangeFile,
   Checkpoint,
+  FollowUp,
   PinnedSlice,
   ReadPass,
   ServerComment,
@@ -65,6 +67,28 @@ export const FILES: ReadonlyArray<ChangeFile> = [
     hunks: [],
   },
 ];
+
+/** Dana's session, shared control off. */
+export const SESSION: Session = {
+  id: "s1",
+  projectId: "p1",
+  worktreeId: "w1",
+  harness: "claude",
+  model: null,
+  label: "add-rate-limit",
+  worktree: "add-rate-limit",
+  branch: "mend/add-rate-limit",
+  status: "running",
+  sealantWorkspaceId: null,
+  summary: null,
+  createdAt: "2026-10-19T09:00:00.000Z",
+  settledAt: null,
+  ownerUserId: "dana",
+  livePeople: [],
+  sharedControlEnabledAt: null,
+  workspaceRetirement: null,
+  workspaceLauncherUserId: "dana",
+};
 
 export const comment = (overrides: Partial<ServerComment>): ServerComment => ({
   id: "c1",
@@ -123,6 +147,7 @@ export const readOf = (choice: SliceChoice, overrides: Partial<ChangeRead> = {})
     },
     comments: [],
     pass: null,
+    facts: { session: SESSION, viewer: "dana", ownerName: "Dana", agent: null },
     reviewedHead: null,
     drift: null,
     notice: null,
@@ -160,10 +185,10 @@ export const session = (id: string): Session => ({
   workspaceLauncherUserId: id,
 });
 
-/** The session reads a review store makes: every session on one change, or on none. */
+/** The session reads a review store makes: every session Dana's, on one change or on none. */
 export const sessionReads = (changeId: string | null) => ({
   sessionDetail: async (sessionId: string): Promise<SessionDetail> => ({
-    session: session(sessionId),
+    session: { ...session(sessionId), ownerUserId: "dana" },
     processes: [],
     currentAgent: null,
     changeId,
@@ -238,6 +263,62 @@ export class FakeMend extends ReviewClient {
 
   override async readPass(): Promise<ReadPass | null> {
     return null;
+  }
+
+  /** Every write the review made, in order: `state d1 open`, `post …`, `deliver s1 <key>`. */
+  readonly writes: Array<string> = [];
+  /** How `follow-up/deliver` answers, and what `GET …/follow-up` lists. */
+  answer: FollowUp["status"] = "delivering";
+  listed: FollowUp | null = null;
+
+  override async setCommentState(
+    _changeId: string,
+    commentId: string,
+    state: "open" | "addressed" | "dismissed",
+  ): Promise<ServerComment> {
+    this.writes.push(`state ${commentId} ${state}`);
+    const found = this.serverComments.find((candidate) => candidate.id === commentId);
+    if (found === undefined) throw new Error(`no comment ${commentId}`);
+    const next = { ...found, state };
+    this.serverComments = this.serverComments.map((candidate) =>
+      candidate.id === commentId ? next : candidate,
+    );
+    return next;
+  }
+
+  override async postComment(
+    _changeId: string,
+    sliceId: string,
+    target: CommentTarget,
+    body: string,
+  ): Promise<ServerComment> {
+    this.writes.push(`post ${body}`);
+    const posted = comment({
+      id: `posted-${this.serverComments.length}`,
+      file: target.newPath,
+      line: target.startLine,
+      endLine: target.endLine,
+      anchor: { sliceId, baseId: PINNED.base.id, headId: PINNED.head.id, side: target.side },
+      body,
+    });
+    this.serverComments = [...this.serverComments, posted];
+    return posted;
+  }
+
+  override async deliver(sessionId: string, request: DeliverRequest): Promise<FollowUp> {
+    this.writes.push(`deliver ${sessionId} ${request.idempotencyKey}`);
+    return { key: request.idempotencyKey, status: this.answer, error: null };
+  }
+
+  override async followUp(): Promise<FollowUp | null> {
+    return this.listed;
+  }
+
+  /** Mend marks these comments sent to the session, as a delivered follow-up does. */
+  markSent(sessionId: string): void {
+    this.serverComments = this.serverComments.map((candidate) =>
+      candidate.state === "open" ? { ...candidate, sentToSessionId: sessionId } : candidate,
+    );
   }
 }
 

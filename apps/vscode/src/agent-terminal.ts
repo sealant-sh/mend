@@ -15,6 +15,13 @@ export const memberName = async (client: MendClient, userId: string | null): Pro
   return names.find((member) => member.userId === userId)?.name ?? "another person";
 };
 
+/** Each tab's pseudoterminal, so the review can paste into the agent's terminal (G12 fallback). */
+const ptys = new WeakMap<vscode.Terminal, MendTtyTerminal>();
+
+/** Pastes into one of Mend's terminal tabs, without Enter; false when it is not one or never opened. */
+export const pasteInto = async (terminal: vscode.Terminal, text: string): Promise<boolean> =>
+  (await ptys.get(terminal)?.paste(text)) ?? false;
+
 /**
  * One of a session's terminals in a VS Code tab over Mend's terminal data plane (`/api/tty`),
  * shown and focused. The owner types; anyone else the server lets in watches.
@@ -33,29 +40,28 @@ export const attachTerminal = async (
     ? `Mend · ${displaySession(session)} · closing this tab detaches; the process keeps running`
     : `read-only · ${await memberName(client, session.ownerUserId)}'s session`;
   const processId = "process" in address ? address.process : null;
-  const terminal = vscode.window.createTerminal({
-    name: facts.name,
-    pty: new MendTtyTerminal({
-      connection: () => client.connection(),
-      address,
-      banner,
-      liveness: async () => {
-        try {
-          const now = await client.sessionDetail(session.id);
-          // Admission first: the server refuses the upgrade to whoever may no longer steer
-          // (shared control turned off), however live the process is.
-          if (viewer !== null && !maySteer(now.session, viewer)) return "not-steerable";
-          const running =
-            processId === null
-              ? now.currentAgent !== null && now.currentAgent.exitedAt === null
-              : attachableProcesses(now.processes).some((process) => process.id === processId);
-          return running ? "live" : "ended";
-        } catch (cause) {
-          return isRefusal(cause) ? "refused" : "unknown";
-        }
-      },
-    }),
+  const pty = new MendTtyTerminal({
+    connection: () => client.connection(),
+    address,
+    banner,
+    liveness: async () => {
+      try {
+        const now = await client.sessionDetail(session.id);
+        // Admission first: the server refuses the upgrade to whoever may no longer steer
+        // (shared control turned off), however live the process is.
+        if (viewer !== null && !maySteer(now.session, viewer)) return "not-steerable";
+        const running =
+          processId === null
+            ? now.currentAgent !== null && now.currentAgent.exitedAt === null
+            : attachableProcesses(now.processes).some((process) => process.id === processId);
+        return running ? "live" : "ended";
+      } catch (cause) {
+        return isRefusal(cause) ? "refused" : "unknown";
+      }
+    },
   });
+  const terminal = vscode.window.createTerminal({ name: facts.name, pty });
+  ptys.set(terminal, pty);
   terminal.show();
   return terminal;
 };
