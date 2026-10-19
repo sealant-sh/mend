@@ -102,7 +102,8 @@ export class Notifier {
       // A read just now decides: Retry only for a launch that failed or never started.
       const { sessionId } = notification;
       const offer = await this.launches.offer(sessionId);
-      if (offer.kind === "moved") {
+      // The offer waits for a launch on its way, so she may have looked away meanwhile.
+      if (offer.kind === "moved" || !this.#stillToasts(notification)) {
         await this.claims.release(notification.key, notification.at);
         return;
       }

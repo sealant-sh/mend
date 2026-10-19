@@ -367,6 +367,46 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     expect(await readdir(shared)).toHaveLength(1);
   });
 
+  it("shows no Retry and gives its claim back when she looked away while the launch was answered", async () => {
+    fake.reset();
+    window.showErrorMessage.mockClear();
+    const shared = await directory();
+    const failed: Session = { ...waiting, status: "failed", settledAt };
+    const answer = Promise.withResolvers<void>();
+    const attempts = new Map<string, LaunchAttempt>();
+    const sender = new Launches(
+      {
+        launchSession: async () => {
+          await answer.promise;
+          throw new MendApiError("Connect Claude to start a session here.", 422, "StoreFailure");
+        },
+        sessionDetail: async () => ({ session: failed }),
+      },
+      { attempted: (sessionId, attempt) => attempts.set(sessionId, attempt) },
+    );
+    const sent = sender.launch("s", { mode: "pty", prompt: "add rate limiting" });
+    const early = {
+      prev: read(starting, new Map(attempts)),
+      next: read(failed, new Map(attempts)),
+    };
+    const claims = new ToastClaims(shared);
+    const release = vi.fn((key: string, at: string) => claims.release(key, at));
+    const offer = vi.spyOn(sender, "offer");
+    new Notifier(
+      { showing: () => new Set<string>(), model: () => early.next, error: () => null },
+      { claim: (key, at) => claims.claim(key, at), release },
+      sender,
+    ).changed(early);
+    await vi.waitFor(() => expect(offer).toHaveBeenCalledTimes(1));
+    fake.focus(false);
+    answer.resolve();
+    await sent;
+    await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(1));
+    await vi.waitFor(async () => expect(await readdir(shared)).toEqual([]));
+    expect(window.showErrorMessage).not.toHaveBeenCalled();
+    fake.focus(true);
+  });
+
   it("toasts a refusal whose confirming read failed once, by the settlement, across two windows", async () => {
     fake.reset();
     window.showErrorMessage.mockClear();
