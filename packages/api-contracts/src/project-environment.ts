@@ -6,6 +6,7 @@ import {
   ProjectSecretId,
   ReviewCommentId,
   ReviewSliceId,
+  Timestamp,
 } from "@mend/domain";
 import {
   AgentLaunchMode,
@@ -457,6 +458,14 @@ export class DeliverFollowUpRequest extends Schema.Class<DeliverFollowUpRequest>
 }) {}
 
 /**
+ * The attempt a launching client saw (SLNT-167): the session's `settledAt` as it read it, null
+ * when it read the session unsettled with no agent (never launched). The launch runs only while
+ * the session still reads that way; one that moved on is refused (`SessionMovedOn`).
+ */
+export const LaunchExpected = Schema.Struct({ settledAt: Schema.NullOr(Timestamp) });
+export type LaunchExpected = typeof LaunchExpected.Type;
+
+/**
  * What to run in the session's PTY. Two shapes: verbatim `argv` (argv[0] is
  * the program; wins when present), or the structured start — the server
  * composes the harness argv from it in one place (`composeLaunchArgv`).
@@ -477,6 +486,13 @@ export class LaunchRequest extends Schema.Class<LaunchRequest>("LaunchRequest")(
   permissionMode: Schema.optional(Schema.Literals(PERMISSION_MODES)),
   /** `fast` = priority processing where the harness supports it (codex). */
   speed: Schema.optional(Schema.Literals(SPEED_MODES)),
+  /** Launch only over this attempt; wins over `restart`. */
+  expected: Schema.optional(LaunchExpected),
+  /**
+   * Replace a live agent. Absent, a launch over a live or starting agent is refused
+   * (`SessionAgentLive`); a server older than the field restarts it as before.
+   */
+  restart: Schema.optional(Schema.Boolean),
 }) {}
 
 /**
