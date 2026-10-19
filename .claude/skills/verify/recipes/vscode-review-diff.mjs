@@ -169,17 +169,23 @@ export default async (h) => {
         `the section's buttons are ${JSON.stringify(actions)}`,
       );
       await clickChangeAction(h, "Open all changes");
-      const tab = await waitUntil(
-        "the multi-diff editor's tab",
-        async () =>
-          (await editorTabs(h)).find((one) => one.active && one.label.startsWith("Changes · ")) ??
-          null,
+      // VS Code appends the file count to the tab once it has read the files, after the tab shows.
+      let label = "";
+      await waitUntil(
+        "the multi-diff editor's tab with its file count",
+        async () => {
+          const tab = (await editorTabs(h)).find(
+            (one) => one.active && one.label.startsWith("Changes · "),
+          );
+          label = tab?.label ?? "";
+          return label === `Changes · ${SESSION} (4 files)`;
+        },
         30_000,
-      );
+      ).catch(() => undefined);
       await sleep(1_500);
       await shot("d2-open-all-changes");
-      expect(tab.label === `Changes · ${SESSION} (4 files)`, `the tab reads "${tab.label}"`);
-      return `buttons ${JSON.stringify(actions.map((action) => action.title))} · tab "${tab.label}"`;
+      expect(label === `Changes · ${SESSION} (4 files)`, `the tab reads "${label}"`);
+      return `buttons ${JSON.stringify(actions.map((action) => action.title))} · tab "${label}"`;
     },
   );
 
