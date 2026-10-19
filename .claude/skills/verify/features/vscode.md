@@ -20,11 +20,11 @@ logs, and a video of the display. The flows below follow the stories in
   `mend-<version>.vsix` (`<version>` is `apps/vscode/package.json`'s).
 - `vscode-connect` is first run's sign-in (story h). Until `mend.serverUrl` names a server with a
   token for it, the view's welcome reads `Connect VS Code to your Mend server.` [Connect]: one URL
-  input (a plain-http server elsewhere warns
-  `Plain http: anyone on this network can read the token`), Mend's approve page in the browser, one
-  cancellable notification `Approve in the browser if it shows <code>` with the code kept in the
-  status bar, then one toast `Signed in to <host> as <email>`; a denial, an expiry or an unreachable
-  server ends in one error with [Try again]. With the Mend CLI signed in, the view's message reads
+  input (a plain-http server elsewhere warns `Plain http: the token travels unencrypted`), Mend's
+  approve page in the browser, one cancellable notification
+  `Approve in the browser if it shows <code>` with the code kept in the status bar, then one toast
+  `Signed in to <host> as <email>`; a denial, an expiry or an unreachable server ends in one error
+  with [Try again]. With the Mend CLI signed in, the view's message reads
   `Mend at <host:port> · signed in as <email> (from the Mend CLI)` over one row, **Use it**. The
   account shows in VS Code's Accounts menu as `<email> @ <host> (Mend)`; its **Sign Out** (after VS
   Code's `Sign out of '<account>'?`) and `Mend: Sign out` revoke the editor's device.
@@ -619,8 +619,8 @@ the row takes the job's name.
       `Mend` item in the status bar.
     - h2a: `welcomeAction("Connect").click()`. One input, titled `Connect to your Mend server`,
       empty with no CLI. `quickInput.validation()` reads null for `http://localhost:3105` and
-      `{ message: "Plain http: anyone on this network can read the token", severity: "warning" }`
-      for the world's `http://<dind ip>:3105`.
+      `{ message: "Plain http: the token travels unencrypted", severity: "warning" }` for the
+      world's `http://<dind ip>:3105`.
     - The approve page. Enter shows one notification, `Approve in the browser if it shows <code>`,
       and the status bar `Mend sign-in · <code>`. VS Code asks
       `Do you want Code to open the external website? <url>/authorize?code=…`;

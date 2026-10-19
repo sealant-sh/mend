@@ -7,7 +7,10 @@
 //   in the status bar meanwhile, the account in the Accounts menu); h3's Set up, which installs
 //   Remote-SSH, registers the key, writes one Host block and seeds the platform, after which Open
 //   asks nothing; h4's Adopt <repo> from <origin> on an unadopted window, and Adopt a repository…
-//   in an empty window; then Sign Out from the Accounts menu, which revokes the editor's device.
+//   in an empty window; the editor's device revoked on the server, after which the Accounts menu
+//   drops the account and one toast says sign in again, whose Connect to server signs in again;
+//   Connect again while connected, which leaves one device; then Sign Out from the Accounts menu,
+//   which revokes the editor's device and toasts only what Mend answered.
 // - From `up --cli-only --no-ssh-setup` (the Mend CLI signed in, the editor not connected): the h1
 //   variant `Use it`, one click with no URL and no browser; then Set up skipped, and Open shows the
 //   one deferred consent once and opens after it.
@@ -24,7 +27,7 @@ import { join } from "node:path";
 
 const CONNECT = "Connect VS Code to your Mend server.";
 const SET_UP = "Open sessions in VS Code: needs Remote-SSH and an SSH key for Mend";
-const PLAIN_HTTP = "Plain http: anyone on this network can read the token";
+const PLAIN_HTTP = "Plain http: the token travels unencrypted";
 const CONSENT = "Set up workspace SSH to open sessions (one Host block in ~/.ssh/config)";
 const SETTING_UP = "Setting up: Remote-SSH · an SSH key for Mend · one Host block in ~/.ssh/config";
 const WARM = "fresh worktree";
@@ -185,7 +188,21 @@ async function signedOut(h) {
   const origin = state.server.origin;
   const host = new URL(origin).hostname;
   const email = state.account.email;
+  const signedInToast = `Signed in to ${host} as ${email}`;
   const web = await browser();
+  /** The editor's devices under Settings → Devices, as Mend lists them. */
+  const devices = async () =>
+    (await api("/me/devices")).filter((device) => /^VS Code on /.test(device.name));
+  /** One Connect walk from its URL input, authorized in the browser, to its one success toast. */
+  const authorize = async () => {
+    const walk = await toApprovePage(h, { url: origin });
+    const pageText = await approvePage(web, walk.page);
+    expect(pageText.includes(walk.code), `the approve page does not show ${walk.code}`);
+    await web.click("Authorize");
+    await web.waitForText("Authorized");
+    await notification(signedInToast).waitFor(30_000);
+    return walk;
+  };
 
   await step(
     "the world: nothing set up",
@@ -485,12 +502,108 @@ async function signedOut(h) {
   );
 
   await step(
+    "setup for the refused token: the editor's device revoked, as Settings → Devices does",
+    async () => {
+      const listed = await devices();
+      expect(listed.length === 1, `VS Code devices ${JSON.stringify(listed)}`);
+      const [revoked] = listed;
+      await api(`/me/devices/${encodeURIComponent(revoked.id)}`, { method: "DELETE" });
+      return `revoked "${revoked.name}" · VS Code devices now ${(await devices()).length}`;
+    },
+    { via: "api" },
+  );
+
+  await step(
+    "edge: Mend refuses the token; the Accounts menu drops the account, one toast says sign in again",
+    async () => {
+      await firstWindow(h);
+      const watching = await watch();
+      await palette("Mend: Refresh");
+      const toast = notification("Signed out — sign in again.");
+      await toast.waitFor(60_000);
+      const said = await waitUntil(
+        "the Connect welcome",
+        async () => {
+          const seen = await welcome();
+          return seen?.lines.includes(CONNECT) ? seen : null;
+        },
+        60_000,
+      );
+      await sleep(5_000);
+      const seen = await watching.stop();
+      await shot("edge-refused-token");
+      const toastText = await toast.text();
+      const items = await accounts({ shot: "edge-refused-accounts-menu" });
+      const signedOut = (seen?.toasts ?? []).filter((text) => text.includes("sign in again"));
+      expect(signedOut.length === 1, `sign-in toasts ${JSON.stringify(seen?.toasts)}`);
+      expect(toastText.includes("Connect to server"), `the toast reads "${toastText}"`);
+      expect(!items.some((item) => item.includes(email)), `Accounts menu ${JSON.stringify(items)}`);
+      return `toast "${toastText}" · ${shown(seen)} · welcome ${JSON.stringify(said.lines)} · Accounts menu ${JSON.stringify(items)}`;
+    },
+  );
+
+  await step(
+    "edge: Connect to server on that toast signs her in again, one success toast",
+    async () => {
+      const watching = await watch();
+      await notification("Signed out — sign in again.").click("Connect to server");
+      await quickInput.waitFor();
+      const kept = await quickInput.value();
+      await authorize();
+      await sleep(5_000);
+      const seen = await watching.stop();
+      await shot("edge-signed-in-again");
+      const successes = (seen?.toasts ?? []).filter((text) => text.startsWith("Signed in to"));
+      const listed = await devices();
+      const items = await accounts();
+      expect(kept === origin, `the URL input starts from "${kept}"`);
+      expect(successes.length === 1, `success toasts ${JSON.stringify(seen?.toasts)}`);
+      expect(listed.length === 1, `VS Code devices ${JSON.stringify(listed)}`);
+      expect(
+        items.some((item) => item.includes(email)),
+        `Accounts menu ${JSON.stringify(items)}`,
+      );
+      await notification(signedInToast).dismiss();
+      return `URL input "${kept}" · ${shown(seen)} · VS Code devices ${listed.length} · Accounts menu ${JSON.stringify(items)}`;
+    },
+  );
+
+  await step(
+    "h2: Connect again while connected revokes the device it replaced; Settings → Devices keeps one",
+    async () => {
+      const [before] = await devices();
+      const watching = await watch();
+      await palette("Mend: Connect to server");
+      await quickInput.waitFor();
+      const kept = await quickInput.value();
+      await authorize();
+      const after = await waitUntil(
+        "the replaced device revoked",
+        async () => {
+          const listed = await devices();
+          return listed.length === 1 && listed[0].id !== before.id ? listed : null;
+        },
+        60_000,
+      );
+      await sleep(3_000);
+      const seen = await watching.stop();
+      await shot("h2-connect-again");
+      const successes = (seen?.toasts ?? []).filter((text) => text.startsWith("Signed in to"));
+      const warnings = (seen?.toasts ?? []).filter((text) => text.includes("earlier device"));
+      expect(kept === origin, `the URL input starts from "${kept}"`);
+      expect(successes.length === 1, `success toasts ${JSON.stringify(seen?.toasts)}`);
+      expect(warnings.length === 0, `warnings ${JSON.stringify(warnings)}`);
+      await notification(signedInToast).dismiss();
+      return `URL input "${kept}" · VS Code devices 1 → ${after.length} (a new device in place of the one replaced) · ${shown(seen)}`;
+    },
+  );
+
+  await step(
     "Accounts menu: Sign Out revokes the editor's device and the view says Connect",
     async () => {
-      const devices = async () =>
-        (await api("/me/devices")).filter((device) => /^VS Code on /.test(device.name));
       const before = await devices();
       await firstWindow(h);
+      const watching = await watch();
       await accounts({ signOut: email });
       // VS Code's own question before any provider's sign-out.
       const ask = dialog("Sign out of");
@@ -506,15 +619,22 @@ async function signedOut(h) {
         },
         60_000,
       );
+      await sleep(5_000);
+      const seen = await watching.stop();
       await shot("signed-out");
       const after = await devices();
       const items = await accounts();
+      const toasts = seen?.toasts ?? [];
       expect(
         before.length === 1 && after.length === 0,
         `devices ${before.length} → ${after.length}`,
       );
       expect(!items.some((item) => item.includes(email)), `Accounts menu ${JSON.stringify(items)}`);
-      return `confirm ${JSON.stringify(confirm)} · VS Code devices ${before.length} → ${after.length} · welcome ${JSON.stringify(said.lines)} · Accounts menu ${JSON.stringify(items)} · toasts ${JSON.stringify(await notifications())}`;
+      expect(
+        toasts.length === 1 && toasts[0].includes("and revoked this editor's device."),
+        `toasts ${JSON.stringify(toasts)}`,
+      );
+      return `confirm ${JSON.stringify(confirm)} · VS Code devices ${before.length} → ${after.length} · welcome ${JSON.stringify(said.lines)} · Accounts menu ${JSON.stringify(items)} · ${shown(seen)}`;
     },
   );
 
