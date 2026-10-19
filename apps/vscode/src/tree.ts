@@ -88,6 +88,38 @@ const dot = (word: Word): vscode.ThemeIcon =>
     new vscode.ThemeColor(statusColor(word)),
   );
 
+/** What the tree draws of a session: a change in anything else must not redraw it. */
+const drawnRow = (view: SessionView) => [
+  view.session.id,
+  view.name,
+  view.line,
+  view.word,
+  view.needsYou,
+  view.live,
+  view.capability,
+  view.session.ownerUserId,
+  view.session.sharedControlEnabledAt,
+  view.session.livePeople,
+  view.session.workspaceRetirement,
+  view.session.branch,
+];
+
+const drawnOf = (model: WindowModel) =>
+  model.kind === "workspace"
+    ? [model.message, model.session === null ? null : drawnRow(model.session), model.others]
+    : [
+        model.message,
+        model.groups.map((group) =>
+          group.kind === "projects"
+            ? group.projects.map((one) => [one.project, one.rows.map(drawnRow)])
+            : [
+                group.kind,
+                group.rows.map(drawnRow),
+                group.kind === "since" ? group.byProject?.length : 0,
+              ],
+        ),
+      ];
+
 const rowsOfGroup = (group: ViewGroup): ReadonlyArray<SessionView> =>
   group.kind === "projects" ? group.projects.flatMap((one) => one.rows) : group.rows;
 
@@ -110,8 +142,21 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
     private readonly client: MendClient,
   ) {}
 
-  /** The model changed: every row may read differently. */
-  changed(): void {
+  #drawn: string | null = null;
+
+  /**
+   * The model changed. The tree redraws only when what it shows did: a redraw while she clicks a
+   * row's button drops the row the click was for (VS Code then runs the command with no row).
+   */
+  changed(model: WindowModel | null): void {
+    const drawn = JSON.stringify([
+      this.store.hasRead(),
+      this.store.error() instanceof Error ? String(this.store.error()) : null,
+      this.store.viewer(),
+      model === null ? null : drawnOf(model),
+    ]);
+    if (drawn === this.#drawn) return;
+    this.#drawn = drawn;
     this.#changed.fire();
   }
 
