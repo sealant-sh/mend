@@ -20,6 +20,7 @@ import {
 } from "./dashboard-adoption.ts";
 import {
   gameSwallows,
+  agentStillThere,
   advanceFromBase,
   backFrom,
   baseStepNotice,
@@ -187,9 +188,6 @@ const STATUS_COLOR: Record<string, string> = {
   stopping: INK_2,
   settled: FAINT,
 };
-
-/** The agent itself is still working: never remove from under it. Idle (agent gone) may go. */
-const AGENT_LIVE_STATUSES: ReadonlySet<string> = new Set(["starting", "running", "waiting"]);
 
 const timeAgo = (iso: string): string => {
   const ms = Date.now() - new Date(iso).getTime();
@@ -1695,8 +1693,8 @@ export const App = ({
       return;
     }
     const session = selectedSession;
-    if (session === null || isPendingId(session.id)) return;
-    if (AGENT_LIVE_STATUSES.has(session.status)) {
+    if (selectedItem === null || session === null || isPendingId(session.id)) return;
+    if (agentStillThere(selectedItem)) {
       say(`the agent is still working · stop it first (⇧K) · ${sessionDisplayName(session)}`);
       return;
     }

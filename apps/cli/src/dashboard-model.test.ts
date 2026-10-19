@@ -44,6 +44,7 @@ import {
   sessionHold,
   sessionRowFacts,
   sessionTimeWords,
+  agentStillThere,
   startingExplanationOf,
   startingWordsOf,
   stepColumn,
@@ -1217,6 +1218,32 @@ describe("dashboard status stories", () => {
           },
     services: [],
     processes: [],
+  });
+  it("keeps ⇧D off an idle session whose agent finished its turn, and lets an ended agent's go", () => {
+    const finished = itemOf({ id: "s", status: "idle" }, minutesAgo(5));
+    expect(agentStillThere(finished)).toBe(true);
+    const annotation = finished.annotation;
+    if (annotation === undefined) throw new Error("no annotation");
+    const ended = {
+      ...finished,
+      annotation: {
+        ...annotation,
+        currentAgent: { ...annotation.currentAgent, status: "exited", exitedAt: minutesAgo(1) },
+      },
+    };
+    expect(agentStillThere(ended)).toBe(false);
+    expect(agentStillThere(itemOf({ id: "s", status: "idle" }))).toBe(false);
+    const unannotated = itemOf({ id: "s", status: "idle" });
+    const liveRow = {
+      id: "agent",
+      kind: "agent-pty",
+      harness: "claude",
+      label: "claude",
+      status: "running",
+      exitedAt: null,
+    };
+    expect(agentStillThere({ ...unannotated, processes: [liveRow] })).toBe(true);
+    expect(agentStillThere(itemOf({ id: "s", status: "waiting" }))).toBe(true);
   });
   const groupOf = (statuses: ReadonlyArray<string>) => {
     const detail: ProjectDetailDto = {
