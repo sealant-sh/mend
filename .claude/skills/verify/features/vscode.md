@@ -190,7 +190,12 @@ Proof rules:
   both the story's expectation and the observation.
 
 The flows. Each story is one recipe; a `<label>` is a session row's visible label, the session's
-label or `<harness> · <id8>` when it has none (the as-built recipe reads it with `api`).
+label or `<harness> · <id8>` when it has none (the as-built recipe reads it with `api`). In the
+world a session started on a prompt keeps `<harness> · <id8>`: the launch queues the `name-session`
+job, whose inference runs on the session owner's connected Claude, then Codex, login, and the fake
+logins are refused (Core answers `/v1/inference/respond` with 409 for Claude, then 404 or
+`The Codex login did not authenticate`; the job fails, retries, and dead-letters). With a real login
+the row takes the job's name.
 
 - **a. Start a session and keep working.** `recipes/vscode-new-session.mjs`, from the default `up`,
   on an extension with flow 3 (`Mend: New session` is one quick input). Claude is connected with
@@ -200,7 +205,9 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
   octocat/Hello-World). Runs `ns1` and `ns3` (2026-10-19, flow 3 at `cabb426c8`, server
   `0.0.0-dev.shab2a748d64120`) passed every step; `ns2` stopped at Change… on a race in the recipe
   (it read a step's title over the last step's rows), fixed by reading a step once two samples
-  agree. The lanes, in an order where each leaves the next a usable world:
+  agree. Runs `nsr1` and `nsr2` (flow 3 rebased onto #1088's round 2, server
+  `0.0.0-dev.shae93b27a70513`, each from a fresh `up`) passed all 29 steps. The lanes, in an order
+  where each leaves the next a usable world:
   - a1. `palette("Mend: New session")`: one quick input, `quickInput.step()` reads the title
     `New session · <project>` with no counter, placeholder `What should claude do?`, and one row
     whose description is the dim line `claude · default model · from <base>` and whose buttons read
@@ -313,10 +320,11 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     `workbench` reads `running`, and the start opens no window (`opens` and windows unchanged; the
     calibration next is the counter's first +1). Run `op1` (flow 3 at `cabb426c8`): `Harness` →
     `shell`, `Base: a branch or commit` → `this window's branch`, the dim line
-    `shell · from master`, 0 windows, `opens 0 → 0`, then the calibration `opens 0 → 1 → 2`. On
-    main's extension (the palette lists `Mend: New Session…`): `Workbench` picked, and the start
-    opens one window: `opens 0 → 1`, the signal's first check, its terminal recorded, not asserted
-    (main attached nothing).
+    `shell · from master`, 0 windows, `opens 0 → 0`, then the calibration `opens 0 → 1 → 2`; run
+    `nsr3` (flow 3 rebased onto #1088's round 2) passed all 53 steps. On main's extension (the
+    palette lists `Mend: New Session…`): `Workbench` picked, and the start opens one window:
+    `opens 0 → 1`, the signal's first check, its terminal recorded, not asserted (main attached
+    nothing).
   - Setup (`via: "setup"`): `userSettings({ "window.openFoldersInNewWindow": "on" })`, so every open
     keeps the local window until the last lane.
   - Calibration. The open button twice with a gap, each window connected and closed: `opens` +1,
@@ -494,7 +502,10 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
   - `Mend: Show project sessions`, shared control off: its pick `Mend · <project>` lists
     `ana running · Review` with the reason, no Open; `opens` and windows unchanged.
 - **f. Dana comes back the next morning.** `recipes/vscode-view.mjs`, from a default `up` on a
-  server with G4 (`--build`, or `--image` of one built from a checkout that has #1082).
+  server with G4 (`--build`, or `--image` of one built from a checkout that has #1082). Runs `nsv2`
+  (#1088 at `74e70040c`) and `nsr4` (flow 3 rebased onto it) passed all 28 steps; in both, S9's
+  watch caught one toast `Signed out — sign in again.` with [Connect to server], and no second in 30
+  s.
   - Setup over the API: three claude terminal agents; `migrate-orders` waits (the G4 stand-in fires
     `PermissionRequest` in a shell beside it, with the agent's `--session-id`), `docs-typos` is told
     `/exit` (`completed`, `exited with code 0`), `flaky-auth-test` gets SIGTERM (`failed`,
