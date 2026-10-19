@@ -115,13 +115,13 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
           node.group.kind === "projects"
             ? node.group.projects.length
             : rowsOfGroup(node.group).length;
+        // VS Code takes a node's collapsible state only the first time it sees its id: a group
+        // drawn empty must already be Expanded, or it stays collapsed once rows come.
         const item = new vscode.TreeItem(
           GROUP_LABELS[node.group.kind],
-          count === 0
-            ? vscode.TreeItemCollapsibleState.None
-            : node.group.kind === "projects"
-              ? vscode.TreeItemCollapsibleState.Collapsed
-              : vscode.TreeItemCollapsibleState.Expanded,
+          node.group.kind === "projects"
+            ? vscode.TreeItemCollapsibleState.Collapsed
+            : vscode.TreeItemCollapsibleState.Expanded,
         );
         item.id = nodeId(node);
         item.description = count === 0 ? "nothing" : String(count);
