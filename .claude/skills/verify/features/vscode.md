@@ -236,7 +236,9 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
   `1a7196046`) observed; the claude lanes, Ana's palette and deep links were added in `r1f` and
   `r1g` (round 1, rebased on main `cfc3862`), and `r1t` reran the trunk lane on main's extension;
   round 2 (`r2b`, `r2c` on main `66bdd4c`, the trunk lane `r2t`) added the read count, the stopping
-  lane, the status bar's pick and the two sessions in one worktree:
+  lane, the status bar's pick and the two sessions in one worktree; round 3 (`r3d`, `r3e` on main
+  `de6d1b5`, the trunk lane `r3t` on `ec101e4`, whose `apps/vscode` is main's) added the stopped
+  session opened from its own window and the unreachable lost-session step:
   - The start. `palette("Mend: New Session…")`, `Workbench`; the row reads `running`. The start
     opens one window on both builds (story a is not built): `opens 0 → 1`, the signal's first check.
     Its terminal is recorded, not asserted: the redesign attached `shell · <session>`, focused,
@@ -292,6 +294,15 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     unchanged, `claude · add-rate-limit` active and focused again. VS Code keeps one window per
     folder: asked for a new window on a folder a window holds, it focuses that window, whatever
     `forceNewWindow` says, so the extension shows the agent instead.
+  - A stopped session opened from its own workspace window. `POST /sessions/<second-look>/stop`
+    (`via: "api"`) while `add-rate-limit` keeps the workspace running: `second-look` reads `stopped`
+    (`failed` in `r3c`, where claude exited non-zero on the stop) and keeps the workspace id, and
+    `add-rate-limit` runs in it (the stop of a session that does not hold the workspace takes about
+    0.4 s). Then, in that window, the open button on `second-look`: the status bar read
+    `starting second-look's workspace · 0 s` to `· 1 s`, the server's
+    `'/api/sessions/<second-look>/resume'` lines `0 → 1`, `second-look` running in the same
+    workspace, the tab `shell · second-look` active and focused, 0 windows, the page unchanged,
+    `opens` unchanged, nothing shown (`r3b`, `r3d`, `r3e`).
   - Setup: the setting removed (VS Code's default).
   - Setup for the claude lanes (`via: "api"`, the calls story a's New session makes, since that flow
     is not built): `add-rate-limit` created and launched as a terminal agent
@@ -308,11 +319,20 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     `<session> — <project>`; the redesign leaves VS Code's own title), no dialog and no quick input
     open after it (the watch went with the page). Before any gesture the tab
     `claude · add-rate-limit` is active and focused with claude's `❯` prompt, though the newer
-    `second-look` shares its workspace: the session the Open meant survives the window's reload (the
-    extension's `globalState`, `open-intent.ts`); `keyboard.type("add a test for the limit")` reads
-    back `❯ add a test for the limit` (claude draws a no-break space after `❯`: match it with `\s`).
-    The Explorer lists README; `Terminal: Create New Terminal` there runs in `/workspace/repo` and
-    lists the file it wrote.
+    `second-look` shares its workspace: the session the Open meant survives the window's reload (a
+    file per workspace in the extension's global storage, `open-intent.ts`; the window takes it
+    about 17 s after it appears, once Remote-SSH has connected);
+    `keyboard.type("add a test for the limit")` reads back `❯ add a test for the limit` (claude
+    draws a no-break space after `❯`: match it with `\s`). The Explorer lists README;
+    `Terminal: Create New Terminal` there runs in `/workspace/repo` and lists the file it wrote.
+  - Verified-unreachable (`via: "api"`, last): a workspace window asked for a session its running
+    workspace no longer holds. `second-look` stopped, then `DELETE /sessions/<id>` answers
+    `{"removed":false,"leftover":"workspace stopping · removed once its workspace has stopped"}` and
+    the session stays listed, stopped, in the same workspace. A session leaves its workspace only
+    when that workspace stops, and a workspace window closes about 1 s after its workspace starts
+    stopping (observed: the `[SSH:` window gone 0.9 s after `POST /stop`), so no live window can
+    take such an intent. `window-role.test.ts` covers it: nothing attaches, and the status bar says
+    `<session> is <status> and not in this workspace · no agent attached`.
   - Open question: the `r1c` click above. VS Code keys an id-less tree item by its label, so a row's
     handle survives an insert; the click may have landed while the view re-fetched its rows. A
     person who clicks Open just as the list changes would get the session pick. Not reproduced since
@@ -357,8 +377,10 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     (the tab says that sentence), after it has already stopped the conversation. In `r2a` a
     conversation whose first turn had completed got the same 422 once: the server's log shows the
     handoff answered at `05:43:07.299` and the harness state captured at `07.630`, after it, where
-    the passing runs (`v1084a`, `r2b`) capture inside the handoff's own request first. A server-side
-    race, not the editor's; rerun the lane. The take-over command is gone from the manifest.
+    the passing runs (`v1084a`, `r2b`) capture inside the handoff's own request first. `r3a` hit it
+    again: the handoff answered 422 at `07:06:52.738`, the harness state observed at `53.122`. A
+    server-side race, not the editor's; rerun the lane. The take-over command is gone from the
+    manifest.
   - Not her session. Ana is a second account, set up `via: "api"`: an invitation, her sign-up with
     `x-mend-invitation`, the project shared, her session resumed as a shell, shared control on. Her
     row (`treeItem("ana")`) offers inline `Mend: Watch terminal`, `Mend: Review change` and
