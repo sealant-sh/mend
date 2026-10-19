@@ -89,8 +89,12 @@ describe("OpenRunner, a session Ana launched", () => {
   /** Dana's world, reading capabilities the way the extension does. */
   const danas = () =>
     world({
-      capability: async (session) =>
-        rowCapability({ session, viewer: "dana", members: [{ userId: "ana", name: "Ana" }] }),
+      capability: async (opened) =>
+        rowCapability({
+          session: opened,
+          viewer: "dana",
+          members: [{ userId: "ana", name: "Ana" }],
+        }),
     });
 
   it("opens nothing, from any entry point: it says why once and offers Watch terminal with shared control", async () => {
