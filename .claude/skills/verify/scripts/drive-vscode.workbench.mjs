@@ -385,7 +385,10 @@ export const workbenchHelpers = async (context, options) => {
 
   /** The Mend view: its Activity Bar entry clicked, its tree waited for. */
   const view = async (name) => {
-    const entry = page().locator(`.activitybar .action-item .action-label[aria-label^="${name}"]`);
+    // The whole item, not its icon: a badge sits over the icon's centre, where a click lands.
+    const entry = page().locator(".activitybar .action-item", {
+      has: page().locator(`.action-label[aria-label^="${name}"]`),
+    });
     await entry.first().waitFor({ timeout });
     const header = page().locator(".part.sidebar .pane-header");
     if ((await header.count()) === 0 || !(await page().locator(".part.sidebar").isVisible()))
@@ -557,6 +560,51 @@ export const workbenchHelpers = async (context, options) => {
         (await box.innerText()).replace(/\s+/g, " ").trim(),
       ),
     );
+
+  /**
+   * Every row of the sidebar's tree as a person reads it: its depth, label, description and
+   * whether it is open; and the view's message above the rows. What scrolled out is not read.
+   */
+  const viewRows = async () =>
+    page().evaluate(() => {
+      const sidebar = document.querySelector(".part.sidebar");
+      const rows = [...(sidebar?.querySelectorAll(".monaco-list-row") ?? [])].map((row) => ({
+        level: Number(row.getAttribute("aria-level") ?? "0"),
+        label: (row.querySelector(".label-name")?.textContent ?? "").trim(),
+        description: (row.querySelector(".label-description")?.textContent ?? "").trim(),
+        expanded: row.getAttribute("aria-expanded"),
+        selected: row.getAttribute("aria-selected") === "true",
+      }));
+      const message = (
+        sidebar?.querySelector(".tree-explorer-viewlet-tree-view > .message:not(.hide)")
+          ?.textContent ?? ""
+      ).trim();
+      return { message, rows };
+    });
+
+  /** The number on an Activity Bar entry's badge (`Mend`), or "" when it shows none. */
+  const badge = async (name) =>
+    page().evaluate((label) => {
+      for (const entry of document.querySelectorAll(".activitybar .action-item")) {
+        const title = entry.querySelector(".action-label")?.getAttribute("aria-label") ?? "";
+        if (!title.startsWith(label)) continue;
+        const content = entry.querySelector(".badge:not(.hidden) .badge-content");
+        const shown = content !== null && getComputedStyle(content).display !== "none";
+        return shown ? (content.textContent ?? "").trim() : "";
+      }
+      return "";
+    }, name);
+
+  /** Every status bar item's text, left to right, as shown. */
+  const statusBarItems = async () =>
+    page()
+      .locator(STATUS_ITEM)
+      .evaluateAll((items) =>
+        items
+          .filter((item) => item.offsetParent !== null)
+          .map((item) => (item.textContent ?? "").replace(/\s+/g, " ").trim())
+          .filter((text) => text !== ""),
+      );
 
   const statusBar = (pattern) => {
     const item = () => page().locator(STATUS_ITEM, { hasText: pattern }).first();
@@ -779,6 +827,9 @@ export const workbenchHelpers = async (context, options) => {
     dialog,
     dialogs,
     statusBar,
+    statusBarItems,
+    viewRows,
+    badge,
     terminal,
     watch,
     userSettings,
