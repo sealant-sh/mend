@@ -688,6 +688,16 @@ the row takes the job's name.
     `frrb` passed the CLI half, and `frrb2` passed it again with the `Running` steps (7 lines). On
     the same head, `vscode-new-session.mjs` (`frns`, 37 lines) passed from a default `up`, and
     `vscode-view.mjs` (29, S9 included) then `vscode-open.mjs` (53) passed in one world (`frvo`).
+  - Runs for review round 2, on #1092's round 4 `d6b81b6cf` (2026-10-19, server
+    `0.0.0-dev.sha39cd0ecf8bc4`: round 4's server change is the store's base check, which no step
+    reads), each world from a cold `up`: `fr5a1` and `fr5a2` passed all 22 step lines of the
+    signed-out half, the refused token, Connect again and the quiet sign-out included; `fr5b2`
+    passed the CLI half (9). `vscode-view.mjs` (32, S9 and its teardown on the CLI's own token
+    included) then `vscode-open.mjs` (54) passed in one world (`fr5vo`), and
+    `vscode-new-session.mjs` (`fr5ns`, 45) passed in its own. Before the recipe's last two fixes,
+    `fr4a1` failed dismissing a toast that had hidden, `fr4a2` read an offer's row before its
+    message, and `fr4a4` counted Connect again's toast in a watch that names a text once; `fr4a3`
+    failed in setup, its sessions not settled in 300 s after their stop.
   - Why some steps are not a welcome: VS Code fixes a welcome's words in the manifest, and a view
     container with one view merges its title (`Mend: Sessions`) and drops the view's description.
     The two steps whose words carry facts (the CLI's server and account; the window's repository)
