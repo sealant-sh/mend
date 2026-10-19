@@ -413,6 +413,29 @@ session.
   any more (a later resume started a new one), it opens nothing and says so. **Show record** in the
   section's `...` menu opens the selected session's transcript.
 
+### Send the review back
+
+- **Send review** in the section's title opens an editor, `review · <session>.md`, with the
+  instruction Mend will send: your comments in the diff's order, each under its file and line, and
+  what to do. Edit it freely. **Send to session** in the editor's title sends it.
+- Mend records the follow-up with one idempotency key, kept with the review on this machine, so a
+  retry never sends a second one.
+- While the session's agent runs in a terminal, Mend holds the follow-up `pending` until that agent
+  exits. VS Code then attaches the agent's terminal in your panel, as **Answer** does, and pastes
+  the review into its input without pressing Enter. The threads read
+  `follow-up pending · in claude's terminal`; press Enter in claude to send it.
+- A stopped session starts on the review as its prompt.
+- When delivery fails, the threads read `delivery failed · retryable`, one notification says why,
+  and **Retry delivery** sends the same key and text again.
+- When the agent's next round moves the worktree on, the slice stays pinned and the section adds
+  `worktree changed since this review · 3 new files`, with **Review the newer change** (or **since
+  my last review** once you sent one). There each sent comment sits at its line; mark it
+  **Addressed**, and an addressed one **Reopen**. Mend never says a comment was addressed.
+- Offline, **Send review** is disabled and says `Mend is offline; your comments are kept`; the diff
+  stays readable and your pending comments stay.
+- **Send review** is offered on your own sessions, and on another person's while they have shared
+  control on. A terminal agent takes a review from its owner only.
+
 ## Other commands
 
 | Command                         | What it does                                                  |
