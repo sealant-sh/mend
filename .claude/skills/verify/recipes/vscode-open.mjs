@@ -37,8 +37,14 @@ const world = await import(
 
 /** The row's open button on either manifest. */
 const OPEN = /^Mend: Open( in VS Code)?$/;
-/** A workspace window lists its own session as one row, its status line (rule 10). */
-const OWN_ROW = /^(starting|running|waiting|idle|stopping|stopped|completed|failed|landed)/;
+/**
+ * A workspace window's own row, on either build: its label is the session's name with its line
+ * beside it, or (before #1088's round 2) the line itself.
+ */
+const ownRow = (name) =>
+  new RegExp(
+    `^(?:${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*)?(?:starting|running|waiting|idle|stopping|stopped|completed|failed|landed)`,
+  );
 /** What Remote-SSH would refuse, said where Open would have been. */
 const ANA_WHY = "Ana launched this workspace · Remote-SSH opens it only for them";
 
@@ -583,7 +589,7 @@ export default async (h) => {
       const before = await counts();
       const watching = await watch();
       await mendView();
-      const { title } = await treeItem(OWN_ROW).inline(OPEN);
+      const { title } = await treeItem(ownRow(session.name)).inline(OPEN);
       const tabs = await waitUntil(
         "the attached tab to be active and focused",
         async () => {
@@ -693,7 +699,7 @@ export default async (h) => {
   });
 
   const caughtStopping = await step(
-    `the open button on ${stoppedName} while it stops: the open waits it out, resumes it once, one window, nothing asks`,
+    `SLNT-143: the open button on ${stoppedName} the moment its row turns from running: the open targets it, waits the stop out, resumes it once, one window, no Choose a session`,
     async () => {
       await useWindow(await homeWindow());
       await mendView();
@@ -711,7 +717,14 @@ export default async (h) => {
         60_000,
       );
       const watching = await watch();
-      await treeItem(stoppedName).inline(OPEN);
+      // The click lands as the row's own status redraws (SLNT-143): a redraw that dropped the row
+      // ran Open with no row, which asks `Choose a session`.
+      const row = treeItem(stoppedName);
+      const before = await row.description();
+      let redrawn = before;
+      for (const until = Date.now() + 60_000; Date.now() < until && /^running/.test(redrawn); )
+        redrawn = await row.description();
+      await row.inline(OPEN);
       await stopping;
       const opened = await newWindows(known, { settle: 10_000, limit: 600_000 });
       const seen = await watching.stop();
@@ -722,10 +735,20 @@ export default async (h) => {
       const opensAfter = await opens();
       await sleep(5_000);
       const resumesAfter = await resumes();
+      const bar = await statusBarItems();
       await shot("stopping-opened");
-      const observed = `the server read "${atClick}" at the click · windows opened ${opened.length} · opens ${opensBefore} → ${opensAfter} · resumes ${resumesBefore} → ${resumesAfter} · ${shown(seen)}`;
+      const observed = `the server read "${atClick}" · the row read "${before}", then "${redrawn}" at the click · windows opened ${opened.length} · its status bar ${JSON.stringify(bar.filter((text) => text.includes(stoppedName) || text.includes("SSH:")))} · opens ${opensBefore} → ${opensAfter} · resumes ${resumesBefore} → ${resumesAfter} · ${shown(seen)}`;
+      expect(!/^running/.test(redrawn), `the row never turned from running: ${observed}`);
       expect(seen !== null && seen.dialogs.length === 0, `dialogs: ${observed}`);
+      expect(
+        !seen.quickInputs.some((title) => title.includes("Choose a session")),
+        `Choose a session: ${observed}`,
+      );
       expect(seen.quickInputs.length === 0, `quick inputs: ${observed}`);
+      expect(
+        bar.some((text) => text.includes(stoppedName)),
+        `the window is not ${stoppedName}'s: ${observed}`,
+      );
       expect(opensAfter - opensBefore === 1, `opens: ${observed}`);
       expect(resumesAfter - resumesBefore === 1, `resumes: ${observed}`);
       return { observed, page: opened[0] };
@@ -1247,7 +1270,7 @@ export default async (h) => {
       const before = await openCounts();
       const watching = await watch();
       await mendView();
-      await treeItem(OWN_ROW).contextMenu("Mend: Open in New Window");
+      await treeItem(ownRow(second.name)).contextMenu("Mend: Open in New Window");
       const tabs = await waitUntil(
         `the tab "${second.tab}" active and focused again`,
         async () => {
@@ -1304,7 +1327,7 @@ export default async (h) => {
       const resumedBefore = await resumesOf();
       const watching = await watch();
       await view("Mend");
-      await treeItem(OWN_ROW).inline(OPEN);
+      await treeItem(ownRow(second.name)).inline(OPEN);
       const starting = statusBar(`starting ${second.name}'s workspace`);
       const caught = await starting
         .waitFor(60_000)
