@@ -53,7 +53,6 @@ const agentOf = (world: World, sessionId: SessionId) =>
 
 const statusOf = (world: World, sessionId: SessionId) => world.sessions.get(sessionId)?.status;
 
-/** A report from the session's own agent: it carries the harness session id the row records. */
 const own = (
   world: World,
   sessionId: SessionId,

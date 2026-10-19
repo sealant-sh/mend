@@ -35,7 +35,6 @@ const utf8 = new TextDecoder();
 export const isTyping = (bytes: Uint8Array | string): boolean =>
   (typeof bytes === "string" ? bytes : utf8.decode(bytes)).replace(EMULATOR_REPLIES, "") !== "";
 
-/** How long after a key that cleared a wait the next clear waits. */
 export const TYPED_CLEAR_EVERY_MS = 2_000;
 
 /**

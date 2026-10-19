@@ -187,7 +187,6 @@ const call = (
     request.end();
   });
 
-/** A POST's status and its `retry-after` header. */
 const retryAfterOf = (
   address: string,
   route: string,

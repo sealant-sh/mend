@@ -54,7 +54,6 @@ describe("isTyping", () => {
   });
 });
 
-/** A `clear` that answers each call from `answers` and records when it was called. */
 const recordedClear = (answers: ReadonlyArray<boolean>) => {
   const calls: Array<number> = [];
   const clear = Effect.gen(function* () {

@@ -1,15 +1,3 @@
-// G4 live: a terminal agent reports that it waits, and why. The skill's fake Claude login is
-// connected first when the account has none (the provider refuses it, so the real claude sits at
-// its sign-in screen: still a live `agent-pty`). A claude session is launched as a PTY agent, its
-// argv read from /proc for the hooks Mend wires and the `--session-id` Mend pinned, then claude's
-// hooks replayed by fixtures/claude-standin.mjs inside the session's own workspace, in a shell
-// beside the agent, to the real helper, each report carrying the agent's own session id. Each
-// state is read from `GET /api/sessions/:id` and the frames of `/api/events`. Then a report under
-// another session id changes nothing; the agent's own terminal attached with the replies a real
-// xterm sends, and nothing typed, keeps the wait, and one key clears it. Then Stop: the wait ends
-// with the agent, and a report replayed after it changes nothing. Last, codex: the `[hooks]`
-// table of the workspace's `/etc/codex/config.toml`.
-//
 //   node .claude/skills/verify/scripts/drive-vscode.mjs run \
 //     .claude/skills/verify/recipes/g4-terminal-agent-waits.mjs --out <dir>
 //
@@ -64,7 +52,6 @@ const NOTIFICATION_TYPES = [
   "auth_success",
 ];
 
-/** The JSON object claude's argv carries after `--settings` (or as `--settings=<json>`). */
 export const settingsOfArgv = (argv) => {
   const at = argv.findIndex((word) => word === "--settings" || word.startsWith("--settings="));
   if (at === -1) throw new Error(`the agent's argv has no --settings: ${argv[0]} …`);
@@ -77,16 +64,11 @@ export const settingsOfArgv = (argv) => {
   throw new Error("the agent's --settings is not inline JSON");
 };
 
-/** The session id a claude argv is pinned to (`--session-id <id>`), or null. */
 export const sessionIdOfArgv = (argv) => {
   const at = argv.indexOf("--session-id");
   return at === -1 ? null : (argv[at + 1] ?? null);
 };
 
-/**
- * Which claude events would run the helper, resolved the way claude resolves them (the stand-in's
- * matcher and payloads), and which Notification types the matcher admits.
- */
 export const claudeHookCheck = (settings) => {
   const common = {
     session_id: "check",
@@ -149,7 +131,6 @@ export const codexHookCheck = (text) => {
   };
 };
 
-/** `/api/events` payloads out of an SSE byte stream, as apps/cli/src/workbench-events.ts splits it. */
 const sseParser = () => {
   let buffer = "";
   return (chunk) => {
@@ -173,10 +154,6 @@ const sseParser = () => {
   };
 };
 
-/**
- * Typed into the shell beside the agent: every process in the workspace that runs claude with a
- * `--settings`, as one marker line. The first one's argv is what the stand-in replays.
- */
 const CLAUDE_CMDLINE_SCAN = `import { readdirSync, readFileSync } from "node:fs";
 const found = [];
 for (const pid of readdirSync("/proc").filter((name) => /^\\d+$/.test(name))) {
@@ -199,7 +176,6 @@ console.log(
 );
 `;
 
-/** Lines that write `text` to `$D/<target>` in a shell: base64 in a quoted heredoc, 76 a line. */
 const heredoc = (target, text) => [
   `base64 -d > "$D/${target}" <<'MEND_G4_EOF'`,
   ...(Buffer.from(text)
@@ -212,7 +188,6 @@ const fail = (reason) => {
   throw new Error(reason);
 };
 
-/** `waiting · permission · Bash`, `running`: what one read of the session says, in API facts. */
 const said = ({ status, waiting }) =>
   waiting === null
     ? status
@@ -220,7 +195,6 @@ const said = ({ status, waiting }) =>
 
 export default async (h) => {
   const { step, note, api, state, sleep } = h;
-  // The helpers carry no `--out`; the driver's own parser reads it from the driver's argv.
   const out = resolve(parseArgs(process.argv.slice(2)).options.out);
   mkdirSync(out, { recursive: true });
   const pauseMs = Number(process.env.MEND_VERIFY_G4_PAUSE_MS ?? 8_000);
@@ -241,7 +215,6 @@ export default async (h) => {
     pathToFileURL(join(here, "../../../../scripts/vscode-remote-world.mjs")).href
   );
 
-  // Opened before the session exists, so no frame about it is missed.
   const frames = [];
   let otherFrames = 0;
   const events = new AbortController();
@@ -275,7 +248,6 @@ export default async (h) => {
   const framesFor = (sessionId, since) =>
     frames.filter((frame) => frame.sessionId === sessionId && frame.at >= since);
 
-  /** Both pointer frames for the session since `since`, waited for briefly: SSE may trail a read. */
   const pointerFrames = async (sessionId, since, what) => {
     for (const deadline = Date.now() + 5_000; Date.now() < deadline; await sleep(250)) {
       const seen = framesFor(sessionId, since);
@@ -291,7 +263,6 @@ export default async (h) => {
     );
   };
 
-  /** One read of the session: its status, the current agent's wait, and every process row's. */
   const read = async (sessionId) => {
     const detail = await api(`/sessions/${sessionId}`);
     const agent = detail.currentAgent ?? null;
@@ -320,7 +291,6 @@ export default async (h) => {
     };
   };
 
-  /** Reads until `matches`, or fails with the last read and `why`. */
   const until = async (sessionId, matches, ms, why, also = () => null) => {
     let last = null;
     for (const deadline = Date.now() + ms; Date.now() < deadline; await sleep(300)) {
@@ -332,7 +302,6 @@ export default async (h) => {
     return fail(`${why} within ${ms / 1000} s; last read ${JSON.stringify(last)}`);
   };
 
-  /** The run's own CLI: its home, its config, the server, the first account's token. */
   const cliEnv = {
     ...process.env,
     HOME: state.home,
@@ -419,7 +388,6 @@ export default async (h) => {
       { via: "api" },
     );
 
-    /** A process's terminal over `/api/tty`, with an upgrade ticket, as the extension attaches. */
     const attach = async (processId) => {
       const { ticket } = await api("/upgrade-tickets", {
         method: "POST",
@@ -495,7 +463,6 @@ export default async (h) => {
       }
       return fail(`${what}: no ${prefix} line in the shell within ${ms / 1000} s`);
     };
-    /** A stand-in event line: its hooks ran, each exited 0 in time and printed nothing. */
     const helperRan = (line, what) => {
       if (line.hooks.length === 0) fail(`${what}: Mend's settings ran no hook for ${line.event}`);
       const off = line.hooks.filter(
@@ -509,9 +476,6 @@ export default async (h) => {
       return line.hooks.map(({ exitCode, ms }) => ({ exitCode, ms }));
     };
 
-    // The process row's `argv` is the composed launch, without Mend's own flags, so the
-    // `--settings` and `--session-id` Mend adds show only on the live process: read them from
-    // /proc inside the workspace.
     let settingsText = null;
     let agentSessionId = null;
     await step(
@@ -694,7 +658,6 @@ export default async (h) => {
     }
     await marker("MEND-G4", (line) => line.done === true, 30_000, "the stand-in's end");
 
-    /** `ms` of reads: every one the same `waiting · permission · Bash` with the same `since`. */
     const waitHeld = async (ms, what) => {
       const reads = [];
       const start = await read(session.id);

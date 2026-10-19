@@ -278,9 +278,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
     const scope = yield* Effect.scope;
 
     const seen = new Map<string, Seen>();
-    /** Per session: when this process last edited its status line to a state that is not settled. */
     const editedAt = new Map<string, number>();
-    /** Sessions with a look waiting for their edit window to end. */
     const heldBack = new Set<string>();
     let sweptAt = 0;
 
@@ -383,7 +381,6 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         ),
       );
 
-    /** Look at the session again in `delayMs`, unless a look is already held back for it. */
     const lookAgainIn = (sessionId: SessionId, delayMs: number) =>
       Effect.suspend(() => {
         if (heldBack.has(sessionId)) return Effect.void;
@@ -431,7 +428,6 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       });
       if (!moved) return;
       if (edit) {
-        // A move out of a settled state (a reply resuming the session) is news: no window.
         if (isSettledState(state)) editedAt.delete(session.id);
         else editedAt.set(session.id, now());
         yield* quietly(

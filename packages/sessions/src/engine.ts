@@ -884,7 +884,6 @@ const TakenAheadRef = Context.Reference<TakenAhead | null>("@mend/sessions/Taken
 /** How long a hand-over to a sender that failed after its stop is not tried again (review 2, P3-3). */
 const HAND_OVER_BACKOFF_MS = 60_000;
 
-/** Hook reports one session may send a minute: a tool call makes a handful, a loop makes more. */
 const AGENT_HOOK_REPORTS_PER_MINUTE = 60;
 
 /** A failure's own words, for a session line. */
@@ -17788,8 +17787,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             launchCorrelationId: correlationId,
             kind: protocolStart === null ? "agent-pty" : "agent-protocol",
             harness: interactiveShell ? "shell" : session.harness,
-            // Known up front for a native resume of the same harness and for a Claude Mend
-            // pinned; the harvest, or a Codex's first SessionStart, fills it otherwise.
             providerSessionId: interactiveShell
               ? null
               : (nativeImport?.providerSessionId ??
@@ -21715,8 +21712,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           report.harness,
         );
         if (live.length === 0) return "no-live-agent";
-        // Codex runs Mend's system hooks in every Codex in the workspace: a hand-run one, or a
-        // `codex exec` the agent starts, reports with its own session id.
         const target = agentHookTarget(report, live);
         if (target._tag === "unidentified" || target._tag === "other-process") return target._tag;
         if (

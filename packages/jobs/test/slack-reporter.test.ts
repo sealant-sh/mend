@@ -486,10 +486,8 @@ const world = (options: WorldOptions = {}) => {
   );
   const writes = () => slack.calls.slice(1);
 
-  // The reporter's own fibers (a held-back look) run in this scope until the test ends.
   const scope = Scope.makeUnsafe();
   onTestFinished(() => Effect.runPromise(Scope.close(scope, Exit.void)));
-  // Effect's clock drives the reporter's sleeps; `state.now` is the clock it reads windows on.
   const clock = Effect.runSync(Layer.buildWithScope(TestClock.layer(), scope));
 
   const layer = Layer.mergeAll(
@@ -576,7 +574,6 @@ const world = (options: WorldOptions = {}) => {
   const baseline = (reporter: ReturnType<typeof worker>) =>
     Effect.runPromise(reporter.baseline().pipe(Effect.provide(layer)));
 
-  /** Move both clocks on by `ms`, and let whatever was sleeping until then run. */
   const advance = async (ms: number) => {
     state.now += ms;
     await Effect.runPromise(TestClock.adjust(ms).pipe(Effect.provideContext(clock)));

@@ -67,7 +67,6 @@ export const currentAgentProcess = (
   return agents.findLast(isLiveProcess) ?? agents.at(-1) ?? null;
 };
 
-/** The newest live terminal agent (`agent-pty`): the one whose hooks report its waits. */
 export const liveTerminalAgentOf = (
   processes: ReadonlyArray<SessionProcess>,
 ): SessionProcess | null =>
@@ -75,7 +74,6 @@ export const liveTerminalAgentOf = (
     (process) => process.kind === "agent-pty" && isLiveProcess(process),
   ) ?? null;
 
-/** Every live terminal agent of `harness`: the processes a hook report may be about. */
 export const liveTerminalAgentsOf = (
   processes: ReadonlyArray<SessionProcess>,
   harness: string,
@@ -85,11 +83,9 @@ export const liveTerminalAgentsOf = (
       process.kind === "agent-pty" && process.harness === harness && isLiveProcess(process),
   );
 
-/** The wait a session-level reader means: the newest live terminal agent's. */
 export const agentWaitOf = (processes: ReadonlyArray<SessionProcess>): AgentWait | null =>
   liveTerminalAgentOf(processes)?.waiting ?? null;
 
-/** `waiting · claude needs your permission to use Bash`; null unless a live agent waits. */
 export const agentWaitLine = (agent: SessionProcess | null): string | null => {
   if (agent === null || agent.waiting === null || !isLiveProcess(agent)) return null;
   return `waiting · ${agentWaitWords(agent.harness ?? agent.label ?? "the agent", agent.waiting)}`;

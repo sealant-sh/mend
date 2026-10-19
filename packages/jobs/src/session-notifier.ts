@@ -261,7 +261,6 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
     const slackInstalls = yield* SlackInstallsRepo;
 
     const lastPhase = new Map<string, Phase | null>();
-    /** Per session: when its last attention push went out. */
     const lastAttentionRing = new Map<string, number>();
     /** Per session: the open (queued/running) turn ids seen on the last event. */
     const watchedTurns = new Map<string, ReadonlySet<string>>();
@@ -333,7 +332,6 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
         if (now - endedAt > TERMINAL_FRESHNESS_MS) return;
       }
       yield* send(session, phaseKind(phase), notificationBody(session, phase));
-      // After the send: a push that failed did not ring, so it does not hold the next one back.
       if (phase === "attention") lastAttentionRing.set(session.id, now);
     });
 

@@ -46,12 +46,7 @@ export const claudeSettingsOf = (kind: ClaudeSettingsKind): Readonly<Record<stri
   }
 };
 
-/**
- * The `hooks` a terminal Claude gets, in every layout: each event `AGENT_HOOKS` reads runs
- * the helper by its absolute path (`MEND_HELPER_PATH hook claude`), which tells Mend that Claude
- * waits for the person, and why, or goes on.
- * Claude merges a settings layer's hooks with the others', so a repository's own hooks still run.
- */
+/** Claude merges a settings layer's hooks with the others', so a repository's own hooks still run. */
 export const CLAUDE_AGENT_HOOKS: Readonly<Record<string, ReadonlyArray<unknown>>> =
   Object.fromEntries(
     AGENT_HOOKS.claude.map((hook) => [

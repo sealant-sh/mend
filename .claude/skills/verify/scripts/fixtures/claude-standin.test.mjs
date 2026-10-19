@@ -1,7 +1,3 @@
-// claude-standin.mjs against a fake `hooks` settings whose commands write their stdin to files:
-// the payloads each event sends, the matcher's filtering, timeouts, the environment, the CLI's
-// marker lines. No network, no Mend.
-//
 //   node --test .claude/skills/verify/scripts/fixtures/claude-standin.test.mjs
 
 import assert from "node:assert/strict";
@@ -16,7 +12,6 @@ import { fire, main, matcherMatches, parseEventSpec, StandinError } from "./clau
 
 const STANDIN = fileURLToPath(new URL("./claude-standin.mjs", import.meta.url));
 
-/** A scratch dir, and a hook command that appends its stdin, one JSON per line, to `<name>.jsonl`. */
 const scratch = (t) => {
   const dir = mkdtempSync(join(tmpdir(), "claude-standin-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -35,7 +30,6 @@ const scratch = (t) => {
 
 const command = (cmd, extra = {}) => ({ type: "command", command: cmd, ...extra });
 
-/** The shape Mend composes: one `mend hook claude` command per event, Notification matched. */
 const mendShaped = (record) => ({
   hooks: {
     SessionStart: [{ hooks: [command(record("SessionStart"), { timeout: 5 })] }],

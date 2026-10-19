@@ -227,9 +227,9 @@ const CODEX_SANDBOX_LINES = [
 ];
 
 /**
- * Every text Mend has written to the system config, oldest first, byte for byte: a file holding
- * one of them is Mend's own and is brought up to date. Literals on purpose, so changing what Mend
- * writes cannot change what it recognises; the last one is the text written now.
+ * Every text Mend has written to the system config, oldest first, byte for byte: an executor
+ * still holding one of them is brought up to date; the last is the text written now. Literals,
+ * so a change to what Mend writes cannot change what it recognises on executors in the field.
  */
 export const CODEX_SYSTEM_CONFIG_TEXT_V1 =
   "# Written by Mend. A workspace is the sandbox: Codex's own (bubblewrap) cannot start in one,\n" +
@@ -237,7 +237,6 @@ export const CODEX_SYSTEM_CONFIG_TEXT_V1 =
   "# ~/.codex/config.toml wins over this file.\n" +
   'sandbox_mode = "danger-full-access"\n';
 
-/** 0.36 G4: the hooks, run as a bare `mend`. */
 export const CODEX_SYSTEM_CONFIG_TEXT_V2 =
   "# Written by Mend. A workspace is the sandbox: Codex's own (bubblewrap) cannot start in one,\n" +
   "# so Codex runs here without it, as the Codex sessions Mend starts do. A sandbox_mode in your\n" +
@@ -254,7 +253,6 @@ export const CODEX_SYSTEM_CONFIG_TEXT_V2 =
   "[[hooks.PostToolUse]]\n" +
   'hooks = [{ type = "command", command = "mend hook codex", timeout = 5 }]\n';
 
-/** G4 review: `SessionStart`, and the helper by its absolute path. */
 export const CODEX_SYSTEM_CONFIG_TEXT_V3 =
   "# Written by Mend. A workspace is the sandbox: Codex's own (bubblewrap) cannot start in one,\n" +
   "# so Codex runs here without it, as the Codex sessions Mend starts do. A sandbox_mode in your\n" +

@@ -1,6 +1,3 @@
-// The G4 recipe's offline parts: the claude settings on an argv and the codex config.toml, each
-// checked the way the live run checks them. No world, no network.
-//
 //   node --test .claude/skills/verify/recipes/g4-terminal-agent-waits.test.mjs
 
 import assert from "node:assert/strict";

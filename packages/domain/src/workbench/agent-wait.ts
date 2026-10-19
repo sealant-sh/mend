@@ -106,11 +106,12 @@ export type AgentHookTarget<P> =
  * `liveAgents` are the session's live agent-pty rows of the report's harness. A report names its
  * process by the harness's own session id. A row that does not know its id yet is claimed only by
  * a `SessionStart`, and only when it is the one such row. Codex's TUI takes no session id on its
- * command line, so a fresh Codex's id is unknown until it runs; it fires `SessionStart` first
- * thing, and the agent Mend launched is the first process in its workspace (shells open later,
- * through the engine), so that agent's `SessionStart` is the first report of its harness the
- * session can receive. Any id after that (a hand-run `codex`, a `codex exec` the agent starts,
- * Claude after `/clear`) names another process.
+ * command line (`codex-rs/tui/src/cli.rs`, rust-v0.160.0: the resume id is internal), so a fresh
+ * Codex's id is unknown until it runs; it fires `SessionStart` first thing, and the agent Mend
+ * launched is the first process in its workspace (shells open later, through the engine), so
+ * that agent's `SessionStart` is the first report of its harness the session can receive. Any
+ * id after that (a hand-run `codex`, a `codex exec` the agent starts, Claude after `/clear`)
+ * names another process.
  */
 export const agentHookTarget = <P extends { readonly providerSessionId: string | null }>(
   report: AgentHookReport,

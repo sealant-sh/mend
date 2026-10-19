@@ -1,10 +1,4 @@
 #!/usr/bin/env node
-// A stand-in for Claude Code's hook runner: given the `--settings` Mend composes for a claude it
-// launches, it fires a scripted list of hook events and runs every matching command hook the way
-// Claude Code runs one. It proves Mend's side of G4 (the settings' shape, the in-workspace `mend
-// hook claude` helper, the session channel, the session's status); it does not prove that a real
-// claude fires these hooks, when, or with these exact fields.
-//
 //   node claude-standin.mjs --settings '<json or path>' --events SessionStart,PermissionRequest,Notification:permission_prompt,PostToolUse,Stop,UserPromptSubmit
 //       [--pause-ms <ms>] [--cwd <dir>] [--marker <word>] [--session-id <id>]
 //
@@ -52,11 +46,6 @@ const NOTIFICATION_MESSAGES = {
   auth_success: { message: "Signed in", title: "Authentication" },
 };
 
-/**
- * The events the stand-in fires: the payload Claude Code sends (the docs' example, with this run's
- * session and cwd), the field its matcher is tested against (null: no matcher support), and the
- * default command timeout in seconds.
- */
 export const EVENTS = {
   SessionStart: {
     matcherField: "source",
@@ -138,7 +127,6 @@ export const EVENTS = {
 
 export class StandinError extends Error {}
 
-/** `Event` or `Event:variant` (a Notification's type); an event this stand-in lacks is refused. */
 export const parseEventSpec = (spec) => {
   const [event, variant, ...rest] = spec.trim().split(":");
   if (!(event in EVENTS) || rest.length > 0)
@@ -150,7 +138,6 @@ export const parseEventSpec = (spec) => {
 
 const EXACT_MATCHER = /^[A-Za-z0-9_\- ,|]*$/;
 
-/** Whether a matcher admits `value`, by the docs' three cases. */
 export const matcherMatches = (matcher, value) => {
   if (matcher === undefined || matcher === null || matcher === "" || matcher === "*") return true;
   if (EXACT_MATCHER.test(matcher))
@@ -161,7 +148,6 @@ export const matcherMatches = (matcher, value) => {
   return new RegExp(matcher).test(value);
 };
 
-/** The settings object: `--settings` takes inline JSON or a path to it, as claude's flag does. */
 export const readSettings = (value) => {
   const inline = /^\s*[[{]/.test(value);
   if (!inline && !existsSync(resolve(value)))
@@ -178,7 +164,6 @@ export const readSettings = (value) => {
   return settings;
 };
 
-/** The command handlers one fired event runs: matched, then deduplicated by command and args. */
 export const handlersFor = (settings, event, payload) => {
   const groups = settings.hooks?.[event];
   if (!Array.isArray(groups)) return [];
@@ -198,7 +183,6 @@ export const handlersFor = (settings, event, payload) => {
   return handlers;
 };
 
-/** One handler run with the payload on stdin; what it did, never what it printed. */
 export const runHandler = async (handler, payload, { cwd, env, defaultTimeout }) => {
   const startedAt = Date.now();
   const [program, args] = Array.isArray(handler.args)
@@ -246,7 +230,6 @@ export const runHandler = async (handler, payload, { cwd, env, defaultTimeout })
   };
 };
 
-/** Fires one event: its payload built, its handlers run in parallel, their results returned. */
 export const fire = async (settings, { event, variant }, context) => {
   const common = {
     session_id: context.sessionId,

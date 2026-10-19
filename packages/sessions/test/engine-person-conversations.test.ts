@@ -805,8 +805,6 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
     const state = makeHarnessLayoutsMemoryState();
     const agentRows: Array<SessionProcess> = [];
     let sessionId: SessionId | null = null;
-    // The conversation moved into `C` before, and no transcript was harvested: the terminal
-    // starts a new conversation there (`mend-conv empty`, no resume).
     const exec = (argv: ReadonlyArray<string>) => {
       if (isPrepare(argv)) return { exitCode: 0, stdout: LAYOUT_READY, stderr: "" };
       if (isStage(argv)) return { exitCode: 0, stdout: "mend-conv empty\n", stderr: "" };

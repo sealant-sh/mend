@@ -104,15 +104,12 @@ describe("agentHookTarget", () => {
   });
 
   it("reads any other id as another process", () => {
-    // Before the agent's own SessionStart, a report with an unknown id names nothing.
     expect(agentHookTarget(report({ event: "Stop" }), [agent("codex", null)])).toEqual({
       _tag: "other-process",
     });
-    // A second session start, once the agent knows its id (Claude after /clear).
     expect(
       agentHookTarget(report({ event: "SessionStart" }), [agent("claude", "conversation-z")]),
     ).toEqual({ _tag: "other-process" });
-    // Two agents without an id: which one started is not known.
     expect(
       agentHookTarget(report({ event: "SessionStart" }), [agent("a", null), agent("b", null)]),
     ).toEqual({ _tag: "other-process" });
