@@ -25,7 +25,6 @@ import { redactValues } from "./secrets.mjs";
 const QUICK_INPUT = ".quick-input-widget";
 const QUICK_INPUT_BOX = `${QUICK_INPUT} .quick-input-box input`;
 const QUICK_INPUT_ROW = `${QUICK_INPUT} .quick-input-list .monaco-list-row`;
-const SIDEBAR_ROW = ".part.sidebar .monaco-list-row";
 const TOAST = ".notifications-toasts .notification-list-item";
 const DIALOG = ".monaco-dialog-box";
 const CONTEXT_MENU_ITEM = ".context-view .monaco-menu .action-item:not(.disabled) .action-label";
@@ -817,39 +816,80 @@ export const workbenchHelpers = async (context, options) => {
 
   /** A row of the sidebar's tree, by a substring or pattern of its text; `pane` names its view. */
   const treeItem = (label, { pane } = {}) => {
-    const row = () =>
-      (pane === undefined
-        ? page().locator(SIDEBAR_ROW, { hasText: label })
-        : page()
-            .locator(".part.sidebar .pane", {
-              has: page().locator(".pane-header .title", {
-                hasText: new RegExp(`^${escapeRegExp(pane)}$`, "i"),
-              }),
-            })
-            .locator(".monaco-list-row", { hasText: label })
-      ).first();
+    const scope = () =>
+      pane === undefined
+        ? page().locator(".part.sidebar")
+        : page().locator(".part.sidebar .pane", {
+            has: page().locator(".pane-header .title", {
+              hasText: new RegExp(`^${escapeRegExp(pane)}$`, "i"),
+            }),
+          });
+    const row = () => scope().locator(".monaco-list-row", { hasText: label }).first();
+    /**
+     * VS Code draws only the rows its tree has on screen: a row below the fold (the Change section
+     * takes half the sidebar) is not in the page until she scrolls to it, wheel over the tree, and
+     * a row drawn under a group's sticky header takes no click until the tree scrolls back up.
+     */
+    const onScreen = async () =>
+      (await row().count()) > 0 &&
+      row().evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return hit !== null && element.contains(hit);
+      });
+    const reveal = async () => {
+      if (await onScreen()) return;
+      for (const list of await scope().locator(".monaco-list").all()) {
+        if (!(await list.isVisible())) continue;
+        await list.hover();
+        await page().mouse.wheel(0, -100_000);
+        let top = null;
+        for (let turn = 0; turn < 200; turn += 1) {
+          await sleep(60);
+          if (await onScreen()) return;
+          const now = await list
+            .locator(".monaco-list-rows")
+            .evaluate((rows) => rows.getBoundingClientRect().top);
+          if (now === top) break;
+          top = now;
+          await page().mouse.wheel(0, 200);
+        }
+      }
+    };
+    const shown = async () => {
+      await reveal();
+      return row();
+    };
     return {
-      waitFor: (limit = timeout) => row().waitFor({ timeout: limit }),
-      text: async () => (await row().innerText()).replace(/\s+/g, " ").trim(),
+      waitFor: (limit = timeout) =>
+        waitUntil(
+          `the row ${label}`,
+          async () => {
+            await reveal();
+            return (await row().count()) > 0;
+          },
+          limit,
+        ),
+      text: async () => (await (await shown()).innerText()).replace(/\s+/g, " ").trim(),
       description: async () => {
-        const description = row().locator(".label-description");
+        const description = (await shown()).locator(".label-description");
         return (await description.count()) > 0
           ? (await description.first().innerText()).trim()
           : "";
       },
-      click: () => row().click(),
-      dblclick: () => row().dblclick(),
-      hover: () => row().hover(),
+      click: async () => (await shown()).click(),
+      dblclick: async () => (await shown()).dblclick(),
+      hover: async () => (await shown()).hover(),
       /** Whether the row is selected, as the tree marks it. */
-      selected: () =>
-        row().evaluate(
+      selected: async () =>
+        (await shown()).evaluate(
           (element) =>
             element.classList.contains("selected") ||
             element.getAttribute("aria-selected") === "true",
         ),
       /** The titles of the inline actions the row shows on hover. */
       actions: async () => {
-        await row().hover();
+        await (await shown()).hover();
         await sleep(400);
         return row()
           .locator(".actions .action-label")
@@ -862,7 +902,7 @@ export const workbenchHelpers = async (context, options) => {
        * found and the clicks that landed.
        */
       inline: async (title, { clicks = 1 } = {}) => {
-        await row().hover();
+        await (await shown()).hover();
         const found =
           typeof title === "string"
             ? title
@@ -892,7 +932,7 @@ export const workbenchHelpers = async (context, options) => {
        */
       contextMenu: async (item) => {
         await closeMenu();
-        await row().click({ button: "right" });
+        await (await shown()).click({ button: "right" });
         const hasText = typeof item === "string" ? new RegExp(`^${escapeRegExp(item)}$`) : item;
         const entry = page().locator(CONTEXT_MENU_ITEM, { hasText }).first();
         await entry.waitFor({ timeout });
@@ -908,7 +948,7 @@ export const workbenchHelpers = async (context, options) => {
       /** Every enabled item of the row's context menu, then Escape. */
       menu: async () => {
         await closeMenu();
-        await row().click({ button: "right" });
+        await (await shown()).click({ button: "right" });
         await page().locator(CONTEXT_MENU_ITEM).first().waitFor({ timeout });
         const items = await page()
           .locator(CONTEXT_MENU_ITEM)
@@ -923,6 +963,7 @@ export const workbenchHelpers = async (context, options) => {
        * whole row) until VS Code's hover shows; moved away and back when it does not.
        */
       tooltip: async () => {
+        await reveal();
         const hover = page().locator(HOVER).first();
         return waitUntil("the row's tooltip", async () => {
           await page().mouse.move(1, 1);
