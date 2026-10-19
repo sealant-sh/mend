@@ -4,20 +4,34 @@
 // Then every step asserts the story: a double-click and a click open nothing and ask nothing (today's
 // extension fails here, at the double-click), two fast Opens make one window, Open in New Window
 // makes one, the workspace window attaches the session's live terminal, a stopped session opens
-// through its resume, Ana's session offers what Dana may do instead of Open, and Open with VS Code's
-// default setting turns the window itself into the workspace.
+// through its resume, a conversation's tab offers Continue here and becomes claude's TUI, Ana's
+// session is never opened from the row, the palette or a deep link (each offers what Dana may do
+// instead), and Open with VS Code's default setting turns the window itself into the workspace of a
+// claude terminal agent, attached and focused, that she types into.
 //
 //   node .claude/skills/verify/scripts/drive-vscode.mjs run .claude/skills/verify/recipes/vscode-open.mjs --out <dir>
 //
 // Needs a world from `up` that is signed in with workspace SSH set up (the default). The last lane
 // turns the first window into a workspace, so it runs last and nothing can follow it.
 //
-// The world has no provider login: a claude terminal agent and a conversation cannot start, so a
-// Workbench session's shell stands in for the agent (its tab is `shell · <session>`, where the story
-// shows `claude · <session>`), and Continue here is verified-unreachable · provider login.
+// Claude is connected with the skill's published fake setup token (`scripts/fakes.mjs`). The real
+// claude starts on it: as a terminal agent it sits at its `❯` prompt, and as a conversation its
+// first turn completes with the provider's 401 as its answer, which leaves the saved turn a mode
+// handoff needs. Nothing reaches the provider beyond that refusal.
+
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { FAKES } from "../scripts/fakes.mjs";
+
+const world = await import(
+  pathToFileURL(join(import.meta.dirname, "../../../../scripts/vscode-remote-world.mjs")).href
+);
 
 /** The row's open button on either manifest. */
 const OPEN = /^Mend: Open( in VS Code)?$/;
+/** What Remote-SSH would refuse, said where Open would have been. */
+const ANA_WHY = "Ana launched this workspace · Remote-SSH opens it only for them";
 
 /** `key before → after` for every counted fact. */
 const delta = (before, after) =>
@@ -27,6 +41,9 @@ const delta = (before, after) =>
 
 const linesMatching = (log, needle) =>
   log.split("\n").filter((line) => line.includes(needle)).length;
+
+const liveProcess = (processes, kind) =>
+  processes.find((process) => process.kind === kind && process.exitedAt === null);
 
 const expect = (holds, message) => {
   if (!holds) throw new Error(message);
@@ -48,8 +65,11 @@ export default async (h) => {
     palette,
     quickInput,
     treeItem,
+    notification,
     notifications,
+    dialog,
     dialogs,
+    openUrl,
     windows,
     newWindows,
     useWindow,
@@ -106,7 +126,8 @@ export default async (h) => {
         null,
       120_000,
     );
-    const name = created.label ?? `claude · ${created.id.slice(0, 8)}`;
+    const short = created.id.slice(0, 8);
+    const name = created.label ?? `claude · ${short}`;
     const row = treeItem(name);
     await waitUntil(
       "the row to read running",
@@ -126,7 +147,7 @@ export default async (h) => {
       observed: `row "${await row.text()}" · session ${created.id.slice(0, 8)} · workspace ${detail.sealantWorkspaceId}`,
       id: created.id,
       name,
-      tab: `shell · ${name}`,
+      tab: `shell · ${created.label ?? short}`,
       workspaceId: detail.sealantWorkspaceId,
     };
   });
@@ -165,6 +186,94 @@ export default async (h) => {
       const written = userSettings({ "window.openFoldersInNewWindow": "on" });
       await sleep(2_000);
       return `window.openFoldersInNewWindow: ${JSON.stringify(written["window.openFoldersInNewWindow"])}`;
+    },
+    { via: "setup" },
+  );
+
+  await step(
+    "Claude connected with the skill's fake setup token: mend connect claude --from-stdin",
+    async () => {
+      const ran = await world.cli(
+        ["connect", "claude", "--from-stdin"],
+        { ...process.env, HOME: state.home, XDG_CONFIG_HOME: state.configHome },
+        { input: FAKES.claude, allowFailure: true },
+      );
+      expect(ran.status === 0, `mend connect claude exited ${ran.status}: ${ran.stderr.trim()}`);
+      return ran.stdout.trim();
+    },
+    { via: "setup" },
+  );
+
+  /** A claude session in a fresh worktree, launched as story a launches one (or the phone, in protocol). */
+  const startClaude = async (label, launch) => {
+    const created = await api(`/projects/${project.id}/sessions`, {
+      method: "POST",
+      body: JSON.stringify({ harness: "claude", label, base: null, name: null }),
+    });
+    await api(`/sessions/${created.id}/launch`, { method: "POST", body: JSON.stringify(launch) });
+    return created.id;
+  };
+
+  const agent = await step(
+    "a claude terminal agent, started the way story a starts one: POST /projects/:id/sessions, then launch in a PTY",
+    async () => {
+      const id = await startClaude("add-rate-limit", { permissionMode: "ask" });
+      const pty = await waitUntil(
+        "a running session with a live agent-pty",
+        async () => {
+          const read = await api(`/sessions/${id}`);
+          return read.session.status === "running" && read.session.sealantWorkspaceId
+            ? (liveProcess(read.processes, "agent-pty") ?? null)
+            : null;
+        },
+        600_000,
+      );
+      return {
+        observed: `session ${id.slice(0, 8)} · running · agent-pty ${pty.id.slice(0, 8)} ${pty.harness} live`,
+        id,
+        name: "add-rate-limit",
+        tab: "claude · add-rate-limit",
+      };
+    },
+    { via: "api" },
+  );
+
+  const conversation = await step(
+    "a claude conversation started elsewhere (launch in protocol mode with a prompt, as the phone starts one): its first turn completes",
+    async () => {
+      const id = await startClaude("from-phone", { mode: "protocol", prompt: "say hi" });
+      const turn = await waitUntil(
+        "the first turn to complete",
+        async () => {
+          const turns = await api(`/sessions/${id}/turns`);
+          return turns.find((item) => item.status === "completed") ?? null;
+        },
+        600_000,
+      );
+      const items = await api(`/sessions/${id}/items`);
+      const read = await api(`/sessions/${id}`);
+      const protocol = liveProcess(read.processes, "agent-protocol");
+      expect(protocol !== undefined, `no live agent-protocol: ${JSON.stringify(read.processes)}`);
+      return {
+        observed: `session ${id.slice(0, 8)} · ${read.session.status} · agent-protocol ${protocol.id.slice(0, 8)} live · turn "${turn.input}" ${turn.status} · the agent answered ${JSON.stringify(items.map((item) => item.text).filter(Boolean))}`,
+        id,
+        name: "from-phone",
+        tab: "claude · from-phone",
+      };
+    },
+    { via: "api" },
+  );
+
+  // Run r1c: an inline Open clicked while these rows were still arriving ran `mend.open` without
+  // its row (the palette's session pick showed). The calibration starts once the view has them.
+  await step(
+    "the Mend view lists both claude sessions, then rests",
+    async () => {
+      await view("Mend");
+      await treeItem(agent.name).waitFor(60_000);
+      await treeItem(conversation.name).waitFor(60_000);
+      await sleep(5_000);
+      return `rows "${await treeItem(agent.name).text()}" and "${await treeItem(conversation.name).text()}"`;
     },
     { via: "setup" },
   );
@@ -474,6 +583,117 @@ export default async (h) => {
     return result;
   });
 
+  /** The center of `text` where the active terminal draws it, for a pointer to go to. */
+  const terminalTextAt = (text) =>
+    page().evaluate((wanted) => {
+      for (const row of document.querySelectorAll(
+        ".terminal-wrapper.active .xterm-rows > div, .terminal .xterm-rows > div",
+      )) {
+        const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+          const at = (node.textContent ?? "").indexOf(wanted);
+          if (at === -1) continue;
+          const range = document.createRange();
+          range.setStart(node, at);
+          range.setEnd(node, at + wanted.length);
+          const box = range.getBoundingClientRect();
+          return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+        }
+      }
+      return null;
+    }, text);
+
+  const handoffs = async () =>
+    linesMatching(await serverLogs(), `'/api/sessions/${conversation.id}/handoff'`);
+
+  const elsewhere = await step(
+    "context menu Mend: Open in New Window on the conversation: its tab says it runs as a conversation, with Continue here",
+    async () => {
+      await useWindow(await homeWindow());
+      await view("Mend");
+      const known = await windows();
+      await treeItem(conversation.name).contextMenu("Mend: Open in New Window");
+      const opened = await newWindows(known, { settle: 10_000, limit: 120_000 });
+      expect(opened.length === 1, `${opened.length} window(s) opened`);
+      await useWindow(opened[0]);
+      await statusBar(/SSH:/).waitFor(600_000);
+      const tabs = await waitUntil(
+        `the tab "${conversation.tab}" active`,
+        async () => {
+          const read = await terminal().tabs();
+          return read.active === conversation.tab ? read : null;
+        },
+        120_000,
+      );
+      const rows = await terminal().waitForText("Continue here", 60_000);
+      await shot("conversation-tab");
+      const line = rows.split("\n").find((row) => row.includes("Continue here")) ?? "";
+      expect(
+        line.includes("claude is running as a conversation"),
+        `the tab reads ${JSON.stringify(rows)}`,
+      );
+      return {
+        observed: `tabs ${JSON.stringify(tabs.names)} · active "${tabs.active}" · focused ${tabs.focused} · line "${line.trim()}"`,
+        page: opened[0],
+      };
+    },
+  );
+
+  await step(
+    "Ctrl+click Continue here: one handoff, the tab becomes claude's TUI with the conversation, she types to it",
+    async () => {
+      const before = await handoffs();
+      const at = await terminalTextAt("Continue here");
+      expect(at !== null, "Continue here is not on the screen");
+      await page().mouse.move(at.x, at.y);
+      const hover = await waitUntil(
+        "the link's hover",
+        async () =>
+          page().evaluate(
+            () =>
+              document.querySelector(".monaco-hover, .workbench-hover")?.textContent?.trim() ||
+              null,
+          ),
+        10_000,
+      ).catch(() => null);
+      await shot("continue-here-hover");
+      await page().keyboard.down("Control");
+      await page().mouse.click(at.x, at.y);
+      await page().keyboard.up("Control");
+      const read = await waitUntil(
+        "a live agent-pty and no live agent-protocol",
+        async () => {
+          const now = await api(`/sessions/${conversation.id}`);
+          return liveProcess(now.processes, "agent-pty") &&
+            !liveProcess(now.processes, "agent-protocol")
+            ? now
+            : null;
+        },
+        120_000,
+      );
+      const tui = await terminal().waitForText("❯", 120_000);
+      const tabs = await terminal().tabs();
+      await shot("continue-here-tui");
+      const prompt = () => tui.split("\n").findLast((row) => row.includes("❯")) ?? "";
+      const promptBefore = prompt();
+      await page().keyboard.type("go on");
+      const typed = await terminal().waitForText(/❯\s+go on/, 30_000);
+      await shot("continue-here-typed");
+      const after = await handoffs();
+      const observed = `hover ${JSON.stringify(hover)} · handoffs ${before} → ${after} · tabs ${JSON.stringify(tabs.names)} · active "${tabs.active}" · focused ${tabs.focused} · processes ${JSON.stringify(read.processes.map((process) => [process.kind, process.status]))} · the conversation in the TUI ${typed.includes("say hi")} · prompt before "${promptBefore.trim()}" · after "${(typed.split("\n").findLast((row) => /❯\s+go on/.test(row)) ?? "").trim()}"`;
+      expect(after - before === 1, observed);
+      expect(tabs.active === conversation.tab, observed);
+      return observed;
+    },
+  );
+
+  await step("that window closed", async () => {
+    const result = await closeWindow(elsewhere.page);
+    await useWindow(await homeWindow());
+    await view("Mend");
+    return result;
+  });
+
   // Ana is a second account in the organization. Her token stays in `asAna` and out of every
   // observation.
   let asAna = null;
@@ -577,6 +797,95 @@ export default async (h) => {
     return `banner "${line.trim()}" · tabs ${JSON.stringify(tabs.names)} · active "${tabs.active}"`;
   });
 
+  /** Opens and windows, which no gesture at Ana's session may change. */
+  const openCounts = async () => ({ opens: await opens(), windows: (await windows()).length });
+
+  /** Mend: Open from the palette in the local window: the session pick, Ana's item as listed. */
+  const paletteAna = async () => {
+    await useWindow(await homeWindow());
+    await palette("Mend: Open");
+    await quickInput.waitFor();
+    const title = await quickInput.title();
+    const items = (await quickInput.items()).map((item) => item.replace(/\s+/g, " ").trim());
+    return { title, items, anas: items.find((item) => item.includes(ANA_WHY)) ?? null };
+  };
+
+  await step(
+    "Mend: Open from the palette, shared control on: the pick lists Ana's session with Watch terminal and why; picking it watches, nothing opens",
+    async () => {
+      await useWindow(await homeWindow());
+      await palette("Terminal: Kill All Terminals");
+      await waitUntil(
+        "no terminal tab left",
+        async () => ((await terminal().tabs()).names.length === 0 ? true : null),
+        30_000,
+      );
+      const before = await openCounts();
+      const tabsBefore = (await terminal().tabs()).names.length;
+      const watching = await watch();
+      const { title, items, anas } = await paletteAna();
+      await shot("palette-ana-watch");
+      const listed = `pick "${title}" · items ${JSON.stringify(items)}`;
+      expect(anas !== null && anas.includes("Watch terminal"), listed);
+      await quickInput.pick(ANA_WHY);
+      const rows = await terminal().waitForText("read-only · Ana's session", 60_000);
+      const tabs = await terminal().tabs();
+      await sleep(3_000);
+      const seen = await watching.stop();
+      const after = await openCounts();
+      await shot("palette-ana-watched");
+      const observed = `${listed} · Ana's item "${anas}" · then tabs ${tabsBefore} → ${tabs.names.length}, active "${tabs.active}", banner ${rows.includes("read-only · Ana's session")} · ${shown(seen)} · ${delta(before, after)}`;
+      expect(after.opens === before.opens && after.windows === before.windows, observed);
+      expect(tabs.names.length === tabsBefore + 1, `no new tab: ${observed}`);
+      expect(seen !== null && seen.dialogs.length === 0, observed);
+      return observed;
+    },
+  );
+
+  /**
+   * A deep link to Ana's session followed from outside VS Code. VS Code asks first whether Mend may
+   * have the URI (its own dialog, before the extension sees anything); Open is the person's answer.
+   * Then Mend must open nothing and say why once, offering `offer`, which she clicks at once (the
+   * toast hides itself after a few seconds). `after` reads what the click led to.
+   */
+  const deepLinkAna = async (offer, slug, after) => {
+    await useWindow(await homeWindow());
+    const before = await openCounts();
+    const watching = await watch();
+    await openUrl(`vscode://sealant-sh.mend/open?session=${ana.id}`);
+    const asked = dialog("open this URI");
+    await asked.waitFor(30_000);
+    const vscodeAsked = await asked.text();
+    await asked.click("Open");
+    const toast = notification(ANA_WHY);
+    await toast.waitFor(60_000);
+    const said = await toast.text();
+    await shot(slug);
+    expect(said.includes(offer), `the toast "${said}" does not offer ${offer}`);
+    await toast.click(offer);
+    const followed = await after();
+    await sleep(3_000);
+    const seen = await watching.stop();
+    const counted = await openCounts();
+    await shot(`${slug}-clicked`);
+    const told = seen === null ? [] : seen.toasts.filter((text) => text.includes(ANA_WHY));
+    const observed = `VS Code asked "${vscodeAsked}", Open clicked · toast "${said}" · ${offer} clicked: ${followed} · ${shown(seen)} · ${delta(before, counted)}`;
+    expect(counted.opens === before.opens && counted.windows === before.windows, observed);
+    expect(told.length === 1, `said why ${told.length} times: ${observed}`);
+    expect(!/\bOpen\b/.test(said.replace(ANA_WHY, "")), `the toast offers Open: ${observed}`);
+    return observed;
+  };
+
+  await step(
+    "vscode://sealant-sh.mend/open?session=<Ana's> from outside, shared control on: nothing opens, Mend says why once and offers Watch terminal, which watches",
+    () =>
+      deepLinkAna("Watch terminal", "deep-link-ana-watch", async () => {
+        const rows = await terminal().waitForText("read-only · Ana's session", 60_000);
+        const tabs = await terminal().tabs();
+        return `tabs ${JSON.stringify(tabs.names)}, active "${tabs.active}", banner ${rows.includes("read-only · Ana's session")}`;
+      }),
+  );
+
   await step(
     "Ana turns shared control off",
     async () => {
@@ -617,6 +926,31 @@ export default async (h) => {
   );
 
   await step(
+    "the deep link again, shared control off: nothing opens, Mend says why once and offers Review; what its click leads to",
+    () =>
+      deepLinkAna("Review", "deep-link-ana-review", async () => {
+        await sleep(3_000);
+        const shownDialogs = await dialogs();
+        const toasts = await notifications();
+        if (shownDialogs.length > 0) await page().keyboard.press("Escape");
+        return `dialogs ${JSON.stringify(shownDialogs)} (dismissed) · toasts ${JSON.stringify(toasts)}`;
+      }),
+  );
+
+  await step(
+    "Mend: Open from the palette, shared control off: the pick lists Ana's session with Review, not Open",
+    async () => {
+      const { title, items, anas } = await paletteAna();
+      await shot("palette-ana-review");
+      await quickInput.cancel();
+      const observed = `pick "${title}" · Ana's item "${anas}" · items ${JSON.stringify(items)}`;
+      expect(anas !== null && anas.includes("Review"), observed);
+      expect(!anas.includes("Watch terminal"), observed);
+      return observed;
+    },
+  );
+
+  await step(
     "window.openFoldersInNewWindow removed from settings.json: VS Code's default again",
     async () => {
       const written = userSettings({ "window.openFoldersInNewWindow": undefined });
@@ -627,7 +961,7 @@ export default async (h) => {
   );
 
   await step(
-    "LAST, the default setting: the open button in the local window turns that window into the workspace",
+    "LAST, the default setting: Open on the claude terminal agent in the local window turns that window into its workspace",
     async () => {
       const home = await homeWindow();
       await useWindow(home);
@@ -636,7 +970,7 @@ export default async (h) => {
       const titleBefore = await home.title();
       const before = await counts();
       const watching = await watch();
-      const { title } = await treeItem(session.name).inline(OPEN);
+      const { title } = await treeItem(agent.name).inline(OPEN);
       await waitUntil(
         "the window's title to gain [SSH:",
         async () => ((await home.title().catch(() => "")).includes("[SSH:") ? true : null),
@@ -656,25 +990,55 @@ export default async (h) => {
     },
   );
 
-  await step(
-    "the window that became the workspace: the live shell attached as its tab, focused, before any gesture",
+  const typedAt = await step(
+    `the window that became the workspace: "${agent.tab}" attached and focused, claude's TUI at its prompt, before any gesture`,
     async () => {
-      const { tabs, line } = await attachedTab();
+      const tabs = await waitUntil(
+        `the tab "${agent.tab}" attached, active and focused`,
+        async () => {
+          const read = await terminal().tabs();
+          return read.active === agent.tab && read.focused ? read : null;
+        },
+        120_000,
+      );
+      const rows = await terminal().waitForText("❯", 120_000);
       await shot("window-becomes-workspace");
-      expect(tabs.focused, `the keyboard is not in the terminal (tabs ${JSON.stringify(tabs)})`);
-      return `window title "${await page().title()}" (the story wants "${session.name} — ${project.name}") · tabs ${JSON.stringify(tabs.names)} · active "${tabs.active}" · focused ${tabs.focused} · banner "${line}"`;
+      const prompt = rows.split("\n").findLast((row) => row.includes("❯")) ?? "";
+      return {
+        observed: `window title "${await page().title()}" (the story wants "${agent.name} — ${project.name}") · tabs ${JSON.stringify(tabs.names)} · active "${tabs.active}" · focused ${tabs.focused} · prompt "${prompt.trim()}"`,
+        prompt: prompt.trim(),
+      };
     },
   );
+
+  await step("she types into the attached claude: the keystrokes reach its TUI", async () => {
+    await page().keyboard.type("add a test for the limit");
+    const rows = await terminal().waitForText(/❯\s+add a test for the limit/, 30_000);
+    await shot("typed-into-claude");
+    const prompt = rows.split("\n").findLast((row) => row.includes("❯")) ?? "";
+    return `prompt before "${typedAt.prompt}" · after "${prompt.trim()}"`;
+  });
 
   await step("its Explorer shows the worktree's files", async () => {
     await view("Explorer");
     await waitForText("README", { timeout: 120_000 });
     await shot("window-becomes-workspace-explorer");
-    const verify = await waitForText("VERIFY.md", { timeout: 30_000 })
-      .then(() => true)
-      .catch(() => false);
-    return `Explorer shows README · VERIFY.md (written in the Open in New Window lane) ${verify}`;
+    return "Explorer shows README";
   });
+
+  await step(
+    "a terminal she opens there runs in the workspace: she writes a file and lists it",
+    async () => {
+      await palette("Terminal: Create New Terminal");
+      await terminal().waitFor(60_000);
+      await terminal().type("echo who-$(id -un) in $(pwd); printf 'limit\\n' > LIMIT.md; ls");
+      const rows = await terminal().waitForText(/who-\S+ in \/workspace\/repo/, 60_000);
+      await terminal().waitForText("LIMIT.md", 30_000);
+      await shot("claude-workspace-terminal");
+      const line = rows.split("\n").find((row) => /who-\S+ in \//.test(row)) ?? "";
+      return `terminal "${line.trim()}" · LIMIT.md listed · tabs ${JSON.stringify((await terminal().tabs()).names)}`;
+    },
+  );
 
   await step(
     "what the server observed of the sessions after the opens",
@@ -684,7 +1048,7 @@ export default async (h) => {
         const processes = await api(`/sessions/${id}/processes`);
         return `${id.slice(0, 8)} ${detail.status} ${JSON.stringify(processes.map((process) => [process.kind, process.status]))}`;
       };
-      return `workbench ${await read(session.id)} · ${stoppedName} ${await read(state.warmSession)} · ana ${await read(ana.id)}`;
+      return `workbench ${await read(session.id)} · ${stoppedName} ${await read(state.warmSession)} · ${agent.name} ${await read(agent.id)} · ${conversation.name} ${await read(conversation.id)} · ana ${await read(ana.id)}`;
     },
     { via: "api" },
   );

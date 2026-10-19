@@ -35,8 +35,9 @@ in `docs/specs/vscode-stories.md` (a to h) and say, per story, where today's ext
 - `vscode-open-new-window` is `Mend: Open in New Window` in the row's context menu: the same open,
   always in a new window.
 - `vscode-attached-tab`: a session's workspace window attaches the session's live terminal as a tab
-  named `<harness> · <session>` (`shell · <session>` for a Workbench session's shell), active and
-  focused, with the banner
+  named `<harness> · <session>` (`shell · <session>` for a Workbench session's shell; an unlabelled
+  session goes by its short id, `shell · d4355821`, though its row reads `claude · d4355821`),
+  active and focused, with the banner
   `Mend · <session> · closing this tab detaches; the process keeps running`. Open in a window that
   already is the workspace focuses that tab and does nothing else.
 - `vscode-continue-here`: a conversation's tab reads
@@ -227,10 +228,13 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
   `<userData>/logs`, one per Remote-SSH window open or reload (a reconnect logs `attempt 2`). The
   server's `/v1/workspaces/<workspace>/ssh-target` lines are recorded as context only: a window's
   SSH teardown adds one about 4.6 s after its close. Each gesture is watched (`watch()`), so a
-  toast, dialog or quick input that shows and goes is counted too. The world has no provider login,
-  so the agent is a Workbench session's shell: its tab is `shell · <session>` where the story shows
-  `claude · <session>`. The lanes, in order, with what runs `open4` and `open5` (2026-10-19, the
-  redesign at this branch) and `trunk3` (main's `apps/vscode`, #1080's head `1a7196046`) observed:
+  toast, dialog or quick input that shows and goes is counted too. Claude is connected with the
+  skill's fake setup token (`mend connect claude --from-stdin` with `FAKES.claude`, `via: "setup"`):
+  the real claude starts on it, sits at its `❯` prompt as a terminal agent, and as a conversation
+  answers its first turn with the provider's `401`. The lanes, in order, with what runs `open4` and
+  `open5` (2026-10-19, the redesign at this branch) and `trunk3` (main's `apps/vscode`, #1080's head
+  `1a7196046`) observed; the claude lanes, Ana's palette and deep links were added in `r1f` and
+  `r1g` (round 1, rebased on main `cfc3862`), and `r1t` reran the trunk lane on main's extension:
   - The start. `palette("Mend: New Session…")`, `Workbench`; the row reads `running`. The start
     opens one window on both builds (story a is not built): `opens 0 → 1`, the signal's first check.
     Its terminal is recorded, not asserted: the redesign attached `shell · <session>`, focused,
@@ -270,12 +274,28 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     `'/api/sessions/<id>/resume'` lines `1 → 2`; 1 window with `SSH:` and README.
   - Ana: lane e's edge case below.
   - Setup: the setting removed (VS Code's default).
-  - Last, because it turns the local window into the workspace and nothing can follow: the open
-    button in the local window. The same page navigated: windows `1 → 1`, `opens` +1, the title
-    `[Extension Development Host] repo [SSH: <alias>] - Visual Studio Code` (the story wants
+  - Setup for the claude lanes (`via: "api"`, the calls story a's New session makes, since that flow
+    is not built): `add-rate-limit` created and launched as a terminal agent
+    (`POST /sessions/:id/launch {permissionMode:"ask"}`), running with a live `agent-pty`; and
+    `from-phone` launched as a conversation (`{mode:"protocol", prompt:"say hi"}`), its first turn
+    `completed` with the item
+    `Failed to authenticate. API Error: 401 OAuth access token is invalid.`. The recipe then waits
+    until the view lists both rows: in run `r1c` an inline Open clicked while they were arriving ran
+    `mend.open` with no row, and the palette's session pick showed instead (not yet explained; see
+    the open question below).
+  - Last, because it turns the local window into the workspace and nothing can follow: Open on
+    `add-rate-limit` in the local window. The same page navigated: windows `1 → 1`, `opens` +1, the
+    title `[Extension Development Host] repo [SSH: <alias>] - Visual Studio Code` (the story wants
     `<session> — <project>`; the redesign leaves VS Code's own title), no dialog and no quick input
-    open after it (the watch went with the page), the attached tab active and focused, the Explorer
-    listing README and VERIFY.md.
+    open after it (the watch went with the page). Before any gesture the tab
+    `claude · add-rate-limit` is active and focused with claude's `❯` prompt;
+    `keyboard.type("add a test for the limit")` reads back `❯ add a test for the limit` (claude
+    draws a no-break space after `❯`: match it with `\s`). The Explorer lists README;
+    `Terminal: Create New Terminal` there runs in `/workspace/repo` and lists the file it wrote.
+  - Open question: the `r1c` click above. VS Code keys an id-less tree item by its label, so a row's
+    handle survives an insert; the click may have landed while the view re-fetched its rows. A
+    person who clicks Open just as the list changes would get the session pick. Not reproduced since
+    the recipe waits.
   - The story's workspace-window Mend view (this session only, `<n> other sessions · <n> needs you`)
     and status bar `● <session> · <status>` are not built. Report `not run · not built`.
   - First open on a machine without Remote-SSH: `recipes/vscode-open-first.mjs` from
@@ -302,12 +322,19 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     (`via: "api"`), then dismiss the dialog with its cancel button. A session without a change shows
     the toast `<label> has no change to review yet.`.
 - **e. Dana wants to drive by hand.** `recipes/vscode-open.mjs`, from the default `up`.
-  - The gesture is Open; the attached tab is story c's. Typing into the agent's TUI needs a terminal
-    agent, which needs a provider login: the recipe types into the attached shell's window instead.
-    The `claude · <session>` tab is `verified-unreachable · provider login`.
-  - **Continue here** needs a conversation session, which needs a provider login (`handoff` answers
-    422 `Connect Claude to start a session here…` in the world). Report
-    `verified-unreachable · provider login`. The take-over command is gone from the manifest.
+  - The gesture is Open; typing into the attached `claude · add-rate-limit` is story c's last lane.
+  - **Continue here.** `contextMenu("Mend: Open in New Window")` on `from-phone`: the tab
+    `claude · from-phone`, active and focused, reads
+    `claude is running as a conversation (from your phone or the web) · Continue here to type to it`.
+    The pointer on `Continue here` shows VS Code's hover
+    `Continue this conversation in a terminal here (ctrl + click)`; Ctrl+click it. The server's
+    `'/api/sessions/<id>/handoff'` lines `0 → 1`; the session's processes read
+    `agent-protocol stopped`, `agent-pty running`; the same tab name now draws claude's TUI with the
+    conversation (`❯ say hi`, then the 401 answer) and its prompt, and `go on` typed reads back
+    `❯ go on`. A conversation with no completed turn cannot be continued: the handoff answers 422
+    `StoreFailure` `No saved harness state to reopen as a terminal — resume the session instead.`
+    (the tab says that sentence), after it has already stopped the conversation. The take-over
+    command is gone from the manifest.
   - Not her session. Ana is a second account, set up `via: "api"`: an invitation, her sign-up with
     `x-mend-invitation`, the project shared, her session resumed as a shell, shared control on. Her
     row (`treeItem("ana")`) offers inline `Mend: Watch terminal`, `Mend: Review change` and
@@ -316,9 +343,24 @@ label or `<harness> · <id8>` when it has none (the as-built recipe reads it wit
     `<project> · mend/wt/<worktree> · running` and
     `Ana launched this workspace · Remote-SSH opens it only for them`.
     `inline("Mend: Watch terminal")`: the tab `shell · ana`, its banner `read-only · Ana's session`.
+  - The palette, shared control on. `Terminal: Kill All Terminals`, then `palette("Mend: Open")` in
+    the local window: the pick `Choose a session · <project>` lists Ana's item as
+    `ana running · Watch terminal` with the detail
+    `Ana launched this workspace · Remote-SSH opens it only for them`, every other session by its
+    status. Picking it attaches `shell · ana` read-only (tabs `0 → 1`); `opens` and windows
+    unchanged, 0 dialogs.
+  - A deep link, shared control on. `openUrl("vscode://sealant-sh.mend/open?session=<Ana's>")`. VS
+    Code asks first, its own dialog `Allow 'Mend by Sealant' extension to open this URI?`; click
+    Open. Mend then toasts once `Ana launched this workspace · Remote-SSH opens it only for them`
+    with the one button `Watch terminal` (no Open); its click attaches `shell · ana`, read-only.
+    `opens` and windows unchanged. Click the button at once: the toast hides itself after a few
+    seconds.
   - Shared control off (`via: "api"`): the watching tab closed and VS Code toasted
-    `The terminal process failed to launch (exit code: 1).`; after `Mend: Refresh` the row offers
-    `Mend: Review change` and `Mend: Open in Mend` only.
+    `The terminal process terminated with exit code: 1.`; after `Mend: Refresh` the row offers
+    `Mend: Review change` and `Mend: Open in Mend` only. The same deep link toasts the same line
+    with `Review`; its click shows VS Code's
+    `Do you want Code to open the external website? <web>/changes/<changeId>` (dismissed). The
+    palette's pick lists `ana running · Review`.
 - **f. Dana comes back the next morning.** From the default `up`, after stories a and c.
   - `palette("Developer: Reload Window")`, then `view("Mend")`. Record
     `treeItem("Projects").text()`, `treeItem(<project>).text()`, each session row's
@@ -427,8 +469,9 @@ Commands outside the stories, one gesture each:
 - The extension never opens the worktree's path on the Mend host. `Mend: Copy worktree path` copies
   the server-side path; nothing else uses it.
 - In a per-person workspace the editor connects as the workspace's launcher. A workspace someone
-  else launched is theirs to open: their row offers no Open, and the palette's `Mend: Open` skips
-  that check.
+  else launched is theirs to open: no entry point opens it. The row offers no Open; the palette's
+  and the status bar's session picks list it with Watch terminal or Review; a deep link or a command
+  aimed at it opens nothing and toasts why once, with that one action.
 - The last-window rule. Open with VS Code's default `window.openFoldersInNewWindow` turns the window
   it runs in into the workspace, and the driver's local window with it. A recipe that needs the
   local window afterwards sets the setting to `on` first (`userSettings`, `via: "setup"`), uses

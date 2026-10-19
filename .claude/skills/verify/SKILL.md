@@ -630,6 +630,9 @@ each is a gesture on the real workbench DOM:
   text that appears in the current window, each once, beyond what already showed (`stop()` returns
   null when the window navigated meanwhile); `userSettings(patch)` (the run's `settings.json`
   changed as a person edits it, live; a key set to undefined removed; `via: "setup"`);
+  `openUrl(url)` (a `vscode://` link followed as the OS URL handler follows one: `code --open-url`
+  with the run's user data; VS Code first asks `Allow '<extension>' extension to open this URI?` in
+  a dialog of its own, which the recipe answers with `dialog("open this URI").click("Open")`);
 - `windows()` (every workbench window), `newWindows(known)` (what one gesture opened, once it has
   settled), `waitForWindow(known)`, `useWindow(page)`, `homeWindow()` (the local window, not a
   Remote-SSH one), `closeWindow(page)` (`Close Window` from that window's palette); a Remote-SSH
