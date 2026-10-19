@@ -27,7 +27,9 @@ logs, and a video of the display. The flows below follow the stories in
   with [Try again]. With the Mend CLI signed in, the view's message reads
   `Mend at <host:port> · signed in as <email> (from the Mend CLI)` over one row, **Use it**. The
   account shows in VS Code's Accounts menu as `<email> @ <host> (Mend)`; its **Sign Out** (after VS
-  Code's `Sign out of '<account>'?`) and `Mend: Sign out` revoke the editor's device.
+  Code's `Sign out of '<account>'?`) and `Mend: Sign out` revoke the editor's device. A token Mend
+  refuses (401) is dropped in every window, with one `Signed out — sign in again.` toast, and
+  Connect while connected revokes the device it replaces.
 - `vscode-view` groups `Needs you`, `Since you last looked` and `Running` in any window that is not
   a session's workspace, always, an empty one reading `nothing`, then `Projects` (collapsed) once a
   project exists; a workspace window shows its own session as a row like any other (its name, its
@@ -650,9 +652,21 @@ the row takes the job's name.
       adopts it (no input) and the sessions tree shows. With the project removed again, a new window
       (`palette("New Window")`) has no folder: `welcome()` reads `Nothing adopted yet.` [Adopt a
       repository…], one input titled `Adopt a repository`.
+    - Edge, the token refused: the editor's device revoked with `DELETE /me/devices/<id>`
+      (`via: "api"`, as Settings → Devices does). Revoking a device does not end the open event
+      stream, so the editor learns it at its next read: `palette("Mend: Refresh")`. One toast,
+      `Signed out — sign in again.` [Connect to server]; the welcome reads Connect, and the Accounts
+      menu holds no Mend account. Its `Connect to server` opens the URL input with her server in it,
+      and one walk through the approve page ends in one success toast and one `VS Code on …` device.
+    - h2, Connect again while connected: `palette("Mend: Connect to server")`, the same walk, one
+      success toast; `GET /me/devices` then lists one `VS Code on …` device, not the one before it,
+      and no `earlier device` warning shows.
     - `accounts({ signOut: <email> })`: VS Code asks `Sign out of '<email> @ <host>'?`;
       `dialog("Sign out of").click("Sign Out")`. `GET /me/devices` lists no `VS Code on …` device
-      after it, the Accounts menu holds no Mend account, and the welcome reads Connect again.
+      after it, the Accounts menu holds no Mend account, and the welcome reads Connect again. The
+      one toast is the sign-out's own,
+      `Signed out of Mend at <url>, and revoked this editor's device.`: no
+      `Signed out — sign in again.` after it.
   - From `up --cli-only --no-ssh-setup`:
     - h1 variant: the view's message reads
       `Mend at <host:port> · signed in as <email> (from the Mend CLI)` over one row, `Use it`.
