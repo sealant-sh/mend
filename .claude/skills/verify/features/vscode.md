@@ -38,10 +38,12 @@ logs, and a video of the display. The flows below follow the stories in
   window's panel, and no window opens.
 - `vscode-adopt` adopts a project from a clone URL and a name.
 - `vscode-new-session` is `Mend: New session`: one quick input on the project the window's origin
-  matched (else a project step with `Adopt this repository` on top), her prompt as its value, one
-  dim line `<harness> · <model> · … · from <base>` with **Change…** (harness, model, thinking,
-  permissions, base, remembered per project). Enter starts a terminal agent and opens no window; a
-  shell (Change… → `shell`) takes the typed text as its name and covers a worktree without an agent.
+  matched (else a project step with `Adopt this repository` on top), her prompt typed into an input
+  box (an `InputBox`, which filters nothing, so a prompt of any length reaches the extension), one
+  dim line `<harness> · <model> · … · from <base>` under it, and **Change…** on its title bar
+  (harness, model, thinking, permissions, base, as lists, remembered per project). Enter starts a
+  terminal agent and opens no window; a shell (Change… → `shell`) takes the typed text as its name
+  and covers a worktree without an agent.
 - `vscode-new-in-worktree` is the same quick input joined to a session's worktree
   (`New session · <project> · in <worktree>`).
 - `vscode-open` is the session row's **Open** button (`Mend: Open`). It opens the session's
@@ -213,11 +215,18 @@ the row takes the job's name.
   all 37 steps. In the server's log the created session's first read of its own began about 480 ms
   after the create answered: the stream's project read came first, about 230 ms after, and the
   session read waited the 250 ms batch gap behind it. The row itself shows when the create answers.
-  The lanes, in an order where each leaves the next a usable world:
-  - a1. `palette("Mend: New session")`: one quick input, `quickInput.step()` reads the title
-    `New session · <project>` with no counter, placeholder `What should claude do?`, and one row
-    whose description is the dim line `claude · default model · from <base>` and whose buttons read
-    `["Change…"]` (`quickInput.rows()`).
+  #1092's round 3 (server `0.0.0-dev.sha00132ab6f8bf`, which names the unknown base): runs `ns4r1`
+  and `ns4r2` passed all 41 steps on the QuickPick prompt; `recipes/vscode-open.mjs` then stopped at
+  its step 8 on `ns4r1`'s world (`Your Claude login needs reconnecting`: the new-session lanes leave
+  the fake login marked), and passed its 53 on a fresh world, `ns4o1`. Runs `ns5r1` and `ns5r2` (the
+  prompt an InputBox, the same server) passed all 43 steps, and `ns5o1` passed
+  `recipes/vscode-open.mjs`'s 53 on a fresh world. The lanes, in an order where each leaves the next
+  a usable world:
+  - a1. `palette("Mend: New session")`: one input box, `quickInput.step()` reads the title
+    `New session · <project>` with no counter, placeholder `What should claude do?`, no rows,
+    `quickInput.message()` reads the dim line `claude · default model · from <base>` undecorated (VS
+    Code's own `(Press 'Enter' to confirm or 'Escape' to cancel)` split off as its `hint`), and the
+    title bar's buttons (`quickInput.buttons()`) hold `Change…`.
   - a2. `watch()`, then `quickInput.type(<prompt>)` and Enter. The input closes; `viewRows()` is
     sampled every 150 ms for rows that were not there before: the first one's delay after Enter, a
     `<label> · starting · …` sample (`shot("row-starting")`), then `running`. Over the API
@@ -241,8 +250,8 @@ the row takes the job's name.
     title reads `New session · <project> · in <label>'s worktree`, never `wt-<uuid>`. Escape.
   - Base not in the store (`via: "setup"`): `git switch -c verify-unpushed` and an empty commit in
     the window's checkout. New session's dim line ends
-    `from <base> · your branch verify-unpushed isn't pushed` and the row's icon is `warning`. The
-    checkout goes back to `<base>`.
+    `from <base> · your branch verify-unpushed isn't pushed`, decorated `warning` (the box's
+    validation message). The checkout goes back to `<base>`.
   - The base is the ref that proved it. `git switch -c verify-tracks --track origin/<base>`
     (`via: "setup"`): the dim line ends `from <base>` with no `warning`; Enter, and the created
     session's worktree in `GET /projects/<id>` has `baseRef` `<base>` and `baseSha` the checkout's
@@ -253,6 +262,16 @@ the row takes the job's name.
     keeps the input open with the prompt and the line
     `from <base> · Mend's store couldn't find verify-gone`, no session created; Enter again starts
     one whose `baseRef` is `<base>`. The checkout goes back to `<base>`.
+  - A repository nested inside the checkout (`via: "setup"`): `git init` at `vendor/nested` in the
+    window's checkout, one empty commit, origin `https://github.com/verify-invalid/nested.git`
+    (never fetched, adopted by no project), and `vendor/nested/` in the checkout's
+    `.git/info/exclude`. `openFolder(<it>)`: New session's first step reads `New session`,
+    `Choose a project`, `Adopt this repository` with that origin on top, then the projects. The
+    window closes, the folder is removed, and New session in the checkout's own window reads
+    `New session · <project>`. This world's project is adopted from a clone URL and its store is in
+    the server's container, so neither path rule (the adopted source, a store worktree) can fire
+    here: the lane shows the nested repository gets Adopt, and `project-match.test.ts` shows the
+    parent's path no longer takes it.
   - No project matched (`via: "setup"`): `git clone https://github.com/octocat/Spoon-Knife.git` into
     a scratch folder named `<project>`, like the adopted project, so a match by folder name would
     take it. Then `openFolder(<it>)` and `waitForWindow`. There New session's first step reads
@@ -271,9 +290,16 @@ the row takes the job's name.
     `notification(/( failed)? · launch refused · /).click("Retry")`: no new session, the server's
     `'/api/sessions/<id>/launch'` lines +1, the session `running` with a live agent, the row
     `running`.
-  - Offline: New session with a prompt typed; the server container stopped (`via: "setup"`). The row
-    reads `Mend is offline · retrying`; Enter leaves the input open with the prompt. Escape, then
-    what VS Code shows: `paletteRows("Mend: New session")` (VS Code leaves a command whose
+  - A long prompt: `quickInput.type()` pastes 100,000 ASCII characters; the box holds them all and
+    the line does not warn. Enter: one session, its live agent's `argv` is `["claude", <prompt>]`
+    with the last word equal to what was pasted (`via: "api"`). Then 130,000 characters: the line
+    reads `the prompt is 130,000 bytes · claude takes at most 120,000`, decorated `warning`, Enter
+    keeps the input open with the prompt, and no session is created. The box is cleared, so New
+    session keeps nothing. Before the prompt was an InputBox, a QuickPick's row filter threw
+    `Regular expression too large` past about 32,000 characters and claude started with no prompt.
+  - Offline: New session with a prompt typed; the server container stopped (`via: "setup"`). The
+    line reads `Mend is offline · retrying`; Enter leaves the input open with the prompt. Escape,
+    then what VS Code shows: `paletteRows("Mend: New session")` (VS Code leaves a command whose
     enablement is false out of the palette), `viewActions()`, and the title bar button
     (`viewAction(/^(Mend: New session|Mend is offline)/)`) disabled with its tooltip. The server
     started again: New session opens with the prompt typed before, the cursor after it
