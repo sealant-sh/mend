@@ -11,16 +11,18 @@ attaching. Review is the worktree against the merge base `M`.
 
 ## Sub-features
 
-- `handoff-held` hands off with no prompt: a held workspace, `✓ held · idle, no agent`.
+- `handoff-held` hands off with no prompt: a held workspace, `✓ held · <status>, no agent`, where
+  `<status>` is the session status the server answered with.
 - `handoff-unchanged` leaves the checkout byte-identical: every file under it, `.git` included, has
   the same bytes, mode, size, mtime and ctime, and no file appears.
 - `handoff-row` shows `handed off from <host>` on the worktree and session lines (web project page),
-  the Now card (web), and the worktree and session rows (TUI).
+  the Now card (web), the worktree and session rows (TUI), and the session's row in `mend sessions`
+  (CLI).
 - `handoff-review-base` reviews the change from `M`: base `main`, base sha `M`, and exactly the
   files `git diff --name-only M` names plus the travelled untracked files, minus those left out.
 - `handoff-split` keeps staged and unstaged apart inside the session, the same file included.
 - `handoff-prompt` starts the agent on a prompt and returns without attaching.
-- `handoff-again` hands off the same branch again as `<name>-2`.
+- `handoff-again` hands off the same branch again as `<name>-2`, and names the earlier handoff.
 - `handoff-foreign-origin` refuses a checkout whose origin is not the project's.
 
 ## How to get to it (user POV)
@@ -78,8 +80,8 @@ Steps:
   `  left out · big.bin · 8.6 MiB, over the 8 MiB file limit`,
   `  bundling 2 commits · 4 files → uploading <size> → creating worktree`,
   `✓ handed off as verify-handoff · your checkout is unchanged · as of <hh:mm:ss>`,
-  `  base main <M7> · session <id8>`, `✓ held · idle, no agent`, `  attach · mend attach <id8>` and
-  `  watch · <web>/sessions/<id>`. Exit code `0`. Note `<id8>` and `<id>`.
+  `  base main <M7> · session <id8>`, `✓ held · <status>, no agent`, `  attach · mend attach <id8>`
+  and `  watch · <web>/sessions/<id>`. Exit code `0`. Note `<id8>`, `<id>` and `<status>`.
 - **Fingerprint after.** Run the same command into `<evidence>/handoff-after.txt`, then
   `diff <evidence>/handoff-before.txt <evidence>/handoff-after.txt`. It prints nothing and exits
   `0`.
@@ -98,7 +100,8 @@ Steps:
 - **TUI rows.** Run `tmux new-session -d -s mend-handoff -x 200 -y 50 'mend ui'`, select
   `<project>`, then `tmux send-keys -t mend-handoff 2`. `tmux capture-pane -p -t mend-handoff` shows
   `verify-handoff` with the line under it starting `from main · handed off from <host>`. Press `3`:
-  the session row's facts line contains `handed off from <host>`.
+  the session row's facts line contains `handed off from <host>`. Run `mend sessions`: the row for
+  `<id8>` contains `handed off from <host>`.
 - **Review base and files.** Open the review from the session page (`Review the change`). The line
   under the heading ends its counts with `· base main`, and the sidebar's file buttons are exactly
   `.env.example`, `.gitignore`, `A.md`, `B.md` and `notes.txt`. Compute the expectation
@@ -115,7 +118,9 @@ Steps:
   the worktree, so take the rows first.
 - **Hand off again.** Run `mend handoff` in `<clone>` once more. The handed-off line reads
   `✓ handed off as verify-handoff-2 · verify-handoff is your earlier handoff · your checkout is unchanged · as of <hh:mm:ss>`.
-  A third reads `verify-handoff-3 · verify-handoff is your earlier handoff`.
+  A third reads `verify-handoff-3 · verify-handoff is your earlier handoff`. The CLI prints the name
+  the server's answer gives as `previous`; an answer whose `previous` is null reads
+  `· verify-handoff was taken` instead. Report which.
 - **With a prompt.** Run `mend handoff "say hello"` in `<clone>`. After the handed-off lines, stdout
   reads `  starting · booting`, `✓ running · claude on your prompt`, then the `attach` and `watch`
   lines, and the command exits `0` without attaching (no terminal is taken). Without
@@ -141,8 +146,9 @@ Steps:
   Now card do.
 - The decided row copy is `idle · handed off from <host>`. At 89e758e1a no surface says `idle` for a
   held session: the web status reads `Running · recording`, the TUI row
-  `up <n> · handed off from <host> …`, and `mend sessions` `claude <id8> running`. Report what the
-  surface shows.
+  `up <n> · handed off from <host> …`, and `mend sessions` `claude <id8> running`. The CLI's held
+  line prints the status the server answered with, so it reads `✓ held · running, no agent` on such
+  a server. Report what the surface shows.
 - At 89e758e1a the review page and the TUI review screen show `0 files · +0 −0` for a handed-off
   worktree (the review's first checkpoint is the handed-off state, not `M`), while the change's diff
   in the API names the right files. Report both.
