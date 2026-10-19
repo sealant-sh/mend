@@ -652,88 +652,95 @@ describe("the hand-off", () => {
     revokedAt: null,
   };
 
-  it.effect("hands nothing off when the shell does not take the typed script", () =>
-    Effect.gen(function* () {
-      const scope = yield* Scope.Scope;
-      const mend = gateDeviceCalls(
-        {
-          ...unreachableMend,
-          launchProtocol: () =>
-            Effect.fail(
-              new MendCommandRefused({
-                operation: "POST /api/sessions/:id/launch",
-                status: 422,
-                tag: null,
-                detail: null,
-              }),
-            ),
-        },
-        () => Effect.void,
-      );
-      const real = makeTerminals({
-        mend,
-        mendUrl: new URL("http://127.0.0.1:0"),
-        threadSession: () => Effect.succeed(null),
-      });
-      const terminals: Terminals = {
-        ...real,
-        open: (_session, input) =>
-          Effect.succeed({
-            threadId: input.threadId,
-            terminalId: input.terminalId,
-            cwd: input.cwd ?? "/workspace",
-            worktreePath: null,
-            status: "running",
-            pid: null,
-            history: "",
-            exitCode: null,
-            exitSignal: null,
-            label: "shell",
-            updatedAt: "2026-10-17T12:00:00.000Z",
-          }),
-        processOf: () => "process-1",
-        write: (input) => real.write(input),
-      };
-      const settled: Array<string | null> = [];
-      const setups = makeWorktreeSetups(scope);
-      yield* setups.begin({
-        threadId: "thread-1",
-        branch: null,
-        baseRef: "main",
-        stages: ["setup-script", "agent"],
-      });
-      yield* prepareWorktree(
-        {
+  // The launch is refused as one already under way (an older Mend's 422) or as the agent already
+  // up (SLNT-167's 409): either way the setup goes on to type its script.
+  it.effect.each([
+    { status: 422, tag: null },
+    { status: 409, tag: "SessionAgentLive" },
+  ])(
+    "hands nothing off when the shell does not take the typed script ($status)",
+    ({ status, tag }) =>
+      Effect.gen(function* () {
+        const scope = yield* Scope.Scope;
+        const mend = gateDeviceCalls(
+          {
+            ...unreachableMend,
+            launchProtocol: () =>
+              Effect.fail(
+                new MendCommandRefused({
+                  operation: "POST /api/sessions/:id/launch",
+                  status,
+                  tag,
+                  detail: null,
+                }),
+              ),
+          },
+          () => Effect.void,
+        );
+        const real = makeTerminals({
           mend,
-          terminals,
-          setups,
-          worktreeOf: () =>
-            Effect.succeed({ worktreeId: "worktree-1", worktreePath: "/workspace" }),
-          setupScriptOf: () =>
+          mendUrl: new URL("http://127.0.0.1:0"),
+          threadSession: () => Effect.succeed(null),
+        });
+        const terminals: Terminals = {
+          ...real,
+          open: (_session, input) =>
             Effect.succeed({
-              id: "install",
-              name: "Install",
-              command: "pnpm install",
-              icon: "configure",
-              runOnWorktreeCreate: true,
+              threadId: input.threadId,
+              terminalId: input.terminalId,
+              cwd: input.cwd ?? "/workspace",
+              worktreePath: null,
+              status: "running",
+              pid: null,
+              history: "",
+              exitCode: null,
+              exitSignal: null,
+              label: "shell",
+              updatedAt: "2026-10-17T12:00:00.000Z",
             }),
-          launchUnderWay: () => Effect.succeed("2026-10-17T12:00:00.000Z"),
-          refresh: () => Effect.void,
-          setupProcessOpened: () => Effect.void,
-          settle: (_preparation, failure) => Effect.sync(() => settled.push(failure)),
-        },
-        {
-          session: SESSION,
+          processOf: () => "process-1",
+          write: (input) => real.write(input),
+        };
+        const settled: Array<string | null> = [];
+        const setups = makeWorktreeSetups(scope);
+        yield* setups.begin({
           threadId: "thread-1",
-          sessionId: "session-1",
-          projectId: "project-1",
-          runId: "run-1",
-          options: {},
-          staleProcessId: null,
-        },
-      );
-      assert.deepStrictEqual(settled, ["The gateway could not type the setup script."]);
-    }),
+          branch: null,
+          baseRef: "main",
+          stages: ["setup-script", "agent"],
+        });
+        yield* prepareWorktree(
+          {
+            mend,
+            terminals,
+            setups,
+            worktreeOf: () =>
+              Effect.succeed({ worktreeId: "worktree-1", worktreePath: "/workspace" }),
+            setupScriptOf: () =>
+              Effect.succeed({
+                id: "install",
+                name: "Install",
+                command: "pnpm install",
+                icon: "configure",
+                runOnWorktreeCreate: true,
+              }),
+            launchUnderWay: () => Effect.succeed("2026-10-17T12:00:00.000Z"),
+            refresh: () => Effect.void,
+            setupProcessOpened: () => Effect.void,
+            settle: (_preparation, failure) => Effect.sync(() => settled.push(failure)),
+          },
+          {
+            session: SESSION,
+            threadId: "thread-1",
+            sessionId: "session-1",
+            projectId: "project-1",
+            runId: "run-1",
+            options: {},
+            staleProcessId: null,
+          },
+        );
+        assert.deepStrictEqual(settled, ["The gateway could not type the setup script."]);
+      }),
   );
 });
 
