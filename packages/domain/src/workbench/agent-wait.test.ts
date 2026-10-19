@@ -75,9 +75,9 @@ describe("agentSignalOf", () => {
   });
 });
 
-describe("agentHookTarget", () => {
-  const agent = (name: string, providerSessionId: string | null) => ({ name, providerSessionId });
+const agent = (name: string, providerSessionId: string | null) => ({ name, providerSessionId });
 
+describe("agentHookTarget", () => {
   it("refuses a report that names no process", () => {
     expect(
       agentHookTarget(report({ event: "Stop", providerSessionId: null }), [agent("a", null)]),
