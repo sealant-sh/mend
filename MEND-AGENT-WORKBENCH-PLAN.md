@@ -305,8 +305,10 @@ worktree is the place, the session is a conversation against it plus its record,
 interacts is a process of one kind — `shell`, `agent-pty`, `agent-protocol`, `service` — with one
 lifecycle. A session holds several agent processes over its life; harness native state is harvested
 per agent process. Session status is a fold over live processes: a pending request on a live
-protocol agent → `waiting`; any other live agent → `running`; shells or Services only → `idle`;
-nothing live → settled from the last agent's outcome.
+protocol agent, or any live terminal agent asking for permission or asking a question → `waiting`;
+any other live agent working → `running`; every live agent a terminal agent that finished its turn →
+`idle`; shells or Services only → `idle`; nothing live → settled from the last agent's outcome
+(amended 2026-10-19, "Decided").
 
 A session contains or references:
 
@@ -1373,8 +1375,12 @@ understand the work.
   session reads `idle · claude finished its turn` while the agent stays live. It asks nothing of the
   person, so it gets no Needs you, no badge and no push. Only a permission or a question reads
   `waiting`. The other `idle`, an ended agent beside a shell or Services, has no live agent and no
-  wait. A session that ends still rings "finished". This replaces the G4 entry's `waiting` for a
-  finished turn below.
+  wait. Several live agents fold together, whatever order their rows come in: any ask reads
+  `waiting` with the earliest ask's line, else any working agent reads `running`, and only when
+  every live agent finished its turn does the session read `idle`. A session that ends still rings
+  "finished", and so does an agent that exits after its finished turn while a shell or Service keeps
+  the session `idle`: the push and review prep read the process event as well as the session's. This
+  replaces the G4 entry's `waiting` for a finished turn below.
 
 - **2026-10-19: a terminal agent's own hooks say that it waits, and why (G4).** A session also reads
   `waiting` while its live terminal agent (`agent-pty`) has reported a wait. Claude's `--settings`
