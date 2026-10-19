@@ -276,6 +276,24 @@ describe("a terminal agent's hooks (G4)", () => {
       }),
     );
   });
+
+  it("refuses the 61st report a session sends in a minute, before it reads anything", async () => {
+    await withClaudeSession((world, sessionId) =>
+      Effect.gen(function* () {
+        const hook = hookOf(sessionId);
+        for (let sent = 0; sent < 60; sent++) {
+          expect(yield* hook(own(world, sessionId, "PreToolUse", { tool: "Bash" }))).toBe(
+            "ignored",
+          );
+        }
+        const refused = yield* hook(own(world, sessionId, "PermissionRequest", { tool: "Bash" }));
+        expect(refused).toMatchObject({ _tag: "too-many" });
+        expect(typeof refused === "object" ? refused.retryAfterSeconds : 0).toBeGreaterThan(0);
+        expect(statusOf(world, sessionId)).toBe("running");
+        expect(agentOf(world, sessionId)?.waiting).toBeNull();
+      }),
+    );
+  });
 });
 
 const refusalOf = <A, E>(effect: Effect.Effect<A, E>) => {

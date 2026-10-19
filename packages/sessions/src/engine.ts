@@ -194,6 +194,7 @@ import {
   noResumeLine,
   resumesOwnHarness,
 } from "@mend/domain/workbench";
+import { makeWindowLimiter } from "@mend/network";
 import {
   asSealantUser,
   captureDrainOf,
@@ -882,6 +883,9 @@ const TakenAheadRef = Context.Reference<TakenAhead | null>("@mend/sessions/Taken
 
 /** How long a hand-over to a sender that failed after its stop is not tried again (review 2, P3-3). */
 const HAND_OVER_BACKOFF_MS = 60_000;
+
+/** Hook reports one session may send a minute: a tool call makes a handful, a loop makes more. */
+const AGENT_HOOK_REPORTS_PER_MINUTE = 60;
 
 /** A failure's own words, for a session line. */
 const causeWords = (cause: Cause.Cause<unknown>): string => {
@@ -21701,10 +21705,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const restartService = (serviceId: ServiceId) =>
         withServiceLifecycle(restartServiceUnlocked(serviceId));
 
+      const agentHookReports = makeWindowLimiter();
       const agentHook = Effect.fn("SessionEngine.agentHook")(function* (
         sessionId: SessionId,
         report: AgentHookReport,
       ): Effect.fn.Return<AgentHookOutcome> {
+        const retryAfterSeconds = agentHookReports.take(
+          sessionId,
+          AGENT_HOOK_REPORTS_PER_MINUTE,
+          clock.currentTimeMillisUnsafe(),
+        );
+        if (retryAfterSeconds !== null) return { _tag: "too-many", retryAfterSeconds };
         if (report.providerSessionId === null) return "unidentified";
         const live = liveTerminalAgentsOf(
           yield* processes.listForSession(sessionId),

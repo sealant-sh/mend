@@ -187,6 +187,31 @@ const call = (
     request.end();
   });
 
+/** A POST's status and its `retry-after` header. */
+const retryAfterOf = (
+  address: string,
+  route: string,
+  headers: Record<string, string>,
+  body: unknown,
+): Promise<{ status: number; retryAfter: string | undefined }> =>
+  new Promise((resolve, reject) => {
+    const [host, port] = address.split(":");
+    const request = http.request(
+      { host, port: Number(port), method: "POST", path: route, headers, agent: false },
+      (response) => {
+        response.resume();
+        response.on("end", () =>
+          resolve({
+            status: response.statusCode ?? 0,
+            retryAfter: response.headers["retry-after"],
+          }),
+        );
+      },
+    );
+    request.on("error", reject);
+    request.end(JSON.stringify(body));
+  });
+
 const runScript = (script: string, args: string[], env: Record<string, string>, stdin?: Buffer) =>
   new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
     const child = spawn(process.execPath, [script, ...args], { env: { ...process.env, ...env } });
@@ -862,6 +887,12 @@ describe("SessionChannelNetworkHost", () => {
           const { providerSessionId: _dropped, ...unnamed } = codexStop;
           expect((yield* post(unnamed)).status).toBe(400);
           expect(seen).toHaveLength(6);
+
+          outcome = { _tag: "too-many", retryAfterSeconds: 17 };
+          const tooMany = yield* Effect.promise(() =>
+            retryAfterOf(address, "/session/agent-hook", auth, codexStop),
+          );
+          expect(tooMany).toEqual({ status: 429, retryAfter: "17" });
 
           const usage = yield* Effect.promise(() =>
             runScript(path.join(dir, "bin", "mend"), ["publish"], env),

@@ -173,7 +173,8 @@ export interface SessionSocketApi {
 /**
  * `no-live-agent`: this session has no live terminal agent of the report's harness, or it ended
  * while the report was read. `other-process`: the report names another process of that harness.
- * `unidentified`: the report carries no harness session id.
+ * `unidentified`: the report carries no harness session id. `too-many`: the session sent more
+ * reports this minute than a working agent does.
  */
 export type AgentHookOutcome =
   | "applied"
@@ -181,7 +182,8 @@ export type AgentHookOutcome =
   | "ignored"
   | "no-live-agent"
   | "other-process"
-  | "unidentified";
+  | "unidentified"
+  | { readonly _tag: "too-many"; readonly retryAfterSeconds: number };
 
 /** What a redeemed pickup answers: each file's path and its bytes in base64. */
 export interface PickupAnswer {

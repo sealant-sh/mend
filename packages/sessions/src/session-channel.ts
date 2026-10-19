@@ -229,6 +229,14 @@ export const handleSessionRequest = async (
       const report = decodeAgentHookReport(await readBody(request, MAX_AGENT_HOOK_BODY_BYTES));
       if (Exit.isFailure(report)) return respond(400, { message: "not an agent hook report" });
       const outcome = await Effect.runPromise(api.agentHook(report.value));
+      if (typeof outcome === "object") {
+        response.writeHead(429, {
+          "content-type": "application/json",
+          "retry-after": String(outcome.retryAfterSeconds),
+        });
+        response.end(JSON.stringify({ message: "too many hook reports from this session" }));
+        return;
+      }
       if (outcome === "no-live-agent") {
         return respond(409, {
           message: "no terminal agent of this harness is live in this session",
