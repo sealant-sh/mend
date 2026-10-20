@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -11,7 +12,7 @@ import { handoffCommand, type HandoffDeps } from "./handoff.ts";
 import { formatBytes } from "./landing.ts";
 import { mainTestFixtures } from "./main-test-fixtures.ts";
 
-const { json, spawning, startCli, startFakeMend } = mainTestFixtures();
+const { json, spawning, startCli, startFakeMend, waitFor } = mainTestFixtures();
 const world = handoffWorlds();
 
 const ORIGIN = "https://github.com/acme/newsroom-api.git";
@@ -474,6 +475,32 @@ describe("mend handoff", spawning, () => {
       expect(result.stderr).toBe(refusal);
       expect(server.routes).toEqual(["GET /api/projects"]);
     }
+  }, 30_000);
+
+  it("removes its copy of the work from TMPDIR when Ctrl-C lands while it bundles", async () => {
+    const w = world();
+    const dana = newsroom(w);
+    const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    const shims = fs.mkdtempSync(path.join(w.root, "shims-"));
+    const bundling = path.join(w.root, "bundling");
+    fs.writeFileSync(
+      path.join(shims, "git"),
+      `#!/bin/sh\ncase " $* " in *" bundle create "*) : > '${bundling}'; sleep 2;; esac\nexec '${realGit}' "$@"\n`,
+      { mode: 0o755 },
+    );
+    const tmp = fs.mkdtempSync(path.join(w.root, "tmp-"));
+    const server = await handoffServer();
+    const env = { TMPDIR: tmp, PATH: `${shims}:${process.env["PATH"] ?? ""}` };
+    const cli = startCli(server.server.url, ["handoff"], env, dana);
+    await waitFor(() => fs.existsSync(bundling));
+    expect(fs.readdirSync(tmp)).not.toEqual([]);
+    cli.child.kill("SIGINT");
+    const { code } = await cli.exited;
+    await server.server.close();
+    expect(code, cli.stderr()).toBe(130);
+    expect(cli.stderr()).toBe("mend: interrupted · nothing was created\n");
+    expect(fs.readdirSync(tmp)).toEqual([]);
+    expect(server.routes.filter((route) => route.startsWith("POST"))).toEqual([]);
   }, 30_000);
 
   it("shares this machine's ssh-agent while it runs, for a server in bridge mode", async () => {

@@ -35,9 +35,20 @@ const dim = paint("2");
 const green = paint("32");
 const amber = paint("33");
 const say = (line: string) => process.stdout.write(`${redactCredentials(line)}\n`);
-const fail = (message: string): never => {
-  process.stderr.write(`mend: ${redactCredentials(message)}\n`);
-  process.exit(1);
+
+/** A refusal on its way to the command boundary, which says it and exits. */
+class Refusal extends Error {
+  readonly words: string;
+  readonly code: number;
+  constructor(words: string, code = 1) {
+    super(words);
+    this.words = words;
+    this.code = code;
+  }
+}
+
+const refuse = (words: string): never => {
+  throw new Refusal(words);
 };
 
 interface ProjectDto {
@@ -280,7 +291,7 @@ const serverTakesHandoffs = async (deps: HandoffDeps): Promise<boolean> =>
 
 const oldServer = async (deps: HandoffDeps): Promise<never> => {
   const version = await deps.serverVersion();
-  return fail(
+  return refuse(
     `this Mend server${version === null ? "" : ` (${version})`} does not take handoffs · upgrade it, then hand off again · nothing was created`,
   );
 };
@@ -291,7 +302,7 @@ const tooLarge = (bytes: number, limit: number): string =>
 const refusal = async (deps: HandoffDeps, call: string, answer: Downloaded): Promise<never> => {
   if (predatesHandoffs(answer)) return oldServer(deps);
   const body = parseJson(answer.bytes);
-  return fail(noteRefusal(call, answer.status, failureWords(answer.status, body)).words);
+  return refuse(noteRefusal(call, answer.status, failureWords(answer.status, body)).words);
 };
 
 const termsFor = async (deps: HandoffDeps, projectId: string): Promise<HandoffTerms> => {
@@ -300,7 +311,7 @@ const termsFor = async (deps: HandoffDeps, projectId: string): Promise<HandoffTe
   if (answer.status !== 200) return refusal(deps, `GET ${route}`, answer);
   const terms = termsOf(parseJson(answer.bytes));
   if (terms === null) {
-    return fail("the server's handoff terms are in a shape this CLI cannot read · update mend");
+    return refuse("the server's handoff terms are in a shape this CLI cannot read · update mend");
   }
   return terms;
 };
@@ -322,7 +333,7 @@ const send = async (
     if (uploaded._tag === "answered" && !GATEWAY_STATUSES.has(uploaded.status)) return uploaded;
     const words = uploaded._tag === "answered" ? `HTTP ${uploaded.status}` : uploaded.message;
     if (attempt === UPLOAD_ATTEMPTS) {
-      return fail(
+      return refuse(
         `${words} · sent ${UPLOAD_ATTEMPTS} times with no answer from Mend · mend sessions shows whether it arrived`,
       );
     }
@@ -351,7 +362,7 @@ const projectFor = async (
         })
       : projects.find((project) => project.name === explicit);
   if (explicit !== null && found === undefined) {
-    return fail(`no adopted project named "${explicit}"`);
+    return refuse(`no adopted project named "${explicit}"`);
   }
   const origin = checkout.originUrl;
   if (found !== undefined) {
@@ -359,26 +370,26 @@ const projectFor = async (
       origin !== null &&
       remoteForOrigin([{ name: "origin", url: origin }], found.originUrl, checkout.top) !== null;
     if (!originMatches) {
-      return fail(
+      return refuse(
         `this checkout's origin is ${origin ?? "not set"} · ${found.name}'s is ${found.originUrl ?? "not set"} · nothing was created`,
       );
     }
     return found;
   }
   if (origin === null) {
-    return fail(
+    return refuse(
       "no adopted project matches this checkout, and it has no origin to adopt · nothing was created",
     );
   }
   const issue = repositoryCloneUrlIssue(origin);
-  if (issue !== null) return fail(`${issue} · nothing was created`);
+  if (issue !== null) return refuse(`${issue} · nothing was created`);
   if (!(await serverTakesHandoffs(deps))) return oldServer(deps);
   const repository = normalizeRemoteUrl(origin) ?? origin;
   const name = normalizeProjectName(path.basename(origin.replace(/\/+$/u, ""), ".git"));
   const question = `adopt ${repository} as ${name} and hand off?`;
   const plan = confirmPlan(args, io.interactive);
   if (plan === "refuse") {
-    return fail(
+    return refuse(
       `non-interactive · pass --yes to adopt ${repository} and hand off · nothing was created`,
     );
   }
@@ -391,12 +402,151 @@ const projectFor = async (
   return adopted;
 };
 
-const cut = (request: SnapshotRequest): HandoffSnapshot => {
-  const outcome = snapshotCheckout(request);
-  return outcome._tag === "snapshot" ? outcome.snapshot : fail(outcome.message);
+const SIGNALS: ReadonlyArray<readonly [NodeJS.Signals, number]> = [
+  ["SIGHUP", 129],
+  ["SIGINT", 130],
+  ["SIGTERM", 143],
+];
+
+const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+interface Cut {
+  readonly snapshot: HandoffSnapshot;
+  readonly bundle: Uint8Array<ArrayBuffer>;
+}
+
+/**
+ * The snapshot and its bundle's bytes. The scratch directory holds a copy of uncommitted work, so
+ * it lives only inside this synchronous block. A signal meanwhile is held until the block has
+ * removed it, then refuses the handoff.
+ */
+const cutBundle = async (request: Omit<SnapshotRequest, "scratch">): Promise<Cut> => {
+  const caught: { code: number | null } = { code: null };
+  const holds = SIGNALS.map(([signal, code]) => {
+    const hold = () => {
+      caught.code = code;
+    };
+    process.on(signal, hold);
+    return () => process.off(signal, hold);
+  });
+  let outcome: { readonly cut: Cut } | { readonly refused: string };
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-handoff-"));
+  try {
+    const cut = snapshotCheckout({ ...request, scratch });
+    outcome =
+      cut._tag === "refused"
+        ? { refused: cut.message }
+        : {
+            cut: {
+              snapshot: cut.snapshot,
+              bundle: new Uint8Array(fs.readFileSync(cut.snapshot.bundlePath)),
+            },
+          };
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+  // The loop's next poll dispatches a signal that arrived during the block. The second of two
+  // immediates always runs after one, whatever phase the first is queued in.
+  await nextTurn();
+  await nextTurn();
+  for (const release of holds) release();
+  if (caught.code !== null) throw new Refusal("interrupted · nothing was created", caught.code);
+  return "refused" in outcome ? refuse(outcome.refused) : outcome.cut;
 };
 
-const scratchDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "mend-handoff-"));
+const sendFrom = async (
+  deps: HandoffDeps,
+  project: ProjectDto,
+  checkout: { readonly top: string },
+  args: HandoffArgs,
+): Promise<void> => {
+  const { prompt, harness } = args;
+  say(`${green("✓")} project ${project.name} ${dim(`· ${project.defaultBranch} · from origin`)}`);
+  const terms = await termsFor(deps, project.id);
+  const { snapshot, bundle } = await cutBundle({
+    checkout: checkout.top,
+    defaultBranch: project.defaultBranch,
+    machine: machineName(),
+    maxFileBytes: terms.fileBytes,
+    cutAt: new Date(),
+  });
+  for (const line of snapshotLines(snapshot, project.defaultBranch, terms.fileBytes)) say(line);
+  if (snapshot.bundleBytes > terms.bundleBytes) {
+    return refuse(tooLarge(snapshot.bundleBytes, terms.bundleBytes));
+  }
+  say(progressLine(snapshot));
+
+  const route = `/projects/${project.id}/handoffs?harness=${encodeURIComponent(harness)}&hold=${prompt === null}`;
+  const answer = await send(deps, route, bundle);
+  if (answer.status === 413) {
+    const body = parseJson(answer.bytes);
+    const budget = field(body, "budget");
+    const limit = field(body, "limit");
+    if (budget === "bodyBytes") return oldServer(deps);
+    if (budget === "bundleBytes" && typeof limit === "number") {
+      return refuse(tooLarge(snapshot.bundleBytes, limit));
+    }
+    if (typeof field(body, "_tag") !== "string") {
+      return refuse(
+        `handoff not sent · something in front of the Mend server refused the ${sizeOf(snapshot.bundleBytes)} bundle (${snapshot.bundleBytes} bytes) with HTTP 413 · its body limit is below the bundle · nothing was created`,
+      );
+    }
+  }
+  if (answer.status < 200 || answer.status >= 300) {
+    return refusal(deps, `POST /projects/${project.id}/handoffs`, answer);
+  }
+  const received = receivedOf(parseJson(answer.bytes));
+  if (received === null) {
+    return refuse(
+      "the server's answer to the handoff is in a shape this CLI cannot read · update mend",
+    );
+  }
+  for (const line of receivedLines(received, snapshot, project.defaultBranch)) say(line);
+  const sessionId = received.session.id;
+  const id8 = sessionId.slice(0, 8);
+  const watch = `${dim("  watch")} · ${deps.serverUrl}/sessions/${sessionId}`;
+  if (prompt === null) {
+    say(heldLine(received.session));
+    if (received.session.status === "failed") {
+      say(watch);
+      return refuse(`the hold failed · mend resume ${id8} starts the session again`);
+    }
+  } else {
+    const launched = await deps.launch(sessionId, prompt);
+    if (launched._tag !== "running") {
+      say(watch);
+      return refuse(
+        launched._tag === "not-started"
+          ? `${launched.words} · the prompt was not sent · mend resume ${id8} starts an agent in the handoff`
+          : `${launched.words} · the prompt may not have reached an agent · follow it: mend attach ${id8}`,
+      );
+    }
+    say(`${green("✓")} running · ${harness} on your prompt`);
+  }
+  say(`${dim("  attach")} · mend attach ${id8}`);
+  say(watch);
+};
+
+const handOff = async (
+  deps: HandoffDeps,
+  args: ReadonlyArray<string>,
+  cwd: string,
+  io: HandoffIo,
+): Promise<void> => {
+  const parsed = parseHandoffArgs(args);
+  if ("error" in parsed) return refuse(parsed.error);
+  const checkout = checkoutOf(cwd);
+  if (checkout === null) {
+    return refuse(
+      `${cwd} is not inside a git checkout · run mend handoff in one · nothing was created`,
+    );
+  }
+  const scratchIssue = scratchParentIssue(os.tmpdir(), checkout);
+  if (scratchIssue !== null) return refuse(scratchIssue);
+  const project = await projectFor(deps, args, parsed.args.project, checkout, io);
+  if (project === null) return;
+  await sendFrom(deps, project, checkout, parsed.args);
+};
 
 export const handoffCommand = async (
   deps: HandoffDeps,
@@ -407,91 +557,14 @@ export const handoffCommand = async (
     ask: askYesNo,
   },
 ): Promise<void> => {
-  const parsed = parseHandoffArgs(args);
-  if ("error" in parsed) return fail(parsed.error);
-  const { prompt, harness } = parsed.args;
-  const checkout = checkoutOf(cwd);
-  if (checkout === null) {
-    return fail(
-      `${cwd} is not inside a git checkout · run mend handoff in one · nothing was created`,
-    );
-  }
-  const project = await projectFor(deps, args, parsed.args.project, checkout, io);
-  if (project === null) return;
-  say(`${green("✓")} project ${project.name} ${dim(`· ${project.defaultBranch} · from origin`)}`);
-  const terms = await termsFor(deps, project.id);
-
-  const scratchIssue = scratchParentIssue(os.tmpdir(), checkout);
-  if (scratchIssue !== null) return fail(scratchIssue);
-  const scratch = scratchDir();
-  const removeScratch = () => fs.rmSync(scratch, { recursive: true, force: true });
-  process.once("exit", removeScratch);
-  try {
-    const snapshot = cut({
-      checkout: checkout.top,
-      defaultBranch: project.defaultBranch,
-      machine: machineName(),
-      maxFileBytes: terms.fileBytes,
-      scratch,
-      cutAt: new Date(),
-    });
-    for (const line of snapshotLines(snapshot, project.defaultBranch, terms.fileBytes)) say(line);
-    if (snapshot.bundleBytes > terms.bundleBytes) {
-      return fail(tooLarge(snapshot.bundleBytes, terms.bundleBytes));
-    }
-    say(progressLine(snapshot));
-
-    const route = `/projects/${project.id}/handoffs?harness=${encodeURIComponent(harness)}&hold=${prompt === null}`;
-    const answer = await send(deps, route, new Uint8Array(fs.readFileSync(snapshot.bundlePath)));
-    if (answer.status === 413) {
-      const body = parseJson(answer.bytes);
-      const budget = field(body, "budget");
-      const limit = field(body, "limit");
-      if (budget === "bodyBytes") return oldServer(deps);
-      if (budget === "bundleBytes" && typeof limit === "number") {
-        return fail(tooLarge(snapshot.bundleBytes, limit));
-      }
-      if (typeof field(body, "_tag") !== "string") {
-        return fail(
-          `handoff not sent · something in front of the Mend server refused the ${sizeOf(snapshot.bundleBytes)} bundle (${snapshot.bundleBytes} bytes) with HTTP 413 · its body limit is below the bundle · nothing was created`,
-        );
-      }
-    }
-    if (answer.status < 200 || answer.status >= 300) {
-      return refusal(deps, `POST /projects/${project.id}/handoffs`, answer);
-    }
-    const received = receivedOf(parseJson(answer.bytes));
-    if (received === null) {
-      return fail(
-        "the server's answer to the handoff is in a shape this CLI cannot read · update mend",
-      );
-    }
-    for (const line of receivedLines(received, snapshot, project.defaultBranch)) say(line);
-    const sessionId = received.session.id;
-    const id8 = sessionId.slice(0, 8);
-    const watch = `${dim("  watch")} · ${deps.serverUrl}/sessions/${sessionId}`;
-    if (prompt === null) {
-      say(heldLine(received.session));
-      if (received.session.status === "failed") {
-        say(watch);
-        return fail(`the hold failed · mend resume ${id8} starts the session again`);
-      }
-    } else {
-      const launched = await deps.launch(sessionId, prompt);
-      if (launched._tag !== "running") {
-        say(watch);
-        return fail(
-          launched._tag === "not-started"
-            ? `${launched.words} · the prompt was not sent · mend resume ${id8} starts an agent in the handoff`
-            : `${launched.words} · the prompt may not have reached an agent · follow it: mend attach ${id8}`,
-        );
-      }
-      say(`${green("✓")} running · ${harness} on your prompt`);
-    }
-    say(`${dim("  attach")} · mend attach ${id8}`);
-    say(watch);
-  } finally {
-    process.off("exit", removeScratch);
-    removeScratch();
-  }
+  const refused = await handOff(deps, args, cwd, io).then(
+    () => null,
+    (error: unknown) => {
+      if (error instanceof Refusal) return error;
+      throw error;
+    },
+  );
+  if (refused === null) return;
+  process.stderr.write(`mend: ${redactCredentials(refused.words)}\n`);
+  process.exit(refused.code);
 };
