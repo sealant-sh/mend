@@ -25,6 +25,7 @@
     "smol-toml": "1.4.2"
   },
   "devDependencies": {
+    "@effect/sql-pg": "catalog:",
     "@effect/vitest": "catalog:",
     "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",

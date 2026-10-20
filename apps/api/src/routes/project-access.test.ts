@@ -877,11 +877,8 @@ const ADMITTED: Readonly<
   },
   "sessions.controlEvents": { status: 500, calls: ["controlEvents.listForSession"] },
   "sessions.checkpoint": { status: 500, calls: ["engine.checkpointNow"] },
-  // Service factories log setLaunchOptions and launch before engine.detach defects; no actual launch ran.
-  "sessions.launch": {
-    status: 500,
-    calls: ["sessions.setLaunchOptions", "engine.launch", "engine.detach"],
-  },
+  // The launch effect is built before engine.detach defects; no actual launch ran.
+  "sessions.launch": { status: 500, calls: ["engine.launch", "engine.detach"] },
   "sessions.transcript": { status: 500, calls: ["engine.transcript"] },
   "sessions.resume": { status: 500, calls: ["engine.resumeSession"] },
   "sessions.handoff": { status: 500, calls: ["engine.handoff"] },

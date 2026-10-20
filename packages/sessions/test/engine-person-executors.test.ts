@@ -13,12 +13,19 @@ import {
   type PreReleaseMigrationRecord,
 } from "@mend/db";
 import { AgentTurnId, SessionId, SessionProcessId } from "@mend/domain";
-import { AgentTurn, type WorkspaceRetirement, Session } from "@mend/domain/workbench";
+import {
+  AgentTurn,
+  type HostUserNamespaces,
+  type WorkspaceRetirement,
+  Session,
+} from "@mend/domain/workbench";
 import { type CaptureFlushKind, SealantPlatformError } from "@mend/sealant";
 import {
   ProtocolHost,
+  Restart,
   SessionEngine,
   SessionTurnRefusedError,
+  WorkspaceHostUserNamespaces,
   WorkspaceReplaceRefusedError,
 } from "@mend/sessions";
 import { Store } from "@mend/store";
@@ -138,6 +145,10 @@ describe("pre-release executors and the migration of their shared home (docs/adr
     readonly flushed?: Queue.Queue<void>;
     /** Woken by every stop the platform is asked for. */
     readonly stopped?: Queue.Queue<void>;
+    /** Holds each flush until it completes (an executor slow to answer). */
+    readonly aroundFlush?: () => Effect.Effect<void>;
+    /** What a launch's host preflight reads (`WorkspaceHostUserNamespaces`). */
+    readonly hostUserNamespaces?: Layer.Layer<WorkspaceHostUserNamespaces>;
   }
   const retiringWorldEffect = (run: RetiringRun, options: RetiringOptions = {}) =>
     Effect.gen(function* () {
@@ -182,6 +193,9 @@ describe("pre-release executors and the migration of their shared home (docs/adr
           captured: memory,
           prepareWorld: (world) => world.members.set(MARIA, "member"),
           protocolHostLayer: quiescentHost(options.busy ?? (() => false)),
+          ...(options.hostUserNamespaces === undefined
+            ? {}
+            : { hostUserNamespaces: options.hostUserNamespaces }),
           drainPolicy: { stallSeconds: 1 },
           sealantLayer: sealantLaunchLayer(
             created,
@@ -217,15 +231,20 @@ describe("pre-release executors and the migration of their shared home (docs/adr
                 },
               ],
               flush: (target) =>
-                Effect.sync(() => {
-                  order.push(`flush:${target.id}`);
-                  if (options.flushed !== undefined) Queue.offerUnsafe(options.flushed, undefined);
-                  const saved = options.saved?.() ?? true;
-                  return captureAnswer({
-                    ...headReport(memory),
-                    ...(saved ? {} : { pending: 3, pendingBytes: 1024 }),
-                  });
-                }),
+                (options.aroundFlush?.() ?? Effect.void).pipe(
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      order.push(`flush:${target.id}`);
+                      if (options.flushed !== undefined)
+                        Queue.offerUnsafe(options.flushed, undefined);
+                      const saved = options.saved?.() ?? true;
+                      return captureAnswer({
+                        ...headReport(memory),
+                        ...(saved ? {} : { pending: 3, pendingBytes: 1024 }),
+                      });
+                    }),
+                  ),
+                ),
               stopAnswer: () => {
                 order.push("stop");
                 if (options.stopped !== undefined) Queue.offerUnsafe(options.stopped, undefined);
@@ -288,6 +307,163 @@ describe("pre-release executors and the migration of their shared home (docs/adr
       );
       expect([...run.state.retirements.values()]).toEqual([]);
     },
+  );
+
+  it.effect(
+    "a launch while a pre-release replacement's pickup holds the gate is refused, and the pickup starts the one agent (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const open = yield* Deferred.make<void>();
+        /** The pickup reached its agent's open, inside the launch gate, and is held there. */
+        const opening = yield* Deferred.make<void>();
+        let holding = false;
+        let during = "";
+        const run = yield* retiringWorldEffect(
+          (engine, _world, { session }) =>
+            Effect.gen(function* () {
+              holding = true;
+              const sweeping = yield* Effect.forkChild(engine.sweepRetirements());
+              yield* Deferred.await(opening);
+              const launched = yield* engine
+                .launch(session.id, ["codex"], { over: Restart })
+                .pipe(Effect.result);
+              during = launched._tag === "Failure" ? launched.failure._tag : "launched";
+              yield* Deferred.succeed(open, undefined);
+              yield* Fiber.join(sweeping);
+            }),
+          {
+            aroundOpen: () =>
+              Effect.suspend(() => {
+                if (!holding) return Effect.void;
+                holding = false;
+                return Deferred.succeed(opening, undefined).pipe(
+                  Effect.andThen(Deferred.await(open)),
+                );
+              }),
+          },
+        );
+        expect(during).toBe("SessionAgentLiveError");
+        expect(run.created).toHaveLength(2);
+        expect([...run.state.retirements.values()]).toEqual([]);
+      }),
+    { timeout: 30_000 },
+  );
+
+  it.effect(
+    "a pre-release replacement's pickup that a launch held off is kept as a plan, and resumes the agent once that launch starts nothing (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const held = yield* Deferred.make<void>();
+        const answer = yield* Deferred.make<HostUserNamespaces | null>();
+        let holding = false;
+        let planned: unknown = null;
+        const seen = { holder: "", status: "", planLeft: true };
+        const flushing = yield* Deferred.make<void>();
+        const flushed = yield* Deferred.make<void>();
+        let holdFlush = false;
+        const run = yield* retiringWorldEffect(
+          (engine, world, { session }) =>
+            Effect.gen(function* () {
+              holdFlush = true;
+              const sweeping = yield* Effect.forkChild(engine.sweepRetirements());
+              // Checked, and its final flush on its way: a launch admitted now holds the gate
+              // when the replacement's pickup comes.
+              yield* Deferred.await(flushing);
+              holding = true;
+              const launching = yield* engine
+                .launch(session.id, ["codex"], { over: Restart })
+                .pipe(Effect.result, Effect.forkChild);
+              yield* Deferred.await(held);
+              yield* Deferred.succeed(flushed, undefined);
+              yield* Fiber.join(sweeping);
+              const stored = world.relaunches.get(session.id);
+              planned = stored === undefined ? null : JSON.parse(stored);
+              yield* Deferred.succeed(answer, {
+                allowed: false,
+                setting: "kernel.unprivileged_userns_clone=1",
+              });
+              seen.holder = (yield* Fiber.join(launching))._tag;
+              yield* engine.reapCaptureLeases();
+              for (let step = 0; step < 100 && world.relaunches.has(session.id); step += 1) {
+                yield* TestClock.adjust("100 millis");
+                yield* Effect.yieldNow;
+              }
+              seen.status = world.sessions.get(session.id)?.status ?? "";
+              seen.planLeft = world.relaunches.has(session.id);
+            }),
+          {
+            aroundFlush: () =>
+              Effect.suspend(() => {
+                if (!holdFlush) return Effect.void;
+                holdFlush = false;
+                return Deferred.succeed(flushing, undefined).pipe(
+                  Effect.andThen(Deferred.await(flushed)),
+                );
+              }),
+            hostUserNamespaces: Layer.succeed(WorkspaceHostUserNamespaces, {
+              observe: () =>
+                Effect.suspend(() => {
+                  if (!holding) return Effect.succeed(null);
+                  holding = false;
+                  return Deferred.succeed(held, undefined).pipe(
+                    Effect.andThen(Deferred.await(answer)),
+                  );
+                }),
+            }),
+          },
+        );
+        expect(planned).toMatchObject({ kind: "pickup", harness: "codex" });
+        expect(seen).toMatchObject({ holder: "Failure", status: "running", planLeft: false });
+        expect(run.created).toHaveLength(2);
+        expect([...run.state.retirements.values()]).toEqual([]);
+      }),
+    { timeout: 30_000 },
+  );
+
+  it.effect(
+    "the owner's Stop during a pre-release replacement's final flush wins: the replacement ends the executor, and no pickup starts the agent again (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const flushing = yield* Deferred.make<void>();
+        const flushed = yield* Deferred.make<void>();
+        let holdFlush = false;
+        const seen = { stop: "", status: "", live: 0 };
+        const run = yield* retiringWorldEffect(
+          (engine, world, { session }) =>
+            Effect.gen(function* () {
+              holdFlush = true;
+              const sweeping = yield* Effect.forkChild(engine.sweepRetirements());
+              yield* Deferred.await(flushing);
+              seen.stop = (yield* engine.stop(session.id).pipe(Effect.result))._tag;
+              yield* Deferred.succeed(flushed, undefined);
+              yield* Fiber.join(sweeping);
+              for (let step = 0; step < 20; step += 1) {
+                yield* TestClock.adjust("100 millis");
+                yield* Effect.yieldNow;
+              }
+              seen.status = world.sessions.get(session.id)?.status ?? "";
+              seen.live = [...world.processes.values()].filter(
+                (process) =>
+                  process.sessionId === session.id &&
+                  process.kind === "agent-protocol" &&
+                  process.exitedAt === null,
+              ).length;
+            }),
+          {
+            aroundFlush: () =>
+              Effect.suspend(() => {
+                if (!holdFlush) return Effect.void;
+                holdFlush = false;
+                return Deferred.succeed(flushing, undefined).pipe(
+                  Effect.andThen(Deferred.await(flushed)),
+                );
+              }),
+          },
+        );
+        expect(seen).toEqual({ stop: "Success", status: "stopped", live: 0 });
+        expect(run.created).toHaveLength(1);
+      }),
+    { timeout: 30_000 },
   );
 
   it(

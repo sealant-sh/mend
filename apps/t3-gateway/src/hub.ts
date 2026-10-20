@@ -68,6 +68,7 @@ import {
   MendClient,
   MendCommandRefused,
   MendDeviceRefused,
+  launchRacedOrLive,
   type MendCommand,
   type MendHarnessCatalog,
   type MendRequestResponse,
@@ -2826,7 +2827,7 @@ export const makePersonHub = (input: {
         const underWay =
           answer._tag === "Failure" &&
           answer.failure._tag === "MendCommandRefused" &&
-          answer.failure.status === 422
+          launchRacedOrLive(answer.failure)
             ? yield* launchUnderWay(entry.token, sessionId)
             : null;
         yield* locked(
@@ -3272,9 +3273,9 @@ export const makePersonHub = (input: {
     const setups = makeWorktreeSetups(hubScope);
 
     /**
-     * Mend refused a launch with a 422: it races another (`session_starting`) or finds the agent up
-     * (`session_active`), and its 422 carries only words, so the session itself is read. The
-     * session's `updatedAt` when its launch is under way or done, else null.
+     * Mend refused a launch because it races another or finds the agent up (`launchRacedOrLive`),
+     * so the session itself is read. The session's `updatedAt` when its launch is under way or done,
+     * else null.
      */
     const launchUnderWay = (token: string, sessionId: string) =>
       mend.sessionDetail(token, sessionId).pipe(

@@ -1299,6 +1299,8 @@ export interface World {
   recentOwners: ReadonlyArray<string>;
   /** A planned relaunch's harness, by session (`planRelaunch`): bookkeeping off the row. */
   readonly relaunches: Map<string, string>;
+  /** When set, `swapRelaunch` awaits it first, with the plan it is about to write. */
+  readonly beforeRelaunchSwap: { current: ((next: string | null) => Promise<void>) | null };
   /** The executor each session sent a final flush to (`markFinalFlush`). */
   readonly finalFlushed: Map<string, string>;
   /** Each session's executor create not yet answered on its row (`recordExecutorCreate`). */
@@ -1386,6 +1388,7 @@ export const makeWorld = (): World => ({
   ]),
   recentOwners: ["user-fixture"],
   relaunches: new Map(),
+  beforeRelaunchSwap: { current: null },
   finalFlushed: new Map(),
   captureSaved: new Map(),
   captureUnsaved: new Map(),
@@ -2315,12 +2318,15 @@ export const sessionsLayer = (world: World) => {
       Effect.sync(() => update(id, { lastSeenSequence: sequence })),
     notifyProgress: () => Effect.void,
     settle: (id, outcome, summary) =>
-      Effect.sync(() =>
+      Effect.sync(() => {
+        const current = world.sessions.get(id);
+        // As SessionsRepo.settle: the first settle wins, until `reopen` clears it.
+        if (current?.settledAt != null) return;
         // A stop drain holds the workspace: `stopping`, not settled (SessionsRepo.settle).
-        world.sessions.get(id)?.captureDrain === "stop"
-          ? update(id, { status: "stopping", summary, settledAt: null })
-          : update(id, { status: outcome, summary, settledAt: world.clock.now() }),
-      ),
+        if (current?.captureDrain === "stop") {
+          update(id, { status: "stopping", summary, settledAt: null });
+        } else update(id, { status: outcome, summary, settledAt: world.clock.now() });
+      }),
     reopen: (id, status) =>
       Effect.sync(() =>
         update(id, {
@@ -2350,7 +2356,11 @@ export const sessionsLayer = (world: World) => {
         update(id, { label });
         return true;
       }),
-    remove: (id) => Effect.sync(() => void world.sessions.delete(id)),
+    remove: (id) =>
+      Effect.sync(() => {
+        world.sessions.delete(id);
+        world.relaunches.delete(id);
+      }),
     recordCaptureObservation: (id, observation) =>
       Effect.sync(() =>
         update(id, {
@@ -2390,8 +2400,10 @@ export const sessionsLayer = (world: World) => {
             : {}),
         });
       }),
-    planRelaunch: (id, resume, at) =>
+    planRelaunch: (id, expected, resume, at) =>
       Effect.sync(() => {
+        if (!world.sessions.has(id)) return "gone";
+        if ((world.relaunches.get(id) ?? null) !== expected) return "moved";
         const current = world.sessions.get(id);
         world.relaunches.set(id, resume);
         update(id, {
@@ -2399,7 +2411,20 @@ export const sessionsLayer = (world: World) => {
           captureDrainRequestedAt: current?.captureDrainRequestedAt ?? at,
           captureDrainProgressAt: current?.captureDrainProgressAt ?? at,
         });
+        return "written";
       }),
+    swapRelaunch: (id, expected, next) =>
+      Effect.promise(() => world.beforeRelaunchSwap.current?.(next) ?? Promise.resolve()).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            if (!world.sessions.has(id)) return "gone";
+            if ((world.relaunches.get(id) ?? null) !== expected) return "moved";
+            if (next === null) world.relaunches.delete(id);
+            else world.relaunches.set(id, next);
+            return "written";
+          }),
+        ),
+      ),
     clearRelaunch: (id) => Effect.sync(() => void world.relaunches.delete(id)),
     stopCaptureDrain: (id) =>
       Effect.sync(() => {
@@ -2411,7 +2436,8 @@ export const sessionsLayer = (world: World) => {
           ...(current.settledAt !== null ? { status: "stopping" as const, settledAt: null } : {}),
         });
       }),
-    relaunchOf: (id) => Effect.sync(() => world.relaunches.get(id) ?? null),
+    relaunchOf: (id) =>
+      Effect.sync(() => (world.sessions.has(id) ? (world.relaunches.get(id) ?? null) : null)),
     markFinalFlush: (id, workspaceId) =>
       Effect.sync(() => void world.finalFlushed.set(id, workspaceId)),
     finalFlushedWorkspace: (id) => Effect.sync(() => world.finalFlushed.get(id) ?? null),

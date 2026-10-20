@@ -32,7 +32,7 @@ import {
   WorktreeChangesRepo,
   type WorktreeNotFoundError,
   WorktreesRepo,
-  type SessionNotFoundError,
+  SessionNotFoundError,
   type SessionOutcome,
   ProjectServiceRecipesRepo,
   SessionProcessesRepo,
@@ -423,7 +423,16 @@ import {
   standbyEpochOf,
   standbyWorktreeAlias,
 } from "./hot-pool.ts";
-import { makeLaunchGate } from "./launch-gate.ts";
+import {
+  Restart,
+  refusalError,
+  refusalOf,
+  underWayRefusal,
+  type LaunchAdmission,
+  type SessionAgentLiveError,
+  type SessionMovedOnError,
+} from "./launch-admission.ts";
+import { LAUNCH_UNDER_WAY_WORDS, makeLaunchGate } from "./launch-gate.ts";
 import { backfillFromNative, cursorAtEndOf } from "./native-backfill.ts";
 import {
   convertNativeSession,
@@ -1641,6 +1650,10 @@ const isLegacyBench = (session: Session): boolean =>
 const isEngineAgentProcess = (row: SessionProcess): boolean =>
   row.kind !== "agent-external" && isAgentProcessKind(row.kind) && row.harness !== "shell";
 
+/** The open workbench: a shell Mend launched as the session's agent (`resumeSession(…, "shell")`). */
+const isWorkbenchShell = (row: SessionProcess): boolean =>
+  row.kind === "agent-pty" && row.harness === "shell";
+
 /**
  * The observer's answer when the home could not be read this pass (a head that is not there or
  * still saving, a blob or manifest read that failed): no answer, so nothing is ended or started.
@@ -1760,7 +1773,15 @@ export class NothingUnsavedError extends Schema.TaggedError<NothingUnsavedError>
  * - `resume`: a plain resume with the harness (or `shell`); nothing was asked of the agent;
  * - `launch`: the exact launch that was asked — its argv (a PTY follow-up's prompt rides in it),
  *   the protocol start with its opening prompt, who asked, and the correlation id the process and
- *   the opening turn carry, so the launch and its opening turn happen exactly once.
+ *   the opening turn carry, so the launch and its opening turn happen exactly once;
+ * - `pickup`: an executor replacement's resume of the holder's agent, which a launch under way
+ *   held off (SLNT-167).
+ *
+ * The column holds one plan, and every writer but the owner's Stop swaps it only from what it
+ * read (`SessionsRepo.swapRelaunch`). `id` is whose plan it is: the launch that wrote it ends only
+ * its own (`endPlannedLaunch`). `pickup` is a replacement's pickup this plan owes: a pickup held
+ * off by a launch is added to that launch's plan rather than written over it, and is left as a
+ * plan of its own if that launch starts nothing.
  */
 const RelaunchStart = Schema.Struct({
   mode: Schema.optional(Schema.Literals(["pty", "protocol"])),
@@ -1770,8 +1791,12 @@ const RelaunchStart = Schema.Struct({
   permissionMode: Schema.optional(Schema.Literals(PERMISSION_MODES)),
   speed: Schema.optional(Schema.Literals(SPEED_MODES)),
 });
+const PlanOwnership = {
+  id: Schema.optional(Schema.String),
+  pickup: Schema.optional(Schema.NullOr(Schema.String)),
+};
 const RelaunchPlan = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("resume"), harness: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("resume"), harness: Schema.String, ...PlanOwnership }),
   Schema.Struct({
     kind: Schema.Literal("launch"),
     argv: Schema.Array(Schema.String),
@@ -1779,7 +1804,9 @@ const RelaunchPlan = Schema.Union([
     start: Schema.NullOr(RelaunchStart),
     author: Schema.NullOr(Schema.String),
     resumeId: Schema.NullOr(Schema.String),
+    ...PlanOwnership,
   }),
+  Schema.Struct({ kind: Schema.Literal("pickup"), harness: Schema.String, id: Schema.String }),
 ]);
 type RelaunchPlan = typeof RelaunchPlan.Type;
 const RelaunchPlanJson = Schema.fromJsonString(RelaunchPlan);
@@ -1802,10 +1829,12 @@ const relaunchPlanOf = (input: {
   readonly start: LaunchStart | null;
   readonly author: string | null;
   readonly resumeId: string | null;
-}): RelaunchPlan => {
-  const resume: RelaunchPlan = {
+}): Exclude<RelaunchPlan, { readonly kind: "pickup" }> & { readonly id: string } => {
+  const id = crypto.randomUUID();
+  const resume: Extract<RelaunchPlan, { readonly kind: "resume" }> & { readonly id: string } = {
     kind: "resume",
     harness: input.argv[0] === "bash" ? "shell" : input.harness,
+    id,
   };
   if (input.hasNativeImport) return resume;
   if (input.launchCorrelationId === null && input.start === null) return resume;
@@ -1816,6 +1845,7 @@ const relaunchPlanOf = (input: {
     start: input.start,
     author: input.author,
     resumeId: input.resumeId,
+    id,
   };
 };
 
@@ -1828,6 +1858,58 @@ const readRelaunchPlan = (stored: string): RelaunchPlan =>
       harness: stored,
     }),
   );
+
+/** Whose a stored plan is: its id, or, for one stored before plans had ids, the text itself. */
+const planIdOf = (stored: string): string => readRelaunchPlan(stored).id ?? stored;
+
+/** The harness whose pickup a stored plan owes, or null. */
+const pickupOwedBy = (plan: RelaunchPlan): string | null =>
+  plan.kind === "pickup" ? plan.harness : (plan.pickup ?? null);
+
+/**
+ * A replacement's pickup that a launch under way held off: a plan of its own when none is
+ * planned, else owed by the plan there, which is kept as it is. A launch plan's opening prompt
+ * outlives the pickup; a plan that already owes one is left alone.
+ */
+const owingPickup = (stored: string | null, harness: string): string => {
+  if (stored === null) {
+    return encodeRelaunchPlan({ kind: "pickup", harness, id: crypto.randomUUID() });
+  }
+  const plan = readRelaunchPlan(stored);
+  if (plan.kind === "pickup" || plan.pickup != null) return stored;
+  return encodeRelaunchPlan({ ...plan, id: plan.id ?? stored, pickup: harness });
+};
+
+/** After the owner's Stop, nothing owes a pickup: one alone goes, one owed by a plan comes off. */
+const withoutPickup = (stored: string | null): string | null => {
+  if (stored === null) return null;
+  const plan = readRelaunchPlan(stored);
+  if (plan.kind === "pickup") return null;
+  return plan.pickup == null ? stored : encodeRelaunchPlan({ ...plan, pickup: null });
+};
+
+/**
+ * The pickup a launch's plan takes over from the plan it replaces: whatever that plan owed. A
+ * pickup plan this very launch is carrying out (`carrying`) is not owed again: it is this launch.
+ */
+const pickupTakenOver = (stored: string | null, carrying: string | undefined): string | null => {
+  if (stored === null) return null;
+  const plan = readRelaunchPlan(stored);
+  if (plan.kind === "pickup" && planIdOf(stored) === carrying) return null;
+  return pickupOwedBy(plan);
+};
+
+/**
+ * What a plan's launch leaves once it has run its course: nothing when it started an agent, which
+ * the pickup it owed resumes too; a pickup plan of its own when it started nothing and owed one.
+ */
+const afterPlannedLaunch = (stored: string, launched: boolean): string | null => {
+  const plan = readRelaunchPlan(stored);
+  const owed = plan.kind === "pickup" ? null : pickupOwedBy(plan);
+  return launched || owed === null
+    ? null
+    : encodeRelaunchPlan({ kind: "pickup", harness: owed, id: crypto.randomUUID() });
+};
 
 /**
  * A landing asked for the worktree as its executor holds it now, and the registered captures did
@@ -2070,7 +2152,8 @@ export class SessionEngine extends Context.Service<
     /**
      * Whether a launch verb (launch, resume, handoff, follow-up) is under way for the session in
      * this process. A resumed session keeps its settled row until its agent runs; the API reads
-     * it as `starting` meanwhile, and a second launch verb is refused (`session_starting`).
+     * it as `starting` meanwhile, and a second launch verb is refused (`session_starting`; a
+     * public launch, in its own terms: `launch-admission.ts`).
      */
     readonly launchUnderWay: (sessionId: SessionId) => boolean;
     /**
@@ -2083,6 +2166,11 @@ export class SessionEngine extends Context.Service<
     readonly launch: (
       sessionId: SessionId,
       argv: ReadonlyArray<string>,
+      /**
+       * What it may launch over (SLNT-167), checked once the launch holds the gate. Omitted:
+       * `Restart`, a live agent's workspace stopped and replaced as it always was.
+       */
+      admission?: LaunchAdmission,
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
@@ -2092,6 +2180,8 @@ export class SessionEngine extends Context.Service<
       | HarnessStateError
       | SessionLaunchSetupError
       | DotfilesResolveError
+      | SessionMovedOnError
+      | SessionAgentLiveError
     >;
     /** Launch a supported harness as a structured byte protocol over a Sealant pipe session. */
     readonly launchProtocol: (
@@ -2100,6 +2190,8 @@ export class SessionEngine extends Context.Service<
       author: string | null,
       launchCorrelationId?: string | null,
       forceFreshWorkspace?: boolean,
+      /** As `launch`'s; a live protocol agent is refused even on `Restart` (`session_active`). */
+      admission?: LaunchAdmission,
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
@@ -2110,6 +2202,8 @@ export class SessionEngine extends Context.Service<
       | SessionLaunchSetupError
       | DotfilesResolveError
       | ProtocolHarnessUnsupportedError
+      | SessionMovedOnError
+      | SessionAgentLiveError
     >;
     /**
      * Cross-mode pickup (mode handoff): end the live agent in the OTHER mode,
@@ -6885,8 +6979,71 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** Stops asked and not yet answered: a planned relaunch picked up meanwhile launches nothing. */
       const stopsUnderWay = new Map<SessionId, number>();
       const stopUnderWay = (sessionId: SessionId) => (stopsUnderWay.get(sessionId) ?? 0) > 0;
-      /** Sessions whose planned relaunch a launch in this process is carrying out. */
-      const relaunching = new Set<SessionId>();
+      /**
+       * The owner stopped a session whose executor is being replaced: marked, or a Stop asked after
+       * the replacement began and still closing its agent, which has not marked it yet (SLNT-111).
+       * Either way the replacement's pickup starts nothing.
+       */
+      const stoppedReplacing = (sessionId: SessionId) =>
+        stoppedDuringReplacement.has(sessionId) || stopUnderWay(sessionId);
+      /**
+       * Sessions whose planned relaunch a launch in this process is carrying out, with the id of
+       * the plan it carries out (`planIdOf`).
+       */
+      const relaunching = new Map<SessionId, string>();
+
+      /**
+       * The relaunch plan becomes `next(stored)`, from what was read, however often it moved. A
+       * removed session has no plan to write.
+       */
+      const updatePlan = (
+        sessionId: SessionId,
+        next: (stored: string | null) => string | null,
+      ): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          while (true) {
+            const stored = yield* sessions.relaunchOf(sessionId);
+            const wanted = next(stored);
+            if (wanted === stored) return;
+            if ((yield* sessions.swapRelaunch(sessionId, stored, wanted)) !== "moved") return;
+          }
+        });
+
+      /** A launch carrying out plan `own` ran its course: that plan ends; another writer's stays. */
+      const endPlannedLaunch = (sessionId: SessionId, own: string, launched: boolean) =>
+        updatePlan(sessionId, (stored) =>
+          stored === null || planIdOf(stored) !== own
+            ? stored
+            : afterPlannedLaunch(stored, launched),
+        );
+
+      /**
+       * An executor replacement's pickup: the holder's agent resumes, in the launch gate
+       * (SLNT-167). A launch under way may yet start nothing (refused, or failed early), so the
+       * pickup it held off is owed by the plan in the column (`owingPickup`), which the reaper
+       * takes up once the gate is free (`resumeDrain`); the resume then refuses over an agent that
+       * launch did start.
+       *
+       * The owner's Stop marks the replacement (`stoppedDuringReplacement`) before it clears the
+       * column. So the pickup asks the mark before its write and again once the write landed: a
+       * Stop that won while the write was on its way finds no pickup left after it.
+       */
+      const pickUpReplaced = (session: Session, failed: string) =>
+        oneLaunch(session.id)(resumeSession(session.id, null)).pipe(
+          Effect.catch((error) =>
+            error instanceof SealantPlatformError && error.code === "session_starting"
+              ? Effect.gen(function* () {
+                  if (stoppedDuringReplacement.has(session.id)) return;
+                  yield* updatePlan(session.id, (stored) => owingPickup(stored, session.harness));
+                  if (stoppedDuringReplacement.has(session.id)) {
+                    yield* updatePlan(session.id, withoutPickup);
+                  }
+                })
+              : Effect.logWarning(failed).pipe(
+                  Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
+                ),
+          ),
+        );
 
       /**
        * Replacement ahead of the platform's cap (`planExecutorCap`): drain, then terminate, then a
@@ -6922,30 +7079,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The lease is released once the termination is observed; when it was not, it lapses
           // with the executor's heartbeats. Wait for either, bounded.
           const deadline = clock.currentTimeMillisUnsafe() + 60_000;
-          // A Stop asked after this replacement began, still closing its agent, has not marked it
-          // yet (`stoppedDuringReplacement`); it beats the replacement all the same (SLNT-111).
-          const stopped = () =>
-            stoppedDuringReplacement.has(session.id) || stopUnderWay(session.id);
-          while (clock.currentTimeMillisUnsafe() < deadline && !stopped()) {
+          while (clock.currentTimeMillisUnsafe() < deadline && !stoppedReplacing(session.id)) {
             const lease = yield* capture.repo.leaseOf(session.worktreeId);
             if (lease === null || !lease.live) break;
             yield* Effect.sleep(Duration.seconds(2));
           }
           // The owner stopped the session while it was being saved: saved and ended, and that is
           // all — no new executor.
-          if (stopped()) {
+          if (stoppedReplacing(session.id)) {
             yield* Effect.logInfo(
               "session engine: capture mode · stopped during the replacement · nothing relaunched",
             ).pipe(Effect.annotateLogs({ sessionId: session.id }));
             return;
           }
-          yield* resumeSession(session.id, null).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("session engine: replacement pickup failed").pipe(
-                Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
-              ),
-            ),
-          );
+          yield* pickUpReplaced(session, "session engine: replacement pickup failed");
         });
         yield* attempt.pipe(
           Effect.ensuring(
@@ -7071,43 +7218,58 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.gen(function* () {
           const workspaceId = session.sealantWorkspaceId;
           // A relaunch's last step: the launch it planned (`RelaunchPlan`). Taken up only when no
-          // launch here is carrying it out.
-          const finishRelaunch = Effect.gen(function* () {
-            const stored = yield* sessions.relaunchOf(session.id);
-            if (stored === null || relaunching.has(session.id) || stopUnderWay(session.id)) {
-              return;
-            }
-            const plan = readRelaunchPlan(stored);
-            relaunching.add(session.id);
-            yield* Effect.logInfo(
-              "session engine: capture mode · finishing a relaunch after a restart",
-            ).pipe(Effect.annotateLogs({ sessionId: session.id, kind: plan.kind }));
-            // Kept until the attempt has run its course, so a restart in the middle tries again;
-            // the correlation id makes the launch and its opening turn happen once. A launch
-            // whose opening turn was not accepted keeps its plan (`finishPlannedLaunch`).
-            const attempt: Effect.Effect<"done" | "retained"> =
-              plan.kind === "launch"
-                ? finishPlannedLaunch(session.id, plan)
-                : resumeSession(session.id, plan.harness).pipe(
-                    Effect.as("done" as const),
-                    Effect.catch((error) =>
-                      Effect.logWarning("session engine: the relaunch could not be finished").pipe(
-                        Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
-                        Effect.as("done" as const),
+          // launch here is carrying it out, and in the launch gate (SLNT-167): a launch admitted
+          // while the plan ran would tear down what it started. One under way leaves the plan for
+          // the next pass, read again then.
+          const finishRelaunch = oneLaunch(session.id)(
+            Effect.gen(function* () {
+              const stored = yield* sessions.relaunchOf(session.id);
+              if (stored === null || relaunching.has(session.id) || stopUnderWay(session.id)) {
+                return;
+              }
+              const plan = readRelaunchPlan(stored);
+              relaunching.set(session.id, planIdOf(stored));
+              yield* Effect.logInfo(
+                "session engine: capture mode · finishing a relaunch after a restart",
+              ).pipe(Effect.annotateLogs({ sessionId: session.id, kind: plan.kind }));
+              // Kept until the attempt has run its course, so a restart in the middle tries again;
+              // the correlation id makes the launch and its opening turn happen once. A launch
+              // whose opening turn was not accepted keeps its plan (`finishPlannedLaunch`).
+              const attempt: Effect.Effect<"done" | "retained"> =
+                plan.kind === "launch"
+                  ? finishPlannedLaunch(session.id, plan)
+                  : resumeSession(session.id, plan.harness).pipe(
+                      Effect.as("done" as const),
+                      Effect.catch((error) =>
+                        Effect.logWarning(
+                          "session engine: the relaunch could not be finished",
+                        ).pipe(
+                          Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
+                          Effect.as("done" as const),
+                        ),
                       ),
-                    ),
-                  );
-            yield* attempt.pipe(
-              Effect.onExit((exit) =>
-                Effect.suspend(() => {
-                  relaunching.delete(session.id);
-                  return Exit.isSuccess(exit) && exit.value === "done"
-                    ? sessions.clearRelaunch(session.id)
-                    : Effect.void;
-                }),
-              ),
-            );
-          });
+                    );
+              yield* attempt.pipe(
+                Effect.onExit((exit) =>
+                  Effect.suspend(() => {
+                    // The plan carried out now: a launch it ran may have planned its own, and a
+                    // launch that ended took it out already (`launchInternal`).
+                    const own = relaunching.get(session.id);
+                    relaunching.delete(session.id);
+                    return own !== undefined && Exit.isSuccess(exit) && exit.value === "done"
+                      ? endPlannedLaunch(session.id, own, true)
+                      : Effect.void;
+                  }),
+                ),
+              );
+            }),
+          ).pipe(
+            Effect.catch(() =>
+              Effect.logInfo(
+                "session engine: capture mode · the relaunch waits · a launch of the session is under way",
+              ).pipe(Effect.annotateLogs({ sessionId: session.id })),
+            ),
+          );
           if (session.captureDrain === null) {
             yield* finishRelaunch;
             return;
@@ -15572,14 +15734,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* Effect.sleep(Duration.seconds(2));
         }
         yield* harnessLayouts.clearRetirement(workspaceId);
-        if (plan.relaunch) {
-          yield* resumeSession(holder.id, null).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("session engine: the replacement's relaunch failed").pipe(
-                Effect.annotateLogs({ sessionId: holder.id, error: String(error) }),
-              ),
-            ),
-          );
+        if (plan.relaunch && !stoppedReplacing(holder.id)) {
+          yield* pickUpReplaced(holder, "session engine: the replacement's relaunch failed");
         }
         for (const name of plan.restart) {
           yield* runServiceRecipe(holder.id, name).pipe(
@@ -15691,6 +15847,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.onExit((exit) =>
             Effect.suspend(() => {
               replacing.delete(holder.id);
+              stoppedDuringReplacement.delete(holder.id);
               if (Exit.isSuccess(exit)) return Effect.void;
               const why = Cause.squash(exit.cause);
               // Its final flush was sent: the executor admits nothing new and its drain asks
@@ -16556,12 +16713,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 resumeId: protocolResumeId,
               });
               if (plan.kind === "launch") correlationId = plan.launchCorrelationId;
-              yield* sessions.planRelaunch(
-                sessionId,
-                encodeRelaunchPlan(plan),
-                new Date(clock.currentTimeMillisUnsafe()),
-              );
-              relaunching.add(sessionId);
+              // This launch's plan replaces what is planned (it was admitted in the gate), and
+              // owes the pickup that plan owed.
+              const carrying = relaunching.get(sessionId);
+              const at = new Date(clock.currentTimeMillisUnsafe());
+              while (true) {
+                const stored = yield* sessions.relaunchOf(sessionId);
+                const next = encodeRelaunchPlan({
+                  ...plan,
+                  pickup: pickupTakenOver(stored, carrying),
+                });
+                const wrote = yield* sessions.planRelaunch(sessionId, stored, next, at);
+                if (wrote === "written") break;
+                if (wrote === "gone") return yield* new SessionNotFoundError({ sessionId });
+              }
+              relaunching.set(sessionId, plan.id);
             }
             const outcome = yield* stopWorkspaceQuietly(sessionId, {
               force: true,
@@ -16579,9 +16745,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return yield* error;
             }
             // The owner stopped the session while its old executor saved: nothing relaunches.
+            const planned = capture === null ? null : yield* sessions.relaunchOf(sessionId);
             if (
               capture !== null &&
-              (stopUnderWay(sessionId) || (yield* sessions.relaunchOf(sessionId)) === null)
+              (stopUnderWay(sessionId) ||
+                planned === null ||
+                planIdOf(planned) !== relaunching.get(sessionId))
             ) {
               return yield* new SealantPlatformError({
                 code: "relaunch_cancelled",
@@ -17994,18 +18163,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * A launch, and the end of any relaunch it planned: once it has run its course — launched,
-       * refused or failed — nothing is left for a restart to finish. A process that dies first
-       * leaves the plan for the reaper (`resumeDrain`).
+       * refused or failed — nothing of its plan is left for a restart to finish, but a pickup it
+       * owed and did not start is (`endPlannedLaunch`). A process that dies first leaves the plan
+       * for the reaper (`resumeDrain`).
        */
       const launchInternal: typeof launchInternalBody = (sessionId, ...rest) =>
         launchInternalBody(sessionId, ...rest).pipe(
           Effect.onExit((exit) =>
-            Effect.suspend(() =>
+            Effect.suspend(() => {
+              const own = relaunching.get(sessionId);
+              relaunching.delete(sessionId);
               // Interrupted (a shutdown, a scope closing): the plan stays for the next start.
-              relaunching.delete(sessionId) && !interruptedOnly(exit)
-                ? sessions.clearRelaunch(sessionId)
-                : Effect.void,
-            ),
+              return own === undefined || interruptedOnly(exit)
+                ? Effect.void
+                : endPlannedLaunch(sessionId, own, Exit.isSuccess(exit));
+            }),
           ),
         );
 
@@ -18323,201 +18495,216 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** A hand-over that failed after its stop, per session and sender (review 2, P3-3). */
       const failedHandOvers = new Map<string, { readonly at: number; readonly words: string }>();
 
+      /**
+       * In the launch gate, start to end, its fallback included (SLNT-167): between its stop and
+       * its start no agent of the session runs, and a launch admitted then would tear down the
+       * next sender's. One under way makes it not now, and the host tries again.
+       */
       const handOverConversation = (
         agentProcess: SessionProcess,
         sender: string,
         turnId: AgentTurnId,
         check: HandOverCheck,
       ): Effect.Effect<void, SealantPlatformError> =>
-        Effect.gen(function* () {
-          // A hand-over to this sender that failed after its stop a moment ago is not tried again
-          // at once: each try stops the conversation's process and starts it again (review 2 of
-          // mend#572, P3-3).
-          const backoffKey = `${agentProcess.sessionId}\u0000${sender}`;
-          const failedBefore = failedHandOvers.get(backoffKey);
-          const now = yield* Clock.currentTimeMillis;
-          if (failedBefore !== undefined && now - failedBefore.at < HAND_OVER_BACKOFF_MS) {
-            return yield* new SealantPlatformError({
-              code: "conversation_not_handed_over",
-              status: 409,
-              message: `The last hand-over of this conversation failed less than a minute ago (${failedBefore.words}), so this turn was not started and nothing was stopped. Send it again in a minute.`,
-              cause: null,
-            });
-          }
-          const session = yield* sessions.byId(agentProcess.sessionId);
-          const workspace = yield* sealant.getWorkspace(agentProcess.sealantWorkspaceId);
-          const options = agentProcess.protocolOptions;
-          const start: LaunchStart = {
-            mode: "protocol",
-            ...(options?.model === null || options?.model === undefined
-              ? {}
-              : { model: options.model }),
-            ...(options?.effort === null || options?.effort === undefined
-              ? {}
-              : { effort: options.effort }),
-            permissionMode: options?.permissionMode ?? "bypass",
-          };
-          const providerSessionId =
-            (yield* processes.byId(agentProcess.id))?.providerSessionId ??
-            agentProcess.providerSessionId ??
-            session.providerSessionId;
-          const composed = composeProtocolArgv(
-            session.harness,
-            start,
-            providerSessionId ?? undefined,
-          );
-          if (composed instanceof ProtocolHarnessUnsupportedError) {
-            return yield* new SealantPlatformError({
-              code: "conversation_not_handed_over",
-              status: null,
-              message: composed.message,
-              cause: composed,
-            });
-          }
-          // The sender's login, asked once more before anything stops: a login that went missing
-          // or invalid while the turn waited refuses here, with the old process still running
-          // (review of mend#572, P2-2).
-          if (sender !== agentProcess.runsAs) {
-            activeLogins.delete(
-              `${sender}\u0000${session.harness === "claude" ? "claude" : "codex"}`,
-            );
-            const refused = yield* steeringRefusal(session, sender);
-            if (refused !== null) {
+        gatedLaunch(
+          agentProcess.sessionId,
+          Effect.fail(handOverFailed(HAND_OVER_NOT_NOW, LAUNCH_UNDER_WAY_WORDS)),
+        )(
+          Effect.gen(function* () {
+            // A hand-over to this sender that failed after its stop a moment ago is not tried again
+            // at once: each try stops the conversation's process and starts it again (review 2 of
+            // mend#572, P3-3).
+            const backoffKey = `${agentProcess.sessionId}\u0000${sender}`;
+            const failedBefore = failedHandOvers.get(backoffKey);
+            const now = yield* Clock.currentTimeMillis;
+            if (failedBefore !== undefined && now - failedBefore.at < HAND_OVER_BACKOFF_MS) {
               return yield* new SealantPlatformError({
-                code: "person_login_refused",
+                code: "conversation_not_handed_over",
                 status: 409,
-                message: refused,
+                message: `The last hand-over of this conversation failed less than a minute ago (${failedBefore.words}), so this turn was not started and nothing was stopped. Send it again in a minute.`,
                 cause: null,
               });
             }
-          }
-          const nameOf = yield* namesFor(session.id);
-          let stopped = false;
-          handingOverProcesses.add(agentProcess.id);
-          const stop = stopForHandOver(agentProcess, nameOf(sender)).pipe(
-            Effect.tap(() =>
-              Effect.sync(() => {
-                stopped = true;
-              }),
-            ),
-          );
-          const launch = (as: string, stopping: Effect.Effect<void, SealantPlatformError>) =>
-            launchInRetainedWorkspace(
-              session.id,
-              composed,
-              null,
-              null,
-              providerSessionId,
+            const session = yield* sessions.byId(agentProcess.sessionId);
+            const workspace = yield* sealant.getWorkspace(agentProcess.sealantWorkspaceId);
+            const options = agentProcess.protocolOptions;
+            const start: LaunchStart = {
+              mode: "protocol",
+              ...(options?.model === null || options?.model === undefined
+                ? {}
+                : { model: options.model }),
+              ...(options?.effort === null || options?.effort === undefined
+                ? {}
+                : { effort: options.effort }),
+              permissionMode: options?.permissionMode ?? "bypass",
+            };
+            const providerSessionId =
+              (yield* processes.byId(agentProcess.id))?.providerSessionId ??
+              agentProcess.providerSessionId ??
+              session.providerSessionId;
+            const composed = composeProtocolArgv(
+              session.harness,
               start,
-              null,
-              workspace,
-              null,
-              stopped
-                ? { sender: as, stop: stopping, replacing: null }
-                : {
-                    sender: as,
-                    stop: stopping,
-                    replacing: agentProcess.id,
-                    // At the stop, after every preparation: the turn still waits and the
-                    // process is still quiescent, or nothing is stopped (review 2, P2-2).
-                    beforeStop: check.stillQuiescent,
-                  },
+              providerSessionId ?? undefined,
             );
-          yield* launch(sender, stop).pipe(
-            Effect.catch((error) =>
-              Effect.gen(function* () {
-                if (!stopped) {
-                  // Another start took the conversation first (a takeover into a terminal, a
-                  // resume): nothing was stopped, and the turn keeps waiting for the
-                  // conversation's next process (review 2 of mend#572, P3-1).
-                  if (error instanceof SealantPlatformError && error.code === "conversation_held") {
-                    return yield* handOverFailed(HAND_OVER_NOT_NOW, error.message);
+            if (composed instanceof ProtocolHarnessUnsupportedError) {
+              return yield* new SealantPlatformError({
+                code: "conversation_not_handed_over",
+                status: null,
+                message: composed.message,
+                cause: composed,
+              });
+            }
+            // The sender's login, asked once more before anything stops: a login that went missing
+            // or invalid while the turn waited refuses here, with the old process still running
+            // (review of mend#572, P2-2).
+            if (sender !== agentProcess.runsAs) {
+              activeLogins.delete(
+                `${sender}\u0000${session.harness === "claude" ? "claude" : "codex"}`,
+              );
+              const refused = yield* steeringRefusal(session, sender);
+              if (refused !== null) {
+                return yield* new SealantPlatformError({
+                  code: "person_login_refused",
+                  status: 409,
+                  message: refused,
+                  cause: null,
+                });
+              }
+            }
+            const nameOf = yield* namesFor(session.id);
+            let stopped = false;
+            handingOverProcesses.add(agentProcess.id);
+            const stop = stopForHandOver(agentProcess, nameOf(sender)).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  stopped = true;
+                }),
+              ),
+            );
+            const launch = (as: string, stopping: Effect.Effect<void, SealantPlatformError>) =>
+              launchInRetainedWorkspace(
+                session.id,
+                composed,
+                null,
+                null,
+                providerSessionId,
+                start,
+                null,
+                workspace,
+                null,
+                stopped
+                  ? { sender: as, stop: stopping, replacing: null }
+                  : {
+                      sender: as,
+                      stop: stopping,
+                      replacing: agentProcess.id,
+                      // At the stop, after every preparation: the turn still waits and the
+                      // process is still quiescent, or nothing is stopped (review 2, P2-2).
+                      beforeStop: check.stillQuiescent,
+                    },
+              );
+            yield* launch(sender, stop).pipe(
+              Effect.catch((error) =>
+                Effect.gen(function* () {
+                  if (!stopped) {
+                    // Another start took the conversation first (a takeover into a terminal, a
+                    // resume): nothing was stopped, and the turn keeps waiting for the
+                    // conversation's next process (review 2 of mend#572, P3-1).
+                    if (
+                      error instanceof SealantPlatformError &&
+                      error.code === "conversation_held"
+                    ) {
+                      return yield* handOverFailed(HAND_OVER_NOT_NOW, error.message);
+                    }
+                    return yield* Effect.fail(error);
+                  }
+                  // The old process stopped and the new one could not start: the waiting turn fails
+                  // with the words, and the conversation goes on in a process of the person who ran
+                  // it before, on their own login, taking the turns queued behind (P2-2).
+                  const words = steerWords(error.message);
+                  if (
+                    !(
+                      error instanceof SealantPlatformError && error.code === "person_login_refused"
+                    )
+                  ) {
+                    failedHandOvers.set(backoffKey, { at: yield* Clock.currentTimeMillis, words });
+                  }
+                  yield* conversations.failTurn(turnId, words).pipe(Effect.ignore);
+                  const previous = agentProcess.runsAs ?? session.ownerUserId;
+                  // No process takes the conversation's queue: the turns behind the waiting one,
+                  // never sent, end with the stopped process, as at any stop.
+                  const dropQueue = conversations.cancelOpenForProcess(agentProcess.id);
+                  if (previous === null) {
+                    yield* dropQueue;
+                  } else {
+                    yield* launch(previous, Effect.void).pipe(
+                      Effect.catchCause((cause) =>
+                        Effect.gen(function* () {
+                          yield* dropQueue;
+                          // Nothing runs the conversation now: the hand-over's hold ends here, so the
+                          // session settles before its line says why, and the words stay on it.
+                          handingOverProcesses.delete(agentProcess.id);
+                          yield* reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore);
+                          // Said on the session line, not only in a log (review 2, P3-2).
+                          yield* noteLaunchWords(
+                            session.id,
+                            `stopped · ${nameOf(sender)}'s turn could not start (${words}), and ${nameOf(previous)}'s agent could not be started again: ${causeWords(cause).replace(/\.+$/, "")}. Resume the session to continue.`,
+                          ).pipe(Effect.ignore);
+                          yield* Effect.logWarning(
+                            "session engine: the conversation could not be started again after a failed hand-over",
+                          ).pipe(
+                            Effect.annotateLogs({
+                              sessionId: session.id,
+                              cause: Cause.pretty(cause),
+                            }),
+                          );
+                        }),
+                      ),
+                    );
                   }
                   return yield* Effect.fail(error);
-                }
-                // The old process stopped and the new one could not start: the waiting turn fails
-                // with the words, and the conversation goes on in a process of the person who ran
-                // it before, on their own login, taking the turns queued behind (P2-2).
-                const words = steerWords(error.message);
-                if (
-                  !(error instanceof SealantPlatformError && error.code === "person_login_refused")
-                ) {
-                  failedHandOvers.set(backoffKey, { at: yield* Clock.currentTimeMillis, words });
-                }
-                yield* conversations.failTurn(turnId, words).pipe(Effect.ignore);
-                const previous = agentProcess.runsAs ?? session.ownerUserId;
-                // No process takes the conversation's queue: the turns behind the waiting one,
-                // never sent, end with the stopped process, as at any stop.
-                const dropQueue = conversations.cancelOpenForProcess(agentProcess.id);
-                if (previous === null) {
-                  yield* dropQueue;
-                } else {
-                  yield* launch(previous, Effect.void).pipe(
-                    Effect.catchCause((cause) =>
-                      Effect.gen(function* () {
-                        yield* dropQueue;
-                        // Nothing runs the conversation now: the hand-over's hold ends here, so the
-                        // session settles before its line says why, and the words stay on it.
-                        handingOverProcesses.delete(agentProcess.id);
-                        yield* reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore);
-                        // Said on the session line, not only in a log (review 2, P3-2).
-                        yield* noteLaunchWords(
-                          session.id,
-                          `stopped · ${nameOf(sender)}'s turn could not start (${words}), and ${nameOf(previous)}'s agent could not be started again: ${causeWords(cause).replace(/\.+$/, "")}. Resume the session to continue.`,
-                        ).pipe(Effect.ignore);
-                        yield* Effect.logWarning(
-                          "session engine: the conversation could not be started again after a failed hand-over",
-                        ).pipe(
-                          Effect.annotateLogs({
-                            sessionId: session.id,
-                            cause: Cause.pretty(cause),
-                          }),
-                        );
+                }),
+              ),
+            );
+            failedHandOvers.delete(backoffKey);
+            // The session crons the waiting turn stopped waiting for ended with the process: said.
+            if (check.endedCrons > 0) {
+              yield* noteLaunchWords(
+                session.id,
+                `${check.endedCrons} scheduled prompt${check.endedCrons === 1 ? "" : "s"} of ${nameOf(agentProcess.runsAs ?? sender)}'s ended with their agent after ${nameOf(sender)}'s turn waited 10 minutes`,
+              ).pipe(Effect.ignore);
+            }
+          }).pipe(
+            Effect.mapError((error) =>
+              error instanceof SealantPlatformError
+                ? error
+                : new SealantPlatformError({
+                    code: "conversation_not_handed_over",
+                    status: null,
+                    message: `The conversation could not be handed over: ${error.message}`,
+                    cause: error,
+                  }),
+            ),
+            Effect.ensuring(
+              Effect.suspend(() => {
+                handingOverProcesses.delete(agentProcess.id);
+                // The fold held while the hand-over ran: now it reads the processes as they are, so a
+                // hand-over that left no process running settles here, once.
+                return reconcileSession(agentProcess.sessionId, { sweep: false }).pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning(
+                      "session engine: the session was not reconciled after a hand-over",
+                    ).pipe(
+                      Effect.annotateLogs({
+                        sessionId: agentProcess.sessionId,
+                        cause: Cause.pretty(cause),
                       }),
                     ),
-                  );
-                }
-                return yield* Effect.fail(error);
+                  ),
+                );
               }),
             ),
-          );
-          failedHandOvers.delete(backoffKey);
-          // The session crons the waiting turn stopped waiting for ended with the process: said.
-          if (check.endedCrons > 0) {
-            yield* noteLaunchWords(
-              session.id,
-              `${check.endedCrons} scheduled prompt${check.endedCrons === 1 ? "" : "s"} of ${nameOf(agentProcess.runsAs ?? sender)}'s ended with their agent after ${nameOf(sender)}'s turn waited 10 minutes`,
-            ).pipe(Effect.ignore);
-          }
-        }).pipe(
-          Effect.mapError((error) =>
-            error instanceof SealantPlatformError
-              ? error
-              : new SealantPlatformError({
-                  code: "conversation_not_handed_over",
-                  status: null,
-                  message: `The conversation could not be handed over: ${error.message}`,
-                  cause: error,
-                }),
-          ),
-          Effect.ensuring(
-            Effect.suspend(() => {
-              handingOverProcesses.delete(agentProcess.id);
-              // The fold held while the hand-over ran: now it reads the processes as they are, so a
-              // hand-over that left no process running settles here, once.
-              return reconcileSession(agentProcess.sessionId, { sweep: false }).pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning(
-                    "session engine: the session was not reconciled after a hand-over",
-                  ).pipe(
-                    Effect.annotateLogs({
-                      sessionId: agentProcess.sessionId,
-                      cause: Cause.pretty(cause),
-                    }),
-                  ),
-                ),
-              );
-            }),
           ),
         );
 
@@ -19817,12 +20004,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Whether the session's AGENT is live — the fold, not the row: a live agent process; a
        * launch in flight (no process row yet); or a run supervised without a process of its own.
        * Shells and Services holding the workspace (`idle`) do not count — a new agent may join
-       * them.
+       * them. `workbench` says whether the open workbench shell counts: a launch may replace it
+       * (SLNT-167), a resume may not.
        */
-      const agentIsLive = Effect.fn("SessionEngine.agentIsLive")(function* (session: Session) {
+      const agentIsLive = Effect.fn("SessionEngine.agentIsLive")(function* (
+        session: Session,
+        workbench: "counts" | "replaceable" = "counts",
+      ) {
         if (session.settledAt !== null) return false;
         const rows = yield* processes.listForSession(session.id);
-        if (rows.some(isLiveAgentProcess)) return true;
+        if (
+          rows.some(
+            (row) => isLiveAgentProcess(row) && (workbench === "counts" || !isWorkbenchShell(row)),
+          )
+        ) {
+          return true;
+        }
         // "starting" is a launch in flight only when something was actually launched. A
         // provisioned-but-never-launched session carries the same status (the schema default)
         // with nothing behind it — refusing that would dead-end every provision-then-resume
@@ -20338,9 +20535,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A successful Stop supersedes pending launches. A refused close leaves their durable
         // intent intact so a restart can still resume the replacement or relaunch.
         if (capture !== null) {
+          // Marked before the clear: a replacement's pickup whose plan lands after it takes
+          // that plan back off (`pickUpReplaced`).
+          if (replacing.has(sessionId)) stoppedDuringReplacement.add(sessionId);
           yield* sessions.clearRelaunch(sessionId);
           yield* sessions.stopCaptureDrain(sessionId);
-          if (replacing.has(sessionId)) stoppedDuringReplacement.add(sessionId);
           // A replacement or relaunch this stop beat saved and ended its executor while the close
           // was under way: its drain is over and launches nothing, so no drain end settles the
           // session. This stop does, once nothing of it is live and the executor's end is
@@ -22988,59 +23187,78 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // end (and the sweep releases the lease); nothing to rehydrate.
             return;
           }
-          // A pipe whose session may no longer run where it does (`accessStopReason`: a removed
-          // member, or a joiner who lost access) is not restored, and no further turn reaches it:
-          // it is ended with the reason. A session in its owner's own executor is restored as
-          // ever (review 3 of mend#558, P1).
-          const owner =
-            (yield* sessions
-              .byId(protocolProcess.sessionId)
-              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null))))
-              ?.ownerUserId ?? null;
-          const access =
-            owner === null
-              ? null
-              : yield* sessions.executorAccessOf(protocolProcess.sealantWorkspaceId, owner);
-          const verdict =
-            access === null || owner === null ? null : accessStopReason(access, owner);
-          if (verdict !== null) {
-            yield* Effect.logInfo("session engine: protocol process not restored · no access").pipe(
-              Effect.annotateLogs({ processId: protocolProcess.id, reason: verdict.code }),
-            );
-            // The boot access sweep owns the Stop, capture and audit record. Do not end only
-            // this agent here and leave its shells or Services out of that reconciliation.
-            return;
-          }
-          const { pipe, status } = probed.value;
-          const options = protocolProcess.protocolOptions;
-          yield* protocolHost
-            .rehydrate({
-              process: protocolProcess,
-              pipe,
-              cwd: "/workspace/repo",
-              model: options?.model ?? undefined,
-              effort: options?.effort ?? undefined,
-              permissionMode: options?.permissionMode ?? "bypass",
-              hooks: protocolHooksFor(protocolProcess),
-              launchedWithLoginOf: yield* launchLoginOfProcess(protocolProcess),
-              runsAs: protocolProcess.runsAs,
-              highWater: status.outputHighWater,
-            })
-            .pipe(
-              Effect.tapError(() => relaunchProtocolProcess(protocolProcess).pipe(Effect.ignore)),
-            );
-          if (yield* protocolHost.has(protocolProcess.id)) {
-            yield* renewWorkspaceLease(
-              protocolProcess.sessionId,
-              protocolProcess.sealantWorkspaceId,
-            ).pipe(Effect.ignore);
-            yield* Effect.logInfo("session engine: protocol process rehydrated").pipe(
-              Effect.annotateLogs({
-                processId: protocolProcess.id,
-                sessionId: protocolProcess.sessionId,
-              }),
-            );
-          }
+          // Under the launch gate (SLNT-167): the relaunch behind a failed rehydrate ends this
+          // agent and starts another, and a launch admitted in between would tear that one down.
+          // A launch that ran first may have replaced this agent: it is read again, and one that
+          // ended is not restored.
+          yield* queuedLaunch(protocolProcess.sessionId)(
+            Effect.gen(function* () {
+              const current = yield* processes.byId(protocolProcess.id);
+              if (current === null || current.exitedAt !== null) {
+                yield* Effect.logInfo(
+                  "session engine: protocol process not restored · it ended while a launch held the session",
+                ).pipe(Effect.annotateLogs({ processId: protocolProcess.id }));
+                return;
+              }
+              // A pipe whose session may no longer run where it does (`accessStopReason`: a removed
+              // member, or a joiner who lost access) is not restored, and no further turn reaches it:
+              // it is ended with the reason. A session in its owner's own executor is restored as
+              // ever (review 3 of mend#558, P1).
+              const owner =
+                (yield* sessions
+                  .byId(protocolProcess.sessionId)
+                  .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null))))
+                  ?.ownerUserId ?? null;
+              const access =
+                owner === null
+                  ? null
+                  : yield* sessions.executorAccessOf(protocolProcess.sealantWorkspaceId, owner);
+              const verdict =
+                access === null || owner === null ? null : accessStopReason(access, owner);
+              if (verdict !== null) {
+                yield* Effect.logInfo(
+                  "session engine: protocol process not restored · no access",
+                ).pipe(
+                  Effect.annotateLogs({ processId: protocolProcess.id, reason: verdict.code }),
+                );
+                // The boot access sweep owns the Stop, capture and audit record. Do not end only
+                // this agent here and leave its shells or Services out of that reconciliation.
+                return;
+              }
+              const { pipe, status } = probed.value;
+              const options = protocolProcess.protocolOptions;
+              yield* protocolHost
+                .rehydrate({
+                  process: protocolProcess,
+                  pipe,
+                  cwd: "/workspace/repo",
+                  model: options?.model ?? undefined,
+                  effort: options?.effort ?? undefined,
+                  permissionMode: options?.permissionMode ?? "bypass",
+                  hooks: protocolHooksFor(protocolProcess),
+                  launchedWithLoginOf: yield* launchLoginOfProcess(protocolProcess),
+                  runsAs: protocolProcess.runsAs,
+                  highWater: status.outputHighWater,
+                })
+                .pipe(
+                  Effect.tapError(() =>
+                    relaunchProtocolProcess(protocolProcess).pipe(Effect.ignore),
+                  ),
+                );
+              if (yield* protocolHost.has(protocolProcess.id)) {
+                yield* renewWorkspaceLease(
+                  protocolProcess.sessionId,
+                  protocolProcess.sealantWorkspaceId,
+                ).pipe(Effect.ignore);
+                yield* Effect.logInfo("session engine: protocol process rehydrated").pipe(
+                  Effect.annotateLogs({
+                    processId: protocolProcess.id,
+                    sessionId: protocolProcess.sessionId,
+                  }),
+                );
+              }
+            }),
+          );
         },
       );
 
@@ -23048,7 +23266,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Rehydrate fallback: end the unrecoverable row (queued turns move to
        * the replacement before the cancel sweep) and start a fresh pipe that
        * resumes by provider id. Only a failed relaunch leaves the session
-       * settled — and then with the relaunch's own error, not ours.
+       * settled — and then with the relaunch's own error, not ours. Runs in the launch gate its
+       * caller holds, so it starts the agent with the gate-free `launchProtocol`.
        */
       const relaunchProtocolProcess = Effect.fn("SessionEngine.relaunchProtocolProcess")(function* (
         protocolProcess: SessionProcess,
@@ -23146,6 +23365,75 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* sessions.setHasTranscript(session.id, live);
         }
       });
+      /**
+       * One launch at a time (`launch-gate.ts`), and the second half of a stop during a launch: a
+       * stop that came after the launch's last look found no agent to end, and the launch started
+       * one anyway. Stopped again as the launch ends, it finds the agent's row and ends it, so the
+       * session ends on the stop. A launch the gate refuses leaves the one under way its mark.
+       *
+       * Without capture, a launch starts once the session's Stops have run their tails: a tail still
+       * harvesting when a resume stops the old workspace would then settle the session and sweep the
+       * workspace the resume had just created (CI, 2026-10-10: two stops of it). A Stop arriving
+       * during the wait finds the launch under way and stands it down, as it does later. Capture
+       * mode does not wait: its relaunch is planned durably while the Stop's drain saves, and waits
+       * on that drain itself (`launchInternal`).
+       *
+       * Defined ahead of the boot pass and the reaper: both start agents under the gate.
+       */
+      const holdingLaunch =
+        (sessionId: SessionId) =>
+        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          capture === null ? Effect.andThen(stopTailsSettled(sessionId), effect) : effect;
+      const stopAfterStoppedLaunch = (sessionId: SessionId) =>
+        Effect.suspend(() =>
+          stoppedDuringLaunch.delete(sessionId)
+            ? stop(sessionId).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning(
+                    "session engine: the stop after a stopped launch did not finish",
+                  ).pipe(Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) })),
+                ),
+              )
+            : Effect.void,
+        );
+      const gatedLaunch =
+        <E2, R2>(sessionId: SessionId, refused: Effect.Effect<never, E2, R2>) =>
+        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          Effect.suspend(() =>
+            launchGate.underWay(sessionId)
+              ? refused
+              : launchGate
+                  .runOr(
+                    sessionId,
+                    refused,
+                  )(holdingLaunch(sessionId)(effect))
+                  .pipe(Effect.ensuring(stopAfterStoppedLaunch(sessionId))),
+          );
+      const oneLaunch = (sessionId: SessionId) =>
+        gatedLaunch(
+          sessionId,
+          Effect.fail(
+            new SealantPlatformError({
+              code: "session_starting",
+              status: 409,
+              message: LAUNCH_UNDER_WAY_WORDS,
+              cause: null,
+            }),
+          ),
+        );
+      /**
+       * An agent Mend recovers on its own after a restart (SLNT-167). It waits for a launch under
+       * way instead of being refused, then holds the gate as any launch does: no launch is admitted
+       * against the agent it is about to replace, and it never starts over what such a launch
+       * started. It reads what it recovers again once it holds the gate.
+       */
+      const queuedLaunch =
+        (sessionId: SessionId) =>
+        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          launchGate
+            .runWhenFree(sessionId)(holdingLaunch(sessionId)(effect))
+            .pipe(Effect.ensuring(stopAfterStoppedLaunch(sessionId)));
+
       // Boot runs with no request context, and the platform answers for nobody: every piece of
       // boot work that reaches it runs as its session's owner (`owned`), forked in the engine's
       // scope, and the engine stands as soon as the rows are reconciled. Nothing here waits on an
@@ -23720,45 +24008,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         detach(effect).pipe(Effect.flatMap(Fiber.join));
 
       /**
-       * One launch at a time (`launch-gate.ts`), and the second half of a stop during a launch: a
-       * stop that came after the launch's last look found no agent to end, and the launch started
-       * one anyway. Stopped again as the launch ends, it finds the agent's row and ends it, so the
-       * session ends on the stop. A launch the gate refuses leaves the one under way its mark.
-       *
-       * Without capture, a launch starts once the session's Stops have run their tails: a tail still
-       * harvesting when a resume stops the old workspace would then settle the session and sweep the
-       * workspace the resume had just created (CI, 2026-10-10: two stops of it). A Stop arriving
-       * during the wait finds the launch under way and stands it down, as it does later. Capture
-       * mode does not wait: its relaunch is planned durably while the Stop's drain saves, and waits
-       * on that drain itself (`launchInternal`).
+       * The public launch verbs only (SLNT-167): the launch runs over what its caller named, as
+       * the session reads once the launch holds the gate, after any Stop queued ahead of it. A
+       * refusal tears nothing down and writes nothing; while another launch verb holds the gate,
+       * the refusal says so in the same terms. Resume, handoff and follow-up keep `oneLaunch`.
        */
-      const oneLaunch =
-        (sessionId: SessionId) =>
+      const admittedLaunch =
+        (sessionId: SessionId, { over, onAdmitted }: LaunchAdmission = { over: Restart }) =>
         <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.suspend(() =>
-            launchGate.underWay(sessionId)
-              ? launchGate.run(sessionId)(effect)
-              : launchGate
-                  .run(sessionId)(
-                    capture === null ? Effect.andThen(stopTailsSettled(sessionId), effect) : effect,
-                  )
-                  .pipe(
-                    Effect.ensuring(
-                      Effect.suspend(() =>
-                        stoppedDuringLaunch.delete(sessionId)
-                          ? stop(sessionId).pipe(
-                              Effect.catchCause((cause) =>
-                                Effect.logWarning(
-                                  "session engine: the stop after a stopped launch did not finish",
-                                ).pipe(
-                                  Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
-                                ),
-                              ),
-                            )
-                          : Effect.void,
-                      ),
-                    ),
-                  ),
+          gatedLaunch(
+            sessionId,
+            sessions
+              .byId(sessionId)
+              .pipe(
+                Effect.flatMap((session) =>
+                  Effect.fail(refusalError(sessionId, underWayRefusal(over, session.settledAt))),
+                ),
+              ),
+          )(
+            Effect.gen(function* () {
+              const session = yield* sessions.byId(sessionId);
+              const refusal = refusalOf(over, {
+                status: session.status,
+                settledAt: session.settledAt,
+                agentLive: yield* agentIsLive(session, "replaceable"),
+                underWay: false,
+              });
+              if (refusal !== null) return yield* refusalError(sessionId, refusal);
+              if (onAdmitted !== undefined) yield* onAdmitted;
+              return yield* effect;
+            }),
           );
 
       // Every public verb about a session runs AS ITS OWNER (docs/SEALANT-IDENTITY.md): the
@@ -23785,10 +24064,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // its image build ran on).
         launchUnderWay: (sessionId) =>
           launchGate.underWay(sessionId) && !stoppedDuringLaunch.has(sessionId),
-        launch: (sessionId, argv) =>
-          detached(owned(sessionId)(oneLaunch(sessionId)(launch(sessionId, argv)))),
-        launchProtocol: (sessionId, ...rest) =>
-          detached(owned(sessionId)(oneLaunch(sessionId)(launchProtocol(sessionId, ...rest)))),
+        launch: (sessionId, argv, admission) =>
+          detached(owned(sessionId)(admittedLaunch(sessionId, admission)(launch(sessionId, argv)))),
+        launchProtocol: (
+          sessionId,
+          start,
+          author,
+          launchCorrelationId,
+          forceFreshWorkspace,
+          admission,
+        ) =>
+          detached(
+            owned(sessionId)(
+              admittedLaunch(
+                sessionId,
+                admission,
+              )(launchProtocol(sessionId, start, author, launchCorrelationId, forceFreshWorkspace)),
+            ),
+          ),
         submitTurn: (sessionId, input, author) =>
           owned(sessionId)(submitTurn(sessionId, input, author)),
         interruptTurn,

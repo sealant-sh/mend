@@ -26,6 +26,7 @@ import * as Stream from "effect/Stream";
 
 import type { GatedMend } from "./device-gate.ts";
 import { makeFanout, type SubscriberFellBehind } from "./fanout.ts";
+import { launchRacedOrLive } from "./mend-client.ts";
 import type { BearerSession, ThreadLaunchOptions } from "./state.ts";
 import type { TerminalFailure, Terminals } from "./terminals.ts";
 
@@ -319,7 +320,7 @@ export interface PreparationHost {
   ) => Effect.Effect<{ readonly worktreeId: string; readonly worktreePath: string } | null>;
   /** The project action the person saved to run on a new worktree, or null (`projectScripts`). */
   readonly setupScriptOf: (projectId: string) => Effect.Effect<ProjectScript | null>;
-  /** Mend's 422 to a launch read again: the session's `updatedAt` when it is under way. */
+  /** Mend's refusal of a launch read again: the session's `updatedAt` when it is under way. */
   readonly launchUnderWay: (token: string, sessionId: string) => Effect.Effect<string | null>;
   /** Reads the session's project again, so the queue sees its agent. */
   readonly refresh: (projectId: string) => Effect.Effect<void>;
@@ -411,7 +412,7 @@ export const prepareWorktree = (host: PreparationHost, preparation: Preparation)
     const launched = yield* mend.launchProtocol(token, sessionId, "", preparation.options).pipe(
       Effect.as(true),
       Effect.catchTag("MendCommandRefused", (error) =>
-        error.status === 422
+        launchRacedOrLive(error)
           ? Effect.map(host.launchUnderWay(token, sessionId), (underWay) => underWay !== null)
           : Effect.fail(error),
       ),

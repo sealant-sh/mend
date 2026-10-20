@@ -3,6 +3,8 @@ import {
   HarnessLayoutRefused,
   LaunchRequest,
   NotFound,
+  SessionAgentLive,
+  SessionMovedOn,
   StoreFailure,
 } from "@mend/api-contracts";
 import {
@@ -25,7 +27,7 @@ import {
   type SessionOrigin,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
-import { SessionEngine } from "@mend/sessions";
+import { Expected, NoLiveAgent, Restart, SessionEngine, type LaunchOver } from "@mend/sessions";
 import { Duration, Effect, Fiber, Layer, Option } from "effect";
 import * as Context from "effect/Context";
 
@@ -80,7 +82,24 @@ export interface StartSessionInput {
   readonly launch: LaunchRequest;
 }
 
-type StartError = NotFound | StoreFailure | BudgetExceeded | HarnessLayoutRefused;
+type StartError =
+  | NotFound
+  | StoreFailure
+  | BudgetExceeded
+  | HarnessLayoutRefused
+  | SessionMovedOn
+  | SessionAgentLive;
+
+/**
+ * What a launch may launch over (SLNT-167): the attempt its caller saw wins; else `restart`
+ * replaces a live agent; else a live or starting agent refuses it.
+ */
+const launchOverOf = (request: LaunchRequest): LaunchOver =>
+  request.expected !== undefined
+    ? Expected(request.expected.settledAt)
+    : request.restart === true
+      ? Restart
+      : NoLiveAgent;
 
 /**
  * Starting a session, as a given account (docs/adr/0006-slack.md, "Slack starts sessions through
@@ -306,23 +325,30 @@ export const makeSessionStart = Effect.gen(function* () {
       ),
       Effect.asVoid,
     );
-    // Inline naming has no transcript dependency and a first launch can
-    // take minutes — enqueue before the launch so the label lands while
-    // the workspace still provisions.
-    if (inlineNamePrompt !== null) yield* queueAutoName;
-    // Recorded once the launch is admitted, never for one the slot refuses. A protocol launch
-    // records inside the engine, after its own live-agent check; a PTY launch here. A verbatim
-    // argv names its own flags, which Mend did not resolve: the row says so with null.
+    // Inline naming has no transcript dependency and a first launch can take minutes: it is
+    // enqueued as the launch is admitted, so the label lands while the workspace still
+    // provisions, and a refused launch names nothing from its prompt (SLNT-167).
+    const nameOnAdmission = inlineNamePrompt === null ? Effect.void : queueAutoName;
+    const over = launchOverOf(request);
+    // A PTY launch's model and effort, recorded once it is admitted (a protocol launch records its
+    // own). A verbatim argv names its own flags, which Mend did not resolve: the row says so with
+    // null.
     const launch =
       input.mode === "protocol"
         ? engine.launchProtocol(
             session.id,
             guarded ? { ...input, prompt: withLandingGuard(prompt) } : input,
             userId,
+            undefined,
+            undefined,
+            { over, onAdmitted: nameOnAdmission },
           )
-        : sessions
-            .setLaunchOptions(session.id, resolved ?? { model: null, effort: null })
-            .pipe(Effect.andThen(engine.launch(session.id, argv)));
+        : engine.launch(session.id, argv, {
+            over,
+            onAdmitted: Effect.suspend(() =>
+              sessions.setLaunchOptions(session.id, resolved ?? { model: null, effort: null }),
+            ).pipe(Effect.andThen(nameOnAdmission)),
+          });
     // A launch holds a platform workspace build for minutes. One account starts a bounded
     // number at once; a launch already under way is never touched. The slot is held for the
     // launch's whole course, in the background too: it is taken and given back inside the
@@ -346,6 +372,26 @@ export const makeSessionStart = Effect.gen(function* () {
         Effect.catchTag("ProtocolHarnessUnsupportedError", (error) =>
           Effect.fail(new StoreFailure({ message: error.message })),
         ),
+        Effect.catchTags({
+          SessionMovedOnError: (error) =>
+            Effect.fail(
+              new SessionMovedOn({
+                sessionId: session.id,
+                status: error.status,
+                settledAt: error.settledAt,
+                message: error.message,
+              }),
+            ),
+          SessionAgentLiveError: (error) =>
+            Effect.fail(
+              new SessionAgentLive({
+                sessionId: session.id,
+                status: error.status,
+                settledAt: error.settledAt,
+                message: error.message,
+              }),
+            ),
+        }),
         Effect.catchTags({
           HarnessStateNotFoundError: (error) =>
             Effect.fail(new StoreFailure({ message: error.message })),

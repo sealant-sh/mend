@@ -268,6 +268,12 @@ export interface CaptureDiscard {
 export type SessionOutcome = "completed" | "failed" | "stopped";
 
 /**
+ * A relaunch plan's compare-and-set: `written`; `moved`, another writer changed the plan first,
+ * so read it again; `gone`, the session's row no longer exists, so nothing will ever be written.
+ */
+export type RelaunchWrite = "written" | "moved" | "gone";
+
+/**
  * The index of supervised agent sessions (plan §5.5) — table `agent_sessions`
  * (better-auth owns `"session"`). The recording stays in Sealant, addressed by
  * `(sealantRunId, sequence)` through SessionRunsRepo. `lastSeenSequence` is only the latest run's
@@ -446,10 +452,26 @@ export class SessionsRepo extends Context.Service<
     ) => Effect.Effect<void>;
     /**
      * A relaunch drains the old executor, then launches `resume` (a harness, or `shell`): both
-     * steps durable, so a restart between them finishes the relaunch.
+     * steps durable, so a restart between them finishes the relaunch. Written only over the plan
+     * `expected` (null: none), so the caller decides what it replaces.
      */
-    readonly planRelaunch: (id: SessionId, resume: string, at: Date) => Effect.Effect<void>;
-    /** The relaunch ran its course, or the user's stop cancelled it. */
+    readonly planRelaunch: (
+      id: SessionId,
+      expected: string | null,
+      resume: string,
+      at: Date,
+    ) => Effect.Effect<RelaunchWrite>;
+    /**
+     * The relaunch plan becomes `next` (null: none) only while it is still `expected` (SLNT-167):
+     * a replacement's pickup owed with no drain before it, and the end of a plan whose launch ran
+     * its course. Taken up by `relaunchOf`.
+     */
+    readonly swapRelaunch: (
+      id: SessionId,
+      expected: string | null,
+      next: string | null,
+    ) => Effect.Effect<RelaunchWrite>;
+    /** The user's stop cancels whatever relaunch is planned. */
     readonly clearRelaunch: (id: SessionId) => Effect.Effect<void>;
     /**
      * The user's stop wins over a drain under way for another reason (a replacement, a
@@ -779,6 +801,12 @@ export const disableOwnerSharedControl = Effect.fn("SessionsRepo.disableOwnerSha
       .pipe(Effect.orDie);
   },
 );
+
+/** The row's relaunch plan is still the one its writer read (null: none). */
+const plannedAs = (expected: string | null) =>
+  expected === null
+    ? isNull(agentSessions.captureDrainResume)
+    : eq(agentSessions.captureDrainResume, expected);
 
 export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClient.PgClient> =
   Layer.effect(
@@ -1550,12 +1578,25 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           )
           .pipe(Effect.orDie);
 
+      /** Why a plan's compare-and-set wrote nothing: another writer, or no row at all. */
+      const unwritten = (id: SessionId): Effect.Effect<RelaunchWrite> =>
+        db
+          .select({ id: agentSessions.id })
+          .from(agentSessions)
+          .where(eq(agentSessions.id, id))
+          .limit(1)
+          .pipe(
+            Effect.orDie,
+            Effect.map((rows) => (rows.length === 0 ? "gone" : "moved")),
+          );
+
       const planRelaunch = Effect.fn("SessionsRepo.planRelaunch")(function* (
         id: SessionId,
+        expected: string | null,
         resume: string,
         at: Date,
-      ) {
-        yield* db
+      ): Effect.fn.Return<RelaunchWrite> {
+        const rows = yield* db
           .update(agentSessions)
           .set({
             captureDrain: "relaunch",
@@ -1564,9 +1605,28 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             captureDrainProgressAt: sql`COALESCE(${agentSessions.captureDrainProgressAt}, ${at})`,
             updatedAt: at,
           })
-          .where(eq(agentSessions.id, id))
+          .where(and(eq(agentSessions.id, id), plannedAs(expected)))
+          .returning({ id: agentSessions.id })
           .pipe(Effect.orDie);
+        if (rows.length === 0) return yield* unwritten(id);
         yield* notify(id);
+        return "written";
+      });
+
+      const swapRelaunch = Effect.fn("SessionsRepo.swapRelaunch")(function* (
+        id: SessionId,
+        expected: string | null,
+        next: string | null,
+      ): Effect.fn.Return<RelaunchWrite> {
+        const rows = yield* db
+          .update(agentSessions)
+          .set({ captureDrainResume: next })
+          .where(and(eq(agentSessions.id, id), plannedAs(expected)))
+          .returning({ id: agentSessions.id })
+          .pipe(Effect.orDie);
+        if (rows.length === 0) return yield* unwritten(id);
+        if (next !== null) yield* notify(id);
+        return "written";
       });
 
       const clearRelaunch = Effect.fn("SessionsRepo.clearRelaunch")(function* (id: SessionId) {
@@ -2288,6 +2348,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         recordCaptureObservation,
         beginCaptureDrain,
         planRelaunch,
+        swapRelaunch,
         clearRelaunch,
         stopCaptureDrain,
         relaunchOf,

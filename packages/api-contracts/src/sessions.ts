@@ -5,6 +5,7 @@ import {
   ServiceId,
   SessionId,
   SessionProcessId,
+  Timestamp,
 } from "@mend/domain";
 import {
   AgentApprovalDecision,
@@ -23,6 +24,7 @@ import {
   Session,
   SessionControlEvent,
   SessionProcess,
+  SessionStatus,
   WorkspaceRetirement,
 } from "@mend/domain/workbench";
 import { Change as SessionChange } from "@mend/domain/workbench";
@@ -180,6 +182,39 @@ export class ReplaceWorkspaceRequest extends Schema.Class<ReplaceWorkspaceReques
 )({
   seen: Schema.String,
 }) {}
+
+/**
+ * A launch named the attempt its client saw (`LaunchRequest.expected`) and the session moved on
+ * from it: another launch is under way or ran, or the session settled again (SLNT-167). Nothing
+ * was launched; `status` and `settledAt` are what the session reads now.
+ */
+export class SessionMovedOn extends Schema.TaggedError<SessionMovedOn>()(
+  "SessionMovedOn",
+  {
+    sessionId: SessionId,
+    status: SessionStatus,
+    settledAt: Schema.NullOr(Timestamp),
+    /** Why, in words a client can show as they are. */
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}
+
+/**
+ * A launch over a live or starting agent, without `restart` (SLNT-167). Nothing was restarted;
+ * attach to the agent, or launch with `restart` to replace it.
+ */
+export class SessionAgentLive extends Schema.TaggedError<SessionAgentLive>()(
+  "SessionAgentLive",
+  {
+    sessionId: SessionId,
+    status: SessionStatus,
+    settledAt: Schema.NullOr(Timestamp),
+    /** Why, in words a client can show as they are. */
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}
 
 export const sessionsGroup = HttpApiGroup.make("sessions")
   .add(
@@ -494,7 +529,14 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: LaunchRequest,
       success: Session,
-      error: [NotFound, SessionNotSteerable, StoreFailure, BudgetExceeded],
+      error: [
+        NotFound,
+        SessionNotSteerable,
+        StoreFailure,
+        BudgetExceeded,
+        SessionMovedOn,
+        SessionAgentLive,
+      ],
     }),
   )
   .add(

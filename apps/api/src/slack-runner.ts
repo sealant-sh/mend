@@ -3,6 +3,8 @@ import {
   type BudgetExceeded,
   type HarnessLayoutRefused,
   type NotFound,
+  type SessionAgentLive,
+  type SessionMovedOn,
   type StoreFailure,
 } from "@mend/api-contracts";
 import {
@@ -399,7 +401,13 @@ export const notStarted = (reason: string): SlackMessage =>
 export const launchFailed = (reason: string): SlackMessage =>
   section(escapeSlack(`launch failed · ${reason}`));
 
-type StartRefusal = NotFound | StoreFailure | BudgetExceeded | HarnessLayoutRefused;
+type StartRefusal =
+  | NotFound
+  | StoreFailure
+  | BudgetExceeded
+  | HarnessLayoutRefused
+  | SessionMovedOn
+  | SessionAgentLive;
 
 /**
  * A refusal from `SessionStart`, as the thread reads it. A budget's words are the budget's own. A
@@ -420,6 +428,11 @@ export const refusalWords = (
       return error.message;
     // Slack never asks for a layout; said as it is if it ever does.
     case "HarnessLayoutRefused":
+      return error.message;
+    // A thread's resume that raced another launch of the session (SLNT-167): the refusal's own
+    // words, which carry no paths.
+    case "SessionMovedOn":
+    case "SessionAgentLive":
       return error.message;
   }
 };

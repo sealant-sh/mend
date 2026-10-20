@@ -1,5 +1,11 @@
+import type { SessionsRepo } from "@mend/db";
 import { SessionId } from "@mend/domain";
-import { Session, captureStatusLine } from "@mend/domain/workbench";
+import {
+  type HostUserNamespaces,
+  Session,
+  SessionProcess,
+  captureStatusLine,
+} from "@mend/domain/workbench";
 import { LAUNCH_WAITING_PREFIX, LAUNCH_WAITING_SAVING } from "@mend/domain/workbench";
 import {
   type CaptureFlushKind,
@@ -7,10 +13,18 @@ import {
   type SealantClientShape,
   SealantPlatformError,
 } from "@mend/sealant";
-import { captureHoldWords, SessionEngine } from "@mend/sessions";
+import {
+  captureHoldWords,
+  NoLiveAgent,
+  ProtocolHost,
+  ProtocolHostNotLiveError,
+  Restart,
+  SessionEngine,
+  WorkspaceHostUserNamespaces,
+} from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSession, InteractiveSessionStatus } from "@sealant/sdk";
-import { Clock, Deferred, Duration, Effect, Fiber, Layer, Logger, Queue } from "effect";
+import { Clock, Deferred, Duration, Effect, Exit, Fiber, Layer, Logger, Queue } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
@@ -31,6 +45,7 @@ import {
 } from "./engine/clock-fixture.ts";
 import {
   drawnLine,
+  recordingProtocolHostLayer,
   sealantLaunchLayer,
   servedSocketApis,
   setup,
@@ -158,6 +173,88 @@ const signalledWorld = () =>
       drivingCheckpointWaits,
     };
   });
+
+/** The relaunch plan the session's row holds, as stored. */
+const storedPlan = (world: World, session: Session): unknown => {
+  const stored = world.relaunches.get(session.id);
+  return stored === undefined ? null : JSON.parse(stored);
+};
+const planId = (plan: unknown): unknown =>
+  typeof plan === "object" && plan !== null && "id" in plan ? plan.id : null;
+const owesPickup = (world: World, session: Session) =>
+  (world.relaunches.get(session.id) ?? "").includes('"pickup":"codex"');
+
+/** The PTY agent exits on its own while its executor drains for the replacement. */
+const agentExitsOnItsOwn = (world: World) => {
+  for (const process of world.processes.values()) {
+    if (process.kind !== "agent-pty" || process.exitedAt !== null) continue;
+    world.processes.set(
+      process.id,
+      new SessionProcess({
+        ...process,
+        status: "exited",
+        exitCode: 0,
+        exitedAt: new Date(),
+        updatedAt: new Date(),
+      }),
+    );
+  }
+};
+
+/** Time and turns for whatever the scenario set going to run its course. */
+const settleFor = (steps: number) =>
+  Effect.gen(function* () {
+    for (let step = 0; step < steps; step += 1) {
+      yield* TestClock.adjust(Duration.millis(100));
+      yield* Effect.yieldNow;
+    }
+  });
+
+/** A plan another writer put in the column: a pickup no launch of the case wrote. */
+const ANOTHER_PLAN = JSON.stringify({ kind: "pickup", harness: "codex", id: "another" });
+
+/** Each read of the session's plan, by its id (`read:<id>`, `read:none`), and each swap's answer. */
+const planTrail = () => {
+  const trail: Array<string> = [];
+  const idOf = (stored: string | null) =>
+    stored === null ? "none" : String(planId(JSON.parse(stored)));
+  const wrap = (inner: SessionsRepo["Service"]): SessionsRepo["Service"] => ({
+    ...inner,
+    relaunchOf: (id) =>
+      inner
+        .relaunchOf(id)
+        .pipe(Effect.tap((stored) => Effect.sync(() => trail.push(`read:${idOf(stored)}`)))),
+    swapRelaunch: (id, expected, next) =>
+      inner
+        .swapRelaunch(id, expected, next)
+        .pipe(Effect.tap((wrote) => Effect.sync(() => trail.push(`swap:${wrote}`)))),
+  });
+  return { trail, wrap };
+};
+
+/**
+ * The next swap of a session's plan, once armed, waits before it compares until `release`;
+ * `read` is the plan the column held when it began.
+ */
+const pausedSwap = (world: World, changed: () => void) => {
+  let armed: SessionId | null = null;
+  let read: string | null = null;
+  const open = Promise.withResolvers<void>();
+  world.beforeRelaunchSwap.current = () => {
+    if (armed === null) return Promise.resolve();
+    read = world.relaunches.get(armed) ?? "";
+    armed = null;
+    changed();
+    return open.promise;
+  };
+  return {
+    arm: (sessionId: SessionId) => {
+      armed = sessionId;
+    },
+    read: () => read,
+    release: Effect.sync(() => open.resolve()),
+  };
+};
 
 describe("SessionEngine capture drain (no loss of work product)", () => {
   it.effect(
@@ -2287,6 +2384,862 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             ),
           },
         );
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a relaunch taken up after a restart waits for a launch under way, and starts nothing over it (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const waits = yield* logged(
+          "session engine: capture mode · the relaunch waits · a launch of the session is under way",
+        );
+        const launchHeld = yield* Deferred.make<void>();
+        const releaseLaunch = yield* Deferred.make<void>();
+        let holding = false;
+        /** Holds the next launch past its admission, before it replaces anything. */
+        const heldLaunch = Layer.succeed(WorkspaceHostUserNamespaces, {
+          observe: () =>
+            Effect.suspend(() => {
+              if (!holding) return Effect.succeed(null);
+              holding = false;
+              return Deferred.succeed(launchHeld, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseLaunch)),
+                Effect.as(null),
+              );
+            }),
+        });
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              yield* shipHarnessCapture(
+                dir,
+                memory,
+                session.worktreeId,
+                memory.leases.get(session.worktreeId)?.epoch ?? 0,
+                crypto.randomUUID(),
+              );
+              yield* engine.stop(session.id);
+              yield* untilChanged(
+                () => world.sessions.get(session.id)?.status === "stopped",
+                "the stop",
+              );
+              // What a restart finds: a planned resume whose old executor is already gone.
+              const current = world.sessions.get(session.id);
+              if (current === undefined) throw new Error("the session is gone");
+              world.relaunches.set(session.id, "codex");
+              world.sessions.set(
+                session.id,
+                new Session({
+                  ...current,
+                  sealantWorkspaceId: null,
+                  captureDrain: "relaunch",
+                  captureDrainRequestedAt: new Date(),
+                  captureDrainProgressAt: new Date(),
+                }),
+              );
+              holding = true;
+              const launching = yield* engine
+                .launch(session.id, ["codex"], { over: NoLiveAgent })
+                .pipe(Effect.forkChild);
+              yield* Deferred.await(launchHeld);
+              const createdWhileHeld = created.length;
+
+              yield* engine.reapCaptureLeases();
+              const first = yield* Effect.raceFirst(
+                Deferred.await(waits.seen).pipe(Effect.as("the relaunch waited")),
+                untilChanged(() => created.length > createdWhileHeld, "a create").pipe(
+                  Effect.as("the relaunch created an executor"),
+                ),
+              );
+
+              expect(first).toBe("the relaunch waited");
+              expect(created).toHaveLength(createdWhileHeld);
+              expect(world.relaunches.has(session.id)).toBe(true);
+              yield* Deferred.succeed(releaseLaunch, undefined);
+              yield* Fiber.join(launching);
+              expect(created).toHaveLength(createdWhileHeld + 1);
+              // The next pass reads the plan again and finds the agent the launch started.
+              yield* engine.reapCaptureLeases();
+              yield* untilChanged(() => !world.relaunches.has(session.id), "the plan's end");
+              expect(created).toHaveLength(createdWhileHeld + 1);
+              expect(world.sessions.get(session.id)?.status).toBe("running");
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            hostUserNamespaces: heldLaunch,
+            sealantLayer: signalling(lifecycleLayer(created)),
+          },
+        ).pipe(Effect.provide(waits.layer));
+      }),
+    { timeout: 20_000 },
+  );
+
+  /**
+   * A session whose executor is replaced ahead of the platform's cap, its drain under way. The
+   * scenario saves it (`save`: the executor terminates and the pickup follows), and can hold the
+   * next launch past its admission (`holdNextLaunch`), answering it as the host would, hold the
+   * next executor create (`holdNextCreate`: a launch past its relaunch plan), and fail the next
+   * agent open (`failNextOpen`). `endExecutor`: the platform reports the current executor stopped
+   * until the next create, as Core does for one it ended.
+   */
+  const capReplacement = (
+    scenario: (run: {
+      readonly engine: typeof SessionEngine.Service;
+      readonly session: Session;
+      readonly world: World;
+      readonly created: ReadonlyArray<CreateOptions>;
+      readonly untilChanged: (condition: () => boolean, label: string) => Effect.Effect<void>;
+      readonly drivingCheckpointWaits: <A, E>(
+        self: Effect.Effect<A, E, SessionEngine>,
+      ) => Effect.Effect<A, E, SessionEngine>;
+      readonly save: Effect.Effect<void>;
+      readonly holdNextLaunch: Effect.Effect<{
+        readonly held: Effect.Effect<void>;
+        readonly answer: (observed: HostUserNamespaces | null) => Effect.Effect<void>;
+      }>;
+      readonly holdNextCreate: Effect.Effect<{
+        readonly held: Effect.Effect<void>;
+        readonly release: Effect.Effect<void>;
+      }>;
+      readonly failNextOpen: Effect.Effect<void>;
+      readonly endExecutor: Effect.Effect<void>;
+      /** The host refuses the next turn it is given: a protocol agent that took no opening turn. */
+      readonly refuseNextTurn: Effect.Effect<void>;
+    }) => Effect.Effect<void, never, SessionEngine>,
+  ) =>
+    Effect.gen(function* () {
+      const {
+        world,
+        memory,
+        tmp,
+        untilChanged,
+        signalling,
+        wrapCaptureChannel,
+        drivingCheckpointWaits,
+      } = yield* signalledWorld();
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      let saveNow = false;
+      const pollInterval = Duration.millis(10);
+      let hold: {
+        readonly held: Deferred.Deferred<void>;
+        readonly answer: Deferred.Deferred<HostUserNamespaces | null>;
+      } | null = null;
+      let createHold: {
+        readonly held: Deferred.Deferred<void>;
+        readonly release: Deferred.Deferred<void>;
+      } | null = null;
+      let failNextOpen = false;
+      let endedUntilCreate = false;
+      let refuseNextTurn = false;
+      const heldLaunch = Layer.succeed(WorkspaceHostUserNamespaces, {
+        observe: () =>
+          Effect.suspend(() => {
+            const current = hold;
+            if (current === null) return Effect.succeed(null);
+            hold = null;
+            return Deferred.succeed(current.held, undefined).pipe(
+              Effect.andThen(Deferred.await(current.answer)),
+            );
+          }),
+      });
+      yield* withPreparedEngineEffect(
+        (_world, dir) => setup(dir, world),
+        (_world, dir, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* shipHarnessCapture(
+              dir,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+            );
+            // Due at once: 1000 s cap, 600 s estimate + 400 s margin.
+            yield* engine.reapCaptureLeases();
+            yield* untilChanged(
+              () => world.sessions.get(session.id)?.captureDrain === "replacement",
+              "the replacement's drain",
+            );
+            yield* scenario({
+              engine,
+              session,
+              world,
+              created,
+              // A wait that never ends fails with what it waited for, not the test's timeout.
+              untilChanged: (condition, label) =>
+                Effect.raceFirst(
+                  untilChanged(condition, label),
+                  Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10_000))).pipe(
+                    Effect.andThen(Effect.die(new Error(`never observed: ${label}`))),
+                  ),
+                ),
+              drivingCheckpointWaits,
+              save: Effect.gen(function* () {
+                saveNow = true;
+                yield* TestClock.adjust(pollInterval);
+                yield* untilChanged(() => events.includes("workspace-1"), "the terminate");
+              }),
+              holdNextLaunch: Effect.gen(function* () {
+                const held = yield* Deferred.make<void>();
+                const answer = yield* Deferred.make<HostUserNamespaces | null>();
+                hold = { held, answer };
+                return {
+                  held: Deferred.await(held),
+                  answer: (observed) => Deferred.succeed(answer, observed).pipe(Effect.asVoid),
+                };
+              }),
+              holdNextCreate: Effect.gen(function* () {
+                const held = yield* Deferred.make<void>();
+                const release = yield* Deferred.make<void>();
+                createHold = { held, release };
+                return {
+                  held: Deferred.await(held),
+                  release: Deferred.succeed(release, undefined).pipe(Effect.asVoid),
+                };
+              }),
+              failNextOpen: Effect.sync(() => {
+                failNextOpen = true;
+              }),
+              endExecutor: Effect.sync(() => {
+                endedUntilCreate = true;
+              }),
+              refuseNextTurn: Effect.sync(() => {
+                refuseNextTurn = true;
+              }),
+            });
+          }),
+        {
+          fixture: { world, tmp },
+          captured: memory,
+          wrapCaptureChannel,
+          hostUserNamespaces: heldLaunch,
+          protocolHostLayer: Layer.effect(
+            ProtocolHost,
+            Effect.map(ProtocolHost, (host) => ({
+              ...host,
+              submitTurn: (sessionId, input, author, correlation) =>
+                Effect.suspend(() => {
+                  if (!refuseNextTurn)
+                    return host.submitTurn(sessionId, input, author, correlation);
+                  refuseNextTurn = false;
+                  return Effect.fail(new ProtocolHostNotLiveError({ processId: "refused" }));
+                }),
+            })),
+          ).pipe(Layer.provide(recordingProtocolHostLayer([], []))),
+          drainPolicy: {
+            pollInterval,
+            executorMaxSeconds: 1000,
+            drainEstimateSeconds: 600,
+            deadlineMarginSeconds: 400,
+            terminationWait: Duration.seconds(5),
+          },
+          sealantLayer: signalling(
+            lifecycleLayer(created, {
+              events,
+              captureOps: {
+                flushed: events,
+                flush: () => Effect.succeed(saveNow ? flushReport(0, 2) : flushReport(1, 1)),
+                status: (stopAsked) => (endedUntilCreate || stopAsked ? "stopped" : undefined),
+                beforeCreate: () =>
+                  Effect.suspend(() => {
+                    endedUntilCreate = false;
+                    const current = createHold;
+                    if (current === null) return Effect.void;
+                    createHold = null;
+                    return Deferred.succeed(current.held, undefined).pipe(
+                      Effect.andThen(Deferred.await(current.release)),
+                    );
+                  }),
+                openFails: () => {
+                  const fails = failNextOpen;
+                  failNextOpen = false;
+                  return fails;
+                },
+              },
+            }),
+          ),
+        },
+      );
+    });
+
+  it.effect(
+    "a launch while a cap-time replacement's pickup holds the gate is refused, and the pickup starts the one agent (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const seen = { during: "", created: 0, status: "" };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            const pickup = yield* run.holdNextLaunch;
+            yield* run.save;
+            yield* pickup.held;
+            const during = yield* run.engine
+              .launch(run.session.id, ["codex"], { over: Restart })
+              .pipe(Effect.result);
+            seen.during = during._tag === "Failure" ? during.failure._tag : "launched";
+            yield* pickup.answer(null);
+            yield* run.untilChanged(() => run.created.length === 2, "the pickup's executor");
+            seen.created = run.created.length;
+            seen.status = run.world.sessions.get(run.session.id)?.status ?? "";
+          }),
+        );
+        expect(seen).toEqual({ during: "SessionAgentLiveError", created: 2, status: "running" });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a cap-time replacement's pickup that a launch held off is kept as a plan, and resumes the agent when that launch starts nothing (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const seen = { planned: false, createdWhileHeld: 0, holder: "", created: 0, status: "" };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            const holder = yield* run.holdNextLaunch;
+            const restarting = yield* run.engine
+              .launch(run.session.id, ["codex"], { over: Restart })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* holder.held;
+            yield* run.save;
+            yield* run.untilChanged(
+              () => run.world.relaunches.has(run.session.id),
+              "the pickup's plan",
+            );
+            seen.planned = true;
+            seen.createdWhileHeld = run.created.length;
+            // The launch holding the gate is refused before it starts anything.
+            yield* holder.answer({ allowed: false, setting: "kernel.unprivileged_userns_clone=1" });
+            const refused = yield* Fiber.join(restarting);
+            seen.holder = refused._tag;
+            yield* run.engine.reapCaptureLeases();
+            yield* run.untilChanged(
+              () =>
+                !run.world.relaunches.has(run.session.id) &&
+                run.world.sessions.get(run.session.id)?.status === "running",
+              "the plan's resume",
+            );
+            seen.created = run.created.length;
+            seen.status = run.world.sessions.get(run.session.id)?.status ?? "";
+          }),
+        );
+        expect(seen).toEqual({
+          planned: true,
+          createdWhileHeld: 1,
+          holder: "Failure",
+          created: 2,
+          status: "running",
+        });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a cap-time replacement's plan does nothing once the launch that held it off started the agent (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const seen = { holder: "", createdByHolder: 0, created: 0, planLeft: true };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            const holder = yield* run.holdNextLaunch;
+            const restarting = yield* run.engine
+              .launch(run.session.id, ["codex"], { over: Restart })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* holder.held;
+            yield* run.save;
+            yield* run.untilChanged(
+              () => run.world.relaunches.has(run.session.id),
+              "the pickup's plan",
+            );
+            yield* holder.answer(null);
+            seen.holder = (yield* Fiber.join(restarting))._tag;
+            seen.createdByHolder = run.created.length;
+            yield* run.engine.reapCaptureLeases();
+            yield* run.untilChanged(
+              () => !run.world.relaunches.has(run.session.id),
+              "the plan's end",
+            );
+            seen.created = run.created.length;
+            seen.planLeft = run.world.relaunches.has(run.session.id);
+          }),
+        );
+        expect(seen).toEqual({
+          holder: "Success",
+          createdByHolder: 2,
+          created: 2,
+          planLeft: false,
+        });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "the owner's Stop that finishes while a held-off pickup's plan is on its way leaves nothing to resume: no agent starts again (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const seen = { atStop: "", holder: "", planLeft: true, created: 0, status: "" };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            const holder = yield* run.holdNextLaunch;
+            const restarting = yield* run.engine
+              .launch(run.session.id, ["codex"], { over: Restart })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* holder.held;
+            const writing = yield* Deferred.make<void>();
+            const written = yield* Deferred.make<void>();
+            run.world.beforeRelaunchSwap.current = (next) => {
+              if (next === null || !next.includes('"pickup"')) return Promise.resolve();
+              run.world.beforeRelaunchSwap.current = null;
+              Deferred.doneUnsafe(writing, Exit.void);
+              return Effect.runPromise(Deferred.await(written));
+            };
+            yield* run.save;
+            yield* Deferred.await(writing);
+            // The launch that held the pickup off is over before the Stop, so no Stop it owes
+            // runs after it: the Stop runs to its end while the pickup's write is on its way.
+            yield* holder.answer({ allowed: false, setting: "kernel.unprivileged_userns_clone=1" });
+            seen.holder = (yield* Fiber.join(restarting))._tag;
+            yield* run.drivingCheckpointWaits(run.engine.stop(run.session.id).pipe(Effect.orDie));
+            seen.atStop = run.world.relaunches.has(run.session.id) ? "planned" : "cleared";
+            yield* Deferred.succeed(written, undefined);
+            yield* settleFor(20);
+            yield* run.engine.reapCaptureLeases();
+            yield* run.untilChanged(
+              () => run.world.sessions.get(run.session.id)?.status !== "stopping",
+              "the Stop's settle",
+            );
+            yield* settleFor(50);
+            seen.planLeft = run.world.relaunches.has(run.session.id);
+            seen.created = run.created.length;
+            seen.status = run.world.sessions.get(run.session.id)?.status ?? "";
+          }),
+        );
+        expect(seen).toEqual({
+          atStop: "cleared",
+          holder: "Failure",
+          planLeft: false,
+          created: 1,
+          status: "failed",
+        });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a pickup's plan still there once the launch that held it off started the agent is consumed by the live-agent refusal, with nothing started (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        let present: unknown = null;
+        const seen = { holder: "", agentLive: false, created: 0, planLeft: true };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            // A protocol launch whose agent starts and then takes no opening turn: it fails with
+            // its agent live, and leaves the pickup its plan owed.
+            agentExitsOnItsOwn(run.world);
+            const create = yield* run.holdNextCreate;
+            yield* run.refuseNextTurn;
+            const launching = yield* run.engine
+              .launchProtocol(
+                run.session.id,
+                { mode: "protocol", prompt: "fix the login form" },
+                "user-fixture",
+                null,
+                false,
+                { over: Restart },
+              )
+              .pipe(Effect.result, Effect.forkChild);
+            yield* run.untilChanged(
+              () => run.world.relaunches.has(run.session.id),
+              "the launch's relaunch plan",
+            );
+            yield* run.save;
+            yield* TestClock.adjust(Duration.seconds(61));
+            yield* run.untilChanged(
+              () => owesPickup(run.world, run.session),
+              "the pickup owed by the launch's plan",
+            );
+            yield* create.held;
+            yield* create.release;
+            seen.holder = (yield* Fiber.join(launching))._tag;
+            present = storedPlan(run.world, run.session);
+            seen.agentLive = [...run.world.processes.values()].some(
+              (process) => process.kind === "agent-protocol" && process.exitedAt === null,
+            );
+            const createdBefore = run.created.length;
+            yield* run.engine.reapCaptureLeases();
+            yield* run.untilChanged(
+              () => !run.world.relaunches.has(run.session.id),
+              "the plan consumed",
+            );
+            seen.created = run.created.length - createdBefore;
+            seen.planLeft = run.world.relaunches.has(run.session.id);
+          }),
+        );
+        expect(present).toMatchObject({ kind: "pickup", harness: "codex" });
+        expect(seen).toEqual({ holder: "Failure", agentLive: true, created: 0, planLeft: false });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a pickup held off by a protocol launch keeps that launch's plan, its opening prompt and its correlation (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        let planned: unknown = null;
+        let owed: unknown = null;
+        const seen = { holder: "", left: true };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            // A protocol launch, which never starts over a live agent, is admitted once the agent
+            // exits, and plans its launch over the drain.
+            agentExitsOnItsOwn(run.world);
+            const create = yield* run.holdNextCreate;
+            const launching = yield* run.engine
+              .launchProtocol(
+                run.session.id,
+                { mode: "protocol", prompt: "fix the login form" },
+                "user-fixture",
+                null,
+                false,
+                { over: Restart },
+              )
+              .pipe(Effect.result, Effect.forkChild);
+            yield* run.untilChanged(
+              () => run.world.relaunches.has(run.session.id),
+              "the launch's relaunch plan",
+            );
+            planned = storedPlan(run.world, run.session);
+            const asPlanned = run.world.relaunches.get(run.session.id);
+            yield* run.save;
+            yield* TestClock.adjust(Duration.seconds(61));
+            yield* run.untilChanged(
+              () => run.world.relaunches.get(run.session.id) !== asPlanned,
+              "the pickup's write to the column",
+            );
+            owed = storedPlan(run.world, run.session);
+            yield* create.held;
+            yield* create.release;
+            seen.holder = (yield* Fiber.join(launching))._tag;
+            seen.left = run.world.relaunches.has(run.session.id);
+          }),
+        );
+        expect(planned).toMatchObject({
+          kind: "launch",
+          start: { mode: "protocol", prompt: "fix the login form" },
+          author: "user-fixture",
+        });
+        expect(owed).toEqual({
+          ...(typeof planned === "object" ? planned : {}),
+          pickup: "codex",
+        });
+        expect(seen).toEqual({ holder: "Success", left: false });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a pickup held off by a launch past its relaunch plan is owed by that plan, and outlives the launch failing to start: the reaper resumes it (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        let planned: unknown = null;
+        let owed: unknown = null;
+        let left: unknown = null;
+        const seen = { holder: "", createdByHolder: 0, created: 0, status: "" };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            const create = yield* run.holdNextCreate;
+            yield* run.failNextOpen;
+            const restarting = yield* run.engine
+              .launch(run.session.id, ["codex"], { over: Restart })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* run.untilChanged(
+              () => run.world.relaunches.has(run.session.id),
+              "the launch's relaunch plan",
+            );
+            planned = storedPlan(run.world, run.session);
+            yield* run.save;
+            // The launch's new executor holds the worktree's lease: the replacement's wait for
+            // the old one's runs out before its pickup.
+            yield* TestClock.adjust(Duration.seconds(61));
+            yield* run.untilChanged(
+              () => owesPickup(run.world, run.session),
+              "the pickup owed by the launch's plan",
+            );
+            owed = storedPlan(run.world, run.session);
+            yield* create.held;
+            yield* create.release;
+            seen.holder = (yield* Fiber.join(restarting))._tag;
+            seen.createdByHolder = run.created.length;
+            left = storedPlan(run.world, run.session);
+            yield* run.endExecutor;
+            yield* run.engine.reapCaptureLeases();
+            yield* run.untilChanged(
+              () =>
+                !run.world.relaunches.has(run.session.id) &&
+                run.world.sessions.get(run.session.id)?.status === "running",
+              "the pickup's resume",
+            );
+            seen.created = run.created.length;
+            seen.status = run.world.sessions.get(run.session.id)?.status ?? "";
+          }),
+        );
+        expect(planned).toMatchObject({ kind: "resume", harness: "codex" });
+        expect(owed).toMatchObject({ kind: "resume", harness: "codex", pickup: "codex" });
+        expect(planId(owed)).toBe(planId(planned));
+        expect(left).toMatchObject({ kind: "pickup", harness: "codex" });
+        expect(seen).toEqual({
+          holder: "Failure",
+          createdByHolder: 2,
+          created: 3,
+          status: "running",
+        });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a pickup's plan that a launch's own plan replaces is owed by it, and outlives that launch failing to start (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        let pickup: unknown = null;
+        let taken: unknown = null;
+        let left: unknown = null;
+        const seen = { holder: "", created: 0, status: "" };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            const holder = yield* run.holdNextLaunch;
+            const restarting = yield* run.engine
+              .launch(run.session.id, ["codex"], { over: Restart })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* holder.held;
+            yield* run.save;
+            yield* run.untilChanged(
+              () => run.world.relaunches.has(run.session.id),
+              "the pickup's plan",
+            );
+            pickup = storedPlan(run.world, run.session);
+            const create = yield* run.holdNextCreate;
+            yield* run.failNextOpen;
+            yield* holder.answer(null);
+            yield* create.held;
+            taken = storedPlan(run.world, run.session);
+            yield* create.release;
+            seen.holder = (yield* Fiber.join(restarting))._tag;
+            left = storedPlan(run.world, run.session);
+            yield* run.endExecutor;
+            yield* run.engine.reapCaptureLeases();
+            yield* run.untilChanged(
+              () =>
+                !run.world.relaunches.has(run.session.id) &&
+                run.world.sessions.get(run.session.id)?.status === "running",
+              "the pickup's resume",
+            );
+            seen.created = run.created.length;
+            seen.status = run.world.sessions.get(run.session.id)?.status ?? "";
+          }),
+        );
+        expect(pickup).toMatchObject({ kind: "pickup", harness: "codex" });
+        expect(taken).toMatchObject({ kind: "resume", harness: "codex", pickup: "codex" });
+        expect(planId(taken)).not.toBe(planId(pickup));
+        expect(left).toMatchObject({ kind: "pickup", harness: "codex" });
+        expect(seen).toEqual({ holder: "Failure", created: 3, status: "running" });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a held-off pickup whose session is removed while its plan is on its way writes once and ends (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const seen = { writes: 0, holder: "", left: true };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            const holder = yield* run.holdNextLaunch;
+            const restarting = yield* run.engine
+              .launch(run.session.id, ["codex"], { over: Restart })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* holder.held;
+            const writing = yield* Deferred.make<void>();
+            run.world.beforeRelaunchSwap.current = (next) => {
+              if (next === null || !next.includes('"pickup"')) return Promise.resolve();
+              seen.writes += 1;
+              Deferred.doneUnsafe(writing, Exit.void);
+              // The removal lands between the pickup's read of the column and its write.
+              run.world.sessions.delete(run.session.id);
+              run.world.relaunches.delete(run.session.id);
+              return seen.writes > 20
+                ? Promise.reject(new Error("the pickup's write never ends"))
+                : Promise.resolve();
+            };
+            yield* run.save;
+            yield* Deferred.await(writing);
+            yield* settleFor(20);
+            yield* holder.answer({ allowed: false, setting: "kernel.unprivileged_userns_clone=1" });
+            seen.holder = (yield* Fiber.join(restarting))._tag;
+            yield* settleFor(20);
+            seen.left = run.world.relaunches.has(run.session.id);
+          }),
+        );
+        expect(seen).toEqual({ writes: 1, holder: "Failure", left: false });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a launch whose session is removed while it plans its relaunch ends there, with nothing planned or started (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, signalling, wrapCaptureChannel } = yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        let removing: SessionId | null = null;
+        let plans = 0;
+        const seen = { launch: "", plans: 0, created: 0, left: true };
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              yield* shipHarnessCapture(
+                dir,
+                memory,
+                session.worktreeId,
+                memory.leases.get(session.worktreeId)?.epoch ?? 0,
+                crypto.randomUUID(),
+              );
+              const createdBefore = created.length;
+              removing = session.id;
+              const relaunched = yield* engine
+                .launch(session.id, ["codex"], { over: Restart })
+                .pipe(Effect.result);
+              seen.launch = relaunched._tag === "Failure" ? relaunched.failure._tag : "launched";
+              seen.plans = plans;
+              seen.created = created.length - createdBefore;
+              seen.left = world.relaunches.has(session.id);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            sealantLayer: signalling(lifecycleLayer(created)),
+            wrapSessions: (inner) => ({
+              ...inner,
+              planRelaunch: (id, expected, resume, at) =>
+                Effect.suspend(() => {
+                  if (id !== removing) return inner.planRelaunch(id, expected, resume, at);
+                  plans += 1;
+                  if (plans > 20) return Effect.die(new Error("the launch's plan never ends"));
+                  // The removal lands between the launch's read of the column and its write.
+                  return inner
+                    .remove(id)
+                    .pipe(Effect.andThen(inner.planRelaunch(id, expected, resume, at)));
+                }),
+            }),
+          },
+        );
+        expect(seen).toEqual({ launch: "SessionNotFoundError", plans: 1, created: 0, left: false });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a launch's cleanup ends only its own plan: another writer's plan, installed while the cleanup is paused, survives the failed swap and the read after it (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, changed, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const plans = planTrail();
+        const cleanup = pausedSwap(world, changed);
+        let own: unknown = null;
+        let launched = "";
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              yield* shipHarnessCapture(
+                dir,
+                memory,
+                session.worktreeId,
+                memory.leases.get(session.worktreeId)?.epoch ?? 0,
+                crypto.randomUUID(),
+              );
+              cleanup.arm(session.id);
+              const relaunching = yield* engine
+                .launch(session.id, ["codex"], { over: Restart })
+                .pipe(Effect.result, Effect.forkChild);
+              yield* untilChanged(() => cleanup.read() !== null, "the launch's cleanup");
+              own = planId(JSON.parse(cleanup.read() ?? "null"));
+              world.relaunches.set(session.id, ANOTHER_PLAN);
+              yield* cleanup.release;
+              launched = (yield* Fiber.join(relaunching))._tag;
+              expect(world.relaunches.get(session.id)).toBe(ANOTHER_PLAN);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            sealantLayer: signalling(lifecycleLayer(created)),
+            wrapSessions: plans.wrap,
+          },
+        );
+        expect(launched).toBe("Success");
+        expect(own).not.toBe(planId(JSON.parse(ANOTHER_PLAN)));
+        expect(plans.trail.slice(-3)).toEqual([`read:${own}`, "swap:moved", "read:another"]);
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "the reaper's end of a recovered plan ends only that plan: another writer's plan, installed while that end is paused, survives the failed swap and the read after it (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, changed, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const plans = planTrail();
+        const end = pausedSwap(world, changed);
+        const recovered = JSON.stringify({ kind: "pickup", harness: "codex", id: "recovered" });
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const createdBefore = created.length;
+              // What a restart finds: a pickup planned over the agent that is live.
+              world.relaunches.set(session.id, recovered);
+              end.arm(session.id);
+              yield* engine.reapCaptureLeases();
+              yield* untilChanged(() => end.read() !== null, "the reaper's end of the plan");
+              expect(end.read()).toBe(recovered);
+              world.relaunches.set(session.id, ANOTHER_PLAN);
+              yield* end.release;
+              yield* settleFor(20);
+              expect(world.relaunches.get(session.id)).toBe(ANOTHER_PLAN);
+              expect(created.length - createdBefore).toBe(0);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            sealantLayer: signalling(lifecycleLayer(created)),
+            wrapSessions: plans.wrap,
+          },
+        );
+        expect(plans.trail.slice(-3)).toEqual(["read:recovered", "swap:moved", "read:another"]);
       }),
     { timeout: 20_000 },
   );

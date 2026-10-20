@@ -857,8 +857,10 @@ describe("review round 3", () => {
         Effect.gen(function* () {
           setup(mend);
           mend.workbench.stopAgent("session-1");
-          mend.workbench.launchRefusal =
-            "starting · a launch of this session is already under way · nothing new started";
+          mend.workbench.launchRefusal = {
+            kind: "under way",
+            words: "starting · a launch of this session is already under way · nothing new started",
+          };
           mend.workbench.launchLiveDelayMs = 500;
           const { rpc } = yield* pairAndConnect(mend, "RACE");
           const thread = yield* feed(
@@ -880,6 +882,36 @@ describe("review round 3", () => {
           );
         }),
       ),
+  );
+});
+
+describe("a relaunch Mend refuses because the agent is up (SLNT-167)", () => {
+  it.live("delivers the queued message by POST /turns instead of failing it", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        mend.workbench.stopAgent("session-1");
+        // Another client brought the agent up after this gateway read it stopped.
+        mend.workbench.launchRefusal = { kind: "agent live" };
+        const { rpc } = yield* pairAndConnect(mend, "LIVE");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          message("session-1", "message-live", "Go on"),
+        );
+        yield* eventually(() => posts(mend, "/turns").length === 1, "the message's turn");
+        assert.strictEqual(posts(mend, "/launch").length, 1);
+        yield* thread.next(
+          runEvent((run) => run.userMessageId === "message-live" && run.status === "running"),
+        );
+      }),
+    ),
   );
 });
 

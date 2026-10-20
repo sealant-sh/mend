@@ -224,10 +224,14 @@ export class FakeWorkbench {
   /** `POST /turns` answers 409 though the row reads running (idle stop claimed, host not attached). */
   turnsNotLive = false;
   /**
-   * Another client's launch is under way: `POST /launch` answers Mend's 422 with these words, the
-   * session reads `starting`, and the agent comes up `launchLiveDelayMs` later.
+   * Another client's launch got there first. `under way`: `POST /launch` answers an older Mend's
+   * 422 with these words, the session reads `starting`, and the agent comes up `launchLiveDelayMs`
+   * later. `agent live`: it answers the 409 `SessionAgentLive` (SLNT-167), the agent already up.
    */
-  launchRefusal: string | null = null;
+  launchRefusal:
+    | { readonly kind: "under way"; readonly words: string }
+    | { readonly kind: "agent live" }
+    | null = null;
   /** How long `POST /launch` takes to answer, and a status it then refuses with (null: it launches). */
   launchAnswerDelayMs = 0;
   launchFailStatus: number | null = null;
@@ -1206,6 +1210,29 @@ export class FakeWorkbench {
     }
     this.launches.push({ sessionId: session.id, body: payload });
     const refusal = this.launchRefusal;
+    if (refusal?.kind === "agent live") {
+      this.launchRefusal = null;
+      const previous = this.agents.get(session.id);
+      if (previous !== undefined) {
+        this.agents.set(session.id, {
+          ...previous,
+          id: this.nextId("process"),
+          status: "running",
+          exitedAt: null,
+          createdAt: tick(),
+        });
+      }
+      session.status = "running";
+      session.updatedAt = tick();
+      return json(409, {
+        _tag: "SessionAgentLive",
+        sessionId: session.id,
+        status: "running",
+        settledAt: null,
+        message:
+          "the session's agent is live · nothing restarted · attach to it, or stop it and launch again",
+      });
+    }
     if (refusal !== null) {
       this.launchRefusal = null;
       session.status = "starting";
@@ -1224,7 +1251,7 @@ export class FakeWorkbench {
         session.updatedAt = tick();
         this.emit({ type: "session-process", sessionId: session.id, projectId: session.projectId });
       }, this.launchLiveDelayMs);
-      return json(422, { _tag: "StoreFailure", message: refusal });
+      return json(422, { _tag: "StoreFailure", message: refusal.words });
     }
     session.model = named("model") ?? session.model;
     session.status = "starting";

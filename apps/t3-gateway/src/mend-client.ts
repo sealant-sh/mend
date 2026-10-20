@@ -181,6 +181,14 @@ export class MendCommandRefused extends Schema.TaggedError<MendCommandRefused>()
   }
 }
 
+/**
+ * Mend refused a launch for a reason the session itself answers: the launch races another, or
+ * finds the agent up. A 422 carries only words (`session_starting`, `session_active`); a 409 is
+ * `SessionMovedOn` or `SessionAgentLive` (SLNT-167). Either way the caller reads the session.
+ */
+export const launchRacedOrLive = (error: MendCommandRefused): boolean =>
+  error.status === 422 || error.status === 409;
+
 /** A command as the person: Mend's answer, or why it did not take it. */
 export type MendCommand<A> = Effect.Effect<
   A,
