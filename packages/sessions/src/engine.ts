@@ -7188,8 +7188,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         for (const session of yield* sessions.listCaptureDrains()) {
           const workspaceId = session.sealantWorkspaceId;
-          if (stopTails.has(session.id) || replacing.has(session.id)) continue;
-          if (relaunching.has(session.id)) continue;
+          // A Stop owns its drain from the moment it takes the intent, while it still closes the
+          // agent. Taken up here then, the agent's row ends without the fold and the session
+          // reads `running` for good (SLNT-111).
+          if (stopUnderWay(session.id) || stopTails.has(session.id)) continue;
+          if (replacing.has(session.id) || relaunching.has(session.id)) continue;
           if (workspaceId !== null && drains.has(workspaceId)) continue;
           // Kept, and nothing changed since: wait (10 s doubling to 5 min) rather than flush again.
           if (yield* keptDrainWaits(session)) continue;
