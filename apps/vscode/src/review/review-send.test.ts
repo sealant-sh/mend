@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionDetail, SessionProcess } from "../types.js";
 import type { Pasted } from "./agent-paste.js";
 import { DRAFT_GONE } from "./delivery.js";
-import type { KeptReviews } from "./kept-reviews.js";
+import { DRIVE_STALE_MS, KeptReviews, NODE_FILES } from "./kept-reviews.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { textToSend } from "./instruction.js";
 import { fake, window as vscodeWindow } from "../test-vscode.js";
@@ -546,5 +546,71 @@ describe("a second window sends a review composed before the first window's went
     await vi.waitFor(() => expect(b.pastes).toHaveLength(1));
     expect(b.pastes[0]).toContain("Name the constant");
     expect(b.pastes[0]).not.toContain(fromA.text.split("\n")[0]);
+  });
+});
+
+/** Mend whose next few comment POSTs, as many as it holds, each wait until the test lets one land. */
+class SlowPosts extends FakeMend {
+  /** Every comment POST asked for, by body, as it was asked. */
+  readonly asked: Array<string> = [];
+  held = 0;
+  readonly #waiting: Array<() => void> = [];
+
+  override async postComment(
+    ...args: Parameters<FakeMend["postComment"]>
+  ): ReturnType<FakeMend["postComment"]> {
+    this.asked.push(args[3]);
+    if (this.held > 0) {
+      this.held -= 1;
+      const { promise, resolve } = Promise.withResolvers<void>();
+      this.#waiting.push(resolve);
+      await promise;
+    }
+    return super.postComment(...args);
+  }
+
+  /** The oldest waiting POST lands. */
+  land(): void {
+    this.#waiting.shift()?.();
+  }
+}
+
+describe("a window whose send another window took over while a POST was on its way", () => {
+  it("posts nothing more once that POST lands, and the review is delivered once", async () => {
+    const directory = await storage();
+    const server = new SlowPosts();
+    server.answer = "pending";
+    server.held = 2;
+    let late = 0;
+    const clock = (): number => Date.now() + late;
+    const a = await window(new KeptReviews(directory, NODE_FILES, clock), server);
+    await a.store.comment(onLine(3, "Use the shared limiter"));
+    await a.store.comment(onLine(7, "Name the retry budget"));
+    const composed = a.store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await a.store.send(composed, composed.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(server.asked).toHaveLength(1));
+    // Its POST outlasts its lease, as from a window asleep: a window opened now reads the send as
+    // abandoned, and Retry delivery drives it.
+    late += DRIVE_STALE_MS + 1_000;
+    const b = await window(new KeptReviews(directory, NODE_FILES, clock), server);
+    const target = b.store.retryTarget();
+    if (target === null) throw new Error("the other window offers no retry");
+    const retried = b.store.retry(target);
+    await vi.waitFor(() => expect(server.asked).toHaveLength(2));
+    server.land();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(server.asked).toHaveLength(2);
+    // Nor does it record that POST: the other window records this send now.
+    const kept = await keptIn(directory).read(target.place);
+    expect(
+      kept.review.sends[0]?.items.map((item) => (item.kind === "own" ? item.post.kind : item.kind)),
+    ).toEqual(["posting", "unposted"]);
+    server.land();
+    await retried;
+    await vi.waitFor(() => expect(server.delivered).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(server.asked.filter((body) => body.includes("Name the retry budget"))).toHaveLength(1);
+    expect(server.delivered).toHaveLength(1);
   });
 });

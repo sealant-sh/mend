@@ -268,6 +268,42 @@ describe("the window that drives a send", () => {
     expect(await other.claimDrive(DANA, "key-1")).toBe(true);
   });
 
+  it("stays a slow live driver's past the stale age: no other window takes it over", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const directory = await storage();
+      let late = 0;
+      const clock = (): number => Date.now() + late;
+      const driver = new KeptReviews(directory, NODE_FILES, clock);
+      const other = new KeptReviews(directory, NODE_FILES, clock);
+      expect(await driver.claimDrive(DANA, "key-1")).toBe(true);
+      late += DRIVE_STALE_MS + 1_000;
+      vi.advanceTimersByTime(DRIVE_STALE_MS + 1_000);
+      await pause(50);
+      expect(await other.drivenElsewhere(DANA, "key-1")).toBe(true);
+      expect(await other.claimDrive(DANA, "key-1")).toBe(false);
+      await driver.releaseDrive(DANA, "key-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("tells a window that lost it that it drives it no more, and that window leaves it be", async () => {
+    const directory = await storage();
+    let late = 0;
+    const clock = (): number => Date.now() + late;
+    const stalled = new KeptReviews(directory, NODE_FILES, clock);
+    const next = new KeptReviews(directory, NODE_FILES, clock);
+    expect(await stalled.claimDrive(DANA, "key-1")).toBe(true);
+    late += DRIVE_STALE_MS + 1_000;
+    expect(await next.claimDrive(DANA, "key-1")).toBe(true);
+    expect(await stalled.renewDrive(DANA, "key-1")).toBe(false);
+    await stalled.releaseDrive(DANA, "key-1");
+    expect(await stalled.drivenElsewhere(DANA, "key-1")).toBe(true);
+    expect(await next.renewDrive(DANA, "key-1")).toBe(true);
+    await next.releaseDrive(DANA, "key-1");
+  });
+
   it("is taken over from a window that closed while driving it", async () => {
     const directory = await storage();
     let now = Date.now();
