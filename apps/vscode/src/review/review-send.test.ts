@@ -5,6 +5,7 @@ import type { Pasted } from "./agent-paste.js";
 import { DRAFT_GONE } from "./delivery.js";
 import type { KeptReviews } from "./kept-reviews.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
+import { textToSend } from "./instruction.js";
 import { ReviewStore, type NewComment, type ReviewFailure } from "./review-store.js";
 import {
   comment,
@@ -17,6 +18,7 @@ import {
   slowFiles,
   storage,
 } from "./test-fixtures.js";
+import { threadsOf } from "./threads.js";
 
 vi.mock("vscode", () => import("../test-vscode.js"));
 
@@ -151,6 +153,71 @@ describe("Send review twice before she presses Enter in claude's terminal", () =
       tone: "warning",
       words: expect.stringMatching(/already in claude's terminal, so VS Code pasted nothing/),
     });
+  });
+});
+
+describe("a third Send after one that pasted nothing", () => {
+  it("pastes the comments the skipped Send never put in claude's input, onto what is there", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    const { store, pastes } = await window(keptIn(await storage()), mend);
+    const told = failures(store);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const first = store.compose();
+    if (first === null) throw new Error("nothing composed");
+    await store.send(first, first.text);
+    await vi.waitFor(() => expect(pastes).toHaveLength(1));
+
+    await store.comment(onLine(5, "Name the constant"));
+    const second = store.compose();
+    if (second === null) throw new Error("nothing composed");
+    await store.send(second, second.text.replace("Use the shared limiter", "Use guard.ts"));
+    await vi.waitFor(() => expect(told).toHaveLength(1));
+    expect(pastes).toHaveLength(1);
+    // Mend holds "Name the constant", and claude's input does not: its thread says so.
+    const read = store.ready();
+    if (read === null) throw new Error("not read");
+    const named = threadsOf(read, store.review(), "Dana").find(({ body }) =>
+      body.includes("Name the constant"),
+    );
+    expect(named?.label).toBe("follow-up pending · not in claude's terminal");
+
+    await store.comment(onLine(9, "Log the limit"));
+    const third = store.compose();
+    if (third === null) throw new Error("nothing composed");
+    // Composed on top of what claude's input holds: the first review as it was pasted.
+    expect(third.text).toContain("Use the shared limiter");
+    expect(third.text).not.toContain("Use guard.ts");
+    await store.send(third, third.text);
+    await vi.waitFor(() => expect(pastes).toHaveLength(2));
+    const input = pastes.join("");
+    expect(input.split("Use the shared limiter")).toHaveLength(2);
+    expect(input).toContain("Name the constant");
+    expect(input).toContain("Log the limit");
+    // What Mend holds is what her input holds once she presses Enter.
+    expect(mend.delivered.at(-1)?.instruction).toBe(textToSend(input, "add-rate-limit"));
+  });
+});
+
+describe("a Send whose earlier part changed only its line endings", () => {
+  it("is not an edit: only the new comment is pasted", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    const { store, pastes } = await window(keptIn(await storage()), mend);
+    const told = failures(store);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const first = store.compose();
+    if (first === null) throw new Error("nothing composed");
+    await store.send(first, first.text);
+    await vi.waitFor(() => expect(pastes).toHaveLength(1));
+    await store.comment(onLine(5, "Name the constant"));
+    const second = store.compose();
+    if (second === null) throw new Error("nothing composed");
+    await store.send(second, second.text.replaceAll("\n", "\r\n"));
+    await vi.waitFor(() => expect(pastes).toHaveLength(2));
+    expect(pastes[1]).toContain("Name the constant");
+    expect(pastes[1]).not.toContain("Use the shared limiter");
+    expect(told).toEqual([]);
   });
 });
 
