@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { startSend, stepReview } from "./delivery.js";
-import type { PastePlan } from "./delivery.js";
+import type { LiveAgent, PastePlan } from "./delivery.js";
 import { EMPTY_REVIEW } from "./pending.js";
 import { checkpoint, CHECKPOINTS, comment, pending, PINNED, readOf } from "./test-fixtures.js";
 import { commentableLines, commentsLine, threadPlace, threadsOf } from "./threads.js";
@@ -230,7 +230,11 @@ describe("the threads of a review she sent", () => {
       { kind: "pinned" },
       { comments: [open], facts: { ...gone.facts, agent: { kind: "other" } } },
     );
-    expect(threadsOf(live, held, "Dana")[0]).toMatchObject({ kind: "sent" });
+    // Held by Mend while an agent lives is not sent: it waits, with no Retry to offer.
+    expect(threadsOf(live, held, "Dana")[0]).toMatchObject({
+      kind: "waiting",
+      label: "follow-up pending",
+    });
     expect(threadsOf(gone, held, "Dana")[0]).toMatchObject({
       kind: "held",
       label: "follow-up pending",
@@ -240,14 +244,46 @@ describe("the threads of a review she sent", () => {
 });
 
 describe("the Comments row's count", () => {
+  it("counts a review Mend holds in claude's terminal as follow-up pending, never as sent", () => {
+    const open = comment({ id: "c1" });
+    const started = startSend(EMPTY_REVIEW, {
+      key: "k1",
+      slice: SLICE,
+      instruction: "the review",
+      paste: ALL,
+      pending: [],
+      open: ["c1"],
+      now: NOW,
+    });
+    if (started === null) throw new Error("the review did not start");
+    const claude: LiveAgent = { kind: "terminal", name: "claude", hers: true, processId: "agent-1" };
+    const held = stepReview(
+      stepReview(started, "k1", { kind: "answered", status: "pending", error: null, agent: claude }, NOW),
+      "k1",
+      { kind: "pasted" },
+      NOW,
+    );
+    const gone = readOf({ kind: "pinned" }, { comments: [open] });
+    const live = readOf(
+      { kind: "pinned" },
+      { comments: [open], facts: { ...gone.facts, agent: claude } },
+    );
+    const threads = threadsOf(live, held, "Dana");
+    expect(threads.map(({ kind, label }) => [kind, label])).toEqual([
+      ["waiting", "follow-up pending · in claude's terminal"],
+    ]);
+    expect(commentsLine(threads)).toBe("1 follow-up pending · in claude's terminal");
+  });
+
+
   it("counts each comment by the state it was observed in", () => {
     expect(
       commentsLine([
-        { kind: "sending" },
-        { kind: "failed" },
-        { kind: "held" },
-        { kind: "sent" },
-        { kind: "pending" },
+        { kind: "sending", label: "sending" },
+        { kind: "failed", label: "delivery failed · retryable" },
+        { kind: "held", label: "follow-up pending" },
+        { kind: "sent", label: "sent" },
+        { kind: "pending", label: "pending" },
       ]),
     ).toBe("1 pending · 1 sending · 1 delivery failed · retryable · 1 follow-up pending · 1 sent");
   });
