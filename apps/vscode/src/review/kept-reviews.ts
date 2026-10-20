@@ -54,8 +54,10 @@ export const NODE_FILES: KeptFiles = {
 /** A session's review untouched this long goes: nobody reviews a session a month on. */
 export const KEPT_REVIEW_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** A lock older than this was left by a window that died holding it. */
+/** A lock its holder has not renewed this long was left by a window that died holding it. */
 const LOCK_STALE_MS = 10_000;
+/** How often a window renews the lock it holds, so a slow write is never taken for a dead one. */
+const LOCK_BEAT_MS = LOCK_STALE_MS / 4;
 /** How long a write waits for another window's before it says it could not keep the review. */
 const LOCK_WAIT_MS = 5_000;
 const LOCK_POLL_MS = 15;
@@ -81,6 +83,21 @@ const parseKept = (text: string): KeptReview => {
 };
 
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A lock reads `<ms> <owner>`: when its holder last renewed it, then who holds it. */
+const HOLD = /^(\d+) ?(.*)$/s;
+const holdText = (at: number, owner: string): string => `${at} ${owner}`;
+const heldAt = (text: string): number | null => {
+  const at = HOLD.exec(text)?.[1];
+  return at === undefined ? null : Number(at);
+};
+const heldBy = (text: string): string | null => HOLD.exec(text)?.[2] ?? null;
+
+/** A hold this window renews: whether it still has it, and the end of its renewing. */
+interface Renewed {
+  readonly held: () => Promise<boolean>;
+  readonly stop: () => Promise<void>;
+}
 
 /**
  * Her pending comments and the reviews she sent, per person and session, in one file each under
@@ -126,7 +143,7 @@ export class KeptReviews {
     const before = this.#queued.get(file) ?? Promise.resolve();
     const run = before
       .catch(() => undefined)
-      .then(() => this.#locked(file, () => this.#write(place, file, update)));
+      .then(() => this.#locked(file, (held) => this.#write(place, file, update, held)));
     this.#queued.set(file, run);
     try {
       return await run;
@@ -139,6 +156,7 @@ export class KeptReviews {
     place: ReviewPlace,
     file: string,
     update: (kept: SessionReview) => SessionReview,
+    held: () => Promise<boolean>,
   ): Promise<KeptReview> {
     const current = await this.read(place);
     const next = update(current.review);
@@ -147,6 +165,10 @@ export class KeptReviews {
     const written = `${file}.${randomUUID()}.tmp`;
     try {
       await this.files.writeFile(written, JSON.stringify(kept));
+      if (!(await held()))
+        throw new Error(
+          "another window of VS Code took over writing this review; this change was not kept.",
+        );
       await this.files.rename(written, file);
     } catch (cause) {
       await this.files.rm(written).catch(() => undefined);
@@ -155,38 +177,110 @@ export class KeptReviews {
     return kept;
   }
 
-  async #locked<T>(file: string, body: () => Promise<T>): Promise<T> {
+  async #locked<T>(file: string, body: (held: () => Promise<boolean>) => Promise<T>): Promise<T> {
     await this.files.mkdir(dirname(file));
     await this.#sweep(dirname(file));
     const lock = `${file}.lock`;
+    const owner = randomUUID();
     const began = this.now();
-    for (;;) {
-      try {
-        await this.files.create(lock, String(this.now()));
-        break;
-      } catch (cause) {
-        if (codeOf(cause) !== "EEXIST") throw cause;
-      }
-      const made = await this.files.modified(lock);
-      if (made !== null && this.now() - made >= LOCK_STALE_MS) {
-        // Taken away under a name of its own, so of two windows that both found it stale only
-        // one removes it.
-        const stale = `${lock}.${randomUUID()}.stale`;
-        await this.files.rename(lock, stale).then(
-          () => this.files.rm(stale),
-          () => undefined,
-        );
-        continue;
-      }
+    while (!(await this.#take(lock, owner))) {
+      if (await this.#breakStale(lock, LOCK_STALE_MS)) continue;
       if (this.now() - began >= LOCK_WAIT_MS)
         throw new Error("another window of VS Code is still writing this review.");
       await pause(LOCK_POLL_MS);
     }
+    const renewed = this.#renew(lock, owner, LOCK_BEAT_MS);
     try {
-      return await body();
+      return await body(renewed.held);
     } finally {
-      await this.files.rm(lock).catch(() => undefined);
+      await renewed.stop();
+      await this.#release(lock, owner).catch(() => undefined);
     }
+  }
+
+  /** Takes `path` for `owner` when nobody holds it. */
+  async #take(path: string, owner: string): Promise<boolean> {
+    try {
+      await this.files.create(path, holdText(this.now(), owner));
+      return true;
+    } catch (cause) {
+      if (codeOf(cause) === "EEXIST") return false;
+      throw cause;
+    }
+  }
+
+  async #holdOf(path: string): Promise<string | null> {
+    return this.files.readFile(path).then(
+      (text) => text,
+      () => null,
+    );
+  }
+
+  async #holds(path: string, owner: string): Promise<boolean> {
+    const text = await this.#holdOf(path);
+    return text !== null && heldBy(text) === owner;
+  }
+
+  async #release(path: string, owner: string): Promise<void> {
+    if (await this.#holds(path, owner)) await this.files.rm(path);
+  }
+
+  /**
+   * Breaks a hold its holder stopped renewing `staleMs` ago, and answers whether to try taking it
+   * again. It breaks only under the breaker, a file created only when absent, and only while the
+   * hold reads as it did when found stale: of two windows that found it stale at once, the later
+   * reads the hold the earlier took since, and leaves it.
+   */
+  async #breakStale(path: string, staleMs: number): Promise<boolean> {
+    const seen = await this.#holdOf(path);
+    if (seen === null) return true;
+    if (!(await this.#stale(path, seen, staleMs))) return false;
+    const breaker = `${path}.break`;
+    if (!(await this.#take(breaker, randomUUID()))) {
+      // A window that died breaking it left the breaker, which goes stale in turn.
+      const other = await this.#holdOf(breaker);
+      if (other !== null && (await this.#stale(breaker, other, staleMs)))
+        await this.files.rm(breaker);
+      return false;
+    }
+    try {
+      if ((await this.#holdOf(path)) === seen) await this.files.rm(path);
+      return true;
+    } finally {
+      await this.files.rm(breaker).catch(() => undefined);
+    }
+  }
+
+  /** A hold with no time in it was cut short by a crash mid-renewal, so its file's age counts. */
+  async #stale(path: string, text: string, staleMs: number): Promise<boolean> {
+    const at = heldAt(text) ?? (await this.files.modified(path));
+    return at !== null && this.now() - at >= staleMs;
+  }
+
+  /**
+   * Renews `owner`'s hold on `path` every `everyMs` while it still has it. Asking whether it does
+   * waits for the renewal in flight, which rewrites the file and reads as no holder until done.
+   */
+  #renew(path: string, owner: string, everyMs: number): Renewed {
+    let last: Promise<unknown> = Promise.resolve();
+    const queue = <T>(work: () => Promise<T>): Promise<T> => {
+      const next = last.then(work);
+      last = next.catch(() => undefined);
+      return next;
+    };
+    const timer = setInterval(() => {
+      void queue(async () => {
+        if (await this.#holds(path, owner))
+          await this.files.writeFile(path, holdText(this.now(), owner));
+      }).catch(() => undefined);
+    }, everyMs);
+    return {
+      held: () => queue(() => this.#holds(path, owner)),
+      stop: async () => {
+        clearInterval(timer);
+        await last;
+      },
+    };
   }
 
   /**
@@ -205,21 +299,18 @@ export class KeptReviews {
     await Promise.all(
       names.map(async (name) => {
         const path = join(directory, name);
-        if (/\.(tmp|stale)$/.test(name)) {
+        if (/\.(tmp|stale|break)$/.test(name)) {
           if (await expired(path, LOCK_STALE_MS * 6)) await this.files.rm(path);
           return;
         }
         if (!name.endsWith(".json") || !(await expired(path, KEPT_REVIEW_TTL_MS))) return;
         const lock = `${path}.lock`;
-        const locked = await this.files.create(lock, String(this.now())).then(
-          () => true,
-          () => false,
-        );
-        if (!locked) return;
+        const owner = randomUUID();
+        if (!(await this.#take(lock, owner).catch(() => false))) return;
         try {
           if (await expired(path, KEPT_REVIEW_TTL_MS)) await this.files.rm(path);
         } finally {
-          await this.files.rm(lock).catch(() => undefined);
+          await this.#release(lock, owner).catch(() => undefined);
         }
       }),
     );
