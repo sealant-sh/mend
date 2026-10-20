@@ -9,6 +9,7 @@ import { DRIVE_STALE_MS, KeptReviews, NODE_FILES } from "./kept-reviews.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore, type NewComment, type ReviewFailure } from "./review-store.js";
 import { reviewToast } from "./review-toast.js";
+import type { ReadPass } from "./review-wire.js";
 import {
   comment,
   FakeMend,
@@ -539,6 +540,51 @@ describe("Retry from the toast when nothing was pasted", () => {
       "Retry delivery sent nothing: this review already reads sent",
       expect.any(Number),
     );
+  });
+});
+
+/** Mend whose read pass of the change is whatever the test last set. */
+class ReadingMend extends FakeMend {
+  pass: ReadPass | null = null;
+
+  override async readPass(): Promise<ReadPass | null> {
+    return this.pass;
+  }
+
+  override async readChange(): Promise<void> {
+    this.writes.push("read");
+  }
+}
+
+describe("a read Mend could not finish, its toast waiting while she starts another", () => {
+  it("shows nothing once the newer read is running", async () => {
+    const mend = new ReadingMend();
+    const { store } = await window(keptIn(await storage()), mend);
+    const told = failures(store);
+    await store.readChange();
+    mend.pass = {
+      kind: "failed",
+      startedAt: "2026-10-20T10:00:00.000Z",
+      at: "2026-10-20T10:00:05.000Z",
+      words: "the model timed out",
+    };
+    store.reread();
+    await vi.waitFor(() => expect(told).toHaveLength(1));
+    const [failure] = told;
+    if (failure === undefined) throw new Error("no failure");
+    expect(failure.words).toBe("Mend could not read this change: the model timed out");
+    // The toast waits on its claim; meanwhile she reads the change again, and Mend is reading it.
+    const claims = {
+      claim: async () => {
+        mend.pass = { kind: "reading", since: "2026-10-20T10:01:00.000Z" };
+        store.reread();
+        await vi.waitFor(() => expect(store.ready()?.pass?.kind).toBe("reading"));
+        return true;
+      },
+      release: async () => undefined,
+    };
+    await reviewToast(store, claims, () => undefined)(failure);
+    expect(vscodeWindow.showErrorMessage).not.toHaveBeenCalled();
   });
 });
 
