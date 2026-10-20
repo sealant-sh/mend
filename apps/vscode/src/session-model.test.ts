@@ -15,7 +15,9 @@ import {
   type Notification,
   type WaitFact,
   type WindowModel,
+  waitsOf,
 } from "./session-model.js";
+import { pendingRequest, requestWait } from "./test-requests.js";
 import type { Project, Session } from "./types.js";
 
 const NOW = new Date("2026-10-19T09:00:00.000Z");
@@ -307,23 +309,48 @@ describe("the badge (rule 15)", () => {
     sharedControlEnabledAt: YESTERDAY,
   });
 
-  const request: WaitFact = {
-    key: "r1",
-    words: "run pnpm db:migrate?",
-    since: YESTERDAY,
-    via: "conversation",
-  };
+  const request = (answerer: string | null = null): WaitFact =>
+    requestWait(pendingRequest({ createdAt: YESTERDAY }), answerer);
 
-  it("does not count Ana's conversation even with shared control on: Answer gives Dana a read-only tab", () => {
-    const model = sessionModel(input([sharedByAna], { waits: new Map([["anas", request]]) }));
+  it("does not count Ana's conversation while she has shared control off, and reads it as hers", () => {
+    const anas = session({ id: "anas", status: "waiting", ownerUserId: "ana" });
+    const model = sessionModel(input([anas], { waits: new Map([["anas", request()]]) }));
     expect(model.badge).toBe(0);
     expect(model.sessions.get("anas")?.needsYou).toBe(false);
     expect(model.sessions.get("anas")?.line).toBe("waiting · Ana's session");
+    expect(waitsOf(model).size).toBe(0);
   });
 
-  it("counts her own conversation's request: Answer offers her Continue here", () => {
+  it("does not count Ana's conversation with shared control on when its agent runs as Ana", () => {
+    const model = sessionModel(
+      input([sharedByAna], { waits: new Map([["anas", request("ana")]]) }),
+    );
+    expect(model.badge).toBe(0);
+    expect(model.sessions.get("anas")?.line).toBe("waiting · Ana's session");
+  });
+
+  it("counts Ana's conversation with shared control on when its agent runs as nobody in particular", () => {
+    const model = sessionModel(input([sharedByAna], { waits: new Map([["anas", request()]]) }));
+    expect(model.badge).toBe(1);
+    expect(model.sessions.get("anas")?.line).toBe(
+      `waiting · run pnpm db:migrate? · since ${clockTime(YESTERDAY)}`,
+    );
+    expect([...waitsOf(model).keys()]).toEqual(["anas:wait:r1"]);
+  });
+
+  it("does not count her own conversation when its agent runs as someone else", () => {
     const mine = session({ id: "mine", status: "waiting" });
-    const model = sessionModel(input([mine], { waits: new Map([["mine", request]]) }));
+    expect(sessionModel(input([mine], { waits: new Map([["mine", request("ana")]]) })).badge).toBe(
+      0,
+    );
+    expect(sessionModel(input([mine], { waits: new Map([["mine", request("dana")]]) })).badge).toBe(
+      1,
+    );
+  });
+
+  it("counts her own conversation's request", () => {
+    const mine = session({ id: "mine", status: "waiting" });
+    const model = sessionModel(input([mine], { waits: new Map([["mine", request()]]) }));
     expect(model.badge).toBe(1);
     expect(model.sessions.get("mine")?.line).toBe(
       `waiting · run pnpm db:migrate? · since ${clockTime(YESTERDAY)}`,

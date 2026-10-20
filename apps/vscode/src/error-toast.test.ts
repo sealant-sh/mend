@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { showErrorToast } from "./error-toast.js";
 import { MendApiError } from "./mend-http.js";
+import { sayAdoptFailed, sayCreateFailed } from "./new-session-input.js";
+import { reportOpenFailure } from "./open-command.js";
 import { commands, fake, window } from "./test-vscode.js";
 
 vi.mock("vscode", () => import("./test-vscode.js"));
@@ -49,5 +51,43 @@ describe("showErrorToast", () => {
       ["boom", "Try again"],
     ]);
     expect(commands.executeCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe("the toasts that go through it", () => {
+  beforeEach(() => fake.reset());
+
+  it("an Open that failed: a refused sign-in reads Mend's words, with Connect", async () => {
+    expect(await reportOpenFailure("Could not open add-rate-limit · …", "Retry", signedOut)).toBe(
+      undefined,
+    );
+    window.showErrorMessage.mockResolvedValueOnce("Retry");
+    const unreached = new MendApiError("Cannot reach Mend at http://mend-mini:3105.", null);
+    expect(await reportOpenFailure("Could not open add-rate-limit", "Retry", unreached)).toBe(
+      "Retry",
+    );
+    expect(window.showErrorMessage.mock.calls).toEqual([
+      ["Signed out — sign in again.", "Connect to server"],
+      ["Could not open add-rate-limit", "Retry"],
+    ]);
+  });
+
+  it("an adopt that failed: a refused sign-in reads Mend's words, with Connect", async () => {
+    await sayAdoptFailed("newsroom-api", signedOut);
+    await sayAdoptFailed("newsroom-api", new MendApiError("That repository is private.", 422));
+    expect(window.showErrorMessage.mock.calls).toEqual([
+      ["Signed out — sign in again.", "Connect to server"],
+      ["Mend could not adopt newsroom-api · That repository is private."],
+    ]);
+  });
+
+  it("a create that failed offers Try again, and a refused sign-in reads Mend's words", async () => {
+    window.showErrorMessage.mockResolvedValueOnce("Try again");
+    expect(await sayCreateFailed(new MendApiError("The store is full.", 507))).toBe(true);
+    expect(await sayCreateFailed(signedOut)).toBe(false);
+    expect(window.showErrorMessage.mock.calls).toEqual([
+      ["Mend could not create the session · The store is full.", "Try again"],
+      ["Signed out — sign in again.", "Connect to server"],
+    ]);
   });
 });

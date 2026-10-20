@@ -299,6 +299,49 @@ describe("the Accounts menu (h2c)", () => {
   });
 });
 
+describe("a refusal and a sign-in at once (SLNT-170)", () => {
+  it("keeps the sign-in written while the refusal of the token before it was being read", async () => {
+    signedIn({ url: MINI, token: "mdt_old", id: "device-old" });
+    const held = Promise.withResolvers<void>();
+    let holding = false;
+    let hold = true;
+    const connections = new ConnectionStore({
+      secrets: {
+        get: async (key: string) => {
+          const value = secrets.get(key);
+          if (hold) {
+            hold = false;
+            holding = true;
+            await held.promise;
+          }
+          return value;
+        },
+        store: async (key: string, value: string) => {
+          secrets.set(key, value);
+        },
+      },
+    });
+    const fetcher = devicesServer(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetcher);
+    ui.showInputBox.mockResolvedValueOnce(MINI);
+    const refusal = connections.refused({ url: MINI, token: "mdt_old" });
+    await vi.waitFor(() => expect(holding).toBe(true));
+    const signIn = connections.connect();
+    await vi.waitFor(
+      () =>
+        expect(fetcher.mock.calls.some(([input]) => String(input).endsWith("/token"))).toBe(true),
+      { timeout: 5_000 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    held.resolve();
+    await Promise.all([refusal, signIn]);
+    expect(parseCredentialStore(secrets.get(TOKEN_KEY)).get(MINI)).toMatchObject({
+      kind: "token",
+      token: "mdt_editor",
+    });
+  }, 10_000);
+});
+
 describe("signing out says what Mend answered", () => {
   const mini = { url: MINI, token: "mdt_mini", id: "device-mini" };
   const cases: ReadonlyArray<readonly [string, () => Response, string]> = [

@@ -45,6 +45,7 @@ const CLAUDE: SessionProcess = {
   providerSessionId: null,
   label: "claude",
   waiting: null,
+  runsAs: null,
 };
 
 /** Dana's session `s1`, with claude live in its terminal, or exited. */

@@ -550,10 +550,21 @@ export const workbenchHelpers = async (context, options) => {
             : { text: hinted[1], hint: hinted[2], severity };
         }),
     /** Every row: `{ label, icons, description, detail, buttons, focused }`, icons by codicon name. */
-    rows: async () =>
-      Promise.all(
-        (await page().locator(QUICK_INPUT_ROW).all()).map((row) => row.evaluate(quickInputRow)),
-      ),
+    rows: async () => {
+      // A row listed can be gone a moment later (the list re-rendered, or an input box replaced
+      // it), and Playwright would wait the whole timeout for it: read the list again instead.
+      for (let attempt = 1; ; attempt += 1) {
+        const listed = await page().locator(QUICK_INPUT_ROW).all();
+        try {
+          return await Promise.all(
+            listed.map((row) => row.evaluate(quickInputRow, undefined, { timeout: 1_000 })),
+          );
+        } catch (cause) {
+          if (attempt === 5 || !(cause instanceof Error && cause.name === "TimeoutError"))
+            throw cause;
+        }
+      }
+    },
     /**
      * Every button the widget shows, by tooltip: the title bar's (`where: "title bar"`, Back
      * included), the input box's, and each row's (`where: "row <label>"`, shown on hover).

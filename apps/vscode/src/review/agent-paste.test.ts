@@ -13,6 +13,7 @@ const process = (id: string, kind: string, exited = false): SessionProcess => ({
   providerSessionId: null,
   label: null,
   waiting: null,
+  runsAs: null,
 });
 
 const detail = (processes: ReadonlyArray<SessionProcess>): SessionDetail => ({

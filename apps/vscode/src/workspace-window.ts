@@ -166,8 +166,9 @@ export class WorkspaceWindow implements vscode.Disposable {
   }
 
   /**
-   * Answer (rule 8): the session's agent in this window's panel, attached or shown again, in any
-   * window, and no window opens. A conversation gets its tab and Continue here.
+   * Answer (rule 8) for a terminal agent: the session's agent in this window's panel, attached or
+   * shown again, in any window, and no window opens. A conversation's request is answered in a
+   * quick pick instead (`RequestPrompts`).
    */
   async answer(sessionId: string): Promise<void> {
     try {

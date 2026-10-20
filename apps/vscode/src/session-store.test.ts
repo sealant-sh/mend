@@ -14,6 +14,7 @@ import {
   type WindowSessions,
 } from "./session-store.js";
 import { Notifier } from "./session-surfaces.js";
+import { pendingRequest } from "./test-requests.js";
 import { EventEmitter, fake, window } from "./test-vscode.js";
 import type { Project, ProjectDetail, Session, SessionDetail, SessionProcess } from "./types.js";
 
@@ -208,6 +209,7 @@ const world = () => {
     store,
     { claim: async () => true, release: async () => undefined },
     { offer: async () => ({ kind: "none" }), relaunch: async () => ({ kind: "held" }) },
+    { chose: async () => {} },
   );
   store.onDidChange((change) => notifier.changed(change));
   return { mend, here, store };
@@ -312,7 +314,7 @@ describe("how fast the store reads (B3, round 3)", () => {
     store.start();
     await tick(300);
     mend.add(session({ id: "a", status: "waiting" }), session({ id: "b", status: "failed" }));
-    mend.requests.set("a", [{ id: "r1", title: "run it?", createdAt: START.toISOString() }]);
+    mend.requests.set("a", [pendingRequest({ sessionId: "a", createdAt: START.toISOString() })]);
     mend.hold("requests:a");
     mend.signal({ kind: "event", event: event("session", "a") });
     mend.signal({ kind: "event", event: event("session", "b") });
@@ -501,11 +503,7 @@ describe("an explicit session id (B2)", () => {
 });
 
 describe("wait facts and toasts (S1, S2)", () => {
-  const request: PendingRequest = {
-    id: "r1",
-    title: "run pnpm db:migrate?",
-    createdAt: "2026-10-19T08:59:00.000Z",
-  };
+  const request = pendingRequest();
 
   it("toasts a wait once, only when Mend has read why it waits", async () => {
     const { mend, store } = world();
@@ -524,7 +522,7 @@ describe("wait facts and toasts (S1, S2)", () => {
     mend.requestsFail = true;
     mend.signal({ kind: "event", event: event("agent-conversation", "s") });
     await tick(300);
-    expect(toasts()).toEqual(["s is waiting · run pnpm db:migrate?"]);
+    expect(toasts()).toEqual(["s asks: run pnpm db:migrate?"]);
     expect(store.model()?.sessions.get("s")?.needsYou).toBe(true);
   });
 
@@ -543,7 +541,7 @@ describe("wait facts and toasts (S1, S2)", () => {
     mend.requests.set("t", [{ ...request, id: "r-t" }]);
     mend.signal({ kind: "event", event: event("agent-conversation", "t") });
     await tick(300);
-    expect(toasts()).toEqual(["t is waiting · run pnpm db:migrate?"]);
+    expect(toasts()).toEqual(["t asks: run pnpm db:migrate?"]);
   });
 
   it("does not toast a wait whose agent terminal is in front in this window", async () => {
@@ -558,7 +556,29 @@ describe("wait facts and toasts (S1, S2)", () => {
       mend.signal({ kind: "event", event: event("agent-conversation", id) });
     }
     await tick(200);
-    expect(toasts()).toEqual(["t is waiting · run pnpm db:migrate?"]);
+    expect(toasts()).toEqual(["t asks: run pnpm db:migrate?"]);
+  });
+});
+
+describe("a session read again for an answer (story b)", () => {
+  it("resolves once the read landed, so the row says what the server says now", async () => {
+    const { mend, store } = world();
+    mend.add(session({ id: "s", status: "waiting" }));
+    mend.requests.set("s", [pendingRequest()]);
+    store.start();
+    await tick(300);
+    mend.add(session({ id: "s", status: "running", summary: "pnpm db:migrate" }));
+    mend.requests.set("s", []);
+    mend.hold("detail:s");
+    const landed = vi.fn();
+    const reread = store.reread("s").then(landed);
+    await tick(300);
+    expect(landed).not.toHaveBeenCalled();
+    mend.release("detail:s");
+    await tick(0);
+    await reread;
+    expect(landed).toHaveBeenCalledTimes(1);
+    expect(store.model()?.sessions.get("s")?.line).toBe("running · pnpm db:migrate");
   });
 });
 
@@ -577,6 +597,7 @@ describe("a finished terminal turn (idle, #1089)", () => {
         status: "running",
         exitedAt: null,
         providerSessionId: null,
+        runsAs: null,
         label: null,
         waiting: { kind: "prompt", tool: null, since: START.toISOString() },
       },

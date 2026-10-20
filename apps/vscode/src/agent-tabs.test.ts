@@ -55,6 +55,7 @@ const process = (overrides: Partial<SessionProcess>): SessionProcess => ({
   status: "running",
   exitedAt: null,
   providerSessionId: null,
+  runsAs: null,
   label: null,
   waiting: null,
   ...overrides,
@@ -233,15 +234,6 @@ describe("focusing a session's agent", () => {
     expect(effects.refused).toHaveBeenCalledWith(
       "another person launched this workspace · Remote-SSH opens it only for them · no agent attached",
     );
-  });
-
-  it("answers her own conversation from a workspace Ana launched, with Continue here", async () => {
-    const mine = session({ workspaceLauncherUserId: "ana" });
-    const asked = world([detail([conversation], mine)]);
-    await asked.agents.focus("older", null);
-    const tab = asked.tabs[0];
-    if (tab === undefined) throw new Error("no conversation tab");
-    expect(asked.agents.continueOffered(tab)).toBe("older");
   });
 
   it("answers nothing of Ana's from a workspace she launched, shared control on or not", async () => {

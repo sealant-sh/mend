@@ -13,6 +13,7 @@ import {
   type WindowModel,
 } from "./session-model.js";
 import { Notifier } from "./session-surfaces.js";
+import { pendingRequest, requestWait } from "./test-requests.js";
 import { commands, fake, window } from "./test-vscode.js";
 import { TOAST_CLAIM_TTL_MS, ToastClaims } from "./toast-claims.js";
 import type { Session } from "./types.js";
@@ -130,17 +131,7 @@ const read = (
     ],
     viewer: "dana",
     members: [],
-    waits: new Map([
-      [
-        "s",
-        {
-          key: "r1",
-          words: "run pnpm db:migrate?",
-          since: new Date().toISOString(),
-          via: "conversation",
-        },
-      ],
-    ]),
+    waits: new Map([["s", requestWait(pendingRequest({ createdAt: new Date().toISOString() }))]]),
     landings: new Map(),
     launches,
     lastSeen: { baseline: waiting.createdAt, sessions: {} },
@@ -174,8 +165,10 @@ const launches = {
   relaunch: async () => ({ kind: "held" as const }),
 };
 
+const prompts = { chose: vi.fn(async () => {}) };
+
 describe("two windows, each focused when its own read lands (B4)", () => {
-  it("toasts one wait once", async () => {
+  it("toasts one conversation's request once, with its answer on the toast", async () => {
     const shared = await directory();
     const store = {
       showing: () => new Set<string>(),
@@ -185,13 +178,19 @@ describe("two windows, each focused when its own read lands (B4)", () => {
     const change = waitStarts();
     window.showInformationMessage.mockClear();
     for (const notifier of [
-      new Notifier(store, new ToastClaims(shared), launches),
-      new Notifier(store, new ToastClaims(shared), launches),
+      new Notifier(store, new ToastClaims(shared), launches, prompts),
+      new Notifier(store, new ToastClaims(shared), launches, prompts),
     ])
       notifier.changed(change);
     await vi.waitFor(async () => expect(await readdir(shared)).toHaveLength(1));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(window.showInformationMessage).toHaveBeenCalledTimes(1);
+    expect(window.showInformationMessage).toHaveBeenCalledWith(
+      "add-rate-limit asks: run pnpm db:migrate?",
+      "Allow",
+      "Deny",
+      "More…",
+    );
   });
 });
 
@@ -204,7 +203,7 @@ describe("a wait the store saw end", () => {
       model: () => read(waiting),
       error: () => null,
     };
-    const notifier = new Notifier(store, new ToastClaims(shared), launches);
+    const notifier = new Notifier(store, new ToastClaims(shared), launches, prompts);
     const { prev, next } = waitStarts();
     notifier.changed({ prev, next });
     await vi.waitFor(async () => expect(await readdir(shared)).toHaveLength(1));
@@ -225,7 +224,7 @@ describe("what changed while a window claimed its toast", () => {
     const change = waitStarts();
     window.showInformationMessage.mockClear();
     const here = heldClaims(new ToastClaims(shared));
-    new Notifier(store, here.claims, launches).changed(change);
+    new Notifier(store, here.claims, launches, prompts).changed(change);
     await vi.waitFor(async () => expect(await readdir(shared)).toHaveLength(1));
     fake.focus(false);
     here.letGo();
@@ -233,11 +232,13 @@ describe("what changed while a window claimed its toast", () => {
     await vi.waitFor(async () => expect(await readdir(shared)).toEqual([]));
     expect(window.showInformationMessage).not.toHaveBeenCalled();
     fake.focus(true);
-    new Notifier(store, new ToastClaims(shared), launches).changed(change);
+    new Notifier(store, new ToastClaims(shared), launches, prompts).changed(change);
     await vi.waitFor(() => expect(window.showInformationMessage).toHaveBeenCalledTimes(1));
     expect(window.showInformationMessage).toHaveBeenCalledWith(
-      expect.stringContaining("add-rate-limit is waiting"),
-      "Answer",
+      "add-rate-limit asks: run pnpm db:migrate?",
+      "Allow",
+      "Deny",
+      "More…",
     );
   });
 
@@ -248,13 +249,13 @@ describe("what changed while a window claimed its toast", () => {
     let showing = new Set<string>();
     const store = { showing: () => showing, model: () => model, error: () => null };
     const ended = heldClaims(new ToastClaims(await directory()));
-    new Notifier(store, ended.claims, launches).changed(waitStarts());
+    new Notifier(store, ended.claims, launches, prompts).changed(waitStarts());
     model = read({ ...waiting, status: "running" });
     ended.letGo();
     await vi.waitFor(() => expect(ended.release).toHaveBeenCalledTimes(1));
     model = read(waiting);
     const opened = heldClaims(new ToastClaims(await directory()));
-    new Notifier(store, opened.claims, launches).changed(waitStarts());
+    new Notifier(store, opened.claims, launches, prompts).changed(waitStarts());
     showing = new Set(["s"]);
     opened.letGo();
     await vi.waitFor(() => expect(opened.release).toHaveBeenCalledTimes(1));
@@ -290,6 +291,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
       store,
       new ToastClaims(shared),
       offering({ kind: "retry", read: starting }),
+      prompts,
     ).changed(change);
     await vi.waitFor(() => expect(window.showErrorMessage).toHaveBeenCalledTimes(1));
     expect(window.showErrorMessage).toHaveBeenCalledWith(
@@ -312,6 +314,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
       { showing: () => new Set<string>(), model: () => settledChange.next, error: () => null },
       new ToastClaims(await directory()),
       settled,
+      prompts,
     ).changed(settledChange);
     await vi.waitFor(() => expect(settled.relaunch).toHaveBeenCalledWith("s", settledAt));
     const refusedChange = refused();
@@ -321,6 +324,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
       { showing: () => new Set<string>(), model: () => refusedChange.next, error: () => null },
       new ToastClaims(await directory()),
       unsettled,
+      prompts,
     ).changed(refusedChange);
     await vi.waitFor(() => expect(unsettled.relaunch).toHaveBeenCalledWith("s", null));
   });
@@ -344,6 +348,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
       { showing: () => new Set<string>(), model: () => change.next, error: () => null },
       new ToastClaims(await directory()),
       movedOn,
+      prompts,
     ).changed(change);
     await vi.waitFor(() =>
       expect(window.showInformationMessage).toHaveBeenCalledWith(
@@ -408,6 +413,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
       { showing: () => new Set<string>(), model: () => change.next, error: () => null },
       new ToastClaims(await directory()),
       agentLive,
+      prompts,
     ).changed(change);
     await vi.waitFor(() => expect(commands.executeCommand).toHaveBeenCalledWith("mend.open", "s"));
     expect(window.showInformationMessage).toHaveBeenCalledWith(
@@ -423,7 +429,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     const change = refused();
     const store = { showing: () => new Set<string>(), model: () => change.next, error: () => null };
     const moved = offering({ kind: "moved", read: starting });
-    new Notifier(store, new ToastClaims(shared), moved).changed(change);
+    new Notifier(store, new ToastClaims(shared), moved, prompts).changed(change);
     await vi.waitFor(() => expect(moved.offer).toHaveBeenCalledTimes(1));
     await vi.waitFor(async () => expect(await readdir(shared)).toEqual([]));
     expect(window.showErrorMessage).not.toHaveBeenCalled();
@@ -454,7 +460,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
       next: read(failed, new Map(attempts)),
     };
     const store = { showing: () => new Set<string>(), model: () => early.next, error: () => null };
-    const notifier = new Notifier(store, new ToastClaims(shared), sender);
+    const notifier = new Notifier(store, new ToastClaims(shared), sender, prompts);
     notifier.changed(early);
     await vi.waitFor(async () => expect(await readdir(shared)).toHaveLength(1));
     answer.resolve();
@@ -480,11 +486,13 @@ describe("a launch she sent that the server refused (flow 3)", () => {
       { showing: () => new Set<string>(), model: () => launching.next, error: () => null },
       new ToastClaims(shared),
       offering({ kind: "retry", read: failed }),
+      prompts,
     );
     const there = new Notifier(
       { showing: () => new Set<string>(), model: () => other.next, error: () => null },
       new ToastClaims(shared),
       offering({ kind: "none" }),
+      prompts,
     );
     here.changed(launching);
     await vi.waitFor(() => expect(window.showErrorMessage).toHaveBeenCalledTimes(1));
@@ -526,6 +534,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
       { showing: () => new Set<string>(), model: () => early.next, error: () => null },
       { claim: (key, at) => claims.claim(key, at), release },
       sender,
+      prompts,
     ).changed(early);
     await vi.waitFor(() => expect(offer).toHaveBeenCalledTimes(1));
     fake.focus(false);
@@ -566,11 +575,13 @@ describe("a launch she sent that the server refused (flow 3)", () => {
       { showing: () => new Set<string>(), model: () => model, error: () => null },
       new ToastClaims(shared),
       offering({ kind: "retry", read: failed }),
+      prompts,
     );
     const there = new Notifier(
       { showing: () => new Set<string>(), model: () => other.next, error: () => null },
       new ToastClaims(shared),
       offering({ kind: "none" }),
+      prompts,
     );
     here.changed(unconfirmed);
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -592,7 +603,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     const store = { showing: () => new Set<string>(), model: () => change.next, error: () => null };
     const held = heldClaims(new ToastClaims(shared));
     const retry = offering({ kind: "retry", read: starting });
-    new Notifier(store, held.claims, retry).changed(change);
+    new Notifier(store, held.claims, retry, prompts).changed(change);
     await vi.waitFor(async () => expect(await readdir(shared)).toHaveLength(1));
     fake.focus(false);
     held.letGo();

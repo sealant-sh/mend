@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { EventPointer } from "./client.js";
 import { conversationWait, limited, readPlan, terminalWait } from "./session-reads.js";
+import { pendingRequest } from "./test-requests.js";
 import type { SessionDetail, SessionProcess } from "./types.js";
 
 const event = (
@@ -82,6 +83,7 @@ const agent = (overrides: Partial<SessionProcess>): SessionProcess => ({
   status: "running",
   exitedAt: null,
   providerSessionId: null,
+  runsAs: null,
   label: "claude",
   waiting: null,
   ...overrides,
@@ -123,13 +125,31 @@ describe("why a session waits", () => {
     expect(terminalWait(detail([ended]))).toBeNull();
   });
 
-  it("says a conversation's oldest pending request, keyed by the request", () => {
-    expect(
-      conversationWait([
-        { id: "r2", title: "run pnpm db:migrate?", createdAt: "2026-10-19T03:00:00.000Z" },
-        { id: "r1", title: "approve schema change?", createdAt: since },
-      ]),
-    ).toEqual({ key: "r1", words: "approve schema change?", since, via: "conversation" });
-    expect(conversationWait([])).toBeNull();
+  it("says a conversation's oldest pending request in its question, keyed by the request", () => {
+    const wait = conversationWait(
+      [
+        pendingRequest({ id: "r2", createdAt: "2026-10-19T03:00:00.000Z" }),
+        pendingRequest({
+          id: "r1",
+          title: "Edit",
+          detail: { toolName: "Edit", input: { file_path: "src/auth.ts" } },
+          createdAt: since,
+        }),
+      ],
+      [],
+    );
+    expect(wait).toMatchObject({ key: "r1", words: "use Edit?", since, via: "conversation" });
+    expect(conversationWait([], [])).toBeNull();
+  });
+
+  it("names who may answer a request: the person its asking process runs as", () => {
+    const asking = agent({ id: "agent", kind: "agent-protocol", runsAs: "ana" });
+    expect(conversationWait([pendingRequest()], [agent({ id: "other" }), asking])).toMatchObject({
+      words: "run pnpm db:migrate?",
+      answerer: "ana",
+    });
+    expect(conversationWait([pendingRequest()], [agent({ id: "agent" })])).toMatchObject({
+      answerer: null,
+    });
   });
 });

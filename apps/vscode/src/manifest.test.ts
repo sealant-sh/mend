@@ -35,10 +35,12 @@ const itemContextMenu = (): ReadonlyArray<MenuEntry> => {
 
 /**
  * Whether a `when` clause holds for a row of the Mend view, for the clause shapes the manifest
- * uses: `view == …`, `viewItem == …` and `viewItem =~ /…/`, joined by `&&`.
+ * uses: `view == …`, `viewItem == …`, `viewItem =~ /…/` and `[!]mend.offline`, joined by `&&`.
  */
-const holds = (when: string, viewItem: string): boolean =>
+const holds = (when: string, viewItem: string, offline: boolean): boolean =>
   when.split("&&").every((clause) => {
+    if (clause.trim() === "mend.offline") return offline;
+    if (clause.trim() === "!mend.offline") return !offline;
     const [key = "", operator = "", ...rest] = clause.trim().split(" ");
     const value = rest.join(" ");
     const subject = key === "view" ? "mend.sessions" : key === "viewItem" ? viewItem : null;
@@ -50,9 +52,9 @@ const holds = (when: string, viewItem: string): boolean =>
   });
 
 /** Where a row of this `viewItem` shows `command`: its groups, `inline…` being the row's buttons. */
-const groupsOn = (command: string, viewItem: string): ReadonlyArray<string> =>
+const groupsOn = (command: string, viewItem: string, offline = false): ReadonlyArray<string> =>
   itemContextMenu()
-    .filter((entry) => entry.command === command && holds(entry.when ?? "", viewItem))
+    .filter((entry) => entry.command === command && holds(entry.when ?? "", viewItem, offline))
     .map((entry) => entry.group ?? "");
 
 const inline = (groups: ReadonlyArray<string>) =>
@@ -184,6 +186,22 @@ describe("offline (stories a and b)", () => {
     expect(commandEntries().find((entry) => entry.command === id)?.enablement).toBe(
       "!mend.offline",
     );
+  });
+
+  it("replaces a row's Answer with a disabled twin that says Mend is offline", () => {
+    const needs = "mend.session.live.open.steer.needs";
+    expect(inline(groupsOn("mend.answer", needs, true))).toEqual([]);
+    expect(inline(groupsOn("mend.answerOffline", needs, true))).toEqual(["inline@0"]);
+    expect(groupsOn("mend.answerOffline", needs)).toEqual([]);
+    expect(groupsOn("mend.answerOffline", "mend.session.live.open.steer", true)).toEqual([]);
+    const answer = commandEntries().find((entry) => entry.command === "mend.answer");
+    expect(commandEntries().find((entry) => entry.command === "mend.answerOffline")).toEqual({
+      command: "mend.answerOffline",
+      title: "Mend is offline",
+      icon: answer?.icon,
+      enablement: "false",
+    });
+    expect(menu("commandPalette")).toContainEqual({ command: "mend.answerOffline", when: "false" });
   });
 });
 

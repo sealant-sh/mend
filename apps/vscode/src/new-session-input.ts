@@ -52,6 +52,14 @@ const words = (cause: unknown): string =>
     ? cause.message
     : "Mend could not complete that action.";
 
+/** The toast of an adopt that failed: a refused sign-in reads as one, with Connect. */
+export const sayAdoptFailed = (name: string, cause: unknown): Promise<boolean> =>
+  showErrorToast(cause, `Mend could not adopt ${name} · ${words(cause)}`);
+
+/** The toast of a create that failed, with Try again; true when she picked it. */
+export const sayCreateFailed = (cause: unknown): Promise<boolean> =>
+  showErrorToast(cause, `Mend could not create the session · ${words(cause)}`, TRY_AGAIN);
+
 /** Where New session opens: a project a row named (or none), and the worktree it joins. */
 export interface NewSessionOpening {
   readonly project: Project | null;
@@ -273,7 +281,7 @@ export class NewSessionInput implements vscode.Disposable {
       dispatch({ kind: "adopted", project });
     } catch (cause) {
       dispatch({ kind: "adoptFailed" });
-      void showErrorToast(cause, `Mend could not adopt ${effect.name} · ${words(cause)}`);
+      void sayAdoptFailed(effect.name, cause);
     }
   }
 
@@ -303,13 +311,7 @@ export class NewSessionInput implements vscode.Disposable {
       const kept = new Map(this.#kept.get(server) ?? []);
       kept.set(keptPromptKey(draft.project.id, draft.join), draft.prompt);
       this.#kept.set(server, kept);
-      if (
-        await showErrorToast(
-          cause,
-          `Mend could not create the session · ${words(cause)}`,
-          TRY_AGAIN,
-        )
-      )
+      if (await sayCreateFailed(cause))
         await this.open({ project: draft.project, join: draft.join });
     }
   }

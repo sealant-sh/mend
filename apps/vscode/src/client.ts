@@ -1,5 +1,10 @@
 import { setTimeout as wait } from "node:timers/promises";
 
+import type {
+  AgentInputQuestionDto,
+  AgentRequestDto,
+  AgentRequestResponse,
+} from "@mend/agent-conversation";
 import * as vscode from "vscode";
 
 import type { ConnectionStore, MendConnection } from "./config.js";
@@ -177,6 +182,7 @@ const parseSessionProcess = (value: unknown): SessionProcess => {
     exitedAt: exitedAt === null || exitedAt === undefined ? null : String(exitedAt),
     providerSessionId: nullableStringField(value, "providerSessionId"),
     label: typeof value["label"] === "string" ? value["label"] : null,
+    runsAs: typeof value["runsAs"] === "string" ? value["runsAs"] : null,
     waiting: parseAgentWait(value["waiting"]),
   };
 };
@@ -195,18 +201,53 @@ const parseAgentWait = (value: unknown): AgentWaitView | null => {
   };
 };
 
-/** A conversation's pending request, as much as the view says of it. */
-export interface PendingRequest {
-  readonly id: string;
-  readonly title: string | null;
-  readonly createdAt: string;
+/** A conversation's pending request: what it asks, and which of the session's processes asks. */
+export interface PendingRequest extends AgentRequestDto {
+  readonly sessionId: string;
+  readonly processId: string;
 }
 
-const parsePendingRequest = (value: unknown): PendingRequest => {
-  if (!isRecord(value)) throw new Error("Mend returned an invalid request.");
+const parseQuestion = (value: unknown): AgentInputQuestionDto => {
+  if (!isRecord(value)) throw new Error("Mend returned an invalid question.");
   return {
     id: stringField(value, "id"),
+    header: nullableStringField(value, "header"),
+    question: stringField(value, "question"),
+    options: parseArray(
+      value["options"],
+      (option) => {
+        if (!isRecord(option)) throw new Error("Mend returned an invalid option.");
+        return {
+          label: stringField(option, "label"),
+          description: nullableStringField(option, "description"),
+        };
+      },
+      "options",
+    ),
+    multiSelect: value["multiSelect"] === true,
+  };
+};
+
+/** A request row; null for one no longer pending, which nothing here may answer. */
+const parsePendingRequest = (value: unknown): PendingRequest | null => {
+  if (!isRecord(value)) throw new Error("Mend returned an invalid request.");
+  if (value["status"] !== "pending") return null;
+  const questions = value["questions"];
+  return {
+    id: stringField(value, "id"),
+    sessionId: stringField(value, "sessionId"),
+    processId: stringField(value, "processId"),
+    turnId: stringField(value, "turnId"),
+    kind: stringField(value, "kind"),
     title: typeof value["title"] === "string" ? value["title"] : null,
+    detail: value["detail"] ?? null,
+    questions:
+      questions === null || questions === undefined
+        ? null
+        : parseArray(questions, parseQuestion, "questions"),
+    status: "pending",
+    decision: null,
+    answers: null,
     createdAt: stringField(value, "createdAt"),
   };
 };
@@ -306,7 +347,7 @@ export const EVENT_STREAM_STALL_MS = 60_000;
 
 /** Small authenticated client for the extension's project and session jobs. */
 export class MendClient {
-  constructor(private readonly connections: ConnectionStore) {}
+  constructor(private readonly connections: Pick<ConnectionStore, "get" | "refused">) {}
 
   async connection(): Promise<MendConnection> {
     return this.connections.get();
@@ -499,11 +540,17 @@ export class MendClient {
 
   /** A conversation's requests still waiting for an answer. */
   async pendingRequests(sessionId: string): Promise<ReadonlyArray<PendingRequest>> {
+    // The server filters only on `pending=1`: any other value lists answered requests too.
     return parseArray(
-      await this.request(`/sessions/${encodeURIComponent(sessionId)}/requests?pending=true`),
+      await this.request(`/sessions/${encodeURIComponent(sessionId)}/requests?pending=1`),
       parsePendingRequest,
       "requests",
-    );
+    ).filter((request) => request !== null);
+  }
+
+  /** Answers a conversation's request: a decision, or answers to its questions. */
+  async respond(requestId: string, response: AgentRequestResponse): Promise<void> {
+    await this.post(`/requests/${encodeURIComponent(requestId)}/respond`, response);
   }
 
   /** The session's newest landing that reached origin; null when none did. */

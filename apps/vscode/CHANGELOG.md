@@ -38,17 +38,27 @@ patch number is the extension's own.
   `completed · observed · exited with code 0`. **Since you last looked** lists what completed,
   failed or landed since this VS Code last showed it, kept per server on this machine.
 - The badge on the Mend icon counts the sessions that wait for you and that **Answer** lets you
-  answer: a terminal agent of your own, or a conversation you may steer. The status bar reads
+  answer: a terminal agent of your own, or a conversation's request Mend lets you answer. That is
+  anyone who may steer the session (its owner, or anyone while shared control is on), and only the
+  person its agent runs as when it runs as someone. Ana's session without shared control reads
+  `waiting · Ana's session` and does not count. The status bar reads
   `Mend · 1 needs you · 2 finished`. A session's workspace window shows that session only, one line
   for the others, and `● <session> · <word>` in the status bar; both open the session picker.
 - A notification shows only in the focused window, only when a session waits for you or a session
   you started finished, and only when that window is not showing it. One wait notifies once across
-  your windows. **Answer** attaches the agent's terminal in this window.
+  your windows. For a terminal agent, **Answer** attaches the agent's terminal in this window.
+- A conversation's request is answered in place, with no terminal. Its notification reads
+  `add-rate-limit asks: run pnpm db:migrate?` with **Allow**, **Deny** and **More…**, or a short
+  question's options. **More…**, and **Answer** on its row, open a quick pick: **Allow once**,
+  **Allow for this session** and **Deny**, or each question's options and **Write an answer…**.
+  Every answer reads the session's requests again first: one already answered elsewhere sends
+  nothing, and the status bar says how the session reads now. A failed answer says why in one
+  notification, with **Retry** when trying again can help.
 - An empty group stays in its place and reads `nothing`, so clicking **Open** on a row while another
   row changes still opens that row's session.
 - When Mend cannot be reached the view says when it was last heard, rows keep their last words, and
   **New session** and **Answer** are disabled. The view's **+** then reads
-  `Mend is offline · retrying`.
+  `Mend is offline · retrying`, and a row's **Answer** reads `Mend is offline`.
 - **Mend: New session** (before, **New Session…**) is one quick input. Type a prompt and press
   Enter: Mend starts claude on it in a new session's terminal, the row shows at once, and no window
   opens. A dim line under the prompt says what Enter starts (`claude · default model · from main`).
@@ -78,7 +88,7 @@ patch number is the extension's own.
   account leaves the Accounts menu in every window and one notification says
   `Signed out — sign in again.` with **Connect to server**. Connecting again while connected revokes
   the device it replaces. A sign-out says what Mend answered: the device revoked, already signed
-  out, or Mend not reached.
+  out, Mend not reached, or the status Mend answered with (`Mend answered 403 …`).
 - Consent to workspace SSH is kept per server: consenting for one server never writes another
   server's `Host` block.
 - After you connect, **Set up** installs Remote-SSH if it is missing, registers an SSH key, writes

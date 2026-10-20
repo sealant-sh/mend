@@ -48,6 +48,7 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit && tsgo -p test/e2e/tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@mend/agent-conversation": "workspace:*",
     "@mend/domain": "workspace:*",
     "@mend/workspace-ssh": "workspace:*"
   },
@@ -153,6 +154,12 @@
         "title": "Mend: Answer",
         "icon": "$(comment-discussion)",
         "enablement": "!mend.offline"
+      },
+      {
+        "command": "mend.answerOffline",
+        "title": "Mend is offline",
+        "icon": "$(comment-discussion)",
+        "enablement": "false"
       },
       {
         "command": "mend.pickSession",
@@ -368,6 +375,10 @@
           "when": "false"
         },
         {
+          "command": "mend.answerOffline",
+          "when": "false"
+        },
+        {
           "command": "mend.useCli",
           "when": "mend.welcome == useCli"
         },
@@ -550,7 +561,12 @@
       "view/item/context": [
         {
           "command": "mend.answer",
-          "when": "view == mend.sessions && viewItem =~ /\\.needs$/",
+          "when": "view == mend.sessions && viewItem =~ /\\.needs$/ && !mend.offline",
+          "group": "inline@0"
+        },
+        {
+          "command": "mend.answerOffline",
+          "when": "view == mend.sessions && viewItem =~ /\\.needs$/ && mend.offline",
           "group": "inline@0"
         },
         {
