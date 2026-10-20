@@ -308,7 +308,8 @@ describe("mend handoff", spawning, () => {
     });
     const held = await run(running, [], dana);
     expect(held.code, held.stderr).toBe(0);
-    expect(held.stdout).toContain("✓ held · running, no agent\n");
+    expect(held.stdout).toContain("· the session reads running\n");
+    expect(held.stdout).not.toContain("held");
 
     const failing = await handoffServer({
       answer: (response) =>

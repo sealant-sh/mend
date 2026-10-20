@@ -260,11 +260,16 @@ const receivedOf = (body: unknown): HandoffReceived | null => {
 };
 
 export const heldLine = (session: HandoffReceived["session"]): string => {
-  if (session.status === "failed") {
-    return `${amber("!")} not held · failed${session.summary === null ? "" : ` · ${session.summary}`}`;
+  switch (session.status) {
+    case "idle":
+      return `${green("✓")} held · idle, no agent`;
+    case "starting":
+      return `${dim("  starting")} · the hold is still coming up`;
+    case "failed":
+      return `${amber("!")} not held · failed${session.summary === null ? "" : ` · ${session.summary}`}`;
+    default:
+      return `${amber("·")} the session reads ${session.status}`;
   }
-  if (session.status === "starting") return `${dim("  starting")} · the hold is still coming up`;
-  return `${green("✓")} held · ${session.status}, no agent`;
 };
 
 const predatesHandoffs = (answer: Downloaded): boolean =>
