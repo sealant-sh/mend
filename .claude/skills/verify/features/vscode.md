@@ -549,12 +549,11 @@ the row takes the job's name.
     turn, so expect the picker without `last turn`. Spans name both checkpoints
     (`checkpoint 1 → checkpoint 3`), never `→ now`: a chosen slice keeps its two checkpoints, and a
     newer one shows as the row `newer checkpoints · read checkpoint 1 → checkpoint 5`.
-  - The worktree moving on (edge step, not yet run on this head): a third round of two files after
-    the pin, then `Mend: Read the change again`, shows
-    `worktree changed since this review · 2 new files` and `Review the newer change` above the
-    pinned slice's files, which still read `4 files`. Clicking it pins a new `review-open`
-    checkpoint and the header reads `6 files`. A header over a listing Mend cut reads
-    `listing cut at N files · … in those · read N s ago`, never `observed`.
+  - The worktree moving on (edge step, run `r2d1`): a third round of two files after the pin, then
+    `Mend: Read the change again`, shows `worktree changed since this review · 2 new files` and
+    `Review the newer change` above the pinned slice's files, which still read `4 files`. Clicking
+    it pins a new `review-open` checkpoint and the header reads `6 files`. A header over a listing
+    Mend cut reads `listing cut at N files · … in those · read N s ago`, never `observed`.
   - Wait for a quick pick's own title before each pick (`Between two checkpoints · from which?`):
     the second pick reuses the widget, and a pick made early lands in the first list.
 - **e. Dana wants to drive by hand.** `recipes/vscode-open.mjs`, from the default `up`.
