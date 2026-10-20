@@ -3056,6 +3056,7 @@ export const testDrainPolicy = (overrides: Partial<CaptureDrainPolicyShape> = {}
     deferredWorkLimit: Duration.seconds(5),
     landingStopWait: Duration.seconds(10),
     statusInterval: Duration.seconds(45),
+    reaperInterval: Duration.seconds(10),
     statusMinInterval: Duration.seconds(10),
     // A launch waits this long for a worktree's previous executor before it is refused.
     leaseWait: Duration.millis(300),

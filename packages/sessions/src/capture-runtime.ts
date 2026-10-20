@@ -109,6 +109,12 @@ export interface CaptureDrainPolicyShape {
    * a failing snap while it fails. MEND_CAPTURE_STATUS_SECONDS.
    */
   readonly statusInterval: Duration.Duration;
+  /**
+   * Between two passes of the capture reaper (lease expiry, drains no fiber runs, planned
+   * replacements). MEND_CAPTURE_REAPER_SECONDS; a verify world shortens it to widen the races the
+   * reaper takes part in.
+   */
+  readonly reaperInterval: Duration.Duration;
   /** The least time between two status reads a client's view asks for, per session. */
   readonly statusMinInterval: Duration.Duration;
   /**
@@ -149,6 +155,7 @@ const DEFAULT_DRAIN_POLICY: CaptureDrainPolicyShape = {
   deferredWorkLimit: Duration.minutes(2),
   landingStopWait: Duration.seconds(45),
   statusInterval: Duration.seconds(45),
+  reaperInterval: Duration.seconds(LEASE_REAPER_INTERVAL_SECONDS),
   statusMinInterval: Duration.seconds(10),
   leaseWait: Duration.minutes(30),
   leaseWaitInterval: Duration.seconds(5),
@@ -181,6 +188,9 @@ export const CaptureDrainPolicyLive: Layer.Layer<CaptureDrainPolicy, Config.Conf
       const statusSeconds = yield* Config.Int("MEND_CAPTURE_STATUS_SECONDS").pipe(
         Config.withDefault(Duration.toSeconds(DEFAULT_DRAIN_POLICY.statusInterval)),
       );
+      const reaperSeconds = yield* Config.Int("MEND_CAPTURE_REAPER_SECONDS").pipe(
+        Config.withDefault(LEASE_REAPER_INTERVAL_SECONDS),
+      );
       const leaseWaitSeconds = yield* Config.Int("MEND_LAUNCH_LEASE_WAIT_SECONDS").pipe(
         Config.withDefault(Duration.toSeconds(DEFAULT_DRAIN_POLICY.leaseWait)),
       );
@@ -188,6 +198,7 @@ export const CaptureDrainPolicyLive: Layer.Layer<CaptureDrainPolicy, Config.Conf
         ...DEFAULT_DRAIN_POLICY,
         leaseWait: Duration.seconds(Math.max(0, leaseWaitSeconds)),
         statusInterval: Duration.seconds(Math.max(5, statusSeconds)),
+        reaperInterval: Duration.seconds(Math.max(1, reaperSeconds)),
         stallSeconds: Math.max(1, stallSeconds),
         executorMaxSeconds: Option.getOrNull(executorMaxSeconds),
         deadlineMarginSeconds: Math.max(0, deadlineMarginSeconds),

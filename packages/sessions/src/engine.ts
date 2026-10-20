@@ -23685,7 +23685,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 Effect.annotateLogs({ defect: String(defect) }),
               ),
             ),
-            Effect.repeat(Schedule.spaced(Duration.seconds(LEASE_REAPER_INTERVAL_SECONDS))),
+            Effect.repeat(Schedule.spaced(drainPolicy.reaperInterval)),
           ),
           scope,
         );
