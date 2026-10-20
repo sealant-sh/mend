@@ -577,8 +577,8 @@ the row takes the job's name.
     line, **Send to session** (`clickEditorTitle`): the panel attaches `claude · <label>` and
     `terminal().read()` shows `❯ [Pasted text #1 +12 lines]` (claude folds a long paste), no 401;
     `follow_ups` holds one row, `vscode-follow-up:<change>:<uuid>|pending` (`followUpRows`, psql in
-    the world's Postgres); the threads read `follow-up pending · in claude's terminal`. The next
-    round (the shell, a mark) adds `worktree changed since this review · 2 new files` and
+    the world's Postgres); the threads read `follow-up pending · pasted into claude's terminal`. The
+    next round (the shell, a mark) adds `worktree changed since this review · 2 new files` and
     `since my last review · 2 files`; there the sent threads sit on the left of
     `limit.ts (checkpoint 4 ↔ checkpoint 6)`, and Addressed then Reopen reach Mend. Offline: the
     disabled `Mend is offline; your comments are kept`.
@@ -589,7 +589,7 @@ the row takes the job's name.
     new part (the whole review again would fold to more lines than the first). `follow_ups` reads
     the first row `superseded` and a second `pending`, whose instruction holds the first review
     once, as edited, then `## More comments` and the third comment; the section reads
-    `3 sent · follow-up pending · in claude's terminal`.
+    `3 sent · follow-up pending · pasted into claude's terminal`.
   - Ana's stopped claude session: shared control off, no **Send review**; on, the disabled button
     `Only the session's owner sends it a review: Mend types it into a terminal agent, live or started for the stopped session`,
     the same words in its tooltip, and no **Send review**. Mend starts a stopped terminal agent only

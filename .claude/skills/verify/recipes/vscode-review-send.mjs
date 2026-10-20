@@ -3,18 +3,18 @@
 // comments in order with file and line, which she edits; Send to session records the follow-up
 // under one idempotency key, and since her claude runs as a terminal agent (Mend holds the
 // follow-up pending, G12), it attaches claude's terminal in her panel and pastes the review into
-// its input without Enter; the threads read `follow-up pending · in claude's terminal`. A second
-// review before Enter keeps the first as she sent it and pastes only its new comments; a third that
-// changes the part claude's input holds pastes nothing, and a fourth pastes what that one left out
-// onto claude's input as it is. The agent's
-// next round moves the worktree on: the slice stays pinned and the section says so, offering since
-// my last review, where each sent comment sits at its anchor and she marks it Addressed, then
-// Reopen. Then the edge cases: Mend offline (Send review disabled, her comment kept), Ana's
-// stopped terminal session (no Send review, then a disabled one that says only Ana sends it one),
-// and a delivery that fails (a stopped session whose claude login is gone), Retry delivery with
-// the same key, and Mend starting the stopped session with the review as its first prompt. Last,
-// her session stops before she pressed Enter and resumes on a new claude: her threads no longer
-// read in claude's terminal, and the next review is pasted whole into the new claude's input.
+// its input without Enter; the threads read `follow-up pending · pasted into claude's terminal`.
+// A second review before Enter keeps the first as she sent it and pastes only its new comments; a
+// third that changes the part VS Code already pasted pastes nothing, and a fourth pastes what that
+// one left out onto what VS Code pasted. The agent's next round moves the worktree on: the slice
+// stays pinned and the section says so, offering since my last review, where each sent comment
+// sits at its anchor and she marks it Addressed, then Reopen. Then the edge cases: Mend offline
+// (Send review disabled, her comment kept), Ana's stopped terminal session (no Send review, then a
+// disabled one that says only Ana sends it one), and a delivery that fails (a stopped session whose
+// claude login is gone), Retry delivery with the same key, and Mend starting the stopped session
+// with the review as its first prompt. Last, her session stops before she pressed Enter and
+// resumes on a new claude: her threads read pasted into an earlier claude, and the next review is
+// pasted whole into the new claude's input.
 //
 //   node .claude/skills/verify/scripts/drive-vscode.mjs run \
 //     .claude/skills/verify/recipes/vscode-review-send.mjs --out <dir>
@@ -55,8 +55,9 @@ const EDITED = "Keep the tests green.";
 const FOURTH = "Answer 429 with Retry-After";
 const FIFTH = "Log the key that hit the limit";
 const SIXTH = "Reset the window at midnight UTC";
-const IN_TERMINAL = "follow-up pending · in claude's terminal";
-const NOT_IN = "follow-up pending · not in claude's terminal";
+const PASTED = "follow-up pending · pasted into claude's terminal";
+const NOT_PASTED = "follow-up pending · not pasted into claude's terminal";
+const EARLIER = "follow-up pending · pasted into an earlier claude";
 const NOT_HERS =
   "Only the session's owner sends it a review: Mend types it into a terminal agent, live or started for the stopped session";
 
@@ -284,12 +285,12 @@ export default async (h) => {
     { via: "api" },
   );
 
-  await step(`d6 · her threads read "${IN_TERMINAL}"`, async () => {
+  await step(`d6 · her threads read "${PASTED}"`, async () => {
     await openFile("limit.ts", "limit.ts (");
-    const threads = await threadsReading(IN_TERMINAL);
+    const threads = await threadsReading(PASTED);
     const seen = await sectionUntil(
-      "Comments · 2 follow-up pending in claude's terminal",
-      (now) => commentsOf(now) === `2 ${IN_TERMINAL}`,
+      "Comments · 2 follow-up pending pasted into claude's terminal",
+      (now) => commentsOf(now) === `2 ${PASTED}`,
     );
     await shot("d6-threads-follow-up-pending");
     return `${said(seen)} · ${JSON.stringify(threads.map((thread) => thread.comments))}`;
@@ -398,18 +399,19 @@ export default async (h) => {
     { via: "api" },
   );
 
-  await step(`edge · after the second review the threads read "${IN_TERMINAL}"`, async () => {
+  await step(`edge · after the second review the threads read "${PASTED}"`, async () => {
     await openFile("limit.ts", "limit.ts (");
-    const threads = await threadsReading(IN_TERMINAL);
-    const seen = await sectionUntil("Comments · 3 follow-up pending in claude's terminal", (now) =>
-      commentsOf(now).startsWith(`3 ${IN_TERMINAL}`),
+    const threads = await threadsReading(PASTED);
+    const seen = await sectionUntil(
+      "Comments · 3 follow-up pending pasted into claude's terminal",
+      (now) => commentsOf(now).startsWith(`3 ${PASTED}`),
     );
     return `${said(seen)} · ${JSON.stringify(threads.map((thread) => thread.comments.map((one) => one.label)))}`;
   });
 
   let beforeSkip = "";
   await step(
-    "edge · a third review that changes the part already in claude's input: nothing is pasted, and the notification says why",
+    "edge · a third review that changes the part VS Code already pasted: nothing is pasted, and the notification says why",
     async () => {
       await openFile("limit.ts", "limit.ts (");
       await commentOnLine(h, 5, FOURTH);
@@ -420,7 +422,7 @@ export default async (h) => {
         async () => ((await editorEnd()).includes("## 4 · src/auth/limit.ts:5") ? true : null),
         30_000,
       );
-      // Her edit is in the first review's heading, which claude's input already holds.
+      // Her edit is in the first review's heading, which VS Code already pasted into claude.
       await page().keyboard.press("Control+Home");
       await page().keyboard.press("ArrowDown");
       await page().keyboard.press("ArrowDown");
@@ -452,7 +454,7 @@ export default async (h) => {
   );
 
   await step(
-    `edge · after the skipped paste, the comment it carried reads "${NOT_IN}", the others "${IN_TERMINAL}"`,
+    `edge · after the skipped paste, the comment it carried reads "${NOT_PASTED}", the others "${PASTED}"`,
     async () => {
       await openFile("limit.ts", "limit.ts (");
       const threads = await waitUntil(
@@ -460,7 +462,7 @@ export default async (h) => {
         async () => {
           const seen = await commentThreads(h);
           const labels = seen.flatMap((thread) => thread.comments.map((one) => one.label));
-          return labels.includes(NOT_IN) ? seen : null;
+          return labels.includes(NOT_PASTED) ? seen : null;
         },
         60_000,
       );
@@ -468,12 +470,12 @@ export default async (h) => {
         thread.comments.some((one) => one.text.includes(FOURTH)),
       );
       expect(
-        fourth?.comments.every((one) => one.label === NOT_IN),
+        fourth?.comments.every((one) => one.label === NOT_PASTED),
         `the fourth comment reads ${JSON.stringify(fourth?.comments)}`,
       );
       const seen = await sectionUntil(
         "Comments · follow-up pending by where its words are",
-        (now) => commentsOf(now).includes(`1 ${NOT_IN}`),
+        (now) => commentsOf(now).includes(`1 ${NOT_PASTED}`),
       );
       await shot("edge-third-review-threads");
       expect(!commentsOf(seen).includes("sent"), `the section counts sent: ${said(seen)}`);
@@ -482,7 +484,7 @@ export default async (h) => {
   );
 
   await step(
-    "edge · a fourth review: its editor is composed on claude's input as it is, and lists the skipped comment again with the new one",
+    "edge · a fourth review: its editor is composed on what VS Code pasted, and lists the skipped comment again with the new one",
     async () => {
       await commentOnLine(h, 6, FIFTH);
       await sectionUntil("Comments · 1 pending", (now) => commentsOf(now).startsWith("1 pending"));
@@ -510,7 +512,7 @@ export default async (h) => {
         top.includes(`# Review for ${SESSION}`) &&
           !top.some((line) => line.includes("(edited)")) &&
           top.filter((line) => line === FIRST).length === 1,
-        `the editor does not hold claude's input as it is: ${JSON.stringify(top)}`,
+        `the editor does not hold what VS Code pasted: ${JSON.stringify(top)}`,
       );
       return `top ${JSON.stringify(top)} · end ${JSON.stringify(end)}`;
     },
@@ -560,11 +562,12 @@ export default async (h) => {
     },
   );
 
-  await step(`edge · after the fourth review every thread reads "${IN_TERMINAL}"`, async () => {
+  await step(`edge · after the fourth review every thread reads "${PASTED}"`, async () => {
     await openFile("limit.ts", "limit.ts (");
-    const threads = await threadsReading(IN_TERMINAL);
-    const seen = await sectionUntil("Comments · 5 follow-up pending in claude's terminal", (now) =>
-      commentsOf(now).startsWith(`5 ${IN_TERMINAL}`),
+    const threads = await threadsReading(PASTED);
+    const seen = await sectionUntil(
+      "Comments · 5 follow-up pending pasted into claude's terminal",
+      (now) => commentsOf(now).startsWith(`5 ${PASTED}`),
     );
     await shot("edge-fourth-review-threads");
     return `${said(seen)} · ${JSON.stringify(threads.map((thread) => thread.comments.map((one) => one.label)))}`;
@@ -1046,7 +1049,7 @@ export default async (h) => {
     },
   );
 
-  // ── A stop and a resume before Enter: the new claude's input holds none of her reviews ──
+  // ── A stop and a resume before Enter: VS Code pasted none of her reviews into the new claude ──
   /**
    * The Change section's rows of her comments sent before the resume, and `more`. Their threads hang
    * on the slice they were written on, not the one now pinned, so the rows say where each one is.
@@ -1116,21 +1119,18 @@ export default async (h) => {
     { via: "setup" },
   );
 
-  await step(
-    `edge · after the resume her threads read "${NOT_IN}": the new claude's input holds none of them`,
-    async () => {
-      await select(SESSION);
-      const seen = await sectionUntil(
-        `her five comments reading "${NOT_IN}"`,
-        (now) =>
-          heldRows(now).length === 5 &&
-          heldRows(now).every((row) => row.description.endsWith(NOT_IN)) &&
-          !commentsOf(now).includes(IN_TERMINAL),
-      );
-      await shot("edge-resumed-threads-not-in");
-      return said(seen);
-    },
-  );
+  await step(`edge · after the resume her threads read "${EARLIER}"`, async () => {
+    await select(SESSION);
+    const seen = await sectionUntil(
+      `her five comments reading "${EARLIER}"`,
+      (now) =>
+        heldRows(now).length === 5 &&
+        heldRows(now).every((row) => row.description.endsWith(EARLIER)) &&
+        !commentsOf(now).includes(PASTED),
+    );
+    await shot("edge-resumed-threads-pasted-into-earlier");
+    return said(seen);
+  });
 
   await step(
     "edge · a review after the resume: one more comment, and Send review composes the whole review on its own, with no More comments",
@@ -1209,18 +1209,18 @@ export default async (h) => {
   );
 
   await step(
-    `edge · after the review into the new claude her threads read "${IN_TERMINAL}"`,
+    `edge · after the review into the new claude her threads read "${PASTED}"`,
     async () => {
       const seen = await sectionUntil(
-        `her six comments reading "${IN_TERMINAL}"`,
+        `her six comments reading "${PASTED}"`,
         (now) =>
           heldRows(now, [SIXTH]).length === 6 &&
-          heldRows(now, [SIXTH]).every((row) => row.description.endsWith(IN_TERMINAL)) &&
-          !commentsOf(now).includes(NOT_IN),
+          heldRows(now, [SIXTH]).every((row) => row.description.endsWith(PASTED)) &&
+          !commentsOf(now).includes(EARLIER),
       );
       await openFile("limit.ts", "limit.ts (");
       const threads = await commentThreads(h);
-      await shot("edge-resumed-threads-in-terminal");
+      await shot("edge-resumed-threads-pasted");
       return `${said(seen)} · ${JSON.stringify(threads.map((thread) => thread.comments.map((one) => one.label)))}`;
     },
   );
