@@ -167,6 +167,8 @@ export class SessionStore implements vscode.Disposable {
   #timer: NodeJS.Timeout | null = null;
   /** Sessions read now, one read each: a frame meanwhile reads that session again after it. */
   readonly #reading = new Set<string>();
+  /** Callers of `reread`, by session, until a read of it lands. */
+  readonly #rereads = new Map<string, Array<() => void>>();
   /**
    * A full or project read runs. It reads alone: it rewrites sessions, and a session read beside
    * it could land older words over newer ones.
@@ -215,6 +217,7 @@ export class SessionStore implements vscode.Disposable {
     this.#connection = { state: "connecting" };
     this.#wantProjects.clear();
     this.#wantSessions.clear();
+    this.#takeRereads([...this.#rereads.keys()])();
     this.#subscription = this.client.subscribe((signal) => this.#signal(signal));
     this.refresh();
   }
@@ -235,6 +238,7 @@ export class SessionStore implements vscode.Disposable {
     this.#wantAll = false;
     this.#wantProjects.clear();
     this.#wantSessions.clear();
+    this.#takeRereads([...this.#rereads.keys()])();
     this.#wantedSince = null;
     this.#connection = { state: "connecting" };
   }
@@ -360,6 +364,29 @@ export class SessionStore implements vscode.Disposable {
   select(sessionIds: ReadonlyArray<string>): void {
     this.#selected = sessionIds;
     this.#emit();
+  }
+
+  /**
+   * Reads the session again, now, and resolves once that read landed: what her answer found is
+   * then what the row says. Resolves too when a new sign-in or server drops the read.
+   */
+  reread(sessionId: string): Promise<void> {
+    return new Promise((resolve) => {
+      this.#rereads.set(sessionId, [...(this.#rereads.get(sessionId) ?? []), resolve]);
+      this.#want({ all: false, projects: new Set(), sessions: new Set([sessionId]) });
+    });
+  }
+
+  /** Whoever waits on a re-read of these sessions: they are read once this read lands. */
+  #takeRereads(sessionIds: Iterable<string>): () => void {
+    const waiting = [...sessionIds].flatMap((id) => {
+      const found = this.#rereads.get(id) ?? [];
+      this.#rereads.delete(id);
+      return found;
+    });
+    return () => {
+      for (const resolve of waiting) resolve();
+    };
   }
 
   /** A launch this window sent, or what its server answered: the session is read again. */
@@ -493,10 +520,12 @@ export class SessionStore implements vscode.Disposable {
       this.#wantProjects.clear();
       if (whole) this.#wantSessions.clear();
       this.#readingAlone = true;
+      const reread = this.#takeRereads(targets);
       void this.#apply((generation) =>
         whole ? this.#readAll(generation, targets) : this.#readProjects(projects, generation),
       ).finally(() => {
         this.#readingAlone = false;
+        reread();
         this.#schedule();
       });
     } else {
@@ -505,8 +534,10 @@ export class SessionStore implements vscode.Disposable {
         if (this.#reading.has(id)) continue;
         this.#wantSessions.delete(id);
         this.#reading.add(id);
+        const reread = this.#takeRereads([id]);
         void this.#apply((generation) => this.#readSession(id, generation)).finally(() => {
           this.#reading.delete(id);
+          reread();
           this.#schedule();
         });
       }

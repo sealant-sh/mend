@@ -38,6 +38,10 @@ export const window = {
     async (..._: ReadonlyArray<unknown>): Promise<string | undefined> => undefined,
   ),
   setStatusBarMessage: vi.fn(),
+  showQuickPick: vi.fn(async (..._: ReadonlyArray<unknown>): Promise<unknown> => undefined),
+  showInputBox: vi.fn(
+    async (..._: ReadonlyArray<unknown>): Promise<string | undefined> => undefined,
+  ),
 };
 
 export const workspace = {
@@ -59,6 +63,8 @@ export const fake = {
     window.showInformationMessage.mockClear();
     window.showErrorMessage.mockClear();
     window.setStatusBarMessage.mockClear();
+    window.showQuickPick.mockReset();
+    window.showInputBox.mockReset();
     commands.executeCommand.mockClear();
   },
 };

@@ -478,7 +478,14 @@ interface Raised {
 }
 
 export type Notification =
-  | (Raised & { readonly kind: "waits"; readonly text: string; readonly quiet: Quiet })
+  | (Raised & {
+      readonly kind: "waits";
+      readonly text: string;
+      readonly quiet: Quiet;
+      readonly name: string;
+      /** A conversation's request, which the toast answers itself; null for a terminal agent. */
+      readonly request: RequestView | null;
+    })
   | (Raised & { readonly kind: "finished"; readonly text: string; readonly quiet: Quiet })
   /**
    * A launch she sent failed, or the server refused it: its error toast may offer Retry, which
@@ -537,11 +544,17 @@ export const transitions = (
   const waits = [...now.values()].flatMap((wait): ReadonlyArray<Notification> => {
     const view = next.sessions.get(wait.sessionId);
     if (view === undefined || before.has(wait.key) || attention.raised.has(wait.key)) return [];
+    const request = view.wait?.via === "conversation" ? view.wait.request : null;
     return [
       {
         kind: "waits",
         ...wait,
-        text: [`${view.name} is waiting`, ...(view.fact === null ? [] : [view.fact])].join(" · "),
+        name: view.name,
+        request,
+        text:
+          request !== null
+            ? `${view.name} asks: ${request.question}`
+            : [`${view.name} is waiting`, ...(view.fact === null ? [] : [view.fact])].join(" · "),
         quiet: quietFor(wait.sessionId),
       },
     ];

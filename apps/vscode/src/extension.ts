@@ -4,6 +4,7 @@ import { repositoryCloneUrlIssue } from "@mend/domain/workbench";
 import * as vscode from "vscode";
 
 import { attachTerminal, memberName, pasteInto, terminalProcess } from "./agent-terminal.js";
+import { RequestPrompts } from "./answer-prompt.js";
 import { AUTH_PROVIDER_ID, MendAuthenticationProvider } from "./auth-provider.js";
 import { MendClient } from "./client.js";
 import { ConnectionStore } from "./config.js";
@@ -19,6 +20,7 @@ import type { OpenMode } from "./open-flow.js";
 import { OpenIntents } from "./open-intent.js";
 import type { OpenRunner } from "./open-runner.js";
 import { originProjectName } from "./project-match.js";
+import { Answers } from "./request-answer.js";
 import { pasteIntoAgent } from "./review/agent-paste.js";
 import { startReview, type Review } from "./review/review.js";
 import {
@@ -614,7 +616,14 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const statusBar = new MendStatusBar();
   const launches = new Launches(client, store);
   const claims = new ToastClaims(path.join(context.globalStorageUri.fsPath, "toasts"));
-  const notifier = new Notifier(store, claims, launches);
+  const prompts = new RequestPrompts(
+    new Answers({
+      pending: (sessionId) => client.pendingRequests(sessionId),
+      respond: (requestId, response) => client.respond(requestId, response),
+    }),
+    store,
+  );
+  const notifier = new Notifier(store, claims, launches, prompts);
   const opens = openRunner({
     context,
     client,

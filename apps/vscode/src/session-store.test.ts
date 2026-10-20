@@ -209,6 +209,7 @@ const world = () => {
     store,
     { claim: async () => true, release: async () => undefined },
     { offer: async () => ({ kind: "none" }), relaunch: async () => ({ kind: "held" }) },
+    { chose: async () => {} },
   );
   store.onDidChange((change) => notifier.changed(change));
   return { mend, here, store };
@@ -521,7 +522,7 @@ describe("wait facts and toasts (S1, S2)", () => {
     mend.requestsFail = true;
     mend.signal({ kind: "event", event: event("agent-conversation", "s") });
     await tick(300);
-    expect(toasts()).toEqual(["s is waiting · run pnpm db:migrate?"]);
+    expect(toasts()).toEqual(["s asks: run pnpm db:migrate?"]);
     expect(store.model()?.sessions.get("s")?.needsYou).toBe(true);
   });
 
@@ -540,7 +541,7 @@ describe("wait facts and toasts (S1, S2)", () => {
     mend.requests.set("t", [{ ...request, id: "r-t" }]);
     mend.signal({ kind: "event", event: event("agent-conversation", "t") });
     await tick(300);
-    expect(toasts()).toEqual(["t is waiting · run pnpm db:migrate?"]);
+    expect(toasts()).toEqual(["t asks: run pnpm db:migrate?"]);
   });
 
   it("does not toast a wait whose agent terminal is in front in this window", async () => {
@@ -555,7 +556,30 @@ describe("wait facts and toasts (S1, S2)", () => {
       mend.signal({ kind: "event", event: event("agent-conversation", id) });
     }
     await tick(200);
-    expect(toasts()).toEqual(["t is waiting · run pnpm db:migrate?"]);
+    expect(toasts()).toEqual(["t asks: run pnpm db:migrate?"]);
+  });
+});
+
+describe("a session read again for an answer (story b)", () => {
+  it("resolves once the read landed, so the row says what the server says now", async () => {
+    const { mend, store } = world();
+    mend.add(session({ id: "s", status: "waiting" }));
+    mend.requests.set("s", [pendingRequest()]);
+    store.start();
+    await tick(300);
+    mend.add(session({ id: "s", status: "running", summary: "pnpm db:migrate" }));
+    mend.requests.set("s", []);
+    mend.hold("detail:s");
+    let landed = false;
+    const reread = store.reread("s").then(() => {
+      landed = true;
+    });
+    await tick(300);
+    expect(landed).toBe(false);
+    mend.release("detail:s");
+    await tick(0);
+    await reread;
+    expect(store.model()?.sessions.get("s")?.line).toBe("running · pnpm db:migrate");
   });
 });
 

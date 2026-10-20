@@ -1,7 +1,9 @@
 import * as vscode from "vscode";
 
+import type { RequestPrompts } from "./answer-prompt.js";
 import { refusedSignIn, showErrorToast } from "./error-toast.js";
 import type { Launches, RetryAnswer } from "./launches.js";
+import { toastChoices } from "./request-answer.js";
 import { displaySession } from "./session-lines.js";
 import {
   ownLine,
@@ -82,6 +84,7 @@ export class Notifier {
     private readonly store: Pick<SessionStore, "showing" | "model" | "error">,
     private readonly claims: Pick<ToastClaims, "claim" | "release">,
     private readonly launches: Pick<Launches, "offer" | "relaunch">,
+    private readonly prompts: Pick<RequestPrompts, "chose">,
   ) {}
 
   changed({ prev, next }: StoreChange): void {
@@ -130,6 +133,19 @@ export class Notifier {
           sessionId,
           await this.launches.relaunch(sessionId, notification.settledAt),
         );
+      return;
+    }
+    if (notification.kind === "waits" && notification.request !== null) {
+      // The toast answers the request itself. VS Code cannot close it once the request is
+      // answered elsewhere, so every button re-reads before it sends (`Answers`).
+      const { request } = notification;
+      const choices = toastChoices(request.ask);
+      const label = await vscode.window.showInformationMessage(
+        notification.text,
+        ...choices.map((choice) => choice.label),
+      );
+      const choice = choices.find((one) => one.label === label);
+      if (choice !== undefined) await this.prompts.chose(request, notification.name, choice);
       return;
     }
     const actions = notification.kind === "waits" ? ["Answer"] : ["Review", "Open"];
