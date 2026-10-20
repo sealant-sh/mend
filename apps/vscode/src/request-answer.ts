@@ -167,6 +167,9 @@ export interface AnswerEffects {
   readonly respond: (requestId: string, response: AgentResponse) => Promise<void>;
 }
 
+/** An answer's 409 `ProtocolSessionNotLive`: Mend does not hold the agent's conversation yet. */
+const NOT_REATTACHED = "Mend has not reattached to the agent yet";
+
 type Failure =
   | { readonly kind: "gone" }
   | { readonly kind: "unreachable"; readonly words: string }
@@ -182,9 +185,10 @@ const failureOf = (cause: unknown): Failure => {
   // A second answer, from here or anywhere, finds it resolved; one removed meanwhile is a 404.
   if (cause.status === 404 || (cause.status === 409 && cause.tag === "AgentRequestResolved"))
     return { kind: "gone" };
-  // Just after Mend restarts, a conversation reads live before Mend has it back.
+  // Just after Mend restarts, a conversation reads live before Mend has it back, so the words every
+  // other call shows for this tag (resume the session) would send her to resume a live agent.
   if (cause.status === 409 && cause.tag === "ProtocolSessionNotLive")
-    return { kind: "transient", words: cause.message };
+    return { kind: "transient", words: NOT_REATTACHED };
   return { kind: cause.status >= 500 ? "transient" : "refused", words: cause.message };
 };
 

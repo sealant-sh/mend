@@ -160,7 +160,7 @@ describe("an answer", () => {
     expect(await mend.answers.send(request, ALLOW)).toEqual({
       kind: "failed",
       response: ALLOW,
-      words: "The agent's conversation is not live.",
+      words: "Mend has not reattached to the agent yet",
       retryable: true,
       cause: notLive,
     });
