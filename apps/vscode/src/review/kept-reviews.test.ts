@@ -77,6 +77,12 @@ const renewedBy = async (directory: string, name: string, at: number): Promise<v
   });
 };
 
+/** A lock's or a lease's renewal, written beside it: `<name>.lock.<uuid>.tmp`, `<name>.<key>.drive.<uuid>.tmp`. */
+const HOLD_RENEWAL = /\.(lock|drive)\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/;
+
+/** Storage in a folder whose name reads like a hold's: only a hold's own renewal is not held back. */
+const heldStorage = async (): Promise<string> => join(await storage(), "reviews.lock.drive.d");
+
 /** A window whose write of a new review waits until the test lets it go on. */
 const heldWrite = (): {
   readonly files: typeof NODE_FILES;
@@ -89,7 +95,7 @@ const heldWrite = (): {
     files: {
       ...NODE_FILES,
       writeFile: async (path, text) => {
-        if (path.endsWith(".tmp") && !/\.(lock|drive)\./.test(path)) {
+        if (path.endsWith(".tmp") && !HOLD_RENEWAL.test(path)) {
           reached();
           await allowed;
         } else if (!path.endsWith(".tmp")) {
@@ -128,7 +134,7 @@ describe("the session's lock, between windows", () => {
   it("stays a slow live window's past the stale age: the other window waits for its write", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
-      const directory = await storage();
+      const directory = await heldStorage();
       let late = 0;
       const clock = (): number => Date.now() + late;
       const slow = heldWrite();
@@ -158,7 +164,7 @@ describe("the session's lock, between windows", () => {
   it("is not removed by a window that stalled holding it once another took it over", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
-      const directory = await storage();
+      const directory = await heldStorage();
       const lock = await lockOf(directory);
       let late = 0;
       const clock = (): number => Date.now() + late;
