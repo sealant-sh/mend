@@ -699,7 +699,8 @@ export default async (h) => {
   );
 
   // ── 4: More… with a typed answer ──
-  const typed = "the reporting replica";
+  // Spaces around it: what she typed arrives as she typed it, never trimmed.
+  const typed = "  the reporting replica  ";
   await step(
     `4: a question with two options: ${ui ? "the toast offers staging, production, More…; More… → Write an answer… → typed" : "respond {answers: {target: [typed]}}"} → the stand-in receives answers.target = ["${typed}"]`,
     async () => {
