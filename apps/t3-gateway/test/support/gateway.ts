@@ -13,7 +13,7 @@ import { AssetTracingDisabledLive, AssetUrlsLive } from "../../src/assets.ts";
 import { GatewayAuthLive } from "../../src/auth.ts";
 import { GatewayConfig } from "../../src/config.ts";
 import { GatewayEnvironmentLive } from "../../src/environment.ts";
-import { findParserLayer } from "../../src/find-parser.ts";
+import { FindParser, findParserLayer } from "../../src/find-parser.ts";
 import { GatewayRoutesLive } from "../../src/http.ts";
 import { ProjectionsLive } from "../../src/hub.ts";
 import { MendClient, type MendCommand } from "../../src/mend-client.ts";
@@ -90,7 +90,6 @@ const gatewayWithClientObservers = (observers: ClientObservers) => {
   return GatewayRoutesLive.pipe(
     Layer.provide(GatewayAuthLive),
     Layer.provide(ProjectionsLive),
-    Layer.provide(findParserLayer()),
     Layer.provideMerge(WebSocketTicketsLive),
     Layer.provideMerge(AssetUrlsLive),
     Layer.provideMerge(AssetTracingDisabledLive),
@@ -116,6 +115,11 @@ export const gatewayTestLayer = (
      * here. Without it, nothing is logged.
      */
     readonly logs?: Array<string>;
+    /**
+     * Find's parser, to share one worker pool across gateways. Without it the gateway starts its
+     * own, as production does.
+     */
+    readonly parser?: FindParser["Service"];
   } = {},
 ) =>
   HttpRouter.serve(
@@ -129,6 +133,9 @@ export const gatewayTestLayer = (
       disableListenLog: true,
     },
   ).pipe(
+    Layer.provide(
+      options.parser === undefined ? findParserLayer() : Layer.succeed(FindParser, options.parser),
+    ),
     Layer.provideMerge(NodeHttpServer.layerTest),
     Layer.provide(
       options.logs === undefined ? Layer.empty : Logger.layer([collectingLogger(options.logs)]),

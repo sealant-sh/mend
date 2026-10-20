@@ -19,7 +19,6 @@ import {
 import * as Effect from "effect/Effect";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
-import * as Schedule from "effect/Schedule";
 
 import { WEBSOCKET_TICKET_QUERY_PARAM } from "../src/ws.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
@@ -36,7 +35,17 @@ const freePort = Effect.callback<number>((resume) => {
   });
 });
 
-const gatewayProcess = (mend: FakeMend, statePath: string) =>
+/** What a gateway process last wrote, for the message of a step that never ends. */
+type Outputs = Array<() => string>;
+
+const LISTENING = /Listening on (http:\/\/\S+)/;
+
+/**
+ * Another test can take the free port before the gateway binds it. Ready is the gateway's own
+ * "Listening on" line, not an answer from whatever holds the port; a gateway that exits first
+ * lost the port, and the next one gets another.
+ */
+const gatewayProcess = (mend: FakeMend, statePath: string, outputs: Outputs) =>
   Effect.gen(function* () {
     const port = yield* freePort;
     const child = yield* Effect.acquireRelease(
@@ -50,21 +59,47 @@ const gatewayProcess = (mend: FakeMend, statePath: string) =>
             MEND_T3_GATEWAY_STATE_PATH: statePath,
             MEND_T3_GATEWAY_LABEL: "Mend under test",
           },
-          stdio: "ignore",
+          stdio: ["ignore", "pipe", "pipe"],
         }),
       ),
       (spawned) => Effect.sync(() => spawned.kill("SIGKILL")),
     );
-    const url = `http://127.0.0.1:${port}`;
-    yield* Effect.tryPromise(() => fetch(`${url}/.well-known/t3/environment`)).pipe(
-      Effect.filterOrFail((response) => response.ok),
-      Effect.retry({ times: 150, schedule: Schedule.spaced("100 millis") }),
-    );
+    let output = "";
+    const keep = (chunk: Buffer) => {
+      output = `${output}${chunk.toString()}`.slice(-4096);
+    };
+    child.stdout.on("data", keep);
+    child.stderr.on("data", keep);
+    outputs.push(() => `gateway on ${port}:\n${output}`);
+    const url = yield* Effect.callback<string, Error>((resume) => {
+      const listened = () => {
+        const address = LISTENING.exec(output)?.[1];
+        if (address === undefined) return;
+        settle();
+        resume(Effect.succeed(address));
+      };
+      const exited = () => {
+        settle();
+        resume(Effect.fail(new Error(`The gateway exited before it listened:\n${output}`)));
+      };
+      const settle = () => {
+        child.stdout.off("data", listened);
+        child.off("exit", exited);
+      };
+      child.stdout.on("data", listened);
+      child.once("exit", exited);
+      listened();
+      return Effect.sync(settle);
+    });
     return { child, url };
-  });
+  }).pipe(Effect.retry({ times: 2 }));
 
 const killed = (child: ChildProcess) =>
   Effect.callback<void>((resume) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resume(Effect.void);
+      return;
+    }
     child.once("exit", () => resume(Effect.void));
     child.kill("SIGKILL");
   });
@@ -87,14 +122,27 @@ const connect = (mend: FakeMend, url: string, code: string) =>
 
 const THREAD = ThreadId.make("draft-killed");
 
-const eventually = (condition: () => boolean, what: string) =>
+const eventually = (condition: () => boolean) =>
   Effect.gen(function* () {
-    for (let attempt = 0; attempt < 300; attempt++) {
-      if (condition()) return;
-      yield* Effect.sleep("50 millis");
-    }
-    return yield* Effect.die(new Error(`Timed out waiting for ${what}.`));
+    while (!condition()) yield* Effect.sleep("50 millis");
   });
+
+/** Bounds one step on its own, so a step that never ends fails naming itself. */
+const within =
+  (outputs: Outputs) =>
+  (what: string) =>
+  <A, E, R>(step: Effect.Effect<A, E, R>) =>
+    step.pipe(
+      Effect.timeoutOrElse({
+        duration: "15 seconds",
+        orElse: () =>
+          Effect.die(
+            new Error(
+              [`Timed out waiting for ${what}.`, ...outputs.map((output) => output())].join("\n"),
+            ),
+          ),
+      }),
+    );
 
 describe("a setup cut short by SIGKILL", () => {
   it.live(
@@ -105,9 +153,13 @@ describe("a setup cut short by SIGKILL", () => {
         mend.workbench.addProject("project-1", "mend");
         mend.tty.scripts.set("pnpm install", { lines: ["fetching"], exitCode: "hang" });
         const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-kill-")), "state.sqlite");
+        const outputs: Outputs = [];
+        const step = within(outputs);
 
-        const first = yield* gatewayProcess(mend, statePath);
-        const before = yield* connect(mend, first.url, "KILLED");
+        const first = yield* gatewayProcess(mend, statePath, outputs).pipe(
+          step("the first gateway to listen"),
+        );
+        const before = yield* connect(mend, first.url, "KILLED").pipe(step("the first pairing"));
         yield* before[WS_METHODS.serverUpdateSettings]({
           patch: {
             projectScriptOverrides: {
@@ -123,7 +175,7 @@ describe("a setup cut short by SIGKILL", () => {
               ],
             },
           },
-        });
+        }).pipe(step("the setup action to save"));
         yield* before[ORCHESTRATION_V2_WS_METHODS.launchThread]({
           commandId: CommandId.make("kill-launch"),
           threadId: THREAD,
@@ -139,18 +191,22 @@ describe("a setup cut short by SIGKILL", () => {
             text: "Run the tests",
             attachments: [],
           },
-        });
-        yield* eventually(() => mend.tty.scriptRuns.length === 1, "the setup script");
+        }).pipe(step("the launch"));
+        yield* eventually(() => mend.tty.scriptRuns.length === 1).pipe(step("the setup script"));
         const orphan = mend.tty.scriptRuns[0] ?? "";
-        yield* killed(first.child);
+        yield* killed(first.child).pipe(step("the first gateway to exit"));
         assert.isTrue(mend.tty.shells.get(orphan)?.running, "Mend keeps the killed setup's shell");
 
         mend.tty.scripts.set("pnpm install", { lines: ["Done"], exitCode: 0 });
-        const second = yield* gatewayProcess(mend, statePath);
-        const after = yield* connect(mend, second.url, "RESTARTED");
+        const second = yield* gatewayProcess(mend, statePath, outputs).pipe(
+          step("the second gateway to listen"),
+        );
+        const after = yield* connect(mend, second.url, "RESTARTED").pipe(
+          step("the second pairing"),
+        );
         const projection = yield* after[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
           threadId: THREAD,
-        });
+        }).pipe(step("the thread after the restart"));
         const run = projection.runs[0];
         assert.strictEqual(run?.status, "failed");
         if (run === undefined) return;
@@ -159,8 +215,10 @@ describe("a setup cut short by SIGKILL", () => {
           commandId: CommandId.make("kill-retry"),
           threadId: THREAD,
           runId: run.id,
-        });
-        yield* eventually(() => mend.tty.scriptRuns.length === 2, "the retried setup script");
+        }).pipe(step("the retry"));
+        yield* eventually(() => mend.tty.scriptRuns.length === 2).pipe(
+          step("the retried setup script"),
+        );
         assert.isFalse(
           mend.tty.shells.get(orphan)?.running,
           "the killed setup's shell was stopped before the retry typed the script",
@@ -170,8 +228,7 @@ describe("a setup cut short by SIGKILL", () => {
             mend.workbench.calls.filter(
               (call) => call.method === "POST" && call.path.endsWith("/turns"),
             ).length === 1,
-          "the opening turn",
-        );
+        ).pipe(step("the opening turn"));
         const running = Array.from(mend.tty.shells.values()).filter((shell) => shell.running);
         assert.isAtMost(running.length, 1);
       }).pipe(Effect.scoped),

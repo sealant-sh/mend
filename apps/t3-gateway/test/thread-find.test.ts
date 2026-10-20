@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as RpcTest from "effect/rpc/RpcTest";
 import * as Schedule from "effect/Schedule";
@@ -32,17 +33,27 @@ import { findsInThread } from "../src/server-config.ts";
 import { MendClientFetchLive } from "../src/server.ts";
 import { GatewayStateLive, type BearerSession } from "../src/state.ts";
 import { FIND_CACHE_LIMITS, makeThreadFinder } from "../src/thread-find.ts";
-import { assert, describe, it } from "./support/effect-vitest.ts";
+import { afterAll, assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { inlineFindParser, recordingFindParser } from "./support/find-parser.ts";
 import { gatewayTestLayer, PERSON } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 import { testBearerSession } from "./support/stubs.ts";
 
+// One pool for the file: a pool's first parse boots a worker that loads the parser's whole module
+// graph, which costs more than most of these tests.
+const parsers = ManagedRuntime.make(findParserLayer());
+afterAll(() => parsers.dispose());
+const findParser = await parsers.runPromise(FindParser);
+const sharedParser = Layer.succeed(FindParser, findParser);
+
 const withGateway = <A, E, R>(test: (mend: FakeMend) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const mend = yield* startFakeMend;
-    return yield* test(mend).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    return yield* test(mend).pipe(
+      Effect.scoped,
+      Effect.provide(gatewayTestLayer(mend.url, ":memory:", { parser: findParser })),
+    );
   });
 
 const THREAD = ThreadId.make("session-1");
@@ -363,7 +374,8 @@ const withQuestion = (snapshot: ThreadSnapshot, text: string): ThreadSnapshot =>
   },
 });
 
-const SLOW_TO_PARSE = `${"[".repeat(PARSED_TEXT_LIMIT / 2)}${"]".repeat(PARSED_TEXT_LIMIT / 2)}`;
+// Nested brackets parse in time quadratic in their length: about 2 s at the limit, 0.5 s at half.
+const slowToParse = (length: number) => `${"[".repeat(length / 2)}${"]".repeat(length / 2)}`;
 
 const needleLinks = (length: number) => {
   const link = "[needle](https://example.com/needle) ";
@@ -403,7 +415,7 @@ describe("find in a thread, as a shared gateway runs it", () => {
       Effect.gen(function* () {
         seed(
           mend,
-          Array.from({ length: 750 }, (_, i) => [longMessage(2 * i), longMessage(2 * i + 1)]),
+          Array.from({ length: 150 }, (_, i) => [longMessage(2 * i), longMessage(2 * i + 1)]),
         );
         const snapshot = yield* snapshotOf(mend, "FINDLONG");
         const parser = yield* FindParser;
@@ -430,7 +442,7 @@ describe("find in a thread, as a shared gateway runs it", () => {
         assert.isTrue(Exit.hasInterrupts(exit));
         assert.isBelow(stopped, 150);
         assert.isAbove(scanned, 4 * stopped, `scan ${scanned} ms, interrupt ${stopped} ms`);
-      }).pipe(Effect.provide(findParserLayer())),
+      }).pipe(Effect.provide(sharedParser)),
     ),
   );
 
@@ -441,18 +453,18 @@ describe("find in a thread, as a shared gateway runs it", () => {
         const { text, links } = needleLinks(PARSED_TEXT_LIMIT);
         const snapshot = withQuestion(
           withAnswer(yield* snapshotOf(mend, "FINDLARGE"), text),
-          SLOW_TO_PARSE,
+          slowToParse(PARSED_TEXT_LIMIT / 2),
         );
         const parser = yield* FindParser;
         const { result, took, longestGap } = yield* besideATicker(
           makeThreadFinder(parser).searchThread(snapshot, { threadId: THREAD, query: "needle" }),
         );
         assert.strictEqual(result.totalMatches, links);
-        // A parse on the event loop holds it for seconds. The bound leaves room for a garbage
+        // A parse on the event loop holds it for half a second. The bound leaves room for a garbage
         // collection on a shared two-core runner, which measured 56 to 77 ms in CI.
         assert.isBelow(longestGap, 150, `find ${took} ms, longest gap ${longestGap} ms`);
         assert.isAbove(took, 4 * longestGap, `find ${took} ms, longest gap ${longestGap} ms`);
-      }).pipe(Effect.provide(findParserLayer())),
+      }).pipe(Effect.provide(sharedParser)),
     ),
   );
 
@@ -469,7 +481,7 @@ describe("find in a thread, as a shared gateway runs it", () => {
         assert.strictEqual(result.totalMatches, 4 * links);
         assert.isBelow(took, 1_000, `find ${took} ms, longest gap ${longestGap} ms`);
         assert.isBelow(longestGap, 100, `find ${took} ms, longest gap ${longestGap} ms`);
-      }).pipe(Effect.provide(findParserLayer())),
+      }).pipe(Effect.provide(sharedParser)),
     ),
   );
 
@@ -478,7 +490,7 @@ describe("find in a thread, as a shared gateway runs it", () => {
       Effect.gen(function* () {
         seed(mend, [["Where is the needle?", "needle"]]);
         const small = yield* snapshotOf(mend, "FINDSTOP");
-        const slow = withQuestion(small, SLOW_TO_PARSE);
+        const slow = withQuestion(small, slowToParse(PARSED_TEXT_LIMIT));
         const parser = yield* FindParser;
         const search = { threadId: THREAD, query: "needle" };
         const abandoned = yield* makeThreadFinder(parser)
@@ -498,7 +510,7 @@ describe("find in a thread, as a shared gateway runs it", () => {
 
         const next = yield* makeThreadFinder(parser).searchThread(small, search);
         assert.strictEqual(next.totalMatches, 2);
-      }).pipe(Effect.provide(findParserLayer())),
+      }).pipe(Effect.provide(sharedParser)),
     ),
   );
 
@@ -641,7 +653,7 @@ const assetUrls: AssetUrls["Service"] = {
 
 const projectionsOver = (mendUrl: URL) =>
   ProjectionsLive.pipe(
-    Layer.provideMerge(Layer.mergeAll(MendClientFetchLive, GatewayStateLive, findParserLayer())),
+    Layer.provideMerge(Layer.mergeAll(MendClientFetchLive, GatewayStateLive, sharedParser)),
     Layer.provideMerge(
       Layer.succeed(GatewayConfig)({
         mendUrl,
