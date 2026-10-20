@@ -6980,6 +6980,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const stopsUnderWay = new Map<SessionId, number>();
       const stopUnderWay = (sessionId: SessionId) => (stopsUnderWay.get(sessionId) ?? 0) > 0;
       /**
+       * The owner stopped a session whose executor is being replaced: marked, or a Stop asked after
+       * the replacement began and still closing its agent, which has not marked it yet (SLNT-111).
+       * Either way the replacement's pickup starts nothing.
+       */
+      const stoppedReplacing = (sessionId: SessionId) =>
+        stoppedDuringReplacement.has(sessionId) || stopUnderWay(sessionId);
+      /**
        * Sessions whose planned relaunch a launch in this process is carrying out, with the id of
        * the plan it carries out (`planIdOf`).
        */
@@ -7072,18 +7079,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The lease is released once the termination is observed; when it was not, it lapses
           // with the executor's heartbeats. Wait for either, bounded.
           const deadline = clock.currentTimeMillisUnsafe() + 60_000;
-          // A Stop asked after this replacement began, still closing its agent, has not marked it
-          // yet (`stoppedDuringReplacement`); it beats the replacement all the same (SLNT-111).
-          const stopped = () =>
-            stoppedDuringReplacement.has(session.id) || stopUnderWay(session.id);
-          while (clock.currentTimeMillisUnsafe() < deadline && !stopped()) {
+          while (clock.currentTimeMillisUnsafe() < deadline && !stoppedReplacing(session.id)) {
             const lease = yield* capture.repo.leaseOf(session.worktreeId);
             if (lease === null || !lease.live) break;
             yield* Effect.sleep(Duration.seconds(2));
           }
           // The owner stopped the session while it was being saved: saved and ended, and that is
           // all — no new executor.
-          if (stopped()) {
+          if (stoppedReplacing(session.id)) {
             yield* Effect.logInfo(
               "session engine: capture mode · stopped during the replacement · nothing relaunched",
             ).pipe(Effect.annotateLogs({ sessionId: session.id }));
@@ -15731,7 +15734,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* Effect.sleep(Duration.seconds(2));
         }
         yield* harnessLayouts.clearRetirement(workspaceId);
-        if (plan.relaunch) {
+        if (plan.relaunch && !stoppedReplacing(holder.id)) {
           yield* pickUpReplaced(holder, "session engine: the replacement's relaunch failed");
         }
         for (const name of plan.restart) {

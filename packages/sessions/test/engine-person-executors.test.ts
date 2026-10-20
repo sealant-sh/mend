@@ -420,6 +420,52 @@ describe("pre-release executors and the migration of their shared home (docs/adr
     { timeout: 30_000 },
   );
 
+  it.effect(
+    "the owner's Stop during a pre-release replacement's final flush wins: the replacement ends the executor, and no pickup starts the agent again (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const flushing = yield* Deferred.make<void>();
+        const flushed = yield* Deferred.make<void>();
+        let holdFlush = false;
+        const seen = { stop: "", status: "", live: 0 };
+        const run = yield* retiringWorldEffect(
+          (engine, world, { session }) =>
+            Effect.gen(function* () {
+              holdFlush = true;
+              const sweeping = yield* Effect.forkChild(engine.sweepRetirements());
+              yield* Deferred.await(flushing);
+              seen.stop = (yield* engine.stop(session.id).pipe(Effect.result))._tag;
+              yield* Deferred.succeed(flushed, undefined);
+              yield* Fiber.join(sweeping);
+              for (let step = 0; step < 20; step += 1) {
+                yield* TestClock.adjust("100 millis");
+                yield* Effect.yieldNow;
+              }
+              seen.status = world.sessions.get(session.id)?.status ?? "";
+              seen.live = [...world.processes.values()].filter(
+                (process) =>
+                  process.sessionId === session.id &&
+                  process.kind === "agent-protocol" &&
+                  process.exitedAt === null,
+              ).length;
+            }),
+          {
+            aroundFlush: () =>
+              Effect.suspend(() => {
+                if (!holdFlush) return Effect.void;
+                holdFlush = false;
+                return Deferred.succeed(flushing, undefined).pipe(
+                  Effect.andThen(Deferred.await(flushed)),
+                );
+              }),
+          },
+        );
+        expect(seen).toEqual({ stop: "Success", status: "stopped", live: 0 });
+        expect(run.created).toHaveLength(1);
+      }),
+    { timeout: 30_000 },
+  );
+
   it(
     "retires nothing on a shared probe's yes alone: only an answer a per-person executor gave replaces a live executor (review of mend#582, finding 1)",
     { timeout: 30_000 },
