@@ -7196,6 +7196,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (workspaceId !== null && drains.has(workspaceId)) continue;
           // Kept, and nothing changed since: wait (10 s doubling to 5 min) rather than flush again.
           if (yield* keptDrainWaits(session)) continue;
+          yield* Effect.logInfo(
+            "session engine: capture mode · a drain no fiber runs · taken up",
+          ).pipe(Effect.annotateLogs({ sessionId: session.id, reason: session.captureDrain }));
           yield* Effect.forkIn(resumeDrain(session), scope);
         }
         for (const session of yield* sessions.listRemovalRequested()) {
