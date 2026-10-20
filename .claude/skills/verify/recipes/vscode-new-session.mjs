@@ -9,8 +9,10 @@
 // its own (Adopt this repository, not the project), a folder named like the project whose origin is
 // not adopted (Adopt this repository, then the prompt), a refused launch (Claude disconnected; the row reads
 // the server's state, one toast with Retry, which relaunches the same session once Claude is
-// back), and Mend going offline while she has typed a prompt (kept, the cursor after it, and there
-// again once Mend is back).
+// back), Mend going offline while she has typed a prompt (kept, the cursor after it, and there
+// again once Mend is back), and Retry on a stale toast: the session moved on since (another client
+// launched it and it failed again), so Mend refuses the Retry with 409 and the toast's answer says
+// how the session reads now.
 //
 //   node .claude/skills/verify/scripts/drive-vscode.mjs run \
 //     .claude/skills/verify/recipes/vscode-new-session.mjs --out <dir>
@@ -34,6 +36,7 @@ const world = await import(
 const PROMPT = "add rate limiting to the login route";
 const PROMPT_CODEX = "list the files in this repository";
 const PROMPT_FAILS = "write a changelog entry";
+const PROMPT_STALE = "bump the lint config";
 const PROMPT_OFFLINE = "rename the config loader";
 /** Pasted whole: 100,000 and 130,000 ASCII characters, so as many bytes; the cap is 120,000. */
 const pasted = (length) => "summarize this build log line by line. ".repeat(4_000).slice(0, length);
@@ -257,6 +260,44 @@ export default async (h) => {
   const createdSince = async (before) =>
     (await api(`/projects/${project.id}`)).sessions.filter((one) => !before.has(one.id));
   const launches = async (id) => linesMatching(await serverLogs(), `'/api/sessions/${id}/launch'`);
+  /** The status the server answered each launch of `id` with, in order. */
+  const launchStatuses = async (id) => {
+    const lines = (await serverLogs()).split("\n");
+    return lines.flatMap((line, at) =>
+      line.includes(`'/api/sessions/${id}/launch'`)
+        ? [Number(/'http\.status': (\d+)/.exec(lines[at + 1] ?? "")?.[1] ?? Number.NaN)]
+        : [],
+    );
+  };
+  /** One of a session's terminals over `/api/tty`, typed into as raw bytes. */
+  const tty = async (processId) => {
+    const { ticket } = await api("/upgrade-tickets", {
+      method: "POST",
+      body: JSON.stringify({ target: "tty", process: processId }),
+    });
+    const url = new URL(`${state.server.origin}/api/tty`);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.searchParams.set("process", processId);
+    url.searchParams.set("ticket", ticket);
+    const socket = new WebSocket(url);
+    let text = "";
+    socket.addEventListener("message", (event) => {
+      text += typeof event.data === "string" ? event.data : "\n";
+    });
+    await new Promise((resolve, reject) => {
+      socket.addEventListener("open", resolve, { once: true });
+      socket.addEventListener("error", () => reject(new Error("the tty did not open")), {
+        once: true,
+      });
+    });
+    socket.send(JSON.stringify({ t: "resize", cols: 220, rows: 50 }));
+    const encoder = new TextEncoder();
+    return {
+      text: () => text,
+      line: (line) => socket.send(encoder.encode(`${line}\r`)),
+      close: () => socket.close(),
+    };
+  };
   const sessionRows = async (labels) =>
     (await viewRows()).rows.filter((row) => row.level >= 2 && !labels.has(row.label));
 
@@ -1014,9 +1055,11 @@ export default async (h) => {
       await shot("retried-running");
       const created = [...(await sessionIds())].filter((id) => !ids.has(id));
       const after = await launches(failed.id);
-      const observed = `session ${failed.id.slice(0, 8)} ${detail.session.status} · argv ${JSON.stringify(liveAgent(detail.processes).argv)} · launches on its id ${failed.launchesBefore} → ${after} · sessions created ${created.length} · row "${failed.label} · ${description}"`;
+      const answers = await launchStatuses(failed.id);
+      const observed = `session ${failed.id.slice(0, 8)} ${detail.session.status} · argv ${JSON.stringify(liveAgent(detail.processes).argv)} · launches on its id ${failed.launchesBefore} → ${after}, answered ${JSON.stringify(answers)} · sessions created ${created.length} · row "${failed.label} · ${description}"`;
       expect(created.length === 0, observed);
       expect(after === failed.launchesBefore + 1, observed);
+      expect(answers.at(-1) === 200, `the Retry was not admitted: ${observed}`);
       return observed;
     },
   );
@@ -1191,5 +1234,151 @@ export default async (h) => {
     },
   );
 
-  note(`sessions: claude ${first.id} · retried ${failed.id}`);
+  // ── Retry from a stale toast ──
+  // Retry names the failure its toast saw (`expected: { settledAt }`). Here the session moves on
+  // first: another client launches it, then its claude ends, so it settles failed again at a later
+  // `settledAt`. Retry on the first toast then reaches Mend, which refuses it.
+  await step(
+    "Claude disconnected again (mend connect claude --remove)",
+    async () => {
+      const ran = await world.cli(["connect", "claude", "--remove"], env, { allowFailure: true });
+      expect(ran.status === 0, `exited ${ran.status}: ${ran.stderr.trim()}`);
+      return ran.stdout.trim();
+    },
+    { via: "setup" },
+  );
+
+  const beforeStale = {
+    ids: await sessionIds(),
+    labels: new Set((await viewRows()).rows.map((row) => row.label)),
+  };
+  const stale = await step(
+    "a second launch refused and settled: New session, Enter: the row reads failed, one error toast with Retry",
+    async () => {
+      await newSession();
+      await quickInput.type(PROMPT_STALE);
+      await quickInput.accept();
+      const { row } = await followNewRow(beforeStale.labels, /^failed · /, 120_000);
+      const toast = await waitUntil(
+        "its toast with Retry",
+        async () => {
+          const all = await notifications();
+          return all.find((text) => text.includes(`${row.label} failed · `)) ?? null;
+        },
+        60_000,
+      );
+      // A toast reads `Source: … <buttons> <message>`: the message is what follows its buttons.
+      const message = toast.slice(toast.indexOf(`${row.label} failed · `));
+      await shot("stale-toast");
+      const [created] = await createdSince(beforeStale.ids);
+      const server = await api(`/sessions/${created.id}`);
+      const observed = `row "${row.label} · ${row.description}" · toast "${toast}" · the server reads ${server.session.status} · settled ${server.session.settledAt}`;
+      expect(server.session.status === "failed" && server.session.settledAt !== null, observed);
+      expect(/Retry/.test(toast), `the toast offers no Retry: ${observed}`);
+      return {
+        observed,
+        id: created.id,
+        label: row.label,
+        toast: message,
+        settledAt: server.session.settledAt,
+      };
+    },
+  );
+
+  const movedOn = await step(
+    "the session moves on: Claude reconnected, another client launches it over the API, running, then its claude ends (SIGTERM from a shell beside it) and it settles failed again, later",
+    async () => {
+      // Reconnected here, just before the launch: the earlier claude's 401 on the fake token can
+      // mark the login for reconnecting a while after a connect. With no prompt, this claude
+      // never asks the provider.
+      await connect("claude", FAKES.claude);
+      // Resume needs a saved harness state, which a launch that never started does not leave.
+      await api(`/sessions/${stale.id}/launch`, {
+        method: "POST",
+        body: JSON.stringify({ mode: "pty" }),
+      });
+      await waitUntil(
+        "the session running with a live agent",
+        async () => {
+          const now = await api(`/sessions/${stale.id}`);
+          return now.session.status === "running" && liveAgent(now.processes) ? now : null;
+        },
+        300_000,
+      );
+      const opened = await api(`/sessions/${stale.id}/shell`, { method: "POST", body: "{}" });
+      const shell = await tty(opened.id);
+      await waitUntil("the shell's prompt", async () => shell.text() !== "" || null, 60_000);
+      await sleep(1_000);
+      // The shell holds the workspace: it leaves with the agent, so the session settles.
+      shell.line("kill -TERM $(pgrep -x claude); exit");
+      // A settle reads `stopping` again while the stop drain runs, then settles once more: the
+      // session is read until two reads 5 s apart agree.
+      let previous = null;
+      const settled = await waitUntil(
+        "the session failed again at a later settle, and still",
+        async () => {
+          const now = await api(`/sessions/${stale.id}`);
+          const held =
+            previous !== null &&
+            now.session.status === "failed" &&
+            now.session.settledAt !== null &&
+            now.session.settledAt !== stale.settledAt &&
+            now.session.settledAt === previous.session.settledAt &&
+            previous.session.status === "failed";
+          previous = now;
+          if (held) return now;
+          await sleep(5_000);
+          return null;
+        },
+        180_000,
+      );
+      shell.close();
+      return {
+        observed: `settled ${stale.settledAt} → ${settled.session.status} · settled ${settled.session.settledAt} · "${settled.session.summary}"`,
+        settledAt: settled.session.settledAt,
+        processes: settled.processes.length,
+      };
+    },
+    { via: "api" },
+  );
+
+  await step(
+    "Retry on the stale toast: Mend refuses it (409, the session moved on), nothing more is sent, and VS Code says how the session reads now",
+    async () => {
+      const before = await launchStatuses(stale.id);
+      const shown = await watch();
+      await notification(stale.toast).click("Retry");
+      const said = await waitUntil(
+        "VS Code to say the session moved on",
+        async () => {
+          const all = await notifications();
+          const found = all.find((text) => text.includes(`${stale.label} moved on · `));
+          return found?.slice(found.indexOf(`${stale.label} moved on · `)) ?? null;
+        },
+        60_000,
+      );
+      await shot("stale-retry-moved-on");
+      await sleep(5_000);
+      const caught = await shown.stop();
+      const after = await launchStatuses(stale.id);
+      const now = await api(`/sessions/${stale.id}`);
+      const observed = `launch answers ${JSON.stringify(before)} → ${JSON.stringify(after)} · toast "${said}" · the server reads ${now.session.status} · settled ${now.session.settledAt} · processes ${movedOn.processes} → ${now.processes.length} · seen ${JSON.stringify(caught?.toasts ?? [])}`;
+      expect(after.length === before.length + 1 && after.at(-1) === 409, observed);
+      expect(now.session.status === "failed", observed);
+      expect(now.session.settledAt === movedOn.settledAt, observed);
+      expect(now.processes.length === movedOn.processes, observed);
+      expect(said.startsWith(`${stale.label} moved on · failed · `), observed);
+      expect(said.includes("nothing launched"), observed);
+      // The later failure was another client's launch: this window offers no Retry of its own.
+      expect(
+        !(caught?.toasts ?? []).some(
+          (text) => text.includes("Retry") && text.includes(`${stale.label} failed · `),
+        ),
+        `a Retry offered for the other client's launch: ${observed}`,
+      );
+      return observed;
+    },
+  );
+
+  note(`sessions: claude ${first.id} · retried ${failed.id} · stale Retry ${stale.id}`);
 };
