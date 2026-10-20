@@ -202,8 +202,10 @@ export interface PendingRequest {
   readonly createdAt: string;
 }
 
-const parsePendingRequest = (value: unknown): PendingRequest => {
+/** A request row; null for one no longer pending, which nothing here may answer. */
+const parsePendingRequest = (value: unknown): PendingRequest | null => {
   if (!isRecord(value)) throw new Error("Mend returned an invalid request.");
+  if (value["status"] !== "pending") return null;
   return {
     id: stringField(value, "id"),
     title: typeof value["title"] === "string" ? value["title"] : null,
@@ -306,7 +308,7 @@ export const EVENT_STREAM_STALL_MS = 60_000;
 
 /** Small authenticated client for the extension's project and session jobs. */
 export class MendClient {
-  constructor(private readonly connections: ConnectionStore) {}
+  constructor(private readonly connections: Pick<ConnectionStore, "get" | "refused">) {}
 
   async connection(): Promise<MendConnection> {
     return this.connections.get();
@@ -499,11 +501,12 @@ export class MendClient {
 
   /** A conversation's requests still waiting for an answer. */
   async pendingRequests(sessionId: string): Promise<ReadonlyArray<PendingRequest>> {
+    // The server filters only on `pending=1`: any other value lists answered requests too.
     return parseArray(
-      await this.request(`/sessions/${encodeURIComponent(sessionId)}/requests?pending=true`),
+      await this.request(`/sessions/${encodeURIComponent(sessionId)}/requests?pending=1`),
       parsePendingRequest,
       "requests",
-    );
+    ).filter((request) => request !== null);
   }
 
   /** The session's newest landing that reached origin; null when none did. */
