@@ -35,10 +35,11 @@ $ mend handoff "finish the tests"
   watch · http://localhost:3105/sessions/3f2a1c0d
 ```
 
-Without a prompt, the last block reads `✓ held · <status>, no agent` with the status the server
-answered (`idle` once the hold took; `starting` when it outlived the answer window; `failed` with
-the hold's words), and the session row reads `idle · handed off from dana-mbp`. A detached HEAD
-reads `✓ detached at 9c1e2f3 · …`, and the worktree is named `handoff-9c1e2f3`.
+Without a prompt, Mend holds the workspace with a shell and no agent, and the last block reads
+`✓ held · idle, no agent`. A hold that outlived the answer window reads
+`  starting · the hold is still coming up`, a failed one `! not held · failed · <why>`, and the
+session row reads `idle · handed off from dana-mbp`. A detached HEAD reads
+`✓ detached at 9c1e2f3 · …`, and the worktree is named `handoff-9c1e2f3`.
 
 When the checkout's repository is not adopted, the CLI asks
 `adopt github.com/acme/newsroom-api as newsroom-api and hand off? [y/N]`. `--yes` answers yes.
@@ -318,6 +319,11 @@ it. The CLI shows it in `sessionRowFacts` (`idle · handed off from dana-mbp · 
   until the first install. This is a follow-up.
 - A replay by another account of the project is refused as `StoreFailure` with the words
   `received before, for another account`; the contract has no closer refusal.
+
+- Files hidden from git with assume-unchanged or skip-worktree travel and are not named. Naming them
+  is open for Yiannis.
+- The foreign-origin check compares origins with the display normalizer, which treats different
+  ports and differently cased paths as one repository. A stricter comparison is open for Yiannis.
 
 These alternatives were weighed and not taken, so a reviewer should not report their absence.
 
