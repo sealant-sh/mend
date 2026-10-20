@@ -291,6 +291,33 @@ describe("an answer that failed", () => {
     ]);
   });
 
+  it("says Mend has not reattached to the agent when it is not live yet, and Retry sends it", async () => {
+    const server = mend({
+      answers: [
+        async () => {
+          throw new MendApiError(
+            "The agent is not running — resume the session, then retry.",
+            409,
+            "ProtocolSessionNotLive",
+          );
+        },
+      ],
+    });
+    window.showErrorMessage.mockResolvedValueOnce("Retry");
+    if (allow === undefined) throw new Error("no Allow");
+    await server.prompts.chose(bash, NAME, allow);
+    expect(window.showErrorMessage.mock.calls).toEqual([
+      [
+        "Mend did not send your answer to add-rate-limit · Mend has not reattached to the agent yet",
+        "Retry",
+      ],
+    ]);
+    expect(server.respond.mock.calls).toEqual([
+      ["r1", { decision: "accept" }],
+      ["r1", { decision: "accept" }],
+    ]);
+  });
+
   it("says Mend's refusal with no Retry", async () => {
     const server = mend({
       answers: [
