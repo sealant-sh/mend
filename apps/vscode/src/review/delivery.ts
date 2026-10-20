@@ -583,24 +583,27 @@ export type CommentTarget = {
  */
 export const commentTarget = (
   files: ReadonlyArray<ChangeFile>,
-  comment: Pick<PendingComment, "path" | "line" | "endLine" | "body">,
+  comment: Pick<PendingComment, "path" | "line" | "endLine" | "body" | "anchor">,
 ): { readonly target: CommentTarget; readonly body: string } => {
+  // Her reply under a Mend draft on the old side goes where the draft is: the base's lines.
+  const old = comment.anchor?.side === "old";
   const file =
     comment.path === null
       ? undefined
-      : files.find((candidate) => candidate.newPath === comment.path);
-  const hunk = file?.hunks.find(
-    (candidate) =>
-      candidate.newLines > 0 &&
-      comment.line >= candidate.newStart &&
-      comment.endLine <= candidate.newStart + candidate.newLines - 1,
-  );
+      : files.find((candidate) => (old ? candidate.oldPath : candidate.newPath) === comment.path);
+  const hunk = file?.hunks.find((candidate) => {
+    const start = old ? candidate.oldStart : candidate.newStart;
+    const lines = old ? candidate.oldLines : candidate.newLines;
+    return lines > 0 && comment.line >= start && comment.endLine <= start + lines - 1;
+  });
+  const paths = old
+    ? { oldPath: comment.path, newPath: null }
+    : { oldPath: null, newPath: comment.path };
   if (file !== undefined && hunk !== undefined)
     return {
       target: {
-        oldPath: null,
-        newPath: comment.path,
-        side: "new",
+        ...paths,
+        side: old ? "old" : "new",
         startLine: comment.line,
         endLine: comment.endLine,
         hunkContextHash: hunk.contextHash,
@@ -611,8 +614,7 @@ export const commentTarget = (
   if (file !== undefined)
     return {
       target: {
-        oldPath: null,
-        newPath: comment.path,
+        ...paths,
         side: null,
         startLine: null,
         endLine: null,
