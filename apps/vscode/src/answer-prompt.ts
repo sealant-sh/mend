@@ -1,4 +1,3 @@
-import { composeAnswers } from "@mend/agent-conversation";
 import * as vscode from "vscode";
 
 import { showErrorToast } from "./error-toast.js";
@@ -45,8 +44,7 @@ const pickResponse = async (
     }
     case "answers": {
       const { questions } = request.ask;
-      const selected: Record<string, ReadonlyArray<string>> = {};
-      const written: Record<string, string> = {};
+      const answers: Record<string, ReadonlyArray<string>> = {};
       for (const [index, question] of questions.entries()) {
         const stepTitle =
           questions.length > 1 ? `${title} (${index + 1}/${questions.length})` : title;
@@ -68,20 +66,23 @@ const pickResponse = async (
               .then((one) => (one === undefined ? undefined : [one]));
         if (picked === undefined) return undefined;
         const choices = picked.flatMap((item) => (item.choice === null ? [] : [item.choice]));
-        selected[question.id] = choices;
+        let typed: string | undefined;
         if (picked.some((item) => item.choice === null)) {
-          const typed = await vscode.window.showInputBox({
+          typed = await vscode.window.showInputBox({
             title: stepTitle,
             prompt: question.question,
             ignoreFocusOut: true,
             validateInput: (value) => (value.trim() === "" ? EMPTY_ANSWER : null),
           });
           if (typed === undefined) return undefined;
-          written[question.id] = typed;
         }
-        if (choices.length === 0 && (written[question.id]?.trim() ?? "") === "") return undefined;
+        // Trimmed only to tell a blank answer: what she typed is sent as typed.
+        if (typed === undefined || typed.trim() === "") {
+          if (choices.length === 0) return undefined;
+          answers[question.id] = choices;
+        } else answers[question.id] = question.multiSelect ? [...choices, typed] : [typed];
       }
-      return { answers: composeAnswers(questions, selected, written) };
+      return { answers };
     }
     case "unanswerable":
       vscode.window.setStatusBarMessage(
