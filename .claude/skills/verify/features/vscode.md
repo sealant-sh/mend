@@ -398,8 +398,9 @@ the row takes the job's name.
     `only the session owner can steer this session; …`. With shared control on it answers `403`
     `Only Ana can answer this; send a turn instead.`, because the process runs as Ana. Ana's own
     respond reaches her stand-in. A request pending across a server stop and start reads `pending`
-    after it, the same protocol process is live, and a respond then answers 200 and reaches the
-    stand-in.
+    after it, and the same protocol process reads live. A respond then answered 200 and reached the
+    stand-in in `ansr2`, `ansr3` and `ans5c`, and answered `409 ProtocolSessionNotLive` in `ans5b`,
+    with the process row still live: whether Mend can deliver right after its restart varies.
   - The default (`ui`) drives the editor and needs flow 5's extension. Step 2: the toast
     `add-rate-limit asks: run pnpm db:migrate?` with [Allow] [Deny] [More…], the row
     `add-rate-limit · waiting · run pnpm db:migrate?` in `Needs you`, badge `1`; Allow, then the row
@@ -410,7 +411,12 @@ the row takes the job's name.
     server log holds one POST to `/api/requests/<id>/respond` and the status bar shows
     `add-rate-limit · …`. Step 7: two windows, both badges `1`, one toast between them. Step 8:
     `ana-migrate · waiting · Ana's session`, no Answer, no badge. Step 9: the server stopped; the
-    row's Answer reads `Mend is offline` and is disabled. On the extension before flow 5 (`ansr2`,
+    row's Answer reads `Mend is offline` and is disabled. Two cold worlds on flow 5's extension,
+    `ans5b` and `ans5c` (server `0.0.0-dev.sha353d68ba2054`), each passed every step (15 step
+    lines); the one toast showed in the home window in `ans5b` and in the second window in `ans5c`,
+    with one claim file each time. A typed answer is typed only once the input box replaced the
+    list: typing sooner lands in the list, and the input box closed empty and no answer went out in
+    `ans5a`; flow 5 now holds Enter on an empty answer. On the extension before flow 5 (`ansr2`,
     `ansr3`) step 2 fails as it should: the row reads
     `add-rate-limit · waiting · Bash · since <hh:mm>`.
   - `GET /sessions/:id/requests` filters only on `?pending=1` (`query.pending === "1"` in
