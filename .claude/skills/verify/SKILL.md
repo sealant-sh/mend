@@ -580,7 +580,7 @@ outlives one call, like the desktop's app:
 # (`--image <ref>`), or one built now from the checkout's Dockerfile (`--build`, 20 to 40 minutes)
 VSCODE_BIN=$(dirname "$(readlink -f "$(which code)")")/../lib/vscode/code \
   node $skill/scripts/drive-vscode.mjs up --version 0.36.0-next.1033 [--extension <checkout>] \
-    [--signed-out] [--no-ssh-setup] [--no-video] [--repo <url>] [--run <name>]
+    [--signed-out] [--no-ssh-setup] [--no-remote-ssh] [--no-video] [--repo <url>] [--run <name>]
 export MEND_VERIFY_VSCODE_RUN=<the run `up` printed>
 node $skill/scripts/drive-vscode.mjs run <recipe.mjs> --out "$E_vscode/<feature>" [--timeout <ms>]
 node $skill/scripts/drive-vscode.mjs logs            # the editor's logs and the server's, redacted
@@ -605,7 +605,9 @@ private directory goes.
 The editor starts **signed in** (the CLI connection the extension reads, `cli.json` in the scratch
 HOME, written as `mend login` writes it) with **workspace SSH set up** (`mend ssh setup` in that
 HOME, and `remote.SSH.remotePlatform` seeded for the alias, as it is after story h's first run).
-`--signed-out` and `--no-ssh-setup` start the first-run stories instead.
+`--signed-out` and `--no-ssh-setup` start the first-run stories instead; `--no-remote-ssh` leaves
+Remote-SSH uninstalled, so the first open installs it from the gallery (`state.remoteSsh` is
+`false`).
 
 A recipe is a module whose default export is `async (helpers) => {}`. The helpers act like a person;
 each is a gesture on the real workbench DOM:
@@ -614,11 +616,23 @@ each is a gesture on the real workbench DOM:
   `.pick(label)`, `.accept()`, `.cancel()`, `.title()`, `.items()`, `.isOpen()`, `.watch()` (every
   time the widget is shown from now, until `stop()`);
 - `view(name)` (the Activity Bar entry), `treeItem(label)` with `.click()`, `.dblclick()`,
-  `.hover()`, `.inline(buttonTitle)` (the row's hover action), `.contextMenu(item)`, `.text()`,
-  `.description()` (a session row's status);
+  `.hover()`, `.inline(title | pattern, { clicks })` (the row's hover action, by its title or a
+  RegExp its title matches; `clicks: 2` clicks it again at once; returns the title found),
+  `.contextMenu(item)` (the whole label; the pointer rests on it before the click), `.menu()` (every
+  context menu item, then Escape), `.actions()` (the inline action titles), `.tooltip()`,
+  `.selected()`, `.text()`, `.description()` (a session row's status);
 - `notification(text)` with `.click(button)`, `.text()`, `.dismiss()`; `notifications()`;
   `dialog(text)` with `.click(button)`; `dialogs()`; `statusBar(text)`;
-- `terminal()` with `.type(line)`, `.read()` (the xterm rows from the DOM), `.waitForText()`;
+- `terminal()` with `.type(line)`, `.read()` (the xterm rows from the DOM), `.waitForText()`,
+  `.tabs()` (`{ names, active, focused }`: the panel's terminal tabs, the active one, whether the
+  keyboard is in a terminal);
+- `watch()`: from now until `stop()`, every toast, modal dialog, quick input title and status bar
+  text that appears in the current window, each once, beyond what already showed (`stop()` returns
+  null when the window navigated meanwhile); `userSettings(patch)` (the run's `settings.json`
+  changed as a person edits it, live; a key set to undefined removed; `via: "setup"`);
+  `openUrl(url)` (a `vscode://` link followed as the OS URL handler follows one: `code --open-url`
+  with the run's user data; VS Code first asks `Allow '<extension>' extension to open this URI?` in
+  a dialog of its own, which the recipe answers with `dialog("open this URI").click("Open")`);
 - `windows()` (every workbench window), `newWindows(known)` (what one gesture opened, once it has
   settled), `waitForWindow(known)`, `useWindow(page)`, `homeWindow()` (the local window, not a
   Remote-SSH one), `closeWindow(page)` (`Close Window` from that window's palette); a Remote-SSH
@@ -641,12 +655,13 @@ before any claim rests on it.
 
 Clicking the real DOM is the rule. A step that calls the server, or any other setup path, says so
 with `via: "api"` or `via: "setup"`, and only ever for setup or for reading what Mend observed,
-never for the action under test. The proven recipe is `recipes/vscode-open-as-built.mjs` (a session
-started from the palette, the row double-clicked and its opens counted, one clean open through to
-the workspace window's files and terminal); the map's [vscode.md](features/vscode.md) has the flows
-by story. `recipes/g4-terminal-agent-waits.mjs` drives no editor: it replays claude's hooks through
-`scripts/fixtures/claude-standin.mjs` in a shell beside a real (signed-out) claude agent and reads
-the session's `waiting` from the API and `/api/events`
+never for the action under test. The recipes: `recipes/vscode-open.mjs` (stories c and e against
+either build of the extension: today's fails at the double-click, the redesign passes),
+`recipes/vscode-open-first.mjs` (the first open without Remote-SSH, from `up --no-remote-ssh`) and
+`recipes/vscode-open-as-built.mjs` (#1080's extension as built); the map's
+[vscode.md](features/vscode.md) has the flows by story. `recipes/g4-terminal-agent-waits.mjs` drives
+no editor: it replays claude's hooks through `scripts/fixtures/claude-standin.mjs` in a shell beside
+a real (signed-out) claude agent and reads the session's `waiting` from the API and `/api/events`
 ([terminal-agent-waits.md](features/terminal-agent-waits.md)).
 
 What cannot be driven, and why: VS Code draws its modals and context menus as GTK windows outside

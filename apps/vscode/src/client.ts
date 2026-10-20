@@ -172,6 +172,7 @@ const parseSessionProcess = (value: unknown): SessionProcess => {
     status: stringField(value, "status"),
     exitedAt: exitedAt === null || exitedAt === undefined ? null : String(exitedAt),
     providerSessionId: nullableStringField(value, "providerSessionId"),
+    label: typeof value["label"] === "string" ? value["label"] : null,
   };
 };
 
@@ -335,8 +336,8 @@ export class MendClient {
   }
 
   /**
-   * Open a shell in the live workspace. Its process row holds the workspace lease, which is
-   * what lets a takeover stop the agent without the workspace closing under the editor.
+   * Open a shell in the live workspace. Its process row holds the workspace lease, so the
+   * workspace stays up while the shell runs.
    */
   async openShell(sessionId: string): Promise<SessionProcess> {
     return parseSessionProcess(
@@ -387,6 +388,16 @@ export class MendClient {
   async resumeSession(sessionId: string, harness: string | null): Promise<Session> {
     return parseSession(
       await this.post(`/sessions/${encodeURIComponent(sessionId)}/resume`, { harness }),
+    );
+  }
+
+  /**
+   * Mend's mode handoff: the same conversation continues in a terminal (`pty`) or as a
+   * conversation (`protocol`). A harness that cannot is refused with HTTP 422.
+   */
+  async handoff(sessionId: string, to: "pty" | "protocol"): Promise<Session> {
+    return parseSession(
+      await this.post(`/sessions/${encodeURIComponent(sessionId)}/handoff`, { to }),
     );
   }
 

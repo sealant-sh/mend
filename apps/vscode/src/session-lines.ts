@@ -15,6 +15,10 @@ import type { LivePerson, Project, ProjectDetail, Session } from "./types.js";
  * waiting line and the retirement line. Parsing is tolerant: an older server omits all of it.
  */
 
+/** A session's name: its label, else its harness and short id. */
+export const displaySession = (session: Pick<Session, "label" | "harness" | "id">): string =>
+  session.label ?? `${session.harness} · ${session.id.slice(0, 8)}`;
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -145,13 +149,21 @@ const LIVE_STATUSES: ReadonlySet<string> = new Set(["starting", "running", "wait
 
 /**
  * Whether rows the extension already holds have anything per-person to say: someone live in an
- * executor, or a retirement under way. Only then is the viewer (`GET /organization`) worth a
- * request; with per-person homes off the server lists nobody and no retirement.
+ * executor, a retirement under way, or who launched the workspace (a row offers Open only to its
+ * launcher). Only then is the viewer (`GET /organization`) worth a request; with per-person homes
+ * off and no executor running the server says none of it.
  */
 export const hasPersonFacts = (
-  sessions: ReadonlyArray<Pick<Session, "livePeople" | "workspaceRetirement">>,
+  sessions: ReadonlyArray<
+    Pick<Session, "livePeople" | "workspaceRetirement" | "workspaceLauncherUserId">
+  >,
 ): boolean =>
-  sessions.some((session) => session.livePeople.length > 0 || session.workspaceRetirement !== null);
+  sessions.some(
+    (session) =>
+      session.livePeople.length > 0 ||
+      session.workspaceRetirement !== null ||
+      session.workspaceLauncherUserId !== null,
+  );
 
 /** Whether any session of the worktree lists someone live: the join line then needs the viewer. */
 export const worktreeListsPeople = (
@@ -218,7 +230,7 @@ export interface WorkspaceLineReads {
   workspaceRetirement(sessionId: string): Promise<RetirementView | null>;
 }
 
-/** The projects and their views, and the viewer only when a row has something per-person. */
+/** The projects, their views and the viewer. */
 export const readProjects = async (client: {
   listProjects(): Promise<ReadonlyArray<Project>>;
   projectDetail(projectId: string): Promise<ProjectDetail>;
@@ -228,11 +240,10 @@ export const readProjects = async (client: {
   readonly details: ReadonlyArray<ProjectDetail>;
   readonly viewer: string | null;
 }> => {
-  const projects = await client.listProjects();
+  // Asked for every time, so a null viewer always means Mend could not say who she is: every row's
+  // Open and Stop depend on it, whether or not a row lists anyone.
+  const [projects, viewer] = await Promise.all([client.listProjects(), client.viewerId()]);
   const details = await Promise.all(projects.map((project) => client.projectDetail(project.id)));
-  const viewer = hasPersonFacts(details.flatMap((detail) => detail.sessions))
-    ? await client.viewerId()
-    : null;
   return { projects, details, viewer };
 };
 
@@ -258,7 +269,14 @@ export const joinLineOf = async (
  * to name a retirement's launcher. With per-person homes off, no request at all.
  */
 export const liveSessionLines = async (
-  session: Pick<Session, "id" | "livePeople" | "sharedControlEnabledAt" | "workspaceRetirement">,
+  session: Pick<
+    Session,
+    | "id"
+    | "livePeople"
+    | "sharedControlEnabledAt"
+    | "workspaceRetirement"
+    | "workspaceLauncherUserId"
+  >,
   client: WorkspaceLineReads,
 ): Promise<ReadonlyArray<string>> => {
   if (!hasPersonFacts([session])) return [];

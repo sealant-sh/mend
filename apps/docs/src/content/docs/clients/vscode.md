@@ -1,8 +1,8 @@
 ---
 title: VS Code extension
 description:
-  Open Mend sessions in VS Code over workspace SSH, start sessions, and take over a running agent in
-  the editor.
+  Open Mend sessions in VS Code over workspace SSH, start sessions, and type to a running agent in
+  its attached terminal.
 sidebar:
   order: 4
 ---
@@ -89,28 +89,41 @@ it.
 
 ## Open a session
 
-Opening a live session opens its workspace. Opening a settled session asks whether to resume it as a
-workbench shell. The shell starts a fresh workspace over the same worktree and keeps it up while the
-editor is attached. No agent is launched.
+**Open**, the window button on a session's row (or **Mend: Open**), makes a VS Code window the
+session's workspace. It follows your `window.openFoldersInNewWindow` setting; **Open in New
+Window**, in the row's right-click menu, opens a new one. VS Code keeps one window per folder, so
+when a window already holds the session's workspace, both focus that window and show the session's
+agent. Neither asks a question, and clicking the row only selects it. A second **Open** while one
+runs shows the first one's progress.
+
+The status bar shows the open as it goes. A settled session is resumed as a workbench shell first
+(`starting <session>'s workspace · 20 s`): the shell starts a fresh workspace over the same worktree
+and keeps it up while the editor is attached, and no agent is launched. A missing Remote-SSH install
+or workspace SSH setup runs as a step of the same open, and the Remote-SSH platform for Mend's host
+is set to Linux so Remote-SSH does not ask. Opening from the window that already is the workspace
+focuses its agent's terminal, after resuming the session if it had stopped. When the session a
+window was opened for is gone or has moved, the window attaches no agent and its status bar says
+why. A failure shows one error with **Retry** or **Set up**.
 
 In a [per-person workspace](/operate/per-person-workspaces/) only the workspace's launcher can open
 it over Remote-SSH: the person whose session started the workspace. A session started in a worktree
 where someone else's session already runs joins their workspace, so it is theirs to open, your own
-session included. Opening one says so first, and offers the session's terminal when the server would
-let you in. The Remote-SSH login runs as the launcher's own Linux user, on their home and logins, so
-an agent they start in its terminal runs as them. Where the server's Sealant cannot bind the person
-(an older Core), it runs as root instead, and the session line says
-`Remote-SSH: root, Core can't bind your person`; an agent started there then does not use the
-person's home and logins.
+session included. Its row offers **Review** instead of **Open**, and **Watch terminal** while its
+owner has shared control on; the row's tooltip says why. The Remote-SSH login runs as the launcher's
+own Linux user, on their home and logins, so an agent they start in its terminal runs as them. Where
+the server's Sealant cannot bind the person (an older Core), it runs as root instead, and the
+session line says `Remote-SSH: root, Core can't bind your person`; an agent started there then does
+not use the person's home and logins.
 
 ### Workspace SSH setup
 
-The first open asks **Set up workspace SSH?**. Setup registers this machine's SSH public key with
-Mend and adds one server-specific `Host` block at the start of `~/.ssh/config`, before any wildcard
-entries. It keeps hand-written configuration and blocks for other Mend servers. On later runs it
-reuses the key it chose. On first setup it can use a key from your SSH agent or create a dedicated
-key under `~/.config/mend/ssh`. It never prompts for a passphrase: an encrypted or missing private
-key has to be loaded in an unlocked agent.
+The first open asks once: **Set up workspace SSH to open sessions (one Host block in
+~/.ssh/config)**. Setup registers this machine's SSH public key with Mend and adds one
+server-specific `Host` block at the start of `~/.ssh/config`, before any wildcard entries. It keeps
+hand-written configuration and blocks for other Mend servers. On later runs it reuses the key it
+chose. On first setup it can use a key from your SSH agent or create a dedicated key under
+`~/.config/mend/ssh`. It never prompts for a passphrase: an encrypted or missing private key has to
+be loaded in an unlocked agent.
 
 Setup writes configuration and registers the key. It does not test the connection or check the
 gateway's host key. OpenSSH accepts an unknown host key on the first connection and refuses a
@@ -139,30 +152,19 @@ member from the organization removes theirs, and Mend keeps retrying any key the
 remove at once. `mend uninstall --home` removes the key of the machine it runs on. The mobile app
 does not list keys.
 
-## Take over a running session
+## Type to the agent
 
-Opening a session whose agent Mend is running elsewhere, such as a `mend codex` in a terminal or a
-session picked up on the phone, asks whether to **Open alongside** it or **Take over in the
-editor**. **Mend: Take over session in the editor** on a live session goes straight to the takeover.
+The workspace window attaches the session's agent terminal in its panel and focuses it, named
+`<harness> · <session>` (`claude · add-rate-limit`), over Mend's terminal connection. Driving by
+hand is typing into it: the same agent and conversation, nothing restarted. A workbench shows its
+shell (`shell · <session>`). The session's owner types; anyone else the server lets in reads
+`read-only · <owner>'s session`.
 
-The editor cannot attach to Mend's terminal for the agent, so a takeover works like this:
-
-1. A confirmation names the agent that will end and the command that will resume it.
-2. Mend opens a shell in the session, which keeps the workspace up, and stops the running agent.
-3. The workspace opens in VS Code, or the current window is used when it is already that workspace.
-4. A new integrated terminal runs the harness's own resume: `codex resume <id>` or
-   `claude --resume <id>`. Without a known id it runs `codex resume --last` or `claude --continue`.
-
-The harness home lives in the workspace, so the resume finds the conversation the agent was writing,
-and Mend observes the new process as the same conversation. Cancelling the SSH setup or the
-confirmation leaves the agent running. The stop ends only the agent; the shell keeps the workspace
-open until you stop the session.
-
-Where the session line says `Remote-SSH: root, Core can't bind your person`, the resume runs as
-root, which does not hold your conversation; take such a session over with `mend attach` instead.
-
-Only `claude` and `codex` sessions can be taken over here. The extension says so and gives the
-`mend attach` command to use from a terminal instead.
+A conversation started on the phone, the web or Slack has no terminal yet. Its tab reads
+`claude is running as a conversation (from …) · Continue here to type to it`. **Continue here**
+moves the same conversation into a terminal with Mend's mode handoff, and the tab becomes that
+terminal. A harness the handoff does not support reads
+`opencode can't continue in a terminal yet · open the terminal to watch`.
 
 ## The session's terminal
 
@@ -237,7 +239,8 @@ URL the extension uses. A session with no change yet says so.
 
 | Command                         | What it does                                                  |
 | ------------------------------- | ------------------------------------------------------------- |
-| **Mend: Open in VS Code**       | Open the session's workspace                                  |
+| **Mend: Open**                  | Open the session's workspace, as your window setting says     |
+| **Mend: Open in New Window**    | Open the session's workspace in a new window                  |
 | **Mend: Open terminal**         | Open the session's terminal in a VS Code terminal tab         |
 | **Mend: Review change**         | Open the session's change in Mend's review                    |
 | **Mend: Open in Mend**          | Open the session or project in the web app                    |
@@ -246,8 +249,8 @@ URL the extension uses. A session with no change yet says so.
 | **Mend: Refresh**               | Reload the view                                               |
 | **Mend: Sign out**              | Forget this editor's token, and revoke it if it signed in     |
 
-A link of the form `vscode://sealant-sh.mend/open?session=<session-id>` opens that session in VS
-Code, with the same takeover question for a running agent.
+A link of the form `vscode://sealant-sh.mend/open?session=<session-id>` runs **Mend: Open** on that
+session.
 
 ## Sign-in
 

@@ -236,19 +236,12 @@ describe("with per-person homes off, no request beyond the project view", () => 
     };
   };
 
-  it("reads the tree's projects without asking who reads them", async () => {
-    const client = reading([session()]);
-    expect((await readProjects(client)).viewer).toBeNull();
-    expect(client.asked).toEqual(["/projects", "/projects/p1"]);
-  });
-
-  it("asks who reads them once a row lists someone live or a retirement", async () => {
-    const live = reading([session({ livePeople: [anna] })]);
-    expect((await readProjects(live)).viewer).toBe("bob");
-    expect(live.asked).toContain("/organization");
-    const retiring = reading([session({ workspaceRetirement: "marked" })]);
-    await readProjects(retiring);
-    expect(retiring.asked).toContain("/organization");
+  it("asks who reads the tree's projects every time, a row listing someone or not", async () => {
+    const quiet = reading([session()]);
+    expect((await readProjects(quiet)).viewer).toBe("bob");
+    expect(quiet.asked.toSorted()).toEqual(["/organization", "/projects", "/projects/p1"]);
+    const launched = reading([session({ workspaceLauncherUserId: "anna" })]);
+    expect((await readProjects(launched)).viewer).toBe("bob");
   });
 
   it("says a live session's lines without a request", async () => {

@@ -40,12 +40,17 @@ test("up takes exactly one server image source and its switches", () => {
     build: true,
     extension: "/x",
   });
+  assert.deepEqual(parseArgs(["up", "--version", "0.36.0-next.1033", "--no-remote-ssh"]).options, {
+    version: "0.36.0-next.1033",
+    "no-remote-ssh": true,
+  });
   for (const [argv, why] of [
     [["up"], /exactly one of/],
     [["up", "--version", "1", "--build"], /exactly one of/],
     [["up", "--version"], /needs a value/],
     [["up", "--version", "--build"], /needs a value/],
     [["up", "--build=yes"], /takes no value/],
+    [["up", "--build", "--no-remote-ssh=1"], /takes no value/],
     [["up", "--image", "x", "--out", "e"], /does not take --out/],
     [["up", "--image", "x", "stray"], /no positional/],
     [["fly"], /a command is needed/],

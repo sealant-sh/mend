@@ -42,6 +42,31 @@ describe("requestMend", () => {
     );
   });
 
+  it("carries the refusal's tag beside its words, so a caller can tell two 422s apart", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            _tag: "StoreFailure",
+            message: "No saved harness state to reopen as a terminal — resume the session instead.",
+          }),
+          { status: 422 },
+        ),
+      ),
+    );
+    await expect(
+      requestMend(connection, "/sessions/s-1/handoff", { method: "POST", body: "{}" }),
+    ).rejects.toEqual(
+      expect.objectContaining({
+        status: 422,
+        tag: "StoreFailure",
+        message: "No saved harness state to reopen as a terminal — resume the session instead.",
+      }),
+    );
+  });
+
   it("words a refusal without a sentence, and keeps the call and status for the log", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.stubGlobal(

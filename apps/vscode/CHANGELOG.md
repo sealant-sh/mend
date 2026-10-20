@@ -5,8 +5,29 @@ patch number is the extension's own.
 
 ## Unreleased
 
-- A pending session takeover runs only in the window with its complete remote authority. A workspace
-  with an overlapping identifier or a different host cannot claim it.
+- **Open** replaces **Open in VS Code**. It follows your `window.openFoldersInNewWindow` setting,
+  and **Open in New Window** in the row's right-click menu opens a new one. Neither asks. A stopped
+  session is resumed as part of the open; a missing Remote-SSH install or workspace SSH setup runs
+  as a step of it; progress shows in the status bar. The one question left is the one-time consent,
+  **Set up workspace SSH to open sessions**, when setup never ran on this machine.
+- Clicking or double-clicking a session row selects it and never opens a window. Before, a
+  double-click opened the workspace twice.
+- A session's workspace window attaches the agent's terminal and focuses it (`claude · <session>`).
+  A conversation started elsewhere shows **Continue here**, which moves it into a terminal through
+  Mend's mode handoff.
+- **Take over session in the editor** is removed: typing into the attached terminal does the same,
+  and **Continue here** moves a conversation into a terminal and keeps the conversation.
+- A row whose workspace someone else launched offers **Review**, and **Watch terminal** while shared
+  control is on, instead of an **Open** that Remote-SSH would refuse. Its tooltip says why. When
+  Mend cannot read who you are, the row offers **Review** only, an **Open** from elsewhere reads
+  again before it opens anything, **Stop** refuses before it asks, and a workspace window attaches
+  no agent. **Stop** is offered only on sessions you may steer.
+- In a worktree that holds several sessions, the window attaches the agent of the session you
+  opened. When that session is gone or has moved, the window attaches no agent and its status bar
+  says why. In a window that already holds the session's workspace, Open and Open in New Window both
+  show that session's agent, after resuming it if it had stopped: VS Code keeps one window per
+  folder.
+- Remote-SSH no longer asks for the platform of Mend's host: the open sets it to Linux.
 
 - Cancelling browser sign-in, including choosing **Paste a device token instead**, discards an
   approval that arrives while a poll is pending and revokes its device. If Mend cannot confirm

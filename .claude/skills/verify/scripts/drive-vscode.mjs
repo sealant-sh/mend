@@ -5,7 +5,8 @@
 // it. The world outlives one call, like drive-desktop.sh's app:
 //
 //   node .claude/skills/verify/scripts/drive-vscode.mjs up (--version <v> | --image <ref> | --build)
-//       [--extension <checkout>] [--repo <url>] [--run <name>] [--signed-out] [--no-ssh-setup] [--no-video]
+//       [--extension <checkout>] [--repo <url>] [--run <name>] [--signed-out] [--no-ssh-setup]
+//       [--no-remote-ssh] [--no-video]
 //   node .claude/skills/verify/scripts/drive-vscode.mjs run <recipe.mjs> --out <dir> [--run <name>] [--timeout <ms>]
 //   node .claude/skills/verify/scripts/drive-vscode.mjs logs [--out <dir>] [--run <name>]
 //   node .claude/skills/verify/scripts/drive-vscode.mjs down [--run <name>]
@@ -22,7 +23,8 @@
 // adopted repository open in its first window. Signed in by default (the CLI connection the
 // extension reads, written as `mend login` writes it), with workspace SSH set up (`mend ssh setup`
 // in the scratch HOME, and Remote-SSH's platform seeded for the alias); `--signed-out` and
-// `--no-ssh-setup` start the first-run stories instead. The display is recorded with ffmpeg
+// `--no-ssh-setup` start the first-run stories instead; `--no-remote-ssh` leaves Remote-SSH
+// uninstalled, so the first open installs it. The display is recorded with ffmpeg
 // (x11grab) when ffmpeg is on PATH and `--no-video` is not given. Every name is run-scoped, so two
 // runs on one machine do not collide, and nothing of local-outer.sh's is touched.
 //
@@ -258,9 +260,13 @@ const up = async () => {
   // No display yet: the installs below need none, and a display chosen now could be another
   // run's by the time the editor starts. It is taken right before the editor.
   const installEnv = world.editorEnv(clientEnv, "");
+  const remoteSsh = !options["no-remote-ssh"];
   say(
-    `Remote-SSH: ${await world.installExtension(code, { userData, extensions, id: "ms-vscode-remote.remote-ssh", env: installEnv })}`,
+    remoteSsh
+      ? `Remote-SSH: ${await world.installExtension(code, { userData, extensions, id: "ms-vscode-remote.remote-ssh", env: installEnv })}`
+      : "Remote-SSH: not installed (--no-remote-ssh): the first open installs it",
   );
+  state({ remoteSsh });
   await world.run("git", ["clone", "-q", sourceUrl, checkout], {
     env: clientEnv,
     timeout: 600_000,
@@ -403,7 +409,7 @@ const up = async () => {
     `VS Code ${browser.Browser} on ${display} · CDP http://127.0.0.1:${cdpPort}${video ? ` · recording ${video}` : ""}`,
   );
   say(
-    `signed ${options["signed-out"] ? "out" : "in"} · workspace SSH ${sshSetup ? `set up (${sshSetup.alias})` : "not set up"}`,
+    `signed ${options["signed-out"] ? "out" : "in"} · workspace SSH ${sshSetup ? `set up (${sshSetup.alias})` : "not set up"} · Remote-SSH ${remoteSsh ? "installed" : "not installed"}`,
   );
   process.stdout.write(`export MEND_VERIFY_VSCODE_RUN=${run}\n`);
 };

@@ -42,16 +42,19 @@ out** revokes a browser sign-in's token and forgets it.
 ## Open a session over Remote-SSH
 
 The Mend icon in the Activity Bar opens **Projects and sessions**: sessions waiting for you under
-**Needs you**, then each project with its sessions and their status. Click a session to open it.
+**Needs you**, then each project with its sessions and their status. **Open** on a session's row
+opens it.
 
-The first open asks **Set up workspace SSH?**. Setup registers this machine's SSH public key with
-Mend and adds one `Host` block for this server at the start of `~/.ssh/config`. It keeps your own
-configuration. It uses a key from your SSH agent or creates one under `~/.config/mend/ssh`, and
-never asks for a passphrase. Run **Mend: Set up workspace SSH**, or `mend ssh setup`, to redo it.
+The first open asks once: **Set up workspace SSH to open sessions (one Host block in
+~/.ssh/config)**. Setup registers this machine's SSH public key with Mend and adds one `Host` block
+for this server at the start of `~/.ssh/config`. It keeps your own configuration. It uses a key from
+your SSH agent or creates one under `~/.config/mend/ssh`, and never asks for a passphrase. Run
+**Mend: Set up workspace SSH**, or `mend ssh setup`, to redo it.
 
 In a per-person workspace, the 0.36 default, the Remote-SSH login is the workspace's launcher, as
 their own Linux user, on their home and logins. Only the launcher can open that workspace over
-Remote-SSH.
+Remote-SSH, so a row whose workspace someone else launched offers **Review** instead, and **Watch
+terminal** while its owner has shared control on. Its tooltip says why.
 
 The extension never opens the worktree's path on the Mend host instead. A terminal there would run
 outside the workspace, where Mend does not see it. When the server has no workspace SSH gateway, the
@@ -70,13 +73,26 @@ Click **+** in the view, or run **Mend: New Session…**:
 **Mend: New session in this worktree…** starts another session on the same files and branch, with a
 new conversation.
 
-## Take over a running session
+## Open
 
-Opening a session whose agent runs elsewhere (a `mend codex` in a terminal, a session picked up on
-the phone) asks whether to **Open alongside** it or **Take over in the editor**. A takeover stops
-the running agent, keeps the workspace up with a shell, opens it, and runs the harness's own resume
-in a new terminal: `codex resume <id>` or `claude --resume <id>`. The conversation continues in the
-editor, and Mend records it as the same conversation.
+**Open**, the window button on a session's row (or **Mend: Open**), makes a VS Code window the
+session's workspace. It follows your `window.openFoldersInNewWindow` setting. **Open in New
+Window**, in the row's right-click menu, opens a new one. VS Code keeps one window per folder, so
+when a window already holds the session's workspace, both focus that window and show the session's
+agent. Neither asks a question. Clicking the row only selects it.
+
+The status bar shows the open's progress. A stopped session is resumed as a workbench shell first
+(`starting <session>'s workspace · 20 s`). A missing Remote-SSH install or workspace SSH setup runs
+as a step of the same open. Opening the window that already is the workspace focuses its agent's
+terminal, after resuming the session if it had stopped. When the session a window was opened for is
+gone or has moved, the window attaches no agent and its status bar says why.
+
+In the workspace window the agent's terminal is attached in the panel and focused, named
+`<harness> · <session>`, so driving by hand is typing into it. A conversation started on the phone,
+the web or Slack has no terminal yet: its tab reads
+`claude is running as a conversation (from …) · Continue here to type to it`, and **Continue here**
+moves the same conversation into a terminal through Mend's mode handoff (claude and codex). Someone
+else's session reads `read-only · <owner>'s session`.
 
 ## Other commands
 

@@ -1,7 +1,13 @@
 import * as vscode from "vscode";
 
 import type { MendClient } from "./client.js";
-import { readProjects, sessionLines, workspaceReads } from "./session-lines.js";
+import {
+  mayStop,
+  rowCapability,
+  rowContextValue,
+  type RowCapability,
+} from "./session-capability.js";
+import { displaySession, readProjects, sessionLines, workspaceReads } from "./session-lines.js";
 import type { Project, ProjectDetail, Session } from "./types.js";
 
 const LIVE_STATUSES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
@@ -30,8 +36,8 @@ export const sessionTooltip = (
   lines: ReadonlyArray<string>,
 ): string => [`${project.name} · ${session.branch} · ${session.status}`, ...lines].join("\n");
 
-const sessionLabel = (session: Session): string =>
-  session.label ?? `${session.harness} · ${session.id.slice(0, 8)}`;
+const whyLine = (capability: RowCapability): ReadonlyArray<string> =>
+  capability.kind === "open" ? [] : [capability.why];
 
 const statusIcon = (status: string): vscode.ThemeIcon => {
   switch (status) {
@@ -103,7 +109,7 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
     this.changed.fire();
   }
 
-  /** The viewer the last snapshot read, without a request; null when it read none. */
+  /** The viewer the last snapshot read, without a request; null when it could not say. */
   knownViewer(): string | null {
     return this.current?.viewer ?? null;
   }
@@ -122,8 +128,7 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
 
   private async load(): Promise<Snapshot> {
     try {
-      // The project view carries who is live and the retirement's state (docs/adr/0016); the
-      // viewer is asked for only when a row has something per-person to say.
+      // The project view carries who is live and the retirement's state (docs/adr/0016).
       const { projects, details, viewer } = await readProjects(this.client);
       this.error = null;
       await vscode.commands.executeCommand("setContext", "mend.hasProjects", projects.length > 0);
@@ -163,30 +168,27 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
       }
       case "session": {
         const item = new vscode.TreeItem(
-          sessionLabel(element.session),
+          displaySession(element.session),
           vscode.TreeItemCollapsibleState.None,
         );
         item.description = element.session.status;
-        item.tooltip = sessionTooltip(
-          element.project,
-          element.session,
-          sessionLines({
+        const capability = this.capabilityOf(element.session);
+        item.tooltip = sessionTooltip(element.project, element.session, [
+          ...sessionLines({
             session: element.session,
             viewer: this.current?.viewer ?? null,
             waitLine: null,
             retirement: null,
             members: [],
           }),
-        );
+          ...whyLine(capability),
+        ]);
         item.iconPath = statusIcon(element.session.status);
-        item.contextValue = LIVE_STATUSES.has(element.session.status)
-          ? "mend.session.live"
-          : "mend.session.settled";
-        item.command = {
-          command: "mend.openWorktree",
-          title: "Open in VS Code",
-          arguments: [element],
-        };
+        item.contextValue = rowContextValue(
+          element.session,
+          capability,
+          mayStop(element.session, this.current?.viewer ?? null),
+        );
         return item;
       }
       case "message": {
@@ -212,18 +214,22 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
     ]);
     const members =
       retirement === null || retirement.launcher === null ? [] : await this.client.memberNames();
-    item.tooltip = sessionTooltip(
-      element.project,
-      element.session,
-      sessionLines({
+    item.tooltip = sessionTooltip(element.project, element.session, [
+      ...sessionLines({
         session: element.session,
         viewer: this.current?.viewer ?? null,
         waitLine,
         retirement,
         members,
       }),
-    );
+      ...whyLine(this.capabilityOf(element.session)),
+    ]);
     return item;
+  }
+
+  /** What the row offers the viewer the last snapshot read; names fall back through who is live. */
+  private capabilityOf(session: Session): RowCapability {
+    return rowCapability({ session, viewer: this.current?.viewer ?? null, members: [] });
   }
 
   async getChildren(element?: MendNode): Promise<MendNode[]> {
@@ -275,5 +281,3 @@ export const isSessionNode = (value: unknown): value is SessionNode =>
 
 export const isProjectNode = (value: unknown): value is ProjectNode =>
   typeof value === "object" && value !== null && Reflect.get(value, "kind") === "project";
-
-export const displaySession = sessionLabel;

@@ -353,8 +353,7 @@ export async function run(): Promise<void> {
   // 4. Start a session from the editor (Workbench): VS Code opens inside its workspace over SSH.
   quickPicks.push(pick((item) => item["label"] === projectName));
   quickPicks.push(pick((item) => item["sessionKind"] === "workbench"));
-  modals.set("Set up workspace SSH?", "Set up");
-  modals.set("has no live workspace", "Resume and open");
+  modals.set("Set up workspace SSH to open sessions", "Set up");
   await vscode.commands.executeCommand("mend.newSession");
   const folder = await until("the workspace window to open", async () => openedFolders[0], 600_000);
   const authority = folder.authority;

@@ -37,6 +37,10 @@ export const FLAGS = {
     run: { value: true, help: "the run's name (default: <MMDD-HHMM>-<4 hex>)" },
     "signed-out": { value: false, help: "no CLI connection seeded: the editor starts signed out" },
     "no-ssh-setup": { value: false, help: "leave workspace SSH and Remote-SSH's platform unset" },
+    "no-remote-ssh": {
+      value: false,
+      help: "leave Microsoft Remote-SSH uninstalled: the first open installs it as a step",
+    },
     "no-video": { value: false, help: "do not record the display with ffmpeg" },
   },
   run: {
