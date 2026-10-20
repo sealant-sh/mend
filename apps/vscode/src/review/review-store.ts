@@ -856,25 +856,25 @@ export class ReviewStore implements vscode.Disposable {
   async #load(context: SendContext): Promise<void> {
     const now = new Date().toISOString();
     // A send another window drives now is that window's: this one neither ends it nor drives it.
-    // Only sends read undriven before the lock are ended: one kept since is another window's, which
-    // claimed its drive before keeping it.
-    const undriven = new Set(
-      (
-        await Promise.all(
-          this.#review.sends.map(async (record) =>
-            (await this.kept.drivenElsewhere(context.place, record.key)) ? [] : [record.key],
-          ),
+    // Its leases are read under the lock: a window claims a send's drive before it keeps the send,
+    // so a send kept sending since, by a new Send or a Retry, reads driven here.
+    const undriven = new Set<string>();
+    const loaded = await this.#keepAt(context.place, async (review) => {
+      undriven.clear();
+      for (const record of review.sends)
+        if (
+          holdsComments(record) &&
+          !this.#driving.has(driveId(context, record.key)) &&
+          !(await this.kept.drivenElsewhere(context.place, record.key))
         )
-      ).flat(),
-    );
-    const loaded = await this.#keepAt(context.place, (review) => ({
-      ...review,
-      sends: review.sends.map((record) =>
-        this.#driving.has(driveId(context, record.key)) || !undriven.has(record.key)
-          ? record
-          : step(record, { kind: "loaded" }, now),
-      ),
-    }));
+          undriven.add(record.key);
+      return {
+        ...review,
+        sends: review.sends.map((record) =>
+          undriven.has(record.key) ? step(record, { kind: "loaded" }, now) : record,
+        ),
+      };
+    });
     for (const record of loaded.sends)
       if (record.phase.kind === "delivering" && undriven.has(record.key))
         void this.#drive(context, record.key);
@@ -1143,7 +1143,7 @@ export class ReviewStore implements vscode.Disposable {
    */
   async #keepAt(
     place: ReviewPlace | null,
-    update: (review: SessionReview) => SessionReview,
+    update: (review: SessionReview) => SessionReview | Promise<SessionReview>,
   ): Promise<SessionReview> {
     if (place === null) throw new Error("Mend has not finished reading this session.");
     const { review } = await this.kept.update(place, update);

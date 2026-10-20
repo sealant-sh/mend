@@ -146,7 +146,7 @@ export class KeptReviews {
    */
   async update(
     place: ReviewPlace,
-    update: (kept: SessionReview) => SessionReview,
+    update: (kept: SessionReview) => SessionReview | Promise<SessionReview>,
   ): Promise<KeptReview> {
     const file = this.#file(place);
     const before = this.#queued.get(file) ?? Promise.resolve();
@@ -210,11 +210,11 @@ export class KeptReviews {
   async #write(
     place: ReviewPlace,
     file: string,
-    update: (kept: SessionReview) => SessionReview,
+    update: (kept: SessionReview) => SessionReview | Promise<SessionReview>,
     held: () => Promise<boolean>,
   ): Promise<KeptReview> {
     const current = await this.read(place);
-    const next = update(current.review);
+    const next = await update(current.review);
     if (JSON.stringify(next) === JSON.stringify(current.review)) return current;
     const kept: KeptReview = { rev: current.rev + 1, review: next };
     const written = `${file}.${randomUUID()}.tmp`;
