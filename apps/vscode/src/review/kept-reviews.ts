@@ -62,6 +62,8 @@ const LOCK_BEAT_MS = LOCK_STALE_MS / 4;
 const LOCK_WAIT_MS = 5_000;
 const LOCK_POLL_MS = 15;
 const SWEEP_EVERY_MS = 60 * 60 * 1000;
+/** A window driving a send renews its lease every step; one older than this belongs to no window. */
+export const DRIVE_STALE_MS = 2 * 60 * 1000;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -110,6 +112,8 @@ interface Renewed {
 export class KeptReviews {
   /** The writes this window has queued, per file: one at a time, so it never waits on itself. */
   readonly #queued = new Map<string, Promise<unknown>>();
+  /** This window, as its drive leases name it. */
+  readonly #window = randomUUID();
   /** When each person's directory was last swept. */
   readonly #swept = new Map<string, number>();
 
@@ -150,6 +154,70 @@ export class KeptReviews {
     } finally {
       if (this.#queued.get(file) === run) this.#queued.delete(file);
     }
+  }
+
+  /**
+   * One window drives a send: the one holding its lease, a file created only when absent and
+   * renewed every step. False when another window holds a fresh one; a lease past
+   * `DRIVE_STALE_MS` was left by a window that closed, and is taken over.
+   */
+  async claimDrive(place: ReviewPlace, key: string): Promise<boolean> {
+    const lease = this.#lease(place, key);
+    await this.files.mkdir(dirname(lease));
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.files.create(lease, this.#window);
+        return true;
+      } catch (cause) {
+        if (codeOf(cause) !== "EEXIST") throw cause;
+      }
+      if ((await this.#holder(lease)) === this.#window) return true;
+      const made = await this.files.modified(lease);
+      if (made !== null && this.now() - made < DRIVE_STALE_MS) return false;
+      if (made !== null) {
+        const stale = `${lease}.${randomUUID()}.stale`;
+        await this.files.rename(lease, stale).then(
+          () => this.files.rm(stale),
+          () => undefined,
+        );
+      }
+    }
+    return false;
+  }
+
+  /** This window still drives the send: its lease stays fresh. */
+  async renewDrive(place: ReviewPlace, key: string): Promise<void> {
+    const lease = this.#lease(place, key);
+    if ((await this.#holder(lease)) === this.#window)
+      await this.files.writeFile(lease, this.#window);
+  }
+
+  async releaseDrive(place: ReviewPlace, key: string): Promise<void> {
+    const lease = this.#lease(place, key);
+    if ((await this.#holder(lease)) === this.#window) await this.files.rm(lease);
+  }
+
+  /** Whether another window drives this send now. */
+  async drivenElsewhere(place: ReviewPlace, key: string): Promise<boolean> {
+    const lease = this.#lease(place, key);
+    const [holder, made] = await Promise.all([this.#holder(lease), this.files.modified(lease)]);
+    return (
+      holder !== null &&
+      holder !== this.#window &&
+      made !== null &&
+      this.now() - made < DRIVE_STALE_MS
+    );
+  }
+
+  async #holder(lease: string): Promise<string | null> {
+    return this.files.readFile(lease).then(
+      (holder) => holder,
+      () => null,
+    );
+  }
+
+  #lease(place: ReviewPlace, key: string): string {
+    return `${this.#file(place)}.${encodeURIComponent(key)}.drive`;
   }
 
   async #write(
@@ -309,6 +377,10 @@ export class KeptReviews {
         const path = join(directory, name);
         if (/\.(tmp|stale|break)$/.test(name)) {
           if (await expired(path, LOCK_STALE_MS * 6)) await this.files.rm(path);
+          return;
+        }
+        if (name.endsWith(".drive")) {
+          if (await expired(path, DRIVE_STALE_MS * 2)) await this.files.rm(path);
           return;
         }
         if (!name.endsWith(".json") || !(await expired(path, KEPT_REVIEW_TTL_MS))) return;

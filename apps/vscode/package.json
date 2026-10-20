@@ -328,7 +328,7 @@
       },
       {
         "command": "mend.change.sendReviewNotHers",
-        "title": "Only the session's owner sends a review to its terminal agent",
+        "title": "Only the session's owner sends it a review: Mend types it into a terminal agent, live or started for the stopped session",
         "icon": "$(comment-discussion)",
         "enablement": "false"
       },

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { startsInTerminal } from "@mend/domain/workbench";
 import * as vscode from "vscode";
 
 import type { EventPointer, MendClient } from "../client.js";
@@ -7,11 +8,13 @@ import { MendApiError } from "../mend-http.js";
 import { displaySession } from "../session-lines.js";
 import { accessChanged } from "../session-reads.js";
 import type { Project, Session, SessionDetail } from "../types.js";
+import type { Pasted } from "./agent-paste.js";
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
 import {
   commentIds,
   commentTarget,
+  DRAFT_GONE,
   handedOver,
   heldIds,
   holdsComments,
@@ -24,10 +27,13 @@ import {
   step,
   stepReview,
   type LiveAgent,
+  type PastePlan,
   type SendEvent,
   type SendRecord,
 } from "./delivery.js";
 import {
+  addedText,
+  composeAddition,
   composeInstruction,
   sendOffer,
   textToSend,
@@ -100,6 +106,10 @@ export interface ReviewFailure {
   readonly cause: unknown;
   /** The send record a failed delivery belongs to: its toast offers Retry delivery. */
   readonly retry: RetryTarget | null;
+  /** The text of a review that was stopped: its toast offers to show it, so her words stay hers. */
+  readonly text: string | null;
+  /** An error, or something she needs to know that went as it should: nothing pasted, and why. */
+  readonly tone: "error" | "warning";
 }
 
 /** A send record, by the person, server and session it is kept for, and its key. */
@@ -117,6 +127,13 @@ export interface Composed {
   readonly pending: ReadonlyArray<string>;
   /** The comments open on Mend, by id. */
   readonly open: ReadonlyArray<string>;
+  /** Every comment it lists with its words as they were: an edit since reads as a change. */
+  readonly digest: string;
+  /**
+   * The review already pasted into the agent's terminal that this one is composed on top of, as
+   * she sent it: Send to session pastes only what follows it. Null for a review on its own.
+   */
+  readonly base: { readonly text: string; readonly agent: string } | null;
 }
 
 /** Whether Send to session recorded the review; when not, why, in Mend's words. */
@@ -133,8 +150,46 @@ interface SendContext {
 const driveId = (context: SendContext, key: string): string =>
   JSON.stringify([context.place.url, context.place.viewer, context.place.sessionId, key]);
 
-const sameIds = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean =>
-  left.length === right.length && new Set([...left, ...right]).size === left.length;
+/** The comments a review lists, each with its words, as one string to compare. */
+const digestOf = (
+  pending: ReadonlyArray<Pick<PendingComment, "id" | "body">>,
+  open: ReadonlyArray<Pick<ServerComment, "id" | "body">>,
+): string =>
+  JSON.stringify([
+    pending.map(({ id, body }) => [id, body]).toSorted(),
+    open.map(({ id, body }) => [id, body]).toSorted(),
+  ]);
+
+/** A comment as the instruction lists it. */
+const asListed = (comment: PendingComment | ServerComment): InstructionComment =>
+  "origin" in comment
+    ? {
+        path: comment.path,
+        line: comment.line,
+        endLine: comment.endLine,
+        body: comment.body,
+        evidence: comment.origin.kind === "accepted" ? comment.origin.evidence : [],
+        createdAt: comment.createdAt,
+      }
+    : {
+        path: comment.file,
+        line: comment.line,
+        endLine: comment.endLine,
+        body: comment.body,
+        evidence: comment.evidence,
+        createdAt: comment.createdAt,
+      };
+
+/** The review pasted into the agent's terminal and not yet answered past: the next one adds to it. */
+const pastedRecord = (records: ReadonlyArray<SendRecord>): SendRecord | null => {
+  const latest = records.findLast((record) => record.phase.kind !== "refused");
+  return latest?.phase.kind === "in-terminal" && latest.phase.pasted ? latest : null;
+};
+
+const pasteWords = (pasted: Exclude<Pasted, "pasted">, agent: string): string =>
+  pasted === "agent-gone"
+    ? `${agent} exited before the review was pasted, so nothing was pasted. Mend holds the follow-up pending: Retry delivery sends it to the stopped session.`
+    : `VS Code could not attach ${agent}'s terminal here, so nothing was pasted. Mend holds the follow-up pending.`;
 
 const TEXT_STAYS = "Your text stays in this editor.";
 
@@ -227,8 +282,8 @@ export class ReviewStore implements vscode.Disposable {
     private readonly memory: ReviewMemory,
     /** Her pending comments and the reviews she sent, per person and session, for every window. */
     private readonly kept: KeptReviews,
-    /** G12 fallback: the session's agent terminal attached here, the text pasted, no Enter. */
-    private readonly paste: (sessionId: string, text: string) => Promise<boolean>,
+    /** G12 fallback: the agent's terminal attached here, the text pasted into that process, no Enter. */
+    private readonly paste: (sessionId: string, processId: string, text: string) => Promise<Pasted>,
   ) {}
 
   /** How many files a choice reads, for the picker, and whether Mend cut the listing. */
@@ -457,7 +512,7 @@ export class ReviewStore implements vscode.Disposable {
     try {
       await this.client.setCommentState(read.changeId, draftId, "dismissed");
     } catch (cause) {
-      this.#fail("error", errorWords(cause), cause);
+      this.#fail("error", errorWords(cause), { cause });
       return;
     }
     if (reply.trim() !== "")
@@ -477,7 +532,7 @@ export class ReviewStore implements vscode.Disposable {
       await this.client.readChange(read.changeId);
     } catch (cause) {
       this.#asked = null;
-      this.#fail("error", errorWords(cause), cause);
+      this.#fail("error", errorWords(cause), { cause });
       return;
     }
     this.reread();
@@ -569,6 +624,7 @@ export class ReviewStore implements vscode.Disposable {
       viewer: read.facts.viewer,
       ownerName: read.facts.ownerName,
       agent: read.facts.agent,
+      startsTerminal: read.facts.startsTerminal,
       offline: this.#offline,
       count:
         this.#review.pending.length +
@@ -579,41 +635,48 @@ export class ReviewStore implements vscode.Disposable {
 
   /**
    * Send review: the instruction Mend will send, her comments in order with file and line, and
-   * which comments it lists: Send to session sends exactly those.
+   * which comments it lists: Send to session sends exactly those. On top of a review already
+   * pasted into the agent's terminal and not entered, it keeps that review's text as she sent it
+   * and adds only the comments that are new.
    */
   compose(): Composed | null {
     const read = this.ready();
     if (read === null) return null;
     const open = this.#openOnMend(read);
-    const comments: ReadonlyArray<InstructionComment> = [
-      ...this.#review.pending.map((pending) => ({
-        path: pending.path,
-        line: pending.line,
-        endLine: pending.endLine,
-        body: pending.body,
-        evidence: pending.origin.kind === "accepted" ? pending.origin.evidence : [],
-        createdAt: pending.createdAt,
-      })),
-      ...open.map((comment) => ({
-        path: comment.file,
-        line: comment.line,
-        endLine: comment.endLine,
-        body: comment.body,
-        evidence: comment.evidence,
-        createdAt: comment.createdAt,
-      })),
-    ];
-    return {
+    const listed = {
       sessionId: read.sessionId,
       sessionName: read.sessionName,
       pending: this.#review.pending.map((pending) => pending.id),
       open: open.map((comment) => comment.id),
+      digest: digestOf(this.#review.pending, open),
+    };
+    const pasted = pastedRecord(this.#review.sends);
+    if (pasted !== null && pasted.phase.kind === "in-terminal") {
+      const inTerminal = new Set(commentIds(pasted) ?? []);
+      return {
+        ...listed,
+        base: { text: pasted.instruction, agent: pasted.phase.agent },
+        text: composeAddition({
+          sessionName: read.sessionName,
+          sent: pasted.instruction,
+          sentCount: pasted.items.length,
+          files: read.pinnedDiff.files,
+          comments: [
+            ...this.#review.pending,
+            ...open.filter((comment) => !inTerminal.has(comment.id)),
+          ].map(asListed),
+        }),
+      };
+    }
+    return {
+      ...listed,
+      base: null,
       text: composeInstruction({
         sessionName: read.sessionName,
         baseName: read.chain.baseName,
         headOrdinal: read.pinned.head.ordinal,
         files: read.pinnedDiff.files,
-        comments,
+        comments: [...this.#review.pending, ...open].map(asListed),
       }),
     };
   }
@@ -634,35 +697,35 @@ export class ReviewStore implements vscode.Disposable {
     const offer = this.offer();
     if (offer.kind !== "ready")
       return { sent: false, words: `${offerWords(offer)}. ${TEXT_STAYS}` };
-    const composedNow =
-      sameIds(
-        this.#review.pending.map((pending) => pending.id),
-        composed.pending,
-      ) &&
-      sameIds(
-        this.#openOnMend(read).map((comment) => comment.id),
-        composed.open,
-      );
-    if (!composedNow) return { sent: false, words: COMMENTS_CHANGED };
+    const open = this.#openOnMend(read);
+    if (digestOf(this.#review.pending, open) !== composed.digest)
+      return { sent: false, words: COMMENTS_CHANGED };
+    const instruction = textToSend(text, read.sessionName);
+    const paste: PastePlan =
+      composed.base === null
+        ? { kind: "all" }
+        : addedText(instruction, composed.base.text, composed.base.agent);
     const key = `vscode-follow-up:${read.changeId}:${randomUUID()}`;
     let next: SessionReview;
     try {
-      next = await this.#keepAt(
-        place,
-        (review) =>
-          startSend(review, {
-            key,
-            slice: {
-              id: read.pinned.id,
-              baseId: read.pinned.base.id,
-              headId: read.pinned.head.id,
-              diffDigest: read.pinned.diffDigest,
-            },
-            instruction: textToSend(text, read.sessionName),
-            pending: composed.pending,
-            open: composed.open,
-            now: new Date().toISOString(),
-          }) ?? review,
+      // Checked again as kept, under the lock: another window may have sent these comments.
+      next = await this.#keepAt(place, (review) =>
+        digestOf(review.pending, open) !== composed.digest
+          ? review
+          : (startSend(review, {
+              key,
+              slice: {
+                id: read.pinned.id,
+                baseId: read.pinned.base.id,
+                headId: read.pinned.head.id,
+                diffDigest: read.pinned.diffDigest,
+              },
+              instruction,
+              paste,
+              pending: composed.pending,
+              open: composed.open,
+              now: new Date().toISOString(),
+            }) ?? review),
       );
     } catch (cause) {
       return {
@@ -728,7 +791,7 @@ export class ReviewStore implements vscode.Disposable {
     try {
       await this.client.setCommentState(read.changeId, commentId, state);
     } catch (cause) {
-      this.#fail("error", errorWords(cause), cause);
+      this.#fail("error", errorWords(cause), { cause });
       return;
     }
     this.reread();
@@ -750,16 +813,27 @@ export class ReviewStore implements vscode.Disposable {
    */
   async #load(context: SendContext): Promise<void> {
     const now = new Date().toISOString();
+    // A send another window drives now is that window's: this one neither ends it nor drives it.
+    const elsewhere = new Set(
+      (
+        await Promise.all(
+          this.#review.sends.map(async (record) =>
+            (await this.kept.drivenElsewhere(context.place, record.key)) ? [record.key] : [],
+          ),
+        )
+      ).flat(),
+    );
     const loaded = await this.#keepAt(context.place, (review) => ({
       ...review,
       sends: review.sends.map((record) =>
-        this.#driving.has(driveId(context, record.key))
+        this.#driving.has(driveId(context, record.key)) || elsewhere.has(record.key)
           ? record
           : step(record, { kind: "loaded" }, now),
       ),
     }));
     for (const record of loaded.sends)
-      if (record.phase.kind === "delivering") void this.#drive(context, record.key);
+      if (record.phase.kind === "delivering" && !elsewhere.has(record.key))
+        void this.#drive(context, record.key);
   }
 
   #context(read: ChangeRead, place: ReviewPlace): SendContext {
@@ -786,13 +860,23 @@ export class ReviewStore implements vscode.Disposable {
     const id = driveId(context, key);
     const before = this.#driving.get(id) ?? Promise.resolve();
     const run: Promise<void> = before
-      .then(() => this.#run(context, key))
-      .catch((cause: unknown) => this.#fail("error", errorWords(cause), cause))
+      .then(() => this.#driveOnce(context, key))
+      .catch((cause: unknown) => this.#fail("error", errorWords(cause), { cause }))
       .finally(() => {
         if (this.#driving.get(id) === run) this.#driving.delete(id);
       });
     this.#driving.set(id, run);
     return run;
+  }
+
+  /** One window drives a send, so one key is posted and delivered once. */
+  async #driveOnce(context: SendContext, key: string): Promise<void> {
+    if (!(await this.kept.claimDrive(context.place, key))) return;
+    try {
+      await this.#run(context, key);
+    } finally {
+      await this.kept.releaseDrive(context.place, key).catch(() => undefined);
+    }
   }
 
   async #run(context: SendContext, key: string): Promise<void> {
@@ -808,6 +892,7 @@ export class ReviewStore implements vscode.Disposable {
       return read;
     };
     for (let turns = 0; turns < MAX_TURNS; turns += 1) {
+      await this.kept.renewDrive(context.place, key);
       const record = (await this.kept.read(context.place)).review.sends.find(
         (candidate) => candidate.key === key,
       );
@@ -821,8 +906,7 @@ export class ReviewStore implements vscode.Disposable {
               this.#fail(
                 `delivery:${key}`,
                 `Mend could not deliver the review: ${record.phase.words}`,
-                null,
-                retry,
+                { retry },
               );
             this.#rereadIfFollowed(sessionId);
             return;
@@ -871,7 +955,13 @@ export class ReviewStore implements vscode.Disposable {
             );
             if (draft === undefined || draft.state === "dismissed") {
               await this.#step(context, key, { kind: "draft-gone", draftId: action.draftId });
-              break;
+              this.#fail(
+                `delivery:${key}`,
+                `${DRAFT_GONE}. Send review composes it again without that draft, from your comments as they are now.`,
+                { text: record.instruction, tone: "warning" },
+              );
+              this.#rereadIfFollowed(sessionId);
+              return;
             }
             if (draft.state === "draft")
               await this.client.setCommentState(changeId, action.draftId, "open");
@@ -890,10 +980,22 @@ export class ReviewStore implements vscode.Disposable {
             break;
           }
           case "paste": {
-            const pasted = await this.paste(sessionId, action.text);
-            await this.#step(context, key, pasted ? { kind: "pasted" } : { kind: "paste-failed" });
+            const pasted = await this.paste(sessionId, action.processId, action.text);
+            if (pasted === "pasted") {
+              await this.#step(context, key, { kind: "pasted" });
+              break;
+            }
+            await this.#step(context, key, { kind: "paste-failed" });
+            const agent = record.phase.kind === "in-terminal" ? record.phase.agent : "the agent";
+            this.#fail(`paste:${key}`, pasteWords(pasted, agent), {
+              retry: pasted === "agent-gone" ? retry : null,
+            });
             break;
           }
+          case "skip-paste":
+            await this.#step(context, key, { kind: "pasted" });
+            this.#fail(`paste:${key}`, action.words, { tone: "warning" });
+            break;
           case "watch": {
             await new Promise((resolve) => setTimeout(resolve, WATCH_MS));
             const [followUp, comments] = await Promise.all([
@@ -923,12 +1025,10 @@ export class ReviewStore implements vscode.Disposable {
         const retryable =
           !(cause instanceof MendApiError) || cause.status === null || cause.status >= 500;
         await this.#step(context, key, { kind: "failed", words: errorWords(cause), retryable });
-        this.#fail(
-          `delivery:${key}`,
-          `Mend could not deliver the review: ${errorWords(cause)}`,
+        this.#fail(`delivery:${key}`, `Mend could not deliver the review: ${errorWords(cause)}`, {
           cause,
-          retryable ? retry : null,
-        );
+          retry: retryable ? retry : null,
+        });
         this.#rereadIfFollowed(sessionId);
         return;
       }
@@ -936,12 +1036,9 @@ export class ReviewStore implements vscode.Disposable {
     // Mend has not answered in all this time: the review reads failed, so Retry is offered.
     const words = "Mend has not said the review was delivered";
     await this.#step(context, key, { kind: "failed", words, retryable: true });
-    this.#fail(
-      `delivery:${key}`,
-      `${words}. Retry delivery asks again with the same key.`,
-      null,
+    this.#fail(`delivery:${key}`, `${words}. Retry delivery asks again with the same key.`, {
       retry,
-    );
+    });
     this.#rereadIfFollowed(sessionId);
   }
 
@@ -952,11 +1049,23 @@ export class ReviewStore implements vscode.Disposable {
   #fail(
     what: string,
     words: string,
-    cause: unknown = null,
-    retry: RetryTarget | null = null,
+    options: {
+      readonly cause?: unknown;
+      readonly retry?: RetryTarget | null;
+      readonly text?: string;
+      readonly tone?: "error" | "warning";
+    } = {},
   ): void {
     const at = new Date().toISOString();
-    this.#failed.fire({ key: `review-${what}:${at}`, at, words, cause, retry });
+    this.#failed.fire({
+      key: `review-${what}:${at}`,
+      at,
+      words,
+      cause: options.cause ?? null,
+      retry: options.retry ?? null,
+      text: options.text ?? null,
+      tone: options.tone ?? "error",
+    });
   }
 
   /**
@@ -1056,6 +1165,8 @@ export class ReviewStore implements vscode.Disposable {
       words: `Mend could not read this change: ${pass.words}`,
       cause: null,
       retry: null,
+      text: null,
+      tone: "error",
     });
   }
 
@@ -1153,6 +1264,7 @@ export class ReviewStore implements vscode.Disposable {
           viewer,
           ownerName: members.find((member) => member.userId === owner)?.name ?? "its owner",
           agent: liveAgent(detail, viewer),
+          startsTerminal: startsInTerminal(detail.currentAgent?.kind ?? null),
         },
         readAt: new Date().toISOString(),
       },
@@ -1208,6 +1320,7 @@ const liveAgent = (detail: SessionDetail, viewer: string | null): LiveAgent | nu
     kind: "terminal",
     name: agent.label ?? agent.harness ?? detail.session.harness,
     hers: viewer !== null && detail.session.ownerUserId === viewer,
+    processId: agent.id,
   };
 };
 

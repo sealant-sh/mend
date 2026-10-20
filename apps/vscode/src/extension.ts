@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { repositoryCloneUrlIssue } from "@mend/domain/workbench";
 import * as vscode from "vscode";
 
-import { attachTerminal, memberName, pasteInto } from "./agent-terminal.js";
+import { attachTerminal, memberName, pasteInto, terminalProcess } from "./agent-terminal.js";
 import { AUTH_PROVIDER_ID, MendAuthenticationProvider } from "./auth-provider.js";
 import { MendClient } from "./client.js";
 import { ConnectionStore } from "./config.js";
@@ -19,6 +19,7 @@ import type { OpenMode } from "./open-flow.js";
 import { OpenIntents } from "./open-intent.js";
 import type { OpenRunner } from "./open-runner.js";
 import { originProjectName } from "./project-match.js";
+import { pasteIntoAgent } from "./review/agent-paste.js";
 import { startReview, type Review } from "./review/review.js";
 import {
   maySteer,
@@ -636,18 +637,27 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     onError: (cause) => void showError(cause),
     claims,
     // G12 fallback: her agent's terminal attached here, as Answer attaches it, and the review
-    // pasted into it for her to press Enter.
-    paste: async (sessionId, text) => {
-      await workspaceWindow.answer(sessionId);
-      // VS Code makes the attached tab the active terminal a moment after Answer shows it.
-      for (let waited = 0; waited < 10_000; waited += 100) {
-        const terminal = vscode.window.activeTerminal;
-        if (terminal !== undefined && workspaceWindow.terminalSession() === sessionId)
-          return pasteInto(terminal, text);
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      return false;
-    },
+    // pasted into that agent process for her to press Enter.
+    paste: (sessionId, processId, text) =>
+      pasteIntoAgent(
+        {
+          detail: (id) => client.sessionDetail(id),
+          answer: (id) => workspaceWindow.answer(id),
+          // VS Code makes the attached tab the active terminal a moment after Answer shows it.
+          activeTab: (id) => {
+            const terminal = vscode.window.activeTerminal;
+            return terminal !== undefined && workspaceWindow.terminalSession() === id
+              ? terminal
+              : null;
+          },
+          processOf: terminalProcess,
+          paste: pasteInto,
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        },
+        sessionId,
+        processId,
+        text,
+      ),
   });
   const commands = new MendCommands(
     connections,

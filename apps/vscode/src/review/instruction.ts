@@ -1,4 +1,4 @@
-import { maySteer } from "../session-capability.js";
+import { maySteer, ownsSession } from "../session-capability.js";
 import type { Session } from "../types.js";
 import type { LiveAgent } from "./delivery.js";
 import type { ChangeFile, RecordLink } from "./review-wire.js";
@@ -49,6 +49,18 @@ export const instructionOrder = (
   );
 };
 
+const commentLines = (
+  comments: ReadonlyArray<InstructionComment>,
+  files: ReadonlyArray<ChangeFile>,
+  from: number,
+): ReadonlyArray<string> =>
+  instructionOrder(comments, files).flatMap((comment, index) => {
+    const evidence = comment.evidence
+      .map((link) => ` (seq ${link.sequence} · ${link.excerpt})`)
+      .join("");
+    return [`## ${from + index} · ${where(comment)}`, `${comment.body}${evidence}`, ""];
+  });
+
 export const composeInstruction = (input: {
   readonly sessionName: string;
   readonly baseName: string;
@@ -63,18 +75,66 @@ export const composeInstruction = (input: {
     "",
     `Slice: ${input.baseName} → checkpoint ${input.headOrdinal} · ${filesLine(input.files).replace("−", "-")}`,
     "",
-  ];
-  instructionOrder(input.comments, input.files).forEach((comment, index) => {
-    const evidence = comment.evidence
-      .map((link) => ` (seq ${link.sequence} · ${link.excerpt})`)
-      .join("");
-    lines.push(`## ${index + 1} · ${where(comment)}`, `${comment.body}${evidence}`, "");
-  });
-  lines.push(
+    ...commentLines(input.comments, input.files, 1),
     "## What to do",
     "Address each comment above, then say what you changed for each one.",
-  );
+  ];
   return `${lines.join("\n")}\n`;
+};
+
+/**
+ * A review on top of one already pasted into the agent's terminal and not yet entered: the text
+ * she sent then, kept as she edited it, and below it only the comments that are new, numbered on
+ * from hers. Send to session pastes only what follows the earlier text.
+ */
+export const composeAddition = (input: {
+  readonly sessionName: string;
+  /** The earlier review as she sent it. */
+  readonly sent: string;
+  /** How many comments the earlier review lists. */
+  readonly sentCount: number;
+  readonly files: ReadonlyArray<ChangeFile>;
+  readonly comments: ReadonlyArray<InstructionComment>;
+}): string =>
+  [
+    mendNote(input.sessionName),
+    "",
+    input.sent,
+    "",
+    "## More comments",
+    "",
+    ...commentLines(input.comments, input.files, input.sentCount + 1),
+    "Address these too, then say what you changed for each one.",
+    "",
+  ].join("\n");
+
+/**
+ * What to paste for a review on top of one already in the agent's terminal: only what she added
+ * after the earlier text; nothing, with why, when she changed the earlier text, since the
+ * terminal's input still holds it as it was.
+ */
+export const addedText = (
+  sent: string,
+  earlier: string,
+  agent: string,
+):
+  | { readonly kind: "added"; readonly text: string }
+  | {
+      readonly kind: "none";
+      readonly words: string;
+    } => {
+  if (!sent.startsWith(earlier))
+    return {
+      kind: "none",
+      words: `You changed the part of this review already in ${agent}'s terminal, so VS Code pasted nothing there: its input still holds the earlier text. Mend holds the review as you sent it.`,
+    };
+  const added = sent.slice(earlier.length);
+  return added.trim() === ""
+    ? {
+        kind: "none",
+        words: `Nothing was added to the review already in ${agent}'s terminal, so VS Code pasted nothing there.`,
+      }
+    : { kind: "added", text: added };
 };
 
 /** The editor's text as Mend sends it: the note line, and the blank line after it, left out. */
@@ -100,7 +160,8 @@ export const OFFLINE_WORDS = "Mend is offline; your comments are kept";
 
 /**
  * Send review, offered to the session's owner, or to anyone while its owner has shared control on;
- * a live terminal agent takes a follow-up only from its owner, as Mend enforces. Offline it stays,
+ * a terminal agent, live or one a stopped session starts with the review, takes a follow-up only
+ * from its owner, as Mend enforces. Offline it stays,
  * disabled, and her comments with it.
  */
 export const sendOffer = (input: {
@@ -108,11 +169,16 @@ export const sendOffer = (input: {
   readonly viewer: string | null;
   readonly ownerName: string;
   readonly agent: LiveAgent | null;
+  /**
+   * Whether the follow-up goes to a terminal agent, live or started anew for a stopped session:
+   * typing there, the owner's alone, as Mend refuses it to anyone else.
+   */
+  readonly startsTerminal: boolean;
   readonly offline: boolean;
   readonly count: number;
   readonly open: "sending" | "failed" | null;
 }): SendOffer => {
-  const { session, viewer, ownerName, agent, offline, count, open } = input;
+  const { session, viewer, ownerName, agent, startsTerminal, offline, count, open } = input;
   if (viewer === null) return { kind: "hidden", why: "Mend could not read who you are" };
   if (!maySteer(session, viewer))
     return {
@@ -123,6 +189,11 @@ export const sendOffer = (input: {
     return {
       kind: "disabled",
       why: `${agent.name} runs in ${ownerName}'s terminal · only ${ownerName} sends it a review`,
+    };
+  if (startsTerminal && !ownsSession(session, viewer))
+    return {
+      kind: "disabled",
+      why: `${ownerName}'s session starts its agent in a terminal with a review · only ${ownerName} sends it one`,
     };
   if (offline) return { kind: "disabled", why: OFFLINE_WORDS };
   if (open === "sending") return { kind: "busy" };

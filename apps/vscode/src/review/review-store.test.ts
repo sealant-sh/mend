@@ -22,6 +22,7 @@ import {
   settle,
   slowFiles,
   storage,
+  noPaste,
 } from "./test-fixtures.js";
 import { threadsOf } from "./threads.js";
 
@@ -49,7 +50,7 @@ const readyStore = async (
     mend,
     new ReviewMemory(memento()),
     kept,
-    async () => false,
+    noPaste,
   );
   store.follow(PROJECT, session("s1"));
   await vi.waitFor(() => expect(store.ready()).not.toBeNull());
@@ -102,7 +103,7 @@ describe("the review store, as it follows one session after another", () => {
       ),
       new ReviewMemory(memento()),
       kept,
-      async () => false,
+      noPaste,
     );
     store.follow(PROJECT, session("ana"));
     store.follow(PROJECT, session("dana"));
@@ -141,7 +142,7 @@ describe("ReviewStore.forget", () => {
       new FakeMend(),
       new ReviewMemory(memento()),
       keptIn(await storage()),
-      async () => false,
+      noPaste,
     );
     store.follow(PROJECT, session("s1"));
     store.forget();
@@ -218,7 +219,7 @@ describe("a comment she submits", () => {
       new FakeMend(),
       new ReviewMemory(memento()),
       keptIn(await storage()),
-      async () => false,
+      noPaste,
     );
     const kept = await store.comment(onLine(3, "Use the shared limiter"));
     expect(kept).toEqual({ kept: false, words: expect.stringMatching(/not kept/) });
@@ -252,7 +253,7 @@ describe("a call Mend refuses", () => {
       new Refusing(),
       new ReviewMemory(memento()),
       keptIn(await storage()),
-      async () => false,
+      noPaste,
     );
     store.follow(PROJECT, session("s1"));
     await settle();
@@ -373,7 +374,7 @@ describe("Show record", () => {
       mend,
       new ReviewMemory(memento()),
       keptIn(await storage()),
-      async () => false,
+      noPaste,
     );
     store.follow(PROJECT, session("s1"));
     await settle();
@@ -393,7 +394,7 @@ describe("Show record", () => {
       mend,
       new ReviewMemory(memento()),
       keptIn(await storage()),
-      async () => false,
+      noPaste,
     );
     store.follow(PROJECT, session("s1"));
     await settle();

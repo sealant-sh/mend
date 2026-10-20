@@ -47,14 +47,32 @@ export type SendPhase =
   | { readonly kind: "sending"; readonly since: string }
   /** A stopped session is being launched on the review (the route resumes it). */
   | { readonly kind: "delivering" }
-  /** G12 fallback: Mend holds it pending while the terminal agent lives; the extension pasted it. */
-  | { readonly kind: "in-terminal"; readonly agent: string; readonly pasted: boolean }
+  /**
+   * G12 fallback: Mend holds it pending while the terminal agent lives, and the extension pastes it
+   * into that one agent process, never another (`pasted` once the paste step is done).
+   */
+  | {
+      readonly kind: "in-terminal";
+      readonly agent: string;
+      readonly processId: string;
+      readonly pasted: boolean;
+    }
   /** Mend holds it pending, and this window had no terminal of hers to paste it into. */
   | { readonly kind: "pending" }
   | { readonly kind: "delivered"; readonly at: string }
   | { readonly kind: "failed"; readonly words: string }
   /** Mend refused this key or this person: a new review, with a new key, is the way on. */
   | { readonly kind: "refused"; readonly words: string };
+
+/**
+ * What Send to session pastes into the agent's terminal (G12 fallback): the whole text; only what
+ * she added to a review already pasted there, since its input still holds that one; or nothing,
+ * with why, when she changed the part already pasted.
+ */
+export type PastePlan =
+  | { readonly kind: "all" }
+  | { readonly kind: "added"; readonly text: string }
+  | { readonly kind: "none"; readonly words: string };
 
 export interface SendRecord {
   /** The follow-up's idempotency key: the same on every retry. */
@@ -65,6 +83,7 @@ export interface SendRecord {
   readonly diffDigest: string;
   /** The text Mend sends, exactly as she sent it. */
   readonly instruction: string;
+  readonly paste: PastePlan;
   readonly items: ReadonlyArray<SendItem>;
   readonly phase: SendPhase;
   readonly createdAt: string;
@@ -72,7 +91,13 @@ export interface SendRecord {
 
 /** What a live agent is, for where a pending follow-up lands. */
 export type LiveAgent =
-  | { readonly kind: "terminal"; readonly name: string; readonly hers: boolean }
+  | {
+      readonly kind: "terminal";
+      readonly name: string;
+      readonly hers: boolean;
+      /** The agent's process: a paste goes into this one, never into a shell beside it. */
+      readonly processId: string;
+    }
   | { readonly kind: "other" };
 
 /** What Mend answered `follow-up/deliver` (or `GET …/follow-up`) about this key. */
@@ -99,8 +124,12 @@ export type SendEvent =
       readonly error: string | null;
       readonly agent: LiveAgent;
     }
+  /** The paste step is done: pasted, or nothing to paste, and she was told why. */
   | { readonly kind: "pasted" }
-  /** Her terminal could not be attached here: Mend still holds the follow-up pending. */
+  /**
+   * Nothing was pasted: her terminal could not be attached here, or the agent process is gone.
+   * Mend still holds the follow-up pending.
+   */
   | { readonly kind: "paste-failed" }
   | { readonly kind: "failed"; readonly words: string; readonly retryable: boolean }
   /**
@@ -130,7 +159,9 @@ export type SendAction =
   | { readonly kind: "post"; readonly pending: PendingComment }
   | { readonly kind: "open"; readonly draftId: string }
   | { readonly kind: "deliver"; readonly request: DeliverRequest }
-  | { readonly kind: "paste"; readonly text: string }
+  | { readonly kind: "paste"; readonly text: string; readonly processId: string }
+  /** Nothing to paste into the agent's terminal, and why, said once. */
+  | { readonly kind: "skip-paste"; readonly words: string }
   | { readonly kind: "watch" }
   | { readonly kind: "idle" };
 
@@ -143,6 +174,18 @@ export interface DeliverRequest {
   readonly instruction: string;
   readonly idempotencyKey: string;
 }
+
+/** Every comment a record carries, by the id Mend knows it by once it is there. */
+const idsOf = (record: SendRecord): ReadonlyArray<string> =>
+  record.items.flatMap((item) =>
+    item.kind === "open"
+      ? [item.commentId]
+      : item.kind === "accepted"
+        ? [item.draftId]
+        : item.post.kind === "posted"
+          ? [item.post.commentId]
+          : [],
+  );
 
 /** The ids Mend knows the review's comments by; null while one is not on Mend yet. */
 export const commentIds = (record: SendRecord): ReadonlyArray<string> | null => {
@@ -173,8 +216,18 @@ export const deliverRequest = (record: SendRecord, ids: ReadonlyArray<string>): 
  * terminal not yet pasted into pastes. Every other record waits for her.
  */
 export const nextAction = (record: SendRecord): SendAction => {
-  if (record.phase.kind === "in-terminal")
-    return record.phase.pasted ? { kind: "idle" } : { kind: "paste", text: record.instruction };
+  if (record.phase.kind === "in-terminal") {
+    if (record.phase.pasted) return { kind: "idle" };
+    const { processId } = record.phase;
+    switch (record.paste.kind) {
+      case "all":
+        return { kind: "paste", text: record.instruction, processId };
+      case "added":
+        return { kind: "paste", text: record.paste.text, processId };
+      case "none":
+        return { kind: "skip-paste", words: record.paste.words };
+    }
+  }
   if (record.phase.kind === "delivering") return { kind: "watch" };
   if (record.phase.kind !== "sending") return { kind: "idle" };
   const posting = record.items.flatMap((item) =>
@@ -207,7 +260,7 @@ const answeredPhase = (
   switch (status) {
     case "pending":
       return agent.kind === "terminal" && agent.hers
-        ? { kind: "in-terminal", agent: agent.name, pasted: false }
+        ? { kind: "in-terminal", agent: agent.name, processId: agent.processId, pasted: false }
         : { kind: "pending" };
     // Delivered is concluded from the comments read back as sent, by the watch.
     case "delivering":
@@ -260,18 +313,12 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
           }
         : record;
     case "draft-gone": {
+      // Its words are in the instruction: the review stops, and Send review composes it anew.
       const items = record.items.filter(
         (item) => item.kind !== "accepted" || item.draftId !== event.draftId,
       );
-      if (items.length > 0 || record.phase.kind === "refused") return { ...record, items };
-      return {
-        ...record,
-        items,
-        phase: {
-          kind: "refused",
-          words: "Every comment in this review was dismissed on Mend: nothing is left to send.",
-        },
-      };
+      if (record.phase.kind === "refused") return { ...record, items };
+      return { ...record, items, phase: { kind: "refused", words: DRAFT_GONE } };
     }
     case "superseded":
       return record.phase.kind === "pending" ||
@@ -315,6 +362,9 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
       };
   }
 };
+
+export const DRAFT_GONE =
+  "A Mend draft in this review was dismissed before it was sent, and the review's text still asks for it, so nothing was sent";
 
 /**
  * Retry delivery is offered on a failed record, and on a follow-up Mend holds pending once the
@@ -518,8 +568,10 @@ export const startSend = (
       readonly diffDigest: string;
     };
     readonly instruction: string;
+    readonly paste: PastePlan;
     /** The pending comments the instruction lists: each must still be pending. */
     readonly pending: ReadonlyArray<string>;
+    /** The comments open on Mend it lists: none may be in a review still on its way. */
     readonly open: ReadonlyArray<string>;
     readonly now: string;
   },
@@ -527,6 +579,9 @@ export const startSend = (
   const chosen = new Set(input.pending);
   const moving = review.pending.filter((pending) => chosen.has(pending.id));
   if (moving.length !== chosen.size) return null;
+  // Another window sent these comments a moment ago: one review takes them, under one key.
+  const onTheirWay = new Set(review.sends.filter(holdsComments).flatMap((record) => idsOf(record)));
+  if (input.open.some((id) => onTheirWay.has(id))) return null;
   const items: ReadonlyArray<SendItem> = [
     ...moving.map(
       (pending): SendItem =>
@@ -543,6 +598,7 @@ export const startSend = (
     headId: input.slice.headId,
     diffDigest: input.slice.diffDigest,
     instruction: input.instruction,
+    paste: input.paste,
     items,
     phase: { kind: "sending", since: input.now },
     createdAt: input.now,

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { startSend, stepReview } from "./delivery.js";
+import type { PastePlan } from "./delivery.js";
 import { EMPTY_REVIEW } from "./pending.js";
 import { checkpoint, CHECKPOINTS, comment, pending, PINNED, readOf } from "./test-fixtures.js";
 import { commentableLines, commentsLine, threadPlace, threadsOf } from "./threads.js";
+
+const ALL: PastePlan = { kind: "all" };
 
 const NOW = "2026-10-19T10:50:00.000Z";
 const SLICE = {
@@ -187,7 +190,15 @@ describe("the threads of a review she sent", () => {
   it("show a draft she accepted once while its review is on its way, as hers", () => {
     const review = startSend(
       { pending: [accepted], sends: [] },
-      { key: "k1", slice: SLICE, instruction: "the review", pending: ["a1"], open: [], now: NOW },
+      {
+        key: "k1",
+        slice: SLICE,
+        instruction: "the review",
+        paste: ALL,
+        pending: ["a1"],
+        open: [],
+        now: NOW,
+      },
     );
     if (review === null) throw new Error("the review did not start");
     const threads = threadsOf(readOf({ kind: "pinned" }, { comments: [draft] }), review, "Dana");
@@ -202,6 +213,7 @@ describe("the threads of a review she sent", () => {
       key: "k1",
       slice: SLICE,
       instruction: "the review",
+      paste: ALL,
       pending: [],
       open: ["c1"],
       now: NOW,
@@ -224,5 +236,19 @@ describe("the threads of a review she sent", () => {
       label: "follow-up pending",
       sendKey: "k1",
     });
+  });
+});
+
+describe("the Comments row's count", () => {
+  it("counts each comment by the state it was observed in", () => {
+    expect(
+      commentsLine([
+        { kind: "sending" },
+        { kind: "failed" },
+        { kind: "held" },
+        { kind: "sent" },
+        { kind: "pending" },
+      ]),
+    ).toBe("1 pending · 1 sending · 1 delivery failed · retryable · 1 follow-up pending · 1 sent");
   });
 });

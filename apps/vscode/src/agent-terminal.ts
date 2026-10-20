@@ -22,6 +22,10 @@ const ptys = new WeakMap<vscode.Terminal, MendTtyTerminal>();
 export const pasteInto = async (terminal: vscode.Terminal, text: string): Promise<boolean> =>
   (await ptys.get(terminal)?.paste(text)) ?? false;
 
+/** The process one of Mend's terminal tabs is attached to: its socket reaches that one alone. */
+export const terminalProcess = (terminal: vscode.Terminal): string | null =>
+  ptys.get(terminal)?.processId() ?? null;
+
 /**
  * One of a session's terminals in a VS Code tab over Mend's terminal data plane (`/api/tty`),
  * shown and focused. The owner types; anyone else the server lets in watches.

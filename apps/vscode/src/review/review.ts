@@ -4,6 +4,7 @@ import type { EventPointer, MendClient } from "../client.js";
 import { refusedSignIn } from "../error-toast.js";
 import type { ToastClaims } from "../toast-claims.js";
 import type { Project, Session } from "../types.js";
+import type { Pasted } from "./agent-paste.js";
 import { CHANGE_SCHEME, ChangeContent } from "./change-content.js";
 import { ChangeNote, NOTE_SCHEME } from "./change-note.js";
 import { ChangeView } from "./change-view.js";
@@ -36,8 +37,8 @@ export const startReview = (deps: {
   readonly onError: (cause: unknown) => void;
   /** The toast claims every window of this VS Code shares with the notifier. */
   readonly claims: Pick<ToastClaims, "claim" | "release">;
-  /** G12 fallback: attaches the session's agent terminal here and pastes, without Enter. */
-  readonly paste: (sessionId: string, text: string) => Promise<boolean>;
+  /** G12 fallback: the session's agent terminal attached here, the review pasted into that agent process, without Enter. */
+  readonly paste: (sessionId: string, processId: string, text: string) => Promise<Pasted>;
 }): Review => {
   const client = new ReviewClient(
     () => deps.client.connection(),
@@ -70,16 +71,26 @@ export const startReview = (deps: {
       return;
     }
     if (!(await deps.claims.claim(failure.key, failure.at))) return;
-    if (!store.stillFails(failure)) {
+    if (!(await store.stillFails(failure))) {
       await deps.claims.release(failure.key, failure.at);
       return;
     }
-    if (failure.retry === null) {
-      void vscode.window.showErrorMessage(failure.words);
-      return;
+    const show =
+      failure.tone === "error" ? vscode.window.showErrorMessage : vscode.window.showWarningMessage;
+    const actions = [
+      ...(failure.retry === null ? [] : ["Retry delivery"]),
+      ...(failure.text === null ? [] : ["Show its text"]),
+    ];
+    const picked = await show(failure.words, ...actions);
+    if (picked === "Retry delivery" && failure.retry !== null) await store.retry(failure.retry);
+    if (picked === "Show its text" && failure.text !== null) {
+      // Her words of a review that was stopped, to copy from: nothing she wrote is lost.
+      const document = await vscode.workspace.openTextDocument({
+        content: failure.text,
+        language: "markdown",
+      });
+      await vscode.window.showTextDocument(document, { preview: true });
     }
-    const picked = await vscode.window.showErrorMessage(failure.words, "Retry delivery");
-    if (picked === "Retry delivery") await store.retry(failure.retry);
   };
   const disposables: ReadonlyArray<vscode.Disposable> = [
     vscode.workspace.registerTextDocumentContentProvider(CHANGE_SCHEME, content),

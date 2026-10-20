@@ -249,31 +249,34 @@ export const commentableLines = (
 
 /**
  * `2 pending · 1 Mend draft`, `2 sent · follow-up pending · in claude's terminal`: the change's
- * comments by the word each reads, and where her last review's follow-up is until it is delivered.
+ * comments counted by the state each was observed in, and, for the ones handed over, where her
+ * last review's follow-up is until it is delivered.
  */
 export const commentsLine = (
   threads: ReadonlyArray<Pick<ThreadView, "kind">>,
   sends: ReadonlyArray<SendRecord> = [],
 ): string => {
-  const count = (kinds: ReadonlyArray<ThreadKind>): number =>
-    threads.filter((thread) => kinds.includes(thread.kind)).length;
-  const pending = count(["pending", "accepted"]);
-  const open = count(["open"]);
-  const sent = count(["sent", "sending", "failed", "held"]);
-  const addressed = count(["addressed"]);
-  const drafts = count(["draft"]);
+  const count = (kind: ThreadKind): number =>
+    threads.filter((thread) => thread.kind === kind).length;
+  const pending = count("pending") + count("accepted");
+  const sent = count("sent");
   const latest = sends.findLast((record) => record.phase.kind !== "refused");
   const where =
-    latest === undefined || latest.phase.kind === "delivered" || sent === 0
-      ? null
-      : recordLabel(latest.phase);
+    sent > 0 && (latest?.phase.kind === "in-terminal" || latest?.phase.kind === "pending")
+      ? recordLabel(latest.phase)
+      : null;
   const parts = [
     pending > 0 ? `${pending} pending` : null,
-    open > 0 ? `${open} open` : null,
+    count("open") > 0 ? `${count("open")} open` : null,
+    count("sending") > 0 ? `${count("sending")} sending` : null,
+    count("failed") > 0 ? `${count("failed")} delivery failed · retryable` : null,
+    count("held") > 0 ? `${count("held")} follow-up pending` : null,
     sent > 0 ? `${sent} sent` : null,
     where,
-    addressed > 0 ? `${addressed} addressed` : null,
-    drafts > 0 ? `${drafts} Mend ${drafts === 1 ? "draft" : "drafts"}` : null,
+    count("addressed") > 0 ? `${count("addressed")} addressed` : null,
+    count("draft") > 0
+      ? `${count("draft")} Mend ${count("draft") === 1 ? "draft" : "drafts"}`
+      : null,
   ].flatMap((part) => (part === null ? [] : [part]));
   return parts.length === 0 ? "none" : parts.join(" · ");
 };

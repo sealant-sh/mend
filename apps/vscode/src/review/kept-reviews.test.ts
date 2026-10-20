@@ -3,7 +3,13 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { KEPT_REVIEW_TTL_MS, KeptReviews, NODE_FILES, type ReviewPlace } from "./kept-reviews.js";
+import {
+  DRIVE_STALE_MS,
+  KEPT_REVIEW_TTL_MS,
+  KeptReviews,
+  NODE_FILES,
+  type ReviewPlace,
+} from "./kept-reviews.js";
 import { addPending, type SessionReview } from "./pending.js";
 import { keptIn, pending, slowFiles, storage } from "./test-fixtures.js";
 
@@ -241,5 +247,35 @@ describe("her pending comments, kept for every window of one VS Code", () => {
     await kept.update({ ...DANA, sessionId: "s2" }, (review) => addPending(review, pending({})));
     expect(await bodies(kept)).toEqual([]);
     expect(await bodies(kept, { ...DANA, sessionId: "s2" })).toHaveLength(1);
+  });
+});
+
+describe("the window that drives a send", () => {
+  it("is one: the other window neither claims it nor ends it while its lease is fresh", async () => {
+    const directory = await storage();
+    const first = keptIn(directory);
+    const second = keptIn(directory);
+    const claims = await Promise.all([
+      first.claimDrive(DANA, "key-1"),
+      second.claimDrive(DANA, "key-1"),
+    ]);
+    expect(claims.toSorted()).toEqual([false, true]);
+    const [driver, other] = claims[0] ? [first, second] : [second, first];
+    expect(await other.drivenElsewhere(DANA, "key-1")).toBe(true);
+    expect(await driver.drivenElsewhere(DANA, "key-1")).toBe(false);
+    await driver.releaseDrive(DANA, "key-1");
+    expect(await other.drivenElsewhere(DANA, "key-1")).toBe(false);
+    expect(await other.claimDrive(DANA, "key-1")).toBe(true);
+  });
+
+  it("is taken over from a window that closed while driving it", async () => {
+    const directory = await storage();
+    let now = Date.now();
+    const closed = new KeptReviews(directory, NODE_FILES, () => now);
+    const next = new KeptReviews(directory, NODE_FILES, () => now);
+    expect(await closed.claimDrive(DANA, "key-1")).toBe(true);
+    now += DRIVE_STALE_MS + 1_000;
+    expect(await next.drivenElsewhere(DANA, "key-1")).toBe(false);
+    expect(await next.claimDrive(DANA, "key-1")).toBe(true);
   });
 });

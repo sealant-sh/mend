@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Project, ProjectDetail, Session, SessionDetail } from "../types.js";
+import type { Pasted } from "./agent-paste.js";
 import type { ChangeRead } from "./change-rows.js";
 import type { CommentTarget, DeliverRequest } from "./delivery.js";
 import { KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
@@ -147,7 +148,13 @@ export const readOf = (choice: SliceChoice, overrides: Partial<ChangeRead> = {})
     },
     comments: [],
     pass: null,
-    facts: { session: SESSION, viewer: "dana", ownerName: "Dana", agent: null },
+    facts: {
+      session: SESSION,
+      viewer: "dana",
+      ownerName: "Dana",
+      agent: null,
+      startsTerminal: true,
+    },
     reviewedHead: null,
     drift: null,
     notice: null,
@@ -267,6 +274,8 @@ export class FakeMend extends ReviewClient {
 
   /** Every write the review made, in order: `state d1 open`, `post …`, `deliver s1 <key>`. */
   readonly writes: Array<string> = [];
+  /** Every follow-up asked for, as sent. */
+  readonly delivered: Array<DeliverRequest> = [];
   /** How `follow-up/deliver` answers, and what `GET …/follow-up` lists. */
   answer: FollowUp["status"] = "delivering";
   listed: FollowUp | null = null;
@@ -307,6 +316,7 @@ export class FakeMend extends ReviewClient {
 
   override async deliver(sessionId: string, request: DeliverRequest): Promise<FollowUp> {
     this.writes.push(`deliver ${sessionId} ${request.idempotencyKey}`);
+    this.delivered.push(request);
     return { key: request.idempotencyKey, status: this.answer, error: null };
   }
 
@@ -364,3 +374,6 @@ export const memoryFiles = (): KeptFiles => {
     modified: async (path) => files.get(path)?.at ?? null,
   };
 };
+
+/** A window with no terminal of hers to paste into. */
+export const noPaste = async (): Promise<Pasted> => "not-attached";

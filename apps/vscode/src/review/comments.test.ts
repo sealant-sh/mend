@@ -14,6 +14,7 @@ import {
   settle,
   slowFiles,
   storage,
+  noPaste,
 } from "./test-fixtures.js";
 
 interface Controller {
@@ -125,7 +126,7 @@ describe("submitting a comment from its thread", () => {
       new FakeMend(),
       new ReviewMemory(memento()),
       keptIn(await storage()),
-      async () => false,
+      noPaste,
     );
     const comments = new ReviewComments(store);
     const reply = replyOnLine3("Use the shared limiter");
@@ -142,7 +143,7 @@ describe("submitting a comment from its thread", () => {
       new FakeMend(),
       new ReviewMemory(memento()),
       keptIn(await storage()),
-      async () => false,
+      noPaste,
     );
     store.follow(PROJECT, session("s1"));
     await settle();
@@ -163,7 +164,7 @@ describe("a double click", () => {
       new FakeMend(),
       new ReviewMemory(memento()),
       keptIn(await storage(), slowFiles(30)),
-      async () => false,
+      noPaste,
     );
     store.follow(PROJECT, session("s1"));
     await vi.waitFor(() => expect(store.ready()).not.toBeNull());

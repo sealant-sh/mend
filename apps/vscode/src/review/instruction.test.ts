@@ -110,6 +110,7 @@ describe("who Send review is offered to", () => {
     viewer: "dana",
     ownerName: "Dana",
     agent: null,
+    startsTerminal: false,
     offline: false,
     count: 2,
     open: null,
@@ -139,12 +140,31 @@ describe("who Send review is offered to", () => {
         sharedControlEnabledAt: "2026-10-19T10:00:00.000Z",
       },
       ownerName: "Ana",
-      agent: { kind: "terminal", name: "claude", hers: false },
+      agent: { kind: "terminal", name: "claude", hers: false, processId: "agent-1" },
     });
     expect(offer).toEqual({
       kind: "disabled",
       why: "claude runs in Ana's terminal · only Ana sends it a review",
     });
+  });
+
+  it("is disabled on Ana's stopped terminal session even with shared control on, and says why", () => {
+    const anas = {
+      ...base,
+      session: {
+        ...SESSION,
+        ownerUserId: "ana",
+        sharedControlEnabledAt: "2026-10-19T10:00:00.000Z",
+      },
+      ownerName: "Ana",
+    };
+    // Mend starts a stopped terminal session's agent in its terminal with the review: Ana's alone.
+    expect(sendOffer({ ...anas, startsTerminal: true })).toEqual({
+      kind: "disabled",
+      why: "Ana's session starts its agent in a terminal with a review · only Ana sends it one",
+    });
+    // Her own stopped terminal session she sends to.
+    expect(sendOffer({ ...base, startsTerminal: true })).toEqual({ kind: "ready", count: 2 });
   });
 
   it("is disabled offline with her comments kept, and says so", () => {

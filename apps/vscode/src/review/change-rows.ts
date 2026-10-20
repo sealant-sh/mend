@@ -57,6 +57,8 @@ export interface ChangeRead {
     readonly viewer: string | null;
     readonly ownerName: string;
     readonly agent: LiveAgent | null;
+    /** The follow-up goes to a terminal agent, live or one a stopped session starts with it. */
+    readonly startsTerminal: boolean;
   };
   readonly readAt: string;
 }

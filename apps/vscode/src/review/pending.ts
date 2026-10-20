@@ -1,4 +1,11 @@
-import type { CommentTarget, PostState, SendItem, SendPhase, SendRecord } from "./delivery.js";
+import type {
+  CommentTarget,
+  PastePlan,
+  PostState,
+  SendItem,
+  SendPhase,
+  SendRecord,
+} from "./delivery.js";
 import type { CommentAnchor, RecordLink } from "./review-wire.js";
 
 /**
@@ -211,12 +218,18 @@ const parsePhase = (value: unknown): SendPhase | null => {
       return { kind: "sending", since: text(value, "since") ?? "" };
     case "delivering":
       return { kind: "delivering" };
-    case "in-terminal":
-      return {
-        kind: "in-terminal",
-        agent: text(value, "agent") ?? "the agent",
-        pasted: value["pasted"] === true,
-      };
+    case "in-terminal": {
+      // A review pasted without the agent's process named goes nowhere: it waits for Retry.
+      const processId = text(value, "processId");
+      return processId === null
+        ? { kind: "pending" }
+        : {
+            kind: "in-terminal",
+            agent: text(value, "agent") ?? "the agent",
+            processId,
+            pasted: value["pasted"] === true,
+          };
+    }
     case "pending":
       return { kind: "pending" };
     case "delivered":
@@ -228,6 +241,15 @@ const parsePhase = (value: unknown): SendPhase | null => {
     default:
       return null;
   }
+};
+
+const parsePaste = (value: unknown): PastePlan => {
+  if (!isRecord(value)) return { kind: "all" };
+  const pasted = text(value, "text");
+  const words = text(value, "words");
+  if (value["kind"] === "added" && pasted !== null) return { kind: "added", text: pasted };
+  if (value["kind"] === "none" && words !== null) return { kind: "none", words };
+  return { kind: "all" };
 };
 
 const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
@@ -253,7 +275,20 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
     items.length !== value["items"].length
   )
     return [];
-  return [{ key, sliceId, baseId, headId, diffDigest, instruction, items, phase, createdAt }];
+  return [
+    {
+      key,
+      sliceId,
+      baseId,
+      headId,
+      diffDigest,
+      instruction,
+      paste: parsePaste(value["paste"]),
+      items,
+      phase,
+      createdAt,
+    },
+  ];
 };
 
 /** A session's review as stored; a comment or a review that does not read back is dropped alone. */

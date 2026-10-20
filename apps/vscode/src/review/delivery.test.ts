@@ -15,8 +15,11 @@ import {
   type SendEvent,
   type SendRecord,
 } from "./delivery.js";
+import type { PastePlan } from "./delivery.js";
 import { acceptedDrafts, EMPTY_REVIEW, parseSessionReview, type SessionReview } from "./pending.js";
 import { comment, FILES, pending, PINNED, readOf } from "./test-fixtures.js";
+
+const ALL: PastePlan = { kind: "all" };
 
 const NOW = "2026-10-19T10:50:00.000Z";
 const SLICE = {
@@ -43,6 +46,7 @@ const sent = (
       key,
       slice: SLICE,
       instruction: "the review",
+      paste: ALL,
       pending: review.pending.map(({ id }) => id),
       open: [],
       now: NOW,
@@ -75,7 +79,7 @@ const posted = (review: SessionReview): SessionReview =>
     { kind: "posted", pendingId: "p2", commentId: "c2" },
   );
 
-const HERS: LiveAgent = { kind: "terminal", name: "claude", hers: true };
+const HERS: LiveAgent = { kind: "terminal", name: "claude", hers: true, processId: "agent-1" };
 
 const answered = (review: SessionReview, status: "pending" | "delivered" | "delivering") =>
   apply(review, {
@@ -123,7 +127,14 @@ describe("sending a review (story d, step 6)", () => {
       pending: [pending({}), pending({ id: "p2", line: 13, endLine: 13 })],
       sends: [],
     };
-    const input = { key: "key-1", slice: SLICE, instruction: "the review", open: [], now: NOW };
+    const input = {
+      key: "key-1",
+      slice: SLICE,
+      instruction: "the review",
+      paste: ALL,
+      open: [],
+      now: NOW,
+    };
     const one = started(startSend(review, { ...input, pending: ["p1"] }));
     expect(one.pending.map(({ id }) => id)).toEqual(["p2"]);
     expect(startSend(review, { ...input, pending: ["p1", "p9"] })).toBe(null);
@@ -153,8 +164,18 @@ describe("sending a review (story d, step 6)", () => {
 
   it("pastes into her live terminal agent once, and delivers that key again only once the agent is gone", () => {
     const inTerminal = answered(posted(sent()), "pending");
-    expect(only(inTerminal).phase).toEqual({ kind: "in-terminal", agent: "claude", pasted: false });
-    expect(nextAction(only(inTerminal))).toEqual({ kind: "paste", text: "the review" });
+    expect(only(inTerminal).phase).toEqual({
+      kind: "in-terminal",
+      agent: "claude",
+      processId: "agent-1",
+      pasted: false,
+    });
+    // Into the agent process Mend held it for, never another terminal of the session.
+    expect(nextAction(only(inTerminal))).toEqual({
+      kind: "paste",
+      text: "the review",
+      processId: "agent-1",
+    });
     const pasted = apply(inTerminal, { kind: "pasted" });
     for (const later of [
       pasted,
@@ -183,6 +204,7 @@ describe("sending a review (story d, step 6)", () => {
         key: "key-2",
         slice: SLICE,
         instruction: "the newer review",
+        paste: ALL,
         pending: [],
         open: ["c1", "c2"],
         now: NOW,

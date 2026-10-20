@@ -14,7 +14,7 @@ import type {
   SliceDiff,
   WorktreeChain,
 } from "./review-wire.js";
-import { keptIn, memoryFiles } from "./test-fixtures.js";
+import { keptIn, memoryFiles, noPaste } from "./test-fixtures.js";
 
 vi.mock("vscode", () => import("../test-vscode.js"));
 
@@ -209,7 +209,7 @@ const storeOver = (
     world,
     new ReviewMemory(options.kept ?? memento()),
     keptIn("/global-storage/reviews", memoryFiles()),
-    async () => false,
+    noPaste,
   );
   return { store, reads };
 };
