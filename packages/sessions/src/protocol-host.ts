@@ -594,6 +594,9 @@ export const ProtocolHostLive: Layer.Layer<
               ) {
                 entry.stopping = false;
                 handingOver.set(entry.process.sessionId, entry.process.id);
+                // A launch can hold the session's gate for a while: look again at the waiting
+                // pace, not at the quiescence settle's.
+                yield* Effect.sleep(WAIT_POLL);
                 continue;
               }
               if (handed.failure.code === HAND_OVER_NOT_NOW) return yield* abandon;
