@@ -20171,6 +20171,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.uninterruptibleMask((restore) =>
           Effect.suspend(() => {
             if ((discardSealed.get(sessionId) ?? 0) > 0) return Effect.void;
+            // Counted in the step that installs its release: a Stop interrupted before its first
+            // read must not release another Stop's count (Astra review of mend#1099, B2).
+            stopsUnderWay.set(sessionId, (stopsUnderWay.get(sessionId) ?? 0) + 1);
             const inFlight = { done: Deferred.makeUnsafe<void>(), tail: false };
             const set = stopTailsDone.get(sessionId) ?? new Set<Deferred.Deferred<void>>();
             set.add(inFlight.done);
@@ -20205,7 +20208,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const guardedReplacement =
           replacing.has(sessionId) && !stoppedDuringReplacement.has(sessionId);
         if (guardedReplacement) stoppedDuringReplacement.add(sessionId);
-        stopsUnderWay.set(sessionId, (stopsUnderWay.get(sessionId) ?? 0) + 1);
         // A launch still waiting for the worktree's previous executor launches nothing now.
         if (waitingLaunches.has(sessionId)) stoppedWhileWaiting.add(sessionId);
         // One further along stands down before its agent starts, or is stopped again as it ends.
