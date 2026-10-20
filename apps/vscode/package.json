@@ -527,41 +527,41 @@
         {
           "command": "mend.review.addComment",
           "group": "inline@1",
-          "when": "commentController == mend.review && commentThreadIsEmpty"
+          "when": "commentController =~ /^mend\\.review(\\.note)?$/ && commentThreadIsEmpty"
         },
         {
           "command": "mend.review.accept",
           "group": "inline@1",
-          "when": "commentController == mend.review && commentThread == mend.thread.draft"
+          "when": "commentController =~ /^mend\\.review(\\.note)?$/ && commentThread == mend.thread.draft"
         },
         {
           "command": "mend.review.dismiss",
           "group": "inline@2",
-          "when": "commentController == mend.review && commentThread == mend.thread.draft"
+          "when": "commentController =~ /^mend\\.review(\\.note)?$/ && commentThread == mend.thread.draft"
         }
       ],
       "comments/comment/title": [
         {
           "command": "mend.review.edit",
           "group": "inline@1",
-          "when": "commentController == mend.review && comment =~ /^mend\\.comment\\.(pending|accepted)$/"
+          "when": "commentController =~ /^mend\\.review(\\.note)?$/ && comment =~ /^mend\\.comment\\.(pending|accepted)$/"
         },
         {
           "command": "mend.review.delete",
           "group": "inline@2",
-          "when": "commentController == mend.review && comment =~ /^mend\\.comment\\.(pending|accepted)$/"
+          "when": "commentController =~ /^mend\\.review(\\.note)?$/ && comment =~ /^mend\\.comment\\.(pending|accepted)$/"
         }
       ],
       "comments/comment/context": [
         {
           "command": "mend.review.save",
           "group": "inline@1",
-          "when": "commentController == mend.review && comment =~ /^mend\\.comment\\.(pending|accepted)$/"
+          "when": "commentController =~ /^mend\\.review(\\.note)?$/ && comment =~ /^mend\\.comment\\.(pending|accepted)$/"
         },
         {
           "command": "mend.review.cancel",
           "group": "inline@2",
-          "when": "commentController == mend.review && comment =~ /^mend\\.comment\\.(pending|accepted)$/"
+          "when": "commentController =~ /^mend\\.review(\\.note)?$/ && comment =~ /^mend\\.comment\\.(pending|accepted)$/"
         }
       ]
     },

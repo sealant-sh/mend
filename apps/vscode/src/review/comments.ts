@@ -74,6 +74,11 @@ const sameThread = (left: ThreadView, right: ThreadView): boolean =>
 
 export class ReviewComments implements vscode.Disposable {
   readonly #controller: vscode.CommentController;
+  /**
+   * The change's note takes only comments on the whole change, and VS Code words a reply box by its
+   * controller alone: the note's threads have a controller of their own.
+   */
+  readonly #note: vscode.CommentController;
   readonly #threads = new Map<string, { view: ThreadView; thread: vscode.CommentThread }>();
   /** Threads whose Add, Accept or Dismiss is still being kept: a second click waits it out. */
   readonly #busy = new Set<vscode.CommentThread>();
@@ -83,6 +88,11 @@ export class ReviewComments implements vscode.Disposable {
     this.#controller = vscode.comments.createCommentController("mend.review", "Mend review");
     this.#controller.options = {
       prompt: "Comment on this line",
+      placeHolder: "Pending until Send review",
+    };
+    this.#note = vscode.comments.createCommentController("mend.review.note", "Mend review");
+    this.#note.options = {
+      prompt: "Comment on the whole change",
       placeHolder: "Pending until Send review",
     };
     this.#controller.commentingRangeProvider = {
@@ -97,6 +107,7 @@ export class ReviewComments implements vscode.Disposable {
     };
     this.#disposables = [
       this.#controller,
+      this.#note,
       store.onDidChange(() => this.#draw()),
       vscode.commands.registerCommand("mend.review.addComment", (reply: vscode.CommentReply) =>
         this.#once(reply.thread, () => this.#add(reply)),
@@ -147,8 +158,11 @@ export class ReviewComments implements vscode.Disposable {
       const drawn = this.#threads.get(view.key);
       if (drawn !== undefined && sameThread(drawn.view, view)) continue;
       const range = new vscode.Range(view.line - 1, 0, view.endLine - 1, 0);
-      const uri = view.at === null ? noteUri(read.changeId) : changeUri(view.at);
-      const thread = drawn?.thread ?? this.#controller.createCommentThread(uri, range, []);
+      const thread =
+        drawn?.thread ??
+        (view.at === null
+          ? this.#note.createCommentThread(noteUri(read.changeId), range, [])
+          : this.#controller.createCommentThread(changeUri(view.at), range, []));
       thread.range = range;
       thread.label = view.at === null ? "the whole change" : `${view.at.path} · line ${view.line}`;
       thread.contextValue = `mend.thread.${view.kind}`;
