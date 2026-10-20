@@ -211,19 +211,28 @@ describe("review prep: a stop is one settle", () => {
 });
 
 describe("review prep: a turn read only after it ended", () => {
-  const first = SessionProcessId.make("agent-first");
-  const resumed = SessionProcessId.make("agent-resumed");
+  const since = 10;
 
-  it("reads a session settled again as live in between when an agent it had not seen ran", () => {
-    const previous = settledBefore(true, new Set([first]), [first, resumed]);
+  it("reads a session settled again as live in between when its live mark moved", () => {
+    const previous = settledBefore({ settled: true, liveMark: 12 }, 14, since);
     expect(previous).toBe(false);
     expect(shouldPrepareReview(previous, true)).toBe(true);
   });
 
-  it("keeps the reading when every agent was seen, or nothing was seen to compare", () => {
-    expect(settledBefore(true, new Set([first]), [first])).toBe(true);
-    expect(settledBefore(true, new Set([first]), [])).toBe(true);
-    expect(settledBefore(undefined, undefined, [first, resumed])).toBeUndefined();
+  it("keeps the reading while the live mark stays where it was read", () => {
+    expect(settledBefore({ settled: true, liveMark: 12 }, 12, since)).toBe(true);
+    expect(settledBefore({ settled: false, liveMark: 12 }, 12, since)).toBe(false);
+  });
+
+  it("prepares a session never read when it was live after the worker began", () => {
+    const previous = settledBefore(undefined, since + 1, since);
+    expect(previous).toBe(false);
+    expect(shouldPrepareReview(previous, true)).toBe(true);
+  });
+
+  it("records a session never read silently when it was last live before the worker began", () => {
+    expect(settledBefore(undefined, since, since)).toBeUndefined();
+    expect(settledBefore(undefined, 0, since)).toBeUndefined();
   });
 });
 
