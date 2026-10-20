@@ -171,6 +171,40 @@ it("reads a ref as missing only when git exits 1 and says nothing; a run Node co
   );
 });
 
+it("keeps git's words for a ref that exits 1 and says why, never an unknown base", async () => {
+  await withRepository(({ repository, env }) =>
+    Effect.gen(function* () {
+      const store = yield* Store;
+      const run = (args: ReadonlyArray<string>, input?: string) =>
+        execFileSync("git", [...args], { cwd: repository, env, input, encoding: "utf8" }).trim();
+      run(["tag", "tree-tag", run(["mktree"], "")]);
+      const error = yield* store.resolveBase(repository, "tree-tag", env).pipe(Effect.flip);
+      expect(error.unknownBase).toBeUndefined();
+      expect(error.args).toEqual(["rev-parse", "--verify", "--quiet", "tree-tag^{commit}"]);
+      expect(error.exitCode).toBe(1);
+      expect(error.stderr).not.toBe("");
+    }),
+  );
+});
+
+it("resolves a base only the fallback fetch brought, by its origin name", async () => {
+  await withRepository(({ origin, repository, env }) =>
+    Effect.gen(function* () {
+      const store = yield* Store;
+      execFileSync("git", ["checkout", "-b", "pushed-later"], { cwd: origin, env });
+      fs.writeFileSync(path.join(origin, "README.md"), "pushed after adoption\n");
+      execFileSync("git", ["commit", "-am", "pushed later"], { cwd: origin, env });
+      const pushed = execFileSync("git", ["rev-parse", "pushed-later"], {
+        cwd: origin,
+        env,
+        encoding: "utf8",
+      }).trim();
+      const base = yield* store.resolveBase(repository, "pushed-later", null);
+      expect(base).toEqual({ baseRef: "pushed-later", baseSha: pushed });
+    }),
+  );
+});
+
 it("preserves a credential refusal without transport or credential disclosure", async () => {
   await withRepository(({ tmp, repository, env }) =>
     Effect.gen(function* () {
