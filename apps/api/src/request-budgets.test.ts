@@ -137,10 +137,7 @@ const serveOverSocket = async (
     ...api,
     send: (path: string, init: RequestInit = {}) =>
       fetch(`http://127.0.0.1:${address.port}${path}`, init),
-    /**
-     * A POST that declares `length` bytes and sends none of them: what the server answers before
-     * reading a body it will refuse. `fetch` cannot declare a length it does not send.
-     */
+    // `fetch` cannot declare a length it does not send.
     declare: (path: string, length: number) =>
       new Promise<{ readonly status: number; readonly body: unknown }>((resolve, reject) => {
         const outgoing = httpRequest(

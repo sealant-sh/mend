@@ -139,7 +139,6 @@ export interface TenancyApi {
     path: string,
     body: Uint8Array,
     contentType: string,
-    /** Abort the request mid-way, as a dropped connection would. */
     signal?: AbortSignal,
   ) => Promise<Response>;
   /** Publish one NOTIFY payload into the in-memory event bus, as Postgres would. */

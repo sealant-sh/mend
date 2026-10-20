@@ -65,13 +65,9 @@ interface Seen {
   readonly holds: Array<string>;
   readonly audits: Array<string>;
   readonly freshens: Array<string>;
-  /** Branch refs the store holds beside the rows (`store_refs`). */
   readonly refs: Array<StoreRef>;
-  /** Names whose first insert loses the name race, as another request's row would make it. */
   readonly namesRacing: Set<string>;
-  /** A provision waits here before it answers, once per entry, so a request can be cut mid-way. */
   readonly provisionGates: Array<Deferred.Deferred<void>>;
-  /** The hold answers a failure instead of a held session. */
   holdFails: boolean;
 }
 
@@ -106,7 +102,6 @@ const worldWith = async (limits: Parameters<typeof createTenancyApi>[0] = {}, se
       if (input.start.kind !== "handoff")
         return yield* Effect.die("a base start in a handoff test");
       const { admitted, ownerUserId } = input.start;
-      // The database's two unique keys on `worktrees`: the name, and the snapshot.
       if (input.name !== null && seen.namesRacing.delete(input.name)) {
         return yield* Effect.die(uniqueViolation(NAME_KEY));
       }
@@ -378,8 +373,6 @@ describe("POST /projects/:id/handoffs", () => {
     api = await worldWith({}, seen);
     const bundle = buildHandoffBundle(world.checkout);
     const earlier = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T06:00:00.000Z" });
-    // `fix-login` is carol's handoff of the branch; `fix-login-2` is alice's of another branch
-    // whose slug is the same.
     api.world.addWorktree(earlierHandoff("worktree-carol", "fix-login", earlier, "carol"));
     api.world.addWorktree(
       earlierHandoff("worktree-other-branch", "fix-login-2", earlier, "alice", "Fix/Login"),
@@ -394,7 +387,6 @@ describe("POST /projects/:id/handoffs", () => {
   it("takes the next suffix when the name is a branch ref the store still holds, or when another request's row lands first", async () => {
     const seen = freshSeen();
     api = await worldWith({}, seen);
-    // A removed worktree's branch outlives its row in `store_refs`.
     seen.refs.push(branchRef("fix-login", "1".repeat(40)));
     const bundle = buildHandoffBundle(world.checkout);
     const stranded = await post(api, "alice", bundle.bytes, "harness=claude&hold=false");
@@ -405,7 +397,6 @@ describe("POST /projects/:id/handoffs", () => {
     });
     expect(seen.provisions.map((provision) => provision.name)).toEqual(["fix-login-2"]);
 
-    // Two handoffs of one branch at once: the loser of the name's unique key takes the next.
     seen.namesRacing.add("fix-login-3");
     const raced = await post(
       api,
@@ -502,7 +493,6 @@ describe("POST /projects/:id/handoffs", () => {
     await until(() => seen.provisions.length === 1, "the provision to start");
     const joined = post(api, "alice", bundle.bytes);
     controller.abort();
-    // The handler answers the abort (499) or the fetch rejects; either way the wait ended.
     expect(await dropped).toMatch(/^aborted|^answered 499$/);
     Deferred.doneUnsafe(gate, Exit.void);
     const answer = await joined;
@@ -558,7 +548,6 @@ describe("POST /projects/:id/handoffs", () => {
   it("spends the account's origin-checks window on the admission's freshen, and says so in the refusal once it is spent", async () => {
     const seen = freshSeen();
     api = await worldWith({ accountOriginChecksPerMinute: 1 }, seen);
-    // A default tip this server's store has not seen: admission asks for one freshen.
     const bundle = buildHandoffBundle(world.checkout, {
       defaultTip: "0123456789abcdef0123456789abcdef01234567",
     });

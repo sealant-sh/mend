@@ -336,9 +336,6 @@ describe("CaptureRetention over dir://", () => {
     onTestFinished(cleanup);
     const now = 30 * 24 * HOUR;
     memory.clock.now = () => now;
-    // A handoff's delta pack lives under its worktree's capture prefix at epoch 0, put before
-    // the row (`SessionRepositoryCaptured.createWorktree`); here one worktree got its row and
-    // capture 0, the other died before its row.
     const orphanWorktree = WorktreeId.make("wt-handoff-orphan");
     const orphanPack = captureKeys(orphanWorktree, 0).pack(sha("orphan-delta"));
     const livePack = captureKeys(WT, 0).pack(sha("live-delta"));

@@ -87,7 +87,6 @@ export const makeHandoffWorld = (tmp: string): HandoffWorld => {
   return { tmp, origin, storePath, checkout, mainTip, mainRoot, sideTip };
 };
 
-/** Where the bundle is cut: at a commit (`^sha`), or nowhere, so it carries the whole history. */
 export type HandoffCut = { readonly kind: "at"; readonly sha: string } | { readonly kind: "none" };
 
 export interface HandoffBundleKnobs {
@@ -95,10 +94,8 @@ export interface HandoffBundleKnobs {
   readonly localBranch?: string | null;
   readonly cutAt?: string;
   readonly defaultTip?: string;
-  /** At the merge base with `origin/main` when absent. */
   readonly cut?: HandoffCut;
-  /** The `Mend-Merge-Base` trailer; the merge base with `origin/main` when absent. */
-  readonly mergeBase?: string;
+  readonly mergeBaseTrailer?: string;
   readonly message?: string;
   readonly shape?: "linear" | "merge" | "root";
   readonly extraRefs?: ReadonlyArray<string>;
@@ -109,7 +106,6 @@ export interface HandoffBundle {
   readonly head: string;
   readonly index: string;
   readonly checkpoint: string;
-  /** The merge base of HEAD with the checkout's `origin/main`, whatever the bundle was cut at. */
   readonly mergeBase: string;
   readonly cut: HandoffCut;
   readonly defaultTip: string;
@@ -150,7 +146,7 @@ export const buildHandoffBundle = (
         knobs.localBranch === null ? null : HandoffBranch.make(knobs.localBranch ?? "fix/login"),
       cutAt: HandoffCutAt.make(knobs.cutAt ?? "2026-10-18T07:42:05.000Z"),
       defaultTip: HexSha.make(defaultTip),
-      mergeBase: HexSha.make(knobs.mergeBase ?? mergeBase),
+      mergeBase: HexSha.make(knobs.mergeBaseTrailer ?? mergeBase),
     });
   const checkpoint = sh(checkout, ["commit-tree", worktreeTree, ...parents], { input: message });
   sh(checkout, ["update-ref", HANDOFF_SNAPSHOT_REF, checkpoint]);
@@ -169,10 +165,6 @@ export const buildHandoffBundle = (
   return { bytes, head, index, checkpoint, mergeBase, cut, defaultTip, worktreeTree, indexTree };
 };
 
-/**
- * A checkout whose branch forked at main's root and merged main's tip back in: its bundle names
- * two prerequisites, the fork point and the merge base.
- */
 export const makeMergedMainCheckout = (world: HandoffWorld): string => {
   const checkout = path.join(world.tmp, "merged");
   sh(world.tmp, ["clone", "-q", world.origin, checkout]);

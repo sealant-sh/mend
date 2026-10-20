@@ -13,19 +13,11 @@ import {
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
-/**
- * Where a new worktree starts (docs/specs/mend-handoff.md, "One creation path"). `base`: a
- * branch or sha the store resolves, the project's default branch when null. `handoff`: a
- * snapshot the store admitted, whose branch starts at the checkout's HEAD and whose base is
- * the merge base with the default branch. One creation path serves both; a handoff never joins
- * an existing worktree.
- */
 export type WorktreeStart =
   | { readonly kind: "base"; readonly base: string | null }
   | {
       readonly kind: "handoff";
       readonly admitted: AdmittedHandoff;
-      /** The account the handoff is received for: recorded on the seed, checked on replay. */
       readonly ownerUserId: string;
     };
 
@@ -67,13 +59,6 @@ export type SessionRepositoryError = GitError | ProjectNotFoundError;
 export class SessionRepository extends Context.Service<
   SessionRepository,
   {
-    /**
-     * Create a worktree on its own branch from `start`: a base (the default branch when null),
-     * or an admitted handoff, whose branch is created at the checkout's HEAD and whose base is
-     * the merge base with the default branch. The caller owns identity (directory + branch).
-     * `remoteEnv` freshens a base from origin first (best-effort); null skips the fetch. Only
-     * the capture store takes a handoff.
-     */
     readonly createWorktree: (
       projectId: ProjectId,
       identity: { readonly id: WorktreeId; readonly directory: string; readonly branch: string },

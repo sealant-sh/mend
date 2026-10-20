@@ -907,10 +907,6 @@ const sha = (value: string) => Sha.make(value);
 const commitOf = (storePath: string, ref: string) =>
   git(["rev-parse", `${ref}^{commit}`], storePath);
 
-/**
- * The commit a base ref names in the store without fetching: origin's remote-tracking ref,
- * which moves with every fetch, else the local name (a sha, a tag, a head frozen at adoption).
- */
 const knownBaseSha = (storePath: string, baseRef: string) =>
   commitOf(storePath, `refs/remotes/origin/${baseRef}`).pipe(
     Effect.catch(() => commitOf(storePath, baseRef)),
@@ -1266,23 +1262,11 @@ export class Store extends Context.Service<
       ChangeBundle,
       GitError | InvalidBranchError | BundleTooLargeError | BundleEmptyError
     >;
-    /**
-     * Freshen one base ref from the project origin, best-effort: what was done is answered,
-     * never failed. `remoteEnv` null means the caller could not resolve credentials; nothing is
-     * fetched. The store's own base resolution freshens the same way before it resolves.
-     */
     readonly freshenBase: (
       storePath: string,
       baseRef: string,
       remoteEnv: GitRemoteEnvironment | null,
     ) => Effect.Effect<FreshenOutcome>;
-    /**
-     * Admit a `mend handoff` bundle against the project's store (`handoff.ts`): verified in a
-     * quarantine under the store root, never fetched into the store. The one store write is
-     * `options.freshen`, spent at most once when the store lacks the bundle's base or the
-     * client's default tip; `options.fileBytes` bounds the blobs new in W or I (0: no bound).
-     * The only constructor of `AdmittedHandoff`.
-     */
     readonly admitHandoff: (
       storePath: string,
       defaultBranch: string,
@@ -1292,7 +1276,6 @@ export class Store extends Context.Service<
       AdmittedHandoff,
       HandoffRefusedError | HandoffFileOverBudgetError | GitError
     >;
-    /** Remove handoff quarantines older than an hour (a crash mid-admission); for boot. */
     readonly sweepHandoffQuarantines: () => Effect.Effect<ReadonlyArray<string>>;
   }
 >()("@mend/store/Store") {

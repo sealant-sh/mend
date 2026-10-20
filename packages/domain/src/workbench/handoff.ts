@@ -6,20 +6,17 @@ import type { WorktreeName } from "./worktree.ts";
 /** The bundle's one ref: W, the working tree, whose parent is I, the index, whose parent is HEAD. */
 export const HANDOFF_SNAPSHOT_REF = "refs/mend/handoff/snapshot";
 
-/** The largest file a handoff carries; larger ones stay behind, named (`MEND_BUDGET_HANDOFF_FILE_BYTES`). */
 export const HANDOFF_FILE_BYTES_DEFAULT = 8 * 1024 * 1024;
 
 const HANDOFF_SUBJECT = "mend handoff";
 
 const SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 
-/** A full lowercase sha-1 or sha-256 object name. */
 export const HexSha = Sha.check(Schema.isPattern(SHA_PATTERN));
 
 const isTrailerValue = (value: string): boolean =>
   value.length > 0 && value.trim() === value && !/\p{Cc}/u.test(value);
 
-/** The machine the checkout lives on: printable, 1 to 64 characters, no surrounding space. */
 export const HandoffMachine = Schema.String.pipe(
   Schema.check(
     Schema.makeFilter((value: string) =>
@@ -32,7 +29,6 @@ export const HandoffMachine = Schema.String.pipe(
 );
 export type HandoffMachine = typeof HandoffMachine.Type;
 
-/** The checkout's local branch as git names it (`fix/login`). */
 export const HandoffBranch = Schema.String.pipe(
   Schema.check(
     Schema.makeFilter((value: string) =>
@@ -43,7 +39,6 @@ export const HandoffBranch = Schema.String.pipe(
 );
 export type HandoffBranch = typeof HandoffBranch.Type;
 
-/** When the snapshot was cut, exactly as `Date.prototype.toISOString` writes it (UTC). */
 export const HandoffCutAt = Schema.String.pipe(
   Schema.check(
     Schema.makeFilter((value: string) => {
@@ -77,7 +72,6 @@ const TRAILER_KEYS = {
   mergeBase: "Mend-Merge-Base",
 };
 
-/** The message of commit W: the subject, a blank line, then the trailers in a fixed order. */
 export const formatHandoffMessage = (trailers: HandoffTrailers): string =>
   [
     HANDOFF_SUBJECT,
@@ -92,7 +86,6 @@ export const formatHandoffMessage = (trailers: HandoffTrailers): string =>
     "",
   ].join("\n");
 
-/** Why a commit message is not a handoff's: the reason, and the words naming what was found. */
 export interface HandoffMessageFault {
   readonly reason: "not-a-handoff" | "garbled-trailer" | "duplicate-trailer" | "missing-trailer";
   readonly detail: string;
@@ -120,10 +113,6 @@ const decodeTrailer = <S extends Schema.ConstraintDecoder<unknown>>(
         }),
       );
 
-/**
- * Read W's message back into its trailers. Strict: the subject must be `mend handoff`, every
- * line after the blank line a `Key: value` trailer Mend writes, each at most once.
- */
 export const parseHandoffMessage = (
   message: string,
 ): Result.Result<HandoffTrailers, HandoffMessageFault> => {
@@ -156,10 +145,6 @@ export const parseHandoffMessage = (
   });
 };
 
-/**
- * The `worktrees.handoff` value: where a handed-off worktree came from, who received it, its
- * replay key (`checkpoint`, the sha of W) and the seed of its capture 0.
- */
 export const WorktreeHandoff = Schema.Struct({
   machine: HandoffMachine,
   localBranch: Schema.NullOr(HandoffBranch),
@@ -201,12 +186,6 @@ const slugOf = (branch: string): string =>
     WORKTREE_NAME_MAX,
   );
 
-/**
- * The worktree a handoff creates: the branch slugged (`fix/login` → `fix-login`), or
- * `handoff-<head7>` when HEAD is detached or nothing of the branch name survives. A name already
- * taken gets `-2`, `-3`, … within 64 characters. Every result is a valid git ref component under
- * `mend/`.
- */
 export const handoffWorktreeName = (
   localBranch: string | null,
   head: Sha,
@@ -222,11 +201,9 @@ export const handoffWorktreeName = (
   }
 };
 
-/** Files a handoff leaves behind by name: any whose basename starts with `.env`. */
 export const isEnvPath = (path: string): boolean =>
   path.slice(path.lastIndexOf("/") + 1).startsWith(".env");
 
-/** What the checkout holds against the default branch, as `mend handoff` counts it. */
 export interface HandoffCounts {
   readonly commitsAhead: number;
   readonly uncommitted: number;
@@ -237,7 +214,6 @@ export interface HandoffCounts {
 const plural = (count: number, one: string, many: string): string =>
   `${count} ${count === 1 ? one : many}`;
 
-/** `2 commits ahead of main · 3 uncommitted files · 1 untracked`. */
 export const formatFactLine = ({
   commitsAhead,
   uncommitted,

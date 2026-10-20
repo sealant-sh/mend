@@ -2561,13 +2561,6 @@ export class SessionEngine extends Context.Service<
       | SessionLaunchSetupError
       | DotfilesResolveError
     >;
-    /**
-     * Hold the session's worktree open with no agent (docs/specs/mend-handoff.md, "Engine
-     * verb"): the workspace a shell resume opens, a shell process of `openedBy`'s in it, and
-     * the resume's own open-workbench shell ended. The fold reads `idle`: a supporting shell
-     * holds the workspace and no agent is live, as it does once an agent exits beside a
-     * `mend shell`. Answers the session as it then stands.
-     */
     readonly holdWorkspace: (
       sessionId: SessionId,
       openedBy: string,
@@ -8722,13 +8715,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return row;
       });
 
-      /**
-       * What follows a worktree row: capture 0 (capture mode, where the lease and the chain
-       * rows follow the row at once, ADR-0002 "Decisions made here" 6; the co-located adapter
-       * has nothing to attach), the ordinal-0 checkpoint and the change row. Each step is a
-       * no-op once done, so a creation that died after its row is finished by the next session
-       * provisioned in it (a handoff's replay).
-       */
       const completeWorktreeCreation = Effect.fn("SessionEngine.completeWorktreeCreation")(
         function* (project: Project, row: Worktree) {
           if (sessionRepo.attachWorktree !== undefined) {
@@ -20731,9 +20717,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         yield* resumeSession(sessionId, "shell");
         yield* openShell(sessionId, openedBy);
-        // The resume's login shell is the current agent; ended as its own exit would be
-        // observed (an open-workbench shell's exit never judges the work), the fold reads
-        // `idle` while the shell opened above holds the workspace.
         const agent = currentAgentProcess(yield* processes.listForSession(sessionId));
         if (
           agent !== null &&
@@ -24112,9 +24095,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const worktree = yield* worktreesRepo.byId(worktreeId);
             const project = yield* projects.byId(worktree.projectId);
             yield* refuseUnsupportedProject(project);
-            // A handed-off worktree is created in one request that can die after its row; the
-            // next session in it finishes what the creation owed. A base worktree made before
-            // captures attaches at launch instead (`ensureCaptureZero`).
             if (worktree.handoff !== null) yield* completeWorktreeCreation(project, worktree);
             return yield* provisionInWorktree(project, worktree, input);
           }).pipe(asSealantUser(input.ownerUserId)),

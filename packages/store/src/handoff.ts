@@ -14,29 +14,17 @@ import { git, GitError, gitExitUnexplained, gitOutput, gitRejectsContent } from 
 
 const admitted: unique symbol = Symbol("AdmittedHandoff");
 
-/**
- * A handoff the store admitted: the facts read out of verified content, and the delta pack the
- * worktree's capture 0 lists beside the base pack of M. Only `admitHandoff` makes one.
- */
 export interface AdmittedHandoff {
   readonly [admitted]: true;
   readonly trailers: HandoffTrailers;
-  /** H: the checkout's HEAD, where the worktree's branch starts. */
   readonly head: Sha;
-  /** I: the commit whose tree is the checkout's index. */
   readonly index: Sha;
-  /**
-   * W: the commit whose tree is the checkout's working tree; the first session-start checkpoint.
-   */
   readonly checkpoint: Sha;
-  /** M: the merge base with the default branch; the change's base. */
   readonly mergeBase: Sha;
   readonly worktreeTree: Sha;
   readonly indexTree: Sha;
   readonly defaultBranch: string;
-  /** Commits in `M..H`. */
   readonly commitsAhead: number;
-  /** `pack-objects --revs` of `W ^M`, self-contained: every object the base pack of M lacks. */
   readonly deltaPack: { readonly pack: Uint8Array; readonly idx: Uint8Array };
 }
 
@@ -52,17 +40,11 @@ export class HandoffRefusedError extends Schema.TaggedError<HandoffRefusedError>
   { reason: Schema.Literals(HANDOFF_ADMISSION_REFUSALS), message: Schema.String },
 ) {}
 
-/** A blob new in W or I is larger than the file budget: named, so the person can leave it out. */
 export class HandoffFileOverBudgetError extends Schema.TaggedError<HandoffFileOverBudgetError>()(
   "HandoffFileOverBudgetError",
   { path: Schema.String, bytes: Schema.Int, limit: Schema.Int },
 ) {}
 
-/**
- * What one freshen of `origin/<default>` did: fetched, skipped before any fetch (no credential
- * to fetch with, or a budget said no), or failed in git's words. Admission words its refusal
- * from it, so a person is never told to push when the server could not fetch.
- */
 export type FreshenOutcome =
   | { readonly kind: "fetched" }
   | { readonly kind: "skipped"; readonly words: string }
@@ -72,11 +54,8 @@ export const fetchedFreshen: FreshenOutcome = { kind: "fetched" };
 export const skippedFreshen = (words: string): FreshenOutcome => ({ kind: "skipped", words });
 export const failedFreshen = (words: string): FreshenOutcome => ({ kind: "failed", words });
 
-/** What `Store.admitHandoff` takes beside the bytes. */
 export interface AdmitHandoffOptions {
-  /** One freshen of `origin/<default>`, spent when the store lacks the bundle's base or tip. */
   readonly freshen: Effect.Effect<FreshenOutcome>;
-  /** The largest blob new in W or I, in bytes; 0 is no limit. */
   readonly fileBytes: number;
 }
 
@@ -85,13 +64,9 @@ export interface AdmitHandoffInput {
   readonly defaultBranch: string;
   readonly bundle: Uint8Array;
   readonly quarantineRoot: string;
-  /** The largest blob new in W or I, in bytes; 0 is no limit. */
   readonly fileBytes: number;
-  /** The store's own tip of the default branch, as `Store.resolveBaseSha` reads it; null when it has none. */
   readonly defaultTip: Effect.Effect<string | null>;
-  /** One freshen of the default branch, spent at most once per admission. */
   readonly freshenDefault: Effect.Effect<FreshenOutcome>;
-  /** How long one git call in the quarantine may take; a longer one is a host failure. */
   readonly gitTimeout?: Duration.Duration;
 }
 
@@ -109,9 +84,8 @@ export const HANDOFF_GIT_TIMEOUT = Duration.minutes(5);
 const isHexSha = Schema.is(HexSha);
 
 /**
- * The bundle header, read as text up to its blank line: the signature, then `@capability`
- * lines (v3), `-<sha> <words>` prerequisites and `<sha> <ref>` refs. Null when these bytes are
- * not a bundle. Pure, so a bundle that is not a handoff is refused before git opens it.
+ * A git bundle header runs to its blank line: the signature, then `@capability` lines (v3),
+ * `-<sha> <words>` prerequisites and `<sha> <ref>` refs.
  */
 export const parseBundleHeader = (bytes: Uint8Array): BundleHeader | null => {
   const text = Buffer.from(bytes.subarray(0, HEADER_LIMIT)).toString("latin1");
@@ -156,7 +130,6 @@ const damagedOr = (error: GitError) =>
 
 const short = (sha: string) => sha.slice(0, 7);
 
-/** The freshen, in the words of a refusal that follows it: what was done about origin. */
 const freshenWords = (outcome: FreshenOutcome, defaultBranch: string): string => {
   switch (outcome.kind) {
     case "fetched":
@@ -170,16 +143,6 @@ const freshenWords = (outcome: FreshenOutcome, defaultBranch: string): string =>
 
 const LACKS_PREREQUISITE = /lacks these prerequisite commits/i;
 
-/**
- * Admit a handoff bundle, or refuse it. Cheap checks first, the walks last. In order: the header
- * (one ref, one prerequisite or more), `bundle verify` (a missing prerequisite earns one freshen
- * of the default branch, then `base-unknown`), a fetch under `fetch.fsckObjects`, the shape (W^ =
- * I, I^ = H, each a single parent), the trailers, the merge base M (the trailer's, among the
- * prerequisites and among `merge-base --all H <Default-Tip>`, the tip in the store's
- * `origin/<default>` history, every prerequisite too), the closure (`rev-list --missing=error`),
- * the file budget over the blobs new in W or I, and the delta pack. Every git call runs in the
- * quarantine, bounded by `gitTimeout`; the store is only read.
- */
 export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHandoffInput) {
   const header = parseBundleHeader(input.bundle);
   if (header === null) return yield* notAHandoff("the body is not a git bundle");
@@ -219,7 +182,6 @@ export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHan
     );
   const knows = (commit: string) =>
     run(["cat-file", "-e", `${commit}^{commit}`]).pipe(Effect.result, Effect.map(Result.isSuccess));
-  /** `merge-base --is-ancestor`: exit 0 is yes, 1 is no; anything else is git's own failure. */
   const isAncestor = (ancestor: string, descendant: string) =>
     gitOutput(["merge-base", "--is-ancestor", ancestor, descendant], repo).pipe(
       Effect.timeoutOrElse({

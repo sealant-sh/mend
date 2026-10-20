@@ -54,11 +54,6 @@ const checkpointsOf = (world: World, worktreeId: string) =>
     .toSorted((a, b) => a.ordinal - b.ordinal)
     .map((checkpoint) => [checkpoint.ordinal, checkpoint.sha]);
 
-/**
- * A handoff through the engine (docs/specs/mend-handoff.md, "One creation path"): it never
- * joins a worktree by name. A name already taken fails the create, and the taken worktree is
- * left as it was.
- */
 describe("SessionEngine handoff", () => {
   it("anchors Review at the base: ordinal 0 is M, the session-start and the next checkpoint are W, the change's base is M", async () => {
     const memory = makeMemoryCaptureStore();
@@ -97,8 +92,6 @@ describe("SessionEngine handoff", () => {
           const admitted = yield* admitIn(project.storePath, bundle.bytes);
           const first = yield* provisionHandoff(project.id, "fix-login", admitted);
           const worktreeId = first.worktreeId;
-          // The residue of a crash right after the row: the seed and the delta pack in the
-          // bucket, and nothing of what follows the row (crash table, "row").
           world.sessions.delete(first.id);
           world.checkpoints.splice(
             0,
@@ -129,7 +122,6 @@ describe("SessionEngine handoff", () => {
             (change) => change.worktreeId === worktreeId,
           );
           expect(changes.map((change) => change.baseSha)).toEqual([bundle.mergeBase]);
-          // Done once: another session in the worktree adds its own session-start and no more.
           yield* engine.provisionSessionIn(worktreeId, {
             harness: "codex",
             label: null,

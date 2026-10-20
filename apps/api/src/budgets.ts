@@ -147,10 +147,6 @@ export class Budgets extends Context.Service<
       userId: string,
       effect: Effect.Effect<A, E, R>,
     ) => Effect.Effect<A | null, E, R>;
-    /**
-     * Hold one handoff slot for the account while `effect` runs (its admission, worktree and
-     * hold), or null when the account has `accountHandoffsInFlight` under way already.
-     */
     readonly withHandoffSlot: <A, E, R>(
       userId: string,
       effect: Effect.Effect<A, E, R>,
@@ -158,7 +154,6 @@ export class Budgets extends Context.Service<
   }
 >()("@mend/api/Budgets") {}
 
-/** One ceiling on what an account has under way at once, held for an effect's whole course. */
 const makeSlots = (ceiling: number) => {
   const held = new Map<string, number>();
   return <A, E, R>(userId: string, effect: Effect.Effect<A, E, R>) =>

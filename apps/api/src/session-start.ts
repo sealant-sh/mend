@@ -108,12 +108,6 @@ const launchOverOf = (request: LaunchRequest): LaunchOver =>
       ? Restart
       : NoLiveAgent;
 
-/**
- * A launch (or a hold) that failed after its caller was answered, and left the session reading
- * `starting` with nothing asked of the platform (no workspace, no run, no create on record): the
- * session says why, instead of `starting` for good. Anything that did reach the platform is the
- * engine's to settle (its own failure paths, the reaper for a create whose answer was lost).
- */
 export const settleIfUnlaunched = Effect.fn("SessionStart.settleIfUnlaunched")(function* (
   sessions: SessionsRepo["Service"],
   session: Session,

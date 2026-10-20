@@ -201,7 +201,7 @@ describe("Store.admitHandoff", () => {
     const bundle = buildHandoffBundle(world.checkout, {
       defaultTip: world.sideTip,
       cut: { kind: "at", sha: world.mainRoot },
-      mergeBase: world.mainRoot,
+      mergeBaseTrailer: world.mainRoot,
     });
     await expectRefusal(bundle.bytes, "base-off-default-branch", {});
   });
@@ -209,7 +209,7 @@ describe("Store.admitHandoff", () => {
   it("refuses a bundle whose base is not the merge base with its default tip as not-a-handoff", async () => {
     const bundle = buildHandoffBundle(world.checkout, {
       cut: { kind: "at", sha: world.mainRoot },
-      mergeBase: world.mainRoot,
+      mergeBaseTrailer: world.mainRoot,
     });
     expect(bundle.defaultTip).toBe(world.mainTip);
     const outcome = await expectRefusal(bundle.bytes, "not-a-handoff");

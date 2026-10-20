@@ -808,8 +808,7 @@ const MainLive = Layer.unwrap(
     // on it, so it must be launched explicitly rather than provided.
     return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
       // Session steering, landing (docs/adr/0007-landing.md) for the landing routes, and
-      // receiving a handoff (docs/specs/mend-handoff.md) for the handoff routes: one instance,
-      // which owns the receives under way.
+      // receiving a handoff (docs/specs/mend-handoff.md) for the handoff routes.
       Layer.provide(
         Layer.mergeAll(
           SessionSteeringLive,

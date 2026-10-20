@@ -71,27 +71,17 @@ const gitFailure = (cwd: string, what: string, detail: string) =>
 
 const NAME_TAKEN = "already exists in this project";
 
-/** `createWorktree` refused the name: its branch is another worktree's (or a removed one's). */
 export const isWorktreeNameTaken = (error: GitError): boolean =>
   error.args[0] === "capture" && error.args[1] === "create" && error.stderr.includes(NAME_TAKEN);
 
 export interface CaptureZeroSource {
-  /** The commit the worktree's branch ref names. */
   readonly head: Sha;
-  /** Checkpoint ordinal 0: the worktree's base state, the one Review anchors at. */
   readonly checkpoint: Sha;
-  /** The trees capture 0 lays down; null lays down `checkpoint`'s own tree as both. */
   readonly trees: { readonly worktreeTree: Sha; readonly indexTree: Sha } | null;
   readonly basePackTip: Sha;
   readonly extraPacks: ReadonlyArray<string>;
 }
 
-/**
- * Where capture 0 comes from. A handed-off worktree's trees are W's and I's, read off the seed,
- * while its ordinal 0 is M, the merge base: Review diffs the worktree against the base, so
- * the local change shows from the first open. The first session-start checkpoint (ordinal 1)
- * is W itself (`checkpoint`, capture 0 alone on the chain).
- */
 export const captureZeroSource = (
   worktree: Worktree,
   legacy: { readonly headSha: Sha; readonly checkpointSha: Sha } | null,
@@ -234,11 +224,6 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         Effect.mapError((error) => gitFailure("", "manifest", `${row.manifestKey}: ${error._tag}`)),
       );
 
-    /**
-     * Create `refs/heads/<branch>` at `sha`. The insert is create-only, so a ref already at
-     * exactly `sha` is this same start retried after a crash between the ref and the row;
-     * any other sha is another worktree's, and the name is `taken`.
-     */
     const claimBranchAt = Effect.fn("SessionRepositoryCaptured.claimBranchAt")(function* (
       projectId: ProjectId,
       branch: string,
@@ -268,9 +253,6 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         );
         if (start.kind === "handoff") {
           const { admitted, ownerUserId } = start;
-          // Under the worktree's own capture prefix, at epoch 0, before any claim: capture 0
-          // names it, so retention keeps it while the chain lives, and reclaims it after the
-          // grace when the row never came or once the worktree is gone (ADR-0002 "Retention").
           const delta = yield* putPack(
             project.storePath,
             captureKeys(identity.id, 0).pack(sha256Hex(admitted.deltaPack.pack)),
@@ -569,8 +551,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         //    is byte for byte capture 0 and the checkpoint is its commit, observed at capture 0.
         //    Session create lands here (the worktree-start checkpoint is ordinal 0, the
         //    session-start one ordinal 1, and no executor has booted) — the derive path below
-        //    would otherwise run a runner over an empty workspace class and fail. A handed-off
-        //    worktree's ordinal 0 is its base M; its content from ordinal 1 on is the snapshot W.
+        //    would otherwise run a runner over an empty workspace class and fail.
         if (chain.head.n === 0 && fromHead.checkpoint !== undefined) {
           const ref = checkpointRef(worktreeId, input.index);
           const base = Sha.make(fromHead.checkpoint.sha);

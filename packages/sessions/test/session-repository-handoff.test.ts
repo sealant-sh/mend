@@ -120,7 +120,6 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
           worktreeId,
           created.baseSha,
         );
-        // The engine's creation tail and the first session-start, as capture 0 alone answers them.
         const ordinal0 = yield* repo.checkpoint({
           projectId: world.project.id,
           scope: worktreeId,
@@ -177,7 +176,6 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
       },
     });
     expect(bundle.mergeBase).toBe(world.baseSha);
-    // Under the worktree's own capture prefix, so retention owns it with the chain.
     expect(seen.row.handoff?.deltaPack).toMatch(
       new RegExp(`^captures/${worktreeId}/0/packs/[0-9a-f]{64}$`),
     );
@@ -191,7 +189,6 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
     expect(seen.manifest.sections.git.packs).toHaveLength(2);
     expect(seen.manifest.sections.git.packs[1]).toBe(seen.row.handoff?.deltaPack);
     expect(seen.manifest.sections.git.fsck).toBe("verified");
-    // Ordinal 0 is the base M, what Review anchors at; the first session-start is W itself.
     expect(seen.manifest.checkpoint).toEqual({
       ordinal: 0,
       sha: bundle.mergeBase,

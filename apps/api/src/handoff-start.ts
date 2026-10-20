@@ -49,24 +49,13 @@ export interface HandoffQueryInput {
 
 type HandoffError = NotFound | HandoffRefused | BudgetExceeded | StoreFailure;
 
-/** How many names a handoff tries past the one it computed before it gives up on a race. */
 const NAME_TRIES = 5;
 
-/** One try at the worktree: made, its name taken meanwhile, or the snapshot's row raced in. */
 type ProvisionOutcome =
   | { readonly kind: "made"; readonly session: Session; readonly name: string }
   | { readonly kind: "name-taken"; readonly name: string }
   | { readonly kind: "replayed" };
 
-/**
- * Receiving a `mend handoff` (docs/specs/mend-handoff.md, "Engine verb"), as a given account:
- * the project's terms before any bytes are sent, and the bundle itself. One implementation for
- * the route, with the same checks in the same order each time: access, the store kind and the
- * repository's format, the replay lookup by the snapshot's sha (before the session budget, so a
- * retry of the same bytes is never refused for room), the session budget, admission, provision,
- * the audit event, and the hold. The work runs detached from the request: a connection that
- * drops mid-way never interrupts it, and a retry of the same bytes by the same account joins it.
- */
 export class HandoffStart extends Context.Service<
   HandoffStart,
   {
@@ -88,7 +77,6 @@ const termOf = (limit: number): number => (limit > 0 ? limit : Number.MAX_SAFE_I
 const refused = (reason: HandoffRefused["reason"], message: string) =>
   new HandoffRefused({ reason, message: `${message} · nothing was created` });
 
-/** A session the hold has not reached: nothing of it asked of the platform yet. */
 const unheld = (session: Session) =>
   session.status === "starting" &&
   session.settledAt === null &&
@@ -97,11 +85,6 @@ const unheld = (session: Session) =>
 
 const BRANCH_PREFIX = "refs/heads/mend/";
 
-/**
- * The caller's earlier handoff of the same local branch among the names this one passed over on
- * its way to `chosen` (`fix-login`, `fix-login-2`, … in that order), the newest when several: the
- * one the CLI names (`fix-login is your earlier handoff`).
- */
 const previousOf = (
   rows: ReadonlyArray<Worktree>,
   chosen: string,
@@ -143,7 +126,6 @@ export const makeHandoffStart = Effect.gen(function* () {
   const policy = yield* SourcePolicy;
   const mendKeys = yield* MendKeys;
   const agentBridge = yield* AgentBridge;
-  /** The receives under way, by caller, project and the bytes themselves. */
   const inFlight = new Map<string, Deferred.Deferred<HandoffReceived, HandoffError>>();
 
   const admissible = Effect.fn("HandoffStart.admissible")(function* (project: Project) {
@@ -186,11 +168,6 @@ export const makeHandoffStart = Effect.gen(function* () {
       );
     });
 
-  /**
-   * One freshen of origin's default branch for the admission, spent only when the store lacks
-   * the bundle's base or tip: counted under the account's origin-checks window, as "Check
-   * origin" is, and skipped in words when that window is spent.
-   */
   const freshenFor = (project: Project, userId: string) =>
     Effect.gen(function* () {
       const { limits, originChecks } = budgets;
@@ -236,11 +213,6 @@ export const makeHandoffStart = Effect.gen(function* () {
       );
   });
 
-  /**
-   * Hold the session's workspace with no agent, forked past the answer window the way a launch
-   * is, and answer the session as it then stands: held (`idle`), still `starting` when the hold
-   * outlives the window, or `failed` with the hold's words when it could not be held.
-   */
   const hold = Effect.fn("HandoffStart.hold")(function* (session: Session, userId: string) {
     const holding = engine.holdWorkspace(session.id, userId).pipe(
       Effect.map((held): Session | null => held),
@@ -291,11 +263,6 @@ export const makeHandoffStart = Effect.gen(function* () {
     );
   });
 
-  /**
-   * The same bytes arrived before: the worktree they made, finished when its creation died
-   * early, its first session (provisioned when there is none), and the hold when the session
-   * is still owed one. Only the account the handoff was received for may replay it.
-   */
   const replay = Effect.fn("HandoffStart.replay")(function* (
     project: Project,
     earlier: Worktree,
@@ -320,7 +287,6 @@ export const makeHandoffStart = Effect.gen(function* () {
     });
   });
 
-  /** Every name a worktree row or a `mend/<name>` branch in the store already holds. */
   const takenNames = Effect.fn("HandoffStart.takenNames")(function* (projectId: ProjectId) {
     const rows = yield* worktrees.listForProject(projectId);
     const refs = yield* storeRefs.list(projectId);
@@ -332,11 +298,6 @@ export const makeHandoffStart = Effect.gen(function* () {
     ]);
   });
 
-  /**
-   * Make the worktree under the branch's name, or the next free suffix when a name is taken
-   * between the look and the create (a row, or a branch ref left by a removed worktree). A
-   * unique violation on the snapshot is a replay that raced this request; it answers null.
-   */
   const provision = Effect.fn("HandoffStart.provision")(function* (
     project: Project,
     userId: string,
@@ -379,7 +340,9 @@ export const makeHandoffStart = Effect.gen(function* () {
             if (constraint === "worktrees_project_name_key") {
               return Effect.succeed({ kind: "name-taken", name });
             }
-            return constraint === null ? Effect.die(defect) : Effect.succeed({ kind: "replayed" });
+            return constraint === "worktrees_project_handoff_checkpoint_key"
+              ? Effect.succeed({ kind: "replayed" })
+              : Effect.die(defect);
           }),
         );
       if (outcome.kind === "replayed") return null;
@@ -468,8 +431,6 @@ export const makeHandoffStart = Effect.gen(function* () {
     if (joined !== undefined) return yield* Deferred.await(joined);
     const deferred = Deferred.makeUnsafe<HandoffReceived, HandoffError>();
     inFlight.set(key, deferred);
-    // Detached, so a dropped connection ends only its wait; the slot is held for the whole
-    // course, and every request for these bytes, this one included, reads the one outcome.
     yield* engine.detach(
       budgets.withHandoffSlot(userId, receive(project, userId, query, bytes)).pipe(
         Effect.flatMap((received) =>
