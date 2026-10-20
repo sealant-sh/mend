@@ -627,7 +627,7 @@ describe("access lost (S9)", () => {
   it("tells whoever follows the frames to read again when the stream reopens", async () => {
     const { mend, store } = world();
     const heard: Array<string> = [];
-    store.onDidHearEvent((event) => heard.push(event.type));
+    store.onDidHearEvent((frame) => heard.push(frame.type));
     store.start();
     await tick(200);
     mend.signal({ kind: "opened" });

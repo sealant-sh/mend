@@ -90,7 +90,7 @@ class World extends ReviewClient {
   readonly opened: Array<string> = [];
   readonly pins = new Map<string, PinnedSlice>();
   readonly ranges: Array<string> = [];
-  comments_: ReadonlyArray<ServerComment> = [];
+  written: ReadonlyArray<ServerComment> = [];
   missing = new Set<string>();
 
   constructor() {
@@ -154,7 +154,7 @@ class World extends ReviewClient {
   }
 
   override async comments(): Promise<ReadonlyArray<ServerComment>> {
-    return this.comments_;
+    return this.written;
   }
 }
 
@@ -348,13 +348,9 @@ describe("a reconnect", () => {
 });
 
 describe("a slice she chose", () => {
-  const turns = (world: World) => {
-    world.take("turn-boundary", 2);
-  };
-
   it("stays on its own two checkpoints while newer ones arrive, until she reads the newer one", async () => {
     const world = new World();
-    turns(world);
+    world.take("turn-boundary", 2);
     const { store } = storeOver(world);
     store.follow(project, session);
     const first = await readyRead(store);
@@ -400,7 +396,7 @@ describe("a slice she chose", () => {
 
   it("falls back once when Mend has no such range, and Refresh does not ask for it again", async () => {
     const world = new World();
-    turns(world);
+    world.take("turn-boundary", 2);
     const { store } = storeOver(world);
     store.follow(project, session);
     const first = await readyRead(store);
@@ -421,34 +417,30 @@ describe("a slice she chose", () => {
   });
 });
 
+const sentBy = (id: string, name: string, headId: string, createdAt: string): ServerComment => ({
+  id,
+  file: "src/f0.ts",
+  line: 1,
+  endLine: 1,
+  anchor: { sliceId: "old", baseId: "cp0", headId, side: "new" },
+  author: { kind: "reviewer", name },
+  body: "x",
+  suggestion: null,
+  state: "open",
+  evidence: [],
+  sentToSessionId: "s1",
+  createdAt,
+  updatedAt: createdAt,
+});
+
 describe("since my last review", () => {
   it("starts from her own most recent review, not another reviewer's", async () => {
     const world = new World();
     world.take("turn-boundary", 1);
     world.take("turn-boundary", 2);
-    const comment = (
-      id: string,
-      name: string,
-      headId: string,
-      createdAt: string,
-    ): ServerComment => ({
-      id,
-      file: "src/f0.ts",
-      line: 1,
-      endLine: 1,
-      anchor: { sliceId: "old", baseId: "cp0", headId, side: "new" },
-      author: { kind: "reviewer", name },
-      body: "x",
-      suggestion: null,
-      state: "open",
-      evidence: [],
-      sentToSessionId: "s1",
-      createdAt,
-      updatedAt: createdAt,
-    });
-    world.comments_ = [
-      comment("dana", "Dana", "cp1", "2026-10-19T10:00:00.000Z"),
-      comment("ana", "Ana", "cp2", "2026-10-19T11:00:00.000Z"),
+    world.written = [
+      sentBy("dana", "Dana", "cp1", "2026-10-19T10:00:00.000Z"),
+      sentBy("ana", "Ana", "cp2", "2026-10-19T11:00:00.000Z"),
     ];
     const dana = storeOver(world).store;
     dana.follow(project, session);

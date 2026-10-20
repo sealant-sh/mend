@@ -78,10 +78,6 @@ export class ContentCache {
     this.#identity = null;
   }
 
-  get size(): number {
-    return this.#entries.size;
-  }
-
   #drop(key: string): void {
     const found = this.#entries.get(key);
     if (found === undefined) return;
@@ -116,7 +112,9 @@ export class ContentReader {
       contents = await this.client.contents(address.worktreeId, address.path, address.at);
     } catch (cause) {
       if (cause instanceof MendApiError && cause.status === 404)
-        throw new Error(`Mend has no ${address.path} at this checkpoint: ${cause.message}`);
+        throw new Error(`Mend has no ${address.path} at this checkpoint: ${cause.message}`, {
+          cause,
+        });
       throw cause;
     }
     const shown = documentText(address.path, contents);

@@ -113,12 +113,12 @@ describe("a slice she reads (story d, step 5)", () => {
   });
 });
 
-describe("last turn", () => {
-  const span = (checkpoints: ReadonlyArray<Checkpoint>): ReadonlyArray<number> | null => {
-    const turn = lastTurn(checkpoints);
-    return turn === null ? null : [turn.from.ordinal, turn.to.ordinal];
-  };
+const span = (checkpoints: ReadonlyArray<Checkpoint>): ReadonlyArray<number> | null => {
+  const turn = lastTurn(checkpoints);
+  return turn === null ? null : [turn.from.ordinal, turn.to.ordinal];
+};
 
+describe("last turn", () => {
   it("is the session's first turn: from its start to the turn boundary taken when it ended", () => {
     expect(
       span([

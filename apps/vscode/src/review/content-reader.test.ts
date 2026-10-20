@@ -128,7 +128,7 @@ describe("the cache's bounds", () => {
     cache.get("me", "a");
     cache.set("me", "a", "12345");
     cache.set("me", "b", "12345");
-    expect(cache.size).toBe(1);
+    expect(cache.get("me", "a")).toBe(undefined);
     expect(cache.get("me", "b")).toBe("12345");
     cache.set("me", "huge", "x".repeat(11));
     expect(cache.get("me", "huge")).toBe(undefined);

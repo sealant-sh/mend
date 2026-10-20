@@ -34,10 +34,7 @@ export interface Slice {
 }
 
 /** The newest checkpoint Mend knows of: the chain's, or the pinned head when the chain lags. */
-export const newestCheckpoint = (
-  chain: ReadonlyArray<Checkpoint>,
-  pinned: PinnedSlice,
-): Checkpoint =>
+const newestCheckpoint = (chain: ReadonlyArray<Checkpoint>, pinned: PinnedSlice): Checkpoint =>
   chain.reduce(
     (best, checkpoint) => (checkpoint.ordinal > best.ordinal ? checkpoint : best),
     pinned.head,
