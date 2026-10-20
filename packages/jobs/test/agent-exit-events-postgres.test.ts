@@ -34,7 +34,16 @@ import {
 } from "@mend/domain";
 import { AgentWait, type SessionProcessKind, type SessionStatus } from "@mend/domain/workbench";
 import { CaptureRuntimeOff, WorktreeReads, WORKTREE_STAMP } from "@mend/sessions";
-import { ConfigProvider, Effect, Layer, Redacted, Schedule, type Scope, Stream } from "effect";
+import {
+  ConfigProvider,
+  Effect,
+  Latch,
+  Layer,
+  Redacted,
+  Schedule,
+  type Scope,
+  Stream,
+} from "effect";
 import { SqlClient } from "effect/sql";
 import { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -182,9 +191,14 @@ interface Observed {
  * Starts the session notifier and review prep on their own `listenEvents` streams over the
  * scratch database, with only the push transport, the job queue and the git read faked. Returns
  * once both streams have heard a NOTIFY, so the LISTEN is in place before the caller triggers.
- * Given `queue`, review prep queues on it instead of the fake.
+ * Given `queue`, review prep queues on it instead of the fake. Given `lag`, review prep reads
+ * each event only while that latch is open, as a worker behind its events does.
  */
-const startWorkers = (diff: () => string = () => BILLING_DIFF, queue?: Layer.Layer<JobRunner>) =>
+const startWorkers = (
+  diff: () => string = () => BILLING_DIFF,
+  queue?: Layer.Layer<JobRunner>,
+  lag?: Latch.Latch,
+) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     const pushes: Array<PushMessage> = [];
@@ -214,7 +228,12 @@ const startWorkers = (diff: () => string = () => BILLING_DIFF, queue?: Layer.Lay
     const listening = (mark: () => void) =>
       listenEvents(sql).pipe(Stream.tap(() => Effect.sync(mark)));
     yield* sessionNotifier(listening(() => (heard.notifier = true))).pipe(Effect.provide(fakes));
-    yield* reviewPrep(listening(() => (heard.prep = true))).pipe(Effect.provide(fakes));
+    const prepEvents = listening(() => (heard.prep = true));
+    yield* reviewPrep(
+      lag === undefined
+        ? prepEvents
+        : prepEvents.pipe(Stream.mapEffect((payload) => Effect.as(lag.await, payload))),
+    ).pipe(Effect.provide(fakes));
     const listeningNow = yield* notifyEvent(sql, {
       type: "project",
       projectId: "listen-canary",
@@ -540,6 +559,38 @@ describe.skipIf(postgres.skip)("a terminal agent's exit under a live shell, thro
           yield* processes.markExited(edited.agentId, "exited", 0);
 
           yield* eventually(() => jobsFor(workers.observed(), edited.changeId).length >= 2);
+          expect(jobsFor(workers.observed(), seeded.changeId)).toEqual([
+            ...reviewPasses(seeded.changeId),
+            ...reviewPasses(seeded.changeId),
+          ]);
+        }),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "prepares a resumed turn that started and ended before review prep read it",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const processes = yield* SessionProcessesRepo;
+          const seeded = yield* seedSession("unseen-turn", "idle", finishedTurn());
+          const marker = yield* seedSession("unseen-turn-marker", "idle", finishedTurn());
+          let diff = BILLING_DIFF;
+          const lag = yield* Latch.make(true);
+          const workers = yield* startWorkers(() => diff, undefined, lag);
+
+          yield* processes.markExited(seeded.agentId, "exited", 0);
+          yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 2);
+          diff = `${BILLING_DIFF}+export const ceiling = 99;\n`;
+          // Every read of the turn's events comes after it ended: each reads the session settled.
+          yield* lag.close;
+          yield* turnThatEnds(seeded, "an edit");
+          yield* processes.markExited(marker.agentId, "exited", 0);
+          yield* lag.open;
+
+          yield* eventually(() => jobsFor(workers.observed(), marker.changeId).length >= 2);
           expect(jobsFor(workers.observed(), seeded.changeId)).toEqual([
             ...reviewPasses(seeded.changeId),
             ...reviewPasses(seeded.changeId),
