@@ -198,6 +198,20 @@ export default async (h) => {
   const keep = (name, text) =>
     writeFileSync(join(out, name), redact(redactValues(String(text), secrets)));
   note(`answers go ${ui ? "through the editor" : "through the API (MEND_VERIFY_ANSWER_VIA=api)"}`);
+  /** `Write an answer…` picked, then `text` typed into the input box it opens and Enter pressed. */
+  const writeAnswer = async (text, slug) => {
+    await quickInput.pick("Write an answer…", { exact: true });
+    // The input box replaces the list a moment after the pick: typing sooner types into the list.
+    await waitUntil("the answer's input box", async () =>
+      (await quickInput.isOpen()) && (await quickInput.rows()).length === 0 ? true : null,
+    );
+    await quickInput.type(text);
+    await waitUntil(`"${text}" in the input box`, async () =>
+      (await quickInput.value()) === text ? true : null,
+    );
+    await shot(slug);
+    await quickInput.accept();
+  };
 
   /** A call that keeps the status and body, for the refusals the steps record. */
   const rawAs =
@@ -708,10 +722,7 @@ export default async (h) => {
             JSON.stringify(items) === JSON.stringify(["staging", "production", "Write an answer…"]),
           `quick pick "${title}" · items ${JSON.stringify(items)}`,
         );
-        await quickInput.pick("Write an answer…", { exact: true });
-        await quickInput.type(typed);
-        await shot("4-typed");
-        await quickInput.accept();
+        await writeAnswer(typed, "4-typed");
         shown = `toast "${words}" · buttons ${JSON.stringify(buttons)} · quick pick "${title}" ${JSON.stringify(items)} · typed "${typed}"`;
       } else await respond(dana, request, { answers: { target: [typed] } });
       const result = await answered(dana, request, { answers: { target: [typed] } });
@@ -737,11 +748,11 @@ export default async (h) => {
         await toast.click("Answer…");
         await quickInput.waitFor(15_000);
         const rows = (await quickInput.rows()).map((row) => row.label);
-        if (rows.includes("Write an answer…"))
-          await quickInput.pick("Write an answer…", { exact: true });
-        await quickInput.type(named);
-        await shot("4b-typed");
-        await quickInput.accept();
+        expect(
+          JSON.stringify(rows) === JSON.stringify(["Write an answer…"]),
+          `rows ${JSON.stringify(rows)}`,
+        );
+        await writeAnswer(named, "4b-typed");
         shown = `toast "${words}" · buttons ${JSON.stringify(buttons)} · first rows ${JSON.stringify(rows)}`;
       } else await respond(dana, request, { answers: { name: [named] } });
       const result = await answered(dana, request, { answers: { name: [named] } });
