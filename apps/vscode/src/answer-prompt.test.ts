@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { RequestPrompts, requestToAnswer, WRITE_AN_ANSWER } from "./answer-prompt.js";
+import { EMPTY_ANSWER, RequestPrompts, requestToAnswer, WRITE_AN_ANSWER } from "./answer-prompt.js";
 import { MendApiError } from "./mend-http.js";
 import { Answers, requestView, toastChoices, type AgentResponse } from "./request-answer.js";
 import { pendingRequest, requestWait, whichDatabase } from "./test-requests.js";
@@ -128,6 +128,23 @@ describe("More…", () => {
       { label: "SQLite", choice: "SQLite" },
       { label: "Write an answer…", choice: null },
     ]);
+    expect(server.respond.mock.calls).toEqual([["r1", { answers: { q1: ["MySQL"] } }]]);
+  });
+
+  it("holds Enter on an empty answer, which would send nothing", async () => {
+    const server = mend();
+    pickLabelled(WRITE_AN_ANSWER);
+    window.showInputBox.mockImplementationOnce(async (options: unknown) => {
+      const validate = Reflect.get(Object(options), "validateInput");
+      if (typeof validate !== "function") return "";
+      expect([validate(""), validate("  "), validate("MySQL")]).toEqual([
+        EMPTY_ANSWER,
+        EMPTY_ANSWER,
+        null,
+      ]);
+      return "MySQL";
+    });
+    await server.prompts.answer(database, NAME);
     expect(server.respond.mock.calls).toEqual([["r1", { answers: { q1: ["MySQL"] } }]]);
   });
 

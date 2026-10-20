@@ -15,6 +15,9 @@ import type { SessionStore } from "./session-store.js";
 /** The last item of a question's quick pick: an input box for an answer of her own. */
 export const WRITE_AN_ANSWER = "Write an answer…";
 
+/** What the input box says while it is empty: Enter would send nothing. */
+export const EMPTY_ANSWER = "Write an answer, or press Escape to send nothing";
+
 const STATUS_MS = 5_000;
 
 interface ChoicePick extends vscode.QuickPickItem {
@@ -71,6 +74,7 @@ const pickResponse = async (
             title: stepTitle,
             prompt: question.question,
             ignoreFocusOut: true,
+            validateInput: (value) => (value.trim() === "" ? EMPTY_ANSWER : null),
           });
           if (typed === undefined) return undefined;
           written[question.id] = typed;
