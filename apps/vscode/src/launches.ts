@@ -1,17 +1,25 @@
 import { MendApiError } from "./mend-http.js";
 import { promptIssue, type LaunchRequest } from "./new-session.js";
 import type { LaunchAttempt } from "./session-model.js";
-import type { Session } from "./types.js";
+import type { LaunchExpected, Session } from "./types.js";
 
 /** What a launch needs of the client. */
 export interface LaunchClient {
-  launchSession(sessionId: string, start: LaunchRequest): Promise<unknown>;
+  launchSession(
+    sessionId: string,
+    start: LaunchRequest & { readonly expected?: LaunchExpected },
+  ): Promise<unknown>;
   sessionDetail(sessionId: string): Promise<{ readonly session: Session }>;
 }
 
 /** Where each attempt is said: the store, whose model reads it. */
 export interface AttemptSink {
   attempted(sessionId: string, attempt: LaunchAttempt): void;
+  /**
+   * Mend refused this window's launch over its precondition: the session moved on under another
+   * launch, so nothing it does next is this window's.
+   */
+  forget(sessionId: string): void;
 }
 
 /** What a failed launch's toast offers, from a read of the session made just before. */
@@ -21,7 +29,33 @@ export type RetryOffer =
   /** Failed, but there is nothing this window can send again. */
   | { readonly kind: "none" }
   /** It reads `starting` or live now, or a launch is on its way: nothing failed to retry. */
-  | { readonly kind: "moved" };
+  | { readonly kind: "moved"; readonly read: Session };
+
+/**
+ * Mend refused a launch over its precondition (#1094), `SessionMovedOn` or `SessionAgentLive`:
+ * nothing launched and nothing was written. `said` is the server's sentence.
+ */
+type Precondition = { readonly kind: "movedOn" | "agentLive"; readonly said: string };
+
+const PRECONDITIONS: Readonly<Record<string, Precondition["kind"]>> = {
+  SessionMovedOn: "movedOn",
+  SessionAgentLive: "agentLive",
+};
+
+/**
+ * What a Retry came to. `read` is the session read after Mend refused it, null when that read
+ * failed; `said` is the server's sentence, null when this window's own read found it moved on.
+ */
+export type RetryAnswer =
+  /** Sent; the reads say how it went. */
+  | { readonly kind: "sent" }
+  /** Nothing sent: another Retry is on its way, or there is nothing this window can send. */
+  | { readonly kind: "held" }
+  /** The session moved on from the failure the toast saw. Nothing was sent again. */
+  | { readonly kind: "movedOn"; readonly read: Session; readonly said: string | null }
+  | { readonly kind: "movedOn"; readonly read: null; readonly said: string }
+  /** Its agent is live or starting: Open attaches to it. */
+  | { readonly kind: "agentLive"; readonly read: Session | null; readonly said: string };
 
 /**
  * The server's gate refuses a launch while another of the same session is under way
@@ -54,9 +88,9 @@ export class Launches {
   /** The first launch of a session this window created. */
   async launch(sessionId: string, start: LaunchRequest): Promise<void> {
     if (this.#busy.has(sessionId)) return;
-    const answered = await this.#hold(sessionId, () => this.#send(sessionId, start, null));
+    const sent = await this.#hold(sessionId, () => this.#send(sessionId, start, null, null));
     // Said once nothing is on its way, so the toast it raises may offer Retry.
-    this.#say(sessionId, answered);
+    if (sent.kind === "answered") this.#say(sessionId, sent.attempt);
   }
 
   /**
@@ -70,15 +104,27 @@ export class Launches {
     return this.#check(sessionId);
   }
 
-  /** Retry: the same launch on the same session, once a read just now says it may be sent. */
-  async relaunch(sessionId: string): Promise<void> {
+  /**
+   * Retry: the same launch on the same session, once a read just now says it may be sent. It names
+   * `settledAt`, the failure its toast saw, as `expected`, so Mend launches it only over that
+   * failure. Null, for a refusal the server never settled, names none: Mend then refuses it only
+   * over a live agent.
+   */
+  async relaunch(sessionId: string, settledAt: string | null): Promise<RetryAnswer> {
     const start = this.#sent.get(sessionId);
-    if (start === undefined || this.#busy.has(sessionId)) return;
-    const answered = await this.#hold(sessionId, async () => {
+    if (start === undefined || this.#busy.has(sessionId)) return { kind: "held" };
+    return this.#hold(sessionId, async (): Promise<RetryAnswer> => {
       const offer = await this.#check(sessionId);
-      return offer.kind === "retry" ? this.#send(sessionId, start, offer.read.settledAt) : null;
+      if (offer.kind === "none") return { kind: "held" };
+      if (offer.kind === "moved") return { kind: "movedOn", read: offer.read, said: null };
+      const expected = settledAt === null ? null : { settledAt };
+      const sent = await this.#send(sessionId, start, offer.read.settledAt, expected);
+      if (sent.kind === "answered") {
+        this.#say(sessionId, sent.attempt);
+        return { kind: "sent" };
+      }
+      return { kind: sent.kind, read: await this.#read(sessionId), said: sent.said };
     });
-    if (answered !== null) this.#say(sessionId, answered);
   }
 
   async #hold<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
@@ -92,54 +138,72 @@ export class Launches {
     }
   }
 
+  async #read(sessionId: string): Promise<Session | null> {
+    return this.client.sessionDetail(sessionId).then(
+      ({ session }) => session,
+      () => null,
+    );
+  }
+
   async #check(sessionId: string): Promise<RetryOffer> {
     const start = this.#sent.get(sessionId);
     if (start === undefined || promptIssue(start.prompt ?? "", "the agent") !== null)
       return { kind: "none" };
-    const read = await this.client.sessionDetail(sessionId).then(
-      ({ session }) => session,
-      () => null,
-    );
+    const read = await this.#read(sessionId);
     if (read === null) return { kind: "none" };
     const refusal = this.#attempts.get(sessionId)?.refusal ?? null;
     if (read.status === "failed") return { kind: "retry", read };
     if (read.status === "starting" && refusal !== null && !UNDER_WAY.test(refusal.line))
       return { kind: "retry", read };
-    return { kind: "moved" };
+    return { kind: "moved", read };
   }
 
-  /** Says the attempt, sends it, and gives back the attempt as answered, for its caller to say. */
+  /**
+   * Says the attempt and sends it. Gives back the attempt as answered, for its caller to say, or a
+   * precondition refusal, after which the store holds no attempt of this window's for the session.
+   */
   async #send(
     sessionId: string,
     start: LaunchRequest,
     after: string | null,
-  ): Promise<LaunchAttempt> {
-    const attempt: LaunchAttempt = {
-      n: (this.#attempts.get(sessionId)?.n ?? 0) + 1,
-      after,
-      refusal: null,
-    };
+    expected: LaunchExpected | null,
+  ): Promise<{ readonly kind: "answered"; readonly attempt: LaunchAttempt } | Precondition> {
+    const before = this.#attempts.get(sessionId);
+    const attempt: LaunchAttempt = { n: (before?.n ?? 0) + 1, after, refusal: null };
     this.#sent.set(sessionId, start);
     this.#say(sessionId, attempt);
     try {
-      await this.client.launchSession(sessionId, start);
-      return attempt;
+      await this.client.launchSession(
+        sessionId,
+        expected === null ? start : { ...start, expected },
+      );
+      return { kind: "answered", attempt };
     } catch (cause) {
       // No answer, or a 5xx (an edge in front of the server answers 502/504 while the server
       // still runs the launch): it may be running. Saying it again reads the session, and the
       // reads say.
       if (!(cause instanceof MendApiError) || cause.status === null || cause.status >= 500)
-        return attempt;
+        return { kind: "answered", attempt };
+      const precondition = cause.status === 409 ? PRECONDITIONS[cause.tag ?? ""] : undefined;
+      if (precondition !== undefined) {
+        if (before === undefined) this.#attempts.delete(sessionId);
+        else this.#attempts.set(sessionId, before);
+        this.sink.forget(sessionId);
+        return { kind: precondition, said: cause.message };
+      }
       // The server settles most refusals failed before it answers: then that failure, keyed by
       // its `settledAt` in every window, is the one toast, and the refusal is not said apart.
       const settled = await this.#settledSince(sessionId, after);
-      if (settled === "settled") return attempt;
+      if (settled === "settled") return { kind: "answered", attempt };
       return {
-        ...attempt,
-        refusal: {
-          line: `launch refused · ${cause.message}`,
-          at: new Date().toISOString(),
-          confirmed: settled === "unsettled",
+        kind: "answered",
+        attempt: {
+          ...attempt,
+          refusal: {
+            line: `launch refused · ${cause.message}`,
+            at: new Date().toISOString(),
+            confirmed: settled === "unsettled",
+          },
         },
       };
     }
@@ -150,10 +214,7 @@ export class Launches {
     sessionId: string,
     after: string | null,
   ): Promise<"settled" | "unsettled" | "unknown"> {
-    const read = await this.client.sessionDetail(sessionId).then(
-      ({ session }) => session,
-      () => null,
-    );
+    const read = await this.#read(sessionId);
     if (read === null) return "unknown";
     return read.status === "failed" && read.settledAt !== after ? "settled" : "unsettled";
   }

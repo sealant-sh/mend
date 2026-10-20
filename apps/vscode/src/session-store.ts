@@ -365,6 +365,11 @@ export class SessionStore implements vscode.Disposable {
     this.#emit();
   }
 
+  forget(sessionId: string): void {
+    this.#launches.delete(sessionId);
+    this.#emit();
+  }
+
   #signal(signal: StreamSignal): void {
     switch (signal.kind) {
       case "opened":
