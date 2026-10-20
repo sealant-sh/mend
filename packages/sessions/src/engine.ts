@@ -32,7 +32,7 @@ import {
   WorktreeChangesRepo,
   type WorktreeNotFoundError,
   WorktreesRepo,
-  type SessionNotFoundError,
+  SessionNotFoundError,
   type SessionOutcome,
   ProjectServiceRecipesRepo,
   SessionProcessesRepo,
@@ -6985,7 +6985,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const relaunching = new Map<SessionId, string>();
 
-      /** The relaunch plan becomes `next(stored)`, from what was read, however often it moved. */
+      /**
+       * The relaunch plan becomes `next(stored)`, from what was read, however often it moved. A
+       * removed session has no plan to write.
+       */
       const updatePlan = (
         sessionId: SessionId,
         next: (stored: string | null) => string | null,
@@ -6994,9 +6997,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           while (true) {
             const stored = yield* sessions.relaunchOf(sessionId);
             const wanted = next(stored);
-            if (wanted === stored || (yield* sessions.swapRelaunch(sessionId, stored, wanted))) {
-              return;
-            }
+            if (wanted === stored) return;
+            if ((yield* sessions.swapRelaunch(sessionId, stored, wanted)) !== "moved") return;
           }
         });
 
@@ -16718,7 +16720,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ...plan,
                   pickup: pickupTakenOver(stored, carrying),
                 });
-                if (yield* sessions.planRelaunch(sessionId, stored, next, at)) break;
+                const wrote = yield* sessions.planRelaunch(sessionId, stored, next, at);
+                if (wrote === "written") break;
+                if (wrote === "gone") return yield* new SessionNotFoundError({ sessionId });
               }
               relaunching.set(sessionId, plan.id);
             }

@@ -38,6 +38,7 @@ const STOPPING = SessionId.make("s-stopping");
 const FAILING = SessionId.make("s-failing");
 const FENCED = SessionId.make("s-fenced");
 const PICKUP = SessionId.make("s-pickup");
+const REMOVED = SessionId.make("s-removed");
 
 /** A reading with one capture pending, taken at `at`. */
 const observed = (at: Date) => ({
@@ -69,7 +70,7 @@ describe.skipIf(postgres.skip)("a session's capture drain, in Postgres", () => {
         yield* sql`
           INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
           VALUES (${WORKTREE}, ${PROJECT}, 'wt-1', 'wt-1', 'mend/wt-1', 'abc')`;
-        for (const id of [DRAINING, REMOVING, STOPPING, FAILING, PICKUP]) {
+        for (const id of [DRAINING, REMOVING, STOPPING, FAILING, PICKUP, REMOVED]) {
           yield* sessions.create({
             id,
             projectId: PROJECT,
@@ -139,19 +140,49 @@ describe.skipIf(postgres.skip)("a session's capture drain, in Postgres", () => {
       }),
     );
     expect(result).toEqual({
-      wrote: true,
+      wrote: "written",
       drain: null,
       listed: true,
-      overNothing: false,
-      relaunchOverNothing: false,
+      overNothing: "moved",
+      relaunchOverNothing: "moved",
       afterRefused: pickup,
-      relaunchOverPickup: true,
+      relaunchOverPickup: "written",
       replaced: launch,
-      staleClear: false,
+      staleClear: "moved",
       afterStaleClear: launch,
-      clear: true,
+      clear: "written",
       resumeAfterClear: null,
       listedAfterClear: false,
+    });
+  });
+
+  it("says a removed session's plan is gone, never moved, so a writer that read it stops asking (SLNT-167)", async () => {
+    const at = new Date("2026-10-20T10:00:00.000Z");
+    const pickup = JSON.stringify({ kind: "pickup", harness: "claude", id: "pickup-2" });
+    const launch = JSON.stringify({ kind: "launch", argv: ["claude"], id: "launch-2" });
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const planned = yield* sessions.planRelaunch(REMOVED, null, launch, at);
+        yield* sessions.remove(REMOVED);
+        return {
+          planned,
+          read: yield* sessions.relaunchOf(REMOVED),
+          // What either writer would try next, from what it read before the removal or after.
+          swapFromRead: yield* sessions.swapRelaunch(REMOVED, launch, pickup),
+          swapFromNothing: yield* sessions.swapRelaunch(REMOVED, null, pickup),
+          planFromRead: yield* sessions.planRelaunch(REMOVED, launch, launch, at),
+          planFromNothing: yield* sessions.planRelaunch(REMOVED, null, launch, at),
+        };
+      }),
+    );
+    expect(result).toEqual({
+      planned: "written",
+      read: null,
+      swapFromRead: "gone",
+      swapFromNothing: "gone",
+      planFromRead: "gone",
+      planFromNothing: "gone",
     });
   });
 

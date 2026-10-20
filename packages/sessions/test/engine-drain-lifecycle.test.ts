@@ -3011,6 +3011,101 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
   );
 
   it.effect(
+    "a held-off pickup whose session is removed while its plan is on its way writes once and ends (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const seen = { writes: 0, holder: "", left: true };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            const holder = yield* run.holdNextLaunch;
+            const restarting = yield* run.engine
+              .launch(run.session.id, ["codex"], { over: Restart })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* holder.held;
+            const writing = yield* Deferred.make<void>();
+            run.world.beforeRelaunchSwap.current = (next) => {
+              if (next === null || !next.includes('"pickup"')) return Promise.resolve();
+              seen.writes += 1;
+              Deferred.doneUnsafe(writing, Exit.void);
+              // The removal lands between the pickup's read of the column and its write.
+              run.world.sessions.delete(run.session.id);
+              run.world.relaunches.delete(run.session.id);
+              return seen.writes > 20
+                ? Promise.reject(new Error("the pickup's write never ends"))
+                : Promise.resolve();
+            };
+            yield* run.save;
+            yield* Deferred.await(writing);
+            yield* settleFor(20);
+            yield* holder.answer({ allowed: false, setting: "kernel.unprivileged_userns_clone=1" });
+            seen.holder = (yield* Fiber.join(restarting))._tag;
+            yield* settleFor(20);
+            seen.left = run.world.relaunches.has(run.session.id);
+          }),
+        );
+        expect(seen).toEqual({ writes: 1, holder: "Failure", left: false });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a launch whose session is removed while it plans its relaunch ends there, with nothing planned or started (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, signalling, wrapCaptureChannel } = yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        let removing: SessionId | null = null;
+        let plans = 0;
+        const seen = { launch: "", plans: 0, created: 0, left: true };
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              yield* shipHarnessCapture(
+                dir,
+                memory,
+                session.worktreeId,
+                memory.leases.get(session.worktreeId)?.epoch ?? 0,
+                crypto.randomUUID(),
+              );
+              const createdBefore = created.length;
+              removing = session.id;
+              const relaunched = yield* engine
+                .launch(session.id, ["codex"], { over: Restart })
+                .pipe(Effect.result);
+              seen.launch = relaunched._tag === "Failure" ? relaunched.failure._tag : "launched";
+              seen.plans = plans;
+              seen.created = created.length - createdBefore;
+              seen.left = world.relaunches.has(session.id);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            sealantLayer: signalling(lifecycleLayer(created)),
+            wrapSessions: (inner) => ({
+              ...inner,
+              planRelaunch: (id, expected, resume, at) =>
+                Effect.suspend(() => {
+                  if (id !== removing) return inner.planRelaunch(id, expected, resume, at);
+                  plans += 1;
+                  if (plans > 20) return Effect.die(new Error("the launch's plan never ends"));
+                  // The removal lands between the launch's read of the column and its write.
+                  return inner
+                    .remove(id)
+                    .pipe(Effect.andThen(inner.planRelaunch(id, expected, resume, at)));
+                }),
+            }),
+          },
+        );
+        expect(seen).toEqual({ launch: "SessionNotFoundError", plans: 1, created: 0, left: false });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
     "the owner's stop wins over a replacement under way: the drain finishes, the executor ends, and no new one starts",
     () =>
       Effect.gen(function* () {
