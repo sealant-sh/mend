@@ -127,6 +127,7 @@ const GitPath = Schema.String.pipe(Schema.brand("GitPath"));
 type GitPath = typeof GitPath.Type;
 
 const NUL = Buffer.from([0]);
+const TAB = 0x09;
 const pathOf = (bytes: Buffer): GitPath => GitPath.make(bytes.toString("latin1"));
 const bytesOf = (file: GitPath): Buffer => Buffer.from(file, "latin1");
 const nulList = (files: Iterable<GitPath>): Buffer =>
@@ -287,6 +288,84 @@ export const scratchParentIssue = (parent: string, checkout: CheckoutPaths): str
     : null;
 };
 
+const NO_COMMIT =
+  "this branch has no commit yet · commit once, then hand off · nothing was created";
+
+const unmergedRefusal = (paths: number): string =>
+  `${paths} unmerged ${paths === 1 ? "path" : "paths"} · finish or abort the merge, then hand off · nothing was created`;
+
+const headOf = (git: Git, base: Env): string | null =>
+  git.attempt(base, ["rev-parse", "--verify", "-q", "HEAD^{commit}"])?.trim() ?? null;
+
+const basesOf = (
+  git: Git,
+  base: Env,
+  head: string,
+  defaultBranch: string,
+): { readonly defaultTip: string; readonly mergeBase: string } | { readonly refused: string } => {
+  const tracking = `refs/remotes/origin/${defaultBranch}`;
+  const defaultTip =
+    git.attempt(base, ["rev-parse", "--verify", "-q", `${tracking}^{commit}`])?.trim() ?? null;
+  if (defaultTip === null) {
+    return {
+      refused: `this checkout has no origin/${defaultBranch} · run git fetch origin, then hand off again · nothing was created`,
+    };
+  }
+  const mergeBase = git.attempt(base, ["merge-base", head, defaultTip])?.trim() ?? null;
+  if (mergeBase === null) {
+    return { refused: `HEAD shares no history with origin/${defaultBranch} · nothing was created` };
+  }
+  return { defaultTip, mergeBase };
+};
+
+/** origin's default branch as this checkout last fetched it (`origin/HEAD`), when it knows. */
+const originDefaultOf = (git: Git, base: Env): string | null => {
+  const ref = git.attempt(base, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"])?.trim() ?? "";
+  return ref.startsWith("refs/remotes/origin/") ? ref.slice("refs/remotes/origin/".length) : null;
+};
+
+export interface PreflightRequest {
+  readonly checkout: string;
+  readonly defaultBranch: string | null;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+const preflight = (request: PreflightRequest): string | null => {
+  const base = scrubbed(request.env ?? process.env);
+  const paths = pathsOf(request.checkout, base);
+  if (paths === null) {
+    return `${request.checkout} is not inside a git checkout · run mend handoff in one · nothing was created`;
+  }
+  const git = gitIn(paths.top, SAFE_CONFIG);
+  const head = headOf(git, base);
+  if (head === null) return NO_COMMIT;
+  const defaultBranch = request.defaultBranch ?? originDefaultOf(git, base);
+  if (defaultBranch !== null) {
+    const bases = basesOf(git, base, head, defaultBranch);
+    if ("refused" in bases) return bases.refused;
+  }
+  const unmerged = new Set(
+    nulFields(git.run(base, ["ls-files", "--unmerged", "-z"])).map((field) =>
+      pathOf(field.subarray(field.indexOf(TAB) + 1)),
+    ),
+  );
+  return unmerged.size === 0 ? null : unmergedRefusal(unmerged.size);
+};
+
+/**
+ * What a snapshot of this checkout would refuse, read without a scratch directory or a server:
+ * no commit, no origin/<default>, no shared history, unmerged paths. A null default branch is
+ * origin's as the checkout knows it. Null when none applies.
+ */
+export const preflightIssue = (request: PreflightRequest): string | null => {
+  try {
+    return preflight(request);
+  } catch (error) {
+    if (error instanceof GitFailure) return `${error.message} · nothing was created`;
+    throw error;
+  }
+};
+
 interface Checkout extends CheckoutPaths {
   readonly objects: string;
   readonly format: string;
@@ -306,26 +385,11 @@ const locate = (
   request: SnapshotRequest,
 ): Checkout | { readonly refused: string } => {
   const text = (args: ReadonlyArray<string>) => git.run(base, args).toString().trim();
-  const head = git.attempt(base, ["rev-parse", "--verify", "-q", "HEAD^{commit}"])?.trim() ?? null;
-  if (head === null) {
-    return {
-      refused: "this branch has no commit yet · commit once, then hand off · nothing was created",
-    };
-  }
-  const tracking = `refs/remotes/origin/${request.defaultBranch}`;
-  const defaultTip =
-    git.attempt(base, ["rev-parse", "--verify", "-q", `${tracking}^{commit}`])?.trim() ?? null;
-  if (defaultTip === null) {
-    return {
-      refused: `this checkout has no origin/${request.defaultBranch} · run git fetch origin, then hand off again · nothing was created`,
-    };
-  }
-  const mergeBase = git.attempt(base, ["merge-base", head, defaultTip])?.trim() ?? null;
-  if (mergeBase === null) {
-    return {
-      refused: `HEAD shares no history with origin/${request.defaultBranch} · nothing was created`,
-    };
-  }
+  const head = headOf(git, base);
+  if (head === null) return { refused: NO_COMMIT };
+  const bases = basesOf(git, base, head, request.defaultBranch);
+  if ("refused" in bases) return bases;
+  const { defaultTip, mergeBase } = bases;
   const branchRef = git.attempt(base, ["symbolic-ref", "-q", "HEAD"])?.trim() ?? "";
   return {
     ...paths,
@@ -420,7 +484,6 @@ interface Inspection {
   readonly commitsAhead: number;
 }
 
-const TAB = 0x09;
 const TREE_MODE = "040000";
 
 /**
@@ -511,9 +574,7 @@ const inspect = (
   );
   const unmerged = status.filter((entry) => entry.kind === "unmerged");
   if (unmerged.length > 0) {
-    return {
-      refused: `${unmerged.length} unmerged ${unmerged.length === 1 ? "path" : "paths"} · finish or abort the merge, then hand off · nothing was created`,
-    };
+    return { refused: unmergedRefusal(unmerged.length) };
   }
   const tracked = status.flatMap((entry) => (entry.kind === "tracked" ? [entry] : []));
   const untracked = status.flatMap((entry) => (entry.kind === "untracked" ? [entry.path] : []));

@@ -15,6 +15,7 @@ import {
   checkoutOf,
   type HandoffSnapshot,
   type LeftOut,
+  preflightIssue,
   scratchParentIssue,
   snapshotCheckout,
   type SnapshotRequest,
@@ -345,13 +346,21 @@ const send = async (
   }
 };
 
+const CO_LOCATED =
+  "this server keeps worktrees in the co-located store, which takes no handoffs · the operator can unset MEND_SESSION_STORE to run the capture store · nothing was created";
+
+interface Resolved {
+  readonly project: ProjectDto;
+  readonly adopted: boolean;
+}
+
 const projectFor = async (
   deps: HandoffDeps,
   args: ReadonlyArray<string>,
   explicit: string | null,
   checkout: { readonly top: string; readonly originUrl: string | null },
   io: HandoffIo,
-): Promise<ProjectDto | null> => {
+): Promise<Resolved | null> => {
   const projects = await deps.api<ReadonlyArray<ProjectDto>>("GET", "/projects");
   const found =
     explicit === null
@@ -374,7 +383,7 @@ const projectFor = async (
         `this checkout's origin is ${origin ?? "not set"} · ${found.name}'s is ${found.originUrl ?? "not set"} · nothing was created`,
       );
     }
-    return found;
+    return { project: found, adopted: false };
   }
   if (origin === null) {
     return refuse(
@@ -383,7 +392,12 @@ const projectFor = async (
   }
   const issue = repositoryCloneUrlIssue(origin);
   if (issue !== null) return refuse(`${issue} · nothing was created`);
+  const local = preflightIssue({ checkout: checkout.top, defaultBranch: null });
+  if (local !== null) return refuse(local);
   if (!(await serverTakesHandoffs(deps))) return oldServer(deps);
+  // The terms answer for a project; before one is adopted the organization says the same store.
+  const organization = await deps.api<{ readonly mountDelivery?: string }>("GET", "/organization");
+  if (organization.mountDelivery === "bind") return refuse(CO_LOCATED);
   const repository = normalizeRemoteUrl(origin) ?? origin;
   const name = normalizeProjectName(path.basename(origin.replace(/\/+$/u, ""), ".git"));
   const question = `adopt ${repository} as ${name} and hand off?`;
@@ -399,7 +413,7 @@ const projectFor = async (
   }
   const adopted = await deps.api<ProjectDto>("POST", "/projects", { name, source: origin });
   say(`${green("✓")} adopted · ${adopted.name} · ${dim(adopted.storePath)}`);
-  return adopted;
+  return { project: adopted, adopted: true };
 };
 
 const SIGNALS: ReadonlyArray<readonly [NodeJS.Signals, number]> = [
@@ -547,9 +561,20 @@ const handOff = async (
   }
   const scratchIssue = scratchParentIssue(os.tmpdir(), checkout);
   if (scratchIssue !== null) return refuse(scratchIssue);
-  const project = await projectFor(deps, args, parsed.args.project, checkout, io);
-  if (project === null) return;
-  await sendFrom(deps, project, checkout, parsed.args);
+  const resolved = await projectFor(deps, args, parsed.args.project, checkout, io);
+  if (resolved === null) return;
+  try {
+    await sendFrom(deps, resolved.project, checkout, parsed.args);
+  } catch (error) {
+    if (!resolved.adopted || !(error instanceof Refusal)) throw error;
+    throw new Refusal(
+      error.words.replace(
+        / · nothing was created$/u,
+        ` · nothing was handed off · ${resolved.project.name} stays adopted`,
+      ),
+      error.code,
+    );
+  }
 };
 
 export const handoffCommand = async (

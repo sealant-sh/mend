@@ -94,6 +94,7 @@ const handoffServer = async (
     readonly terms?: (response: ServerResponse) => void;
     readonly answer?: (response: ServerResponse, attempt: number) => void;
     readonly launch?: (response: ServerResponse) => void;
+    readonly mountDelivery?: "bind" | "sources";
     readonly socket?: "end" | "drop";
   } = {},
 ) => {
@@ -103,7 +104,9 @@ const handoffServer = async (
     fake.routes.push(route);
     if (route === "GET /api/projects") json(response, options.projects ?? [project]);
     else if (route === "GET /api/health") json(response, { version: "0.35.1" });
-    else if (route === "GET /api/me/git-access") json(response, { mode: "bridge" });
+    else if (route === "GET /api/organization") {
+      json(response, { mountDelivery: options.mountDelivery ?? "sources" });
+    } else if (route === "GET /api/me/git-access") json(response, { mode: "bridge" });
     else if (route === `GET /api/projects/${project.id}/handoffs`) {
       if (options.terms === undefined) {
         json(response, { bundleBytes: 64 * 1024 * 1024, fileBytes: FILE_BYTES });
@@ -546,6 +549,71 @@ describe("mend handoff", spawning, () => {
       expect(result.stderr).toBe(refusal);
       expect(server.routes).toEqual(["GET /api/projects"]);
     }
+  }, 30_000);
+
+  it("refuses what the checkout or the server would refuse before it offers to adopt", async () => {
+    const w = world();
+    const unborn = path.join(w.root, "unborn");
+    w.git(w.root, ["init", "-q", "-b", "main", unborn]);
+    w.git(unborn, ["remote", "add", "origin", ORIGIN]);
+
+    const conflicted = newsroom(w, "conflicted");
+    w.git(conflicted, ["stash", "-q", "-u"]);
+    w.git(conflicted, ["switch", "-q", "-c", "theirs", "origin/main"]);
+    w.write(path.join(conflicted, "a.txt"), "theirs\n");
+    w.git(conflicted, ["commit", "-q", "-am", "theirs"]);
+    expect(() => w.git(conflicted, ["merge", "-q", "fix/login"])).toThrow();
+
+    const untracked = newsroom(w, "untracked-main");
+    w.git(untracked, ["update-ref", "-d", "refs/remotes/origin/main"]);
+
+    const cases: ReadonlyArray<readonly [string, string, "bind" | "sources"]> = [
+      [
+        unborn,
+        "this branch has no commit yet · commit once, then hand off · nothing was created",
+        "sources",
+      ],
+      [
+        conflicted,
+        "1 unmerged path · finish or abort the merge, then hand off · nothing was created",
+        "sources",
+      ],
+      [
+        untracked,
+        "this checkout has no origin/main · run git fetch origin, then hand off again · nothing was created",
+        "sources",
+      ],
+      [
+        newsroom(w, "co-located"),
+        "this server keeps worktrees in the co-located store, which takes no handoffs · the operator can unset MEND_SESSION_STORE to run the capture store · nothing was created",
+        "bind",
+      ],
+    ];
+    for (const [checkout, words, mountDelivery] of cases) {
+      const before = fingerprint(checkout);
+      const server = await handoffServer({ projects: [], mountDelivery });
+      const result = await run(server, ["--yes"], checkout);
+      expect(result.stderr).toBe(`mend: ${words}\n`);
+      expect(result.code).toBe(1);
+      expect(server.adoptions).toEqual([]);
+      expect(server.routes.filter((route) => route.startsWith("POST"))).toEqual([]);
+      expect(fingerprint(checkout)).toEqual(before);
+    }
+  }, 60_000);
+
+  it("says what it adopted when a refusal comes after the adoption", async () => {
+    const w = world();
+    const dana = newsroom(w);
+    const server = await handoffServer({
+      projects: [],
+      terms: (response) => json(response, { bundleBytes: 100, fileBytes: FILE_BYTES }),
+    });
+    const result = await run(server, ["--yes"], dana);
+    expect(result.code).toBe(1);
+    expect(server.adoptions).toHaveLength(1);
+    expect(result.stderr).toMatch(
+      /^mend: handoff not sent · the bundle is .+ · nothing was handed off · newsroom-api stays adopted\n$/u,
+    );
   }, 30_000);
 
   it("removes its copy of the work from TMPDIR when Ctrl-C lands while it bundles", async () => {
