@@ -114,10 +114,15 @@ export type MendEvent = typeof MendEvent.Type;
 
 const encodeEvent = Schema.encodeEffect(Schema.fromJsonString(MendEvent));
 
+/**
+ * Inside a transaction the notify rides the transaction's own connection, so PostgreSQL delivers
+ * it at COMMIT and drops it on ROLLBACK; outside one it is sent at once. `sql.notify` would check
+ * out a second pooled connection and send before the caller commits.
+ */
 export const notifyEvent = (sql: PgClient.PgClient, event: MendEvent) =>
   Effect.gen(function* () {
     const payload = yield* encodeEvent(event).pipe(Effect.orDie);
-    yield* sql.notify(MEND_EVENTS_CHANNEL, payload).pipe(Effect.orDie);
+    yield* sql`SELECT pg_notify(${MEND_EVENTS_CHANNEL}, ${payload})`.pipe(Effect.orDie);
   });
 
 /**
