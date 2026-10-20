@@ -1,116 +1,28 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  changeRows,
-  commentsLine,
-  fileRow,
-  type ChangeRead,
-  type ChangeRow,
-} from "./change-rows.js";
-import type { ChangeFile, Checkpoint, ServerComment } from "./review-wire.js";
-import { resolveSlice } from "./slices.js";
+import { changeRows, fileRow, type ChangeRow } from "./change-rows.js";
+import { EMPTY_REVIEW } from "./pending.js";
+import { checkpoint, comment, FILES, pending, PINNED, readOf } from "./test-fixtures.js";
 
-const checkpoint = (ordinal: number, trigger: Checkpoint["trigger"] = "user-mark"): Checkpoint => ({
-  id: `cp${ordinal}`,
-  ordinal,
-  trigger,
-  createdAt: "2026-10-19T10:00:00.000Z",
-});
-
-const checkpoints = [checkpoint(0, "session-start"), checkpoint(1), checkpoint(2, "review-open")];
-const base = checkpoints[0] ?? checkpoint(0);
-const head = checkpoints[2] ?? checkpoint(2);
-
-const files: ReadonlyArray<ChangeFile> = [
-  {
-    oldPath: null,
-    newPath: "src/auth/limit.ts",
-    status: "added",
-    additions: 15,
-    deletions: 0,
-    binary: false,
-    hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 15, contextHash: "h1" }],
-  },
-  {
-    oldPath: "README",
-    newPath: null,
-    status: "deleted",
-    additions: 0,
-    deletions: 1,
-    binary: false,
-    hunks: [],
-  },
-];
-
-const observed = { state: "observed", observedAt: "2026-10-19T10:00:00.000Z" } as const;
-
-const read = (
-  choice: Parameters<typeof resolveSlice>[0],
-  overrides: Partial<ChangeRead> = {},
-  chain: ReadonlyArray<Checkpoint> = checkpoints,
-): ChangeRead => {
-  const pinned = {
-    id: "slice-1",
-    changeId: "change-1",
-    diffDigest: "d",
-    base,
-    head,
-    createdAt: "2026-10-19T10:00:00.000Z",
-  };
-  const slice = resolveSlice(choice, pinned, chain);
-  if (slice === null) throw new Error("the slice did not resolve");
-  const diff = {
-    files,
-    worktreeChangedSinceSnapshot: false,
-    observation: observed,
-    listingCut: false,
-  };
-  return {
-    sessionId: "s1",
-    sessionName: "add-rate-limit",
-    changeId: "change-1",
-    chain: { worktreeId: "w1", baseName: "main", checkpoints: chain },
-    pinned,
-    pinnedDiff: diff,
-    slice,
-    diff,
-    comments: [],
-    reviewedHead: null,
-    drift: null,
-    notice: null,
-    readAt: "2026-10-19T10:00:00.000Z",
-    ...overrides,
-  };
-};
+const NOW = new Date("2026-10-19T10:00:40.000Z");
 
 const sliceRow = (rows: ReadonlyArray<ChangeRow>) => {
-  const [slice] = rows;
+  const slice = rows.find((row) => row.kind === "slice");
   if (slice?.kind !== "slice") throw new Error("no slice row");
   return slice;
 };
 
-const now = new Date("2026-10-19T10:00:40.000Z");
-
-const comment = (overrides: Partial<ServerComment>): ServerComment => ({
-  id: "c1",
-  file: "src/auth/limit.ts",
-  line: 12,
-  endLine: 12,
-  anchor: null,
-  author: { kind: "reviewer", name: "Dana" },
-  body: "Use the shared limiter",
-  suggestion: null,
-  state: "open",
-  evidence: [],
-  sentToSessionId: null,
-  createdAt: "2026-10-19T10:00:00.000Z",
-  updatedAt: "2026-10-19T10:00:00.000Z",
-  ...overrides,
-});
+const rowsOf = (read: Parameters<typeof changeRows>[0]) =>
+  changeRows(read, EMPTY_REVIEW, "Dana", NOW);
 
 describe("the Change section's rows (story d, step 1)", () => {
   it("is the slice's header with its files, then Comments and Checkpoints", () => {
-    const rows = changeRows(read({ kind: "pinned" }), new Date("2026-10-19T10:00:40.000Z"));
+    const shown = readOf({ kind: "pinned" });
+    const observed = {
+      ...shown.diff,
+      observation: { state: "observed", observedAt: "2026-10-19T10:00:00.000Z" },
+    } as const;
+    const rows = changeRows({ ...shown, diff: observed }, EMPTY_REVIEW, "Dana", NOW);
     expect(rows.map((row) => row.kind)).toEqual(["slice", "comments", "checkpoints"]);
     const [slice] = rows;
     if (slice?.kind !== "slice") throw new Error("no slice row");
@@ -125,20 +37,22 @@ describe("the Change section's rows (story d, step 1)", () => {
 
   it("says a view-only slice takes no comments (G10)", () => {
     const rows = changeRows(
-      read({ kind: "between", from: checkpoint(1), to: head }),
-      new Date("2026-10-19T10:00:40.000Z"),
+      readOf({ kind: "between", from: checkpoint(1), to: PINNED.head }),
+      EMPTY_REVIEW,
+      "Dana",
+      NOW,
     );
     expect(rows.find((row) => row.kind === "note")).toMatchObject({
       label: "viewing · comments go on main → now",
     });
   });
 
-  it("opens a file between the slice's two checkpoints, empty only on the side its status says", () => {
-    const shown = read({ kind: "pinned" });
-    const [added, deleted] = files.map((file) => fileRow(file, shown));
+  it("opens a file between the slice's two checkpoints, empty only on the side its status says, the pinned new side named", () => {
+    const shown = readOf({ kind: "pinned" });
+    const [added, deleted] = FILES.map((file) => fileRow(file, shown));
     const where = { worktreeId: "w1", path: "src/auth/limit.ts" };
-    expect(added?.left).toEqual({ ...where, at: "cp0", absent: true });
-    expect(added?.right).toEqual({ ...where, at: "cp2", absent: false });
+    expect(added?.left).toEqual({ ...where, at: "cp0", absent: true, slice: null });
+    expect(added?.right).toEqual({ ...where, at: "cp2", absent: false, slice: "slice-1" });
     expect([deleted?.left.path, deleted?.left.absent, deleted?.right.absent]).toEqual([
       "README",
       false,
@@ -148,18 +62,16 @@ describe("the Change section's rows (story d, step 1)", () => {
   });
 
   it("says the worktree moved on, with Review the newer change, while the slice stays pinned", () => {
-    const counted = sliceRow(changeRows(read({ kind: "pinned" }, { drift: { files: 3 } }), now));
+    const counted = sliceRow(rowsOf(readOf({ kind: "pinned" }, { drift: { files: 3 } })));
     expect(counted.above.map((row) => `${row.kind} ${"label" in row ? row.label : ""}`)).toEqual([
       "note worktree changed since this review · 3 new files",
       "action Review the newer change",
     ]);
     expect(counted.above[1]).toMatchObject({ command: "mend.change.repin" });
     expect(counted.files).toHaveLength(2);
-    const uncounted = sliceRow(
-      changeRows(read({ kind: "pinned" }, { drift: { files: null } }), now),
-    );
+    const uncounted = sliceRow(rowsOf(readOf({ kind: "pinned" }, { drift: { files: null } })));
     expect(uncounted.above[0]).toMatchObject({ label: "worktree changed since this review" });
-    expect(sliceRow(changeRows(read({ kind: "pinned" }), now)).above).toEqual([]);
+    expect(sliceRow(rowsOf(readOf({ kind: "pinned" }))).above).toEqual([]);
   });
 
   it("offers the newer read of a last turn she chose, once a newer turn ended", () => {
@@ -174,7 +86,9 @@ describe("the Change section's rows (story d, step 1)", () => {
       from: checkpoint(0, "session-start"),
       to: checkpoint(1, "turn-boundary"),
     } as const;
-    const slice = sliceRow(changeRows(read(chosen, {}, turns), now));
+    const slice = sliceRow(
+      rowsOf(readOf(chosen, { chain: { worktreeId: "w1", baseName: "main", checkpoints: turns } })),
+    );
     expect(slice.label).toBe("last turn ▾");
     expect(slice.above).toEqual([
       {
@@ -189,24 +103,58 @@ describe("the Change section's rows (story d, step 1)", () => {
 
   it("says the listing was cut in the header, and never observed", () => {
     const cut = {
-      files,
+      files: FILES,
       worktreeChangedSinceSnapshot: false,
-      observation: observed,
+      observation: { state: "observed", observedAt: "2026-10-19T10:00:00.000Z" },
       listingCut: true,
-    };
-    const slice = sliceRow(changeRows(read({ kind: "pinned" }, { diff: cut }), now));
+    } as const;
+    const slice = sliceRow(rowsOf(readOf({ kind: "pinned" }, { diff: cut })));
     expect(slice.description).toBe("listing cut at 2 files · +15 −1 in those · read 40 s ago");
   });
 
-  it("counts comments by what was observed of each", () => {
-    expect(commentsLine([])).toBe("none");
-    expect(
-      commentsLine([
-        comment({ id: "1", state: "draft", author: { kind: "mend", name: "Mend" } }),
-        comment({ id: "2", sentToSessionId: "s1" }),
-        comment({ id: "3", sentToSessionId: "s1" }),
-        comment({ id: "4", state: "dismissed" }),
-      ]),
-    ).toBe("2 sent · 1 Mend draft");
+  it("names no slice on a view-only slice's documents, so they take no comment", () => {
+    const shown = readOf({ kind: "between", from: checkpoint(1), to: PINNED.head });
+    expect(FILES.map((file) => fileRow(file, shown).right.slice)).toEqual([null, null]);
+  });
+
+  it("reads `Mend is reading · 10:42` above the slice while Mend reads the change", () => {
+    const since = new Date(2026, 9, 19, 10, 42).toISOString();
+    const rows = changeRows(
+      readOf({ kind: "pinned" }, { pass: { kind: "reading", since } }),
+      EMPTY_REVIEW,
+      "Dana",
+      NOW,
+    );
+    expect(rows[0]).toMatchObject({ kind: "note", label: "Mend is reading · 10:42" });
+  });
+
+  it("lists each comment under Comments with its file, line and word (story d, step 4)", () => {
+    const rows = changeRows(
+      readOf(
+        { kind: "pinned" },
+        {
+          comments: [
+            comment({
+              id: "d1",
+              state: "draft",
+              line: 6,
+              file: "src/auth/login.ts",
+              author: { kind: "mend", name: "Mend" },
+              body: "On the limit, line 6 returns without a response.",
+            }),
+          ],
+        },
+      ),
+      { pending: [pending({})] },
+      "Dana",
+      NOW,
+    );
+    const comments = rows.find((row) => row.kind === "comments");
+    if (comments?.kind !== "comments") throw new Error("no Comments row");
+    expect(comments.description).toBe("1 pending · 1 Mend draft");
+    expect(comments.comments.map((row) => `${row.label} · ${row.description}`)).toEqual([
+      "Use the shared limiter from guard.ts · limit.ts:12 · pending",
+      "On the limit, line 6 returns without a response. · login.ts:6 · Mend · draft",
+    ]);
   });
 });

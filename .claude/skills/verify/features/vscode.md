@@ -556,6 +556,22 @@ the row takes the job's name.
     Mend cut reads `listing cut at N files · … in those · read N s ago`, never `observed`.
   - Wait for a quick pick's own title before each pick (`Between two checkpoints · from which?`):
     the second pick reuses the widget, and a pick made early lands in the first list.
+  - Steps 3 and 4: `recipes/vscode-review-comments.mjs`. The `+` is `commentGlyph(h, line)`: rest
+    the pointer on the line number of the diff's new side until `.comment-range-glyph.line-hover`
+    shows there, then click it; `writeComment(h, text, "Add comment")` types into the thread's
+    Monaco form. Observed (runs `rcomma`, `rcommb`): the thread `src/auth/limit.ts · line 12` with
+    `pending`, Edit and Delete; `Comments · 1 pending`; the Comments panel `… [Ln 12]`; after
+    `Developer: Reload Window` the same thread and row. Between two checkpoints, line 8 shows no
+    `+`. A comment Mend holds, marked addressed over the API, shows `addressed` with no Edit or
+    Delete. **Show record** (the `...` menu) opens `record · <label>.md`, read-only. Pending
+    comments are files under the extension's global storage,
+    `reviews/<server account>/<session>.json`, one per person and session, written under a `.lock`
+    file; a draft about the whole change hangs on `mend-change-note://<change>/the whole change`.
+  - **Read this change** asks Mend to read; the section reads `Mend is reading · <time>`, then one
+    toast:
+    `Mend could not read this change: The connected account was rejected by the provider — reconnect it. (Inference failed: authentication_failed)`.
+    The world's logins are fake, so drafts, Accept, Dismiss and Show record from a draft are
+    `verified-unreachable · inference`.
 - **e. Dana wants to drive by hand.** `recipes/vscode-open.mjs`, from the default `up`.
   - The gesture is Open; typing into the attached `claude · add-rate-limit` is story c's last lane.
   - **Continue here.** `contextMenu("Mend: Open in New Window")` on `from-phone`: the tab

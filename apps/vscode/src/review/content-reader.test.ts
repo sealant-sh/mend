@@ -10,6 +10,7 @@ const address = (overrides: Partial<ChangeAddress> = {}): ChangeAddress => ({
   path: "src/a.ts",
   at: "cp1",
   absent: false,
+  slice: null,
   ...overrides,
 });
 

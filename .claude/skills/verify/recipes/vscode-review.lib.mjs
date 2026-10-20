@@ -320,13 +320,11 @@ export const said = (section) =>
 /** The editor tabs of the active group: their labels, and which is active. */
 export const editorTabs = (h) =>
   h.page().evaluate(() =>
-    [...document.querySelectorAll(".editor-group-container.active .tabs-container .tab")].map(
-      (tab) => ({
-        label: (tab.querySelector(".label-name")?.textContent ?? "").trim(),
-        title: tab.getAttribute("aria-label") ?? "",
-        active: tab.classList.contains("active"),
-      }),
-    ),
+    [...document.querySelectorAll(".part.editor .tabs-container .tab")].map((tab) => ({
+      label: (tab.querySelector(".label-name")?.textContent ?? "").trim(),
+      title: tab.getAttribute("aria-label") ?? "",
+      active: tab.classList.contains("active"),
+    })),
   );
 
 /** The active diff editor's two sides, as their visible lines read (spaces as spaces). */
@@ -386,6 +384,116 @@ export const changeActions = async (h) => {
       .filter((action) => action.title !== "" && !action.title.startsWith("More Actions")),
   );
 };
+
+/** The overflow menu's item, by its label. */
+export const clickOverflow = async (h, label) => {
+  const { page, sleep } = h;
+  const pane = page().locator(".part.sidebar .pane", {
+    has: page().locator(".pane-header .title", { hasText: /^change$/i }),
+  });
+  await pane.locator(".pane-header").hover();
+  await sleep(300);
+  await pane
+    .locator('.pane-header .actions .action-label[aria-label^="More Actions"]')
+    .first()
+    .click();
+  const item = page().locator(".context-view .monaco-menu .action-item .action-label", {
+    hasText: label,
+  });
+  await item.first().waitFor({ timeout: 10_000 });
+  await item.first().hover();
+  await sleep(300);
+  await item.first().click();
+};
+
+const MODIFIED =
+  ".editor-group-container.active .monaco-diff-editor .modified-in-monaco-diff-editor";
+
+/**
+ * The `+` on a line of the active diff editor's new side: the pointer rests on the line's margin
+ * until VS Code draws the comment glyph there, then clicks it. Null when the line shows no `+`.
+ */
+export const commentGlyph = async (h, line) => {
+  const { page, sleep } = h;
+  const top = await page().evaluate(
+    ({ selector, wanted }) => {
+      const editor = document.querySelector(selector);
+      const numbers = [...(editor?.querySelectorAll(".margin-view-overlays .line-numbers") ?? [])];
+      const found = numbers.find((cell) => (cell.textContent ?? "").trim() === String(wanted));
+      const box = found?.getBoundingClientRect();
+      return box === undefined
+        ? null
+        : { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    },
+    { selector: MODIFIED, wanted: line },
+  );
+  if (top === null) return null;
+  await page().mouse.move(top.x, top.y);
+  await sleep(600);
+  // The glyph VS Code draws under the pointer: one per commentable line, marked `line-hover`.
+  const glyph = page().locator(`${MODIFIED} .comment-range-glyph.line-hover`);
+  if ((await glyph.count()) === 0) return { at: top, found: false };
+  const box = await glyph.first().boundingBox();
+  const onLine = box !== null && Math.abs(box.y + box.height / 2 - top.y) < box.height;
+  return { at: top, found: onLine, click: () => glyph.first().click() };
+};
+
+/** Every comment thread widget open in the active editor group, as she reads it. */
+export const commentThreads = (h) =>
+  h.page().evaluate(() =>
+    [...document.querySelectorAll(".editor-group-container.active .review-widget")].map(
+      (widget) => ({
+        title: (widget.querySelector(".head .review-title")?.textContent ?? "").trim(),
+        comments: [...widget.querySelectorAll(".review-comment")].map((comment) => ({
+          author: (comment.querySelector(".author")?.textContent ?? "").trim(),
+          label: (
+            comment.querySelector(".isPending, .comment-label, .action-label.label")?.textContent ??
+            ""
+          ).trim(),
+          text: (comment.querySelector(".comment-body")?.textContent ?? "")
+            .replace(/\s+/g, " ")
+            .trim(),
+          header: (comment.querySelector(".comment-title")?.textContent ?? "")
+            .replace(/\s+/g, " ")
+            .trim(),
+          actions: [...comment.querySelectorAll(".comment-title .action-label")].map(
+            (action) => action.getAttribute("aria-label") ?? "",
+          ),
+        })),
+        buttons: [...widget.querySelectorAll(".form-actions .monaco-text-button")].map((button) =>
+          (button.textContent ?? "").trim(),
+        ),
+      }),
+    ),
+  );
+
+/** Types into the comment form open in the active group, then presses its button. */
+export const writeComment = async (h, text, button) => {
+  const { page, sleep } = h;
+  const form = page()
+    .locator(".editor-group-container.active .review-widget .comment-form-container .monaco-editor")
+    .last();
+  await form.waitFor({ timeout: 10_000 });
+  await form.click();
+  await page().keyboard.type(text);
+  await sleep(300);
+  await page()
+    .locator(".editor-group-container.active .review-widget .form-actions .monaco-text-button", {
+      hasText: button,
+    })
+    .last()
+    .click();
+};
+
+/** The Comments panel's rows: each file and each thread as the panel lists them. */
+export const commentsPanel = (h) =>
+  h
+    .page()
+    .evaluate(() =>
+      [...document.querySelectorAll(".part.panel .comments-panel .monaco-list-row")].map((row) =>
+        (row.textContent ?? "").replace(/\s+/g, " ").trim(),
+      ),
+    );
 
 export const clickChangeAction = async (h, title) => {
   const { page, sleep } = h;

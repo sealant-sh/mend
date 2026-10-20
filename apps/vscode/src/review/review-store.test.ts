@@ -1,452 +1,469 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import type { EventPointer } from "../client.js";
 import { MendApiError } from "../mend-http.js";
-import type { Project, Session, SessionDetail } from "../types.js";
-import type { ChangeRead } from "./change-rows.js";
+import type { Session, SessionDetail } from "../types.js";
+import { NODE_FILES } from "./kept-reviews.js";
+import type { KeptReviews } from "./kept-reviews.js";
+import { addPending, MAX_PENDING } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
-import { ReviewMemory } from "./review-memory.js";
-import { ReviewStore } from "./review-store.js";
-import type {
-  Checkpoint,
-  PinnedSlice,
-  ServerComment,
-  SliceDiff,
-  WorktreeChain,
-} from "./review-wire.js";
+import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
+import { ReviewStore, type NewComment, type ReviewFailure } from "./review-store.js";
+import type { ReadPass, ServerComment, TranscriptEntry } from "./review-wire.js";
+import {
+  comment,
+  FakeMend,
+  keptIn,
+  PINNED,
+  PROJECT,
+  pending,
+  session,
+  sessionReads,
+  settle,
+  slowFiles,
+  storage,
+} from "./test-fixtures.js";
+import { threadsOf } from "./threads.js";
 
 vi.mock("vscode", () => import("../test-vscode.js"));
 
-const project: Project = {
-  id: "p1",
-  name: "api",
-  originUrl: null,
-  storePath: "/store/api",
-  defaultBranch: "main",
-};
-
-const session: Session = {
-  id: "s1",
-  projectId: "p1",
-  harness: "claude",
-  model: null,
-  label: null,
-  worktree: "add-rate-limit",
-  branch: "mend/add-rate-limit",
-  status: "running",
-  sealantWorkspaceId: null,
-  summary: null,
-  createdAt: "2026-10-19T09:00:00.000Z",
-  settledAt: null,
-  ownerUserId: "dana",
-  livePeople: [],
-  sharedControlEnabledAt: null,
-  workspaceRetirement: null,
-  workspaceLauncherUserId: null,
-};
-
-const noChange: SessionDetail = {
-  session,
-  processes: [],
-  currentAgent: null,
-  changeId: null,
-};
-
-const withChange: SessionDetail = {
-  session: { ...session, worktreeId: "w1" },
-  processes: [],
-  currentAgent: null,
-  changeId: "change-1",
-};
-
-const checkpoint = (ordinal: number, trigger: Checkpoint["trigger"]): Checkpoint => ({
-  id: `cp${ordinal}`,
-  ordinal,
-  trigger,
-  createdAt: `2026-10-19T10:${String(ordinal).padStart(2, "0")}:00.000Z`,
-});
-
-const fileList = (count: number): SliceDiff["files"] =>
-  Array.from({ length: count }, (_, index) => ({
-    oldPath: null,
-    newPath: `src/f${index}.ts`,
-    status: "added",
-    additions: 1,
-    deletions: 0,
-    binary: false,
-    hunks: [],
-  }));
-
-/**
- * A Mend with one session's worktree: its chain, how many files each checkpoint holds, and
- * `reviews/open` answering the same slice for the same key, a new checkpoint for a new key.
- */
-class World extends ReviewClient {
-  readonly chainOf: Array<Checkpoint> = [checkpoint(0, "session-start")];
-  /** Files changed from the base, at each checkpoint, by id. */
-  readonly filesAt = new Map<string, number>([["cp0", 0]]);
-  /** Files in the worktree now, checkpointed or not. */
-  files = 0;
-  readonly opened: Array<string> = [];
-  readonly pins = new Map<string, PinnedSlice>();
-  readonly ranges: Array<string> = [];
-  written: ReadonlyArray<ServerComment> = [];
-  missing = new Set<string>();
-
-  constructor() {
-    super(async () => ({ url: "http://mend.test", token: "t" }));
-  }
-
-  /** The agent wrote: a checkpoint of `trigger` holding `files` files. */
-  take(trigger: Checkpoint["trigger"], files = this.files): Checkpoint {
-    this.files = files;
-    const taken = checkpoint(this.chainOf.length, trigger);
-    this.chainOf.push(taken);
-    this.filesAt.set(taken.id, files);
-    return taken;
-  }
-
-  override async openReview(_changeId: string, key: string): Promise<PinnedSlice> {
-    this.opened.push(key);
-    const known = this.pins.get(key);
-    if (known !== undefined) return known;
-    const base = this.chainOf[0] ?? checkpoint(0, "session-start");
-    const slice = {
-      id: `slice-${this.pins.size + 1}`,
-      changeId: "change-1",
-      diffDigest: "d",
-      base,
-      head: this.take("review-open"),
-      createdAt: "2026-10-19T10:00:00.000Z",
-    };
-    this.pins.set(key, slice);
-    return slice;
-  }
-
-  override async sliceDiff(_changeId: string, sliceId: string): Promise<SliceDiff> {
-    const slice = [...this.pins.values()].find((pinned) => pinned.id === sliceId);
-    const files = this.filesAt.get(slice?.head.id ?? "") ?? 0;
-    return {
-      files: fileList(files),
-      worktreeChangedSinceSnapshot: files !== this.files,
-      observation: {
-        state: "observed",
-        observedAt: "2026-10-19T10:00:00.000Z",
-      },
-      listingCut: false,
-    };
-  }
-
-  override async rangeDiff(_worktreeId: string, from: string, to: string): Promise<SliceDiff> {
-    this.ranges.push(`${from}→${to}`);
-    if (this.missing.has(from) || this.missing.has(to))
-      throw new MendApiError(`checkpoint ${to} not found`, 404);
-    return {
-      files: fileList(Math.max(0, (this.filesAt.get(to) ?? 0) - (this.filesAt.get(from) ?? 0))),
-      worktreeChangedSinceSnapshot: false,
-      observation: null,
-      listingCut: false,
-    };
-  }
-
-  override async chain(worktreeId: string): Promise<WorktreeChain> {
-    return { worktreeId, baseName: "main", checkpoints: [...this.chainOf] };
-  }
-
-  override async comments(): Promise<ReadonlyArray<ServerComment>> {
-    return this.written;
-  }
-}
-
-const memento = () => {
-  const kept = new Map<string, unknown>();
+const memento = (): ReviewMemento => {
+  const saved = new Map<string, unknown>();
   return {
-    get: (key: string): unknown => kept.get(key),
-    update: async (key: string, value: unknown): Promise<void> => {
-      kept.set(key, value);
+    get: (key: string) => saved.get(key),
+    update: async (key: string, value: unknown) => {
+      saved.set(key, JSON.parse(JSON.stringify(value)));
     },
   };
 };
 
-/** A review store over `world`, its session reads gated by `detail` and counted. */
-const storeOver = (
-  world: World,
-  options: {
-    readonly detail?: () => Promise<SessionDetail>;
-    readonly kept?: ReturnType<typeof memento>;
-    readonly viewer?: string;
-  } = {},
-) => {
-  const reads = { started: 0, inFlight: 0, most: 0 };
-  const store = new ReviewStore(
-    {
-      sessionDetail: async () => {
-        reads.started++;
-        reads.inFlight++;
-        reads.most = Math.max(reads.most, reads.inFlight);
-        try {
-          return await (options.detail?.() ?? Promise.resolve(withChange));
-        } finally {
-          reads.inFlight--;
-        }
-      },
-      connection: async () => ({ url: "http://mend.test", token: "t" }),
-      viewerId: async () => options.viewer ?? "dana",
-      memberNames: async () => [
-        { userId: "dana", name: "Dana" },
-        { userId: "ana", name: "Ana" },
-      ],
-    },
-    world,
-    new ReviewMemory(options.kept ?? memento()),
-  );
-  return { store, reads };
+const DANA_S1 = { url: "http://mend", viewer: "dana", sessionId: "s1" };
+
+/** A window's review store over its own kept reviews, following `s1`, its change read. */
+const readyStore = async (
+  kept: KeptReviews,
+  mend: FakeMend = new FakeMend(),
+): Promise<ReviewStore> => {
+  const store = new ReviewStore(sessionReads("change-1"), mend, new ReviewMemory(memento()), kept);
+  store.follow(PROJECT, session("s1"));
+  await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+  return store;
 };
 
-const readyRead = async (store: ReviewStore) => {
-  await vi.waitFor(() => expect(store.state().kind).toBe("ready"));
-  const read = store.ready();
-  if (read === null) throw new Error("the store read nothing");
-  return read;
-};
+const DRAFT = comment({
+  id: "d1",
+  state: "draft",
+  line: 13,
+  author: { kind: "mend", name: "Mend" },
+  body: "Nothing in this session ran the tests after limit.ts changed.",
+  evidence: [{ runId: "run-1", sequence: "214", excerpt: "pnpm test auth · never ran" }],
+});
 
-/** Waits for the store's next read to land. */
-const nextRead = async (store: ReviewStore, before: ChangeRead) => {
-  await vi.waitFor(() => expect(store.ready()).not.toBe(before));
-  return readyRead(store);
-};
+const onLine = (line: number, body: string): NewComment => ({
+  at: {
+    worktreeId: "w1",
+    path: "src/auth/limit.ts",
+    at: PINNED.head.id,
+    absent: false,
+    slice: PINNED.id,
+  },
+  line,
+  endLine: line,
+  lineText: "",
+  body,
+});
 
-afterEach(() => {
-  vi.useRealTimers();
+describe("the review store, as it follows one session after another", () => {
+  it("never shows one session's pending comments under the next, when the first's read lands late", async () => {
+    const kept = keptIn(await storage());
+    await kept.update({ ...DANA_S1, sessionId: "ana" }, (stored) =>
+      addPending(stored, pending({ body: "for Ana" })),
+    );
+    // Both reads are held, then Ana's lands first, while Dana's is still on its way.
+    const held = { ana: Promise.withResolvers<void>(), dana: Promise.withResolvers<void>() };
+    const detail = async (sessionId: string): Promise<SessionDetail> => {
+      if (sessionId === "ana" || sessionId === "dana") await held[sessionId].promise;
+      return { session: session(sessionId), processes: [], currentAgent: null, changeId: null };
+    };
+    // Neither session has a change: a read ends once it has loaded the session's comments.
+    const store = new ReviewStore(
+      { ...sessionReads(null), sessionDetail: detail },
+      new ReviewClient(
+        async () => {
+          throw new Error("no review route is read for a session without a change");
+        },
+        () => undefined,
+      ),
+      new ReviewMemory(memento()),
+      kept,
+    );
+    store.follow(PROJECT, session("ana"));
+    store.follow(PROJECT, session("dana"));
+    held.ana.resolve();
+    await settle();
+    held.dana.resolve();
+    await settle();
+    expect(store.followed()?.session.id).toBe("dana");
+    expect(store.review().pending).toEqual([]);
+  });
 });
 
 describe("ReviewStore.forget", () => {
-  it("drops what the section showed", async () => {
-    const { store } = storeOver(new World(), { detail: async () => noChange });
-    store.follow(project, session);
-    await vi.waitFor(() => expect(store.state().kind).toBe("empty"));
+  it("drops what the section showed, and her pending comments stay kept on this machine", async () => {
+    const directory = await storage();
+    const store = await readyStore(keptIn(directory));
+    await store.comment(onLine(3, "Use the shared limiter"));
     store.forget();
     expect(store.state()).toEqual({ kind: "idle" });
+    expect(store.review().pending).toEqual([]);
+    const stored = (await keptIn(directory).read(DANA_S1)).review.pending;
+    expect(stored.map(({ body }) => body)).toEqual(["Use the shared limiter"]);
   });
 
   it("keeps a read that lands after it from drawing the session again", async () => {
-    const held = Promise.withResolvers<SessionDetail>();
-    const { store } = storeOver(new World(), { detail: () => held.promise });
-    store.follow(project, session);
-    expect(store.state().kind).toBe("reading");
+    const held = Promise.withResolvers<void>();
+    const reads = sessionReads("change-1");
+    const store = new ReviewStore(
+      {
+        ...reads,
+        sessionDetail: async (sessionId) => {
+          await held.promise;
+          return reads.sessionDetail(sessionId);
+        },
+      },
+      new FakeMend(),
+      new ReviewMemory(memento()),
+      keptIn(await storage()),
+    );
+    store.follow(PROJECT, session("s1"));
     store.forget();
-    held.resolve(noChange);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    held.resolve();
+    await settle();
     expect(store.state()).toEqual({ kind: "idle" });
   });
 
   it("lets the same session be followed again afterwards", async () => {
-    const { store } = storeOver(new World(), { detail: async () => noChange });
-    store.follow(project, session);
-    await vi.waitFor(() => expect(store.state().kind).toBe("empty"));
+    const store = await readyStore(keptIn(await storage()));
     store.forget();
-    store.follow(project, session);
-    expect(store.state().kind).toBe("reading");
+    store.follow(PROJECT, session("s1"));
+    await settle();
+    expect(store.ready()).not.toBeNull();
   });
 });
 
-describe("the worktree moved on past the pinned slice (story d, edge case)", () => {
-  it("keeps the pinned slice, says how many files changed since, and re-pins on Review the newer change", async () => {
-    const world = new World();
-    const kept = memento();
-    const { store } = storeOver(world, { kept });
-    store.follow(project, session);
-    const first = await readyRead(store);
-    expect(first.diff.files).toHaveLength(0);
-    expect(first.drift).toBe(null);
-
-    world.take("turn-boundary", 3);
-    store.reread();
-    const moved = await nextRead(store, first);
-    expect(moved.diff.files).toHaveLength(0);
-    expect(moved.pinned.id).toBe(first.pinned.id);
-    expect(moved.drift).toEqual({ files: 3 });
-
-    await store.repin();
-    const newer = await nextRead(store, moved);
-    expect(newer.pinned.id).not.toBe(first.pinned.id);
-    expect(newer.diff.files).toHaveLength(3);
-    expect(newer.drift).toBe(null);
-
-    const reloaded = storeOver(world, { kept }).store;
-    reloaded.follow(project, session);
-    expect((await readyRead(reloaded)).pinned.id).toBe(newer.pinned.id);
-    expect(new Set(world.opened).size).toBe(2);
+describe("two windows on one session", () => {
+  it("each keep the other's pending comments, and a delete takes only its own", async () => {
+    const directory = await storage();
+    const first = await readyStore(keptIn(directory));
+    const second = await readyStore(keptIn(directory));
+    await first.comment(onLine(3, "from the first window"));
+    await second.comment(onLine(4, "from the second window"));
+    const bodies = async () =>
+      (await keptIn(directory).read(DANA_S1)).review.pending.map(({ body }) => body);
+    expect(await bodies()).toEqual(["from the first window", "from the second window"]);
+    const own = second.review().pending.find(({ body }) => body === "from the second window");
+    if (own === undefined) throw new Error("the second window lost its own comment");
+    await second.remove(own.id);
+    expect(await bodies()).toEqual(["from the first window"]);
+    // The first window's next write keeps the second's delete: nothing it read earlier comes back.
+    const [mine] = first.review().pending;
+    if (mine === undefined) throw new Error("the first window lost its own comment");
+    await first.edit(mine.id, "edited in the first window");
+    expect(await bodies()).toEqual(["edited in the first window"]);
   });
 
-  it("says the worktree changed, uncounted, when no checkpoint holds the newer files yet", async () => {
-    const world = new World();
-    const { store } = storeOver(world);
-    store.follow(project, session);
-    const first = await readyRead(store);
-    world.files = 2;
-    store.reread();
-    expect((await nextRead(store, first)).drift).toEqual({ files: null });
+  it("keep both comments when the two windows add theirs at the same moment", async () => {
+    const directory = await storage();
+    const first = await readyStore(keptIn(directory, slowFiles(30)));
+    const second = await readyStore(keptIn(directory, slowFiles(30)));
+    const kept = await Promise.all([
+      first.comment(onLine(3, "from the first window")),
+      second.comment(onLine(4, "from the second window")),
+    ]);
+    expect(kept).toEqual([{ kept: true }, { kept: true }]);
+    await Promise.all([first.reloadReview(), second.reloadReview()]);
+    for (const window of [first, second])
+      expect(
+        window
+          .review()
+          .pending.map(({ body }) => body)
+          .toSorted(),
+      ).toEqual(["from the first window", "from the second window"]);
+  });
+
+  it("accept one draft once, when both accept it at once", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.serverComments = [DRAFT];
+    const first = await readyStore(keptIn(directory, slowFiles(30)), mend);
+    const second = await readyStore(keptIn(directory, slowFiles(30)), mend);
+    await Promise.all([first.accept("d1", ""), second.accept("d1", ""), first.accept("d1", "")]);
+    const kept = (await keptIn(directory).read(DANA_S1)).review.pending;
+    expect(kept.map(({ origin }) => origin.kind)).toEqual(["accepted"]);
   });
 });
 
-describe("reads in flight (as flow 2)", () => {
-  it("keeps one read in flight under a burst of frames and refreshes, and one more after it", async () => {
-    vi.useFakeTimers();
-    const world = new World();
-    world.take("turn-boundary", 1);
-    const gates: Array<PromiseWithResolvers<SessionDetail>> = [];
-    const { store, reads } = storeOver(world, {
-      detail: () => {
-        const gate = Promise.withResolvers<SessionDetail>();
-        gates.push(gate);
-        return gate.promise;
-      },
-    });
-    store.follow(project, session);
-    const frame: EventPointer = {
-      type: "session-change",
-      sessionId: "s1",
-      projectId: "p1",
-      changeId: "change-1",
-      facet: null,
-    };
-    for (let tick = 0; tick < 10; tick++) {
-      store.heard(frame);
-      store.reread();
-      await vi.advanceTimersByTimeAsync(2_000);
+describe("a comment she submits", () => {
+  it("says it was not kept, and why, while the change is still being read", async () => {
+    const store = new ReviewStore(
+      sessionReads("change-1"),
+      new FakeMend(),
+      new ReviewMemory(memento()),
+      keptIn(await storage()),
+    );
+    const kept = await store.comment(onLine(3, "Use the shared limiter"));
+    expect(kept).toEqual({ kept: false, words: expect.stringMatching(/not kept/) });
+  });
+
+  it("says it was not kept on a slice the section no longer shows", async () => {
+    const store = await readyStore(keptIn(await storage()));
+    const moved = onLine(3, "Use the shared limiter");
+    const kept = await store.comment({ ...moved, at: { ...moved.at, slice: "slice-0" } });
+    expect(kept).toEqual({ kept: false, words: expect.stringMatching(/not kept/) });
+    expect(store.review().pending).toEqual([]);
+  });
+
+  it("says it was kept once it is pending", async () => {
+    const store = await readyStore(keptIn(await storage()));
+    expect(await store.comment(onLine(3, "Use the shared limiter"))).toEqual({ kept: true });
+    expect(store.review().pending.map(({ body }) => body)).toEqual(["Use the shared limiter"]);
+  });
+});
+
+describe("a call Mend refuses", () => {
+  it("fails with the refusal itself, so a refused sign-in toasts as every surface does", async () => {
+    const refused = new MendApiError("Signed out — sign in again.", 401);
+    class Refusing extends FakeMend {
+      override async readChange(): Promise<void> {
+        throw refused;
+      }
     }
-    expect(reads.most).toBe(1);
-    expect(reads.started).toBe(1);
-    gates[0]?.resolve(withChange);
-    await vi.waitFor(() => expect(reads.started).toBe(2));
-    gates[1]?.resolve(withChange);
-    await vi.waitFor(() => expect(store.state().kind).toBe("ready"));
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(reads.most).toBe(1);
-    expect(reads.started).toBe(2);
+    const store = new ReviewStore(
+      sessionReads("change-1"),
+      new Refusing(),
+      new ReviewMemory(memento()),
+      keptIn(await storage()),
+    );
+    store.follow(PROJECT, session("s1"));
+    await settle();
+    const failures: Array<ReviewFailure> = [];
+    store.onDidFail((failure) => failures.push(failure));
+    await store.readChange();
+    expect(failures.map(({ words, cause }) => ({ words, cause }))).toEqual([
+      { words: "Signed out — sign in again.", cause: refused },
+    ]);
   });
 });
 
-describe("a reconnect", () => {
-  it("reads the followed change again on the stream's resync", async () => {
-    vi.useFakeTimers();
-    const { store, reads } = storeOver(new World());
-    store.follow(project, session);
-    await vi.waitFor(() => expect(store.state().kind).toBe("ready"));
-    expect(reads.started).toBe(1);
-    store.heard({
-      type: "resync",
-      sessionId: null,
-      projectId: null,
-      changeId: null,
-      facet: null,
-    });
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(reads.started).toBe(2);
-  });
+const reads = (sessions: ReadonlyArray<Session>) => ({
+  ...sessionReads("change-1"),
+  projectDetail: async () => ({ project: PROJECT, sessions }),
 });
 
-describe("a slice she chose", () => {
-  it("stays on its own two checkpoints while newer ones arrive, until she reads the newer one", async () => {
-    const world = new World();
-    world.take("turn-boundary", 2);
-    const { store } = storeOver(world);
-    store.follow(project, session);
-    const first = await readyRead(store);
-    const turn = {
-      kind: "last-turn",
-      from: checkpoint(0, "session-start"),
-      to: checkpoint(1, "turn-boundary"),
-    } as const;
-    store.choose("s1", turn);
-    const chosen = await nextRead(store, first);
-    expect([chosen.slice.from.id, chosen.slice.to.id]).toEqual(["cp0", "cp1"]);
+const failedPass = (startedAt: string): ReadPass => ({
+  kind: "failed",
+  startedAt,
+  at: startedAt,
+  words: "authentication_failed",
+});
 
-    world.take("turn-boundary", 5);
-    store.reread();
-    const later = await nextRead(store, chosen);
-    expect([later.slice.from.id, later.slice.to.id]).toEqual(["cp0", "cp1"]);
+describe("a Mend draft she acts on", () => {
+  it("keeps the words of a Dismiss under its own session when she follows another before Mend answers", async () => {
+    const directory = await storage();
+    const answered = Promise.withResolvers<void>();
+    class SlowDismiss extends FakeMend {
+      override async setCommentState(): Promise<ServerComment> {
+        await answered.promise;
+        return { ...DRAFT, state: "dismissed" };
+      }
+    }
+    const mend = new SlowDismiss();
+    mend.serverComments = [DRAFT];
+    const store = await readyStore(keptIn(directory), mend);
+    const dismissed = store.dismiss("d1", "I ran them by hand");
+    store.follow(PROJECT, session("s2"));
+    await settle();
+    answered.resolve();
+    await dismissed;
+    const bodies = async (sessionId: string) =>
+      (await keptIn(directory).read({ ...DANA_S1, sessionId })).review.pending.map(
+        ({ body }) => body,
+      );
+    expect(await bodies("s1")).toEqual(["I ran them by hand"]);
+    expect(await bodies("s2")).toEqual([]);
+    expect(store.review().pending).toEqual([]);
+  });
 
-    store.readNewer();
-    const newer = await nextRead(store, later);
-    expect([newer.slice.choice.kind, newer.slice.from.id, newer.slice.to.id]).toEqual([
-      "last-turn",
-      "cp1",
-      "cp3",
+  it("keeps a draft on a deleted file's old side there, through Accept and her reply", async () => {
+    const mend = new FakeMend();
+    mend.serverComments = [
+      {
+        ...DRAFT,
+        file: "README",
+        line: 3,
+        endLine: 3,
+        anchor: { sliceId: PINNED.id, baseId: PINNED.base.id, headId: PINNED.head.id, side: "old" },
+      },
+    ];
+    const store = await readyStore(keptIn(await storage()), mend);
+    const read = store.ready();
+    if (read === null) throw new Error("not read");
+    const oldSide = {
+      worktreeId: "w1",
+      absent: false,
+      path: "README",
+      at: PINNED.base.id,
+      slice: null,
+    };
+    expect(threadsOf(read, store.review(), "Dana").map(({ at }) => at)).toEqual([oldSide]);
+    await store.accept("d1", "and keep the install steps");
+    const threads = threadsOf(read, store.review(), "Dana").filter(({ kind }) => kind !== "draft");
+    expect(threads.map(({ kind, at, line }) => ({ kind, at, line }))).toEqual([
+      { kind: "accepted", at: oldSide, line: 3 },
+      { kind: "pending", at: oldSide, line: 3 },
     ]);
   });
 
-  it("falls back to main → now, saying why, when its checkpoints left the chain", async () => {
-    const world = new World();
-    const { store } = storeOver(world);
-    store.follow(project, session);
-    const first = await readyRead(store);
-    store.choose("s1", {
-      kind: "between",
-      from: checkpoint(0, "session-start"),
-      to: checkpoint(9, "user-mark"),
+  it("accepts a draft about the whole change, with its evidence, as a comment on the whole change", async () => {
+    const mend = new FakeMend();
+    mend.serverComments = [{ ...DRAFT, file: null, line: null, endLine: null }];
+    const store = await readyStore(keptIn(await storage()), mend);
+    await store.accept("d1", "and say which tests");
+    expect(
+      store.review().pending.map(({ path, origin, body }) => ({ path, kind: origin.kind, body })),
+    ).toEqual([
+      { path: null, kind: "accepted", body: DRAFT.body },
+      { path: null, kind: "own", body: "and say which tests" },
+    ]);
+    const [accepted] = store.review().pending;
+    expect(accepted?.origin).toEqual({
+      kind: "accepted",
+      draftId: "d1",
+      evidence: DRAFT.evidence,
     });
-    const fell = await nextRead(store, first);
-    expect(fell.slice.choice.kind).toBe("pinned");
-    expect(fell.notice).toBe(
-      "main → checkpoint 9 is no longer in this worktree's checkpoints · showing main → now",
+  });
+});
+
+describe("Show record", () => {
+  class Transcripts extends FakeMend {
+    readonly asked: Array<string> = [];
+    override async transcript(sessionId: string): Promise<ReadonlyArray<TranscriptEntry>> {
+      this.asked.push(sessionId);
+      return [];
+    }
+  }
+
+  it("opens the transcript of the session whose run the evidence cites, not the one selected", async () => {
+    const mend = new Transcripts();
+    const store = new ReviewStore(
+      reads([
+        { ...session("s1"), sealantRunId: "run-1" },
+        { ...session("s2"), sealantRunId: "run-2" },
+      ]),
+      mend,
+      new ReviewMemory(memento()),
+      keptIn(await storage()),
     );
-  });
-
-  it("falls back once when Mend has no such range, and Refresh does not ask for it again", async () => {
-    const world = new World();
-    world.take("turn-boundary", 2);
-    const { store } = storeOver(world);
-    store.follow(project, session);
-    const first = await readyRead(store);
-    world.missing.add("cp1");
-    store.choose("s1", {
-      kind: "between",
-      from: checkpoint(0, "session-start"),
-      to: checkpoint(1, "turn-boundary"),
+    store.follow(PROJECT, session("s1"));
+    await settle();
+    expect(await store.record({ runId: "run-2" })).toMatchObject({
+      kind: "found",
+      sessionId: "s2",
     });
-    const fell = await nextRead(store, first);
-    expect(fell.slice.choice.kind).toBe("pinned");
-    expect(fell.notice).toContain("Mend could not read main → checkpoint 1");
-    const asked = world.ranges.length;
-    store.reread();
-    const again = await nextRead(store, fell);
-    expect(again.notice).toBe(null);
-    expect(world.ranges.length).toBe(asked);
+    expect(mend.asked).toEqual(["s2"]);
+    // From the section's menu, with no evidence: the selected session's own record.
+    expect(await store.record(null)).toMatchObject({ kind: "found", sessionId: "s1" });
+  });
+
+  it("opens nothing, and says why, for a run no session records now", async () => {
+    const mend = new Transcripts();
+    const store = new ReviewStore(
+      reads([{ ...session("s1"), sealantRunId: "run-1" }]),
+      mend,
+      new ReviewMemory(memento()),
+      keptIn(await storage()),
+    );
+    store.follow(PROJECT, session("s1"));
+    await settle();
+    expect(await store.record({ runId: "run-0" })).toMatchObject({
+      kind: "not-found",
+      words: expect.stringMatching(/run-0/),
+    });
+    expect(await store.record({ runId: null })).toMatchObject({ kind: "not-found" });
+    expect(mend.asked).toEqual([]);
   });
 });
 
-const sentBy = (id: string, name: string, headId: string, createdAt: string): ServerComment => ({
-  id,
-  file: "src/f0.ts",
-  line: 1,
-  endLine: 1,
-  anchor: { sliceId: "old", baseId: "cp0", headId, side: "new" },
-  author: { kind: "reviewer", name },
-  body: "x",
-  suggestion: null,
-  state: "open",
-  evidence: [],
-  sentToSessionId: "s1",
-  createdAt,
-  updatedAt: createdAt,
+describe("Read this change, refused", () => {
+  it("toasts once when the pass it started fails, whatever this machine's clock says", async () => {
+    // Mend's clock is an hour behind this one: its pass starts "before" she asked.
+    const behind = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const earlier = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    let pass: ReadPass | null = failedPass(earlier);
+    class Passes extends FakeMend {
+      override async readPass(): Promise<ReadPass | null> {
+        return pass;
+      }
+      override async readChange(): Promise<void> {
+        pass = failedPass(behind);
+      }
+    }
+    const store = await readyStore(keptIn(await storage()), new Passes());
+    const failures: Array<ReviewFailure> = [];
+    store.onDidFail((failure) => failures.push(failure));
+    await store.readChange();
+    await settle();
+    expect(failures.map(({ words }) => words)).toEqual([
+      "Mend could not read this change: authentication_failed",
+    ]);
+  });
+
+  it("says nothing of the failed pass Mend held before she asked", async () => {
+    const before = new Date().toISOString();
+    class StillOld extends FakeMend {
+      override async readPass(): Promise<ReadPass | null> {
+        return failedPass(before);
+      }
+      override async readChange(): Promise<void> {}
+    }
+    const store = await readyStore(keptIn(await storage()), new StillOld());
+    const failures: Array<ReviewFailure> = [];
+    store.onDidFail((failure) => failures.push(failure));
+    await store.readChange();
+    await settle();
+    expect(failures).toEqual([]);
+  });
 });
 
-describe("since my last review", () => {
-  it("starts from her own most recent review, not another reviewer's", async () => {
-    const world = new World();
-    world.take("turn-boundary", 1);
-    world.take("turn-boundary", 2);
-    world.written = [
-      sentBy("dana", "Dana", "cp1", "2026-10-19T10:00:00.000Z"),
-      sentBy("ana", "Ana", "cp2", "2026-10-19T11:00:00.000Z"),
-    ];
-    const dana = storeOver(world).store;
-    dana.follow(project, session);
-    expect((await readyRead(dana)).reviewedHead?.id).toBe("cp1");
-    const ana = storeOver(world, { viewer: "ana" }).store;
-    ana.follow(project, session);
-    expect((await readyRead(ana)).reviewedHead?.id).toBe("cp2");
+describe("a comment VS Code could not keep", () => {
+  it("is not shown as kept, and the same comment afterwards is", async () => {
+    let failing = true;
+    const store = await readyStore(
+      keptIn(await storage(), {
+        ...NODE_FILES,
+        writeFile: async (path, text) => {
+          if (failing) throw new Error("the disk is full.");
+          await NODE_FILES.writeFile(path, text);
+        },
+      }),
+    );
+    const first = await store.comment(onLine(3, "Use the shared limiter"));
+    expect(first).toEqual({ kept: false, words: expect.stringMatching(/the disk is full/) });
+    expect(store.review().pending).toEqual([]);
+    failing = false;
+    expect(await store.comment(onLine(3, "Use the shared limiter"))).toEqual({ kept: true });
+    expect(store.review().pending.map(({ body }) => body)).toEqual(["Use the shared limiter"]);
+  });
+
+  it("is refused past the cap, with why", async () => {
+    const directory = await storage();
+    await keptIn(directory).update(DANA_S1, () => ({
+      pending: Array.from({ length: MAX_PENDING }, (_, index) => pending({ id: `p${index}` })),
+    }));
+    const store = await readyStore(keptIn(directory));
+    expect(await store.comment(onLine(3, "one more"))).toEqual({
+      kept: false,
+      words: expect.stringMatching(/already holds 200 pending comments/),
+    });
+    expect(store.review().pending).toHaveLength(MAX_PENDING);
   });
 });

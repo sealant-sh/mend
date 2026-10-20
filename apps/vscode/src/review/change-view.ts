@@ -2,17 +2,22 @@ import * as vscode from "vscode";
 
 import { displaySession } from "../session-lines.js";
 import { changeUri } from "./change-content.js";
+import { noteUri } from "./change-note.js";
 import {
   changeRows,
   fileRow,
   type ChangeRead,
   type ChangeRow,
   type CheckpointRow,
+  type CommentRow,
   type FileRow,
 } from "./change-rows.js";
+import { recordText } from "./record-text.js";
+import type { RecordContent } from "./record.js";
 import type { ReviewStore } from "./review-store.js";
 import type { Checkpoint } from "./review-wire.js";
 import { checkpointName, sliceOffers, type SliceChoice, type SliceOffer } from "./slices.js";
+import { evidenceLine } from "./threads.js";
 
 /**
  * The Change section (story d): the review store's read as a tree under the Sessions view, the
@@ -20,7 +25,7 @@ import { checkpointName, sliceOffers, type SliceChoice, type SliceOffer } from "
  * only its overflow menu opens the web app (rule 11).
  */
 
-type ChangeNode = ChangeRow | FileRow | CheckpointRow;
+type ChangeNode = ChangeRow | FileRow | CheckpointRow | CommentRow;
 
 const ROW_SCHEME = "mend-change-row";
 
@@ -59,6 +64,7 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
 
   constructor(
     private readonly store: ReviewStore,
+    private readonly record: RecordContent,
     private readonly onError: (cause: unknown) => void,
     private readonly serverUrl: () => Promise<string>,
   ) {
@@ -88,6 +94,15 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
         store.repin().catch((cause: unknown) => this.onError(cause)),
       ),
       vscode.commands.registerCommand("mend.change.readNewer", () => store.readNewer()),
+      vscode.commands.registerCommand("mend.change.read", () => store.readChange()),
+      vscode.commands.registerCommand("mend.change.openComment", (row?: CommentRow) =>
+        this.#openComment(row),
+      ),
+      vscode.commands.registerCommand(
+        "mend.change.showRecord",
+        (runId?: unknown, sequence?: unknown, excerpt?: unknown) =>
+          this.#showRecord(runId, sequence, excerpt),
+      ),
     ];
     // The header's `40 s ago` keeps counting while the section is on screen.
     this.#ticker = setInterval(() => this.#draw(), 10_000);
@@ -106,7 +121,10 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
 
   #draw(): void {
     const state = this.store.state();
-    this.#rows = state.kind === "ready" ? changeRows(state.read, new Date()) : [];
+    this.#rows =
+      state.kind === "ready"
+        ? changeRows(state.read, this.store.review(), this.store.you(), new Date())
+        : [];
     const followed = this.store.followed();
     this.#view.description = followed === null ? "" : displaySession(followed.session);
     this.#view.message =
@@ -165,10 +183,29 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
         return item;
       }
       case "comments": {
-        const item = new vscode.TreeItem("Comments", vscode.TreeItemCollapsibleState.None);
-        item.id = node.id;
+        // VS Code keeps the collapsible state it first saw for an id, so the row with comments
+        // under it has an id of its own.
+        const item = new vscode.TreeItem(
+          "Comments",
+          node.comments.length === 0
+            ? vscode.TreeItemCollapsibleState.None
+            : vscode.TreeItemCollapsibleState.Expanded,
+        );
+        item.id = node.comments.length === 0 ? `${node.id}:none` : node.id;
         item.description = node.description;
         item.contextValue = "mend.change.comments";
+        return item;
+      }
+      case "comment": {
+        const item = new vscode.TreeItem(node.label, vscode.TreeItemCollapsibleState.None);
+        item.id = node.id;
+        item.description = node.description;
+        item.iconPath = new vscode.ThemeIcon(node.mend ? "sparkle" : "comment");
+        item.command = {
+          command: "mend.change.openComment",
+          title: "Show the comment",
+          arguments: [node],
+        };
         return item;
       }
       case "checkpoints": {
@@ -192,7 +229,65 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
     const row = this.#rows.find((candidate) => candidate.id === node.id);
     if (row?.kind === "slice") return [...row.above, ...row.files];
     if (row?.kind === "checkpoints") return [...row.checkpoints];
+    if (row?.kind === "comments") return [...row.comments];
     return [];
+  }
+
+  /** A comment's row: its file at its line, in the diff of the slice it hangs on. */
+  async #openComment(row?: CommentRow): Promise<void> {
+    const thread = row?.thread ?? null;
+    const read = this.store.ready();
+    if (thread === null || read === null) return;
+    const selection = new vscode.Range(thread.line - 1, 0, thread.line - 1, 0);
+    const at = thread.at;
+    if (at === null) {
+      await vscode.window.showTextDocument(noteUri(read.changeId), { selection, preview: true });
+      return;
+    }
+    if (at.slice !== read.pinned.id) {
+      await vscode.window.showTextDocument(changeUri(at), { selection, preview: true });
+      return;
+    }
+    const file = read.pinnedDiff.files.find((candidate) => candidate.newPath === at.path);
+    const left = { ...at, at: read.pinned.base.id, path: file?.oldPath ?? at.path, slice: null };
+    await vscode.commands.executeCommand(
+      "vscode.diff",
+      changeUri(left),
+      changeUri(at),
+      `${at.path.split("/").at(-1) ?? at.path} (${read.chain.baseName} ↔ checkpoint ${read.pinned.head.ordinal})`,
+      { preview: true, selection },
+    );
+  }
+
+  /**
+   * Show record (G9): the whole transcript of the session whose run the evidence cites, the
+   * evidence it was asked for on top.
+   */
+  async #showRecord(runId: unknown, sequence: unknown, excerpt: unknown): Promise<void> {
+    try {
+      const cited =
+        typeof sequence === "string" ? { runId: typeof runId === "string" ? runId : null } : null;
+      const shown = await this.store.record(cited);
+      if (shown === null) return;
+      if (shown.kind === "not-found") {
+        void vscode.window.showWarningMessage(shown.words);
+        return;
+      }
+      await this.record.show(
+        shown.sessionId,
+        shown.name,
+        recordText({
+          name: shown.name,
+          evidence:
+            typeof sequence === "string" && typeof excerpt === "string"
+              ? evidenceLine({ runId: null, sequence, excerpt })
+              : null,
+          entries: shown.entries,
+        }),
+      );
+    } catch (cause) {
+      this.onError(cause);
+    }
   }
 
   async #openFile(row?: FileRow): Promise<void> {

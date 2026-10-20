@@ -612,11 +612,8 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const tree = new MendTreeProvider(store, client);
   const statusBar = new MendStatusBar();
   const launches = new Launches(client, store);
-  const notifier = new Notifier(
-    store,
-    new ToastClaims(path.join(context.globalStorageUri.fsPath, "toasts")),
-    launches,
-  );
+  const claims = new ToastClaims(path.join(context.globalStorageUri.fsPath, "toasts"));
+  const notifier = new Notifier(store, claims, launches);
   const opens = openRunner({
     context,
     client,
@@ -635,7 +632,9 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const review = startReview({
     client,
     memento: context.globalState,
+    keptDirectory: path.join(context.globalStorageUri.fsPath, "reviews"),
     onError: (cause) => void showError(cause),
+    claims,
   });
   const commands = new MendCommands(
     connections,

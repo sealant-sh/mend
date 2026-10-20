@@ -72,6 +72,7 @@ const parseSession = (value: unknown): Session => {
     projectId: stringField(value, "projectId"),
     // Present once the server is worktree-aware; older servers omit it.
     ...(typeof value["worktreeId"] === "string" ? { worktreeId: value["worktreeId"] } : {}),
+    ...(typeof value["sealantRunId"] === "string" ? { sealantRunId: value["sealantRunId"] } : {}),
     harness: stringField(value, "harness"),
     // Recorded since the server owns the model catalog; older servers omit it.
     model: typeof value["model"] === "string" ? value["model"] : null,
@@ -317,11 +318,14 @@ export class MendClient {
     try {
       return await requestMend(connection, path, init);
     } catch (cause) {
-      const { url, token } = connection;
-      if (cause instanceof MendApiError && cause.status === 401 && token !== null)
-        void this.connections.refused({ url, token });
+      if (cause instanceof MendApiError && cause.status === 401) this.refused(connection);
       throw cause;
     }
+  }
+
+  /** Mend refused this connection's token: it is dropped, as every reader of Mend drops it. */
+  refused({ url, token }: MendConnection): void {
+    if (token !== null) void this.connections.refused({ url, token });
   }
 
   private post(path: string, payload: unknown): Promise<unknown> {
