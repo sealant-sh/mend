@@ -543,6 +543,27 @@ describe("mend handoff's adoption offer at a terminal", () => {
     return { calls, deps };
   };
 
+  it("paints its marks with escape sequences at a terminal", async () => {
+    const w = world();
+    const dana = newsroom(w);
+    const out = capture();
+    const tty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+    try {
+      await handoffCommand(inProcess([project]).deps, [], dana, {
+        interactive: true,
+        ask: async () => true,
+      });
+    } finally {
+      if (tty === undefined) Reflect.deleteProperty(process.stdout, "isTTY");
+      else Object.defineProperty(process.stdout, "isTTY", tty);
+    }
+    const text = out.join("");
+    expect(text).toContain("\u001b[32m✓\u001b[0m handed off as fix-login");
+    expect(text).toContain("\u001b[2m  attach\u001b[0m · mend attach 3f2a1c0d");
+    expect(text.replaceAll("\u001b[", "")).not.toMatch(/\[\d+m/u);
+  });
+
   for (const answer of [true, false]) {
     it(`adopts and hands off only on yes (answer: ${String(answer)})`, async () => {
       const w = world();

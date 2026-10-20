@@ -30,7 +30,7 @@ import {
 } from "./shared.ts";
 
 const paint = (code: string) => (text: string) =>
-  process.stdout.isTTY === true ? `[${code}m${text}[0m` : text;
+  process.stdout.isTTY === true ? `\u001b[${code}m${text}\u001b[0m` : text;
 const dim = paint("2");
 const green = paint("32");
 const amber = paint("33");
