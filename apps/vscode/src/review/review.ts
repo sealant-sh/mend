@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
 
 import type { EventPointer, MendClient } from "../client.js";
-import { refusedSignIn } from "../error-toast.js";
 import type { ToastClaims } from "../toast-claims.js";
 import type { Project, Session } from "../types.js";
 import type { Pasted } from "./agent-paste.js";
@@ -13,7 +12,8 @@ import { KeptReviews } from "./kept-reviews.js";
 import { RECORD_SCHEME, RecordContent } from "./record.js";
 import { ReviewClient } from "./review-client.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
-import { ReviewStore, type ReviewFailure } from "./review-store.js";
+import { ReviewStore } from "./review-store.js";
+import { reviewToast } from "./review-toast.js";
 import { SendEditor } from "./send-editor.js";
 
 /** Review in the editor (story d), as the extension starts it: one owner, and its surfaces. */
@@ -60,38 +60,7 @@ export const startReview = (deps: {
     async () => (await deps.client.connection()).url,
   );
   const content = new ChangeContent(client, () => deps.client.connection());
-  /**
-   * A review failure toasts once in this VS Code (rule 14): claimed as the notifier claims its
-   * toasts, then checked again, since a delivery may have been retried while the claim was made.
-   */
-  const toast = async (failure: ReviewFailure): Promise<void> => {
-    // A refused sign-in reads as it does on every surface: Mend's words with Connect.
-    if (refusedSignIn(failure.cause)) {
-      deps.onError(failure.cause);
-      return;
-    }
-    if (!(await deps.claims.claim(failure.key, failure.at))) return;
-    if (!(await store.stillFails(failure))) {
-      await deps.claims.release(failure.key, failure.at);
-      return;
-    }
-    const show =
-      failure.tone === "error" ? vscode.window.showErrorMessage : vscode.window.showWarningMessage;
-    const actions = [
-      ...(failure.retry === null ? [] : ["Retry delivery"]),
-      ...(failure.text === null ? [] : ["Show its text"]),
-    ];
-    const picked = await show(failure.words, ...actions);
-    if (picked === "Retry delivery" && failure.retry !== null) await store.retry(failure.retry);
-    if (picked === "Show its text" && failure.text !== null) {
-      // Her words of a review that was stopped, to copy from: nothing she wrote is lost.
-      const document = await vscode.workspace.openTextDocument({
-        content: failure.text,
-        language: "markdown",
-      });
-      await vscode.window.showTextDocument(document, { preview: true });
-    }
-  };
+  const toast = reviewToast(store, deps.claims, deps.onError);
   const disposables: ReadonlyArray<vscode.Disposable> = [
     vscode.workspace.registerTextDocumentContentProvider(CHANGE_SCHEME, content),
     vscode.workspace.registerTextDocumentContentProvider(RECORD_SCHEME, record),
