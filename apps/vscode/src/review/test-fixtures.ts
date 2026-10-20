@@ -94,6 +94,7 @@ export const pending = (overrides: Partial<PendingComment>): PendingComment => (
   body: "Use the shared limiter from guard.ts",
   createdAt: "2026-10-19T10:00:00.000Z",
   origin: { kind: "own" },
+  anchor: null,
   ...overrides,
 });
 

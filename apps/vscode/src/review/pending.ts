@@ -1,4 +1,4 @@
-import type { RecordLink } from "./review-wire.js";
+import type { CommentAnchor, RecordLink } from "./review-wire.js";
 
 /**
  * Her pending comments (story d, step 4): held by the extension, like a pending review in GitHub
@@ -35,6 +35,11 @@ export interface PendingComment {
   readonly body: string;
   readonly createdAt: string;
   readonly origin: PendingOrigin;
+  /**
+   * Where the Mend draft it came from hangs, kept through Accept and her reply under it: a draft on
+   * a deleted line stays on the old side. Null for a comment she wrote on a line of the pinned slice.
+   */
+  readonly anchor: CommentAnchor | null;
 }
 
 /** One session's review on this machine. */
@@ -78,6 +83,17 @@ const parseOrigin = (value: unknown): PendingOrigin | null => {
     : null;
 };
 
+const parseAnchor = (value: unknown): CommentAnchor | null => {
+  if (!isRecord(value)) return null;
+  const sliceId = text(value, "sliceId");
+  const baseId = text(value, "baseId");
+  const headId = text(value, "headId");
+  const side = value["side"];
+  return sliceId === null || baseId === null || headId === null
+    ? null
+    : { sliceId, baseId, headId, side: side === "old" || side === "new" ? side : null };
+};
+
 const parsePending = (value: unknown): ReadonlyArray<PendingComment> => {
   if (!isRecord(value)) return [];
   const id = text(value, "id");
@@ -90,6 +106,7 @@ const parsePending = (value: unknown): ReadonlyArray<PendingComment> => {
   const body = text(value, "body");
   const createdAt = text(value, "createdAt");
   const origin = parseOrigin(value["origin"]);
+  const anchor = parseAnchor(value["anchor"]);
   if (
     id === null ||
     sliceId === null ||
@@ -103,7 +120,7 @@ const parsePending = (value: unknown): ReadonlyArray<PendingComment> => {
     origin === null
   )
     return [];
-  return [{ id, sliceId, headId, path, line, endLine, lineText, body, createdAt, origin }];
+  return [{ id, sliceId, headId, path, line, endLine, lineText, body, createdAt, origin, anchor }];
 };
 
 /** A session's review as stored; a comment that does not read back is dropped alone. */

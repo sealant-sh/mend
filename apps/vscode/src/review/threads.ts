@@ -1,7 +1,7 @@
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
 import { acceptedDrafts, type PendingComment, type SessionReview } from "./pending.js";
-import type { RecordLink, ServerComment } from "./review-wire.js";
+import type { CommentAnchor, RecordLink, ServerComment } from "./review-wire.js";
 
 /**
  * Every comment of a change as a thread in the editor (story d, steps 3, 4 and 7), decided without
@@ -57,15 +57,17 @@ const pendingThread = (read: ChangeRead, comment: PendingComment, you: string): 
   at:
     comment.path === null
       ? null
-      : comment.sliceId === read.pinned.id
-        ? pinnedAt(read, comment.path)
-        : {
-            worktreeId: read.chain.worktreeId,
-            absent: false,
-            path: comment.path,
-            at: comment.headId,
-            slice: comment.sliceId,
-          },
+      : comment.anchor !== null
+        ? anchoredAt(read, comment.anchor, comment.path)
+        : comment.sliceId === read.pinned.id
+          ? pinnedAt(read, comment.path)
+          : {
+              worktreeId: read.chain.worktreeId,
+              absent: false,
+              path: comment.path,
+              at: comment.headId,
+              slice: comment.sliceId,
+            },
   line: comment.line,
   endLine: comment.endLine,
   author: comment.origin.kind === "accepted" ? `${you} · accepted from Mend` : you,
@@ -104,9 +106,10 @@ const LABELS: Readonly<Record<ThreadKind, string>> = {
  * at the slice's base, the new side at its head (the pinned slice's new side when that is the
  * pinned head); with no anchor, on the pinned new side.
  */
-const serverAt = (read: ChangeRead, comment: ServerComment, file: string): ChangeAddress => {
-  const anchor = comment.anchor;
-  if (anchor === null) return pinnedAt(read, file);
+const serverAt = (read: ChangeRead, comment: ServerComment, file: string): ChangeAddress =>
+  comment.anchor === null ? pinnedAt(read, file) : anchoredAt(read, comment.anchor, file);
+
+const anchoredAt = (read: ChangeRead, anchor: CommentAnchor, file: string): ChangeAddress => {
   const at = (checkpoint: string): ChangeAddress => ({
     worktreeId: read.chain.worktreeId,
     absent: false,

@@ -293,6 +293,7 @@ export class ReviewStore implements vscode.Disposable {
       body,
       createdAt: new Date().toISOString(),
       origin: { kind: "own" },
+      anchor: null,
     };
     let full = false;
     try {
@@ -639,7 +640,7 @@ export class ReviewStore implements vscode.Disposable {
   }
 }
 
-/** A pending comment on a Mend draft's place: its lines on the pinned slice, or the whole change. */
+/** A pending comment on a Mend draft's place: its lines where the draft hangs, or the whole change. */
 const onDraft = (
   read: ChangeRead,
   draft: ServerComment,
@@ -658,5 +659,6 @@ const onDraft = (
     body,
     createdAt: new Date().toISOString(),
     origin,
+    anchor: draft.anchor,
   };
 };
