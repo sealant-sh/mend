@@ -181,7 +181,9 @@ describe("Send review twice before she presses Enter in claude's terminal", () =
     expect(pastes).toHaveLength(1);
     expect(told[0]).toMatchObject({
       tone: "warning",
-      words: expect.stringMatching(/already pasted into claude's terminal, so VS Code pasted nothing there\. Mend holds/),
+      words: expect.stringMatching(
+        /already pasted into claude's terminal, so VS Code pasted nothing there\. Mend holds/,
+      ),
     });
   });
 });
