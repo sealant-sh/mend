@@ -61,17 +61,19 @@ describe("a conversation's pending requests", () => {
   });
 });
 
+/** A process row as the server sends it; an older server sends no `runsAs`. */
+const processRow = (id: string, runsAs?: string) => ({
+  id,
+  kind: "agent-protocol",
+  harness: "claude",
+  status: "running",
+  exitedAt: null,
+  providerSessionId: null,
+  ...(runsAs === undefined ? {} : { runsAs }),
+});
+
 describe("a session's processes", () => {
   it("say whom each runs as, and nobody from an older server", async () => {
-    const process = (id: string, runsAs?: string) => ({
-      id,
-      kind: "agent-protocol",
-      harness: "claude",
-      status: "running",
-      exitedAt: null,
-      providerSessionId: null,
-      ...(runsAs === undefined ? {} : { runsAs }),
-    });
     vi.stubGlobal(
       "fetch",
       vi.fn(
@@ -88,7 +90,7 @@ describe("a session's processes", () => {
                 status: "waiting",
                 createdAt: "2026-10-20T08:00:00.000Z",
               },
-              processes: [process("p", "ana"), process("q")],
+              processes: [processRow("p", "ana"), processRow("q")],
               currentAgent: null,
             }),
           ),

@@ -570,15 +570,14 @@ describe("a session read again for an answer (story b)", () => {
     mend.add(session({ id: "s", status: "running", summary: "pnpm db:migrate" }));
     mend.requests.set("s", []);
     mend.hold("detail:s");
-    let landed = false;
-    const reread = store.reread("s").then(() => {
-      landed = true;
-    });
+    const landed = vi.fn();
+    const reread = store.reread("s").then(landed);
     await tick(300);
-    expect(landed).toBe(false);
+    expect(landed).not.toHaveBeenCalled();
     mend.release("detail:s");
     await tick(0);
     await reread;
+    expect(landed).toHaveBeenCalledTimes(1);
     expect(store.model()?.sessions.get("s")?.line).toBe("running · pnpm db:migrate");
   });
 });
