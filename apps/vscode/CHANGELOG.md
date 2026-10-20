@@ -25,8 +25,9 @@ patch number is the extension's own.
   agent's follow-up waits `pending` in Mend, so VS Code attaches its terminal and pastes the review
   there without Enter (`follow-up pending · in claude's terminal`), into that agent only, and with
   no control character. A second review before Enter pastes only its new comments, and after one
-  that pasted nothing the next pastes every comment claude's input lacks. A failed delivery reads
-  `delivery failed · retryable` with **Retry delivery** on the same key; a review Mend holds
+  that pasted nothing the next pastes every comment claude's input lacks. After a stop and a resume
+  the new claude's input holds none of it, so the next review is pasted whole. A failed delivery
+  reads `delivery failed · retryable` with **Retry delivery** on the same key; a review Mend holds
   `pending` offers **Retry delivery** once the agent exits, or when its paste did not happen; and a
   Retry that finds the review `sent` sends nothing and says so. When the worktree moves on the slice
   stays pinned and the section says so; you mark each sent comment **Addressed** or **Reopen**.

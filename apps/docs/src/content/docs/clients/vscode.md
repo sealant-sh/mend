@@ -438,6 +438,10 @@ session.
     and the comments that never reached claude's input read
     `follow-up pending · not in claude's terminal`. Your next **Send review** is composed on what
     claude's input holds, and pastes every comment it lacks.
+  - What is in claude's input belongs to that claude process. Stop the session and resume it, and
+    the new claude's input holds none of it: the threads read
+    `follow-up pending · not in claude's terminal`, and the next **Send review** pastes the whole
+    review into the new claude, every comment Mend holds and the new ones.
   - The section counts a review Mend holds by where its words are, such as
     `2 follow-up pending · in claude's terminal`, never as `sent`.
 - Once that agent exits, a review Mend still holds `pending` offers **Retry delivery**, in its
