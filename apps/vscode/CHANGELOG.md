@@ -11,6 +11,9 @@ patch number is the extension's own.
   changes** opens them all in one multi-diff editor; the header picks **since my last review**,
   **last turn** or two checkpoints, which read but take no comments. **Mend: Review change** shows
   the section instead of opening the browser, and **Open in Mend (web)** sits in its `...` menu.
+  When the worktree moves on, the section says `worktree changed since this review · 3 new files`
+  and **Review the newer change** pins it. A session row's **Open in Mend** moves from its buttons
+  to its right-click menu.
 - The Mend view is **Sessions**: **Needs you**, **Since you last looked**, **Running**, then
   **Projects**, collapsed. Each row reads `<word> · <fact>` as Mend observed it, such as
   `waiting · claude needs your permission to use Bash · since 02:14` or
