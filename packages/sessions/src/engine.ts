@@ -1596,6 +1596,13 @@ const refusalWordsIn = (summary: string | null, processId: string): string | nul
 /** A PTY close that failed is tried again twice, a little later each time. */
 const PTY_CLOSE_RETRY = Schedule.max([Schedule.exponential("250 millis"), Schedule.recurs(2)]);
 
+/**
+ * How long a Stop waits for the platform to close its agent. Past it, a Stop whose drain ends the
+ * whole executor leaves the agent to that drain's terminate; any other Stop reads it as refused.
+ * Either way the Stop ends and releases its hold on the drain (SLNT-111).
+ */
+const STOP_CLOSE_DEADLINE = Duration.seconds(30);
+
 const workspaceIsLive = (status: string) =>
   status === "queued" || status === "running" || status === "ready";
 
@@ -20235,6 +20242,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // or after a restart.
         // Whether this very stop began the drain intent (a refused close withdraws only its own).
         let beganDrain = false;
+        // Whether the drain this stop is under ends the whole executor: nothing else holds it.
+        let drainEndsExecutor = false;
         if (capture !== null && session.sealantWorkspaceId !== null) {
           const workspaceId = session.sealantWorkspaceId;
           const liveAgents = rows.filter(isLiveAgentProcess);
@@ -20254,6 +20263,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               (forward) => forward.sealantWorkspaceId === workspaceId,
             ).length;
           if (held === 0) {
+            drainEndsExecutor = true;
             beganDrain = session.captureDrain === null;
             yield* sessions.beginCaptureDrain(
               sessionId,
@@ -20273,13 +20283,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* protocolHost.detach(agent.id);
             yield* conversations.cancelOpenForProcess(agent.id);
           }
-          if (
-            agent.sealantSessionId !== null &&
-            !(yield* closeProcessPty(agent.sealantWorkspaceId, agent.sealantSessionId))
-          ) {
-            yield* notStopped(agent);
-            notEnded.push(agent);
-            continue;
+          if (agent.sealantSessionId !== null) {
+            const closed = yield* closeProcessPty(
+              agent.sealantWorkspaceId,
+              agent.sealantSessionId,
+            ).pipe(Effect.timeoutOption(STOP_CLOSE_DEADLINE));
+            if (Option.isNone(closed) && drainEndsExecutor) {
+              // The tail's sweep reaps it and the drain's terminate ends it with its executor.
+              yield* Effect.logWarning(
+                "session engine: a stop's close did not answer · the drain ends the executor",
+              ).pipe(Effect.annotateLogs({ sessionId, processId: agent.id }));
+              continue;
+            }
+            if (Option.isNone(closed) || !closed.value) {
+              yield* notStopped(agent);
+              notEnded.push(agent);
+              continue;
+            }
           }
 
           const recorded = yield* endAgentProcess(agent, {
