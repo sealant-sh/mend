@@ -73,15 +73,33 @@ export interface TerminalInput {
   readonly ids: ReadonlyArray<string>;
 }
 
+/** What one agent process's input holds, as VS Code pasted it: another process's input holds none of it. */
+export interface HeldInput {
+  readonly input: TerminalInput;
+  readonly agent: string;
+  readonly processId: string;
+}
+
 /**
  * What Send to session pastes into the agent's terminal (G12 fallback): the whole text; only what
  * she added onto what its input holds; or nothing, with why, when she changed the part already
- * there. `onto` is what the input held when she composed it.
+ * there. `onto` is what the input of the agent process `processId` held when she composed it: a
+ * paste into any other process is the whole text.
  */
 export type PastePlan =
   | { readonly kind: "all" }
-  | { readonly kind: "added"; readonly text: string; readonly onto: TerminalInput }
-  | { readonly kind: "none"; readonly words: string; readonly onto: TerminalInput };
+  | {
+      readonly kind: "added";
+      readonly text: string;
+      readonly onto: TerminalInput;
+      readonly processId: string;
+    }
+  | {
+      readonly kind: "none";
+      readonly words: string;
+      readonly onto: TerminalInput;
+      readonly processId: string;
+    };
 
 /** The paste step of a review Mend holds pending in her agent's terminal. */
 export type PasteStep =
@@ -238,13 +256,14 @@ export const nextAction = (record: SendRecord): SendAction => {
   if (record.phase.kind === "in-terminal") {
     if (record.phase.paste.kind !== "due") return { kind: "idle" };
     const { processId } = record.phase;
-    switch (record.paste.kind) {
+    const plan = planFor(record.paste, processId);
+    switch (plan.kind) {
       case "all":
         return { kind: "paste", text: record.instruction, processId };
       case "added":
-        return { kind: "paste", text: record.paste.text, processId };
+        return { kind: "paste", text: plan.text, processId };
       case "none":
-        return { kind: "skip-paste", words: record.paste.words };
+        return { kind: "skip-paste", words: plan.words };
     }
   }
   if (record.phase.kind === "delivering") return { kind: "watch" };
@@ -264,41 +283,62 @@ export const nextAction = (record: SendRecord): SendAction => {
     : { kind: "deliver", request: deliverRequest(record, ids) };
 };
 
-/** What the agent's input holds after this record's paste step: what it was pasted onto, and the paste. */
-const inputAfter = (record: SendRecord, pasted: boolean): TerminalInput => {
+/**
+ * The plan for a paste into the agent process `processId`: one composed onto another process's
+ * input is the whole text, since this process's input holds none of it.
+ */
+const planFor = (plan: PastePlan, processId: string): PastePlan =>
+  plan.kind !== "all" && plan.processId !== processId ? { kind: "all" } : plan;
+
+/**
+ * What the agent's input holds after this record's paste step, in the process it was pasted into:
+ * what it was pasted onto, and the paste.
+ */
+const inputAfter = (record: SendRecord, processId: string, pasted: boolean): TerminalInput => {
   const ids = commentIds(record) ?? [];
-  switch (record.paste.kind) {
+  const plan = planFor(record.paste, processId);
+  switch (plan.kind) {
     case "all":
       return pasted ? { text: record.instruction, ids } : { text: "", ids: [] };
     case "added":
-      return pasted
-        ? { text: `${record.paste.onto.text}${record.paste.text}`, ids }
-        : record.paste.onto;
+      return pasted ? { text: `${plan.onto.text}${plan.text}`, ids } : plan.onto;
     case "none":
-      return record.paste.onto;
+      return plan.onto;
   }
 };
 
-/** What her agent's input holds, by the newest review not refused; null when nothing of hers is. */
-export const terminalInput = (
-  records: ReadonlyArray<SendRecord>,
-): { readonly input: TerminalInput; readonly agent: string } | null => {
+/** What an agent process's input holds, by the newest review not refused; null when nothing of hers is. */
+const recordedInput = (records: ReadonlyArray<SendRecord>): HeldInput | null => {
   const latest = records.findLast((record) => record.phase.kind !== "refused");
   if (latest?.phase.kind !== "in-terminal") return null;
-  const { agent, paste } = latest.phase;
-  if (paste.kind === "done") return { input: paste.input, agent };
+  const { agent, processId, paste } = latest.phase;
+  if (paste.kind === "done") return { input: paste.input, agent, processId };
   // Nothing was pasted: the input holds what this review was composed onto.
   return paste.kind === "failed" && latest.paste.kind !== "all"
-    ? { input: latest.paste.onto, agent }
+    ? { input: latest.paste.onto, agent, processId: latest.paste.processId }
     : null;
 };
 
 /**
- * The reviews a composition was made after: the newest one kept, and what her agent's input holds.
+ * What the input of her live agent holds; null when nothing of hers is, or when the agent is a
+ * process other than the one VS Code pasted into, as after a stop and a resume.
+ */
+export const terminalInput = (
+  records: ReadonlyArray<SendRecord>,
+  agent: LiveAgent | null,
+): HeldInput | null => {
+  const held = recordedInput(records);
+  return held !== null && agent?.kind === "terminal" && agent.processId === held.processId
+    ? held
+    : null;
+};
+
+/**
+ * The reviews a composition was made after: the newest one kept, and what an agent's input holds.
  * One composed before another review went out, in any window, no longer says what it would send.
  */
 export const sendGeneration = (records: ReadonlyArray<SendRecord>): string =>
-  JSON.stringify([records.at(-1)?.key ?? null, terminalInput(records)?.input.text ?? null]);
+  JSON.stringify([records.at(-1)?.key ?? null, recordedInput(records)]);
 
 const withPost = (record: SendRecord, pendingId: string, post: PostState): SendRecord => ({
   ...record,
@@ -362,7 +402,10 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
             ...record,
             phase: {
               ...record.phase,
-              paste: { kind: "done", input: inputAfter(record, event.kind === "pasted") },
+              paste: {
+                kind: "done",
+                input: inputAfter(record, record.phase.processId, event.kind === "pasted"),
+              },
             },
           }
         : record;
@@ -545,15 +588,22 @@ export const recordLabel = (phase: SendPhase): string => {
 };
 
 /**
- * What the thread of one comment in this record reads: in her terminal, whether its words are in
- * the agent's input.
+ * What the thread of a comment in this record reads (`commentId` null for one not on Mend yet): in
+ * her terminal, whether its words are in the input of her live agent, the process they were pasted
+ * into. A new process, after a stop and a resume, holds none of them.
  */
-export const commentLabel = (record: SendRecord, commentId: string): string =>
-  record.phase.kind === "in-terminal" &&
-  record.phase.paste.kind === "done" &&
-  !record.phase.paste.input.ids.includes(commentId)
-    ? `follow-up pending · not in ${record.phase.agent}'s terminal`
-    : recordLabel(record.phase);
+export const commentLabel = (
+  record: SendRecord,
+  commentId: string | null,
+  agent: LiveAgent | null,
+): string => {
+  const { phase } = record;
+  if (phase.kind !== "in-terminal" || phase.paste.kind !== "done") return recordLabel(phase);
+  const here = agent?.kind === "terminal" && agent.processId === phase.processId;
+  return here && (commentId === null || phase.paste.input.ids.includes(commentId))
+    ? recordLabel(phase)
+    : `follow-up pending · not in ${phase.agent}'s terminal`;
+};
 
 /** A record whose comments were handed to the session: its head is where her last review was. */
 export const handedOver = (record: SendRecord): boolean =>

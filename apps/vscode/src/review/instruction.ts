@@ -1,7 +1,7 @@
 import { lfOnly } from "../line-endings.js";
 import { maySteer, ownsSession } from "../session-capability.js";
 import type { Session } from "../types.js";
-import type { LiveAgent, PastePlan, TerminalInput } from "./delivery.js";
+import type { HeldInput, LiveAgent, PastePlan } from "./delivery.js";
 import type { ChangeFile, RecordLink } from "./review-wire.js";
 import { filesLine } from "./slices.js";
 
@@ -115,14 +115,14 @@ export const composeAddition = (input: {
  */
 export const addedText = (
   sent: string,
-  onto: TerminalInput,
-  agent: string,
+  { input: onto, agent, processId }: HeldInput,
 ): Exclude<PastePlan, { readonly kind: "all" }> => {
   if (!sent.startsWith(onto.text))
     return {
       kind: "none",
       words: `You changed the part of this review already in ${agent}'s terminal, so VS Code pasted nothing there: its input still holds the earlier text. Mend holds the review as you sent it.`,
       onto,
+      processId,
     };
   const added = sent.slice(onto.text.length);
   return added.trim() === ""
@@ -130,8 +130,9 @@ export const addedText = (
         kind: "none",
         words: `Nothing was added to the review already in ${agent}'s terminal, so VS Code pasted nothing there.`,
         onto,
+        processId,
       }
-    : { kind: "added", text: added, onto };
+    : { kind: "added", text: added, onto, processId };
 };
 
 /**

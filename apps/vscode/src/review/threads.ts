@@ -1,12 +1,6 @@
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
-import {
-  commentLabel,
-  mayRetry,
-  recordLabel,
-  type LiveAgent,
-  type SendRecord,
-} from "./delivery.js";
+import { commentLabel, mayRetry, type LiveAgent, type SendRecord } from "./delivery.js";
 import { acceptedDrafts, type PendingComment, type SessionReview } from "./pending.js";
 import type { CommentAnchor, RecordLink, ServerComment } from "./review-wire.js";
 
@@ -156,7 +150,7 @@ const fromRecord = (
   /** The comment on Mend the thread shows; null for one not on Mend yet. */
   commentId: string | null,
 ): { readonly kind: ThreadKind; readonly label: string; readonly sendKey: string } => {
-  const label = commentId === null ? recordLabel(record.phase) : commentLabel(record, commentId);
+  const label = commentLabel(record, commentId, agent);
   const sendKey = record.key;
   switch (record.phase.kind) {
     case "sending":

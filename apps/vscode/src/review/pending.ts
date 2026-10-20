@@ -264,9 +264,11 @@ const parsePaste = (value: unknown): PastePlan | null => {
   const pasted = text(value, "text");
   const words = text(value, "words");
   const onto = parseInput(value["onto"]);
-  if (onto === null) return null;
-  if (value["kind"] === "added" && pasted !== null) return { kind: "added", text: pasted, onto };
-  if (value["kind"] === "none" && words !== null) return { kind: "none", words, onto };
+  const processId = text(value, "processId");
+  if (onto === null || processId === null) return null;
+  if (value["kind"] === "added" && pasted !== null)
+    return { kind: "added", text: pasted, onto, processId };
+  if (value["kind"] === "none" && words !== null) return { kind: "none", words, onto, processId };
   return null;
 };
 

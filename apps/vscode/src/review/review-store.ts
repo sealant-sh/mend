@@ -23,7 +23,7 @@ import {
   nextAction,
   openRecord,
   postedComment,
-  recordLabel,
+  commentLabel,
   retryRecord,
   sendGeneration,
   startSend,
@@ -33,7 +33,7 @@ import {
   type PastePlan,
   type SendEvent,
   type SendRecord,
-  type TerminalInput,
+  type HeldInput,
   terminalInput,
 } from "./delivery.js";
 import {
@@ -141,7 +141,7 @@ export interface Composed {
    * What the agent's input holds, as VS Code pasted it, that this review is composed on top of:
    * Send to session pastes only what follows it. Null for a review on its own.
    */
-  readonly base: { readonly input: TerminalInput; readonly agent: string } | null;
+  readonly base: HeldInput | null;
 }
 
 /** Whether Retry delivery sent the review again; when not, what it found instead. */
@@ -665,7 +665,7 @@ export class ReviewStore implements vscode.Disposable {
       digest: digestOf(this.#review.pending, open),
       generation: sendGeneration(this.#review.sends),
     };
-    const base = terminalInput(this.#review.sends);
+    const base = terminalInput(this.#review.sends, read.facts.agent);
     if (base !== null) {
       const inTerminal = new Set(base.input.ids);
       return {
@@ -717,9 +717,7 @@ export class ReviewStore implements vscode.Disposable {
       return { sent: false, words: COMMENTS_CHANGED };
     const instruction = textToSend(text, read.sessionName);
     const paste: PastePlan =
-      composed.base === null
-        ? { kind: "all" }
-        : addedText(instruction, composed.base.input, composed.base.agent);
+      composed.base === null ? { kind: "all" } : addedText(instruction, composed.base);
     const key = `vscode-follow-up:${read.changeId}:${randomUUID()}`;
     let next: SessionReview;
     let stale = false;
@@ -794,7 +792,7 @@ export class ReviewStore implements vscode.Disposable {
     if (detail.changeId === null || !mayRetry(record, agent))
       return {
         retried: false,
-        words: `Retry delivery sent nothing: this review already reads ${recordLabel(record.phase)}`,
+        words: `Retry delivery sent nothing: this review already reads ${commentLabel(record, null, agent)}`,
       };
     const context: SendContext = {
       place: target.place,
