@@ -3,7 +3,8 @@
 // 3 files · …`, a row per file with its letter, Comments and Checkpoints); a file opens VS Code's
 // own diff editor, base on the left and the pinned checkpoint on the right; Open all changes opens
 // every file in one multi-diff editor; the header picks another slice, which she can read but not
-// comment on (G10); Open in Mend (web) sits only in the section's overflow menu; review works on a
+// comment on (G10); files written after the pin are said above the pinned slice, and Review the
+// newer change pins them; Open in Mend (web) sits only in the section's overflow menu; review works on a
 // stopped session; and in the session's own workspace window the section shows its change unasked.
 //
 //   node .claude/skills/verify/scripts/drive-vscode.mjs run \
@@ -29,6 +30,15 @@ import {
 // A world that already ran this recipe names its next session apart: `MEND_REVIEW_SESSION`.
 const SESSION = process.env.MEND_REVIEW_SESSION ?? "add-rate-limit";
 const OPEN = /^Mend: Open$/;
+/** Two more files, written after the slice was pinned. */
+const NEWER = {
+  files: {
+    "src/auth/guard.ts": "export const guard = () => true;\n",
+    "docs/limits.md": "# Limits\n\nSee rate-limit.md.\n",
+  },
+  remove: [],
+};
+const DRIFT = "worktree changed since this review · 2 new files";
 
 export default async (h) => {
   const { step, note, api, sleep, view, treeItem, quickInput, waitUntil, shot, userSettings } = h;
@@ -190,7 +200,7 @@ export default async (h) => {
   );
 
   await step(
-    "d5 · she clicks the header: Review which slice? offers main → now, last turn and between two checkpoints",
+    "d5 · she clicks the header: Review which slice? offers main → now and between two checkpoints (last turn once a turn ended)",
     async () => {
       await treeItem("→ now ▾", { pane: "Change" }).click();
       await quickInput.waitFor();
@@ -290,6 +300,41 @@ export default async (h) => {
     );
     return said(seen);
   });
+
+  await step(
+    "edge · the worktree moved on: the slice stays pinned, the header counts the new files, and Review the newer change pins them",
+    async () => {
+      const shell = await shellBeside(session);
+      await shell.write(NEWER);
+      await shell.close();
+      await h.palette("Mend: Read the change again");
+      const drifted = await sectionUntil("the worktree-changed line", (now) =>
+        now.rows.some((row) => row.label === DRIFT),
+      );
+      await shot("edge-worktree-moved-on");
+      const pinnedHeader = drifted.rows.find((row) => row.label === `${base} → now ▾`);
+      expect(
+        pinnedHeader?.description.startsWith("4 files · ") === true,
+        `the pinned slice moved: "${pinnedHeader?.description}"`,
+      );
+      expect(
+        drifted.rows.some((row) => row.label === "Review the newer change"),
+        `no Review the newer change: ${said(drifted)}`,
+      );
+      await treeItem("Review the newer change", { pane: "Change" }).click();
+      const repinned = await sectionUntil(
+        "the newer change, pinned",
+        (now) =>
+          now.rows.some(
+            (row) => row.label === `${base} → now ▾` && row.description.startsWith("6 files · "),
+          ) && !now.rows.some((row) => row.label === DRIFT),
+      );
+      await shot("edge-review-the-newer-change");
+      const head = (await sessionRead(session.id)).checkpoints.at(-1);
+      expect(head.trigger === "review-open", `the newest checkpoint is ${head.trigger}`);
+      return `${said(drifted)} → ${said(repinned)}`;
+    },
+  );
 
   await step(
     "rule 11 · Open in Mend (web) is in the section's overflow menu, not among its buttons",

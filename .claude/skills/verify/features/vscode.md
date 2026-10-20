@@ -108,16 +108,15 @@ logs, and a video of the display. The flows below follow the stories in
 - VS Code: the Accounts menu in the Activity Bar lists `<email> @ <host> (Mend)` while connected;
   its submenu holds `Manage Trusted Extensions` and `Sign Out`.
 - VS Code: on a project row, inline `Mend: New session`; its context menu holds it too.
-- VS Code: on a session row whose workspace this person may open, inline `Mend: Open` and
-  `Mend: Open in Mend`. Its context menu holds `Mend: Open`, `Mend: Open in New Window`,
-  `Mend: New session in this worktree…`, `Mend: Review change` and `Mend: Copy worktree path`, and
-  on a live session also `Mend: Open terminal` and `Mend: Stop session`.
+- VS Code: on a session row whose workspace this person may open, inline `Mend: Open`. Its context
+  menu holds `Mend: Open`, `Mend: Open in New Window`, `Mend: New session in this worktree…`,
+  `Mend: Review change`, `Mend: Copy worktree path` and `Mend: Open in Mend` (rule 11: no row button
+  opens the browser), and on a live session also `Mend: Open terminal` and `Mend: Stop session`.
 - VS Code: on a session row whose workspace another person launched, no Open: inline
-  `Mend: Review change` and `Mend: Open in Mend`, plus `Mend: Watch terminal` while that person has
-  shared control on. The row's tooltip ends
-  `<launcher> launched this workspace · Remote-SSH opens it only for them`. Its context menu holds
-  `Mend: Watch terminal` (shared control on), `Mend: Review change`, `Mend: Stop session` and
-  `Mend: Copy worktree path`.
+  `Mend: Review change`, plus `Mend: Watch terminal` while that person has shared control on. The
+  row's tooltip ends `<launcher> launched this workspace · Remote-SSH opens it only for them`. Its
+  context menu holds `Mend: Watch terminal` (shared control on), `Mend: Review change`,
+  `Mend: Stop session`, `Mend: Copy worktree path` and `Mend: Open in Mend`.
 - VS Code: a click or a double-click on a session row selects it and runs nothing.
 - VS Code: while an open runs, the status bar item `Mend: opening a session` reads
   `installing Remote-SSH · <n> s`, `setting up workspace SSH · <n> s`,
@@ -545,6 +544,17 @@ the row takes the job's name.
     `throttle.ts [D]`, and the row `viewing · comments go on master → now`. The `...` menu offers
     `Open in Mend (web)`; no title button opens the browser. A stopped session shows the same
     change; its workspace window shows it with nothing selected.
+  - Since review round 2, `last turn` runs from the boundary before the newest `turn-boundary`
+    checkpoint to it, and the engine takes one only when a turn ends. The recipe's agent ends no
+    turn, so expect the picker without `last turn`. Spans name both checkpoints
+    (`checkpoint 1 → checkpoint 3`), never `→ now`: a chosen slice keeps its two checkpoints, and a
+    newer one shows as the row `newer checkpoints · read checkpoint 1 → checkpoint 5`.
+  - The worktree moving on (edge step, not yet run on this head): a third round of two files after
+    the pin, then `Mend: Read the change again`, shows
+    `worktree changed since this review · 2 new files` and `Review the newer change` above the
+    pinned slice's files, which still read `4 files`. Clicking it pins a new `review-open`
+    checkpoint and the header reads `6 files`. A header over a listing Mend cut reads
+    `listing cut at N files · … in those · read N s ago`, never `observed`.
   - Wait for a quick pick's own title before each pick (`Between two checkpoints · from which?`):
     the second pick reuses the widget, and a pick made early lands in the first list.
 - **e. Dana wants to drive by hand.** `recipes/vscode-open.mjs`, from the default `up`.
@@ -568,9 +578,9 @@ the row takes the job's name.
     manifest.
   - Not her session. Ana is a second account, set up `via: "api"`: an invitation, her sign-up with
     `x-mend-invitation`, the project shared, her session resumed as a shell, shared control on. Her
-    row (`treeItem("ana")`) offers inline `Mend: Watch terminal`, `Mend: Review change` and
-    `Mend: Open in Mend`, no Open; its menu `Mend: Watch terminal`, `Mend: Review change`,
-    `Mend: Stop session`, `Mend: Copy worktree path`, no Open and no Open in New Window; its tooltip
+    row (`treeItem("ana")`) offers inline `Mend: Watch terminal` and `Mend: Review change`, no Open;
+    its menu `Mend: Watch terminal`, `Mend: Review change`, `Mend: Stop session`,
+    `Mend: Copy worktree path`, `Mend: Open in Mend`, no Open and no Open in New Window; its tooltip
     `<project> · mend/wt/<worktree> · running` and
     `Ana launched this workspace · Remote-SSH opens it only for them`.
     `inline("Mend: Watch terminal")`: the tab `shell · ana`, its banner `read-only · Ana's session`.
@@ -588,10 +598,9 @@ the row takes the job's name.
     seconds.
   - Shared control off (`via: "api"`): the watching tab closed and VS Code toasted
     `The terminal process terminated with exit code: 1.`; after `Mend: Refresh` the row offers
-    `Mend: Review change` and `Mend: Open in Mend` only. The same deep link toasts the same line
-    with `Review`; its click shows VS Code's
-    `Do you want Code to open the external website? <web>/changes/<changeId>` (dismissed). The
-    palette's pick lists `ana running · Review`.
+    inline `Mend: Review change` only. The same deep link toasts the same line with `Review`; its
+    click shows VS Code's `Do you want Code to open the external website? <web>/changes/<changeId>`
+    (dismissed). The palette's pick lists `ana running · Review`.
   - `Mend: Show project sessions`, shared control off: its pick `Mend · <project>` lists
     `ana running · Review` with the reason, no Open; `opens` and windows unchanged.
 - **f. Dana comes back the next morning.** `recipes/vscode-view.mjs`, from a default `up` on a
@@ -727,8 +736,8 @@ Commands outside the stories, one gesture each:
 - **Stop.** `treeItem(<label>).contextMenu("Mend: Stop session")`. The modal `Stop <label>?`
   (`The worktree and reviewable change remain.`); `dialog("Stop").click("Stop session")`. The row's
   description turns to its settled word, and `api("/projects/<id>")` (`via: "api"`) agrees.
-- **Open in Mend.** `treeItem(<label>).inline("Mend: Open in Mend")`. Record `dialogs()`; when VS
-  Code asks before opening the external link, its dialog names `<web>/sessions/<id>`. Dismiss it.
+- **Open in Mend.** `treeItem(<label>).contextMenu("Mend: Open in Mend")`. Record `dialogs()`; when
+  VS Code asks before opening the external link, its dialog names `<web>/sessions/<id>`. Dismiss it.
 - **Copy worktree path.** `treeItem(<label>).contextMenu("Mend: Copy worktree path")`. The status
   bar shows `Mend worktree path copied` for two seconds.
 - **Sign out.** `palette("Mend: Sign out")`. Record the toast; with the CLI's connection it reads
