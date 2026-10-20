@@ -424,13 +424,27 @@ session.
   exits. VS Code then attaches the agent's terminal in your panel, as **Answer** does, and pastes
   the review into its input without pressing Enter. The threads read
   `follow-up pending · in claude's terminal`; press Enter in claude to send it.
+  - The paste goes only into that agent, while Mend still lists it running. If it exited first,
+    nothing is pasted, not even into a shell of the session, and a notification says so with **Retry
+    delivery**.
+  - The paste carries your words and line breaks only: carriage returns, tabs and other control
+    characters are dropped or turned into spaces, so nothing in it acts as a key.
+  - Send another review before you press Enter, and its editor holds the first review as you sent
+    it, then only the new comments under `More comments`. Only the new part is pasted after the
+    first. If you change the part already in claude's terminal, nothing is pasted and a notification
+    says why; Mend still holds the whole review as you sent it.
 - Once that agent exits, a review Mend still holds `pending` offers **Retry delivery**, in its
   threads and the section's title: the same key starts the stopped session on the review. Comments a
   held review carries also go out with your next **Send review**, and Mend then replaces the held
   one.
 - **Send to session** sends the comments the editor lists. If your comments changed after it opened,
-  nothing is sent and your text stays in the editor; open **Send review** again to compose the
-  review anew.
+  an edited word included, nothing is sent and your text stays in the editor; open **Send review**
+  again to compose the review anew. Two windows sending the same review record it once, under one
+  key, and one window drives it.
+- When a Mend draft in a review on its way is dismissed (on the web, or in another window), the
+  review stops before it is delivered, since its text still asks for that draft. A notification says
+  so and offers **Show its text**, your wording, to copy from; **Send review** composes the review
+  again without the draft.
 - A stopped session starts on the review as its prompt. The threads read `sent` once Mend reads each
   comment back as sent to the session.
 - When delivery fails, the threads read `delivery failed · retryable`, one notification says why,
@@ -442,7 +456,10 @@ session.
 - Offline, **Send review** is disabled and says `Mend is offline; your comments are kept`; the diff
   stays readable and your pending comments stay.
 - **Send review** is offered on your own sessions, and on another person's while they have shared
-  control on. A terminal agent takes a review from its owner only.
+  control on. A terminal agent takes a review from its owner only, live or started for a stopped
+  session, so on another person's terminal session **Send review** is disabled and says why.
+- The **Comments** row counts each comment by what was observed of it: `2 sent`, `1 sending`,
+  `1 delivery failed · retryable`, `1 follow-up pending`.
 
 ## Other commands
 
