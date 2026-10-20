@@ -266,7 +266,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             cutAt: admitted.trailers.cutAt,
             head: HexSha.make(admitted.head),
             index: HexSha.make(admitted.index),
-            checkpoint: HexSha.make(admitted.checkpoint),
+            checkpoint: HexSha.make(admitted.snapshot),
             mergeBase: HexSha.make(admitted.mergeBase),
             worktreeTree: HexSha.make(admitted.worktreeTree),
             indexTree: HexSha.make(admitted.indexTree),

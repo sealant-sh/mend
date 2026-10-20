@@ -385,7 +385,7 @@ export const makeHandoffStart = Effect.gen(function* () {
     if (earlier !== null) return yield* replay(project, earlier, userId, query, admitted);
     const made = yield* provision(project, userId, query, admitted);
     if (made === null) {
-      const raced = yield* worktrees.byHandoffCheckpoint(project.id, admitted.checkpoint);
+      const raced = yield* worktrees.byHandoffCheckpoint(project.id, admitted.snapshot);
       if (raced === null) {
         return yield* new StoreFailure({
           message: "the handoff's worktree was made elsewhere and cannot be found · hand off again",

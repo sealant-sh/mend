@@ -105,17 +105,17 @@ const worldWith = async (limits: Parameters<typeof createTenancyApi>[0] = {}, se
       if (input.name !== null && seen.namesRacing.delete(input.name)) {
         return yield* Effect.die(uniqueViolation(NAME_KEY));
       }
-      if (checkpoints.has(admitted.checkpoint)) {
+      if (checkpoints.has(admitted.snapshot)) {
         return yield* Effect.die(uniqueViolation(CHECKPOINT_KEY));
       }
-      checkpoints.add(admitted.checkpoint);
+      checkpoints.add(admitted.snapshot);
       const handoff: WorktreeHandoff = {
         machine: admitted.trailers.machine,
         localBranch: admitted.trailers.localBranch,
         cutAt: admitted.trailers.cutAt,
         head: HexSha.make(admitted.head),
         index: HexSha.make(admitted.index),
-        checkpoint: HexSha.make(admitted.checkpoint),
+        checkpoint: HexSha.make(admitted.snapshot),
         mergeBase: HexSha.make(admitted.mergeBase),
         worktreeTree: HexSha.make(admitted.worktreeTree),
         indexTree: HexSha.make(admitted.indexTree),

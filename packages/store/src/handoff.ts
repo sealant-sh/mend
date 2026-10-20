@@ -19,7 +19,8 @@ export interface AdmittedHandoff {
   readonly trailers: HandoffTrailers;
   readonly head: Sha;
   readonly index: Sha;
-  readonly checkpoint: Sha;
+  /** W: the snapshot commit, the working tree over the index over HEAD. */
+  readonly snapshot: Sha;
   readonly mergeBase: Sha;
   readonly worktreeTree: Sha;
   readonly indexTree: Sha;
@@ -156,7 +157,7 @@ export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHan
   if (header.prerequisites.length === 0) {
     return yield* notAHandoff("the bundle has no prerequisite: it was not cut at the merge base");
   }
-  const checkpoint = header.refs[0].sha;
+  const snapshot = header.refs[0].sha;
   const timeout = input.gitTimeout ?? HANDOFF_GIT_TIMEOUT;
 
   yield* Effect.sync(() => fs.mkdirSync(input.quarantineRoot, { recursive: true }));
@@ -252,7 +253,7 @@ export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHan
       input.bundle.subarray(header.packStart),
     ).pipe(Effect.mapError(damagedOr));
 
-    const [index, ...otherParentsOfW] = yield* parentsOf(checkpoint);
+    const [index, ...otherParentsOfW] = yield* parentsOf(snapshot);
     if (index === undefined || otherParentsOfW.length > 0) {
       return yield* notAHandoff("the snapshot commit does not have exactly one parent");
     }
@@ -261,7 +262,7 @@ export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHan
       return yield* notAHandoff("the index commit does not have exactly one parent");
     }
 
-    const raw = yield* run(["cat-file", "commit", checkpoint]);
+    const raw = yield* run(["cat-file", "commit", snapshot]);
     const message = raw.slice(raw.indexOf("\n\n") + 2);
     const parsed = parseHandoffMessage(message);
     if (Result.isFailure(parsed)) {
@@ -314,12 +315,12 @@ export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHan
       }
     }
 
-    yield* run(["rev-list", "--objects", "--missing=error", checkpoint, `^${mergeBase}`]).pipe(
+    yield* run(["rev-list", "--objects", "--missing=error", snapshot, `^${mergeBase}`]).pipe(
       Effect.mapError(damagedOr),
     );
 
     if (input.fileBytes > 0) {
-      const fresh = yield* run(["rev-list", "--objects", checkpoint, index, `^${head}`]);
+      const fresh = yield* run(["rev-list", "--objects", snapshot, index, `^${head}`]);
       const sizes = yield* run(
         ["cat-file", "--batch-check=%(objecttype) %(objectsize) %(rest)"],
         `${fresh}\n`,
@@ -338,9 +339,7 @@ export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHan
       }
     }
 
-    const trees = (yield* run(["rev-parse", `${checkpoint}^{tree}`, `${index}^{tree}`])).split(
-      "\n",
-    );
+    const trees = (yield* run(["rev-parse", `${snapshot}^{tree}`, `${index}^{tree}`])).split("\n");
     const [worktreeTree, indexTree] = trees;
     if (worktreeTree === undefined || indexTree === undefined) {
       return yield* notAHandoff("the snapshot's trees could not be read");
@@ -349,7 +348,7 @@ export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHan
 
     const name = yield* run(
       ["pack-objects", "-q", "--revs", path.join(quarantine, "delta")],
-      `${checkpoint}\n^${mergeBase}\n`,
+      `${snapshot}\n^${mergeBase}\n`,
     );
     const deltaPack = yield* Effect.sync(() => ({
       pack: new Uint8Array(fs.readFileSync(path.join(quarantine, `delta-${name}.pack`))),
@@ -361,7 +360,7 @@ export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHan
       trailers,
       head: Sha.make(head),
       index: Sha.make(index),
-      checkpoint: Sha.make(checkpoint),
+      snapshot: Sha.make(snapshot),
       mergeBase: Sha.make(mergeBase),
       worktreeTree: Sha.make(worktreeTree),
       indexTree: Sha.make(indexTree),

@@ -101,7 +101,7 @@ describe("Store.admitHandoff", () => {
     expect(admitted).toMatchObject({
       head: bundle.head,
       index: bundle.index,
-      checkpoint: bundle.checkpoint,
+      snapshot: bundle.checkpoint,
       mergeBase: bundle.mergeBase,
       worktreeTree: bundle.worktreeTree,
       indexTree: bundle.indexTree,
