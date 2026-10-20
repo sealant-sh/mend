@@ -4,6 +4,7 @@ import { ReviewComments } from "./comments.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore } from "./review-store.js";
 import {
+  comment,
   FakeMend,
   keptIn,
   PINNED,
@@ -15,9 +16,16 @@ import {
   storage,
 } from "./test-fixtures.js";
 
+interface Controller {
+  readonly id: string;
+  options: { readonly prompt?: string };
+  readonly threads: Array<{ readonly uri: { readonly scheme: string } }>;
+}
+
 const ui = vi.hoisted(() => ({
   commands: new Map<string, (...args: ReadonlyArray<unknown>) => unknown>(),
   warn: vi.fn(async (..._: ReadonlyArray<unknown>) => undefined),
+  controllers: new Array<Controller>(),
 }));
 
 vi.mock("vscode", async () => {
@@ -59,10 +67,17 @@ vi.mock("vscode", async () => {
       },
     },
     comments: {
-      createCommentController: () => ({
-        createCommentThread: () => ({ dispose: () => undefined, comments: [] }),
-        dispose: () => undefined,
-      }),
+      createCommentController: (id: string) => {
+        const controller: Controller = { id, options: {}, threads: [] };
+        ui.controllers.push(controller);
+        return Object.assign(controller, {
+          createCommentThread: (uri: { readonly scheme: string }) => {
+            controller.threads.push({ uri });
+            return { dispose: () => undefined, comments: [] };
+          },
+          dispose: () => undefined,
+        });
+      },
     },
   };
 });
@@ -100,6 +115,7 @@ const submit = async (reply: ReturnType<typeof replyOnLine3>): Promise<void> => 
 
 beforeEach(() => {
   ui.warn.mockClear();
+  ui.controllers.length = 0;
 });
 
 describe("submitting a comment from its thread", () => {
@@ -153,5 +169,34 @@ describe("a double click", () => {
     await Promise.all([submit(reply), submit(reply)]);
     expect(store.review().pending.map(({ body }) => body)).toEqual(["Use the shared limiter"]);
     comments.dispose();
+  });
+});
+
+describe("the reply box", () => {
+  it("asks for a comment on the whole change on the change's note, and on the line elsewhere", async () => {
+    const mend = new FakeMend();
+    mend.serverComments = [
+      comment({ id: "d1", state: "draft", file: null, line: null, endLine: null }),
+      comment({ id: "d2", state: "draft", line: 3 }),
+    ];
+    const store = new ReviewStore(
+      sessionReads("change-1"),
+      mend,
+      new ReviewMemory(memento()),
+      keptIn(await storage()),
+    );
+    store.follow(PROJECT, session("s1"));
+    const comments = new ReviewComments(store);
+    await vi.waitFor(() =>
+      expect(ui.controllers.flatMap((controller) => controller.threads)).toHaveLength(2),
+    );
+    const promptFor = (scheme: string): ReadonlyArray<string | undefined> =>
+      ui.controllers
+        .filter((controller) => controller.threads.some(({ uri }) => uri.scheme === scheme))
+        .map((controller) => controller.options.prompt);
+    expect(promptFor("mend-change-note")).toEqual(["Comment on the whole change"]);
+    expect(promptFor("mend-change")).toEqual(["Comment on this line"]);
+    comments.dispose();
+    store.dispose();
   });
 });
