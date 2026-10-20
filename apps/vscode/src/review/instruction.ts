@@ -1,3 +1,4 @@
+import { lfOnly } from "../line-endings.js";
 import { maySteer, ownsSession } from "../session-capability.js";
 import type { Session } from "../types.js";
 import type { LiveAgent, PastePlan, TerminalInput } from "./delivery.js";
@@ -133,12 +134,15 @@ export const addedText = (
     : { kind: "added", text: added, onto };
 };
 
-/** The editor's text as Mend sends it: the note line, and the blank line after it, left out. */
+/**
+ * The editor's text as Mend sends it: the note line, and the blank line after it, left out; each
+ * line ending LF, as a paste reads it, so line endings alone never read as an edit.
+ */
 export const textToSend = (editorText: string, sessionName: string): string => {
   const note = mendNote(sessionName);
-  const lines = editorText.split("\n");
+  const lines = lfOnly(editorText).split("\n");
   const at = lines.findIndex((line) => line.trim() === note);
-  if (at === -1) return editorText.trim();
+  if (at === -1) return lines.join("\n").trim();
   const after = lines[at + 1]?.trim() === "" ? 2 : 1;
   return [...lines.slice(0, at), ...lines.slice(at + after)].join("\n").trim();
 };

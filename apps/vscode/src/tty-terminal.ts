@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import type { MendConnection } from "./config.js";
+import { lfOnly } from "./line-endings.js";
 import { TtyAttachment, type PtyLiveness } from "./tty-attachment.js";
 import type { TtyAddress } from "./tty-protocol.js";
 
@@ -32,7 +33,7 @@ const dim = (text: string): string => `\x1b[2m${text}\x1b[0m`;
  * every C1 control goes. So no CR reaches a shell as Enter, and no ESC ends the paste early.
  */
 export const pasteBytes = (text: string): string => {
-  const words = [...text.replaceAll("\r\n", "\n").replaceAll("\r", "\n").replaceAll("\t", "  ")]
+  const words = [...lfOnly(text).replaceAll("\t", "  ")]
     .filter((character) => {
       const code = character.codePointAt(0) ?? 0;
       return code === 0x0a || (code > 0x1f && (code < 0x7f || code > 0x9f));
