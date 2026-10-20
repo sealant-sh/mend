@@ -22,6 +22,7 @@ import {
   slowFiles,
   storage,
 } from "./test-fixtures.js";
+import { threadsOf } from "./threads.js";
 
 vi.mock("vscode", () => import("../test-vscode.js"));
 
@@ -290,6 +291,36 @@ describe("a Mend draft she acts on", () => {
     expect(await bodies("s1")).toEqual(["I ran them by hand"]);
     expect(await bodies("s2")).toEqual([]);
     expect(store.review().pending).toEqual([]);
+  });
+
+  it("keeps a draft on a deleted file's old side there, through Accept and her reply", async () => {
+    const mend = new FakeMend();
+    mend.serverComments = [
+      {
+        ...DRAFT,
+        file: "README",
+        line: 3,
+        endLine: 3,
+        anchor: { sliceId: PINNED.id, baseId: PINNED.base.id, headId: PINNED.head.id, side: "old" },
+      },
+    ];
+    const store = await readyStore(keptIn(await storage()), mend);
+    const read = store.ready();
+    if (read === null) throw new Error("not read");
+    const oldSide = {
+      worktreeId: "w1",
+      absent: false,
+      path: "README",
+      at: PINNED.base.id,
+      slice: null,
+    };
+    expect(threadsOf(read, store.review(), "Dana").map(({ at }) => at)).toEqual([oldSide]);
+    await store.accept("d1", "and keep the install steps");
+    const threads = threadsOf(read, store.review(), "Dana").filter(({ kind }) => kind !== "draft");
+    expect(threads.map(({ kind, at, line }) => ({ kind, at, line }))).toEqual([
+      { kind: "accepted", at: oldSide, line: 3 },
+      { kind: "pending", at: oldSide, line: 3 },
+    ]);
   });
 
   it("accepts a draft about the whole change, with its evidence, as a comment on the whole change", async () => {
