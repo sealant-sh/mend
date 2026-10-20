@@ -1880,6 +1880,14 @@ const owingPickup = (stored: string | null, harness: string): string => {
   return encodeRelaunchPlan({ ...plan, id: plan.id ?? stored, pickup: harness });
 };
 
+/** After the owner's Stop, nothing owes a pickup: one alone goes, one owed by a plan comes off. */
+const withoutPickup = (stored: string | null): string | null => {
+  if (stored === null) return null;
+  const plan = readRelaunchPlan(stored);
+  if (plan.kind === "pickup") return null;
+  return plan.pickup == null ? stored : encodeRelaunchPlan({ ...plan, pickup: null });
+};
+
 /**
  * The pickup a launch's plan takes over from the plan it replaces: whatever that plan owed. A
  * pickup plan this very launch is carrying out (`carrying`) is not owed again: it is this launch.
@@ -7006,12 +7014,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * pickup it held off is owed by the plan in the column (`owingPickup`), which the reaper
        * takes up once the gate is free (`resumeDrain`); the resume then refuses over an agent that
        * launch did start.
+       *
+       * The owner's Stop marks the replacement (`stoppedDuringReplacement`) before it clears the
+       * column. So the pickup asks the mark before its write and again once the write landed: a
+       * Stop that won while the write was on its way finds no pickup left after it.
        */
       const pickUpReplaced = (session: Session, failed: string) =>
         oneLaunch(session.id)(resumeSession(session.id, null)).pipe(
           Effect.catch((error) =>
             error instanceof SealantPlatformError && error.code === "session_starting"
-              ? updatePlan(session.id, (stored) => owingPickup(stored, session.harness))
+              ? Effect.gen(function* () {
+                  if (stoppedDuringReplacement.has(session.id)) return;
+                  yield* updatePlan(session.id, (stored) => owingPickup(stored, session.harness));
+                  if (stoppedDuringReplacement.has(session.id)) {
+                    yield* updatePlan(session.id, withoutPickup);
+                  }
+                })
               : Effect.logWarning(failed).pipe(
                   Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
                 ),
@@ -15824,6 +15842,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.onExit((exit) =>
             Effect.suspend(() => {
               replacing.delete(holder.id);
+              stoppedDuringReplacement.delete(holder.id);
               if (Exit.isSuccess(exit)) return Effect.void;
               const why = Cause.squash(exit.cause);
               // Its final flush was sent: the executor admits nothing new and its drain asks
@@ -20509,9 +20528,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A successful Stop supersedes pending launches. A refused close leaves their durable
         // intent intact so a restart can still resume the replacement or relaunch.
         if (capture !== null) {
+          // Marked before the clear: a replacement's pickup whose plan lands after it takes
+          // that plan back off (`pickUpReplaced`).
+          if (replacing.has(sessionId)) stoppedDuringReplacement.add(sessionId);
           yield* sessions.clearRelaunch(sessionId);
           yield* sessions.stopCaptureDrain(sessionId);
-          if (replacing.has(sessionId)) stoppedDuringReplacement.add(sessionId);
           // A replacement or relaunch this stop beat saved and ended its executor while the close
           // was under way: its drain is over and launches nothing, so no drain end settles the
           // session. This stop does, once nothing of it is live and the executor's end is

@@ -23,7 +23,7 @@ import {
 } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSession, InteractiveSessionStatus } from "@sealant/sdk";
-import { Clock, Deferred, Duration, Effect, Fiber, Layer, Logger, Queue } from "effect";
+import { Clock, Deferred, Duration, Effect, Exit, Fiber, Layer, Logger, Queue } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
@@ -199,6 +199,15 @@ const agentExitsOnItsOwn = (world: World) => {
     );
   }
 };
+
+/** Time and turns for whatever the scenario set going to run its course. */
+const settleFor = (steps: number) =>
+  Effect.gen(function* () {
+    for (let step = 0; step < steps; step += 1) {
+      yield* TestClock.adjust(Duration.millis(100));
+      yield* Effect.yieldNow;
+    }
+  });
 
 describe("SessionEngine capture drain (no loss of work product)", () => {
   it.effect(
@@ -2722,6 +2731,54 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
           createdByHolder: 2,
           created: 2,
           planLeft: false,
+        });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "the owner's Stop that finishes while a held-off pickup's plan is on its way leaves nothing to resume: no agent starts again (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const seen = { atStop: "", holder: "", planLeft: true, created: 0, status: "" };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            const holder = yield* run.holdNextLaunch;
+            const restarting = yield* run.engine
+              .launch(run.session.id, ["codex"], { over: Restart })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* holder.held;
+            const writing = yield* Deferred.make<void>();
+            const written = yield* Deferred.make<void>();
+            run.world.beforeRelaunchSwap.current = (next) => {
+              if (next === null || !next.includes('"pickup"')) return Promise.resolve();
+              run.world.beforeRelaunchSwap.current = null;
+              Deferred.doneUnsafe(writing, Exit.void);
+              return Effect.runPromise(Deferred.await(written));
+            };
+            yield* run.save;
+            yield* Deferred.await(writing);
+            // The launch that held the pickup off is over before the Stop, so no Stop it owes
+            // runs after it: the Stop runs to its end while the pickup's write is on its way.
+            yield* holder.answer({ allowed: false, setting: "kernel.unprivileged_userns_clone=1" });
+            seen.holder = (yield* Fiber.join(restarting))._tag;
+            yield* run.drivingCheckpointWaits(run.engine.stop(run.session.id).pipe(Effect.orDie));
+            seen.atStop = run.world.relaunches.has(run.session.id) ? "planned" : "cleared";
+            yield* Deferred.succeed(written, undefined);
+            yield* settleFor(20);
+            yield* run.engine.reapCaptureLeases();
+            yield* settleFor(50);
+            seen.planLeft = run.world.relaunches.has(run.session.id);
+            seen.created = run.created.length;
+            seen.status = run.world.sessions.get(run.session.id)?.status ?? "";
+          }),
+        );
+        expect(seen).toEqual({
+          atStop: "cleared",
+          holder: "Failure",
+          planLeft: false,
+          created: 1,
+          status: "failed",
         });
       }),
     { timeout: 20_000 },

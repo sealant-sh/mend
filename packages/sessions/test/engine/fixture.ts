@@ -1299,6 +1299,8 @@ export interface World {
   recentOwners: ReadonlyArray<string>;
   /** A planned relaunch's harness, by session (`planRelaunch`): bookkeeping off the row. */
   readonly relaunches: Map<string, string>;
+  /** When set, `swapRelaunch` awaits it first, with the plan it is about to write. */
+  readonly beforeRelaunchSwap: { current: ((next: string | null) => Promise<void>) | null };
   /** The executor each session sent a final flush to (`markFinalFlush`). */
   readonly finalFlushed: Map<string, string>;
   /** Each session's executor create not yet answered on its row (`recordExecutorCreate`). */
@@ -1386,6 +1388,7 @@ export const makeWorld = (): World => ({
   ]),
   recentOwners: ["user-fixture"],
   relaunches: new Map(),
+  beforeRelaunchSwap: { current: null },
   finalFlushed: new Map(),
   captureSaved: new Map(),
   captureUnsaved: new Map(),
@@ -2406,12 +2409,16 @@ export const sessionsLayer = (world: World) => {
         return true;
       }),
     swapRelaunch: (id, expected, next) =>
-      Effect.sync(() => {
-        if ((world.relaunches.get(id) ?? null) !== expected) return false;
-        if (next === null) world.relaunches.delete(id);
-        else world.relaunches.set(id, next);
-        return true;
-      }),
+      Effect.promise(() => world.beforeRelaunchSwap.current?.(next) ?? Promise.resolve()).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            if ((world.relaunches.get(id) ?? null) !== expected) return false;
+            if (next === null) world.relaunches.delete(id);
+            else world.relaunches.set(id, next);
+            return true;
+          }),
+        ),
+      ),
     clearRelaunch: (id) => Effect.sync(() => void world.relaunches.delete(id)),
     stopCaptureDrain: (id) =>
       Effect.sync(() => {
