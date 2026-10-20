@@ -182,6 +182,9 @@ const failureOf = (cause: unknown): Failure => {
   // A second answer, from here or anywhere, finds it resolved; one removed meanwhile is a 404.
   if (cause.status === 404 || (cause.status === 409 && cause.tag === "AgentRequestResolved"))
     return { kind: "gone" };
+  // Just after Mend restarts, a conversation reads live before Mend has it back.
+  if (cause.status === 409 && cause.tag === "ProtocolSessionNotLive")
+    return { kind: "transient", words: cause.message };
   return { kind: cause.status >= 500 ? "transient" : "refused", words: cause.message };
 };
 

@@ -143,6 +143,30 @@ describe("an answer", () => {
     });
   });
 
+  it("fails retryably while the conversation is not live yet, as just after Mend restarts", async () => {
+    const notLive = new MendApiError(
+      "The agent's conversation is not live.",
+      409,
+      "ProtocolSessionNotLive",
+    );
+    const mend = server(
+      ["r1"],
+      [
+        async () => {
+          throw notLive;
+        },
+      ],
+    );
+    expect(await mend.answers.send(request, ALLOW)).toEqual({
+      kind: "failed",
+      response: ALLOW,
+      words: "The agent's conversation is not live.",
+      retryable: true,
+      cause: notLive,
+    });
+    expect(await mend.answers.send(request, ALLOW)).toEqual({ kind: "answered", response: ALLOW });
+  });
+
   it("sends nothing and keeps the request as it was when the re-read cannot reach Mend", async () => {
     const mend = server([], [], async () => {
       throw new MendApiError("Cannot reach Mend at http://mend-mini:3105.", null);
