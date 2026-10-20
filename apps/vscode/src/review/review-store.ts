@@ -722,6 +722,9 @@ export class ReviewStore implements vscode.Disposable {
     let next: SessionReview;
     let stale = false;
     try {
+      // Its drive is claimed before the record is kept: a window loading it then reads it driven
+      // here, never left behind by a window that closed.
+      await this.kept.claimDrive(place, key);
       // Checked again as kept, under the lock: another window may have sent these comments.
       next = await this.#keepAt(place, (review) => {
         stale = sendGeneration(review.sends) !== composed.generation;
@@ -743,13 +746,16 @@ export class ReviewStore implements vscode.Disposable {
             }) ?? review);
       });
     } catch (cause) {
+      await this.kept.releaseDrive(place, key).catch(() => undefined);
       return {
         sent: false,
         words: `VS Code could not keep the review: ${errorWords(cause)} ${TEXT_STAYS}`,
       };
     }
-    if (!next.sends.some((record) => record.key === key))
+    if (!next.sends.some((record) => record.key === key)) {
+      await this.kept.releaseDrive(place, key);
       return { sent: false, words: stale ? ANOTHER_WENT_OUT : COMMENTS_CHANGED };
+    }
     void this.#drive(this.#context(read, place), key);
     return { sent: true };
   }
@@ -800,13 +806,23 @@ export class ReviewStore implements vscode.Disposable {
       viewer,
       author: this.#author,
     };
+    // Claimed before the record is sending again, as a new send is: a window loading it leaves it.
+    if (!(await this.kept.claimDrive(target.place, target.key)))
+      return {
+        retried: false,
+        words: "Retry delivery sent nothing: another window of VS Code is delivering this review",
+      };
     const retried = await this.#step(context, target.key, {
       kind: "retry",
       at: new Date().toISOString(),
       agent,
+    }).catch(async (cause: unknown) => {
+      await this.kept.releaseDrive(target.place, target.key).catch(() => undefined);
+      throw cause;
     });
     if (retried !== null && nextAction(retried).kind !== "idle")
       await this.#drive(context, target.key);
+    else await this.kept.releaseDrive(target.place, target.key);
     return { retried: true };
   }
 
@@ -840,11 +856,13 @@ export class ReviewStore implements vscode.Disposable {
   async #load(context: SendContext): Promise<void> {
     const now = new Date().toISOString();
     // A send another window drives now is that window's: this one neither ends it nor drives it.
-    const elsewhere = new Set(
+    // Only sends read undriven before the lock are ended: one kept since is another window's, which
+    // claimed its drive before keeping it.
+    const undriven = new Set(
       (
         await Promise.all(
           this.#review.sends.map(async (record) =>
-            (await this.kept.drivenElsewhere(context.place, record.key)) ? [record.key] : [],
+            (await this.kept.drivenElsewhere(context.place, record.key)) ? [] : [record.key],
           ),
         )
       ).flat(),
@@ -852,13 +870,13 @@ export class ReviewStore implements vscode.Disposable {
     const loaded = await this.#keepAt(context.place, (review) => ({
       ...review,
       sends: review.sends.map((record) =>
-        this.#driving.has(driveId(context, record.key)) || elsewhere.has(record.key)
+        this.#driving.has(driveId(context, record.key)) || !undriven.has(record.key)
           ? record
           : step(record, { kind: "loaded" }, now),
       ),
     }));
     for (const record of loaded.sends)
-      if (record.phase.kind === "delivering" && !elsewhere.has(record.key))
+      if (record.phase.kind === "delivering" && undriven.has(record.key))
         void this.#drive(context, record.key);
   }
 
