@@ -1,9 +1,9 @@
 # `mend handoff`
 
 - **Release:** 0.36
-- **Status:** built. The server half is on `handoff/2-server` and the CLI half on `handoff/3-cli`,
-  both in review after fix round 1 (2026-10-19) of the interrogate verdict.
-- **PRs:** stacked as `handoff/1-vocabulary`, `handoff/2-server`, `handoff/3-cli`.
+- **Status:** built, in review after fix round 1 (2026-10-19) of the interrogate verdict. Driven
+  live on 2026-10-20 with `.claude/skills/verify/features/handoff.md`.
+- **PRs:** stacked as `handoff/1-vocabulary`, `handoff/2-server`, `handoff/3-cli-fix`.
 - **Decision records:** none. Yiannis's decisions are listed below with their dates.
 - **Written:** 2026-10-18, against mend main `ed9f782aa`.
 
@@ -313,6 +313,9 @@ it. The CLI shows it in `sessionRowFacts` (`idle · handed off from dana-mbp · 
 - A base worktree whose creation died after its row is not finished by the next session in it; only
   a handed-off worktree's creation tail runs again. Pre-existing, outside this feature.
 
+- `holdWorkspace` opens the workspace with a shell resume and then ends that resume's shell, so the
+  TUI's session row for a held session reads `agent ended <n> ago` where no agent ran.
+
 These alternatives were weighed and not taken, so a reviewer should not report their absence.
 
 - Receipts with tombstones, a durable opening outbox and a reconciler.
@@ -340,7 +343,7 @@ Each PR in the stack is green on `pnpm exec turbo typecheck --force` and
      main, one session on replay, and a hot claim that keeps capture 0;
    - HTTP tests through the real middleware covering the 64 MiB route, the other upload routes still
      at 24 MiB, and the old 1 MiB elsewhere.
-3. `handoff/3-cli`. The snapshot, the command, the upload helper, the catalog, the flag-gate
+3. `handoff/3-cli-fix`. The snapshot, the command, the upload helper, the catalog, the flag-gate
    `READS`, completions, the README, `reference/cli.md`, a guide, a changeset, rows in the CLI and
    web, and `.claude/skills/verify/features/handoff.md`. Checks:
    - snapshot fingerprint tests on real repositories (hostile environment, split index, detached
