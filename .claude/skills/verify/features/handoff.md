@@ -16,8 +16,8 @@ attaching. Review is the worktree against the merge base `M`.
 - `handoff-unchanged` leaves the checkout byte-identical: every file under it, `.git` included, has
   the same bytes, mode, size, mtime and ctime, and no file appears.
 - `handoff-row` shows `handed off from <host>` on the worktree and session lines (web project page),
-  the Now card (web), the worktree and session rows (TUI), and the session's row in `mend sessions`
-  (CLI).
+  the Now card (web), the worktree row (TUI), and the session's row in `mend sessions` (CLI). The
+  TUI session row carries it after the session's state, where a narrow pane can cut it.
 - `handoff-review-base` reviews the change from `M`: base `main`, base sha `M`, and exactly the
   files `git diff --name-only M` names plus the travelled untracked files, minus those left out.
 - `handoff-split` keeps staged and unstaged apart inside the session, the same file included.
@@ -48,6 +48,7 @@ Preconditions:
 
   ```sh
   git clone <repo-url> <clone> && cd <clone>
+  git config user.name verify && git config user.email verify@verify-stack.invalid
   git switch -c verify/handoff
   printf 'a\n' > A.md && printf 'b\n' > B.md
   printf 'ignored.log\n' > .gitignore && printf 'PORT=3000\n' > .env.example
@@ -93,39 +94,39 @@ Steps:
   `page.getByRole("main").getByRole("link", { name: /session <id8> .* handed off from/ })`. The
   worktree's fact line reads `mend/verify-handoff · base main · handed off from <host>`, and the
   session link's name is `session <id8> claude · handed off from <host>`; the status beside it reads
-  `idle` (the decided copy; see Gotchas). Then `await page.goto("<web>/")`: the Live card for
-  `verify-handoff · <project>` reads
+  `Idle`. Then `await page.goto("<web>/")`: the Live card for `verify-handoff · <project>` reads
   `claude · mend/verify-handoff · base main · handed off from <host>`. Keep ARIA snapshots and
   screenshots of both.
 - **TUI rows.** Run `tmux new-session -d -s mend-handoff -x 200 -y 50 'mend ui'`, select
   `<project>`, then `tmux send-keys -t mend-handoff 2`. `tmux capture-pane -p -t mend-handoff` shows
   `verify-handoff` with the line under it starting `from main · handed off from <host>`. Press `3`:
-  the session row's facts line contains `handed off from <host>`. Run `mend sessions`: the row for
-  `<id8>` contains `handed off from <host>`.
+  the session row's facts line starts with the session's state (`agent ended <n> ago` for a held
+  session), and the pane's width decides whether `handed off from <host>` follows it; report what it
+  shows. Run `mend sessions`: the row for `<id8>` contains `handed off from <host>`.
 - **Review base and files.** Open the review from the session page (`Review the change`). The line
-  under the heading ends its counts with `· base main`, and the sidebar's file buttons are exactly
-  `.env.example`, `.gitignore`, `A.md`, `B.md` and `notes.txt`. Compute the expectation
-  independently in `<clone>`: `git -C <clone> diff --name-only <M>` lists the first four,
-  `notes.txt` is the one travelled untracked file, and `.env.local`, `ignored.log` and `big.bin`
-  were left out. `GET <web>/api/changes/<change id>/diff` names the same files and its `change` has
-  `baseSha` `<M>`. In the TUI review screen (`v` on the session) the header reads
+  under the heading reads `<M12> → <tip12> · 5 files · +8 −0 · 0 open comments · base main · …`, and
+  the sidebar's file buttons are exactly `.env.example`, `.gitignore`, `A.md`, `B.md` and
+  `notes.txt`. Compute the expectation independently in `<clone>`:
+  `git -C <clone> diff --name-only <M>` lists the first four, `notes.txt` is the one travelled
+  untracked file, and `.env.local`, `ignored.log` and `big.bin` were left out.
+  `GET <web>/api/changes/<change id>/diff` names the same files and its `change` has `baseSha`
+  `<M>`. In the TUI review screen (`v` on the session) the header reads
   `mend/verify-handoff · worktree vs <M, 12 characters> · 5 files …`.
 - **Staged and unstaged in the session.** Run
   `mend run --project <project> --worktree verify-handoff -- git status --porcelain=v2 --untracked-files=all`
-  and `git rev-parse HEAD` the same way. The `1 MM`, `1 .M` and `1 .D` lines for `A.md`, `B.md` and
-  `C.md` equal the clone's, blob ids included, `? notes.txt` is there, nothing is listed for
-  `.env.local`, `ignored.log` or `big.bin`, and `HEAD` is the clone's. This adds a `run` session to
-  the worktree, so take the rows first.
+  and `git rev-parse HEAD` the same way. Its lines end in CRLF: strip the CR before comparing. The
+  `1 MM`, `1 .M` and `1 .D` lines for `A.md`, `B.md` and `C.md` equal the clone's, blob ids
+  included, `? notes.txt` is there, nothing is listed for `.env.local`, `ignored.log` or `big.bin`,
+  and `HEAD` is the clone's. This adds a `run` session to the worktree, so take the rows first.
 - **Hand off again.** Run `mend handoff` in `<clone>` once more. The handed-off line reads
   `✓ handed off as verify-handoff-2 · verify-handoff is your earlier handoff · your checkout is unchanged · as of <hh:mm:ss>`.
-  A third reads `verify-handoff-3 · verify-handoff is your earlier handoff`. The CLI prints the name
-  the server's answer gives as `previous`; an answer whose `previous` is null reads
-  `· verify-handoff was taken` instead. Report which.
+  A third reads `verify-handoff-3 · verify-handoff-2 is your earlier handoff`: the newest earlier
+  handoff is named. The CLI prints the name the server's answer gives as `previous`; an answer whose
+  `previous` is null reads `· verify-handoff was taken` instead. Report which.
 - **With a prompt.** Run `mend handoff "say hello"` in `<clone>`. After the handed-off lines, stdout
-  reads `  starting · booting`, `✓ running · claude on your prompt`, then the `attach` and `watch`
-  lines, and the command exits `0` without attaching (no terminal is taken). Without
-  `mend connect claude` the session still starts `claude "say hello"`; what the agent does then
-  needs the login.
+  reads `✓ running · claude on your prompt`, then the `attach` and `watch` lines, and the command
+  exits `0` without attaching (no terminal is taken). Without `mend connect claude` the session
+  still starts `claude "say hello"`; what the agent does then needs the login.
 - **Foreign origin.** Run `git clone <repo-url> <fork>`, then
   `git -C <fork> remote set-url origin https://github.com/someone/fork.git`, then
   `mend handoff --project <project>` in `<fork>`. Stderr reads
@@ -144,14 +145,11 @@ Steps:
   the two fingerprints: `git status` and editors refresh the index, which changes its mtime.
 - The session page (`<web>/sessions/<id>`) does not show `handed off from`; the project page and the
   Now card do.
-- The decided row copy is `idle · handed off from <host>`. At 89e758e1a no surface says `idle` for a
-  held session: the web status reads `Running · recording`, the TUI row
-  `up <n> · handed off from <host> …`, and `mend sessions` `claude <id8> running`. The CLI's held
-  line prints the status the server answered with, so it reads `✓ held · running, no agent` on such
-  a server. Report what the surface shows.
-- At 89e758e1a the review page and the TUI review screen show `0 files · +0 −0` for a handed-off
-  worktree (the review's first checkpoint is the handed-off state, not `M`), while the change's diff
-  in the API names the right files. Report both.
+- The inner home has no git identity: without the `git config` line in the preconditions, the
+  fixture's first `git commit` fails with `Author identity unknown`.
+- Run in the order above, the prompt handoff is the fourth of the branch, so it is named
+  `verify-handoff-4`.
+- `mend ui` started inside a checkout offers to adopt that checkout's repository. Press Escape.
 - The CLI never fetches. A checkout without `origin/main` is refused with
   `this checkout has no origin/main · run git fetch origin, then hand off again · nothing was created`.
 - The merge base is the checkout's, against `origin/main` as it was last fetched. A newer `main` on
