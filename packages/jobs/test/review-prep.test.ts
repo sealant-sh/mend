@@ -20,6 +20,7 @@ import {
   reviewReading,
   type ReviewReading,
   settledAfter,
+  settledBefore,
   settledForReview,
   shouldPrepareReview,
 } from "../src/review-prep.ts";
@@ -206,6 +207,23 @@ describe("review prep: a stop is one settle", () => {
 
   it("holds a settle still ahead for a session first seen stopping", () => {
     expect(prepsAlong(undefined, ["stopping", "settled"])).toEqual([1]);
+  });
+});
+
+describe("review prep: a turn read only after it ended", () => {
+  const first = SessionProcessId.make("agent-first");
+  const resumed = SessionProcessId.make("agent-resumed");
+
+  it("reads a session settled again as live in between when an agent it had not seen ran", () => {
+    const previous = settledBefore(true, new Set([first]), [first, resumed]);
+    expect(previous).toBe(false);
+    expect(shouldPrepareReview(previous, true)).toBe(true);
+  });
+
+  it("keeps the reading when every agent was seen, or nothing was seen to compare", () => {
+    expect(settledBefore(true, new Set([first]), [first])).toBe(true);
+    expect(settledBefore(true, new Set([first]), [])).toBe(true);
+    expect(settledBefore(undefined, undefined, [first, resumed])).toBeUndefined();
   });
 });
 

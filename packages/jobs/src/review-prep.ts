@@ -11,7 +11,7 @@ import {
   SessionsRepo,
   SettingsRepo,
 } from "@mend/db";
-import { ChangeId, SessionId, type WorktreeId } from "@mend/domain";
+import { ChangeId, SessionId, type SessionProcessId, type WorktreeId } from "@mend/domain";
 import {
   agentProcessesOf,
   isLiveAgentProcess,
@@ -40,6 +40,7 @@ import { queueReviewPass } from "./review-passes.ts";
  * - transition, not state: only a session seen leaving a live phase queues
  *   the passes; the settle event flapping or repeating cannot re-queue, and
  *   `stopping` is a settle in flight, so idle → stopping → completed is one.
+ *   An agent no earlier reading saw is a live phase read late (`settledBefore`).
  * - not twice in a row for one diff: each pass records the digest of the diff
  *   it was last queued for (`ChangePassesRepo.recordPrep`), so a restarted
  *   worker, another session of the worktree, or a resumed turn that wrote
@@ -101,6 +102,18 @@ export const settledAfter = (previous: boolean | undefined, reading: ReviewReadi
  */
 export const shouldPrepareReview = (previous: boolean | undefined, settled: boolean): boolean =>
   previous === false && settled;
+
+/**
+ * The reading a session moves from. Events name a session, not its state, so a worker behind its
+ * events can read a whole turn only after it ended, settled before and settled after. An agent
+ * the last idle reading did not see is that turn's trace: the session was live in between.
+ */
+export const settledBefore = (
+  previous: boolean | undefined,
+  seen: ReadonlySet<SessionProcessId> | undefined,
+  agents: ReadonlyArray<SessionProcessId>,
+): boolean | undefined =>
+  seen !== undefined && agents.some((agent) => !seen.has(agent)) ? false : previous;
 
 /** The passes a settled session queues over a non-empty change. */
 export interface ReviewPasses {
@@ -210,6 +223,7 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
     const jobs = yield* JobRunner;
 
     const lastSettled = new Map<string, boolean>();
+    const agentsSeen = new Map<string, ReadonlySet<SessionProcessId>>();
     // Passes a running job absorbed, per change: that job read an older diff, so each waits for it
     // to end. Held in memory: after a restart the diff is still unrecorded, so the next settle
     // queues it.
@@ -422,15 +436,33 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
       readonly status: SessionStatus;
     }) {
       // Only an `idle` session needs its processes read: every other status answers alone.
-      const read = session.status === "idle" ? yield* processes.listForSession(session.id) : [];
-      return reviewReading(session.status, read);
+      if (session.status !== "idle") return { reading: reviewReading(session.status, []) };
+      const read = yield* processes.listForSession(session.id);
+      return {
+        reading: reviewReading(session.status, read),
+        agents: agentProcessesOf(read).map((agent) => agent.id),
+      };
     });
+
+    const remember = (
+      sessionId: SessionId,
+      settled: boolean,
+      agents: ReadonlyArray<SessionProcessId> | undefined,
+    ) => {
+      lastSettled.set(sessionId, settled);
+      if (agents !== undefined) agentsSeen.set(sessionId, new Set(agents));
+    };
 
     const observe = Effect.fn("ReviewPrep.observe")(function* (sessionId: string) {
       const session = yield* sessions.byId(SessionId.make(sessionId));
-      const previous = lastSettled.get(session.id);
-      const settled = settledAfter(previous, yield* readingNow(session));
-      lastSettled.set(session.id, settled);
+      const now = yield* readingNow(session);
+      const previous = settledBefore(
+        lastSettled.get(session.id),
+        agentsSeen.get(session.id),
+        now.agents ?? [],
+      );
+      const settled = settledAfter(previous, now.reading);
+      remember(session.id, settled, now.agents);
       if (!shouldPrepareReview(previous, settled)) return;
       yield* prepare(session.id);
     });
@@ -438,7 +470,8 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
     // Baseline: whatever exists right now settled before we were listening.
     const active = yield* sessions.listActive();
     for (const session of active) {
-      lastSettled.set(session.id, settledAfter(undefined, yield* readingNow(session)));
+      const now = yield* readingNow(session);
+      remember(session.id, settledAfter(undefined, now.reading), now.agents);
     }
 
     yield* events.pipe(
