@@ -481,6 +481,45 @@ describe("snapshotCheckout", () => {
     expect(snapshot.committedEnv).toEqual([{ path: ".env.prod", commit: real }]);
   });
 
+  it("never runs the checkout's signature verifier on a signed commit ahead", () => {
+    const w = world();
+    const dana = w.clone("signed");
+    w.git(dana, ["switch", "-q", "-c", "fix/signed"]);
+    w.write(path.join(dana, ".env.prod"), "token=1\n");
+    w.git(dana, ["add", ".env.prod"]);
+    const tree = w.git(dana, ["write-tree"]);
+    const parent = w.git(dana, ["rev-parse", "HEAD"]);
+    const ident = "Dana <dana@example.com> 1760000000 +0000";
+    const signed = w.git(
+      dana,
+      ["hash-object", "-t", "commit", "-w", "--stdin"],
+      [
+        `tree ${tree}`,
+        `parent ${parent}`,
+        `author ${ident}`,
+        `committer ${ident}`,
+        "gpgsig -----BEGIN PGP SIGNATURE-----",
+        " ",
+        " iQEzBAABCAAdFiEEnotarealsignature",
+        " -----END PGP SIGNATURE-----",
+        "",
+        "signed",
+        "",
+      ].join("\n"),
+    );
+    w.git(dana, ["reset", "-q", "--hard", signed]);
+    const marker = path.join(w.root, "verifier-ran");
+    const verifier = path.join(w.root, "verifier.sh");
+    fs.writeFileSync(verifier, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`, { mode: 0o755 });
+    w.git(dana, ["config", "log.showSignature", "true"]);
+    w.git(dana, ["config", "gpg.program", verifier]);
+    const before = fingerprint(dana);
+    const snapshot = snapshotOf(w, dana);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(fingerprint(dana)).toEqual(before);
+    expect(snapshot.committedEnv).toEqual([{ path: ".env.prod", commit: signed.slice(0, 7) }]);
+  });
+
   it("leaves a cone sparse checkout with a sparse index byte-identical, and carries what it does not check out", () => {
     const w = world();
     const dana = w.clone("sparse");

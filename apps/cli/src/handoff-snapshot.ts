@@ -61,6 +61,7 @@ const SAFE_CONFIG = [
   "core.untrackedCache=false",
   "gc.auto=0",
   "core.hooksPath=/dev/null",
+  "log.showSignature=false",
 ];
 
 class GitFailure extends Error {
@@ -468,6 +469,7 @@ const committedEnvOf = (git: Git, base: Env, checkout: Checkout): ReadonlyArray<
   git
     .run(base, [
       "log",
+      "--no-show-signature",
       "--no-renames",
       "--diff-filter=d",
       // A merge's own changes, against every parent, so a file only the merge brought is named.
