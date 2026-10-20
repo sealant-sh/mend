@@ -80,6 +80,13 @@ const window = async (
   return { store, pastes };
 };
 
+/**
+ * A wait on a drive through `slowFiles`: each read and write is held back, so with `slowFiles(20)` a
+ * send takes 0.4 to 0.7 s to reach Mend or claude on an idle machine, most of the one-second default
+ * before a loaded runner stretches it.
+ */
+const SLOW_DRIVE = { timeout: 5_000 };
+
 const onLine = (line: number, body: string): NewComment => ({
   at: {
     worktreeId: "w1",
@@ -337,7 +344,7 @@ describe("two windows send one review at once", () => {
       b.store.send(fromB, fromB.text),
     ]);
     expect(sent.filter((one) => one.sent)).toHaveLength(1);
-    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1));
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SLOW_DRIVE);
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(new Set(mend.delivered.map(({ idempotencyKey }) => idempotencyKey)).size).toBe(1);
     expect(mend.writes.filter((write) => write.startsWith("post "))).toHaveLength(1);
@@ -377,7 +384,7 @@ describe("two windows, one review of comments already open on Mend", () => {
       b.store.send(fromB, fromB.text),
     ]);
     expect(sent.filter((one) => one.sent)).toHaveLength(1);
-    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1));
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SLOW_DRIVE);
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(mend.delivered).toHaveLength(1);
   });
@@ -517,6 +524,73 @@ describe("Retry from the toast when nothing was pasted", () => {
   });
 });
 
+describe("a window that loads its kept reviews while another window sends one", () => {
+  it("leaves that send to the window sending it: Mend gets it, claude's input gets it, and nothing reads failed", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    mend.serverComments = [comment({ id: "c1" })];
+    // Slow files, as a loaded machine's: the second window is still loading when the first sends.
+    const a = await window(keptIn(directory, slowFiles(60)), mend);
+    const b = await window(keptIn(directory, slowFiles(60)), mend);
+    const told = failures(a.store);
+    const fromA = a.store.compose();
+    if (fromA === null) throw new Error("nothing composed");
+    expect(await a.store.send(fromA, fromA.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(a.pastes).toHaveLength(1), SLOW_DRIVE);
+    expect(mend.delivered).toHaveLength(1);
+    expect(told).toEqual([]);
+    await b.store.reloadReview();
+    expect(b.store.review().sends.map(({ phase }) => phase.kind)).toEqual(["in-terminal"]);
+  }, 30_000);
+
+  it("leaves a send it reads before that window's drive began to that window", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    mend.serverComments = [comment({ id: "c1" })];
+    const { promise: claiming, resolve: claims } = Promise.withResolvers<void>();
+    const { promise: allowed, resolve: allow } = Promise.withResolvers<void>();
+    // The first window's drive lease waits to be made until the second window has loaded.
+    const a = await window(
+      keptIn(directory, {
+        ...NODE_FILES,
+        create: async (path, text) => {
+          if (path.endsWith(".drive")) {
+            claims();
+            await allowed;
+          }
+          await NODE_FILES.create(path, text);
+        },
+      }),
+      mend,
+    );
+    const told = failures(a.store);
+    const fromA = a.store.compose();
+    if (fromA === null) throw new Error("nothing composed");
+    const sent = a.store.send(fromA, fromA.text);
+    await claiming;
+    const { promise: loaded, resolve: load } = Promise.withResolvers<void>();
+    const b = await window(
+      keptIn(directory, {
+        ...NODE_FILES,
+        rm: async (path) => {
+          await NODE_FILES.rm(path);
+          if (path.endsWith(".lock")) load();
+        },
+      }),
+      mend,
+    );
+    await loaded;
+    allow();
+    expect(await sent).toEqual({ sent: true });
+    await vi.waitFor(() => expect(a.pastes).toHaveLength(1));
+    expect(told).toEqual([]);
+    await b.store.reloadReview();
+    expect(b.store.review().sends.map(({ phase }) => phase.kind)).toEqual(["in-terminal"]);
+  });
+});
+
 describe("a second window sends a review composed before the first window's went out", () => {
   it("sends nothing once the first is held in claude's terminal, and a new review with more still goes", async () => {
     const directory = await storage();
@@ -529,9 +603,10 @@ describe("a second window sends a review composed before the first window's went
     const fromB = b.store.compose();
     if (fromA === null || fromB === null) throw new Error("nothing composed");
     expect(await a.store.send(fromA, fromA.text)).toEqual({ sent: true });
-    await vi.waitFor(() => expect(a.pastes).toHaveLength(1));
-    await vi.waitFor(() =>
-      expect(a.store.review().sends.at(-1)?.phase).toMatchObject({ paste: { kind: "done" } }),
+    await vi.waitFor(() => expect(a.pastes).toHaveLength(1), SLOW_DRIVE);
+    await vi.waitFor(
+      () => expect(a.store.review().sends.at(-1)?.phase).toMatchObject({ paste: { kind: "done" } }),
+      SLOW_DRIVE,
     );
     expect(await b.store.send(fromB, fromB.text)).toMatchObject({ sent: false });
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -543,7 +618,7 @@ describe("a second window sends a review composed before the first window's went
     const more = b.store.compose();
     if (more === null) throw new Error("nothing composed");
     expect(await b.store.send(more, more.text)).toEqual({ sent: true });
-    await vi.waitFor(() => expect(b.pastes).toHaveLength(1));
+    await vi.waitFor(() => expect(b.pastes).toHaveLength(1), SLOW_DRIVE);
     expect(b.pastes[0]).toContain("Name the constant");
     expect(b.pastes[0]).not.toContain(fromA.text.split("\n")[0]);
   });
