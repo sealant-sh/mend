@@ -6,7 +6,7 @@ import * as vscode from "vscode";
 import type { MendClient } from "./client.js";
 import { showErrorToast } from "./error-toast.js";
 import { openConsent, parseSshConsent, withSshConsent, type SshConsent } from "./first-run.js";
-import { statusText, type OpenState } from "./open-flow.js";
+import { statusText, type OpenAction, type OpenState } from "./open-flow.js";
 import type { OpenIntents } from "./open-intent.js";
 import { OpenRunner, type OpenEffects } from "./open-runner.js";
 import type { NotYoursOffer, RowCapability } from "./session-capability.js";
@@ -243,13 +243,23 @@ export const openRunner = (deps: {
       );
     },
     render: (sessionId, name, state) => progress.render(sessionId, name, state),
-    report: async (_sessionId, reason, action, cause) => {
-      if (action === null) {
-        await showErrorToast(cause, reason);
-        return undefined;
-      }
-      return (await showErrorToast(cause, reason, action)) ? action : undefined;
-    },
+    report: (_sessionId, reason, action, cause) => reportOpenFailure(reason, action, cause),
   };
   return { runner: new OpenRunner(effects), disposable: progress };
+};
+
+/**
+ * An Open that failed, once, with the one action that helps: a refused sign-in reads Mend's own
+ * words with Connect instead.
+ */
+export const reportOpenFailure = async (
+  reason: string,
+  action: OpenAction | null,
+  cause: unknown,
+): Promise<OpenAction | undefined> => {
+  if (action === null) {
+    await showErrorToast(cause, reason);
+    return undefined;
+  }
+  return (await showErrorToast(cause, reason, action)) ? action : undefined;
 };

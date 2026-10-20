@@ -25,6 +25,10 @@ export class EventEmitter<T> {
   }
 }
 
+export class ThemeIcon {
+  constructor(readonly id: string) {}
+}
+
 const windowState = new EventEmitter<{ readonly focused: boolean }>();
 
 export const window = {
