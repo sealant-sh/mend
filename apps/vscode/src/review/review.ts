@@ -31,10 +31,8 @@ export const startReview = (deps: {
     deps.onError,
     async () => (await deps.client.connection()).url,
   );
-  const content = vscode.workspace.registerTextDocumentContentProvider(
-    CHANGE_SCHEME,
-    new ChangeContent(client),
-  );
+  const content = new ChangeContent(client, () => deps.client.connection());
+  const provider = vscode.workspace.registerTextDocumentContentProvider(CHANGE_SCHEME, content);
   return {
     follow: (project, session) => store.follow(project, session),
     show: async (project, session) => {
@@ -42,9 +40,12 @@ export const startReview = (deps: {
       await view.reveal();
     },
     heard: (event) => store.heard(event),
-    forget: () => store.forget(),
+    forget: () => {
+      store.forget();
+      content.clear();
+    },
     dispose: () => {
-      content.dispose();
+      provider.dispose();
       view.dispose();
       store.dispose();
     },

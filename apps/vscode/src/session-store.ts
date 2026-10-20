@@ -380,6 +380,14 @@ export class SessionStore implements vscode.Disposable {
         this.#refused = false;
         this.#heard();
         this.refresh();
+        // Frames sent while the stream was closed are lost: whoever follows them reads again.
+        this.#heardEvent.fire({
+          type: "resync",
+          sessionId: null,
+          projectId: null,
+          changeId: null,
+          facet: null,
+        });
         return;
       case "heard":
         this.#heard();

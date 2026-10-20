@@ -12,11 +12,17 @@ import type {
  * slice's hunks, and no route opens a slice between two other checkpoints yet (G10).
  */
 
+/** Two checkpoints of the chain, fixed when she chose them: a newer checkpoint never moves them. */
+export interface Span {
+  readonly from: Checkpoint;
+  readonly to: Checkpoint;
+}
+
 export type SliceChoice =
   | { readonly kind: "pinned" }
-  | { readonly kind: "since-last-review"; readonly from: Checkpoint }
-  | { readonly kind: "last-turn"; readonly from: Checkpoint }
-  | { readonly kind: "between"; readonly from: Checkpoint; readonly to: Checkpoint };
+  | ({ readonly kind: "since-last-review" } & Span)
+  | ({ readonly kind: "last-turn" } & Span)
+  | ({ readonly kind: "between" } & Span);
 
 /** A choice resolved against the chain: the two checkpoints the diff compares. */
 export interface Slice {
@@ -27,72 +33,131 @@ export interface Slice {
   readonly commentable: boolean;
 }
 
-const newest = (chain: ReadonlyArray<Checkpoint>, pinned: PinnedSlice): Checkpoint =>
+/** The newest checkpoint Mend knows of: the chain's, or the pinned head when the chain lags. */
+export const newestCheckpoint = (
+  chain: ReadonlyArray<Checkpoint>,
+  pinned: PinnedSlice,
+): Checkpoint =>
   chain.reduce(
     (best, checkpoint) => (checkpoint.ordinal > best.ordinal ? checkpoint : best),
     pinned.head,
   );
 
 /**
- * The slice a choice reads. A choice other than the pinned one reads up to the newest checkpoint
- * ("now"); one whose start is not before its end has nothing to read and resolves to null.
+ * The slice a choice reads. A chosen span reads its own two checkpoints; one whose ends are no
+ * longer in the chain, or whose start is not before its end, resolves to null.
  */
 export const resolveSlice = (
   choice: SliceChoice,
   pinned: PinnedSlice,
   chain: ReadonlyArray<Checkpoint>,
 ): Slice | null => {
-  switch (choice.kind) {
-    case "pinned":
-      return { choice, from: pinned.base, to: pinned.head, commentable: true };
-    case "since-last-review":
-    case "last-turn": {
-      const to = newest(chain, pinned);
-      return choice.from.ordinal < to.ordinal
-        ? { choice, from: choice.from, to, commentable: false }
-        : null;
-    }
-    case "between":
-      return choice.from.ordinal < choice.to.ordinal
-        ? { choice, from: choice.from, to: choice.to, commentable: false }
-        : null;
-  }
+  if (choice.kind === "pinned")
+    return { choice, from: pinned.base, to: pinned.head, commentable: true };
+  const from = chain.find((checkpoint) => checkpoint.id === choice.from.id);
+  const to = chain.find((checkpoint) => checkpoint.id === choice.to.id);
+  if (from === undefined || to === undefined || from.ordinal >= to.ordinal) return null;
+  return { choice, from, to, commentable: false };
 };
 
+/** Whether two choices read the same two checkpoints. */
+export const sameChoice = (left: SliceChoice, right: SliceChoice): boolean =>
+  left.kind === "pinned" || right.kind === "pinned"
+    ? left.kind === right.kind
+    : left.kind === right.kind && left.from.id === right.from.id && left.to.id === right.to.id;
+
 /**
- * Where the agent's last turn started: the newest turn boundary (or the session's start) before
- * the newest checkpoint. Null when the chain has no turn behind it.
+ * The agent's last turn. Mend takes a turn boundary when a turn ends (packages/sessions engine,
+ * `turn-boundary`) and a session start when a session starts; none when a turn starts. So the last
+ * turn ends at the newest turn boundary and starts at the boundary or session start before it,
+ * else at the chain's base. Null before any turn ended. The chain is in ordinal order.
  */
-export const lastTurnStart = (
-  chain: ReadonlyArray<Checkpoint>,
-  pinned: PinnedSlice,
-): Checkpoint | null => {
-  const to = newest(chain, pinned);
-  const starts = chain.filter(
-    (checkpoint) =>
-      checkpoint.ordinal < to.ordinal &&
-      (checkpoint.trigger === "turn-boundary" || checkpoint.trigger === "session-start"),
-  );
-  return starts.at(-1) ?? null;
+export const lastTurn = (chain: ReadonlyArray<Checkpoint>): Span | null => {
+  const to = chain.findLast((checkpoint) => checkpoint.trigger === "turn-boundary");
+  if (to === undefined) return null;
+  const from =
+    chain.findLast(
+      (checkpoint) =>
+        checkpoint.ordinal < to.ordinal &&
+        (checkpoint.trigger === "turn-boundary" || checkpoint.trigger === "session-start"),
+    ) ?? chain[0];
+  return from === undefined || from.ordinal >= to.ordinal ? null : { from, to };
 };
 
+/** A review this VS Code sent, and when: what since my last review starts from. */
+export interface SentReview {
+  readonly headId: string;
+  readonly at: string;
+}
+
 /**
- * The checkpoint her last sent review was pinned to: the newest head among the slices of the
- * comments Mend sent to a session, and of the reviews this VS Code sent (`sentHeads`), which
- * include one pasted into a terminal that Mend still holds pending.
+ * The checkpoint her last sent review was pinned to: the head of her most recently sent review,
+ * among the comments Mend sent to a session that carry her name as their reviewer, and the reviews
+ * this VS Code sent (`sentHeads`), which include one pasted into a terminal that Mend still holds
+ * pending. A comment's time is when it was written: marking it addressed later moves its
+ * `updatedAt`, never which review was hers last. Null with no name to match and nothing sent here.
  */
 export const lastReviewHead = (
   chain: ReadonlyArray<Checkpoint>,
   comments: ReadonlyArray<ServerComment>,
-  sentHeads: ReadonlyArray<string>,
+  author: string | null,
+  sentHeads: ReadonlyArray<SentReview>,
 ): Checkpoint | null => {
-  const heads = new Set([
+  const sent = [
     ...comments.flatMap((comment) =>
-      comment.sentToSessionId !== null && comment.anchor !== null ? [comment.anchor.headId] : [],
+      author !== null &&
+      comment.author.kind === "reviewer" &&
+      comment.author.name === author &&
+      comment.sentToSessionId !== null &&
+      comment.anchor !== null
+        ? [{ headId: comment.anchor.headId, at: comment.createdAt }]
+        : [],
     ),
     ...sentHeads,
-  ]);
-  return chain.filter((checkpoint) => heads.has(checkpoint.id)).at(-1) ?? null;
+  ].filter((review) => chain.some((checkpoint) => checkpoint.id === review.headId));
+  const last = sent.reduce<SentReview | null>(
+    (best, review) =>
+      best === null || Date.parse(review.at) > Date.parse(best.at) ? review : best,
+    null,
+  );
+  return last === null ? null : (chain.find((checkpoint) => checkpoint.id === last.headId) ?? null);
+};
+
+/** What the slices other than the pinned one read off: the chain, and her last review's head. */
+export interface SliceBasis {
+  readonly pinned: PinnedSlice;
+  readonly chain: ReadonlyArray<Checkpoint>;
+  /** The head checkpoint of the last review she sent; null before one. */
+  readonly reviewedHead: Checkpoint | null;
+}
+
+/** Since my last review or last turn, as the chain reads now; null when it has nothing to read. */
+export const freshChoice = (
+  kind: "since-last-review" | "last-turn",
+  basis: SliceBasis,
+): SliceChoice | null => {
+  const span =
+    kind === "last-turn"
+      ? lastTurn(basis.chain)
+      : basis.reviewedHead === null
+        ? null
+        : {
+            from: basis.reviewedHead,
+            to: newestCheckpoint(basis.chain, basis.pinned),
+          };
+  if (span === null) return null;
+  const choice: SliceChoice = { kind, from: span.from, to: span.to };
+  return resolveSlice(choice, basis.pinned, basis.chain) === null ? null : choice;
+};
+
+/**
+ * The newer read of what she chose: since my last review, or last turn, as the chain reads now,
+ * once newer checkpoints moved it. Null when her choice is still the newest.
+ */
+export const newerChoice = (current: SliceChoice, basis: SliceBasis): SliceChoice | null => {
+  if (current.kind !== "since-last-review" && current.kind !== "last-turn") return null;
+  const fresh = freshChoice(current.kind, basis);
+  return fresh === null || sameChoice(fresh, current) ? null : fresh;
 };
 
 /** `checkpoint 6`, or the base's own name for ordinal 0. */
@@ -113,14 +178,9 @@ export const sliceName = (slice: Slice, base: string): string => {
   }
 };
 
-/** The slice's span in checkpoint words, as the picker describes it: `checkpoint 3 → now`. */
-export const sliceSpan = (slice: Slice, base: string): string => {
-  const to =
-    slice.choice.kind === "pinned" || slice.choice.kind === "between"
-      ? checkpointName(slice.to, base)
-      : "now";
-  return `${slice.from.ordinal === 0 ? "base" : checkpointName(slice.from, base)} → ${to}`;
-};
+/** The slice's span in checkpoint words, as the picker describes it: `checkpoint 3 → checkpoint 6`. */
+export const sliceSpan = (slice: Slice, base: string): string =>
+  `${slice.from.ordinal === 0 ? "base" : checkpointName(slice.from, base)} → ${checkpointName(slice.to, base)}`;
 
 /** `4 files · +120 −18`. */
 export const filesLine = (files: ReadonlyArray<ChangeFile>): string => {
@@ -139,17 +199,27 @@ export const secondsAgo = (iso: string, now: Date): string => {
   return hours < 24 ? `${hours} h ago` : `${Math.floor(hours / 24)} d ago`;
 };
 
-/** The header's fact: `4 files · +120 −18 · observed · 40 s ago`, as Mend observed it. */
+/**
+ * The header's fact, in what Mend said of the diff: `4 files · +120 −18 · observed · 40 s ago`.
+ * A diff Mend gave no observation for says only when it was read; a listing Mend cut says so, and
+ * never `observed`, since the files it lists are not all of the slice.
+ */
 export const headerFact = (input: {
   readonly files: ReadonlyArray<ChangeFile>;
   readonly observation: Observation | null;
+  readonly listingCut: boolean;
   /** When the slice's diff was read: what `ago` counts from when Mend gave no time. */
   readonly readAt: string;
   readonly now: Date;
 }): string => {
-  const { files, observation, readAt, now } = input;
-  const word = observation?.state ?? "observed";
-  return `${filesLine(files)} · ${word} · ${secondsAgo(observation?.observedAt ?? readAt, now)}`;
+  const { files, observation, listingCut, readAt, now } = input;
+  if (listingCut) {
+    const additions = files.reduce((sum, file) => sum + file.additions, 0);
+    const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
+    return `listing cut at ${files.length} ${files.length === 1 ? "file" : "files"} · +${additions} −${deletions} in those · read ${secondsAgo(readAt, now)}`;
+  }
+  if (observation === null) return `${filesLine(files)} · read ${secondsAgo(readAt, now)}`;
+  return `${filesLine(files)} · ${observation.state} · ${secondsAgo(observation.observedAt ?? readAt, now)}`;
 };
 
 /** A file's path in the slice: its new path, or its old one once deleted. */
@@ -186,33 +256,27 @@ export interface SliceOffer {
 
 /**
  * The picker's choices, in the storyboard's order: main → now, since my last review (from the
- * checkpoint her last sent review was pinned to), last turn, and between two checkpoints.
+ * checkpoint her last sent review was pinned to), last turn, and between two checkpoints. Each reads
+ * the chain as it is now: a choice she made before newer checkpoints is offered again, newer.
  */
-export const sliceOffers = (input: {
-  readonly pinned: PinnedSlice;
-  readonly chain: ReadonlyArray<Checkpoint>;
-  readonly base: string;
-  readonly current: SliceChoice;
-  /** The head checkpoint of the last review she sent from this VS Code; null before one. */
-  readonly reviewedHead: Checkpoint | null;
-}): ReadonlyArray<SliceOffer> => {
-  const { pinned, chain, base, current, reviewedHead } = input;
+export const sliceOffers = (
+  input: SliceBasis & { readonly base: string; readonly current: SliceChoice },
+): ReadonlyArray<SliceOffer> => {
+  const { pinned, chain, base, current } = input;
   const offers: Array<SliceOffer> = [];
-  const offer = (label: string, choice: SliceChoice): void => {
-    const slice = resolveSlice(choice, pinned, chain);
+  const offer = (label: string, choice: SliceChoice | null): void => {
+    const slice = choice === null ? null : resolveSlice(choice, pinned, chain);
     if (slice !== null)
       offers.push({
         label,
-        choice,
+        choice: slice.choice,
         span: sliceSpan(slice, base),
-        current: choice.kind === current.kind,
+        current: sameChoice(slice.choice, current),
       });
   };
   offer(`${base} → now`, { kind: "pinned" });
-  if (reviewedHead !== null)
-    offer("since my last review", { kind: "since-last-review", from: reviewedHead });
-  const turn = lastTurnStart(chain, pinned);
-  if (turn !== null) offer("last turn", { kind: "last-turn", from: turn });
+  offer("since my last review", freshChoice("since-last-review", input));
+  offer("last turn", freshChoice("last-turn", input));
   if (chain.length >= 2)
     offers.push({
       label: "between two checkpoints…",

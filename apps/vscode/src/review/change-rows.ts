@@ -1,4 +1,4 @@
-import type { ChangeAddress } from "./change-content.js";
+import type { ChangeAddress } from "./content-reader.js";
 import type {
   ChangeFile,
   Checkpoint,
@@ -12,7 +12,10 @@ import {
   diffTitle,
   filePath,
   headerFact,
+  newerChoice,
+  resolveSlice,
   sliceName,
+  sliceSpan,
   statusLetter,
   type Slice,
 } from "./slices.js";
@@ -35,6 +38,12 @@ export interface ChangeRead {
   /** The diff of `slice`: the pinned diff itself when the pinned slice is chosen. */
   readonly diff: SliceDiff;
   readonly comments: ReadonlyArray<ServerComment>;
+  /** The head checkpoint of her last sent review: where since my last review starts. */
+  readonly reviewedHead: Checkpoint | null;
+  /** The worktree moved on past the pinned slice: the files changed since, null when uncounted. */
+  readonly drift: { readonly files: number | null } | null;
+  /** Why the section shows another slice than she chose: hers could not be read. */
+  readonly notice: string | null;
   readonly readAt: string;
 }
 
@@ -46,9 +55,9 @@ export interface FileRow {
   readonly folder: string;
   readonly letter: string;
   readonly file: ChangeFile;
-  /** The file where the slice starts: Mend answers no file, and the editor shows it empty, once added. */
+  /** The file where the slice starts: empty, read from nowhere, when the slice added it. */
   readonly left: ChangeAddress;
-  /** The file where the slice ends: empty once the slice deleted it. */
+  /** The file where the slice ends: empty, read from nowhere, when the slice deleted it. */
   readonly right: ChangeAddress;
   readonly title: string;
 }
@@ -66,9 +75,18 @@ export type ChangeRow =
       readonly id: string;
       readonly label: string;
       readonly description: string;
+      /** What it says above its files: the worktree moved on, and what to do about it. */
+      readonly above: ReadonlyArray<ChangeRow>;
       readonly files: ReadonlyArray<FileRow>;
     }
   | { readonly kind: "note"; readonly id: string; readonly label: string; readonly icon: string }
+  /** A row that does what it says: `Review the newer change`. */
+  | {
+      readonly kind: "action";
+      readonly id: string;
+      readonly label: string;
+      readonly command: "mend.change.repin" | "mend.change.readNewer";
+    }
   | {
       readonly kind: "comments";
       readonly id: string;
@@ -96,10 +114,11 @@ const clock = (iso: string): string => {
 
 export const fileRow = (file: ChangeFile, read: ChangeRead): FileRow => {
   const path = filePath(file);
-  const at = (checkpoint: Checkpoint, where: string): ChangeAddress => ({
+  const at = (checkpoint: Checkpoint, where: string, absent: boolean): ChangeAddress => ({
     worktreeId: read.chain.worktreeId,
     path: where,
     at: checkpoint.id,
+    absent,
   });
   const slash = path.lastIndexOf("/");
   return {
@@ -109,8 +128,8 @@ export const fileRow = (file: ChangeFile, read: ChangeRead): FileRow => {
     folder: slash === -1 ? "" : path.slice(0, slash),
     letter: statusLetter(file),
     file,
-    left: at(read.slice.from, file.oldPath ?? path),
-    right: at(read.slice.to, file.newPath ?? path),
+    left: at(read.slice.from, file.oldPath ?? path, file.status === "added"),
+    right: at(read.slice.to, file.newPath ?? path, file.status === "deleted"),
     title: diffTitle(path, read.slice, read.chain.baseName),
   };
 };
@@ -137,6 +156,41 @@ export const commentsLine = (comments: ReadonlyArray<ServerComment>): string => 
 /** The section's rows for one read, at `now`. */
 export const changeRows = (read: ChangeRead, now: Date): ReadonlyArray<ChangeRow> => {
   const base = read.chain.baseName;
+  const above: Array<ChangeRow> = [];
+  if (read.notice !== null)
+    above.push({ kind: "note", id: "note:notice", label: read.notice, icon: "info" });
+  if (read.drift !== null) {
+    // The slice stays pinned while she reviews; the newer change is hers to choose.
+    const files = read.drift.files;
+    above.push(
+      {
+        kind: "note",
+        id: "note:drift",
+        label: `worktree changed since this review${files === null ? "" : ` · ${files} new ${files === 1 ? "file" : "files"}`}`,
+        icon: "warning",
+      },
+      {
+        kind: "action",
+        id: "action:newer",
+        label: "Review the newer change",
+        command: "mend.change.repin",
+      },
+    );
+  }
+  const newer = newerChoice(read.slice.choice, {
+    pinned: read.pinned,
+    chain: read.chain.checkpoints,
+    reviewedHead: read.reviewedHead,
+  });
+  const newerSlice =
+    newer === null ? null : resolveSlice(newer, read.pinned, read.chain.checkpoints);
+  if (newerSlice !== null)
+    above.push({
+      kind: "action",
+      id: "action:read-newer",
+      label: `newer checkpoints · read ${sliceSpan(newerSlice, base)}`,
+      command: "mend.change.readNewer",
+    });
   const rows: Array<ChangeRow> = [
     {
       kind: "slice",
@@ -145,9 +199,11 @@ export const changeRows = (read: ChangeRead, now: Date): ReadonlyArray<ChangeRow
       description: headerFact({
         files: read.diff.files,
         observation: read.diff.observation,
+        listingCut: read.diff.listingCut,
         readAt: read.readAt,
         now,
       }),
+      above,
       files: read.diff.files.map((file) => fileRow(file, read)),
     },
   ];

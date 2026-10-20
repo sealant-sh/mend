@@ -245,6 +245,16 @@
         "command": "mend.change.openFile",
         "title": "Open the file's diff",
         "category": "Mend"
+      },
+      {
+        "command": "mend.change.repin",
+        "title": "Review the newer change",
+        "category": "Mend"
+      },
+      {
+        "command": "mend.change.readNewer",
+        "title": "Read the newer slice",
+        "category": "Mend"
       }
     ],
     "menus": {
@@ -279,7 +289,15 @@
         },
         {
           "command": "mend.change.openInWeb",
+          "when": "false"
+        },
+        {
+          "command": "mend.change.repin",
           "when": "mend.change.ready"
+        },
+        {
+          "command": "mend.change.readNewer",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -358,7 +376,7 @@
         {
           "command": "mend.openInMend",
           "when": "view == mend.sessions && viewItem =~ /^mend\\.session/",
-          "group": "inline@3"
+          "group": "3_web@1"
         },
         {
           "command": "mend.open",

@@ -159,6 +159,8 @@ export interface SliceDiff {
   readonly files: ReadonlyArray<ChangeFile>;
   readonly worktreeChangedSinceSnapshot: boolean;
   readonly observation: Observation | null;
+  /** Mend listed only the first files, within its time and size budget: `files` is not all. */
+  readonly listingCut: boolean;
 }
 
 export const parseSliceDiff = (value: unknown): SliceDiff => {
@@ -167,6 +169,7 @@ export const parseSliceDiff = (value: unknown): SliceDiff => {
     files: list(raw["anchorFiles"] ?? raw["files"], parseFile, "review files"),
     worktreeChangedSinceSnapshot: raw["worktreeChangedSinceSnapshot"] === true,
     observation: parseObservation(raw["observation"]),
+    listingCut: false,
   };
 };
 
@@ -177,6 +180,7 @@ export const parseRangeDiff = (value: unknown): SliceDiff => {
     files: list(raw["files"], parseFile, "worktree files"),
     worktreeChangedSinceSnapshot: false,
     observation: parseObservation(raw["observation"]),
+    listingCut: raw["listingCut"] === true,
   };
 };
 
@@ -210,18 +214,21 @@ export const parseWorktreeChain = (value: unknown): WorktreeChain => {
 
 /** A file's contents at a checkpoint, as the diff editor shows it. */
 export type FileContents =
-  | { readonly kind: "text"; readonly text: string; readonly truncated: boolean }
-  | { readonly kind: "binary"; readonly size: number }
-  | { readonly kind: "absent" };
+  | {
+      readonly kind: "text";
+      readonly text: string;
+      /** Mend read only the file's first 1 MiB; `size` is the whole file's. */
+      readonly truncated: boolean;
+      readonly size: number;
+    }
+  | { readonly kind: "binary"; readonly size: number };
 
 export const parseContents = (value: unknown): FileContents => {
-  const raw = record(value, "worktree contents");
-  const file = raw["file"];
-  if (!isRecord(file)) return { kind: "absent" };
+  const file = record(record(value, "worktree contents")["file"], "worktree file");
   const contents = file["contents"];
-  if (file["binary"] === true || typeof contents !== "string")
-    return { kind: "binary", size: typeof file["size"] === "number" ? file["size"] : 0 };
-  return { kind: "text", text: contents, truncated: file["truncated"] === true };
+  const size = typeof file["size"] === "number" ? file["size"] : 0;
+  if (file["binary"] === true || typeof contents !== "string") return { kind: "binary", size };
+  return { kind: "text", text: contents, truncated: file["truncated"] === true, size };
 };
 
 const COMMENT_STATES = ["draft", "open", "addressed", "dismissed"] as const;

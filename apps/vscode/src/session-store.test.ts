@@ -623,4 +623,14 @@ describe("access lost (S9)", () => {
     expect(store.model()?.sessions.size).toBe(0);
     expect(store.model()?.badge).toBe(0);
   });
+
+  it("tells whoever follows the frames to read again when the stream reopens", async () => {
+    const { mend, store } = world();
+    const heard: Array<string> = [];
+    store.onDidHearEvent((event) => heard.push(event.type));
+    store.start();
+    await tick(200);
+    mend.signal({ kind: "opened" });
+    expect(heard).toEqual(["resync"]);
+  });
 });

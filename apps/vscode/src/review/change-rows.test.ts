@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { changeRows, commentsLine, fileRow, type ChangeRead } from "./change-rows.js";
+import {
+  changeRows,
+  commentsLine,
+  fileRow,
+  type ChangeRead,
+  type ChangeRow,
+} from "./change-rows.js";
 import type { ChangeFile, Checkpoint, ServerComment } from "./review-wire.js";
 import { resolveSlice } from "./slices.js";
 
@@ -36,7 +42,13 @@ const files: ReadonlyArray<ChangeFile> = [
   },
 ];
 
-const read = (choice: Parameters<typeof resolveSlice>[0]): ChangeRead => {
+const observed = { state: "observed", observedAt: "2026-10-19T10:00:00.000Z" } as const;
+
+const read = (
+  choice: Parameters<typeof resolveSlice>[0],
+  overrides: Partial<ChangeRead> = {},
+  chain: ReadonlyArray<Checkpoint> = checkpoints,
+): ChangeRead => {
   const pinned = {
     id: "slice-1",
     changeId: "change-1",
@@ -45,21 +57,39 @@ const read = (choice: Parameters<typeof resolveSlice>[0]): ChangeRead => {
     head,
     createdAt: "2026-10-19T10:00:00.000Z",
   };
-  const slice = resolveSlice(choice, pinned, checkpoints);
+  const slice = resolveSlice(choice, pinned, chain);
   if (slice === null) throw new Error("the slice did not resolve");
+  const diff = {
+    files,
+    worktreeChangedSinceSnapshot: false,
+    observation: observed,
+    listingCut: false,
+  };
   return {
     sessionId: "s1",
     sessionName: "add-rate-limit",
     changeId: "change-1",
-    chain: { worktreeId: "w1", baseName: "main", checkpoints },
+    chain: { worktreeId: "w1", baseName: "main", checkpoints: chain },
     pinned,
-    pinnedDiff: { files, worktreeChangedSinceSnapshot: false, observation: null },
+    pinnedDiff: diff,
     slice,
-    diff: { files, worktreeChangedSinceSnapshot: false, observation: null },
+    diff,
     comments: [],
+    reviewedHead: null,
+    drift: null,
+    notice: null,
     readAt: "2026-10-19T10:00:00.000Z",
+    ...overrides,
   };
 };
+
+const sliceRow = (rows: ReadonlyArray<ChangeRow>) => {
+  const [slice] = rows;
+  if (slice?.kind !== "slice") throw new Error("no slice row");
+  return slice;
+};
+
+const now = new Date("2026-10-19T10:00:40.000Z");
 
 const comment = (overrides: Partial<ServerComment>): ServerComment => ({
   id: "c1",
@@ -103,13 +133,69 @@ describe("the Change section's rows (story d, step 1)", () => {
     });
   });
 
-  it("opens a file between the slice's two checkpoints, the added file empty on the left", () => {
+  it("opens a file between the slice's two checkpoints, empty only on the side its status says", () => {
     const shown = read({ kind: "pinned" });
     const [added, deleted] = files.map((file) => fileRow(file, shown));
-    expect(added?.left).toEqual({ worktreeId: "w1", path: "src/auth/limit.ts", at: "cp0" });
-    expect(added?.right).toEqual({ worktreeId: "w1", path: "src/auth/limit.ts", at: "cp2" });
-    expect(deleted?.left.path).toBe("README");
+    const where = { worktreeId: "w1", path: "src/auth/limit.ts" };
+    expect(added?.left).toEqual({ ...where, at: "cp0", absent: true });
+    expect(added?.right).toEqual({ ...where, at: "cp2", absent: false });
+    expect([deleted?.left.path, deleted?.left.absent, deleted?.right.absent]).toEqual([
+      "README",
+      false,
+      true,
+    ]);
     expect(added?.title).toBe("limit.ts (main ↔ checkpoint 2)");
+  });
+
+  it("says the worktree moved on, with Review the newer change, while the slice stays pinned", () => {
+    const counted = sliceRow(changeRows(read({ kind: "pinned" }, { drift: { files: 3 } }), now));
+    expect(counted.above.map((row) => `${row.kind} ${"label" in row ? row.label : ""}`)).toEqual([
+      "note worktree changed since this review · 3 new files",
+      "action Review the newer change",
+    ]);
+    expect(counted.above[1]).toMatchObject({ command: "mend.change.repin" });
+    expect(counted.files).toHaveLength(2);
+    const uncounted = sliceRow(
+      changeRows(read({ kind: "pinned" }, { drift: { files: null } }), now),
+    );
+    expect(uncounted.above[0]).toMatchObject({ label: "worktree changed since this review" });
+    expect(sliceRow(changeRows(read({ kind: "pinned" }), now)).above).toEqual([]);
+  });
+
+  it("offers the newer read of a last turn she chose, once a newer turn ended", () => {
+    const turns = [
+      checkpoint(0, "session-start"),
+      checkpoint(1, "turn-boundary"),
+      checkpoint(2, "review-open"),
+      checkpoint(3, "turn-boundary"),
+    ];
+    const chosen = {
+      kind: "last-turn",
+      from: checkpoint(0, "session-start"),
+      to: checkpoint(1, "turn-boundary"),
+    } as const;
+    const slice = sliceRow(changeRows(read(chosen, {}, turns), now));
+    expect(slice.label).toBe("last turn ▾");
+    expect(slice.above).toEqual([
+      {
+        kind: "action",
+        id: "action:read-newer",
+        label: "newer checkpoints · read checkpoint 1 → checkpoint 3",
+        command: "mend.change.readNewer",
+      },
+    ]);
+    expect(slice.files[0]?.right.at).toBe("cp1");
+  });
+
+  it("says the listing was cut in the header, and never observed", () => {
+    const cut = {
+      files,
+      worktreeChangedSinceSnapshot: false,
+      observation: observed,
+      listingCut: true,
+    };
+    const slice = sliceRow(changeRows(read({ kind: "pinned" }, { diff: cut }), now));
+    expect(slice.description).toBe("listing cut at 2 files · +15 −1 in those · read 40 s ago");
   });
 
   it("counts comments by what was observed of each", () => {

@@ -12,13 +12,7 @@ import {
 } from "./change-rows.js";
 import type { ReviewStore } from "./review-store.js";
 import type { Checkpoint } from "./review-wire.js";
-import {
-  checkpointName,
-  lastReviewHead,
-  sliceOffers,
-  type SliceChoice,
-  type SliceOffer,
-} from "./slices.js";
+import { checkpointName, sliceOffers, type SliceChoice, type SliceOffer } from "./slices.js";
 
 /**
  * The Change section (story d): the review store's read as a tree under the Sessions view, the
@@ -90,6 +84,10 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
       vscode.commands.registerCommand("mend.change.pickSlice", () => this.#pickSlice()),
       vscode.commands.registerCommand("mend.change.openInWeb", () => this.#openInWeb()),
       vscode.commands.registerCommand("mend.change.refresh", () => store.reread()),
+      vscode.commands.registerCommand("mend.change.repin", () =>
+        store.repin().catch((cause: unknown) => this.onError(cause)),
+      ),
+      vscode.commands.registerCommand("mend.change.readNewer", () => store.readNewer()),
     ];
     // The header's `40 s ago` keeps counting while the section is on screen.
     this.#ticker = setInterval(() => this.#draw(), 10_000);
@@ -149,6 +147,13 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
         item.iconPath = new vscode.ThemeIcon(node.icon);
         return item;
       }
+      case "action": {
+        const item = new vscode.TreeItem(node.label, vscode.TreeItemCollapsibleState.None);
+        item.id = node.id;
+        item.iconPath = new vscode.ThemeIcon("arrow-right");
+        item.command = { command: node.command, title: node.label };
+        return item;
+      }
       case "file": {
         const item = new vscode.TreeItem(rowUri(node), vscode.TreeItemCollapsibleState.None);
         item.id = node.id;
@@ -185,7 +190,7 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
   getChildren(node?: ChangeNode): Array<ChangeNode> {
     if (node === undefined) return [...this.#rows];
     const row = this.#rows.find((candidate) => candidate.id === node.id);
-    if (row?.kind === "slice") return [...row.files];
+    if (row?.kind === "slice") return [...row.above, ...row.files];
     if (row?.kind === "checkpoints") return [...row.checkpoints];
     return [];
   }
@@ -239,7 +244,7 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
       chain: read.chain.checkpoints,
       base: read.chain.baseName,
       current: read.slice.choice,
-      reviewedHead: lastReviewHead(read.chain.checkpoints, read.comments, []),
+      reviewedHead: read.reviewedHead,
     });
     const pick = vscode.window.createQuickPick<SliceItem>();
     pick.title = `Review which slice? · ${read.sessionName}`;
@@ -259,9 +264,10 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
     void Promise.all(
       offers.map(async (offer) => {
         if (offer.choice === "between") return;
-        const files = await this.store.fileCount(offer.choice);
-        if (files === null) return;
-        counts.set(offer.label, `${files} ${files === 1 ? "file" : "files"}`);
+        const count = await this.store.fileCount(offer.choice);
+        if (count === null) return;
+        const files = `${count.files} ${count.files === 1 ? "file" : "files"}`;
+        counts.set(offer.label, count.cut ? `listing cut at ${files}` : files);
         pick.items = items();
       }),
     )

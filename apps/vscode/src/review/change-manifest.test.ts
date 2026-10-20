@@ -62,5 +62,22 @@ describe("the Change section (story d)", () => {
     const groups = onChangeTitle("mend.change.openInWeb");
     expect(groups).toHaveLength(1);
     expect(groups[0]?.startsWith("navigation")).toBe(false);
+    const palette = menu("commandPalette").find(
+      (entry) => entry.command === "mend.change.openInWeb",
+    );
+    expect(palette?.when).toBe("false");
+  });
+
+  it("puts no browser button on a session row: Open in Mend is in its overflow menu (rule 11)", () => {
+    const groups = menu("view/item/context")
+      .filter((entry) => entry.command === "mend.openInMend")
+      .map((entry) => entry.group ?? "");
+    expect(groups.length).toBeGreaterThan(0);
+    for (const group of groups) expect(group.startsWith("inline")).toBe(false);
+  });
+
+  it("offers Review the newer change once the section has read a change", () => {
+    const palette = menu("commandPalette").find((entry) => entry.command === "mend.change.repin");
+    expect(palette?.when).toBe("mend.change.ready");
   });
 });
