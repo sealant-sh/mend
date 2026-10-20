@@ -162,7 +162,7 @@ describe("Send review twice before she presses Enter in claude's terminal", () =
     expect(newest?.idempotencyKey).not.toBe(mend.delivered[0]?.idempotencyKey);
   });
 
-  it("pastes nothing, and says why, when she changed the part already in claude's terminal", async () => {
+  it("pastes nothing, and says why, when she changed the part VS Code already pasted into claude's terminal", async () => {
     const mend = new FakeMend();
     mend.answer = "pending";
     const { store, pastes } = await window(keptIn(await storage()), mend);
@@ -180,7 +180,7 @@ describe("Send review twice before she presses Enter in claude's terminal", () =
     expect(pastes).toHaveLength(1);
     expect(told[0]).toMatchObject({
       tone: "warning",
-      words: expect.stringMatching(/already in claude's terminal, so VS Code pasted nothing/),
+      words: expect.stringMatching(/already pasted into claude's terminal, so VS Code pasted nothing there\. Mend holds/),
     });
   });
 });
@@ -211,7 +211,7 @@ describe("a third Send after one that pasted nothing", () => {
       const named = threadsOf(read, store.review(), "Dana").find(({ body }) =>
         body.includes("Name the constant"),
       );
-      expect(named?.label).toBe("follow-up pending · not in claude's terminal");
+      expect(named?.label).toBe("follow-up pending · not pasted into claude's terminal");
     });
 
     await store.comment(onLine(9, "Log the limit"));
@@ -656,7 +656,7 @@ describe("a window that loads its kept reviews while another window sends one", 
 });
 
 describe("a second window sends a review composed before the first window's went out", () => {
-  it("sends nothing once the first is held in claude's terminal, and a new review with more still goes", async () => {
+  it("sends nothing once the first was pasted into claude's terminal, and a new review with more still goes", async () => {
     const directory = await storage();
     const mend = new FakeMend();
     mend.answer = "pending";
@@ -807,7 +807,7 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
     return { store, pastes };
   };
 
-  it("pastes the whole review into the new claude, and the first review no longer reads in its terminal", async () => {
+  it("pastes the whole review into the new claude, and the first review reads pasted into an earlier claude", async () => {
     const mend = new FakeMend();
     mend.answer = "pending";
     const directory = await storage();
@@ -827,7 +827,7 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
     const limiter = threadsOf(read, store.review(), "Dana").find(({ body }) =>
       body.includes("Use the shared limiter"),
     );
-    expect(limiter?.label).toBe("follow-up pending · not in claude's terminal");
+    expect(limiter?.label).toBe("follow-up pending · pasted into an earlier claude");
 
     // A second window, its own kept files over the same storage, reads what the first kept.
     const other = await windowOver(directory, mend, world.reads);
@@ -853,8 +853,8 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
         .filter(({ body }) => body.includes("limiter") || body.includes("constant"))
         .map(({ label }) => label);
       expect(labels).toEqual([
-        "follow-up pending · in claude's terminal",
-        "follow-up pending · in claude's terminal",
+        "follow-up pending · pasted into claude's terminal",
+        "follow-up pending · pasted into claude's terminal",
       ]);
     });
   });

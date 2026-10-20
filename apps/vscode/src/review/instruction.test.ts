@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  addedText,
   composeInstruction,
   OFFLINE_WORDS,
   sendOffer,
@@ -175,5 +176,22 @@ describe("who Send review is offered to", () => {
   it("is Retry delivery after a failed one, and waits while one is sending", () => {
     expect(sendOffer({ ...base, open: "failed" })).toEqual({ kind: "retry" });
     expect(sendOffer({ ...base, open: "sending" })).toEqual({ kind: "busy" });
+  });
+});
+
+describe("a Send onto a review VS Code pasted into claude's terminal", () => {
+  const held = {
+    input: { text: "## 1 · limit.ts:3\nUse the shared limiter\n", ids: ["c1"] },
+    agent: "claude",
+    processId: "agent-1",
+  };
+
+  it("says what VS Code did when it pastes nothing, never what claude's input holds now", () => {
+    const changed = addedText("## 1 · limit.ts:3\nUse guard.ts\n", held);
+    const same = addedText(held.input.text, held);
+    expect([changed, same].map((plan) => (plan.kind === "none" ? plan.words : plan.kind))).toEqual([
+      "You changed the part of this review VS Code already pasted into claude's terminal, so VS Code pasted nothing there. Mend holds the review as you sent it.",
+      "Nothing was added to the review VS Code already pasted into claude's terminal, so VS Code pasted nothing there.",
+    ]);
   });
 });

@@ -244,7 +244,7 @@ describe("the threads of a review she sent", () => {
 });
 
 describe("the Comments row's count", () => {
-  it("counts a review Mend holds in claude's terminal as follow-up pending, never as sent", () => {
+  it("counts a review VS Code pasted into claude's terminal as follow-up pending, never as sent", () => {
     const open = comment({ id: "c1" });
     const started = startSend(EMPTY_REVIEW, {
       key: "k1",
@@ -280,9 +280,9 @@ describe("the Comments row's count", () => {
     );
     const threads = threadsOf(live, held, "Dana");
     expect(threads.map(({ kind, label }) => [kind, label])).toEqual([
-      ["waiting", "follow-up pending · in claude's terminal"],
+      ["waiting", "follow-up pending · pasted into claude's terminal"],
     ]);
-    expect(commentsLine(threads)).toBe("1 follow-up pending · in claude's terminal");
+    expect(commentsLine(threads)).toBe("1 follow-up pending · pasted into claude's terminal");
   });
 
   it("counts each comment by the state it was observed in", () => {
