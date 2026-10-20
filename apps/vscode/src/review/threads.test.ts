@@ -256,9 +256,19 @@ describe("the Comments row's count", () => {
       now: NOW,
     });
     if (started === null) throw new Error("the review did not start");
-    const claude: LiveAgent = { kind: "terminal", name: "claude", hers: true, processId: "agent-1" };
+    const claude: LiveAgent = {
+      kind: "terminal",
+      name: "claude",
+      hers: true,
+      processId: "agent-1",
+    };
     const held = stepReview(
-      stepReview(started, "k1", { kind: "answered", status: "pending", error: null, agent: claude }, NOW),
+      stepReview(
+        started,
+        "k1",
+        { kind: "answered", status: "pending", error: null, agent: claude },
+        NOW,
+      ),
       "k1",
       { kind: "pasted" },
       NOW,
@@ -274,7 +284,6 @@ describe("the Comments row's count", () => {
     ]);
     expect(commentsLine(threads)).toBe("1 follow-up pending · in claude's terminal");
   });
-
 
   it("counts each comment by the state it was observed in", () => {
     expect(

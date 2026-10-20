@@ -460,8 +460,9 @@ export default async (h) => {
         fourth?.comments.every((one) => one.label === NOT_IN),
         `the fourth comment reads ${JSON.stringify(fourth?.comments)}`,
       );
-      const seen = await sectionUntil("Comments · follow-up pending by where its words are", (now) =>
-        commentsOf(now).includes(`1 ${NOT_IN}`),
+      const seen = await sectionUntil(
+        "Comments · follow-up pending by where its words are",
+        (now) => commentsOf(now).includes(`1 ${NOT_IN}`),
       );
       await shot("edge-third-review-threads");
       expect(!commentsOf(seen).includes("sent"), `the section counts sent: ${said(seen)}`);

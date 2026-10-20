@@ -28,9 +28,9 @@ patch number is the extension's own.
   that pasted nothing the next pastes every comment claude's input lacks. A failed delivery reads
   `delivery failed · retryable` with **Retry delivery** on the same key; a review Mend holds
   `pending` offers **Retry delivery** once the agent exits, or when its paste did not happen; and a
-  Retry that finds the review `sent` sends nothing and says so. When the worktree moves on the
-  slice stays pinned and the section says so; you mark each sent comment **Addressed** or
-  **Reopen**. Offline, **Send review** is disabled and your comments stay.
+  Retry that finds the review `sent` sends nothing and says so. When the worktree moves on the slice
+  stays pinned and the section says so; you mark each sent comment **Addressed** or **Reopen**.
+  Offline, **Send review** is disabled and your comments stay.
 - The Mend view is **Sessions**: **Needs you**, **Since you last looked**, **Running**, then
   **Projects**, collapsed. Each row reads `<word> · <fact>` as Mend observed it, such as
   `waiting · claude needs your permission to use Bash · since 02:14` or

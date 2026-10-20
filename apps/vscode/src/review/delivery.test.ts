@@ -330,7 +330,10 @@ describe("where a comment goes on Mend", () => {
   it("is the old side's lines for her reply under a Mend draft on a deleted line", () => {
     const files = FILES.map((file) =>
       file.oldPath === "README"
-        ? { ...file, hunks: [{ oldStart: 1, oldLines: 5, newStart: 0, newLines: 0, contextHash: "r1" }] }
+        ? {
+            ...file,
+            hunks: [{ oldStart: 1, oldLines: 5, newStart: 0, newLines: 0, contextHash: "r1" }],
+          }
         : file,
     );
     const reply = pending({

@@ -145,7 +145,9 @@ export interface Composed {
 }
 
 /** Whether Retry delivery sent the review again; when not, what it found instead. */
-export type Retried = { readonly retried: true } | { readonly retried: false; readonly words: string };
+export type Retried =
+  | { readonly retried: true }
+  | { readonly retried: false; readonly words: string };
 
 /** Whether Send to session recorded the review; when not, why, in Mend's words. */
 export type Sent = { readonly sent: true } | { readonly sent: false; readonly words: string };
@@ -774,7 +776,8 @@ export class ReviewStore implements vscode.Disposable {
    * agent (the route then launches the stopped session on the review).
    */
   async retry(target: RetryTarget): Promise<Retried> {
-    if (this.#offline) return { retried: false, words: `Retry delivery sent nothing: ${OFFLINE_WORDS}` };
+    if (this.#offline)
+      return { retried: false, words: `Retry delivery sent nothing: ${OFFLINE_WORDS}` };
     const record = (await this.kept.read(target.place)).review.sends.find(
       (candidate) => candidate.key === target.key,
     );

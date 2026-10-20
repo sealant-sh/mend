@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { fake, window as vscodeWindow } from "../test-vscode.js";
 import type { SessionDetail, SessionProcess } from "../types.js";
 import type { Pasted } from "./agent-paste.js";
 import { DRAFT_GONE } from "./delivery.js";
+import { textToSend } from "./instruction.js";
 import { DRIVE_STALE_MS, KeptReviews, NODE_FILES } from "./kept-reviews.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
-import { textToSend } from "./instruction.js";
-import { fake, window as vscodeWindow } from "../test-vscode.js";
 import { ReviewStore, type NewComment, type ReviewFailure } from "./review-store.js";
 import { reviewToast } from "./review-toast.js";
 import {
