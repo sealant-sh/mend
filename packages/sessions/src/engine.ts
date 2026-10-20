@@ -6915,17 +6915,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The lease is released once the termination is observed; when it was not, it lapses
           // with the executor's heartbeats. Wait for either, bounded.
           const deadline = clock.currentTimeMillisUnsafe() + 60_000;
-          while (
-            clock.currentTimeMillisUnsafe() < deadline &&
-            !stoppedDuringReplacement.has(session.id)
-          ) {
+          // A Stop asked after this replacement began, still closing its agent, has not marked it
+          // yet (`stoppedDuringReplacement`); it beats the replacement all the same (SLNT-111).
+          const stopped = () =>
+            stoppedDuringReplacement.has(session.id) || stopUnderWay(session.id);
+          while (clock.currentTimeMillisUnsafe() < deadline && !stopped()) {
             const lease = yield* capture.repo.leaseOf(session.worktreeId);
             if (lease === null || !lease.live) break;
             yield* Effect.sleep(Duration.seconds(2));
           }
           // The owner stopped the session while it was being saved: saved and ended, and that is
           // all — no new executor.
-          if (stoppedDuringReplacement.has(session.id)) {
+          if (stopped()) {
             yield* Effect.logInfo(
               "session engine: capture mode · stopped during the replacement · nothing relaunched",
             ).pipe(Effect.annotateLogs({ sessionId: session.id }));
@@ -7341,8 +7342,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* Effect.logWarning(
               "session engine: capture mode · lease expired · the platform keeps the executor · nothing released",
             ).pipe(Effect.annotateLogs({ sessionId: session.id, epoch: lease.epoch }));
+            // Folded after, as the dead-lease pickup is (`confirmDeadExecutor`): the reap ends the
+            // agent's row, and a drain the platform ends at once never writes `stopping`.
             yield* Effect.forkIn(
               stopWorkspaceQuietly(session.id, { force: true, reason: "stop" }).pipe(
+                Effect.andThen(reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore)),
                 asSealantUser(session.ownerUserId),
               ),
               scope,
@@ -9697,6 +9701,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.gen(function* () {
           const session = yield* sessions.byId(sessionId);
           if (session.sealantWorkspaceId === null) return;
+          // Under the owner's stop drain the agent ends because they stopped it, whoever reaps it:
+          // a Stop interrupted before its close still settles the session `stopped`.
+          const how = session.captureDrain === "stop" ? "stopped" : "exited";
           for (const process of yield* processes.listLiveForWorkspace(session.sealantWorkspaceId)) {
             // Refused, as this process knows or as the session line still says after a restart.
             const refused =
@@ -9706,7 +9713,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               AGENT_PROCESS_KINDS.has(process.kind) &&
               !refused
             ) {
-              yield* markProcessExited(process.id, "exited", null);
+              yield* markProcessExited(process.id, how, null);
             }
           }
         }).pipe(
@@ -9904,7 +9911,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const captureReady = yield* flushBeforeHarvest(session, workspaceId, "settle harvest");
           if (captureReady) yield* harvestLatestIfMissing(sessionId);
           yield* stopWorkspaceQuietly(sessionId);
-        }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
+        }).pipe(
+          // What the sweep reaped is folded into the session: a takeover of a Stop's drain that
+          // ends the agent's row must not leave the session `running` (SLNT-111).
+          Effect.andThen(reconcileSession(sessionId, { sweep: false })),
+          Effect.catchTag("SessionNotFoundError", () => Effect.void),
+        );
 
       /**
        * The session's harness state as one "latest" view over per-process captures: the newest
@@ -20355,7 +20367,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (activeRun !== null) {
             yield* sessionRuns.settle(activeRun.sealantRunId, "stopped", summary);
           }
-          const after = liveShells.length > 0 ? yield* processes.listForSession(sessionId) : rows;
+          // Read again, not `rows`: what this Stop did not end itself may have ended during its
+          // close (a reaper takeover, a replacement's terminate), and the fold reads what is.
+          const after = yield* processes.listForSession(sessionId);
           if (foldSessionLiveness(after) === "settled") {
             yield* settleSession(sessionId, "stopped", summary);
           }
