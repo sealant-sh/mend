@@ -174,6 +174,66 @@ const capture = () => {
   return out;
 };
 
+const JOINED_ID = "7c1d2e3f-0a1b-4c2d-8e3f-4a5b6c7d8e9f";
+
+/**
+ * Runs the `mend …` command a refusal printed, in the same checkout, against a server whose
+ * project holds the handoff's worktree and its never-launched session, until `reached` is seen.
+ */
+const runPrinted = async (
+  stderr: string,
+  cwd: string,
+  reached: (route: string) => boolean,
+): Promise<{ readonly bodies: Readonly<Record<string, unknown>> }> => {
+  const printed = /· mend ((?:resume|claude)[^·\n]*?) (?:opens|starts) /u.exec(stderr)?.[1];
+  if (printed === undefined) throw new Error(`no command in ${stderr}`);
+  const routes: Array<string> = [];
+  const bodies: Record<string, unknown> = {};
+  const handoffSession = {
+    id: SESSION_ID,
+    projectId: project.id,
+    worktreeId: "worktree-1",
+    harness: "claude",
+    label: null,
+    worktree: "fix-login",
+    branch: "mend/fix-login",
+    baseSha: "a".repeat(40),
+    baseRef: "main",
+    status: "failed",
+    summary: null,
+    settledAt: null,
+    createdAt: new Date(0).toISOString(),
+  };
+  const server = await startFakeMend((request, response) => {
+    const route = `${request.method ?? "GET"} ${request.url ?? ""}`;
+    routes.push(route);
+    withBody(request, (body) => {
+      if (body.length > 0) bodies[route] = JSON.parse(body.toString());
+      if (route === "GET /api/projects") json(response, [project]);
+      else if (route === `GET /api/projects/${project.id}`) {
+        json(response, {
+          project,
+          sessions: [handoffSession],
+          annotations: [],
+          worktrees: [{ id: "worktree-1", name: "fix-login", branch: "mend/fix-login" }],
+        });
+      } else if (route === `POST /api/projects/${project.id}/sessions`) {
+        json(response, { ...handoffSession, id: JOINED_ID, status: "starting" });
+      } else if (route.startsWith("POST /api/sessions/")) {
+        json(response, { ...handoffSession, status: "starting" });
+      } else response.writeHead(404).end();
+    });
+  }, "hold");
+  const cli = startCli(server.url, printed.split(" "), {}, cwd);
+  try {
+    await waitFor(() => routes.some(reached));
+  } finally {
+    cli.child.kill("SIGKILL");
+    await server.close();
+  }
+  return { bodies };
+};
+
 const OLD_SERVER =
   "mend: this Mend server (0.35.1) does not take handoffs · upgrade it, then hand off again · nothing was created\n";
 
@@ -326,8 +386,12 @@ describe("mend handoff", spawning, () => {
     );
     expect(failed.stdout).not.toContain("✓ held");
     expect(failed.stderr).toBe(
-      "mend: the hold failed · mend resume 3f2a1c0d starts the session again\n",
+      "mend: the hold failed · mend resume 3f2a1c0d --with shell opens the workspace with a shell\n",
     );
+    const resumed = await runPrinted(failed.stderr, dana, (route) =>
+      route.startsWith(`POST /api/sessions/${SESSION_ID}/resume`),
+    );
+    expect(resumed.bodies[`POST /api/sessions/${SESSION_ID}/resume`]).toEqual({ harness: "shell" });
   }, 30_000);
 
   it("says the prompt was not sent when the launch is refused, and how to start the agent", async () => {
@@ -344,8 +408,15 @@ describe("mend handoff", spawning, () => {
     expect(result.stdout).toContain("✓ handed off as fix-login");
     expect(result.stdout).not.toContain("✓ running");
     expect(result.stderr).toMatch(
-      /^mend: .+ · the prompt was not sent · mend resume 3f2a1c0d starts an agent in the handoff\n$/u,
+      /^mend: .+ · the prompt was not sent · mend claude --worktree fix-login starts claude in the handoff\n$/u,
     );
+    const started = await runPrinted(result.stderr, dana, (route) =>
+      route.startsWith(`POST /api/sessions/${JOINED_ID}/launch`),
+    );
+    expect(started.bodies[`POST /api/projects/${project.id}/sessions`]).toMatchObject({
+      harness: "claude",
+      name: "fix-login",
+    });
   }, 30_000);
 
   it("sends the same bytes again when a proxy answers 502", async () => {

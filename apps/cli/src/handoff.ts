@@ -509,15 +509,19 @@ const sendFrom = async (
     say(heldLine(received.session));
     if (received.session.status === "failed") {
       say(watch);
-      return refuse(`the hold failed · mend resume ${id8} starts the session again`);
+      // A shell resume is the hold's own first step and needs no harness state.
+      return refuse(
+        `the hold failed · mend resume ${id8} --with shell opens the workspace with a shell`,
+      );
     }
   } else {
     const launched = await deps.launch(sessionId, prompt);
     if (launched._tag !== "running") {
       say(watch);
+      // A resume needs the state of a harness that ran; a new session in the worktree needs none.
       return refuse(
         launched._tag === "not-started"
-          ? `${launched.words} · the prompt was not sent · mend resume ${id8} starts an agent in the handoff`
+          ? `${launched.words} · the prompt was not sent · mend ${harness} --worktree ${received.worktree.name} starts ${harness} in the handoff`
           : `${launched.words} · the prompt may not have reached an agent · follow it: mend attach ${id8}`,
       );
     }
