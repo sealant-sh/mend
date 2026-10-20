@@ -78,7 +78,8 @@ const termOf = (limit: number): number => (limit > 0 ? limit : Number.MAX_SAFE_I
 const refused = (reason: HandoffRefused["reason"], message: string) =>
   new HandoffRefused({ reason, message: `${message} · nothing was created` });
 
-const unheld = (session: Session) =>
+const unheld = (session: Session, launchUnderWay: (sessionId: Session["id"]) => boolean) =>
+  !launchUnderWay(session.id) &&
   session.status === "starting" &&
   session.settledAt === null &&
   session.sealantWorkspaceId === null &&
@@ -205,21 +206,33 @@ export const makeHandoffStart = Effect.gen(function* () {
       );
   });
 
+  /**
+   * The hold, detached past the answer and under one of the account's launch slots for its whole
+   * course. The engine settles a hold that fails once it started; one refused a slot, or failing
+   * before the engine took it, is settled here. The answer is the session as it stands: `idle`,
+   * `starting` while the hold is still under way, or `failed` with its words.
+   */
   const hold = Effect.fn("HandoffStart.hold")(function* (session: Session, userId: string) {
-    const holding = engine.holdWorkspace(session.id, userId).pipe(
-      Effect.map((held): Session | null => held),
-      Effect.catch((error) =>
-        Effect.gen(function* () {
-          const message = error.message;
-          yield* settleIfUnlaunched(sessions, session, `hold failed: ${message}`).pipe(
-            Effect.ignore,
-          );
-          yield* Effect.logWarning("handoff: the hold failed").pipe(
+    const failed = (message: string) =>
+      settleIfUnlaunched(sessions, session, `hold failed: ${message}`).pipe(
+        Effect.ignore,
+        Effect.andThen(
+          Effect.logWarning("handoff: the hold failed").pipe(
             Effect.annotateLogs({ sessionId: session.id, error: message }),
-          );
-          return null;
-        }),
-      ),
+          ),
+        ),
+        Effect.as(null),
+      );
+    const holding = budgets.withLaunchSlot(userId, engine.holdWorkspace(session.id)).pipe(
+      Effect.matchEffect({
+        onFailure: (error) => failed(error.message),
+        onSuccess: (held) =>
+          held === null
+            ? failed(
+                budgetMessage("accountLaunchesInFlight", budgets.limits.accountLaunchesInFlight),
+              )
+            : Effect.succeed(held),
+      }),
     );
     const fiber = yield* engine.detach(holding);
     const answered = yield* Fiber.join(fiber).pipe(Effect.timeoutOption(LAUNCH_ANSWER_WINDOW));
@@ -267,7 +280,9 @@ export const makeHandoffStart = Effect.gen(function* () {
   ) {
     const session = yield* sessionIn(project, earlier, userId, query);
     const answered =
-      query.hold === "true" && unheld(session) ? yield* hold(session, userId) : session;
+      query.hold === "true" && unheld(session, engine.launchUnderWay)
+        ? yield* hold(session, userId)
+        : session;
     return new HandoffReceived({
       session: answered,
       worktree: earlier,

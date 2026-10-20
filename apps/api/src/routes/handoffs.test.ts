@@ -68,6 +68,9 @@ interface Seen {
   readonly refs: Array<StoreRef>;
   readonly namesRacing: Set<string>;
   readonly provisionGates: Array<Deferred.Deferred<void>>;
+  readonly holdGates: Array<Deferred.Deferred<void>>;
+  /** Sessions the engine reads as having a launch under way. */
+  readonly launching: Set<string>;
   holdFails: boolean;
 }
 
@@ -158,7 +161,7 @@ const worldWith = async (
       },
       storeRefs: { list: () => Effect.succeed(seen.refs) },
       engine: {
-        launchUnderWay: () => false,
+        launchUnderWay: (sessionId) => seen.launching.has(sessionId),
         provision,
         provisionSessionIn: (worktreeId, input) =>
           Effect.sync(() => {
@@ -169,28 +172,35 @@ const worldWith = async (
               input.ownerUserId ?? "nobody",
             );
           }),
-        holdWorkspace: (sessionId, openedBy) =>
-          Effect.suspend(() => {
-            seen.holds.push(`${sessionId}:${openedBy}`);
-            if (seen.holdFails) {
-              return Effect.fail(
-                new SealantPlatformError({
-                  code: "workspace_create_failed",
-                  status: null,
-                  message: "the platform refused the workspace",
-                  cause: null,
-                }),
-              );
-            }
-            const current = api?.world.sessions.get(sessionId);
-            return Effect.succeed(
-              new Session({
-                ...(current ?? unlaunched(sessionId, sharedA.worktree, openedBy)),
-                id: sessionId,
-                status: "idle",
+        holdWorkspace: (sessionId) =>
+          Effect.gen(function* () {
+            seen.holds.push(sessionId);
+            const gate = seen.holdGates.shift();
+            if (gate !== undefined) yield* Deferred.await(gate);
+          }).pipe(
+            Effect.andThen(
+              Effect.suspend(() => {
+                if (seen.holdFails) {
+                  return Effect.fail(
+                    new SealantPlatformError({
+                      code: "workspace_create_failed",
+                      status: null,
+                      message: "the platform refused the workspace",
+                      cause: null,
+                    }),
+                  );
+                }
+                const current = api?.world.sessions.get(sessionId);
+                return Effect.succeed(
+                  new Session({
+                    ...(current ?? unlaunched(sessionId, sharedA.worktree, "alice")),
+                    id: sessionId,
+                    status: "idle",
+                  }),
+                );
               }),
-            );
-          }),
+            ),
+          ),
         detach: (effect) => Effect.forkDetach(effect),
       },
       audit: {
@@ -212,6 +222,8 @@ const freshSeen = (): Seen => ({
   refs: [],
   namesRacing: new Set(),
   provisionGates: [],
+  holdGates: [],
+  launching: new Set(),
   holdFails: false,
 });
 
@@ -373,7 +385,7 @@ describe("POST /projects/:id/handoffs", () => {
     expect(seen.provisions).toEqual([
       { name: "fix-login", kind: "handoff", harness: "claude", owner: "alice" },
     ]);
-    expect(seen.holds).toEqual(["session-handoff-1:alice"]);
+    expect(seen.holds).toEqual(["session-handoff-1"]);
     expect(seen.audits).toEqual(["worktree.handed_off:worktree"]);
 
     sh(world.checkout, ["commit", "-q", "-am", "more"]);
@@ -391,7 +403,7 @@ describe("POST /projects/:id/handoffs", () => {
       harness: "codex",
       owner: "alice",
     });
-    expect(seen.holds).toEqual(["session-handoff-1:alice"]);
+    expect(seen.holds).toEqual(["session-handoff-1"]);
   });
 
   it("names no earlier handoff when the taken name is someone else's, another branch's, or no handoff at all", async () => {
@@ -464,7 +476,7 @@ describe("POST /projects/:id/handoffs", () => {
     expect(api.world.calls).not.toContain("store.admitHandoff");
     expect(seen.provisions).toEqual([]);
     expect(seen.sessionsIn).toEqual(["worktree-earlier"]);
-    expect(seen.holds).toEqual(["session-again-worktree-earlier:alice"]);
+    expect(seen.holds).toEqual(["session-again-worktree-earlier"]);
   });
 
   it("answers a replay from what the first receipt stored, admitting nothing: a file budget lowered since, the earlier handoff it named", async () => {
@@ -512,7 +524,7 @@ describe("POST /projects/:id/handoffs", () => {
       session: { id: "session-again-worktree-earlier", ownerUserId: "alice" },
     });
     expect(seen.sessionsIn).toEqual(["worktree-earlier"]);
-    expect(seen.holds).toEqual(["session-again-worktree-earlier:alice"]);
+    expect(seen.holds).toEqual(["session-again-worktree-earlier"]);
   });
 
   it("provisions one session for two different uploads of the same W by one account at once", async () => {
@@ -553,6 +565,59 @@ describe("POST /projects/:id/handoffs", () => {
     expect(seen.sessionsIn).toEqual([]);
   });
 
+  it("holds under one of the account's launch slots for the hold's whole course: a second hold past the ceiling never reaches the engine", async () => {
+    const seen = freshSeen();
+    api = await worldWith({ accountLaunchesInFlight: 1 }, seen);
+    const gate = Deferred.makeUnsafe<void>();
+    seen.holdGates.push(gate);
+    const first = post(
+      api,
+      "alice",
+      buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T10:00:00.000Z" }).bytes,
+    );
+    await until(() => seen.holds.length === 1, "the first hold");
+    const second = await post(
+      api,
+      "alice",
+      buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T10:00:01.000Z" }).bytes,
+    );
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({ session: { id: "session-handoff-2" } });
+    expect(seen.holds).toEqual(["session-handoff-1"]);
+    Deferred.doneUnsafe(gate, Exit.void);
+    expect(await (await first).json()).toMatchObject({
+      session: { id: "session-handoff-1", status: "idle" },
+    });
+    const third = await post(
+      api,
+      "alice",
+      buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T10:00:02.000Z" }).bytes,
+    );
+    expect(await third.json()).toMatchObject({
+      session: { id: "session-handoff-3", status: "idle" },
+    });
+    expect(seen.holds).toEqual(["session-handoff-1", "session-handoff-3"]);
+  });
+
+  it("re-holds on a replay only a session no launch is under way for", async () => {
+    const seen = freshSeen();
+    const bundle = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T10:10:00.000Z" });
+    const alices = unlaunched(
+      SessionId.make("session-alice"),
+      WorktreeId.make("worktree-earlier"),
+      "alice",
+    );
+    seen.launching.add(alices.id);
+    api = await worldWith({}, seen, [alices]);
+    api.world.addWorktree(earlierHandoff("worktree-earlier", "fix-login", bundle, "alice"));
+    const response = await post(api, "alice", bundle.bytes);
+    expect(await response.json()).toMatchObject({
+      replayed: true,
+      session: { id: "session-alice", status: "starting" },
+    });
+    expect(seen.holds).toEqual([]);
+  });
+
   it("answers the session as it stands when the hold fails: starting, never claimed held", async () => {
     const seen = freshSeen();
     seen.holdFails = true;
@@ -564,7 +629,7 @@ describe("POST /projects/:id/handoffs", () => {
       session: { id: "session-handoff-1", status: "starting" },
       worktree: { name: "fix-login" },
     });
-    expect(seen.holds).toEqual(["session-handoff-1:alice"]);
+    expect(seen.holds).toEqual(["session-handoff-1"]);
   });
 
   it("finishes the work when the connection drops, and a retry of the same bytes joins it", async () => {
@@ -597,7 +662,7 @@ describe("POST /projects/:id/handoffs", () => {
       worktree: { name: "fix-login" },
     });
     expect(seen.provisions).toHaveLength(1);
-    expect(seen.holds).toEqual(["session-handoff-1:alice"]);
+    expect(seen.holds).toEqual(["session-handoff-1"]);
     expect(api.world.calls.filter((call) => call === "store.admitHandoff")).toHaveLength(1);
   });
 
