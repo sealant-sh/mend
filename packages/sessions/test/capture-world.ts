@@ -240,6 +240,10 @@ export const worktreesFor = (rows: Map<string, Worktree>): Layer.Layer<Worktrees
       Effect.succeed(
         [...rows.values()].find((row) => row.projectId === projectId && row.name === name) ?? null,
       ),
+    handoffPacks: () =>
+      Effect.succeed(
+        [...rows.values()].flatMap((row) => (row.handoff === null ? [] : [row.handoff.deltaPack])),
+      ),
     byHandoffCheckpoint: (projectId, checkpoint) =>
       Effect.succeed(
         [...rows.values()].find(

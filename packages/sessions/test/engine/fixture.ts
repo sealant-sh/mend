@@ -2695,6 +2695,12 @@ export const worktreesLayer = (world: World) =>
           (worktree) => worktree.projectId === projectId && worktree.name === name,
         ) ?? null,
       ),
+    handoffPacks: () =>
+      Effect.succeed(
+        [...world.worktrees.values()].flatMap((row) =>
+          row.handoff === null ? [] : [row.handoff.deltaPack],
+        ),
+      ),
     byHandoffCheckpoint: (projectId, checkpoint) =>
       Effect.succeed(
         [...world.worktrees.values()].find(

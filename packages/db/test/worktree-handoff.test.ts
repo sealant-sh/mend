@@ -151,4 +151,9 @@ describe.skipIf(!reachable)("worktrees.handoff in Postgres", () => {
     );
     expect(rows.map((worktree) => worktree.handoff)).toEqual([null, null]);
   });
+
+  it("names the delta pack of every handoff row, and none for a base worktree", async () => {
+    const packs = await run(Effect.flatMap(WorktreesRepo, (repo) => repo.handoffPacks()));
+    expect(packs).toEqual([provenance.deltaPack, provenance.deltaPack]);
+  });
 });

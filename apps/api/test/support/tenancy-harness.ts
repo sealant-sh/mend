@@ -767,6 +767,12 @@ export const createTenancyWorld = async (
         byId: (id) => found(worktrees, id, () => new WorktreeNotFoundError({ id })),
         listForProject: (projectId) =>
           Effect.succeed([...worktrees.values()].filter((row) => row.projectId === projectId)),
+        handoffPacks: () =>
+          Effect.succeed(
+            [...worktrees.values()].flatMap((row) =>
+              row.handoff === null ? [] : [row.handoff.deltaPack],
+            ),
+          ),
         byHandoffCheckpoint: (projectId, checkpoint) =>
           Effect.succeed(
             [...worktrees.values()].find(

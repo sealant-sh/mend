@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { CaptureStoreRepo, type CaptureRow } from "@mend/db";
+import { CaptureStoreRepo, WorktreesRepo, type CaptureRow } from "@mend/db";
 import { WorktreeId } from "@mend/domain";
 import {
   CaptureChannelLive,
@@ -214,7 +214,10 @@ const makeRetentionFixture = () => {
     Layer.provide(blobs),
   );
   const layer = Layer.mergeAll(
-    CaptureRetentionLive.pipe(Layer.provide(runtime)),
+    CaptureRetentionLive.pipe(
+      Layer.provide(runtime),
+      Layer.provide(Layer.mock(WorktreesRepo, { handoffPacks: () => Effect.succeed([]) })),
+    ),
     memory.layer,
     blobs,
   );
