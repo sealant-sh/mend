@@ -325,7 +325,7 @@ describe("POST /projects/:id/handoffs", () => {
     expect(seen.provisions).toEqual([]);
   });
 
-  it("provisions from the admitted snapshot under the branch's name, holds the session idle, audits it; a second handoff of the branch is -2 and names the earlier one", async () => {
+  it("provisions a held, audited session under the branch's name; a second handoff is -2 and names the first", async () => {
     const seen = freshSeen();
     api = await worldWith({}, seen);
     const bundle = buildHandoffBundle(world.checkout, { machine: "dana-mbp" });

@@ -271,7 +271,7 @@ export const makeHandoffStart = Effect.gen(function* () {
     userId: string,
     query: HandoffQueryInput,
   ) {
-    const first = (yield* sessions.listForWorktree(worktree.id)).at(-1) ?? null;
+    const first = (yield* sessions.listForWorktree(worktree.id)).at(-1);
     return (
       first ??
       (yield* engine

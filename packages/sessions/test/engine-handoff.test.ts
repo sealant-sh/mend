@@ -87,7 +87,7 @@ describe("SessionEngine handoff", () => {
     );
   });
 
-  it("finishes a creation that died after its row when the next session is provisioned in it: capture 0, ordinal 0 at M, the change row, each once", async () => {
+  it("finishes, once, a creation that died after its row when the next session is provisioned in it", async () => {
     const memory = makeMemoryCaptureStore();
     await withEngine(
       (world, tmp) =>
@@ -154,35 +154,16 @@ describe("SessionEngine handoff", () => {
         Effect.gen(function* () {
           const project = yield* setup(tmp, world);
           const engine = yield* SessionEngine;
-          const store = yield* Store;
-          const checkout = path.join(tmp, "checkout");
-          sh(tmp, ["clone", "-q", path.join(tmp, "origin"), checkout]);
-          sh(checkout, ["checkout", "-q", "-b", "fix/login"]);
-          fs.writeFileSync(path.join(checkout, "login.ts"), "export const login = () => true;\n");
-          sh(checkout, ["add", "-A"]);
-          sh(checkout, ["commit", "-q", "-m", "login"]);
-          const bundle = buildHandoffBundle(checkout);
-          const admitted = yield* store.admitHandoff(
-            project.storePath,
-            project.defaultBranch,
-            bundle.bytes,
-            { freshen: Effect.succeed(skippedFreshen("no credential in this test")), fileBytes: 0 },
-          );
+          const bundle = buildHandoffBundle(checkoutIn(tmp));
+          const admitted = yield* admitIn(project.storePath, bundle.bytes);
           const taken = yield* engine.ensureWorktree(
             project.id,
             { name: "fix-login", start: { kind: "base", base: null } },
             "user-fixture",
           );
-          const refused = yield* engine
-            .provision({
-              projectId: project.id,
-              harness: "codex",
-              label: null,
-              name: "fix-login",
-              start: { kind: "handoff", admitted, ownerUserId: "user-fixture" },
-              ownerUserId: "user-fixture",
-            })
-            .pipe(Effect.result);
+          const refused = yield* provisionHandoff(project.id, "fix-login", admitted).pipe(
+            Effect.result,
+          );
           if (Result.isFailure(refused) && refused.failure._tag === "GitError") {
             expect(refused.failure.stderr).toMatch(/already exists/);
           } else {

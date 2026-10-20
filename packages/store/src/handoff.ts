@@ -25,7 +25,9 @@ export interface AdmittedHandoff {
   readonly head: Sha;
   /** I: the commit whose tree is the checkout's index. */
   readonly index: Sha;
-  /** W: the commit whose tree is the checkout's working tree; capture 0's checkpoint. */
+  /**
+   * W: the commit whose tree is the checkout's working tree; the first session-start checkpoint.
+   */
   readonly checkpoint: Sha;
   /** M: the merge base with the default branch; the change's base. */
   readonly mergeBase: Sha;

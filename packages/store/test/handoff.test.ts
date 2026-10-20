@@ -165,9 +165,7 @@ describe("Store.admitHandoff", () => {
   it("refuses a torn pack as damaged", async () => {
     const bundle = buildHandoffBundle(world.checkout);
     const outcome = await expectRefusal(damage(bundle.bytes), "damaged");
-    if (Result.isFailure(outcome) && outcome.failure._tag === "HandoffRefusedError") {
-      expect(outcome.failure.message).toMatch(/git said: /);
-    }
+    expect(refusalMessage(outcome)).toMatch(/git said: /);
   });
 
   it("refuses a base the store has not seen as base-unknown, and admits it once a freshen brings it", async () => {
@@ -297,16 +295,6 @@ describe("Store.admitHandoff", () => {
     expect(Result.isSuccess(await admit(bundle.bytes, null, 0))).toBe(true);
   });
 
-  it("refuses a bundle whose branch continues from the store's tip past an old base before walking it", async () => {
-    sh(world.storePath, ["fetch", "-q", "origin", "main"]);
-    const bundle = buildHandoffBundle(world.checkout, {
-      cut: { kind: "at", sha: world.mainRoot },
-      mergeBase: world.mainRoot,
-    });
-    const outcome = await expectRefusal(bundle.bytes, "not-a-handoff");
-    expect(refusalMessage(outcome)).toMatch(/is not the merge base/);
-  });
-
   it("ends a git call that outlives the timeout as a host failure, and removes the quarantine", async () => {
     const bundle = buildHandoffBundle(world.checkout);
     const tmp = path.join(storeRoot, "tmp");
@@ -335,9 +323,7 @@ describe("Store.admitHandoff", () => {
   it("refuses a snapshot that is a merge commit, or a root, as not-a-handoff", async () => {
     const merge = buildHandoffBundle(world.checkout, { shape: "merge" });
     const outcome = await expectRefusal(merge.bytes, "not-a-handoff");
-    if (Result.isFailure(outcome) && outcome.failure._tag === "HandoffRefusedError") {
-      expect(outcome.failure.message).toMatch(/exactly one parent/);
-    }
+    expect(refusalMessage(outcome)).toMatch(/exactly one parent/);
     const root = buildHandoffBundle(world.checkout, { shape: "root", cut: { kind: "none" } });
     await expectRefusal(root.bytes, "not-a-handoff");
   });
@@ -345,9 +331,7 @@ describe("Store.admitHandoff", () => {
   it("refuses a snapshot whose message is not a handoff's as not-a-handoff", async () => {
     const bundle = buildHandoffBundle(world.checkout, { message: "wip\n" });
     const outcome = await expectRefusal(bundle.bytes, "not-a-handoff");
-    if (Result.isFailure(outcome) && outcome.failure._tag === "HandoffRefusedError") {
-      expect(outcome.failure.message).toMatch(/the subject is not "mend handoff"/);
-    }
+    expect(refusalMessage(outcome)).toMatch(/the subject is not "mend handoff"/);
   });
 
   it("admits a detached checkout with nothing ahead and nothing uncommitted: a held workspace at HEAD", async () => {

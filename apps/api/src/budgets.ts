@@ -159,12 +159,12 @@ export class Budgets extends Context.Service<
 >()("@mend/api/Budgets") {}
 
 /** One ceiling on what an account has under way at once, held for an effect's whole course. */
-const makeSlots = (ceiling: () => number) => {
+const makeSlots = (ceiling: number) => {
   const held = new Map<string, number>();
   return <A, E, R>(userId: string, effect: Effect.Effect<A, E, R>) =>
     Effect.suspend(() => {
       const current = held.get(userId) ?? 0;
-      if (overCeiling(current, ceiling())) return Effect.succeed(null);
+      if (overCeiling(current, ceiling)) return Effect.succeed(null);
       held.set(userId, current + 1);
       return effect.pipe(
         Effect.ensuring(
@@ -184,8 +184,8 @@ export const makeBudgets = (limits: BudgetLimits) => ({
   credentials: makeWindowLimiter(),
   signIns: makeWindowLimiter(),
   originChecks: makeWindowLimiter(),
-  withLaunchSlot: makeSlots(() => limits.accountLaunchesInFlight),
-  withHandoffSlot: makeSlots(() => limits.accountHandoffsInFlight),
+  withLaunchSlot: makeSlots(limits.accountLaunchesInFlight),
+  withHandoffSlot: makeSlots(limits.accountHandoffsInFlight),
 });
 
 const limit = (name: BudgetName) =>

@@ -204,8 +204,8 @@ const slugOf = (branch: string): string =>
 /**
  * The worktree a handoff creates: the branch slugged (`fix/login` → `fix-login`), or
  * `handoff-<head7>` when HEAD is detached or nothing of the branch name survives. A name already
- * taken gets `-2`, `-3`, … within 64 characters. Every result is a valid git
- * ref component under `mend/`.
+ * taken gets `-2`, `-3`, … within 64 characters. Every result is a valid git ref component under
+ * `mend/`.
  */
 export const handoffWorktreeName = (
   localBranch: string | null,

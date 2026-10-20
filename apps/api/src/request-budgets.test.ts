@@ -447,7 +447,7 @@ describe("bodies are bounded before they are decoded", () => {
     });
   });
 
-  it("at the shipped limits, takes a 30 MiB handoff and refuses 64 MiB + 1 unread, while a file route stops at 24 MiB and a plain route at 1 MiB", async () => {
+  it("holds each route to its shipped body limit: handoff 64 MiB, file 24 MiB, plain 1 MiB", async () => {
     const MiB = 1024 * 1024;
     const api = await serveOverSocket({});
     const handoff = await api.send("/api/projects/p1/handoffs", {

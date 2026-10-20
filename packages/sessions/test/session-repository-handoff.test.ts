@@ -73,7 +73,7 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
     return checkout;
   };
 
-  it("lays capture 0 down from the snapshot: branch at H, ordinal 0 at M, W's and I's trees off the seed, packs that close, review equal to the checkout's diff", async () => {
+  it("lays capture 0 down from the snapshot: branch at H, ordinal 0 at M, review equal to the checkout's diff", async () => {
     const checkout = makeCheckout("checkout-one");
     const bundle = buildHandoffBundle(checkout, { machine: "dana-mbp" });
     const worktreeId = newWorktreeId();
