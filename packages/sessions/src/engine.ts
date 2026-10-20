@@ -18362,201 +18362,216 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** A hand-over that failed after its stop, per session and sender (review 2, P3-3). */
       const failedHandOvers = new Map<string, { readonly at: number; readonly words: string }>();
 
+      /**
+       * In the launch gate, start to end, its fallback included (SLNT-167): between its stop and
+       * its start no agent of the session runs, and a launch admitted then would tear down the
+       * next sender's. One under way makes it not now, and the host tries again.
+       */
       const handOverConversation = (
         agentProcess: SessionProcess,
         sender: string,
         turnId: AgentTurnId,
         check: HandOverCheck,
       ): Effect.Effect<void, SealantPlatformError> =>
-        Effect.gen(function* () {
-          // A hand-over to this sender that failed after its stop a moment ago is not tried again
-          // at once: each try stops the conversation's process and starts it again (review 2 of
-          // mend#572, P3-3).
-          const backoffKey = `${agentProcess.sessionId}\u0000${sender}`;
-          const failedBefore = failedHandOvers.get(backoffKey);
-          const now = yield* Clock.currentTimeMillis;
-          if (failedBefore !== undefined && now - failedBefore.at < HAND_OVER_BACKOFF_MS) {
-            return yield* new SealantPlatformError({
-              code: "conversation_not_handed_over",
-              status: 409,
-              message: `The last hand-over of this conversation failed less than a minute ago (${failedBefore.words}), so this turn was not started and nothing was stopped. Send it again in a minute.`,
-              cause: null,
-            });
-          }
-          const session = yield* sessions.byId(agentProcess.sessionId);
-          const workspace = yield* sealant.getWorkspace(agentProcess.sealantWorkspaceId);
-          const options = agentProcess.protocolOptions;
-          const start: LaunchStart = {
-            mode: "protocol",
-            ...(options?.model === null || options?.model === undefined
-              ? {}
-              : { model: options.model }),
-            ...(options?.effort === null || options?.effort === undefined
-              ? {}
-              : { effort: options.effort }),
-            permissionMode: options?.permissionMode ?? "bypass",
-          };
-          const providerSessionId =
-            (yield* processes.byId(agentProcess.id))?.providerSessionId ??
-            agentProcess.providerSessionId ??
-            session.providerSessionId;
-          const composed = composeProtocolArgv(
-            session.harness,
-            start,
-            providerSessionId ?? undefined,
-          );
-          if (composed instanceof ProtocolHarnessUnsupportedError) {
-            return yield* new SealantPlatformError({
-              code: "conversation_not_handed_over",
-              status: null,
-              message: composed.message,
-              cause: composed,
-            });
-          }
-          // The sender's login, asked once more before anything stops: a login that went missing
-          // or invalid while the turn waited refuses here, with the old process still running
-          // (review of mend#572, P2-2).
-          if (sender !== agentProcess.runsAs) {
-            activeLogins.delete(
-              `${sender}\u0000${session.harness === "claude" ? "claude" : "codex"}`,
-            );
-            const refused = yield* steeringRefusal(session, sender);
-            if (refused !== null) {
+        gatedLaunch(
+          agentProcess.sessionId,
+          Effect.fail(handOverFailed(HAND_OVER_NOT_NOW, LAUNCH_UNDER_WAY_WORDS)),
+        )(
+          Effect.gen(function* () {
+            // A hand-over to this sender that failed after its stop a moment ago is not tried again
+            // at once: each try stops the conversation's process and starts it again (review 2 of
+            // mend#572, P3-3).
+            const backoffKey = `${agentProcess.sessionId}\u0000${sender}`;
+            const failedBefore = failedHandOvers.get(backoffKey);
+            const now = yield* Clock.currentTimeMillis;
+            if (failedBefore !== undefined && now - failedBefore.at < HAND_OVER_BACKOFF_MS) {
               return yield* new SealantPlatformError({
-                code: "person_login_refused",
+                code: "conversation_not_handed_over",
                 status: 409,
-                message: refused,
+                message: `The last hand-over of this conversation failed less than a minute ago (${failedBefore.words}), so this turn was not started and nothing was stopped. Send it again in a minute.`,
                 cause: null,
               });
             }
-          }
-          const nameOf = yield* namesFor(session.id);
-          let stopped = false;
-          handingOverProcesses.add(agentProcess.id);
-          const stop = stopForHandOver(agentProcess, nameOf(sender)).pipe(
-            Effect.tap(() =>
-              Effect.sync(() => {
-                stopped = true;
-              }),
-            ),
-          );
-          const launch = (as: string, stopping: Effect.Effect<void, SealantPlatformError>) =>
-            launchInRetainedWorkspace(
-              session.id,
-              composed,
-              null,
-              null,
-              providerSessionId,
+            const session = yield* sessions.byId(agentProcess.sessionId);
+            const workspace = yield* sealant.getWorkspace(agentProcess.sealantWorkspaceId);
+            const options = agentProcess.protocolOptions;
+            const start: LaunchStart = {
+              mode: "protocol",
+              ...(options?.model === null || options?.model === undefined
+                ? {}
+                : { model: options.model }),
+              ...(options?.effort === null || options?.effort === undefined
+                ? {}
+                : { effort: options.effort }),
+              permissionMode: options?.permissionMode ?? "bypass",
+            };
+            const providerSessionId =
+              (yield* processes.byId(agentProcess.id))?.providerSessionId ??
+              agentProcess.providerSessionId ??
+              session.providerSessionId;
+            const composed = composeProtocolArgv(
+              session.harness,
               start,
-              null,
-              workspace,
-              null,
-              stopped
-                ? { sender: as, stop: stopping, replacing: null }
-                : {
-                    sender: as,
-                    stop: stopping,
-                    replacing: agentProcess.id,
-                    // At the stop, after every preparation: the turn still waits and the
-                    // process is still quiescent, or nothing is stopped (review 2, P2-2).
-                    beforeStop: check.stillQuiescent,
-                  },
+              providerSessionId ?? undefined,
             );
-          yield* launch(sender, stop).pipe(
-            Effect.catch((error) =>
-              Effect.gen(function* () {
-                if (!stopped) {
-                  // Another start took the conversation first (a takeover into a terminal, a
-                  // resume): nothing was stopped, and the turn keeps waiting for the
-                  // conversation's next process (review 2 of mend#572, P3-1).
-                  if (error instanceof SealantPlatformError && error.code === "conversation_held") {
-                    return yield* handOverFailed(HAND_OVER_NOT_NOW, error.message);
+            if (composed instanceof ProtocolHarnessUnsupportedError) {
+              return yield* new SealantPlatformError({
+                code: "conversation_not_handed_over",
+                status: null,
+                message: composed.message,
+                cause: composed,
+              });
+            }
+            // The sender's login, asked once more before anything stops: a login that went missing
+            // or invalid while the turn waited refuses here, with the old process still running
+            // (review of mend#572, P2-2).
+            if (sender !== agentProcess.runsAs) {
+              activeLogins.delete(
+                `${sender}\u0000${session.harness === "claude" ? "claude" : "codex"}`,
+              );
+              const refused = yield* steeringRefusal(session, sender);
+              if (refused !== null) {
+                return yield* new SealantPlatformError({
+                  code: "person_login_refused",
+                  status: 409,
+                  message: refused,
+                  cause: null,
+                });
+              }
+            }
+            const nameOf = yield* namesFor(session.id);
+            let stopped = false;
+            handingOverProcesses.add(agentProcess.id);
+            const stop = stopForHandOver(agentProcess, nameOf(sender)).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  stopped = true;
+                }),
+              ),
+            );
+            const launch = (as: string, stopping: Effect.Effect<void, SealantPlatformError>) =>
+              launchInRetainedWorkspace(
+                session.id,
+                composed,
+                null,
+                null,
+                providerSessionId,
+                start,
+                null,
+                workspace,
+                null,
+                stopped
+                  ? { sender: as, stop: stopping, replacing: null }
+                  : {
+                      sender: as,
+                      stop: stopping,
+                      replacing: agentProcess.id,
+                      // At the stop, after every preparation: the turn still waits and the
+                      // process is still quiescent, or nothing is stopped (review 2, P2-2).
+                      beforeStop: check.stillQuiescent,
+                    },
+              );
+            yield* launch(sender, stop).pipe(
+              Effect.catch((error) =>
+                Effect.gen(function* () {
+                  if (!stopped) {
+                    // Another start took the conversation first (a takeover into a terminal, a
+                    // resume): nothing was stopped, and the turn keeps waiting for the
+                    // conversation's next process (review 2 of mend#572, P3-1).
+                    if (
+                      error instanceof SealantPlatformError &&
+                      error.code === "conversation_held"
+                    ) {
+                      return yield* handOverFailed(HAND_OVER_NOT_NOW, error.message);
+                    }
+                    return yield* Effect.fail(error);
+                  }
+                  // The old process stopped and the new one could not start: the waiting turn fails
+                  // with the words, and the conversation goes on in a process of the person who ran
+                  // it before, on their own login, taking the turns queued behind (P2-2).
+                  const words = steerWords(error.message);
+                  if (
+                    !(
+                      error instanceof SealantPlatformError && error.code === "person_login_refused"
+                    )
+                  ) {
+                    failedHandOvers.set(backoffKey, { at: yield* Clock.currentTimeMillis, words });
+                  }
+                  yield* conversations.failTurn(turnId, words).pipe(Effect.ignore);
+                  const previous = agentProcess.runsAs ?? session.ownerUserId;
+                  // No process takes the conversation's queue: the turns behind the waiting one,
+                  // never sent, end with the stopped process, as at any stop.
+                  const dropQueue = conversations.cancelOpenForProcess(agentProcess.id);
+                  if (previous === null) {
+                    yield* dropQueue;
+                  } else {
+                    yield* launch(previous, Effect.void).pipe(
+                      Effect.catchCause((cause) =>
+                        Effect.gen(function* () {
+                          yield* dropQueue;
+                          // Nothing runs the conversation now: the hand-over's hold ends here, so the
+                          // session settles before its line says why, and the words stay on it.
+                          handingOverProcesses.delete(agentProcess.id);
+                          yield* reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore);
+                          // Said on the session line, not only in a log (review 2, P3-2).
+                          yield* noteLaunchWords(
+                            session.id,
+                            `stopped · ${nameOf(sender)}'s turn could not start (${words}), and ${nameOf(previous)}'s agent could not be started again: ${causeWords(cause).replace(/\.+$/, "")}. Resume the session to continue.`,
+                          ).pipe(Effect.ignore);
+                          yield* Effect.logWarning(
+                            "session engine: the conversation could not be started again after a failed hand-over",
+                          ).pipe(
+                            Effect.annotateLogs({
+                              sessionId: session.id,
+                              cause: Cause.pretty(cause),
+                            }),
+                          );
+                        }),
+                      ),
+                    );
                   }
                   return yield* Effect.fail(error);
-                }
-                // The old process stopped and the new one could not start: the waiting turn fails
-                // with the words, and the conversation goes on in a process of the person who ran
-                // it before, on their own login, taking the turns queued behind (P2-2).
-                const words = steerWords(error.message);
-                if (
-                  !(error instanceof SealantPlatformError && error.code === "person_login_refused")
-                ) {
-                  failedHandOvers.set(backoffKey, { at: yield* Clock.currentTimeMillis, words });
-                }
-                yield* conversations.failTurn(turnId, words).pipe(Effect.ignore);
-                const previous = agentProcess.runsAs ?? session.ownerUserId;
-                // No process takes the conversation's queue: the turns behind the waiting one,
-                // never sent, end with the stopped process, as at any stop.
-                const dropQueue = conversations.cancelOpenForProcess(agentProcess.id);
-                if (previous === null) {
-                  yield* dropQueue;
-                } else {
-                  yield* launch(previous, Effect.void).pipe(
-                    Effect.catchCause((cause) =>
-                      Effect.gen(function* () {
-                        yield* dropQueue;
-                        // Nothing runs the conversation now: the hand-over's hold ends here, so the
-                        // session settles before its line says why, and the words stay on it.
-                        handingOverProcesses.delete(agentProcess.id);
-                        yield* reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore);
-                        // Said on the session line, not only in a log (review 2, P3-2).
-                        yield* noteLaunchWords(
-                          session.id,
-                          `stopped · ${nameOf(sender)}'s turn could not start (${words}), and ${nameOf(previous)}'s agent could not be started again: ${causeWords(cause).replace(/\.+$/, "")}. Resume the session to continue.`,
-                        ).pipe(Effect.ignore);
-                        yield* Effect.logWarning(
-                          "session engine: the conversation could not be started again after a failed hand-over",
-                        ).pipe(
-                          Effect.annotateLogs({
-                            sessionId: session.id,
-                            cause: Cause.pretty(cause),
-                          }),
-                        );
+                }),
+              ),
+            );
+            failedHandOvers.delete(backoffKey);
+            // The session crons the waiting turn stopped waiting for ended with the process: said.
+            if (check.endedCrons > 0) {
+              yield* noteLaunchWords(
+                session.id,
+                `${check.endedCrons} scheduled prompt${check.endedCrons === 1 ? "" : "s"} of ${nameOf(agentProcess.runsAs ?? sender)}'s ended with their agent after ${nameOf(sender)}'s turn waited 10 minutes`,
+              ).pipe(Effect.ignore);
+            }
+          }).pipe(
+            Effect.mapError((error) =>
+              error instanceof SealantPlatformError
+                ? error
+                : new SealantPlatformError({
+                    code: "conversation_not_handed_over",
+                    status: null,
+                    message: `The conversation could not be handed over: ${error.message}`,
+                    cause: error,
+                  }),
+            ),
+            Effect.ensuring(
+              Effect.suspend(() => {
+                handingOverProcesses.delete(agentProcess.id);
+                // The fold held while the hand-over ran: now it reads the processes as they are, so a
+                // hand-over that left no process running settles here, once.
+                return reconcileSession(agentProcess.sessionId, { sweep: false }).pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning(
+                      "session engine: the session was not reconciled after a hand-over",
+                    ).pipe(
+                      Effect.annotateLogs({
+                        sessionId: agentProcess.sessionId,
+                        cause: Cause.pretty(cause),
                       }),
                     ),
-                  );
-                }
-                return yield* Effect.fail(error);
+                  ),
+                );
               }),
             ),
-          );
-          failedHandOvers.delete(backoffKey);
-          // The session crons the waiting turn stopped waiting for ended with the process: said.
-          if (check.endedCrons > 0) {
-            yield* noteLaunchWords(
-              session.id,
-              `${check.endedCrons} scheduled prompt${check.endedCrons === 1 ? "" : "s"} of ${nameOf(agentProcess.runsAs ?? sender)}'s ended with their agent after ${nameOf(sender)}'s turn waited 10 minutes`,
-            ).pipe(Effect.ignore);
-          }
-        }).pipe(
-          Effect.mapError((error) =>
-            error instanceof SealantPlatformError
-              ? error
-              : new SealantPlatformError({
-                  code: "conversation_not_handed_over",
-                  status: null,
-                  message: `The conversation could not be handed over: ${error.message}`,
-                  cause: error,
-                }),
-          ),
-          Effect.ensuring(
-            Effect.suspend(() => {
-              handingOverProcesses.delete(agentProcess.id);
-              // The fold held while the hand-over ran: now it reads the processes as they are, so a
-              // hand-over that left no process running settles here, once.
-              return reconcileSession(agentProcess.sessionId, { sweep: false }).pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning(
-                    "session engine: the session was not reconciled after a hand-over",
-                  ).pipe(
-                    Effect.annotateLogs({
-                      sessionId: agentProcess.sessionId,
-                      cause: Cause.pretty(cause),
-                    }),
-                  ),
-                ),
-              );
-            }),
           ),
         );
 

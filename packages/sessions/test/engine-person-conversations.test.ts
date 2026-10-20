@@ -21,14 +21,22 @@ import {
 } from "@mend/domain";
 import { AgentRequest, AgentTurn, Session, SessionProcess } from "@mend/domain/workbench";
 import { type HomeLogins, PersonLayoutPlatform, type PersonSessionOptions } from "@mend/sealant";
-import { ProtocolHost, type ProtocolHostHooks, SessionEngine } from "@mend/sessions";
+import {
+  NoLiveAgent,
+  ProtocolHost,
+  type ProtocolHostHooks,
+  Restart,
+  SessionEngine,
+  WorkspaceHostUserNamespaces,
+} from "@mend/sessions";
 import { processStatePathOf } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, SessionOptions, Workspace } from "@sealant/sdk";
-import { Deferred, Effect, Layer, Queue } from "effect";
+import { Deferred, Effect, Fiber, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
 import { CLAUDE_AGENT_HOOKS, claudeSettingsOf } from "../src/claude-settings.ts";
+import { HAND_OVER_NOT_NOW } from "../src/conversation-steps.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import {
   claudeLine,
@@ -52,6 +60,7 @@ import {
   redeemPickupExec,
   sealantLaunchLayer,
   setup,
+  type World,
   withEngine,
   withEngineEffect,
   withPreparedEngineEffect,
@@ -997,6 +1006,37 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
   }, 30_000);
 });
 
+/** What a test sees between a hand-over's two senders (`inTheHandOverGap`). */
+interface GapContext {
+  readonly world: World;
+  readonly sessionId: SessionId;
+  readonly alice: SessionProcess;
+  readonly attached: Array<{
+    readonly process: SessionProcess;
+    readonly hooks: ProtocolHostHooks;
+    readonly resumePath: string | null;
+  }>;
+  /** Each process stopped for a hand-over. */
+  readonly stops: ReadonlyArray<string>;
+  /** Each stop of a workspace asked of the platform. */
+  readonly workspaceStops: ReadonlyArray<"drain" | "discard">;
+  readonly spawned: ReadonlyArray<ReadonlyArray<string>>;
+  /** The words of each waiting turn failed. */
+  readonly failed: ReadonlyArray<string>;
+  /** Waits for a write of a session row that makes `condition` true. */
+  readonly untilWritten: (condition: () => boolean, label: string) => Effect.Effect<void>;
+  /** The next launch waits past its admission: `held` once it does, until `release`. */
+  readonly holdNextLaunch: Effect.Effect<{
+    readonly held: Effect.Effect<void>;
+    readonly release: Deferred.Deferred<void>;
+  }>;
+  /** How the hand-over ended, once it has. */
+  readonly handedOver: () => string | null;
+}
+
+/** A plain launch that needs no saved harness state: it gets as far as replacing the workspace. */
+const LAUNCH_ARGV = ["bash"];
+
 /** What the host says at a hand-over's stop: the turn still waits and the process is quiescent. */
 const atTheStop = (stillQuiescent: Effect.Effect<boolean> = Effect.succeed(true)) => ({
   stillQuiescent,
@@ -1273,6 +1313,297 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       },
     ]);
   }, 30_000);
+
+  /**
+   * Alice's shared conversation handed over to Maria, held between its two senders: Alice's process
+   * has ended, and Maria's has not started. `between` runs there; `after` once the hand-over ends.
+   * The next launch can be held past its admission (`holdNextLaunch`).
+   */
+  const inTheHandOverGap = (scenario: {
+    readonly between: (context: GapContext) => Effect.Effect<void, never, SessionEngine>;
+    readonly after?: (context: GapContext) => Effect.Effect<void, never, SessionEngine>;
+  }) =>
+    Effect.gen(function* () {
+      const spawned: Array<ReadonlyArray<string>> = [];
+      const calls: Array<string> = [];
+      const attached: GapContext["attached"] = [];
+      const stops: Array<string> = [];
+      const workspaceStops: Array<"drain" | "discard"> = [];
+      const failed: Array<string> = [];
+      const writes = yield* Queue.make<void>();
+      const state = makeHarnessLayoutsMemoryState();
+      const provider = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
+      let sessionId: SessionId | null = null;
+      const betweenSenders = yield* Deferred.make<void>();
+      const goOn = yield* Deferred.make<void>();
+      const launchHeld = yield* Deferred.make<void>();
+      const releaseLaunch = yield* Deferred.make<void>();
+      let holding = false;
+      const heldLaunch = Layer.succeed(WorkspaceHostUserNamespaces, {
+        observe: () =>
+          Effect.suspend(() => {
+            if (!holding) return Effect.succeed(null);
+            holding = false;
+            return Deferred.succeed(launchHeld, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseLaunch)),
+              Effect.as(null),
+            );
+          }),
+      });
+      const exec = (argv: ReadonlyArray<string>) => {
+        if (isPrepare(argv)) return { exitCode: 0, stdout: LAYOUT_READY, stderr: "" };
+        if (isStage(argv)) {
+          const resume = (argv[2] ?? "").includes(provider)
+            ? `mend-conv resume /run/mend/conv/${sessionId ?? ""}/.claude/projects/-workspace-repo/${provider}.jsonl\n`
+            : "";
+          const moved = (argv[2] ?? "").includes("moved=0") ? "mend-conv moved 1\n" : "";
+          return { exitCode: 0, stdout: `${moved}${resume}mend-conv empty\n`, stderr: "" };
+        }
+        if (isExchange(argv)) {
+          return { exitCode: 0, stdout: "mend-conv exchanged renameat2\n", stderr: "" };
+        }
+        return undefined;
+      };
+      let handedOver: string | null = null;
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, _tmp, project) =>
+          Effect.gen(function* () {
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "shared",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            sessionId = session.id;
+            const row = world.sessions.get(session.id);
+            if (row === undefined) return yield* Effect.die("no session");
+            world.sessions.set(
+              session.id,
+              new Session({ ...row, sharedControlEnabledAt: now(), sharedControlEverAt: now() }),
+            );
+            yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
+            const alice = attached[0];
+            const steering = alice?.hooks.steering;
+            if (alice === undefined || steering === undefined) {
+              return yield* Effect.die("no steering for the owner's process");
+            }
+            world.processes.set(
+              alice.process.id,
+              new SessionProcess({ ...alice.process, providerSessionId: provider }),
+            );
+            const handing = yield* steering
+              .handOver(MARIA, AgentTurnId.make("turn-maria"), atTheStop())
+              .pipe(Effect.forkChild);
+            yield* Deferred.await(betweenSenders);
+            // No harvest to restore from: a launch admitted here goes on to replace the workspace.
+            const between = world.sessions.get(session.id);
+            if (between === undefined) return yield* Effect.die("no session");
+            world.sessions.set(session.id, new Session({ ...between, sealantRunId: null }));
+            const context: GapContext = {
+              world,
+              sessionId: session.id,
+              alice: alice.process,
+              attached,
+              stops,
+              workspaceStops,
+              spawned,
+              failed,
+              untilWritten: signalled(writes),
+              holdNextLaunch: Effect.sync(() => {
+                holding = true;
+              }).pipe(Effect.as({ held: Deferred.await(launchHeld), release: releaseLaunch })),
+              handedOver: () => handedOver,
+            };
+            yield* scenario.between(context);
+            yield* Deferred.succeed(goOn, undefined);
+            handedOver = (yield* Fiber.await(handing))._tag;
+            if (scenario.after !== undefined) yield* scenario.after(context);
+          }),
+        {
+          captured: makeMemoryCaptureStore(),
+          prepareWorld: (world) => {
+            world.members.set(MARIA, "member");
+            signalWrites(world.sessions, writes);
+          },
+          sealantLayer: sealantLaunchLayer(
+            [],
+            undefined,
+            undefined,
+            spawned,
+            undefined,
+            undefined,
+            undefined,
+            [],
+            undefined,
+            [],
+            undefined,
+            { exec, stops: workspaceStops },
+          ),
+          protocolHostLayer: steeringHost(attached, stops),
+          hostUserNamespaces: heldLaunch,
+          conversationLayer: Layer.succeed(AgentConversationRepo, {
+            ...agentConversationStub,
+            cancelOpenForProcess: () => Effect.void,
+            failTurn: (turnId, words) =>
+              Effect.sync(() => {
+                failed.push(words);
+                return new AgentTurn({
+                  id: turnId,
+                  sessionId: sessionId ?? SessionId.make("no-session"),
+                  processId: SessionProcessId.make("process-maria"),
+                  ordinal: 1,
+                  author: MARIA,
+                  input: "go",
+                  status: "failed",
+                  providerTurnId: null,
+                  error: words,
+                  usage: null,
+                  createdAt: now(),
+                  startedAt: null,
+                  endedAt: now(),
+                });
+              }),
+          }),
+          harnessLayout: {
+            flag: "person",
+            state,
+            platform: Layer.effect(
+              PersonLayoutPlatform,
+              Effect.map(PersonLayoutPlatform, (inner) => ({
+                ...inner,
+                // Maria's login goes into the conversation's home once Alice's process has ended.
+                postCredentials: (
+                  workspace: Workspace,
+                  input: Parameters<typeof inner.postCredentials>[1],
+                ) =>
+                  input.onBehalfOf === MARIA && input.home.startsWith("/run/mend/conv/")
+                    ? Deferred.succeed(betweenSenders, undefined).pipe(
+                        Effect.andThen(Deferred.await(goOn)),
+                        Effect.andThen(inner.postCredentials(workspace, input)),
+                      )
+                    : inner.postCredentials(workspace, input),
+              })),
+            ).pipe(Layer.provide(personPlatform(calls, { person: true }))),
+          },
+        },
+      );
+    });
+
+  it.effect(
+    "a plain launch between a hand-over's two senders is refused, and Maria's agent starts and stays (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const seen = { launch: "", aliceEnded: false, mariaLive: false, handedOver: "" };
+        let spawnedLaunches: ReadonlyArray<ReadonlyArray<string>> = [];
+        let workspaceStops: ReadonlyArray<string> = [];
+        yield* inTheHandOverGap({
+          between: (gap) =>
+            Effect.gen(function* () {
+              seen.aliceEnded = (gap.world.processes.get(gap.alice.id)?.exitedAt ?? null) !== null;
+              const launched = yield* (yield* SessionEngine)
+                .launch(gap.sessionId, LAUNCH_ARGV, { over: NoLiveAgent })
+                .pipe(Effect.result);
+              seen.launch = launched._tag === "Failure" ? launched.failure._tag : "launched";
+            }),
+          after: (gap) =>
+            Effect.sync(() => {
+              const maria = gap.attached.at(-1)?.process;
+              seen.handedOver = gap.handedOver() ?? "";
+              seen.mariaLive =
+                maria?.runsAs === MARIA &&
+                (gap.world.processes.get(maria.id)?.exitedAt ?? null) === null;
+              spawnedLaunches = gap.spawned.filter((argv) => argv[0] === LAUNCH_ARGV[0]);
+              workspaceStops = [...gap.workspaceStops];
+            }),
+        });
+        expect(seen).toEqual({
+          launch: "SessionAgentLiveError",
+          aliceEnded: true,
+          mariaLive: true,
+          handedOver: "Success",
+        });
+        expect(spawnedLaunches).toEqual([]);
+        expect(workspaceStops).toEqual([]);
+      }),
+    30_000,
+  );
+
+  it.effect(
+    "a hand-over asked while a launch holds the gate is not now, and stops nothing (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const seen = { back: "", mariaLive: false, stopped: 0 };
+        yield* inTheHandOverGap({
+          between: () => Effect.void,
+          after: (gap) =>
+            Effect.gen(function* () {
+              const maria = gap.attached.at(-1);
+              const steering = maria?.hooks.steering;
+              if (maria === undefined || steering === undefined) {
+                return yield* Effect.die("no steering for Maria's process");
+              }
+              const stopsBefore = gap.stops.length;
+              const hold = yield* gap.holdNextLaunch;
+              const restarting = yield* (yield* SessionEngine)
+                .launch(gap.sessionId, LAUNCH_ARGV, { over: Restart })
+                .pipe(Effect.forkChild);
+              yield* hold.held;
+              const back = yield* steering
+                .handOver("user-fixture", AgentTurnId.make("turn-alice"), atTheStop())
+                .pipe(Effect.result);
+              seen.back = back._tag === "Failure" ? back.failure.code : "handed over";
+              seen.stopped = gap.stops.length - stopsBefore;
+              seen.mariaLive =
+                (gap.world.processes.get(maria.process.id)?.exitedAt ?? null) === null;
+              yield* Deferred.succeed(hold.release, undefined);
+              yield* Fiber.await(restarting);
+            }),
+        });
+        expect(seen).toEqual({ back: HAND_OVER_NOT_NOW, mariaLive: true, stopped: 0 });
+      }),
+    30_000,
+  );
+
+  it.effect(
+    "the owner's Stop between a hand-over's two senders wins: neither agent starts again (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const seen: {
+          status: string | undefined;
+          live: ReadonlyArray<string | null>;
+          failed: ReadonlyArray<string>;
+        } = { status: undefined, live: [], failed: [] };
+        yield* inTheHandOverGap({
+          between: (gap) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              yield* engine.stop(gap.sessionId).pipe(Effect.ignore);
+            }),
+          after: (gap) =>
+            Effect.gen(function* () {
+              // The Stop the hand-over owed runs as it ends; its settle is the signal.
+              yield* gap.untilWritten(
+                () => (gap.world.sessions.get(gap.sessionId)?.settledAt ?? null) !== null,
+                "the stop's settle",
+              );
+              seen.status = gap.world.sessions.get(gap.sessionId)?.status;
+              seen.live = [...gap.world.processes.values()]
+                .filter((process) => process.sessionId === gap.sessionId)
+                .filter((process) => process.exitedAt === null)
+                .map((process) => process.runsAs);
+              seen.failed = [...gap.failed];
+            }),
+        });
+        expect(seen.status).toBe("stopped");
+        expect(seen.live).toEqual([]);
+        expect(seen.failed).toHaveLength(1);
+      }),
+    30_000,
+  );
 
   /**
    * Alice's shared Claude conversation in a person executor, her process attached, and a hand-over
