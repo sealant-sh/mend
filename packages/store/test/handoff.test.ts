@@ -392,4 +392,27 @@ describe("sweepHandoffQuarantines", () => {
     ).toEqual([]);
     fs.rmSync(root, { recursive: true, force: true });
   });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "skips an entry gone before its stat and one it cannot remove, and sweeps the rest",
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-handoff-sweep-"));
+      const stale = path.join(root, `${HANDOFF_QUARANTINE_PREFIX}stale`);
+      const locked = path.join(root, `${HANDOFF_QUARANTINE_PREFIX}locked`);
+      const gone = path.join(root, `${HANDOFF_QUARANTINE_PREFIX}gone`);
+      fs.mkdirSync(stale);
+      fs.mkdirSync(path.join(locked, "inner"), { recursive: true });
+      fs.writeFileSync(path.join(locked, "inner", "pack"), "bytes");
+      fs.chmodSync(path.join(locked, "inner"), 0o500);
+      fs.symlinkSync(path.join(root, "vanished"), gone);
+      const now = Date.now();
+      const old = new Date(now - 2 * 60 * 60 * 1000);
+      for (const dir of [stale, locked]) fs.utimesSync(dir, old, old);
+      const removed = await Effect.runPromise(sweepHandoffQuarantines(root, now));
+      expect(removed).toEqual([stale]);
+      expect(fs.existsSync(path.join(locked, "inner", "pack"))).toBe(true);
+      fs.chmodSync(path.join(locked, "inner"), 0o700);
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  );
 });

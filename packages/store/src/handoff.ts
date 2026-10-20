@@ -315,9 +315,14 @@ export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHan
       }
     }
 
-    yield* run(["rev-list", "--objects", "--missing=error", snapshot, `^${mergeBase}`]).pipe(
-      Effect.mapError(damagedOr),
-    );
+    yield* run([
+      "rev-list",
+      "--objects",
+      "--missing=error",
+      "--quiet",
+      snapshot,
+      `^${mergeBase}`,
+    ]).pipe(Effect.mapError(damagedOr));
 
     if (input.fileBytes > 0) {
       const fresh = yield* run(["rev-list", "--objects", snapshot, index, `^${head}`]);
@@ -375,19 +380,33 @@ export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHan
   );
 });
 
-export const sweepHandoffQuarantines = (
+/**
+ * Removes quarantines older than an hour. One gone since the listing is done; one this process
+ * cannot remove is skipped with a warning, and the next sweep weighs it again.
+ */
+export const sweepHandoffQuarantines = Effect.fn("sweepHandoffQuarantines")(function* (
   quarantineRoot: string,
   now: number,
-): Effect.Effect<ReadonlyArray<string>> =>
-  Effect.sync(() => {
-    if (!fs.existsSync(quarantineRoot)) return [];
-    const removed: Array<string> = [];
-    for (const entry of fs.readdirSync(quarantineRoot)) {
-      if (!entry.startsWith(HANDOFF_QUARANTINE_PREFIX)) continue;
-      const dir = path.join(quarantineRoot, entry);
-      if (now - fs.statSync(dir).mtimeMs < QUARANTINE_MAX_AGE_MS) continue;
+) {
+  const skipped = (dir: string) => (error: unknown) =>
+    Effect.logWarning("handoff: a quarantine was not swept").pipe(
+      Effect.annotateLogs({ dir, error: String(error) }),
+      Effect.as(false),
+    );
+  const entries = yield* Effect.try(() =>
+    fs.existsSync(quarantineRoot) ? fs.readdirSync(quarantineRoot) : [],
+  ).pipe(Effect.catch((error) => Effect.as(skipped(quarantineRoot)(error), [])));
+  const removed: Array<string> = [];
+  for (const entry of entries) {
+    if (!entry.startsWith(HANDOFF_QUARANTINE_PREFIX)) continue;
+    const dir = path.join(quarantineRoot, entry);
+    const swept = yield* Effect.try(() => {
+      const stat = fs.statSync(dir, { throwIfNoEntry: false });
+      if (stat === undefined || now - stat.mtimeMs < QUARANTINE_MAX_AGE_MS) return false;
       fs.rmSync(dir, { recursive: true, force: true });
-      removed.push(dir);
-    }
-    return removed;
-  });
+      return true;
+    }).pipe(Effect.catch(skipped(dir)));
+    if (swept) removed.push(dir);
+  }
+  return removed;
+});
