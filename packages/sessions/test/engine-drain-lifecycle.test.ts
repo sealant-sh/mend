@@ -2767,6 +2767,10 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             yield* Deferred.succeed(written, undefined);
             yield* settleFor(20);
             yield* run.engine.reapCaptureLeases();
+            yield* run.untilChanged(
+              () => run.world.sessions.get(run.session.id)?.status !== "stopping",
+              "the Stop's settle",
+            );
             yield* settleFor(50);
             seen.planLeft = run.world.relaunches.has(run.session.id);
             seen.created = run.created.length;
