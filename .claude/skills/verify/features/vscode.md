@@ -365,8 +365,57 @@ the row takes the job's name.
     shell exits and she stops it; in one run of four (`r2v4`) Mend still read it `waiting` minutes
     after the stop, both processes exited and the workspace stopped, so the recipe notes that
     instead of failing.
-  - A conversation's question in a toast with [Allow] [Deny] needs a conversation session, which
-    needs a provider login. Report `verified-unreachable · provider login`.
+  - A conversation's request: `recipes/vscode-answer.mjs`, from the default `up`. A real claude
+    under the fake token never asks, so only the process behind the name `claude` is a stand-in
+    (`scripts/fixtures/claude-protocol-standin.mjs`, its wire tested in
+    `claude-protocol-standin.test.mjs`). Mend's engine launches it with its own protocol argv over
+    sealantd's pipe; ClaudeAdapter, ProtocolHost, the `agent_requests` row, the list and respond
+    routes and the adapter's `control_response` are Mend's. Setup (`via: "tty"`): `add-rate-limit`
+    starts as a claude terminal agent; a shell beside it writes the stand-in to `/tmp/mend-answer`
+    and puts a shim where `command -v claude` resolves. `/usr/local/bin` is root's `755` and the
+    person has no sudo, but holds `CAP_FOWNER` (`CapEff 0x8`, which sealantd grants so pnpm can
+    relink bins). So the swap chmods the directory `o+w`, renames the symlink to
+    `claude.mend-answer-orig`, writes the shim, and puts `755` back. The terminal agent is stopped
+    (the shell keeps the workspace, the session reads `idle`), then
+    `POST /sessions/:id/launch {"mode":"protocol","permissionMode":"ask","prompt":"mend-ask:permission …"}`.
+    The stand-in records its argv and uid: Mend ran it as the person (uid `40001`) with
+    `--print --verbose --input-format stream-json … --permission-prompt-tool stdio --resume <the terminal agent's id> --settings {"env":{"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS":"1"}}`;
+    the session shows a live `agent-protocol`.
+  - One request at a time. Each turn's text picks what the stand-in asks: `mend-ask:permission`
+    (Bash `pnpm db:migrate`, `tool-permission`), `mend-ask:question` (`AskUserQuestion`, one
+    single-select `target` question `Which database?` with `staging` and `production`, `user-input`)
+    or `mend-ask:text` (the same with no options, `name`, `What should the migration be called?`). A
+    step sends `POST /sessions/:id/turns` once the turns settle, and waits for a pending request it
+    has not seen. It reads the stand-in's record back through the shell (`MEND-ANSWER-R<n>:` lines).
+    A socket the server's restart cut attaches again.
+  - `MEND_VERIFY_ANSWER_VIA=api` answers with the extension's bodies over the API: Mend's half of
+    every step, on any extension. Two cold worlds, `ansr2` and `ansr3` (server
+    `0.0.0-dev.sha1a696f3beeac`), each passed all 14 steps: Allow → `accept` and the stand-in
+    `allow`; Deny → `decline`, `deny` with `Declined by user`; typed and picked answers arrive as
+    `answers.<id> = [...]`, in Mend's row and the stand-in's response. A second respond answers
+    `409 AgentRequestResolved`, the server log holds two POSTs, and the stand-in received one. Ana's
+    conversation, shared control off: Dana's respond answers `403`
+    `only the session owner can steer this session; …`. With shared control on it answers `403`
+    `Only Ana can answer this; send a turn instead.`, because the process runs as Ana. Ana's own
+    respond reaches her stand-in. A request pending across a server stop and start reads `pending`
+    after it, the same protocol process is live, and a respond then answers 200 and reaches the
+    stand-in.
+  - The default (`ui`) drives the editor and needs flow 5's extension. Step 2: the toast
+    `add-rate-limit asks: run pnpm db:migrate?` with [Allow] [Deny] [More…], the row
+    `add-rate-limit · waiting · run pnpm db:migrate?` in `Needs you`, badge `1`; Allow, then the row
+    leaves and the badge clears. Step 3: Deny. Step 4: [staging] [production] [More…]; More… opens
+    the quick pick `add-rate-limit asks: Which database?` with `staging`, `production`,
+    `Write an answer…`, and the typed answer arrives. Step 4b: [Answer…] and an input box. Step 5:
+    the row's inline Answer opens the same pick. Step 6: the toast's Allow after an API answer; the
+    server log holds one POST to `/api/requests/<id>/respond` and the status bar shows
+    `add-rate-limit · …`. Step 7: two windows, both badges `1`, one toast between them. Step 8:
+    `ana-migrate · waiting · Ana's session`, no Answer, no badge. Step 9: the server stopped; the
+    row's Answer reads `Mend is offline` and is disabled. On the extension before flow 5 (`ansr2`,
+    `ansr3`) step 2 fails as it should: the row reads
+    `add-rate-limit · waiting · Bash · since <hh:mm>`.
+  - `GET /sessions/:id/requests` filters only on `?pending=1` (`query.pending === "1"` in
+    `apps/api/src/routes/workbench.ts`); `?pending=true` returned all 8 of a session's resolved
+    requests in `ansr1`.
   - The answer's mechanics are drivable today. Record `windows()`, then
     `treeItem(<label>).contextMenu("Mend: Open terminal")`. The quick pick titled
     `Terminal · <label>` offers the session's shell (`Shell · <id8>`) and `New shell`;
