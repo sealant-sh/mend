@@ -468,6 +468,12 @@ export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHan
   return yield* Effect.scoped(admit);
 });
 
+const notSwept = (dir: string) => (error: unknown) =>
+  Effect.logWarning("handoff: a quarantine was not swept").pipe(
+    Effect.annotateLogs({ dir, error: String(error) }),
+    Effect.as(false),
+  );
+
 /**
  * Removes quarantines older than an hour. One gone since the listing is done; one this process
  * cannot remove is skipped with a warning, and the next sweep weighs it again.
@@ -476,14 +482,9 @@ export const sweepHandoffQuarantines = Effect.fn("sweepHandoffQuarantines")(func
   quarantineRoot: string,
   now: number,
 ) {
-  const skipped = (dir: string) => (error: unknown) =>
-    Effect.logWarning("handoff: a quarantine was not swept").pipe(
-      Effect.annotateLogs({ dir, error: String(error) }),
-      Effect.as(false),
-    );
   const entries = yield* Effect.try(() =>
     fs.existsSync(quarantineRoot) ? fs.readdirSync(quarantineRoot) : [],
-  ).pipe(Effect.catch((error) => Effect.as(skipped(quarantineRoot)(error), [])));
+  ).pipe(Effect.catch((error) => Effect.as(notSwept(quarantineRoot)(error), [])));
   const removed: Array<string> = [];
   for (const entry of entries) {
     if (!entry.startsWith(HANDOFF_QUARANTINE_PREFIX)) continue;
@@ -493,7 +494,7 @@ export const sweepHandoffQuarantines = Effect.fn("sweepHandoffQuarantines")(func
       if (stat === undefined || now - stat.mtimeMs < QUARANTINE_MAX_AGE_MS) return false;
       fs.rmSync(dir, { recursive: true, force: true });
       return true;
-    }).pipe(Effect.catch(skipped(dir)));
+    }).pipe(Effect.catch(notSwept(dir)));
     if (swept) removed.push(dir);
   }
   return removed;

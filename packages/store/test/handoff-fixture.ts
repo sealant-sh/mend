@@ -171,6 +171,10 @@ export const buildHandoffBundle = (
   return { bytes, head, index, checkpoint, mergeBase, cut, defaultTip, worktreeTree, indexTree };
 };
 
+/** Git orders a tree's entries by name, a subtree's name ending in `/`. */
+const treeSortKey = (entry: { readonly mode: string; readonly name: string }) =>
+  entry.mode === "40000" ? `${entry.name}/` : entry.name;
+
 /**
  * `tree` with `entries` added as blobs, written with `hash-object --literally` so git's own
  * checks never see it: the snapshot a hostile client could send.
@@ -188,15 +192,13 @@ const writeTreeUnchecked = (
       const [mode = "", , sha = ""] = meta.split(" ");
       return { mode: mode.replace(/^0/, ""), name, sha };
     });
-  const sortKey = (entry: { readonly mode: string; readonly name: string }) =>
-    entry.mode === "40000" ? `${entry.name}/` : entry.name;
   const added = entries.map(({ name, content }) => ({
     mode: "100644",
     name,
     sha: sh(checkout, ["hash-object", "-w", "--stdin"], { input: content }),
   }));
   const body = [...listed, ...added]
-    .toSorted((a, b) => Buffer.compare(Buffer.from(sortKey(a)), Buffer.from(sortKey(b))))
+    .toSorted((a, b) => Buffer.compare(Buffer.from(treeSortKey(a)), Buffer.from(treeSortKey(b))))
     .map(({ mode, name, sha }) =>
       Buffer.concat([Buffer.from(`${mode} ${name}\0`), Buffer.from(sha, "hex")]),
     );
