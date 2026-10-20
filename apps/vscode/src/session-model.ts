@@ -467,8 +467,17 @@ interface Raised {
 export type Notification =
   | (Raised & { readonly kind: "waits"; readonly text: string; readonly quiet: Quiet })
   | (Raised & { readonly kind: "finished"; readonly text: string; readonly quiet: Quiet })
-  /** A launch she sent failed, or the server refused it: its error toast may offer Retry. */
-  | (Raised & { readonly kind: "launchFailed"; readonly text: string; readonly quiet: Quiet })
+  /**
+   * A launch she sent failed, or the server refused it: its error toast may offer Retry, which
+   * launches only over `settledAt`, the failure the session read when it was raised. Null when it
+   * read `starting`: a refusal the server never settled.
+   */
+  | (Raised & {
+      readonly kind: "launchFailed";
+      readonly text: string;
+      readonly settledAt: string | null;
+      readonly quiet: Quiet;
+    })
   /** A wait that ended (answered here or elsewhere): its toast, if one shows, no longer holds. */
   | (Raised & { readonly kind: "withdrawn" });
 
@@ -533,6 +542,7 @@ export const transitions = (
             key,
             sessionId: view.session.id,
             at,
+            settledAt: view.session.status === "failed" ? view.session.settledAt : null,
             // A refusal the server still reads `starting` is said as the refusal, not as failed.
             text: [
               view.word === "failed" ? `${view.name} failed` : view.name,

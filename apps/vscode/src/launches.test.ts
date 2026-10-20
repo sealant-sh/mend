@@ -4,10 +4,15 @@ import { Launches } from "./launches.js";
 import { MendApiError } from "./mend-http.js";
 import type { LaunchRequest } from "./new-session.js";
 import type { LaunchAttempt } from "./session-model.js";
-import type { Session, SessionStatus } from "./types.js";
+import type { LaunchExpected, Session, SessionStatus } from "./types.js";
+
+type LaunchBody = LaunchRequest & { readonly expected?: LaunchExpected };
 
 const START: LaunchRequest = { mode: "pty", prompt: "add rate limiting", model: "opus" };
 const S1 = "2026-10-19T09:00:06.000Z";
+const MOVED_ON = "the session moved on · it reads running · nothing launched";
+const AGENT_LIVE =
+  "the session's agent is live · nothing restarted · attach to it, or stop it and launch again";
 
 const session = (status: SessionStatus, settledAt: string | null = null): Session => ({
   id: "s1",
@@ -34,18 +39,22 @@ const session = (status: SessionStatus, settledAt: string | null = null): Sessio
  * and each read returns `reads` in turn (the last one repeats).
  */
 const fakeServer = (
-  answers: ReadonlyArray<"ok" | "refused" | "under-way" | "unanswered" | "edge-504">,
+  answers: ReadonlyArray<
+    "ok" | "refused" | "under-way" | "unanswered" | "edge-504" | "moved-on" | "agent-live"
+  >,
   reads: ReadonlyArray<Session>,
 ) => {
-  const launched: Array<{ readonly sessionId: string; readonly body: LaunchRequest }> = [];
+  const launched: Array<{ readonly sessionId: string; readonly body: LaunchBody }> = [];
   let answer = 0;
   let read = 0;
   return {
     launched,
-    launchSession: async (sessionId: string, body: LaunchRequest) => {
+    launchSession: async (sessionId: string, body: LaunchBody) => {
       launched.push({ sessionId, body });
       const said = answers[answer++] ?? "ok";
       if (said === "refused") throw new MendApiError("Over the organization's budget.", 429);
+      if (said === "moved-on") throw new MendApiError(MOVED_ON, 409, "SessionMovedOn");
+      if (said === "agent-live") throw new MendApiError(AGENT_LIVE, 409, "SessionAgentLive");
       if (said === "under-way")
         throw new MendApiError(
           "starting · a launch of this session is already under way · nothing new started",
@@ -69,11 +78,51 @@ const fakeServer = (
   };
 };
 
+/**
+ * One server two windows share, admitting as `refusalOf` does: a launch naming `expected` only
+ * over that settle with no agent live, one without only with no agent live. An admitted launch runs.
+ */
+const admittingServer = (initial: Session) => {
+  let now = initial;
+  let agentLive = false;
+  const bodies: Array<LaunchBody> = [];
+  const admitted: Array<LaunchBody> = [];
+  const live = () => agentLive;
+  return {
+    bodies,
+    admitted,
+    /** The agent exited and the session settled as `settled` reads. */
+    settle: (settled: Session) => {
+      now = settled;
+      agentLive = false;
+    },
+    launchSession: async (_: string, body: LaunchBody) => {
+      bodies.push(body);
+      if (body.expected !== undefined && (live() || now.settledAt !== body.expected.settledAt))
+        throw new MendApiError(
+          `the session moved on · it reads ${now.status} · nothing launched`,
+          409,
+          "SessionMovedOn",
+        );
+      if (body.expected === undefined && live())
+        throw new MendApiError(AGENT_LIVE, 409, "SessionAgentLive");
+      admitted.push(body);
+      agentLive = true;
+      now = { ...now, status: "running", settledAt: null, summary: "reading src/auth" };
+      return {};
+    },
+    sessionDetail: async () => ({ session: now }),
+  };
+};
+
 const sink = () => {
   const said: Array<{ readonly sessionId: string; readonly attempt: LaunchAttempt }> = [];
+  const forgot: Array<string> = [];
   return {
     said,
+    forgot,
     attempted: (sessionId: string, attempt: LaunchAttempt) => said.push({ sessionId, attempt }),
+    forget: (sessionId: string) => forgot.push(sessionId),
   };
 };
 
@@ -113,8 +162,8 @@ describe("Launches", () => {
     const server = fakeServer(["unanswered"], [session("running")]);
     const launches = new Launches(server, sink());
     await launches.launch("s1", START);
-    expect(await launches.offer("s1")).toEqual({ kind: "moved" });
-    await launches.relaunch("s1");
+    expect(await launches.offer("s1")).toMatchObject({ kind: "moved" });
+    await launches.relaunch("s1", null);
     expect(server.launched).toHaveLength(1);
   });
 
@@ -124,8 +173,8 @@ describe("Launches", () => {
     const launches = new Launches(server, store);
     await launches.launch("s1", START);
     expect(store.said.at(-1)?.attempt).toEqual({ n: 1, after: null, refusal: null });
-    expect(await launches.offer("s1")).toEqual({ kind: "moved" });
-    await launches.relaunch("s1");
+    expect(await launches.offer("s1")).toMatchObject({ kind: "moved" });
+    await launches.relaunch("s1", null);
     expect(server.launched).toHaveLength(1);
   });
 
@@ -133,19 +182,19 @@ describe("Launches", () => {
     const server = fakeServer(["unanswered"], [session("starting")]);
     const launches = new Launches(server, sink());
     await launches.launch("s1", START);
-    await launches.relaunch("s1");
+    await launches.relaunch("s1", null);
     expect(server.launched).toHaveLength(1);
   });
 
-  it("sends a Retry for a session that reads failed: the same launch, the next attempt, after its settle", async () => {
+  it("sends a Retry for a session that reads failed: the same launch over the failure the toast saw, the next attempt", async () => {
     const server = fakeServer(["ok", "ok"], [session("failed", S1)]);
     const store = sink();
     const launches = new Launches(server, store);
     await launches.launch("s1", START);
-    await launches.relaunch("s1");
+    await launches.relaunch("s1", S1);
     expect(server.launched).toEqual([
       { sessionId: "s1", body: START },
-      { sessionId: "s1", body: START },
+      { sessionId: "s1", body: { ...START, expected: { settledAt: S1 } } },
     ]);
     expect(store.said.at(-1)?.attempt).toEqual({ n: 2, after: S1, refusal: null });
   });
@@ -155,8 +204,11 @@ describe("Launches", () => {
     const launches = new Launches(server, sink());
     await launches.launch("s1", START);
     expect((await launches.offer("s1")).kind).toBe("retry");
-    await launches.relaunch("s1");
-    expect(server.launched).toHaveLength(2);
+    await launches.relaunch("s1", null);
+    expect(server.launched).toEqual([
+      { sessionId: "s1", body: START },
+      { sessionId: "s1", body: START },
+    ]);
   });
 
   it("says a refusal only once nothing is on its way, so the toast it raises can offer Retry", async () => {
@@ -166,6 +218,7 @@ describe("Launches", () => {
       attempted: (sessionId, attempt) => {
         if (attempt.refusal !== null) offers.push(launches.offer(sessionId));
       },
+      forget: () => {},
     });
     await launches.launch("s1", START);
     expect(await Promise.all(offers)).toMatchObject([{ kind: "retry" }]);
@@ -175,8 +228,8 @@ describe("Launches", () => {
     const server = fakeServer(["under-way"], [session("starting")]);
     const launches = new Launches(server, sink());
     await launches.launch("s1", START);
-    expect(await launches.offer("s1")).toEqual({ kind: "moved" });
-    await launches.relaunch("s1");
+    expect(await launches.offer("s1")).toMatchObject({ kind: "moved" });
+    await launches.relaunch("s1", null);
     expect(server.launched).toHaveLength(1);
   });
 
@@ -184,7 +237,7 @@ describe("Launches", () => {
     const server = fakeServer(["refused", "ok", "ok"], [session("failed", S1)]);
     const launches = new Launches(server, sink());
     await launches.launch("s1", START);
-    await Promise.all([launches.relaunch("s1"), launches.relaunch("s1")]);
+    await Promise.all([launches.relaunch("s1", S1), launches.relaunch("s1", S1)]);
     expect(server.launched).toHaveLength(2);
   });
 
@@ -192,10 +245,61 @@ describe("Launches", () => {
     const server = fakeServer([], [session("failed", S1)]);
     const launches = new Launches(server, sink());
     expect(await launches.offer("s2")).toEqual({ kind: "none" });
-    await launches.relaunch("s2");
+    await launches.relaunch("s2", S1);
     await launches.launch("s1", { mode: "pty", prompt: "a\0b" });
     expect(await launches.offer("s1")).toEqual({ kind: "none" });
-    await launches.relaunch("s1");
+    await launches.relaunch("s1", S1);
     expect(server.launched).toHaveLength(1);
+  });
+
+  it("sends nothing more when Mend says the session moved on, and gives back how it reads now", async () => {
+    const running: Session = { ...session("running"), summary: "reading src/auth" };
+    const server = fakeServer(["ok", "moved-on"], [session("failed", S1), running]);
+    const store = sink();
+    const launches = new Launches(server, store);
+    await launches.launch("s1", START);
+    expect(await launches.relaunch("s1", S1)).toEqual({
+      kind: "movedOn",
+      read: running,
+      said: MOVED_ON,
+    });
+    expect(server.launched).toHaveLength(2);
+    expect(store.forgot).toEqual(["s1"]);
+  });
+
+  it("starts no second agent when Mend says one is live, and gives back how it reads for Open", async () => {
+    const running: Session = { ...session("running"), summary: "reading src/auth" };
+    const server = fakeServer(
+      ["refused", "agent-live"],
+      [session("starting"), session("starting"), running],
+    );
+    const launches = new Launches(server, sink());
+    await launches.launch("s1", START);
+    expect(await launches.relaunch("s1", null)).toEqual({
+      kind: "agentLive",
+      read: running,
+      said: AGENT_LIVE,
+    });
+    expect(server.launched).toEqual([
+      { sessionId: "s1", body: START },
+      { sessionId: "s1", body: START },
+    ]);
+  });
+
+  it("refuses the second of two windows' Retries from the same stale toast, and it sends nothing more", async () => {
+    const server = admittingServer(session("starting"));
+    const here = new Launches(server, sink());
+    const there = new Launches(server, sink());
+    await here.launch("s1", START);
+    server.settle(session("failed", S1));
+    await there.launch("s1", START);
+    server.settle(session("failed", S1));
+    const answers = await Promise.all([here.relaunch("s1", S1), there.relaunch("s1", S1)]);
+    expect(server.admitted).toEqual([START, START, { ...START, expected: { settledAt: S1 } }]);
+    expect(server.bodies).toHaveLength(4);
+    expect(answers).toMatchObject([
+      { kind: "sent" },
+      { kind: "movedOn", read: { status: "running", summary: "reading src/auth" } },
+    ]);
   });
 });

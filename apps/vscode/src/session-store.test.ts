@@ -207,7 +207,7 @@ const world = () => {
   const notifier = new Notifier(
     store,
     { claim: async () => true, release: async () => undefined },
-    { offer: async () => ({ kind: "none" }), relaunch: async () => {} },
+    { offer: async () => ({ kind: "none" }), relaunch: async () => ({ kind: "held" }) },
   );
   store.onDidChange((change) => notifier.changed(change));
   return { mend, here, store };

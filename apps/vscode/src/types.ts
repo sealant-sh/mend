@@ -116,6 +116,12 @@ export interface HarnessModelCatalog {
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
+/** `LaunchRequest.expected`: launch only over this settle; any other is refused `SessionMovedOn`. */
+export interface LaunchExpected {
+  readonly settledAt: string | null;
+}
+
+/** Carries no `restart`: no launch from here replaces a live agent. */
 export interface LaunchStart {
   readonly prompt?: string | undefined;
   readonly model?: string | undefined;

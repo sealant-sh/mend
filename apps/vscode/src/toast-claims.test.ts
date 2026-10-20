@@ -4,11 +4,16 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { Launches, type RetryOffer } from "./launches.js";
+import { Launches, type RetryAnswer, type RetryOffer } from "./launches.js";
 import { MendApiError } from "./mend-http.js";
-import { sessionModel, type LaunchAttempt, type WindowModel } from "./session-model.js";
+import {
+  sessionModel,
+  transitions,
+  type LaunchAttempt,
+  type WindowModel,
+} from "./session-model.js";
 import { Notifier } from "./session-surfaces.js";
-import { fake, window } from "./test-vscode.js";
+import { commands, fake, window } from "./test-vscode.js";
 import { TOAST_CLAIM_TTL_MS, ToastClaims } from "./toast-claims.js";
 import type { Session } from "./types.js";
 
@@ -164,7 +169,10 @@ const heldClaims = (claims: ToastClaims) => {
   };
 };
 
-const launches = { offer: async () => ({ kind: "none" as const }), relaunch: async () => {} };
+const launches = {
+  offer: async () => ({ kind: "none" as const }),
+  relaunch: async () => ({ kind: "held" as const }),
+};
 
 describe("two windows, each focused when its own read lands (B4)", () => {
   it("toasts one wait once", async () => {
@@ -254,9 +262,9 @@ describe("what changed while a window claimed its toast", () => {
   });
 });
 
-const offering = (offer: RetryOffer) => ({
+const offering = (offer: RetryOffer, answer: RetryAnswer = { kind: "sent" }) => ({
   offer: vi.fn(async () => offer),
-  relaunch: vi.fn(async () => undefined),
+  relaunch: vi.fn(async (_sessionId: string, _settledAt: string | null) => answer),
 });
 
 describe("a launch she sent that the server refused (flow 3)", () => {
@@ -293,12 +301,128 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     ]);
   });
 
+  it("names the failure its toast said on Retry, and no failure for a refusal never settled", async () => {
+    fake.reset();
+    const failed: Session = { ...waiting, status: "failed", settledAt };
+    const sent = new Map([["s", { n: 1, after: null, refusal: null }]]);
+    const settledChange = { prev: read(starting, sent), next: read(failed, sent) };
+    const settled = offering({ kind: "retry", read: failed });
+    window.showErrorMessage.mockResolvedValueOnce("Retry");
+    new Notifier(
+      { showing: () => new Set<string>(), model: () => settledChange.next, error: () => null },
+      new ToastClaims(await directory()),
+      settled,
+    ).changed(settledChange);
+    await vi.waitFor(() => expect(settled.relaunch).toHaveBeenCalledWith("s", settledAt));
+    const refusedChange = refused();
+    const unsettled = offering({ kind: "retry", read: starting });
+    window.showErrorMessage.mockResolvedValueOnce("Retry");
+    new Notifier(
+      { showing: () => new Set<string>(), model: () => refusedChange.next, error: () => null },
+      new ToastClaims(await directory()),
+      unsettled,
+    ).changed(refusedChange);
+    await vi.waitFor(() => expect(unsettled.relaunch).toHaveBeenCalledWith("s", null));
+  });
+
+  it("says how the session reads now when Mend says it moved on, and sends nothing more", async () => {
+    fake.reset();
+    const failed: Session = { ...waiting, status: "failed", settledAt };
+    const sent = new Map([["s", { n: 1, after: null, refusal: null }]]);
+    const change = { prev: read(starting, sent), next: read(failed, sent) };
+    const running: Session = { ...waiting, status: "running", summary: "reading src/auth" };
+    const movedOn = offering(
+      { kind: "retry", read: failed },
+      {
+        kind: "movedOn",
+        read: running,
+        said: "the session moved on · it reads running · nothing launched",
+      },
+    );
+    window.showErrorMessage.mockResolvedValueOnce("Retry");
+    new Notifier(
+      { showing: () => new Set<string>(), model: () => change.next, error: () => null },
+      new ToastClaims(await directory()),
+      movedOn,
+    ).changed(change);
+    await vi.waitFor(() =>
+      expect(window.showInformationMessage).toHaveBeenCalledWith(
+        "add-rate-limit moved on · running · reading src/auth · nothing launched",
+      ),
+    );
+    expect(movedOn.relaunch).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers no Retry of its own for a failure after Mend refused its Retry: another client launched that", async () => {
+    const later = iso(Date.now() - 500);
+    const failedAgain: Session = {
+      ...waiting,
+      status: "failed",
+      settledAt: later,
+      summary: "exited with code 143",
+    };
+    let now: Session = { ...waiting, status: "failed", settledAt };
+    const attempts = new Map<string, LaunchAttempt>();
+    const sender = new Launches(
+      {
+        launchSession: async (_, body) => {
+          if (body.expected !== undefined)
+            throw new MendApiError(
+              "the session moved on · it reads failed · nothing launched",
+              409,
+              "SessionMovedOn",
+            );
+        },
+        sessionDetail: async () => ({ session: now }),
+      },
+      {
+        attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
+        forget: (sessionId) => attempts.delete(sessionId),
+      },
+    );
+    await sender.launch("s", { mode: "pty", prompt: "add rate limiting" });
+    // The store drops a launch once the session runs: another client launched it here.
+    attempts.delete("s");
+    const running = read({ ...waiting, status: "running" }, new Map(attempts));
+    now = failedAgain;
+    expect(await sender.relaunch("s", settledAt)).toMatchObject({ kind: "movedOn" });
+    const notified = transitions(running, read(failedAgain, new Map(attempts)), {
+      focused: true,
+      showing: new Set(),
+      raised: new Set(),
+    });
+    expect(notified.map((one) => one.kind)).toEqual(["finished"]);
+  });
+
+  it("offers Open, not a second launch, when Mend says an agent is already running", async () => {
+    fake.reset();
+    const change = refused();
+    const running: Session = { ...waiting, status: "running", summary: "reading src/auth" };
+    const agentLive = offering(
+      { kind: "retry", read: starting },
+      { kind: "agentLive", read: running, said: "the session's agent is live · nothing restarted" },
+    );
+    window.showErrorMessage.mockResolvedValueOnce("Retry");
+    window.showInformationMessage.mockResolvedValueOnce("Open");
+    new Notifier(
+      { showing: () => new Set<string>(), model: () => change.next, error: () => null },
+      new ToastClaims(await directory()),
+      agentLive,
+    ).changed(change);
+    await vi.waitFor(() => expect(commands.executeCommand).toHaveBeenCalledWith("mend.open", "s"));
+    expect(window.showInformationMessage).toHaveBeenCalledWith(
+      "add-rate-limit · an agent is already running · nothing launched",
+      "Open",
+    );
+    expect(agentLive.relaunch).toHaveBeenCalledTimes(1);
+  });
+
   it("gives its claim back and shows nothing when the read before Retry says it moved", async () => {
     fake.reset();
     const shared = await directory();
     const change = refused();
     const store = { showing: () => new Set<string>(), model: () => change.next, error: () => null };
-    const moved = offering({ kind: "moved" });
+    const moved = offering({ kind: "moved", read: starting });
     new Notifier(store, new ToastClaims(shared), moved).changed(change);
     await vi.waitFor(() => expect(moved.offer).toHaveBeenCalledTimes(1));
     await vi.waitFor(async () => expect(await readdir(shared)).toEqual([]));
@@ -319,7 +443,10 @@ describe("a launch she sent that the server refused (flow 3)", () => {
         },
         sessionDetail: async () => ({ session: failed }),
       },
-      { attempted: (sessionId, attempt) => attempts.set(sessionId, attempt) },
+      {
+        attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
+        forget: (sessionId) => attempts.delete(sessionId),
+      },
     );
     const sent = sender.launch("s", { mode: "pty", prompt: "add rate limiting" });
     const early = {
@@ -382,7 +509,10 @@ describe("a launch she sent that the server refused (flow 3)", () => {
         },
         sessionDetail: async () => ({ session: failed }),
       },
-      { attempted: (sessionId, attempt) => attempts.set(sessionId, attempt) },
+      {
+        attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
+        forget: (sessionId) => attempts.delete(sessionId),
+      },
     );
     const sent = sender.launch("s", { mode: "pty", prompt: "add rate limiting" });
     const early = {
@@ -422,7 +552,10 @@ describe("a launch she sent that the server refused (flow 3)", () => {
           throw new MendApiError("Cannot reach Mend at http://localhost:3100.", null);
         },
       },
-      { attempted: (sessionId, attempt) => attempts.set(sessionId, attempt) },
+      {
+        attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
+        forget: (sessionId) => attempts.delete(sessionId),
+      },
     ).launch("s", { mode: "pty", prompt: "add rate limiting" });
     const sent = new Map([["s", { n: 1, after: null, refusal: null }]]);
     const unconfirmed = { prev: read(starting, sent), next: read(starting, attempts) };

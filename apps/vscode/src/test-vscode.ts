@@ -31,7 +31,9 @@ export const window = {
   state: { focused: true },
   onDidChangeWindowState: windowState.event,
   onDidChangeActiveTerminal: new EventEmitter<unknown>().event,
-  showInformationMessage: vi.fn(async (..._: ReadonlyArray<unknown>) => undefined),
+  showInformationMessage: vi.fn(
+    async (..._: ReadonlyArray<unknown>): Promise<string | undefined> => undefined,
+  ),
   showErrorMessage: vi.fn(
     async (..._: ReadonlyArray<unknown>): Promise<string | undefined> => undefined,
   ),

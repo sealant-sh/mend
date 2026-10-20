@@ -19,6 +19,7 @@ import {
   SESSION_STATUSES,
   type Effort,
   type HarnessModelCatalog,
+  type LaunchExpected,
   type LaunchStart,
   type Project,
   type ProjectDetail,
@@ -408,7 +409,10 @@ export class MendClient {
     );
   }
 
-  async launchSession(sessionId: string, start: LaunchStart): Promise<Session> {
+  async launchSession(
+    sessionId: string,
+    start: LaunchStart & { readonly expected?: LaunchExpected },
+  ): Promise<Session> {
     return parseSession(
       await this.post(`/sessions/${encodeURIComponent(sessionId)}/launch`, start),
     );

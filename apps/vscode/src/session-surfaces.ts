@@ -1,8 +1,15 @@
 import * as vscode from "vscode";
 
 import { refusedSignIn, showErrorToast } from "./error-toast.js";
-import type { Launches } from "./launches.js";
-import { transitions, waitsOf, type Notification, type WindowModel } from "./session-model.js";
+import type { Launches, RetryAnswer } from "./launches.js";
+import { displaySession } from "./session-lines.js";
+import {
+  ownLine,
+  transitions,
+  waitsOf,
+  type Notification,
+  type WindowModel,
+} from "./session-model.js";
 import type { SessionStore, StoreChange } from "./session-store.js";
 import type { ToastClaims } from "./toast-claims.js";
 import { statusColor } from "./tree.js";
@@ -118,7 +125,11 @@ export class Notifier {
         return;
       }
       const picked = await vscode.window.showErrorMessage(notification.text, "Retry");
-      if (picked === "Retry") await this.launches.relaunch(sessionId);
+      if (picked === "Retry")
+        await this.#sayRetry(
+          sessionId,
+          await this.launches.relaunch(sessionId, notification.settledAt),
+        );
       return;
     }
     const actions = notification.kind === "waits" ? ["Answer"] : ["Review", "Open"];
@@ -132,6 +143,29 @@ export class Notifier {
     const command =
       picked === "Answer" ? "mend.answer" : picked === "Review" ? "mend.reviewChange" : "mend.open";
     await vscode.commands.executeCommand(command, notification.sessionId);
+  }
+
+  /** A Retry Mend refused says how the session reads now; an agent already running offers Open. */
+  async #sayRetry(sessionId: string, answer: RetryAnswer): Promise<void> {
+    if (answer.kind === "sent" || answer.kind === "held") return;
+    const name =
+      answer.read === null
+        ? (this.store.model()?.sessions.get(sessionId)?.name ?? sessionId)
+        : displaySession(answer.read);
+    if (answer.kind === "movedOn") {
+      void vscode.window.showInformationMessage(
+        answer.read === null
+          ? `${name} · ${answer.said}`
+          : `${name} moved on · ${ownLine(answer.read)} · nothing launched`,
+      );
+      return;
+    }
+    const state = answer.read?.status === "starting" ? "starting" : "running";
+    const picked = await vscode.window.showInformationMessage(
+      `${name} · an agent is already ${state} · nothing launched`,
+      "Open",
+    );
+    if (picked === "Open") await vscode.commands.executeCommand("mend.open", sessionId);
   }
 
   #stillToasts(notification: Exclude<Notification, { readonly kind: "withdrawn" }>): boolean {
