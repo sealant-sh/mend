@@ -64,6 +64,19 @@ const lateOnTheLock = (
   };
 };
 
+/**
+ * Waits until the hold `name` in her folder reads renewed at `at` or later, by the test's clock: a
+ * renewal the timers fired is written some time after.
+ */
+const renewedBy = async (directory: string, name: string, at: number): Promise<void> => {
+  await vi.waitFor(async () => {
+    const [folder] = await readdir(directory);
+    if (folder === undefined) throw new Error("no folder was made for her reviews");
+    const text = await NODE_FILES.readFile(join(directory, folder, name)).catch(() => "");
+    expect(Number(text.split(" ")[0])).toBeGreaterThanOrEqual(at);
+  });
+};
+
 /** A window whose write of a new review waits until the test lets it go on. */
 const heldWrite = (): {
   readonly files: typeof NODE_FILES;
@@ -126,8 +139,9 @@ describe("the session's lock, between windows", () => {
       );
       await slow.writing;
       late += 20_000;
+      const renewing = clock();
       vi.advanceTimersByTime(20_000);
-      await pause(50);
+      await renewedBy(directory, "s1.json.lock", renewing);
       const waiting = other.update(DANA, (review) =>
         addPending(review, pending({ id: "b", body: "other" })),
       );
@@ -278,8 +292,9 @@ describe("the window that drives a send", () => {
       const other = new KeptReviews(directory, NODE_FILES, clock);
       expect(await driver.claimDrive(DANA, "key-1")).toBe(true);
       late += DRIVE_STALE_MS + 1_000;
+      const renewing = clock();
       vi.advanceTimersByTime(DRIVE_STALE_MS + 1_000);
-      await pause(50);
+      await renewedBy(directory, "s1.json.key-1.drive", renewing);
       expect(await other.drivenElsewhere(DANA, "key-1")).toBe(true);
       expect(await other.claimDrive(DANA, "key-1")).toBe(false);
       await driver.releaseDrive(DANA, "key-1");

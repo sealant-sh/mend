@@ -105,6 +105,21 @@ beforeEach(() => {
   fake.reset();
 });
 
+/**
+ * Waits until claude's input got `count` pastes and the store keeps its newest review as pasted, or
+ * as one that pasted nothing: a paste lands before the store keeps it, and a review composed between
+ * the two is composed onto nothing.
+ */
+const pastedInto = async (
+  store: ReviewStore,
+  pastes: ReadonlyArray<unknown>,
+  count: number,
+): Promise<void> =>
+  vi.waitFor(() => {
+    expect(pastes).toHaveLength(count);
+    expect(store.review().sends.at(-1)?.phase).toMatchObject({ paste: { kind: "done" } });
+  });
+
 const failures = (store: ReviewStore): Array<ReviewFailure> => {
   const seen: Array<ReviewFailure> = [];
   store.onDidFail((failure) => seen.push(failure));
@@ -124,7 +139,7 @@ describe("Send review twice before she presses Enter in claude's terminal", () =
       "Address each comment carefully",
     );
     expect(await store.send(first, edited)).toEqual({ sent: true });
-    await vi.waitFor(() => expect(pastes).toHaveLength(1));
+    await pastedInto(store, pastes, 1);
     expect(pastes[0]).toContain("Address each comment carefully");
 
     await store.comment(onLine(5, "Name the constant"));
@@ -155,7 +170,7 @@ describe("Send review twice before she presses Enter in claude's terminal", () =
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
     await store.send(first, first.text);
-    await vi.waitFor(() => expect(pastes).toHaveLength(1));
+    await pastedInto(store, pastes, 1);
     await store.comment(onLine(5, "Name the constant"));
     const second = store.compose();
     if (second === null) throw new Error("nothing composed");
@@ -179,7 +194,7 @@ describe("a third Send after one that pasted nothing", () => {
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
     await store.send(first, first.text);
-    await vi.waitFor(() => expect(pastes).toHaveLength(1));
+    await pastedInto(store, pastes, 1);
 
     await store.comment(onLine(5, "Name the constant"));
     const second = store.compose();
@@ -187,13 +202,16 @@ describe("a third Send after one that pasted nothing", () => {
     await store.send(second, second.text.replace("Use the shared limiter", "Use guard.ts"));
     await vi.waitFor(() => expect(told).toHaveLength(1));
     expect(pastes).toHaveLength(1);
-    // Mend holds "Name the constant", and claude's input does not: its thread says so.
-    const read = store.ready();
-    if (read === null) throw new Error("not read");
-    const named = threadsOf(read, store.review(), "Dana").find(({ body }) =>
-      body.includes("Name the constant"),
-    );
-    expect(named?.label).toBe("follow-up pending · not in claude's terminal");
+    // Mend holds "Name the constant", and VS Code never pasted it: its thread says so once the
+    // store reads the comment Mend posted.
+    await vi.waitFor(() => {
+      const read = store.ready();
+      if (read === null) throw new Error("not read");
+      const named = threadsOf(read, store.review(), "Dana").find(({ body }) =>
+        body.includes("Name the constant"),
+      );
+      expect(named?.label).toBe("follow-up pending · not in claude's terminal");
+    });
 
     await store.comment(onLine(9, "Log the limit"));
     const third = store.compose();
@@ -222,7 +240,7 @@ describe("a Send whose earlier part changed only its line endings", () => {
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
     await store.send(first, first.text);
-    await vi.waitFor(() => expect(pastes).toHaveLength(1));
+    await pastedInto(store, pastes, 1);
     await store.comment(onLine(5, "Name the constant"));
     const second = store.compose();
     if (second === null) throw new Error("nothing composed");
@@ -753,7 +771,7 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
     await store.send(first, first.text);
-    await vi.waitFor(() => expect(pastes).toHaveLength(1));
+    await pastedInto(store, pastes, 1);
     expect(pastes[0]?.processId).toBe("agent-1");
 
     world.replace(CLAUDE_2);
@@ -781,15 +799,18 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
     expect(into?.text).toContain("Use the shared limiter");
     expect(into?.text).toContain("Name the constant");
     expect(mend.delivered.at(-1)?.instruction).toBe(textToSend(into?.text ?? "", "add-rate-limit"));
-    const after = other.store.ready();
-    if (after === null) throw new Error("not read");
-    const labels = threadsOf(after, other.store.review(), "Dana")
-      .filter(({ body }) => body.includes("limiter") || body.includes("constant"))
-      .map(({ label }) => label);
-    expect(labels).toEqual([
-      "follow-up pending · in claude's terminal",
-      "follow-up pending · in claude's terminal",
-    ]);
+    // Once the store keeps the paste and reads the comment Mend posted.
+    await vi.waitFor(() => {
+      const after = other.store.ready();
+      if (after === null) throw new Error("not read");
+      const labels = threadsOf(after, other.store.review(), "Dana")
+        .filter(({ body }) => body.includes("limiter") || body.includes("constant"))
+        .map(({ label }) => label);
+      expect(labels).toEqual([
+        "follow-up pending · in claude's terminal",
+        "follow-up pending · in claude's terminal",
+      ]);
+    });
   });
 
   it("pastes the whole review when claude was replaced after she composed onto the old one", async () => {
@@ -801,7 +822,7 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
     await store.send(first, first.text);
-    await vi.waitFor(() => expect(pastes).toHaveLength(1));
+    await pastedInto(store, pastes, 1);
 
     await store.comment(onLine(5, "Name the constant"));
     const second = store.compose();
