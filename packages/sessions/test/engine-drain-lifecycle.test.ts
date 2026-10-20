@@ -39,6 +39,22 @@ import {
   withPreparedEngineEffect,
 } from "./engine/fixture.ts";
 
+const sessionSettled = (world: World, sessionId: SessionId) =>
+  world.sessions.get(sessionId)?.settledAt != null;
+
+/**
+ * Room for a drain the reaper took up to flush, terminate and release the lease (SLNT-111), ended
+ * early once the workspace stop is recorded. Each round also yields to the event loop, where the
+ * fake platform's promises settle and the fibers waiting on them resume.
+ */
+const reaperWindow = (events: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    for (let round = 0; round < 200 && !events.includes("workspace-1"); round++) {
+      yield* TestClock.adjust(Duration.millis(10));
+      yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+    }
+  });
+
 /**
  * `launchOnce` for the TestClock cases: `setup` runs as `withPreparedEngineEffect`'s `before`,
  * over the store alone, and this provisions in the engine built after it.
@@ -414,6 +430,143 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
                 undefined,
                 { flush: () => Effect.succeed(flushReport(2, 1)) },
               ),
+            ),
+          },
+        );
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a reaper tick while a Stop still closes its agent leaves the drain to that Stop: the session settles `stopped` (SLNT-111)",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, changed, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const events: string[] = [];
+        const close = Promise.withResolvers<void>();
+        let closeReached = false;
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const stopping = yield* Effect.forkChild(engine.stop(session.id));
+              yield* untilChanged(() => closeReached, "the stop at the agent's close");
+              expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
+              yield* engine.reapCaptureLeases();
+              yield* reaperWindow(events);
+              close.resolve();
+              yield* Fiber.join(stopping);
+              yield* untilChanged(() => events.includes("workspace-1"), "the workspace stop");
+              for (let look = 0; look < 100 && !sessionSettled(world, session.id); look++) {
+                yield* TestClock.adjust(Duration.millis(10));
+              }
+              const after = world.sessions.get(session.id);
+              expect(after?.status).toBe("stopped");
+              expect(after?.settledAt).not.toBeNull();
+              expect(after?.captureDrain).toBeNull();
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            drainPolicy: {
+              pollInterval: Duration.millis(10),
+              terminationWait: Duration.seconds(5),
+            },
+            sealantLayer: slowCloses(
+              signalling(
+                lifecycleLayer(created, {
+                  events,
+                  captureOps: {
+                    status: (stopAsked) => (stopAsked ? "stopped" : "ready"),
+                    flush: () => Effect.succeed(flushReport(0, 1)),
+                  },
+                }),
+              ),
+              () => {
+                closeReached = true;
+                changed();
+                return close.promise;
+              },
+            ),
+          },
+        );
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "once that Stop is over, its kept drain is the reaper's again: a later tick saves it and the session settles `stopped` (SLNT-111)",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, changed, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const events: string[] = [];
+        const close = Promise.withResolvers<void>();
+        let closeReached = false;
+        let pending = 2;
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const stopping = yield* Effect.forkChild(engine.stop(session.id));
+              yield* untilChanged(() => closeReached, "the stop at the agent's close");
+              yield* engine.reapCaptureLeases();
+              yield* reaperWindow(events);
+              close.resolve();
+              yield* Fiber.join(stopping);
+              // Nothing moves for the stall window (1 s): the Stop's drain keeps the workspace.
+              yield* TestClock.adjust(Duration.seconds(1));
+              yield* untilChanged(
+                () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+                "the drain kept its workspace",
+              );
+              expect(world.sessions.get(session.id)?.status).toBe("stopping");
+              expect(events).not.toContain("workspace-1");
+              // It saves after all; only the reaper is left to take the drain up.
+              pending = 0;
+              yield* TestClock.adjust(Duration.seconds(10));
+              yield* engine.reapCaptureLeases();
+              yield* reaperWindow(events);
+              expect(events).toContain("workspace-1");
+              for (let look = 0; look < 100 && !sessionSettled(world, session.id); look++) {
+                yield* TestClock.adjust(Duration.millis(10));
+              }
+              const after = world.sessions.get(session.id);
+              expect(after?.status).toBe("stopped");
+              expect(after?.captureDrain).toBeNull();
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            drainPolicy: {
+              pollInterval: Duration.millis(10),
+              stallSeconds: 1,
+              terminationWait: Duration.seconds(5),
+            },
+            sealantLayer: slowCloses(
+              signalling(
+                lifecycleLayer(created, {
+                  events,
+                  captureOps: {
+                    status: (stopAsked) => (stopAsked ? "stopped" : "ready"),
+                    flush: () => Effect.succeed(flushReport(pending, 1)),
+                  },
+                }),
+              ),
+              () => {
+                closeReached = true;
+                changed();
+                return close.promise;
+              },
             ),
           },
         );
