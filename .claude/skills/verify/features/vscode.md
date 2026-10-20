@@ -563,7 +563,10 @@ the row takes the job's name.
     `pending`, Edit and Delete; `Comments · 1 pending`; the Comments panel `… [Ln 12]`; after
     `Developer: Reload Window` the same thread and row. Between two checkpoints, line 8 shows no
     `+`. A comment Mend holds, marked addressed over the API, shows `addressed` with no Edit or
-    Delete. **Show record** (the `...` menu) opens `record · <label>.md`, read-only.
+    Delete. **Show record** (the `...` menu) opens `record · <label>.md`, read-only. Pending
+    comments are files under the extension's global storage,
+    `reviews/<server account>/<session>.json`, one per person and session, written under a `.lock`
+    file; a draft about the whole change hangs on `mend-change-note://<change>/the whole change`.
   - **Read this change** asks Mend to read; the section reads `Mend is reading · <time>`, then one
     toast:
     `Mend could not read this change: The connected account was rejected by the provider — reconnect it. (Inference failed: authentication_failed)`.

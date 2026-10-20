@@ -393,19 +393,25 @@ session.
 - Hover a changed line of the `main → now` diff, click **+**, write, and **Add comment**. The
   comment is **pending**: this VS Code holds it, as a pending review in GitHub Pull Requests, and
   Mend does not have it until you send the review. Edit or delete it until then (its pencil and
-  trash). Pending comments are kept per server and session in VS Code's global state, so they are
-  there after a window reload and in your other windows.
+  trash). Pending comments are kept on this machine per server, account and session, in the
+  extension's global storage that every window shares, so they are there after a window reload and
+  in your other windows, and two windows writing at once each keep the other's. A session's review
+  holds up to 200 pending comments, and one nobody touched for 30 days is let go.
 - The Comments panel lists every comment of the change: yours, Mend's drafts, and the ones Mend
   already holds, each with the word for its state (`pending`, `draft`, `sent`, `addressed`).
 - **Read this change** (the section's sparkle button) asks Mend to read the change. The section
   reads `Mend is reading · 10:42` while it does. Its findings arrive as threads authored
   `Mend · draft`, each with its evidence (`seq 214 · pnpm test auth · never ran`) and **Show
-  record**. **Accept** makes a draft yours, pending like your own comments; **Dismiss** removes it.
-  Mend writes drafts and evidence, never a verdict. Mend reads with your own provider login; when it
-  cannot, one notification says why in Mend's words.
-- **Show record** (also in the section's `...` menu) opens the session's transcript in a read-only
-  editor. Mend cannot open it at a record entry yet, so it opens whole, with the draft's evidence on
-  top.
+  record**. **Accept** makes a draft yours, pending like your own comments, and you can edit it
+  until you send the review; **Dismiss** removes it. A draft about the change as a whole hangs on
+  the change's own note (`the whole change`), with its evidence, Accept and Dismiss; its row under
+  **Comments** opens it. Mend writes drafts and evidence, never a verdict. Mend reads with your own
+  provider login; when it cannot, one notification says why in Mend's words.
+- **Show record** opens, in a read-only editor, the transcript of the session whose run the evidence
+  cites, which can be another session of the same worktree. Mend cannot open it at a record entry
+  yet, so it opens whole, with the draft's evidence on top. When no session is recorded by that run
+  any more (a later resume started a new one), it opens nothing and says so. **Show record** in the
+  section's `...` menu opens the selected session's transcript.
 
 ## Other commands
 

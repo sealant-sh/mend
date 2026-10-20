@@ -232,7 +232,7 @@ export default async (h) => {
     return JSON.stringify(rows);
   });
 
-  await step("her pending comment survives a window reload (kept in globalState)", async () => {
+  await step("her pending comment survives a window reload (kept in global storage)", async () => {
     await reload();
     const seen = await select();
     expect(
