@@ -6215,17 +6215,21 @@ const main = async () => {
     case "pull":
       return pullCommand(boundApi(config), download(config), rest);
     case "handoff":
-      return handoffCommand(
-        {
-          api: boundApi(config),
-          download: download(config),
-          upload: upload(config),
-          serverVersion: async () => (await fetchServerVersion(config.url)).version,
-          launch: (sessionId, prompt) => launchHandoff(config, sessionId, prompt),
-          spin: (label, work) => withSpinner(label, work),
-          serverUrl: config.url,
-        },
-        rest,
+      // Bridge mode signs the admission's origin read and an adoption's clone with this machine's
+      // ssh-agent, so the share runs meanwhile.
+      return withAgentShare(config, () =>
+        handoffCommand(
+          {
+            api: boundApi(config),
+            download: download(config),
+            upload: upload(config),
+            serverVersion: async () => (await fetchServerVersion(config.url)).version,
+            launch: (sessionId, prompt) => launchHandoff(config, sessionId, prompt),
+            spin: (label, work) => withSpinner(label, work),
+            serverUrl: config.url,
+          },
+          rest,
+        ),
       );
     case "sessions":
     case "status":

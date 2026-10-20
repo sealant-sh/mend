@@ -93,6 +93,7 @@ const handoffServer = async (
     readonly terms?: (response: ServerResponse) => void;
     readonly answer?: (response: ServerResponse, attempt: number) => void;
     readonly launch?: (response: ServerResponse) => void;
+    readonly socket?: "end" | "drop";
   } = {},
 ) => {
   const fake: Fake = { routes: [], bodies: [], launches: [], adoptions: [] };
@@ -101,6 +102,7 @@ const handoffServer = async (
     fake.routes.push(route);
     if (route === "GET /api/projects") json(response, options.projects ?? [project]);
     else if (route === "GET /api/health") json(response, { version: "0.35.1" });
+    else if (route === "GET /api/me/git-access") json(response, { mode: "bridge" });
     else if (route === `GET /api/projects/${project.id}/handoffs`) {
       if (options.terms === undefined) {
         json(response, { bundleBytes: 64 * 1024 * 1024, fileBytes: FILE_BYTES });
@@ -129,7 +131,7 @@ const handoffServer = async (
         json(response, project);
       });
     } else response.writeHead(404).end();
-  });
+  }, options.socket);
   return { ...fake, server };
 };
 
@@ -471,6 +473,16 @@ describe("mend handoff", spawning, () => {
       expect(result.stderr).toBe(refusal);
       expect(server.routes).toEqual(["GET /api/projects"]);
     }
+  }, 30_000);
+
+  it("shares this machine's ssh-agent while it runs, for a server in bridge mode", async () => {
+    const w = world();
+    const dana = newsroom(w);
+    // The fake never answers a close handshake; a dropped socket lets the stopped share end.
+    const server = await handoffServer({ socket: "drop" });
+    const result = await run(server, [], dana, { SSH_AUTH_SOCK: path.join(w.root, "agent.sock") });
+    expect(result.code, result.stderr).toBe(0);
+    expect(server.routes[0]).toBe("GET /api/me/git-access");
   }, 30_000);
 
   it("offers to adopt the origin; without a terminal it needs --yes", async () => {
