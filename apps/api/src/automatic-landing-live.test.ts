@@ -70,6 +70,7 @@ const makeSlot = (name: string) => {
     branch: `mend/${name}`,
     baseSha: BASE,
     baseRef: "main",
+    handoff: null,
     createdAt: now,
     updatedAt: now,
   });

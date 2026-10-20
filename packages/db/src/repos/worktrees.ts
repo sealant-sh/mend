@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { SessionId, WorktreeId, type ProjectId, type Sha } from "@mend/domain";
-import { Worktree } from "@mend/domain/workbench";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { Worktree, WorktreeHandoff } from "@mend/domain/workbench";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -25,6 +25,7 @@ export interface NewWorktreeRow {
   readonly branch: string;
   readonly baseSha: Sha;
   readonly baseRef: string | null;
+  readonly handoff: WorktreeHandoff | null;
 }
 
 /** Session states that count as live for removal guards and follow-up targeting. */
@@ -42,6 +43,10 @@ export class WorktreesRepo extends Context.Service<
     readonly create: (worktree: NewWorktreeRow) => Effect.Effect<Worktree>;
     readonly byId: (id: WorktreeId) => Effect.Effect<Worktree, WorktreeNotFoundError>;
     readonly byName: (projectId: ProjectId, name: string) => Effect.Effect<Worktree | null>;
+    readonly byHandoffCheckpoint: (
+      projectId: ProjectId,
+      checkpoint: Sha,
+    ) => Effect.Effect<Worktree | null>;
     /** Directory names are the store-path key pre-pivot rows are matched by. */
     readonly byDirectory: (
       projectId: ProjectId,
@@ -61,7 +66,10 @@ export class WorktreesRepo extends Context.Service<
   }
 >()("@mend/db/WorktreesRepo") {}
 
-const toWorktree = (row: typeof worktrees.$inferSelect): Worktree => new Worktree(row);
+const decodeHandoff = Schema.decodeUnknownSync(WorktreeHandoff);
+
+const toWorktree = (row: typeof worktrees.$inferSelect): Worktree =>
+  new Worktree({ ...row, handoff: row.handoff === null ? null : decodeHandoff(row.handoff) });
 
 // Compile-time seam tripwire (same discipline as SessionsRepo): a column added
 // to `worktrees` must land in @mend/domain's Worktree in the same change.
@@ -109,6 +117,24 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
           .select()
           .from(worktrees)
           .where(and(eq(worktrees.projectId, projectId), eq(worktrees.name, name)))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row === undefined ? null : toWorktree(row);
+      });
+
+      const byHandoffCheckpoint = Effect.fn("WorktreesRepo.byHandoffCheckpoint")(function* (
+        projectId: ProjectId,
+        checkpoint: Sha,
+      ) {
+        const [row] = yield* db
+          .select()
+          .from(worktrees)
+          .where(
+            and(
+              eq(worktrees.projectId, projectId),
+              sql`${worktrees.handoff}->>'checkpoint' = ${checkpoint}`,
+            ),
+          )
           .limit(1)
           .pipe(Effect.orDie);
         return row === undefined ? null : toWorktree(row);
@@ -200,6 +226,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         create,
         byId,
         byName,
+        byHandoffCheckpoint,
         byDirectory,
         listForProject,
         setBase,

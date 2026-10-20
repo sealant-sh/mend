@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 import { ProjectId, Sha, WorktreeId } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
+import { WorktreeHandoff } from "./handoff.ts";
 
 export const WORKTREE_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
@@ -48,6 +49,12 @@ export class Worktree extends Schema.Class<Worktree>("Worktree")({
    * session-level column existed.
    */
   baseRef: Schema.NullOr(Schema.String),
+  /**
+   * Where a handed-off worktree came from (`mend handoff`): the machine, the local branch, the
+   * cut time and the snapshot its capture 0 was laid down from. Null for a worktree that
+   * started from a base.
+   */
+  handoff: Schema.NullOr(WorktreeHandoff),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}

@@ -217,6 +217,7 @@ const worktree = new Worktree({
   branch: "mend/fix-login",
   baseSha: BASE,
   baseRef: "main",
+  handoff: null,
   createdAt: NOW,
   updatedAt: NOW,
 });

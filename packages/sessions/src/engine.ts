@@ -8695,6 +8695,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           branch: created.branch,
           baseSha: created.baseSha,
           baseRef: created.baseRef,
+          handoff: created.handoff,
         });
         // Capture mode: capture 0, the lease and the chain rows follow the worktree row at once
         // (ADR-0002 "Decisions made here" 6); the co-located adapter has nothing to attach.

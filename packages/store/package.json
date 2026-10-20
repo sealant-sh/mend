@@ -6,7 +6,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./testing": "./test/capture-fixture.ts"
+    "./testing": "./test/capture-fixture.ts",
+    "./testing/handoff": "./test/handoff-fixture.ts"
   },
   "scripts": {
     "bench:capture-verification": "vitest run --config vitest.performance.config.ts",

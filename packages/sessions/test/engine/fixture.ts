@@ -2695,6 +2695,13 @@ export const worktreesLayer = (world: World) =>
           (worktree) => worktree.projectId === projectId && worktree.name === name,
         ) ?? null,
       ),
+    byHandoffCheckpoint: (projectId, checkpoint) =>
+      Effect.succeed(
+        [...world.worktrees.values()].find(
+          (worktree) =>
+            worktree.projectId === projectId && worktree.handoff?.checkpoint === checkpoint,
+        ) ?? null,
+      ),
     byDirectory: (projectId, directory) =>
       Effect.succeed(
         [...world.worktrees.values()].find(

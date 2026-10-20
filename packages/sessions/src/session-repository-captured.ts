@@ -1,5 +1,6 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 import {
@@ -10,6 +11,7 @@ import {
   type CaptureRow,
 } from "@mend/db";
 import { type ProjectId, Sha, type WorktreeId } from "@mend/domain";
+import { HexSha, type Worktree, type WorktreeHandoff } from "@mend/domain/workbench";
 import {
   BlobStore,
   type CaptureManifest,
@@ -27,7 +29,7 @@ import {
   WORKTREE_TREE_REF,
   worktreePathOf,
 } from "@mend/store";
-import { Clock, Duration, Effect, Layer } from "effect";
+import { Clock, Duration, Effect, Layer, Result } from "effect";
 
 import { CaptureChannel } from "./capture-channel.ts";
 import { bulkSectionOfCache, readDependencyCache } from "./dependency-cache.ts";
@@ -67,6 +69,45 @@ const checkpointRef = (worktreeId: string, index: number) =>
 
 const gitFailure = (cwd: string, what: string, detail: string) =>
   new GitError({ args: ["capture", what], cwd, exitCode: null, stderr: detail });
+
+export interface CaptureZeroSource {
+  readonly head: Sha;
+  readonly checkpoint: Sha;
+  readonly worktreeTreeOf: Sha;
+  readonly indexTreeOf: Sha;
+  readonly basePackTip: Sha;
+  readonly extraPacks: ReadonlyArray<string>;
+  readonly treesIn: "store" | "handoff-packs";
+}
+
+export const captureZeroSource = (
+  worktree: Worktree,
+  legacy: { readonly headSha: Sha; readonly checkpointSha: Sha } | null,
+): CaptureZeroSource => {
+  if (worktree.handoff !== null) {
+    const handoff = worktree.handoff;
+    return {
+      head: Sha.make(handoff.head),
+      checkpoint: Sha.make(handoff.checkpoint),
+      worktreeTreeOf: Sha.make(handoff.checkpoint),
+      indexTreeOf: Sha.make(handoff.index),
+      basePackTip: Sha.make(handoff.mergeBase),
+      extraPacks: [handoff.deltaPack],
+      treesIn: "handoff-packs",
+    };
+  }
+  const head = legacy?.headSha ?? worktree.baseSha;
+  const checkpoint = legacy?.checkpointSha ?? worktree.baseSha;
+  return {
+    head,
+    checkpoint,
+    worktreeTreeOf: checkpoint,
+    indexTreeOf: checkpoint,
+    basePackTip: checkpoint,
+    extraPacks: [],
+    treesIn: "store",
+  };
+};
 
 /** Seed the virtual harness root so sealantd materializes and watches it before startup. */
 const initialWorkspaceTree = (worktreeId: string, epoch: number) => {
@@ -125,10 +166,32 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
     const blobFailure = (cwd: string, what: string) => (error: { readonly _tag: string }) =>
       gitFailure(cwd, what, `bucket: ${error._tag}`);
 
-    /**
-     * A self-contained pack of `sha`'s closure from the project's bare repo, content-addressed
-     * under the project prefix; already-present packs are not re-uploaded.
-     */
+    const putPack = Effect.fn("SessionRepositoryCaptured.putPack")(function* (
+      projectId: ProjectId,
+      storePath: string,
+      pack: Uint8Array,
+      idx: Uint8Array,
+    ) {
+      const key = `${derivedPackPrefix(projectId)}${sha256Hex(pack)}`;
+      yield* blobs
+        .put(key, pack, { ifAbsent: true })
+        .pipe(Effect.catch(blobFailure(storePath, "put")));
+      yield* blobs
+        .put(packIdxKeyOf(key), idx, { ifAbsent: true })
+        .pipe(Effect.catch(blobFailure(storePath, "put")));
+      yield* repo.recordPacks([
+        {
+          key,
+          class: "git",
+          bytes: pack.byteLength,
+          worktreeId: null,
+          epoch: null,
+          platform: null,
+        },
+      ]);
+      return { key, bytes: pack.byteLength };
+    });
+
     const uploadBasePack = Effect.fn("SessionRepositoryCaptured.uploadBasePack")(function* (
       projectId: ProjectId,
       storePath: string,
@@ -149,27 +212,43 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         );
         const pack = new Uint8Array(fs.readFileSync(path.join(staging, `p-${name}.pack`)));
         const idx = new Uint8Array(fs.readFileSync(path.join(staging, `p-${name}.idx`)));
-        const key = `${derivedPackPrefix(projectId)}${sha256Hex(pack)}`;
-        yield* blobs
-          .put(key, pack, { ifAbsent: true })
-          .pipe(Effect.catch(blobFailure(storePath, "put")));
-        yield* blobs
-          .put(packIdxKeyOf(key), idx, { ifAbsent: true })
-          .pipe(Effect.catch(blobFailure(storePath, "put")));
-        yield* repo.recordPacks([
-          {
-            key,
-            class: "git",
-            bytes: pack.byteLength,
-            worktreeId: null,
-            epoch: null,
-            platform: null,
-          },
-        ]);
-        return { key, bytes: pack.byteLength };
+        return yield* putPack(projectId, storePath, pack, idx);
       });
       return yield* attempt.pipe(
         Effect.ensuring(Effect.sync(() => fs.rmSync(staging, { recursive: true, force: true }))),
+      );
+    });
+
+    const treesFromPacks = Effect.fn("SessionRepositoryCaptured.treesFromPacks")(function* (
+      storePath: string,
+      packKeys: ReadonlyArray<string>,
+      commits: ReadonlyArray<Sha>,
+    ) {
+      const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-handoff-trees-"));
+      const read = Effect.gen(function* () {
+        yield* git(["init", "-q", "--bare", scratch], os.tmpdir());
+        const objects = yield* git(
+          ["rev-parse", "--path-format=absolute", "--git-path", "objects"],
+          storePath,
+        );
+        fs.writeFileSync(path.join(scratch, "objects", "info", "alternates"), `${objects}\n`);
+        for (const key of packKeys) {
+          const pack = yield* blobs.get(key).pipe(Effect.catch(blobFailure(storePath, "get")));
+          const idx = yield* blobs
+            .get(packIdxKeyOf(key))
+            .pipe(Effect.catch(blobFailure(storePath, "get")));
+          const name = path.join(scratch, "objects", "pack", `pack-${sha256Hex(pack)}`);
+          fs.writeFileSync(`${name}.pack`, pack);
+          fs.writeFileSync(`${name}.idx`, idx);
+        }
+        const trees = yield* git(
+          ["rev-parse", ...commits.map((commit) => `${commit}^{tree}`)],
+          scratch,
+        );
+        return trees.split("\n");
+      });
+      return yield* read.pipe(
+        Effect.ensuring(Effect.sync(() => fs.rmSync(scratch, { recursive: true, force: true }))),
       );
     });
 
@@ -179,6 +258,25 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         Effect.mapError((error) => gitFailure("", "manifest", `${row.manifestKey}: ${error._tag}`)),
       );
 
+    /**
+     * Create `refs/heads/<branch>` at `sha`. The insert is create-only, so a ref already at
+     * exactly `sha` is this same start retried after a crash between the ref and the row;
+     * any other sha is another worktree's, and the name is `taken`.
+     */
+    const claimBranchAt = Effect.fn("SessionRepositoryCaptured.claimBranchAt")(function* (
+      projectId: ProjectId,
+      branch: string,
+      sha: Sha,
+      taken: GitError,
+    ) {
+      const inserted = yield* refs
+        .set(projectId, `refs/heads/${branch}`, sha, null)
+        .pipe(Effect.result);
+      if (Result.isSuccess(inserted)) return;
+      const existing = yield* refs.get(projectId, `refs/heads/${branch}`);
+      if (existing?.sha !== sha) return yield* taken;
+    });
+
     const createWorktree: SessionRepository["Service"]["createWorktree"] = (
       projectId,
       identity,
@@ -187,28 +285,50 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
     ) =>
       Effect.gen(function* () {
         const project = yield* projects.byId(projectId);
+        const taken = gitFailure(
+          project.storePath,
+          "create",
+          `branch "${identity.branch}" already exists in this project — pick another worktree name`,
+        );
         if (start.kind === "handoff") {
-          return yield* gitFailure(project.storePath, "create", "handoffs are not taken yet");
+          const { admitted } = start;
+          const delta = yield* putPack(
+            projectId,
+            project.storePath,
+            admitted.deltaPack.pack,
+            admitted.deltaPack.idx,
+          );
+          yield* claimBranchAt(projectId, identity.branch, admitted.head, taken);
+          const handoff: WorktreeHandoff = {
+            machine: admitted.trailers.machine,
+            localBranch: admitted.trailers.localBranch,
+            cutAt: admitted.trailers.cutAt,
+            head: HexSha.make(admitted.head),
+            index: HexSha.make(admitted.index),
+            checkpoint: HexSha.make(admitted.checkpoint),
+            mergeBase: HexSha.make(admitted.mergeBase),
+            deltaPack: delta.key,
+          };
+          return {
+            name: identity.directory,
+            branch: identity.branch,
+            baseSha: admitted.mergeBase,
+            baseRef: admitted.defaultBranch,
+            handoff,
+          };
         }
         const resolved = yield* store.resolveBase(project.storePath, start.base, remoteEnv);
         // The branch is the worktree's ref, moved only by Mend (`store_refs`); a name already
         // taken is refused the way the co-located adapter refuses an existing branch.
         yield* refs
           .set(projectId, `refs/heads/${identity.branch}`, resolved.baseSha, null)
-          .pipe(
-            Effect.mapError(() =>
-              gitFailure(
-                project.storePath,
-                "create",
-                `branch "${identity.branch}" already exists in this project — pick another worktree name`,
-              ),
-            ),
-          );
+          .pipe(Effect.mapError(() => taken));
         return {
           name: identity.directory,
           branch: identity.branch,
           baseSha: resolved.baseSha,
           baseRef: resolved.baseRef,
+          handoff: null,
         };
       });
 
@@ -234,13 +354,26 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         const legacy = fs.existsSync(path.join(legacyDir, ".git"))
           ? yield* backfillFromDirectory(project.storePath, legacyDir, worktreeId)
           : null;
-        const headSha = legacy?.headSha ?? worktree.baseSha;
-        const checkpointSha = legacy?.checkpointSha ?? worktree.baseSha;
-        const basePack = yield* uploadBasePack(projectId, project.storePath, checkpointSha);
-        const baseTree = yield* git(
-          ["rev-parse", "--verify", `${checkpointSha}^{tree}`],
-          project.storePath,
-        );
+        const source = captureZeroSource(worktree, legacy);
+        const basePack = yield* uploadBasePack(projectId, project.storePath, source.basePackTip);
+        const packs = [basePack.key, ...source.extraPacks];
+        const [worktreeTree, indexTree] =
+          source.treesIn === "store"
+            ? (yield* git(
+                ["rev-parse", `${source.worktreeTreeOf}^{tree}`, `${source.indexTreeOf}^{tree}`],
+                project.storePath,
+              )).split("\n")
+            : yield* treesFromPacks(project.storePath, packs, [
+                source.worktreeTreeOf,
+                source.indexTreeOf,
+              ]);
+        if (worktreeTree === undefined || indexTree === undefined) {
+          return yield* gitFailure(
+            project.storePath,
+            "attach",
+            "capture 0's trees could not be read",
+          );
+        }
         // The project's object format (e2e8 F4): capture 0 of a SHA-256 project named 64-digit
         // ids under no `object_format`, and sealantd restored them into a SHA-1 repository. Named
         // when it is not `sha1`, as sealantd names it (the `object_format` manifest feature).
@@ -251,7 +384,14 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         if (legacy !== null) {
           yield* Effect.logInfo(
             "capture mode: legacy worktree backfilled · capture 0 is the directory's current files",
-          ).pipe(Effect.annotateLogs({ worktreeId, headSha, checkpointSha, directory: legacyDir }));
+          ).pipe(
+            Effect.annotateLogs({
+              worktreeId,
+              headSha: source.head,
+              checkpointSha: source.checkpoint,
+              directory: legacyDir,
+            }),
+          );
         }
         yield* refs
           .set(projectId, `refs/mend/base/${worktreeId}`, worktree.baseSha, null)
@@ -288,11 +428,11 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             created_at: new Date(yield* Clock.currentTimeMillis).toISOString(),
             sections: {
               git: {
-                packs: [basePack.key],
+                packs,
                 refs: {
-                  [`refs/heads/${worktree.branch}`]: headSha,
-                  [WORKTREE_TREE_REF]: baseTree,
-                  [INDEX_TREE_REF]: baseTree,
+                  [`refs/heads/${worktree.branch}`]: source.head,
+                  [WORKTREE_TREE_REF]: worktreeTree,
+                  [INDEX_TREE_REF]: indexTree,
                 },
                 head: `refs/heads/${worktree.branch}`,
                 fsck: "verified",
@@ -303,7 +443,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             },
             checkpoint: {
               ordinal: 0,
-              sha: checkpointSha,
+              sha: source.checkpoint,
               ref: checkpointRef(worktreeId, 0),
             },
           };
@@ -332,11 +472,11 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
               ),
             );
           yield* refs
-            .set(projectId, checkpointRef(worktreeId, 0), checkpointSha, null)
+            .set(projectId, checkpointRef(worktreeId, 0), source.checkpoint, null)
             .pipe(Effect.ignore);
           if (legacy !== null) {
             yield* refs
-              .set(projectId, `refs/heads/${worktree.branch}`, headSha, null)
+              .set(projectId, `refs/heads/${worktree.branch}`, source.head, null)
               .pipe(Effect.ignore);
           }
           const row = yield* repo.captureById(id);

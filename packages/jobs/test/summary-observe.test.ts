@@ -243,6 +243,7 @@ const observationHarness = () => {
     branch: "mend/summary",
     baseSha: Sha.make("a".repeat(40)),
     baseRef: "main",
+    handoff: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   });

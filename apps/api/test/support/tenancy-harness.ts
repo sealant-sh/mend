@@ -395,6 +395,7 @@ export const createTenancyWorld = async (
         branch: `mend/${projectKey}`,
         baseSha: Sha.make("0123456789abcdef"),
         baseRef: "main",
+        handoff: null,
         createdAt: NOW,
         updatedAt: NOW,
       }),

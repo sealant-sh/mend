@@ -71,6 +71,7 @@ import {
   SkillFile,
   SlackPendingMention,
   TourStop,
+  WorktreeHandoff,
 } from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
@@ -517,12 +518,17 @@ export const worktrees = pgTable(
     baseSha: text().$type<Sha>().notNull(),
     /** The base as the user named it; null only for rows migrated from pre-column sessions. */
     baseRef: text(),
+    handoff: jsonbOf(WorktreeHandoff),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     unique("worktrees_project_name_key").on(table.projectId, table.name),
     unique("worktrees_project_directory_key").on(table.projectId, table.directory),
+    uniqueIndex("worktrees_project_handoff_checkpoint_key").on(
+      table.projectId,
+      sql`(${table.handoff}->>'checkpoint')`,
+    ),
   ],
 );
 

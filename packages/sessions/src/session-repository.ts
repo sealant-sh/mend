@@ -1,5 +1,6 @@
 import { ProjectNotFoundError, ProjectsRepo } from "@mend/db";
 import type { ProjectId, Sha, WorktreeId } from "@mend/domain";
+import type { WorktreeHandoff } from "@mend/domain/workbench";
 import {
   type AdmittedHandoff,
   GitError,
@@ -53,6 +54,7 @@ export interface SessionWorktreeSummary {
   readonly baseSha: Sha;
   /** The base as resolved — the caller's ref, or the default branch when none was given. */
   readonly baseRef: string;
+  readonly handoff: WorktreeHandoff | null;
 }
 
 export type SessionRepositoryError = GitError | ProjectNotFoundError;
@@ -178,7 +180,13 @@ export const SessionRepositoryLocalLive: Layer.Layer<
                     "this server keeps worktrees in the co-located store, which takes no handoffs",
                 }),
           ),
-          Effect.map(({ name, branch, baseSha, baseRef }) => ({ name, branch, baseSha, baseRef })),
+          Effect.map(({ name, branch, baseSha, baseRef }) => ({
+            name,
+            branch,
+            baseSha,
+            baseRef,
+            handoff: null,
+          })),
         ),
       renameBranch: (projectId, worktreeName, newBranch) =>
         projects

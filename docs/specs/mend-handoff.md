@@ -207,7 +207,7 @@ existing worktree. Captured `createWorktree(Handoff)` uploads the delta pack (co
 Inserting it at the base and moving it later would silently leave it at the base. An existing ref
 already at `H` is a crash replay. The co-located adapter refuses.
 
-**Provenance, replay key and seed in one place.** Migration 0132 adds `worktrees.handoff jsonb`,
+**Provenance, replay key and seed in one place.** Migration 0135 adds `worktrees.handoff jsonb`,
 nullable and decoded by `WorktreeHandoff`:
 `{machine, localBranch, cutAt, head, index, checkpoint, mergeBase, deltaPack}`. A unique index
 covers `(project_id, (handoff->>'checkpoint'))`. The column rides the `ExactKeys` seam, `Worktree`
@@ -285,7 +285,7 @@ Each PR in the stack is green on `pnpm exec turbo typecheck --force` and
 1. `handoff/1-vocabulary`. The session summary and mode switch words and identifiers. The mode
    switch wire stays pinned.
 2. `handoff/2-server`. The domain types, `Store.admitHandoff`, `WorktreeStart` through the engine
-   and the port, migration 0132, captured capture 0, the budgets table, the contract, the routes,
+   and the port, migration 0135, captured capture 0, the budgets table, the contract, the routes,
    the hold and provenance on the DTOs. Checks:
    - fixture-repository tests, where each refusal leaves store refs and objects unchanged;
    - an engine test covering manifest refs and trees, packs that close, change base `M`, `baseRef`

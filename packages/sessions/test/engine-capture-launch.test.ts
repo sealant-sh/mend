@@ -1805,6 +1805,7 @@ describe("SessionEngine capture mode", () => {
             branch,
             baseSha: base,
             baseRef: "main",
+            handoff: null,
           });
           const engine = yield* SessionEngine;
           const session = yield* engine.provisionSessionIn(worktree.id, {

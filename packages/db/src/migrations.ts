@@ -3566,6 +3566,16 @@ const sessionLiveMarksMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE agent_sessions ALTER COLUMN live_mark SET DEFAULT nextval('session_live_marks')`;
 });
 
+// A base worktree's `handoff->>'checkpoint'` is NULL, and Postgres treats NULLs as distinct in a
+// unique index: base worktrees never collide on it.
+const worktreeHandoffMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE worktrees ADD COLUMN handoff jsonb`;
+  yield* sql`
+    CREATE UNIQUE INDEX worktrees_project_handoff_checkpoint_key
+      ON worktrees (project_id, (handoff->>'checkpoint'))`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3702,4 +3712,5 @@ export const migrations = {
   "0132_session_process_waiting": sessionProcessWaitingMigration,
   "0133_change_review_preps": changeReviewPrepsMigration,
   "0134_session_live_marks": sessionLiveMarksMigration,
+  "0135_worktree_handoff": worktreeHandoffMigration,
 };

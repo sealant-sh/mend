@@ -106,6 +106,7 @@ const worktree = (id: WorktreeId, projectId: ProjectId, name: string): Worktree 
     branch: `mend/${name}`,
     baseSha: Sha.make("0123456789abcdef"),
     baseRef: "main",
+    handoff: null,
     createdAt: NOW,
     updatedAt: NOW,
   });
