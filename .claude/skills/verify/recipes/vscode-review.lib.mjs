@@ -79,6 +79,40 @@ export const ROUNDS = [
   },
 ];
 
+/** The agent's next round, after her review: the shared limiter in place of its own Map. */
+export const ADDRESSED = {
+  files: {
+    "src/auth/limit.ts": [
+      'import { Request } from "express";',
+      'import { tooMany } from "../http";',
+      'import { sharedLimiter } from "./guard";',
+      "",
+      "const limiter = sharedLimiter({ windowMs: 60_000, max: 5 });",
+      "",
+      "export function rateLimit(req: Request) {",
+      '  if (!limiter.take(req.ip ?? "anon")) return tooMany(req);',
+      "  return true;",
+      "}",
+      "",
+    ].join("\n"),
+    "src/auth/guard.ts": [
+      "export function sharedLimiter(options: { windowMs: number; max: number }) {",
+      "  const hits = new Map<string, number[]>();",
+      "  return {",
+      "    take(key: string) {",
+      "      const now = Date.now();",
+      "      const recent = (hits.get(key) ?? []).filter((t) => now - t < options.windowMs);",
+      "      hits.set(key, [...recent, now]);",
+      "      return recent.length < options.max;",
+      "    },",
+      "  };",
+      "}",
+      "",
+    ].join("\n"),
+  },
+  remove: [],
+};
+
 const heredoc = (target, text) => [
   `mkdir -p "$(dirname '${target}')" && base64 -d > '${target}' <<'MEND_REVIEW_EOF'`,
   ...(Buffer.from(text)
@@ -112,22 +146,22 @@ export const reviewWorld = (h) => {
       { via: "setup" },
     );
 
-  const sessionRead = (id) => api(`/sessions/${id}`);
+  const sessionRead = (id, call = api) => call(`/sessions/${id}`);
 
   /** A claude terminal agent in its own worktree, running at its prompt. */
-  const startClaude = async (label) => {
-    const created = await api(`/projects/${project.id}/sessions`, {
+  const startClaude = async (label, call = api) => {
+    const created = await call(`/projects/${project.id}/sessions`, {
       method: "POST",
       body: JSON.stringify({ harness: "claude", label, base: null, name: label }),
     });
-    await api(`/sessions/${created.id}/launch`, {
+    await call(`/sessions/${created.id}/launch`, {
       method: "POST",
       body: JSON.stringify({ permissionMode: "ask" }),
     });
     const agent = await waitUntil(
       `${label} running with a live agent-pty`,
       async () => {
-        const now = await sessionRead(created.id);
+        const now = await sessionRead(created.id, call);
         return now.session.status === "running"
           ? (now.processes.find((row) => row.kind === "agent-pty" && row.exitedAt === null) ?? null)
           : null;
@@ -138,8 +172,8 @@ export const reviewWorld = (h) => {
   };
 
   /** One of a session's terminals over `/api/tty`, read and typed into as raw bytes. */
-  const tty = async (processId) => {
-    const { ticket } = await api("/upgrade-tickets", {
+  const tty = async (processId, call = api) => {
+    const { ticket } = await call("/upgrade-tickets", {
       method: "POST",
       body: JSON.stringify({ target: "tty", process: processId }),
     });
@@ -185,25 +219,27 @@ export const reviewWorld = (h) => {
   };
 
   /** A shell beside the agent in the session's worktree (`/workspace/repo`). */
-  const shellBeside = async (session) => {
-    const opened = await api(`/sessions/${session.id}/shell`, { method: "POST", body: "{}" });
-    const shell = await tty(opened.id);
+  const shellBeside = async (session, call = api) => {
+    const opened = await call(`/sessions/${session.id}/shell`, { method: "POST", body: "{}" });
+    const shell = await tty(opened.id, call);
     await waitUntil("the shell's prompt", () => shell.attached.text.trim() !== "", 60_000);
     await sleep(1_000);
     await shell.lines(["cd /workspace/repo"]);
     let written = 0;
     return {
       /** One round of the change, written by the shell, then a checkpoint marked. */
-      write: async (round) => {
+      write: async (round, { mark = true } = {}) => {
         written += 1;
         const marker = `MEND-REVIEW-${written}`;
         await shell.lines([
           ...Object.entries(round.files).flatMap(([target, text]) => heredoc(target, text)),
           ...round.remove.map((target) => `rm -f '${target}'`),
-          `echo ${marker}-DONE`,
+          // Quoted apart, so the typed line does not already read as the marker.
+          `echo ${marker}-DO''NE`,
         ]);
         await shell.marker(marker);
-        return api(`/sessions/${session.id}/checkpoints`, {
+        if (!mark) return null;
+        return call(`/sessions/${session.id}/checkpoints`, {
           method: "POST",
           body: JSON.stringify({ trigger: "user-mark" }),
         });
@@ -255,8 +291,93 @@ export const reviewWorld = (h) => {
       if (row?.expanded === "false") await h.treeItem(group, { pane: "Sessions" }).click();
       await sleep(500);
     }
+    // The list draws only the rows in view: a long one scrolls until the row shows.
+    const list = h
+      .page()
+      .locator(".part.sidebar .pane", {
+        has: h.page().locator(".pane-header .title", { hasText: /^sessions$/i }),
+      })
+      .locator(".monaco-list")
+      .first();
+    for (let scrolled = 0; scrolled < 8 && !(await shown()); scrolled += 1) {
+      await list.hover();
+      await h.page().mouse.wheel(0, 300);
+      await sleep(300);
+    }
     await waitUntil(`${label}'s row`, async () => ((await shown()) ? true : null), 15_000);
   };
+
+  /** The Mend server's container stopped or started; Postgres keeps running beside it. */
+  const server = (verb) =>
+    world.run(
+      "docker",
+      [
+        "--context",
+        state.context,
+        verb,
+        ...(verb === "stop" ? ["-t", "5"] : []),
+        state.server.container,
+      ],
+      // The world's Docker context is registered under its own HOME.
+      { timeout: 120_000, env: cliEnv(state) },
+    );
+
+  /** One query against the world's Postgres, its rows as `a|b|c` lines. */
+  const psql = async (sql) => {
+    const env = cliEnv(state);
+    const found = await world.run(
+      "docker",
+      [
+        "--context",
+        state.context,
+        "ps",
+        "-q",
+        "--filter",
+        "label=com.docker.compose.project=mend",
+        "--filter",
+        "label=com.docker.compose.service=postgres",
+      ],
+      { env },
+    );
+    const container = found.stdout.trim().split("\n")[0];
+    expect(container !== undefined && container !== "", "no Postgres container in the world");
+    const ran = await world.run(
+      "docker",
+      [
+        "--context",
+        state.context,
+        "exec",
+        container,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "mend",
+        "-tAc",
+        sql,
+      ],
+      { env },
+    );
+    return ran.stdout.trim() === "" ? [] : ran.stdout.trim().split("\n");
+  };
+
+  /** The follow-up rows Mend recorded for a session, read from its database: `key|status`. */
+  const followUpRows = async (sessionId) => {
+    if (!/^[0-9a-f-]+$/.test(sessionId)) throw new Error(`not a session id: ${sessionId}`);
+    return psql(
+      `select idempotency_key || '|' || status from follow_ups where session_id = '${sessionId}' order by created_at`,
+    );
+  };
+
+  /** What Mend's connections are doing that is not idle: `state|wait|seconds|query`. */
+  const serverActivity = () =>
+    psql(
+      "select state || '|' || coalesce(wait_event_type || ':' || wait_event, '-') || '|' || " +
+        "coalesce(extract(epoch from now() - xact_start)::int::text, '-') || '|' || " +
+        "left(regexp_replace(query, '\\s+', ' ', 'g'), 120) from pg_stat_activity " +
+        "where datname = 'mend' and pid <> pg_backend_pid() and state <> 'idle' " +
+        "and query not ilike '%LISTEN%' order by xact_start",
+    );
 
   return {
     project,
@@ -267,6 +388,9 @@ export const reviewWorld = (h) => {
     shellBeside,
     reload,
     revealSession,
+    server,
+    followUpRows,
+    serverActivity,
   };
 };
 
@@ -485,6 +609,26 @@ export const writeComment = async (h, text, button) => {
     .click();
 };
 
+/** The `+` on a line of the open diff's new side, her words, Add comment: one pending comment. */
+export const commentOnLine = async (h, line, text) => {
+  const glyph = await h.waitUntil(`the + on line ${line}`, async () => {
+    const found = await commentGlyph(h, line);
+    return found?.found === true ? found : null;
+  });
+  await glyph.click();
+  await writeComment(h, text, "Add comment");
+  return h.waitUntil(
+    `the thread of "${text}"`,
+    async () => {
+      const seen = await commentThreads(h);
+      return seen.some((thread) => thread.comments.some((one) => one.text.includes(text)))
+        ? seen
+        : null;
+    },
+    30_000,
+  );
+};
+
 /** The Comments panel's rows: each file and each thread as the panel lists them. */
 export const commentsPanel = (h) =>
   h
@@ -494,6 +638,40 @@ export const commentsPanel = (h) =>
         (row.textContent ?? "").replace(/\s+/g, " ").trim(),
       ),
     );
+
+/** The active editor's lines as they read on screen (Monaco draws only what is in view). */
+export const editorLines = (h) =>
+  h.page().evaluate(() => {
+    const editor = document.querySelector(
+      ".editor-group-container.active .editor-container .monaco-editor:not(.original-in-monaco-diff-editor)",
+    );
+    return [...(editor?.querySelectorAll(".view-lines .view-line") ?? [])]
+      .map((line) => ({
+        top: Number.parseFloat(line.style.top || "0"),
+        text: (line.textContent ?? "").replace(/ /g, " "),
+      }))
+      .toSorted((left, right) => left.top - right.top)
+      .map((line) => line.text);
+  });
+
+/** A button in the active editor's title bar, by its title (a prefix). */
+export const clickEditorTitle = async (h, title) => {
+  const button = h
+    .page()
+    .locator(".editor-group-container.active .title .editor-actions .action-label", {
+      hasText: title,
+    })
+    .or(
+      h
+        .page()
+        .locator(
+          `.editor-group-container.active .title .editor-actions .action-label[aria-label^="${title}"]`,
+        ),
+    )
+    .first();
+  await button.waitFor({ timeout: 10_000 });
+  await button.click();
+};
 
 export const clickChangeAction = async (h, title) => {
   const { page, sleep } = h;

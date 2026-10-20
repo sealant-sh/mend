@@ -1,3 +1,13 @@
+import type {
+  CommentTarget,
+  PastePlan,
+  PasteStep,
+  PostState,
+  SendItem,
+  SendPhase,
+  SendRecord,
+  TerminalInput,
+} from "./delivery.js";
 import type { CommentAnchor, RecordLink } from "./review-wire.js";
 
 /**
@@ -42,12 +52,19 @@ export interface PendingComment {
   readonly anchor: CommentAnchor | null;
 }
 
-/** One session's review on this machine. */
+/**
+ * One session's review on this machine: her pending comments, and the reviews she sent. A comment
+ * is pending or in exactly one send record, never both.
+ */
 export interface SessionReview {
   readonly pending: ReadonlyArray<PendingComment>;
+  readonly sends: ReadonlyArray<SendRecord>;
 }
 
-export const EMPTY_REVIEW: SessionReview = { pending: [] };
+export const EMPTY_REVIEW: SessionReview = { pending: [], sends: [] };
+
+/** The reviews kept: the newest few, enough for since my last review and a retry. */
+export const KEPT_SENDS = 5;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -123,10 +140,186 @@ const parsePending = (value: unknown): ReadonlyArray<PendingComment> => {
   return [{ id, sliceId, headId, path, line, endLine, lineText, body, createdAt, origin, anchor }];
 };
 
-/** A session's review as stored; a comment that does not read back is dropped alone. */
+const nullableText = (value: Record<string, unknown>, field: string): string | null | undefined => {
+  const found = value[field];
+  return found === null ? null : typeof found === "string" ? found : undefined;
+};
+
+const nullableWhole = (
+  value: Record<string, unknown>,
+  field: string,
+): number | null | undefined => {
+  const found = value[field];
+  return found === null ? null : (whole(value, field) ?? undefined);
+};
+
+const parseTarget = (value: unknown): CommentTarget | null => {
+  if (!isRecord(value)) return null;
+  const oldPath = nullableText(value, "oldPath");
+  const newPath = nullableText(value, "newPath");
+  const side = value["side"];
+  const startLine = nullableWhole(value, "startLine");
+  const endLine = nullableWhole(value, "endLine");
+  const hunkContextHash = nullableText(value, "hunkContextHash");
+  if (
+    oldPath === undefined ||
+    newPath === undefined ||
+    (side !== null && side !== "old" && side !== "new") ||
+    startLine === undefined ||
+    endLine === undefined ||
+    hunkContextHash === undefined
+  )
+    return null;
+  return { oldPath, newPath, side, startLine, endLine, hunkContextHash };
+};
+
+const parsePost = (value: unknown): PostState | null => {
+  if (!isRecord(value)) return null;
+  const commentId = text(value, "commentId");
+  const body = text(value, "body");
+  const target = parseTarget(value["target"]);
+  const author = nullableText(value, "author");
+  const listed = value["before"];
+  const before = Array.isArray(listed)
+    ? listed.flatMap((id) => (typeof id === "string" ? [id] : []))
+    : null;
+  if (value["kind"] === "unposted") return { kind: "unposted" };
+  if (
+    value["kind"] === "posting" &&
+    body !== null &&
+    target !== null &&
+    author !== undefined &&
+    before !== null &&
+    Array.isArray(listed) &&
+    before.length === listed.length
+  )
+    return { kind: "posting", body, target, author, before };
+  if (value["kind"] === "posted" && commentId !== null) return { kind: "posted", commentId };
+  return null;
+};
+
+const parseItem = (value: unknown): ReadonlyArray<SendItem> => {
+  if (!isRecord(value)) return [];
+  const [pending] = parsePending(value["pending"]);
+  const post = parsePost(value["post"]);
+  const draftId = text(value, "draftId");
+  const commentId = text(value, "commentId");
+  if (value["kind"] === "own" && pending !== undefined && post !== null)
+    return [{ kind: "own", pending, post }];
+  if (value["kind"] === "accepted" && pending !== undefined && draftId !== null)
+    return [{ kind: "accepted", pending, draftId, opened: value["opened"] === true }];
+  if (value["kind"] === "open" && commentId !== null) return [{ kind: "open", commentId }];
+  return [];
+};
+
+const parsePhase = (value: unknown): SendPhase | null => {
+  if (!isRecord(value)) return null;
+  const words = text(value, "words");
+  switch (value["kind"]) {
+    case "sending":
+      return { kind: "sending", since: text(value, "since") ?? "" };
+    case "delivering":
+      return { kind: "delivering" };
+    case "in-terminal": {
+      // A review pasted without the agent's process named goes nowhere: it waits for Retry.
+      const processId = text(value, "processId");
+      return processId === null
+        ? { kind: "pending" }
+        : {
+            kind: "in-terminal",
+            agent: text(value, "agent") ?? "the agent",
+            processId,
+            paste: parsePasteStep(value["paste"]),
+          };
+    }
+    case "pending":
+      return { kind: "pending" };
+    case "delivered":
+      return { kind: "delivered", at: text(value, "at") ?? "" };
+    case "failed":
+      return { kind: "failed", words: words ?? "Mend could not deliver the review." };
+    case "refused":
+      return { kind: "refused", words: words ?? "Mend refused the review." };
+    default:
+      return null;
+  }
+};
+
+const parseInput = (value: unknown): TerminalInput | null => {
+  if (!isRecord(value) || !Array.isArray(value["ids"])) return null;
+  const input = text(value, "text");
+  const ids = value["ids"].flatMap((id) => (typeof id === "string" ? [id] : []));
+  return input === null || ids.length !== value["ids"].length ? null : { text: input, ids };
+};
+
+const parsePasteStep = (value: unknown): PasteStep => {
+  if (isRecord(value) && value["kind"] === "failed") return { kind: "failed" };
+  const input = isRecord(value) && value["kind"] === "done" ? parseInput(value["input"]) : null;
+  return input === null ? { kind: "due" } : { kind: "done", input };
+};
+
+/** What a review pastes; null for a plan that does not read back, so it is never pasted whole. */
+const parsePaste = (value: unknown): PastePlan | null => {
+  if (!isRecord(value) || value["kind"] === "all") return { kind: "all" };
+  const pasted = text(value, "text");
+  const words = text(value, "words");
+  const onto = parseInput(value["onto"]);
+  const processId = text(value, "processId");
+  if (onto === null || processId === null) return null;
+  if (value["kind"] === "added" && pasted !== null)
+    return { kind: "added", text: pasted, onto, processId };
+  if (value["kind"] === "none" && words !== null) return { kind: "none", words, onto, processId };
+  return null;
+};
+
+const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
+  if (!isRecord(value) || !Array.isArray(value["items"])) return [];
+  const key = text(value, "key");
+  const sliceId = text(value, "sliceId");
+  const baseId = text(value, "baseId");
+  const headId = text(value, "headId");
+  const diffDigest = text(value, "diffDigest");
+  const instruction = text(value, "instruction");
+  const createdAt = text(value, "createdAt");
+  const phase = parsePhase(value["phase"]);
+  const paste = parsePaste(value["paste"]);
+  const items = value["items"].flatMap(parseItem);
+  if (
+    key === null ||
+    sliceId === null ||
+    baseId === null ||
+    headId === null ||
+    diffDigest === null ||
+    instruction === null ||
+    createdAt === null ||
+    phase === null ||
+    paste === null ||
+    items.length !== value["items"].length
+  )
+    return [];
+  return [
+    {
+      key,
+      sliceId,
+      baseId,
+      headId,
+      diffDigest,
+      instruction,
+      paste,
+      items,
+      phase,
+      createdAt,
+    },
+  ];
+};
+
+/** A session's review as stored; a comment or a review that does not read back is dropped alone. */
 export const parseSessionReview = (value: unknown): SessionReview =>
-  isRecord(value) && Array.isArray(value["pending"])
-    ? { pending: value["pending"].flatMap(parsePending) }
+  isRecord(value)
+    ? {
+        pending: Array.isArray(value["pending"]) ? value["pending"].flatMap(parsePending) : [],
+        sends: Array.isArray(value["sends"]) ? value["sends"].flatMap(parseSend) : [],
+      }
     : EMPTY_REVIEW;
 
 export const addPending = (review: SessionReview, comment: PendingComment): SessionReview => ({
@@ -147,8 +340,14 @@ export const removePending = (review: SessionReview, id: string): SessionReview 
 
 /** The drafts she accepted, by their id on Mend: their threads show as hers, not as drafts. */
 export const acceptedDrafts = (review: SessionReview): ReadonlySet<string> =>
-  new Set(
-    review.pending.flatMap((comment) =>
+  new Set([
+    ...review.pending.flatMap((comment) =>
       comment.origin.kind === "accepted" ? [comment.origin.draftId] : [],
     ),
-  );
+    // One on its way in a review she sent is hers too, until Mend opens it.
+    ...review.sends.flatMap((record) =>
+      record.phase.kind === "refused"
+        ? []
+        : record.items.flatMap((item) => (item.kind === "accepted" ? [item.draftId] : [])),
+    ),
+  ]);

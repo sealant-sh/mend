@@ -1,4 +1,6 @@
+import type { Session } from "../types.js";
 import type { ChangeAddress } from "./content-reader.js";
+import { handedOver, type LiveAgent } from "./delivery.js";
 import type { SessionReview } from "./pending.js";
 import type {
   ChangeFile,
@@ -49,6 +51,15 @@ export interface ChangeRead {
   readonly notice: string | null;
   /** Mend's last read of the change; null when it never read it. */
   readonly pass: ReadPass | null;
+  /** Who may send a review to the session, and to what agent (story d, step 6). */
+  readonly facts: {
+    readonly session: Session;
+    readonly viewer: string | null;
+    readonly ownerName: string;
+    readonly agent: LiveAgent | null;
+    /** The follow-up goes to a terminal agent, live or one a stopped session starts with it. */
+    readonly startsTerminal: boolean;
+  };
   readonly readAt: string;
 }
 
@@ -95,12 +106,14 @@ export type ChangeRow =
       readonly files: ReadonlyArray<FileRow>;
     }
   | { readonly kind: "note"; readonly id: string; readonly label: string; readonly icon: string }
-  /** A row that does what it says: `Review the newer change`. */
+  /** A row that does what it says: `Review the newer change`, `since my last review · 2 files`. */
   | {
       readonly kind: "action";
       readonly id: string;
       readonly label: string;
       readonly command: "mend.change.repin" | "mend.change.readNewer";
+      /** Review the newer change opens on since my last review, after a review she sent. */
+      readonly sinceLastReview: boolean;
     }
   | {
       readonly kind: "comments";
@@ -175,20 +188,24 @@ export const changeRows = (
   if (read.drift !== null) {
     // The slice stays pinned while she reviews; the newer change is hers to choose.
     const files = read.drift.files;
-    above.push(
-      {
-        kind: "note",
-        id: "note:drift",
-        label: `worktree changed since this review${files === null ? "" : ` · ${files} new ${files === 1 ? "file" : "files"}`}`,
-        icon: "warning",
-      },
-      {
-        kind: "action",
-        id: "action:newer",
-        label: "Review the newer change",
-        command: "mend.change.repin",
-      },
+    above.push({
+      kind: "note",
+      id: "note:drift",
+      label: `worktree changed since this review${files === null ? "" : ` · ${files} new ${files === 1 ? "file" : "files"}`}`,
+      icon: "warning",
+    });
+    const sent = review.sends.some(
+      (record) => handedOver(record) && record.sliceId === read.pinned.id,
     );
+    above.push({
+      kind: "action",
+      id: sent ? "action:since-last-review" : "action:newer",
+      label: sent
+        ? `since my last review${files === null ? "" : ` · ${files} ${files === 1 ? "file" : "files"}`}`
+        : "Review the newer change",
+      command: "mend.change.repin",
+      sinceLastReview: sent,
+    });
   }
   const newer = newerChoice(read.slice.choice, {
     pinned: read.pinned,
@@ -203,6 +220,7 @@ export const changeRows = (
       id: "action:read-newer",
       label: `newer checkpoints · read ${sliceSpan(newerSlice, base)}`,
       command: "mend.change.readNewer",
+      sinceLastReview: false,
     });
   const threads = threadsOf(read, review, you);
   const rows: Array<ChangeRow> = [];

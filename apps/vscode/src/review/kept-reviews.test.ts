@@ -3,7 +3,13 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { KEPT_REVIEW_TTL_MS, KeptReviews, NODE_FILES, type ReviewPlace } from "./kept-reviews.js";
+import {
+  DRIVE_STALE_MS,
+  KEPT_REVIEW_TTL_MS,
+  KeptReviews,
+  NODE_FILES,
+  type ReviewPlace,
+} from "./kept-reviews.js";
 import { addPending, type SessionReview } from "./pending.js";
 import { keptIn, pending, slowFiles, storage } from "./test-fixtures.js";
 
@@ -58,6 +64,26 @@ const lateOnTheLock = (
   };
 };
 
+/**
+ * Waits until the hold `name` in her folder reads renewed at `at` or later, by the test's clock: a
+ * renewal the timers fired is written some time after.
+ */
+const renewedBy = async (directory: string, name: string, at: number): Promise<void> => {
+  await vi.waitFor(async () => {
+    const [folder] = await readdir(directory);
+    if (folder === undefined) throw new Error("no folder was made for her reviews");
+    const text = await NODE_FILES.readFile(join(directory, folder, name)).catch(() => "");
+    expect(Number(text.split(" ")[0])).toBeGreaterThanOrEqual(at);
+  });
+};
+
+/** A lock's or a lease's renewal: `<name>.lock.<uuid>.tmp`, `<name>.<key>.drive.<uuid>.tmp`. */
+const HOLD_RENEWAL =
+  /\.(lock|drive)\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/;
+
+/** Storage in a folder whose name reads like a hold's: only a hold's own renewal is not held back. */
+const heldStorage = async (): Promise<string> => join(await storage(), "reviews.lock.drive.d");
+
 /** A window whose write of a new review waits until the test lets it go on. */
 const heldWrite = (): {
   readonly files: typeof NODE_FILES;
@@ -70,9 +96,13 @@ const heldWrite = (): {
     files: {
       ...NODE_FILES,
       writeFile: async (path, text) => {
-        if (path.endsWith(".tmp")) {
+        if (path.endsWith(".tmp") && !HOLD_RENEWAL.test(path)) {
           reached();
           await allowed;
+        } else if (!path.endsWith(".tmp")) {
+          // A write in place is truncated before it is written; another window can read between.
+          await NODE_FILES.writeFile(path, "");
+          await pause(40);
         }
         await NODE_FILES.writeFile(path, text);
       },
@@ -105,7 +135,7 @@ describe("the session's lock, between windows", () => {
   it("stays a slow live window's past the stale age: the other window waits for its write", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
-      const directory = await storage();
+      const directory = await heldStorage();
       let late = 0;
       const clock = (): number => Date.now() + late;
       const slow = heldWrite();
@@ -116,8 +146,9 @@ describe("the session's lock, between windows", () => {
       );
       await slow.writing;
       late += 20_000;
+      const renewing = clock();
       vi.advanceTimersByTime(20_000);
-      await pause(50);
+      await renewedBy(directory, "s1.json.lock", renewing);
       const waiting = other.update(DANA, (review) =>
         addPending(review, pending({ id: "b", body: "other" })),
       );
@@ -134,7 +165,7 @@ describe("the session's lock, between windows", () => {
   it("is not removed by a window that stalled holding it once another took it over", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
-      const directory = await storage();
+      const directory = await heldStorage();
       const lock = await lockOf(directory);
       let late = 0;
       const clock = (): number => Date.now() + late;
@@ -237,5 +268,106 @@ describe("her pending comments, kept for every window of one VS Code", () => {
     await kept.update({ ...DANA, sessionId: "s2" }, (review) => addPending(review, pending({})));
     expect(await bodies(kept)).toEqual([]);
     expect(await bodies(kept, { ...DANA, sessionId: "s2" })).toHaveLength(1);
+  });
+});
+
+describe("the window that drives a send", () => {
+  it("is one: the other window neither claims it nor ends it while its lease is fresh", async () => {
+    const directory = await storage();
+    const first = keptIn(directory);
+    const second = keptIn(directory);
+    const claims = await Promise.all([
+      first.claimDrive(DANA, "key-1"),
+      second.claimDrive(DANA, "key-1"),
+    ]);
+    expect(claims.toSorted()).toEqual([false, true]);
+    const [driver, other] = claims[0] ? [first, second] : [second, first];
+    expect(await other.drivenFor(DANA, "key-1")).not.toBeNull();
+    expect(await driver.drivenFor(DANA, "key-1")).toBeNull();
+    await driver.releaseDrive(DANA, "key-1");
+    expect(await other.drivenFor(DANA, "key-1")).toBeNull();
+    expect(await other.claimDrive(DANA, "key-1")).toBe(true);
+  });
+
+  it("stays a slow live driver's past the stale age: no other window takes it over", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const directory = await storage();
+      let late = 0;
+      const clock = (): number => Date.now() + late;
+      const driver = new KeptReviews(directory, NODE_FILES, clock);
+      const other = new KeptReviews(directory, NODE_FILES, clock);
+      expect(await driver.claimDrive(DANA, "key-1")).toBe(true);
+      late += DRIVE_STALE_MS + 1_000;
+      const renewing = clock();
+      vi.advanceTimersByTime(DRIVE_STALE_MS + 1_000);
+      await renewedBy(directory, "s1.json.key-1.drive", renewing);
+      expect(await other.drivenFor(DANA, "key-1")).not.toBeNull();
+      expect(await other.claimDrive(DANA, "key-1")).toBe(false);
+      await driver.releaseDrive(DANA, "key-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stays a live driver's while it renews it past the stale age: no window reads it empty", async () => {
+    const directory = await storage();
+    let late = 0;
+    const clock = (): number => Date.now() + late;
+    const { promise: torn, resolve: tear } = Promise.withResolvers<void>();
+    const { promise: mended, resolve: mend } = Promise.withResolvers<void>();
+    // A write in place is truncated, then held there until the test lets it finish.
+    const driver = new KeptReviews(
+      directory,
+      {
+        ...NODE_FILES,
+        writeFile: async (path, text) => {
+          if (!path.endsWith(".tmp")) {
+            await NODE_FILES.writeFile(path, "");
+            tear();
+            await mended;
+          }
+          await NODE_FILES.writeFile(path, text);
+        },
+      },
+      clock,
+    );
+    const other = new KeptReviews(directory, NODE_FILES, clock);
+    expect(await driver.claimDrive(DANA, "key-1")).toBe(true);
+    late += DRIVE_STALE_MS + 1_000;
+    const renewing = driver.renewDrive(DANA, "key-1");
+    await Promise.race([torn, renewing]);
+    expect(await other.drivenFor(DANA, "key-1")).not.toBeNull();
+    expect(await other.claimDrive(DANA, "key-1")).toBe(false);
+    mend();
+    expect(await renewing).toBe(true);
+    await driver.releaseDrive(DANA, "key-1");
+  });
+
+  it("tells a window that lost it that it drives it no more, and that window leaves it be", async () => {
+    const directory = await storage();
+    let late = 0;
+    const clock = (): number => Date.now() + late;
+    const stalled = new KeptReviews(directory, NODE_FILES, clock);
+    const next = new KeptReviews(directory, NODE_FILES, clock);
+    expect(await stalled.claimDrive(DANA, "key-1")).toBe(true);
+    late += DRIVE_STALE_MS + 1_000;
+    expect(await next.claimDrive(DANA, "key-1")).toBe(true);
+    expect(await stalled.renewDrive(DANA, "key-1")).toBe(false);
+    await stalled.releaseDrive(DANA, "key-1");
+    expect(await stalled.drivenFor(DANA, "key-1")).not.toBeNull();
+    expect(await next.renewDrive(DANA, "key-1")).toBe(true);
+    await next.releaseDrive(DANA, "key-1");
+  });
+
+  it("is taken over from a window that closed while driving it", async () => {
+    const directory = await storage();
+    let now = Date.now();
+    const closed = new KeptReviews(directory, NODE_FILES, () => now);
+    const next = new KeptReviews(directory, NODE_FILES, () => now);
+    expect(await closed.claimDrive(DANA, "key-1")).toBe(true);
+    now += DRIVE_STALE_MS + 1_000;
+    expect(await next.drivenFor(DANA, "key-1")).toBeNull();
+    expect(await next.claimDrive(DANA, "key-1")).toBe(true);
   });
 });

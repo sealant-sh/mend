@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import type { MendConnection } from "./config.js";
+import { lfOnly } from "./line-endings.js";
 import { TtyAttachment, type PtyLiveness } from "./tty-attachment.js";
 import type { TtyAddress } from "./tty-protocol.js";
 
@@ -25,6 +26,21 @@ export interface TtyTerminalOptions {
 }
 
 const dim = (text: string): string => `\x1b[2m${text}\x1b[0m`;
+
+/**
+ * Text as a bracketed paste the terminal takes as typed words, never as keys: line ends become
+ * newlines, kept only inside the paste; a tab becomes two spaces; every other C0 control, DEL and
+ * every C1 control goes. So no CR reaches a shell as Enter, and no ESC ends the paste early.
+ */
+export const pasteBytes = (text: string): string => {
+  const words = [...lfOnly(text).replaceAll("\t", "  ")]
+    .filter((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code === 0x0a || (code > 0x1f && (code < 0x7f || code > 0x9f));
+    })
+    .join("");
+  return `\u001b[200~${words}\u001b[201~`;
+};
 
 /** The pseudoterminal behind one VS Code terminal tab. Closing the tab detaches; the process runs on. */
 export class MendTtyTerminal implements vscode.Pseudoterminal {
@@ -56,6 +72,24 @@ export class MendTtyTerminal implements vscode.Pseudoterminal {
 
   handleInput(data: string): void {
     this.attachment.input(data);
+  }
+
+  /** The process this terminal is attached to; null for a session's terminal by session. */
+  processId(): string | null {
+    return "process" in this.options.address ? this.options.address.process : null;
+  }
+
+  /**
+   * Text pasted into the terminal once its socket is open, as a bracketed paste (the TUI takes it
+   * as one paste, its newlines without Enter; `pasteBytes`). False when the socket never opened.
+   */
+  async paste(text: string, waitMs = 15_000): Promise<boolean> {
+    for (let waited = 0; !this.attachment.isOpen(); waited += 100) {
+      if (waited >= waitMs || this.attachment.isClosed()) return false;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    this.attachment.input(pasteBytes(text));
+    return true;
   }
 
   setDimensions(dimensions: vscode.TerminalDimensions): void {

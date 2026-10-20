@@ -1,0 +1,1231 @@
+// Story d, steps 6 and 7 of the VS Code redesign (flow 6, branch review-send), with its edge cases,
+// driven as Dana meets them: Send review opens an editor with the instruction Mend will send, her
+// comments in order with file and line, which she edits; Send to session records the follow-up
+// under one idempotency key, and since her claude runs as a terminal agent (Mend holds the
+// follow-up pending, G12), it attaches claude's terminal in her panel and pastes the review into
+// its input without Enter; the threads read `follow-up pending · pasted into claude's terminal`.
+// A second review before Enter keeps the first as she sent it and pastes only its new comments; a
+// third that changes the part VS Code already pasted pastes nothing, and a fourth pastes what that
+// one left out onto what VS Code pasted. The agent's next round moves the worktree on: the slice
+// stays pinned and the section says so, offering since my last review, where each sent comment
+// sits at its anchor and she marks it Addressed, then Reopen. Then the edge cases: Mend offline
+// (Send review disabled, her comment kept), Ana's stopped terminal session (no Send review, then a
+// disabled one that says only Ana sends it one), and a delivery that fails (a stopped session whose
+// claude login is gone), Retry delivery with the same key, and Mend starting the stopped session
+// with the review as its first prompt. Last, her session stops before she pressed Enter and
+// resumes on a new claude: her threads read pasted into an earlier claude, and the next review is
+// pasted whole into the new claude's input.
+//
+//   node .claude/skills/verify/scripts/drive-vscode.mjs run \
+//     .claude/skills/verify/recipes/vscode-review-send.mjs --out <dir>
+//
+// Needs a world from `up` (signed in, workspace SSH set up) whose extension sends reviews. Claude
+// runs on the skill's fake setup token and sits at its prompt; the recipe never presses Enter in
+// it, because the fake login would only answer 401.
+
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { FAKES } from "../scripts/fakes.mjs";
+import {
+  ADDRESSED,
+  changeActions,
+  changeRows,
+  clickChangeAction,
+  clickEditorTitle,
+  cliEnv,
+  commentOnLine,
+  commentThreads,
+  editorLines,
+  editorTabs,
+  expect,
+  reviewWorld,
+  ROUNDS,
+  said,
+  world,
+} from "./vscode-review.lib.mjs";
+
+// A world that already ran this recipe names its next sessions apart: `MEND_REVIEW_SESSION`.
+const SESSION = process.env.MEND_REVIEW_SESSION ?? "add-rate-limit";
+const STOPPED = `${SESSION}-stopped`;
+const FIRST = "Use the shared limiter from guard.ts";
+const SECOND = "Test the sixth request";
+const THIRD = "Key by account once she signs in";
+const EDITED = "Keep the tests green.";
+const FOURTH = "Answer 429 with Retry-After";
+const FIFTH = "Log the key that hit the limit";
+const SIXTH = "Reset the window at midnight UTC";
+const PASTED = "follow-up pending · pasted into claude's terminal";
+const NOT_PASTED = "follow-up pending · not pasted into claude's terminal";
+const EARLIER = "follow-up pending · pasted into an earlier claude";
+const NOT_HERS =
+  "Only the session's owner sends it a review: Mend types it into a terminal agent, live or started for the stopped session";
+
+/** Claude folds a long paste in its input: `[Pasted text #1 +12 lines]`, one per paste. */
+const pastes = (text) =>
+  [...text.matchAll(/\[Pasted text #(\d+) \+(\d+) lines\]/g)].map((found) => ({
+    n: Number(found[1]),
+    lines: Number(found[2]),
+  }));
+const times = (text, words) => text.split(words).length - 1;
+/** A prompt Mend starts an agent with rides its argv base64-encoded: `sh -c <decode> sh <chunks…>`. */
+const promptOf = (argv) =>
+  argv[0] === "sh" && argv[3] === "sh"
+    ? Buffer.from(argv.slice(4).join(""), "base64").toString("utf8")
+    : argv.join(" ");
+
+export default async (h) => {
+  const { step, note, api, sleep, view, treeItem, quickInput, waitUntil, shot, page, state } = h;
+  const lane = reviewWorld(h);
+  const { project, connectClaude, startClaude, shellBeside, reload } = lane;
+
+  await connectClaude();
+  const session = await step(
+    `${SESSION}: a claude terminal agent in its own worktree, at its prompt`,
+    async () => startClaude(SESSION),
+    { via: "setup" },
+  );
+  const shell = await step(
+    "the change written in two rounds by a shell beside the agent, a checkpoint after each",
+    async () => {
+      const opened = await shellBeside(session);
+      await opened.write(ROUNDS[0]);
+      await opened.write(ROUNDS[1]);
+      return opened;
+    },
+    { via: "setup" },
+  );
+  await step("the window reloads onto the extension built from this checkout", reload, {
+    via: "setup",
+  });
+  const base = (await api(`/projects/${project.id}`)).project.defaultBranch;
+
+  const section = () => changeRows(h);
+  const sectionUntil = (what, check, limit = 60_000) =>
+    waitUntil(
+      what,
+      async () => {
+        const seen = await section();
+        return check(seen) ? seen : null;
+      },
+      limit,
+    );
+  const commentsOf = (seen) => seen.rows.find((row) => row.label === "Comments")?.description ?? "";
+  /**
+   * Her row when the view shows it and no other row's name holds hers (`add-rate-limit` is in
+   * `add-rate-limit-stopped`); else Mend: Review change, which picks the session by its whole name.
+   */
+  const select = async (label) => {
+    // Another session's diffs would answer for this one's: the editors close first.
+    await h.palette("View: Close All Editors");
+    await view("Mend");
+    const rows = (await h.viewRows("Sessions")).rows;
+    const shown =
+      rows.some((row) => row.label === label) &&
+      !rows.some((row) => row.label !== label && row.label.includes(label));
+    if (shown) await treeItem(label, { pane: "Sessions" }).click();
+    else {
+      await h.palette("Mend: Review change");
+      await quickInput.waitFor();
+      await quickInput.pick(label, { exact: true });
+    }
+    // The title moves at once and the rows a moment later: read until two reads agree.
+    let last = "";
+    return sectionUntil(`${label}'s change, held still`, (now) => {
+      const drawn = JSON.stringify(now);
+      const still = drawn === last;
+      last = drawn;
+      return still && now.title.endsWith(label) && now.rows.some((row) => row.label.endsWith("▾"));
+    });
+  };
+  const openFile = async (name, tab) => {
+    await treeItem(new RegExp(`^${name.replaceAll(".", "\\.")}`), { pane: "Change" }).click();
+    await waitUntil(
+      `${name}'s diff`,
+      async () =>
+        (await editorTabs(h)).find((one) => one.active && one.label.startsWith(tab)) ?? null,
+      30_000,
+    );
+    await sleep(800);
+  };
+  /** The editor shows only the lines in view: its end, once the cursor is there. */
+  const editorEnd = async () => {
+    await page().keyboard.press("Control+End");
+    await sleep(300);
+    return editorLines(h);
+  };
+  const threadsReading = (words) =>
+    waitUntil(
+      `threads reading "${words}"`,
+      async () => {
+        const seen = await commentThreads(h);
+        return seen.length > 0 &&
+          seen.every((thread) => thread.comments.every((one) => one.label === words))
+          ? seen
+          : null;
+      },
+      60_000,
+    );
+
+  await step("d4 · two pending comments on limit.ts, lines 12 and 13", async () => {
+    await select(SESSION);
+    await openFile("limit.ts", "limit.ts (");
+    await commentOnLine(h, 12, FIRST);
+    await commentOnLine(h, 13, SECOND);
+    const seen = await sectionUntil("Comments · 2 pending", (now) =>
+      commentsOf(now).startsWith("2 pending"),
+    );
+    return said(seen);
+  });
+
+  const editor = await step(
+    "d6 · Send review: an editor with the instruction Mend will send, her comments in order with file and line",
+    async () => {
+      const actions = await changeActions(h);
+      expect(
+        actions.some((action) => action.title === "Send review" && !action.disabled),
+        `the section's buttons are ${JSON.stringify(actions)}`,
+      );
+      await clickChangeAction(h, "Send review");
+      const tab = await waitUntil(
+        "the review's editor",
+        async () =>
+          (await editorTabs(h)).find(
+            (one) => one.active && one.title.startsWith(`review · ${SESSION}.md`),
+          ) ?? null,
+        30_000,
+      );
+      await sleep(800);
+      const lines = await editorLines(h);
+      await shot("d6-send-it-back");
+      const first = lines.indexOf("## 1 · src/auth/limit.ts:12");
+      const second = lines.indexOf("## 2 · src/auth/limit.ts:13");
+      expect(
+        lines[0] === `# Review for ${SESSION}`,
+        `the editor starts ${JSON.stringify(lines[0])}`,
+      );
+      expect(
+        first !== -1 && lines[first + 1] === FIRST,
+        `no "## 1 · src/auth/limit.ts:12" then her words: ${JSON.stringify(lines)}`,
+      );
+      expect(
+        second > first && lines[second + 1] === SECOND,
+        `no "## 2 · src/auth/limit.ts:13" after it: ${JSON.stringify(lines)}`,
+      );
+      return { observed: `tab "${tab.title}" · ${JSON.stringify(lines)}`, lines };
+    },
+  );
+  void editor;
+
+  await step(
+    "d6 · she edits the instruction before sending: one more line under What to do",
+    async () => {
+      await page().keyboard.press("Control+End");
+      await page().keyboard.type(EDITED);
+      await sleep(300);
+      const lines = await editorLines(h);
+      expect(
+        lines.includes(EDITED),
+        `her line is not in the editor: ${JSON.stringify(lines.slice(-3))}`,
+      );
+      return JSON.stringify(lines.slice(-3));
+    },
+  );
+
+  let firstPaste = "";
+  let firstHeld = "";
+  await step(
+    "d6 · Send to session: claude's terminal attaches in her panel with the review pasted in its input, and no Enter",
+    async () => {
+      await clickEditorTitle(h, "Send to session");
+      const tabs = await waitUntil(
+        "claude's terminal in the panel",
+        async () => {
+          const seen = await h.terminal().tabs();
+          return seen.names.some((name) => name.startsWith("claude") && name.includes(SESSION))
+            ? seen
+            : null;
+        },
+        60_000,
+      );
+      const text = await waitUntil(
+        "the review in claude's input",
+        async () => {
+          const rows = (await h.terminal().read()).join("\n");
+          return /Pasted text|Review for/.test(rows) ? rows : null;
+        },
+        60_000,
+      );
+      // Enter would make claude ask its provider, which answers 401 to the fake login.
+      await sleep(4_000);
+      const after = (await h.terminal().read()).join("\n");
+      await shot("d6-sent-in-claudes-terminal");
+      expect(
+        !/401|API Error|authentication_error/i.test(after),
+        `claude ran the review: ${after.slice(-400)}`,
+      );
+      firstPaste = after;
+      return `terminal tabs ${JSON.stringify(tabs)} · claude reads ${JSON.stringify(text.slice(-600))}`;
+    },
+  );
+
+  await step(
+    "d6 · Mend holds one follow-up for the session, pending under the review's key",
+    async () => {
+      const followUp = await api(`/sessions/${session.id}/follow-up`);
+      const rows = await lane.followUpRows(session.id);
+      expect(followUp?.status === "pending", `the follow-up reads ${JSON.stringify(followUp)}`);
+      expect(
+        rows.length === 1 && rows[0].startsWith("vscode-follow-up:"),
+        `follow_ups rows ${JSON.stringify(rows)}`,
+      );
+      firstHeld = followUp.instruction;
+      return `status ${followUp.status} · rows ${JSON.stringify(rows.map((row) => row.replace(/:[0-9a-f-]{36}\|/, ":<uuid>|")))}`;
+    },
+    { via: "api" },
+  );
+
+  await step(`d6 · her threads read "${PASTED}"`, async () => {
+    await openFile("limit.ts", "limit.ts (");
+    const threads = await threadsReading(PASTED);
+    const seen = await sectionUntil(
+      "Comments · 2 follow-up pending pasted into claude's terminal",
+      (now) => commentsOf(now) === `2 ${PASTED}`,
+    );
+    await shot("d6-threads-follow-up-pending");
+    return `${said(seen)} · ${JSON.stringify(threads.map((thread) => thread.comments))}`;
+  });
+
+  await step(
+    "edge · a second review before Enter: one more comment, Send review again, and the editor holds the first review as she sent it, then More comments",
+    async () => {
+      await commentOnLine(h, 9, THIRD);
+      await sectionUntil("Comments · 1 pending", (now) => commentsOf(now).startsWith("1 pending"));
+      await clickChangeAction(h, "Send review");
+      const lines = await waitUntil(
+        "the review's editor with More comments",
+        async () => {
+          const tab = (await editorTabs(h)).find(
+            (one) => one.active && one.title.startsWith(`review · ${SESSION}.md`),
+          );
+          const now = tab === undefined ? [] : await editorLines(h);
+          return now.includes("## More comments") ? now : null;
+        },
+        30_000,
+      );
+      await shot("edge-second-review-editor");
+      const more = lines.indexOf("## More comments");
+      const third = lines.indexOf("## 3 · src/auth/limit.ts:9");
+      expect(
+        lines.indexOf(`# Review for ${SESSION}`) !== -1 &&
+          lines.indexOf(`# Review for ${SESSION}`) < more,
+        `the first review is not above More comments: ${JSON.stringify(lines)}`,
+      );
+      expect(
+        lines.filter((line) => line === FIRST).length === 1 &&
+          lines.indexOf(FIRST) < more &&
+          lines.indexOf(EDITED) !== -1 &&
+          lines.indexOf(EDITED) < more,
+        `the first review is not there once, as she edited it: ${JSON.stringify(lines)}`,
+      );
+      expect(
+        third > more && lines[third + 1] === THIRD,
+        `no "## 3 · src/auth/limit.ts:9" then her words under More comments: ${JSON.stringify(lines)}`,
+      );
+      return JSON.stringify(lines);
+    },
+  );
+
+  await step(
+    "edge · Send to session again: claude's input holds the first review once and only the new comments after it",
+    async () => {
+      await clickEditorTitle(h, "Send to session");
+      const text = await waitUntil(
+        "the new comments in claude's input",
+        async () => {
+          const rows = (await h.terminal().read()).join("\n");
+          return rows !== firstPaste && (pastes(rows).length > 1 || rows.includes(THIRD))
+            ? rows
+            : null;
+        },
+        60_000,
+      );
+      await sleep(4_000);
+      const after = (await h.terminal().read()).join("\n");
+      await shot("edge-second-review-in-claudes-terminal");
+      const [first, second, ...more] = pastes(after);
+      expect(
+        !/401|API Error|authentication_error/i.test(after),
+        `claude ran the review: ${after.slice(-400)}`,
+      );
+      expect(
+        first !== undefined && more.length === 0 && times(after, "Review for") === 0,
+        `claude's input does not hold the first review once: ${after.slice(-800)}`,
+      );
+      // The whole review again would fold to more lines than the first; the new part alone, fewer.
+      expect(
+        second === undefined
+          ? times(after, THIRD) === 1 && times(after, FIRST) === 0
+          : second.lines < first.lines && times(after, FIRST) === 0,
+        `claude's input repeats the first review: ${after.slice(-800)}`,
+      );
+      return `pastes ${JSON.stringify(pastes(after))} · claude reads ${JSON.stringify(after.slice(-600))} · first read ${JSON.stringify(text.slice(-200))}`;
+    },
+  );
+
+  await step(
+    "edge · Mend holds the whole review as she sent it: the first as edited, once, then the new comment",
+    async () => {
+      const followUp = await waitUntil(
+        "a follow-up holding the new comment",
+        async () => {
+          const now = await api(`/sessions/${session.id}/follow-up`);
+          return now?.instruction.includes(THIRD) ? now : null;
+        },
+        60_000,
+      );
+      const rows = await lane.followUpRows(session.id);
+      const said3 = followUp.instruction;
+      expect(followUp.status === "pending", `the follow-up reads ${followUp.status}`);
+      expect(
+        times(said3, FIRST) === 1 &&
+          times(said3, EDITED) === 1 &&
+          said3.indexOf(EDITED) < said3.indexOf("## More comments") &&
+          said3.indexOf("## More comments") < said3.indexOf(THIRD),
+        `Mend holds ${JSON.stringify(said3)}`,
+      );
+      return `status ${followUp.status} · ${followUp.commentIds.length} comments · rows ${JSON.stringify(rows.map((row) => row.replace(/:[0-9a-f-]{36}\|/, ":<uuid>|")))} · instruction ${JSON.stringify(said3)}`;
+    },
+    { via: "api" },
+  );
+
+  await step(`edge · after the second review the threads read "${PASTED}"`, async () => {
+    await openFile("limit.ts", "limit.ts (");
+    const threads = await threadsReading(PASTED);
+    const seen = await sectionUntil(
+      "Comments · 3 follow-up pending pasted into claude's terminal",
+      (now) => commentsOf(now).startsWith(`3 ${PASTED}`),
+    );
+    return `${said(seen)} · ${JSON.stringify(threads.map((thread) => thread.comments.map((one) => one.label)))}`;
+  });
+
+  let beforeSkip = "";
+  await step(
+    "edge · a third review that changes the part VS Code already pasted: nothing is pasted, and the notification says why",
+    async () => {
+      await openFile("limit.ts", "limit.ts (");
+      await commentOnLine(h, 5, FOURTH);
+      await sectionUntil("Comments · 1 pending", (now) => commentsOf(now).startsWith("1 pending"));
+      await clickChangeAction(h, "Send review");
+      await waitUntil(
+        "the third review's editor",
+        async () => ((await editorEnd()).includes("## 4 · src/auth/limit.ts:5") ? true : null),
+        30_000,
+      );
+      // Her edit is in the first review's heading, which VS Code already pasted into claude.
+      await page().keyboard.press("Control+Home");
+      await page().keyboard.press("ArrowDown");
+      await page().keyboard.press("ArrowDown");
+      await page().keyboard.press("End");
+      await page().keyboard.type(" (edited)");
+      await sleep(300);
+      const lines = await editorLines(h);
+      expect(
+        lines.includes(`# Review for ${SESSION} (edited)`),
+        `her edit is not in the editor: ${JSON.stringify(lines.slice(0, 4))}`,
+      );
+      beforeSkip = (await h.terminal().read()).join("\n");
+      await clickEditorTitle(h, "Send to session");
+      const toast = await waitUntil(
+        "the nothing-pasted notification",
+        async () =>
+          (await h.notifications()).find((text) => text.includes("pasted nothing there")) ?? null,
+        60_000,
+      );
+      await sleep(4_000);
+      const after = (await h.terminal().read()).join("\n");
+      await shot("edge-third-review-skipped");
+      expect(
+        pastes(after).length === pastes(beforeSkip).length && !after.includes("(edited)"),
+        `claude's input changed: ${after.slice(-600)}`,
+      );
+      return `toast ${JSON.stringify(toast)} · pastes ${JSON.stringify(pastes(after))}`;
+    },
+  );
+
+  await step(
+    `edge · after the skipped paste, the comment it carried reads "${NOT_PASTED}", the others "${PASTED}"`,
+    async () => {
+      await openFile("limit.ts", "limit.ts (");
+      const threads = await waitUntil(
+        "the third review's threads",
+        async () => {
+          const seen = await commentThreads(h);
+          const labels = seen.flatMap((thread) => thread.comments.map((one) => one.label));
+          return labels.includes(NOT_PASTED) ? seen : null;
+        },
+        60_000,
+      );
+      const fourth = threads.find((thread) =>
+        thread.comments.some((one) => one.text.includes(FOURTH)),
+      );
+      expect(
+        fourth?.comments.every((one) => one.label === NOT_PASTED),
+        `the fourth comment reads ${JSON.stringify(fourth?.comments)}`,
+      );
+      const seen = await sectionUntil(
+        "Comments · follow-up pending by where its words are",
+        (now) => commentsOf(now).includes(`1 ${NOT_PASTED}`),
+      );
+      await shot("edge-third-review-threads");
+      expect(!commentsOf(seen).includes("sent"), `the section counts sent: ${said(seen)}`);
+      return `${said(seen)} · ${JSON.stringify(threads.map((thread) => thread.comments.map((one) => one.label)))}`;
+    },
+  );
+
+  await step(
+    "edge · a fourth review: its editor is composed on what VS Code pasted, and lists the skipped comment again with the new one",
+    async () => {
+      await commentOnLine(h, 6, FIFTH);
+      await sectionUntil("Comments · 1 pending", (now) => commentsOf(now).startsWith("1 pending"));
+      await clickChangeAction(h, "Send review");
+      const end = await waitUntil(
+        "the fourth review's editor",
+        async () => {
+          const now = await editorEnd();
+          return now.includes("## 5 · src/auth/limit.ts:6") ? now : null;
+        },
+        30_000,
+      );
+      await shot("edge-fourth-review-editor-end");
+      const last = end.lastIndexOf("## More comments");
+      const fourth = end.indexOf("## 4 · src/auth/limit.ts:5");
+      expect(
+        fourth > last && end[fourth + 1] === FOURTH,
+        `the skipped comment is not listed again under More comments: ${JSON.stringify(end)}`,
+      );
+      await page().keyboard.press("Control+Home");
+      await sleep(300);
+      const top = await editorLines(h);
+      await shot("edge-fourth-review-editor-top");
+      expect(
+        top.includes(`# Review for ${SESSION}`) &&
+          !top.some((line) => line.includes("(edited)")) &&
+          top.filter((line) => line === FIRST).length === 1,
+        `the editor does not hold what VS Code pasted: ${JSON.stringify(top)}`,
+      );
+      return `top ${JSON.stringify(top)} · end ${JSON.stringify(end)}`;
+    },
+  );
+
+  await step(
+    "edge · Send to session: claude's input gains one paste holding both the skipped comment and the new one",
+    async () => {
+      await clickEditorTitle(h, "Send to session");
+      const after = await waitUntil(
+        "a third paste in claude's input",
+        async () => {
+          const rows = (await h.terminal().read()).join("\n");
+          return pastes(rows).length > pastes(beforeSkip).length ? rows : null;
+        },
+        60_000,
+      );
+      await sleep(4_000);
+      const settled = (await h.terminal().read()).join("\n");
+      await shot("edge-fourth-review-in-claudes-terminal");
+      const folds = pastes(settled);
+      expect(
+        !/401|API Error|authentication_error/i.test(settled),
+        `claude ran the review: ${settled.slice(-400)}`,
+      );
+      expect(
+        folds.length === pastes(beforeSkip).length + 1 && times(settled, "Review for") === 0,
+        `claude's input holds ${JSON.stringify(folds)}: ${settled.slice(-600)}`,
+      );
+      const followUp = await waitUntil(
+        "Mend's follow-up with the fourth and fifth comments",
+        async () => {
+          const now = await api(`/sessions/${session.id}/follow-up`);
+          return now?.instruction.includes(FIFTH) ? now : null;
+        },
+        60_000,
+      );
+      const held = followUp.instruction;
+      expect(
+        times(held, FIRST) === 1 &&
+          !held.includes("(edited)") &&
+          times(held, FOURTH) === 1 &&
+          held.indexOf(FOURTH) < held.indexOf(FIFTH),
+        `Mend holds ${JSON.stringify(held)}`,
+      );
+      return `pastes ${JSON.stringify(folds)} · claude reads ${JSON.stringify(after.slice(-400))} · Mend holds ${JSON.stringify(held)}`;
+    },
+  );
+
+  await step(`edge · after the fourth review every thread reads "${PASTED}"`, async () => {
+    await openFile("limit.ts", "limit.ts (");
+    const threads = await threadsReading(PASTED);
+    const seen = await sectionUntil(
+      "Comments · 5 follow-up pending pasted into claude's terminal",
+      (now) => commentsOf(now).startsWith(`5 ${PASTED}`),
+    );
+    await shot("edge-fourth-review-threads");
+    return `${said(seen)} · ${JSON.stringify(threads.map((thread) => thread.comments.map((one) => one.label)))}`;
+  });
+
+  await step(
+    "the agent's next round (the shell beside it) moves the worktree on, a checkpoint after it",
+    async () => {
+      await shell.write(ADDRESSED);
+      return "limit.ts takes the shared limiter from guard.ts";
+    },
+    { via: "setup" },
+  );
+
+  await step(
+    "edge · the worktree moved on: the slice stays pinned, and the section says what changed since",
+    async () => {
+      const seen = await sectionUntil(
+        "the worktree-changed line",
+        (now) => now.rows.some((row) => row.label.startsWith("worktree changed since this review")),
+        90_000,
+      );
+      await shot("edge-worktree-moved-on");
+      expect(
+        seen.rows.some((row) => row.label === `${base} → now ▾`),
+        "the pinned slice moved",
+      );
+      expect(
+        seen.rows.some((row) => row.label.startsWith("since my last review")),
+        `no since my last review row: ${said(seen)}`,
+      );
+      return said(seen);
+    },
+  );
+
+  await step(
+    "d7 · since my last review: the newer change, each sent comment at its anchor on the left",
+    async () => {
+      await treeItem(/^since my last review/, { pane: "Change" }).click();
+      const seen = await sectionUntil("since my last review ▾", (now) =>
+        now.rows.some((row) => row.label === "since my last review ▾"),
+      );
+      await openFile("limit.ts", "limit.ts (checkpoint");
+      const threads = await waitUntil(
+        "the sent threads over the newer diff",
+        async () => {
+          const found = await commentThreads(h);
+          return found.length >= 2 ? found : null;
+        },
+        30_000,
+      );
+      await shot("d7-she-checks-what-it-did");
+      const tab = (await editorTabs(h)).find((one) => one.active);
+      return `${said(seen)} · tab "${tab?.label}" · ${JSON.stringify(threads.map((thread) => thread.comments.map((one) => one.label)))}`;
+    },
+  );
+
+  await step(
+    "d7 · she marks the topmost comment Addressed, then Reopens it; Mend says neither itself",
+    async () => {
+      const first = page()
+        .locator(".editor-group-container.active .review-widget", { hasText: FOURTH })
+        .first();
+      await first.locator(".comment-title").hover();
+      await first.locator(".comment-title .action-label[aria-label^='Addressed']").click();
+      await waitUntil(
+        "the first comment addressed",
+        async () =>
+          (await commentThreads(h)).some((thread) =>
+            thread.comments.some((one) => one.text.includes(FOURTH) && one.label === "addressed"),
+          ) || null,
+        30_000,
+      );
+      await shot("d7-addressed");
+      const changeId = (await api(`/sessions/${session.id}`)).change.id;
+      const marked = (await api(`/changes/${changeId}/comments`)).find(
+        (one) => one.body === FOURTH,
+      );
+      expect(marked?.state === "addressed", `Mend holds the comment ${marked?.state}`);
+      await first.locator(".comment-title").hover();
+      await first.locator(".comment-title .action-label[aria-label^='Reopen']").click();
+      await waitUntil(
+        "the first comment open again",
+        async () =>
+          (await commentThreads(h)).some((thread) =>
+            thread.comments.some((one) => one.text.includes(FOURTH) && one.label !== "addressed"),
+          ) || null,
+        30_000,
+      );
+      const reopened = (await api(`/changes/${changeId}/comments`)).find(
+        (one) => one.body === FOURTH,
+      );
+      return `addressed, then ${reopened?.state} on Mend`;
+    },
+  );
+
+  await step(
+    "edge · offline: a pending comment, then Mend stops",
+    async () => {
+      await treeItem("▾", { pane: "Change" }).click();
+      await quickInput.waitFor();
+      await quickInput.pick(`${base} → now`, { exact: true });
+      await sectionUntil(`${base} → now`, (now) =>
+        now.rows.some((row) => row.label === `${base} → now ▾`),
+      );
+      await openFile("guard.ts", "guard.ts (");
+      await commentOnLine(h, 3, "Name the window, not just its length");
+      await lane.server("stop");
+      return "server stopped";
+    },
+    { via: "setup" },
+  );
+
+  await step(
+    "edge · offline: Send review is disabled and says Mend is offline; her comment is kept, the diff readable",
+    async () => {
+      const disabled = await waitUntil(
+        "the offline Send review",
+        async () => {
+          const found = (await changeActions(h)).find(
+            (action) => action.title === "Mend is offline; your comments are kept",
+          );
+          return found ?? null;
+        },
+        120_000,
+      );
+      const seen = await section();
+      await openFile("guard.ts", "guard.ts (");
+      const threads = await commentThreads(h);
+      await shot("edge-offline");
+      expect(disabled.disabled, "the offline Send review is enabled");
+      expect(commentsOf(seen).startsWith("1 pending"), `her comment is gone: ${said(seen)}`);
+      expect(
+        threads.some((thread) => thread.comments.some((one) => one.label === "pending")),
+        "her thread is gone",
+      );
+      return `button "${disabled.title}" disabled · ${said(seen)}`;
+    },
+  );
+
+  await step(
+    "edge · Mend comes back",
+    async () => {
+      await lane.server("start");
+      await waitUntil(
+        "Send review again",
+        async () =>
+          (await changeActions(h)).some((action) => action.title === "Send review") || null,
+        240_000,
+      );
+      return "Send review offered again";
+    },
+    { via: "setup" },
+  );
+
+  // ── Ana's session ──
+  let asAna = null;
+  const ana = await step(
+    "Ana joins, the project is shared, and her stopped claude session holds a change; shared control off",
+    async () => {
+      const { token: invitation } = await api("/organization/invitations", {
+        method: "POST",
+        body: JSON.stringify({ role: "member" }),
+      });
+      const signUp = await fetch(`${lane.origin}/api/auth/sign-up/email`, {
+        method: "POST",
+        headers: {
+          origin: lane.origin,
+          "content-type": "application/json",
+          "x-mend-invitation": invitation,
+        },
+        body: JSON.stringify({
+          email: `ana-${state.run}-${Date.now().toString(36)}@verify.invalid`,
+          password: `ana-${crypto.randomUUID()}`,
+          name: "Ana",
+        }),
+      });
+      const bearer = signUp.headers.get("set-auth-token");
+      expect(signUp.ok && bearer, `Ana's sign-up answered ${signUp.status}`);
+      asAna = async (route, init = {}) => {
+        const response = await fetch(`${lane.origin}/api${route}`, {
+          ...init,
+          headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+        });
+        const text = await response.text();
+        expect(response.ok, `${init.method ?? "GET"} ${route} as Ana → ${response.status}`);
+        return text === "" ? null : JSON.parse(text);
+      };
+      await api(`/projects/${project.id}/visibility`, {
+        method: "PUT",
+        body: JSON.stringify({ visibility: "shared" }),
+      });
+      const scratch = mkdtempSync(join(state.scratch, "ana-"));
+      try {
+        mkdirSync(join(scratch, "mend"), { mode: 0o700 });
+        writeFileSync(
+          join(scratch, "mend", "cli.json"),
+          JSON.stringify({ url: lane.origin, token: bearer }),
+          { mode: 0o600 },
+        );
+        const ran = await world.cli(
+          ["connect", "claude", "--from-stdin"],
+          { ...process.env, HOME: scratch, XDG_CONFIG_HOME: scratch },
+          { input: FAKES.claude, allowFailure: true },
+        );
+        expect(ran.status === 0, `mend connect claude as Ana exited ${ran.status}`);
+      } finally {
+        rmSync(scratch, { recursive: true, force: true });
+      }
+      const started = await startClaude("ana-limits", asAna);
+      const opened = await shellBeside(started, asAna);
+      await opened.write(ROUNDS[0]);
+      await opened.close();
+      await asAna(`/sessions/${started.id}/stop`, { method: "POST", body: "{}" });
+      await waitUntil(
+        "Ana's session settled",
+        async () =>
+          ["stopped", "completed", "failed"].includes(
+            (await lane.sessionRead(started.id, asAna)).session.status,
+          ) || null,
+        180_000,
+      );
+      return {
+        observed: `ana-limits ${started.id.slice(0, 8)} · stopped · shared control off`,
+        ...started,
+      };
+    },
+    { via: "api" },
+  );
+
+  await step(
+    "edge · Ana's session: Dana reads its change and comments, and Send review is not offered",
+    async () => {
+      await view("Mend");
+      await h.palette("Mend: Refresh");
+      await select("ana-limits");
+      await openFile("limit.ts", "limit.ts (");
+      await commentOnLine(h, 4, "Ask Ana: why true here?");
+      const seen = await sectionUntil("Ana's change with Dana's comment", (now) =>
+        commentsOf(now).startsWith("1 pending"),
+      );
+      const actions = await changeActions(h);
+      await shot("edge-anas-session-no-send");
+      expect(
+        !actions.some((action) => action.title.startsWith("Send review")),
+        `Send review is offered on Ana's session: ${JSON.stringify(actions)}`,
+      );
+      return `${said(seen)} · buttons ${JSON.stringify(actions.map((action) => action.title))}`;
+    },
+  );
+
+  await step(
+    "edge · Ana turns shared control on: her stopped terminal session's Send review is disabled, and says only its owner sends it one",
+    async () => {
+      await asAna(`/sessions/${ana.id}/shared-control`, {
+        method: "PUT",
+        body: JSON.stringify({ enabled: true }),
+      });
+      await h.palette("Mend: Read the change again");
+      const actions = await waitUntil(
+        "the owner-only Send review on Ana's session",
+        async () => {
+          const found = await changeActions(h);
+          return found.some((action) => action.title === NOT_HERS) ? found : null;
+        },
+        60_000,
+      );
+      const tooltip = await h.viewAction(NOT_HERS).tooltip();
+      await shot("edge-anas-session-shared-control");
+      expect(
+        actions.find((action) => action.title === NOT_HERS)?.disabled === true,
+        `the owner-only Send review is enabled: ${JSON.stringify(actions)}`,
+      );
+      expect(
+        !actions.some((action) => action.title === "Send review"),
+        `Send review is offered on Ana's terminal session: ${JSON.stringify(actions)}`,
+      );
+      expect(tooltip === NOT_HERS, `its tooltip reads ${JSON.stringify(tooltip)}`);
+      return `buttons ${JSON.stringify(actions)} · tooltip ${JSON.stringify(tooltip)}`;
+    },
+  );
+
+  // ── delivery fails, then Retry delivery with the same key ──
+  const stopped = await step(
+    `${STOPPED}: a second claude session with a change, stopped; then claude disconnected`,
+    async () => {
+      const started = await startClaude(STOPPED);
+      const opened = await shellBeside(started);
+      await opened.write(ROUNDS[0]);
+      await opened.close();
+      await api(`/sessions/${started.id}/stop`, { method: "POST", body: "{}" });
+      await waitUntil(
+        `${STOPPED} settled`,
+        async () =>
+          ["stopped", "completed", "failed"].includes(
+            (await lane.sessionRead(started.id)).session.status,
+          ) || null,
+        180_000,
+      );
+      const removed = await world.cli(["connect", "claude", "--remove"], cliEnv(state), {
+        allowFailure: true,
+      });
+      expect(
+        removed.status === 0,
+        `mend connect claude --remove exited ${removed.status}: ${removed.stderr}`,
+      );
+      return started;
+    },
+    { via: "setup" },
+  );
+
+  await step(
+    "edge · delivery fails: Send to session on the stopped session, whose launch Mend cannot make",
+    async () => {
+      await select(STOPPED);
+      await openFile("limit.ts", "limit.ts (");
+      await commentOnLine(h, 4, "Return the limit's answer, not true");
+      await clickChangeAction(h, "Send review");
+      await waitUntil(
+        "the review's editor",
+        async () =>
+          (await editorTabs(h)).find(
+            (one) => one.active && one.title.startsWith(`review · ${STOPPED}.md`),
+          ) ?? null,
+        30_000,
+      );
+      await clickEditorTitle(h, "Send to session");
+      const seen = await sectionUntil(
+        "delivery failed · retryable",
+        (now) => commentsOf(now).includes("delivery failed · retryable"),
+        300_000,
+      );
+      await openFile("limit.ts", "limit.ts (");
+      const threads = await threadsReading("delivery failed · retryable");
+      await shot("edge-delivery-failed");
+      const rows = await lane.followUpRows(stopped.id);
+      return `${said(seen)} · ${JSON.stringify(threads.map((thread) => thread.comments))} · rows ${JSON.stringify(rows.map((row) => row.replace(/:[0-9a-f-]{36}\|/, ":<uuid>|")))} · toasts ${JSON.stringify(await h.notifications())}`;
+    },
+  );
+
+  await step(
+    "claude connected again with the fake setup token",
+    async () => {
+      const ran = await world.cli(["connect", "claude", "--from-stdin"], cliEnv(state), {
+        input: FAKES.claude,
+        allowFailure: true,
+      });
+      expect(ran.status === 0, `mend connect claude exited ${ran.status}`);
+      return ran.stdout.trim();
+    },
+    { via: "setup" },
+  );
+
+  await step(
+    "edge · Retry delivery sends the same key: one follow-up row, moved from failed on, and Mend launches the session on it",
+    async () => {
+      const before = await lane.followUpRows(stopped.id);
+      await clickChangeAction(h, "Retry delivery");
+      const rows = await waitUntil(
+        "the follow-up moved on under its key",
+        async () => {
+          const now = await lane.followUpRows(stopped.id);
+          return now.length === 1 && !now[0].endsWith("|delivery_failed") ? now : null;
+        },
+        60_000,
+      ).catch(async (cause) => {
+        // What Mend is doing instead: still inside a deliver it never answered, or nothing.
+        const activity = await lane.serverActivity().catch((error) => [`unread: ${error.message}`]);
+        throw new Error(`${cause.message} · Mend's connections ${JSON.stringify(activity)}`);
+      });
+      const key = (row) => row.split("|")[0];
+      expect(
+        before.length === 1 && key(before[0]) === key(rows[0]),
+        `the retry used another key: ${JSON.stringify([before, rows])}`,
+      );
+      const seen = await section();
+      await shot("edge-retry-same-key");
+      return `${said(seen)} · rows before ${JSON.stringify(before.map((row) => row.replace(/:[0-9a-f-]{36}:/, ":<change>:")))} after ${JSON.stringify(rows.map((row) => row.replace(/:[0-9a-f-]{36}:/, ":<change>:")))}`;
+    },
+  );
+
+  await step(
+    "edge · after Retry delivery the thread reads where the follow-up is (sending, delivery in progress or sent), no longer delivery failed",
+    async () => {
+      await openFile("limit.ts", "limit.ts (");
+      const threads = await waitUntil(
+        "the thread past delivery failed",
+        async () => {
+          const seen = await commentThreads(h);
+          const label = seen[0]?.comments[0]?.label ?? "";
+          return ["sending", "delivery in progress", "sent"].includes(label) ? seen : null;
+        },
+        60_000,
+      );
+      await shot("edge-retry-delivery-in-progress");
+      return JSON.stringify(threads.map((thread) => thread.comments));
+    },
+  );
+
+  await step(
+    "edge · Mend starts the stopped session with the review as its first prompt: a new claude terminal whose command carries it, the follow-up delivered",
+    async () => {
+      const rows = await waitUntil(
+        "the follow-up delivered",
+        async () => {
+          const now = await lane.followUpRows(stopped.id);
+          return now.length === 1 && now[0].endsWith("|delivered") ? now : null;
+        },
+        300_000,
+      ).catch(async (cause) => {
+        const now = await lane.followUpRows(stopped.id).catch((error) => [error.message]);
+        const activity = await lane.serverActivity().catch((error) => [`unread: ${error.message}`]);
+        throw new Error(
+          `${cause.message} · rows ${JSON.stringify(now)} · Mend's connections ${JSON.stringify(activity)}`,
+        );
+      });
+      const read = await lane.sessionRead(stopped.id);
+      const agents = read.processes.filter((row) => row.kind.startsWith("agent-"));
+      const started = agents.filter((row) => row.id !== stopped.agent);
+      const carries = started.find(
+        (row) =>
+          promptOf(row.argv).startsWith(`# Review for ${STOPPED}`) &&
+          promptOf(row.argv).includes("Return the limit's answer, not true"),
+      );
+      expect(
+        carries !== undefined && carries.kind === "agent-pty",
+        `no new claude terminal carries the review: ${JSON.stringify(agents.map((row) => ({ kind: row.kind, status: row.status, argv: row.argv.map((part) => part.slice(0, 60)) })))}`,
+      );
+      const transcript = await api(`/sessions/${stopped.id}/transcript`).catch((error) => ({
+        events: [],
+        unread: error.message,
+      }));
+      const firstUser = transcript.events.find((event) => event.kind === "user");
+      return `session ${read.session.status} · rows ${JSON.stringify(rows.map((row) => row.replace(/:[0-9a-f-]{36}:/, ":<change>:")))} · ${carries.kind} ${carries.status}, its prompt ${JSON.stringify(promptOf(carries.argv))} · transcript's first user event ${JSON.stringify(firstUser?.text?.slice(0, 160) ?? null)} of ${transcript.events.length}`;
+    },
+    { via: "api" },
+  );
+
+  await step(
+    "edge · the stopped session's thread reads sent once Mend reads its comment back as sent",
+    async () => {
+      await openFile("limit.ts", "limit.ts (");
+      const threads = await threadsReading("sent");
+      const seen = await sectionUntil("Comments · 1 sent", (now) =>
+        commentsOf(now).startsWith("1 sent"),
+      );
+      const changeId = (await api(`/sessions/${stopped.id}`)).change.id;
+      const onMend = (await api(`/changes/${changeId}/comments`)).map(
+        (one) => `${one.body} · ${one.state} · sent to ${one.sentToSessionId?.slice(0, 8) ?? null}`,
+      );
+      await shot("edge-stopped-session-sent");
+      return `${said(seen)} · ${JSON.stringify(threads.map((thread) => thread.comments.map((one) => one.label)))} · on Mend ${JSON.stringify(onMend)}`;
+    },
+  );
+
+  await step(
+    "edge · the earlier failure's toast, still on screen: its Retry delivery sends nothing and the status bar says the review reads sent",
+    async () => {
+      const before = await lane.followUpRows(stopped.id);
+      const toast = h.notification("Mend could not deliver the review");
+      await toast.waitFor(10_000);
+      const words = await toast.text();
+      await toast.click("Retry delivery");
+      const bar = h.statusBar("Retry delivery sent nothing");
+      await bar.waitFor(15_000);
+      const reads = await bar.text();
+      await shot("edge-stale-toast-retry");
+      await sleep(3_000);
+      const after = await lane.followUpRows(stopped.id);
+      expect(
+        reads.includes("this review already reads sent"),
+        `the status bar reads ${JSON.stringify(reads)}`,
+      );
+      expect(
+        JSON.stringify(after) === JSON.stringify(before),
+        `the follow-up rows moved: ${JSON.stringify([before, after])}`,
+      );
+      return `toast ${JSON.stringify(words)} · status bar ${JSON.stringify(reads)} · rows ${JSON.stringify(after.map((row) => row.replace(/:[0-9a-f-]{36}:/, ":<change>:")))}`;
+    },
+  );
+
+  // ── A stop and a resume before Enter: VS Code pasted none of her reviews into the new claude ──
+  /**
+   * The Change section's rows of her comments sent before the resume, and `more`. Their threads hang
+   * on the slice they were written on, not the one now pinned, so the rows say where each one is.
+   */
+  const heldRows = (seen, more = []) =>
+    seen.rows.filter((row) =>
+      [FIRST, SECOND, THIRD, FOURTH, FIFTH, ...more].some((words) => row.label.startsWith(words)),
+    );
+  const resumed = await step(
+    `${SESSION} stops before she presses Enter in claude, and resumes on a new claude process`,
+    async () => {
+      const before = await lane.sessionRead(session.id);
+      const old = before.processes.find((row) => row.kind === "agent-pty" && row.exitedAt === null);
+      const settled = async () =>
+        ["stopped", "completed", "failed"].includes(
+          (await lane.sessionRead(session.id)).session.status,
+        );
+      await api(`/sessions/${session.id}/stop`, { method: "POST", body: "{}" });
+      await waitUntil(
+        `${SESSION}'s claude ended`,
+        async () =>
+          (await lane.sessionRead(session.id)).processes.some(
+            (row) => row.id === old?.id && row.exitedAt !== null,
+          ) || null,
+        180_000,
+      );
+      // A Stop that ends the agent Mend started keeps the shell beside it; a second Stop closes it.
+      const stops = (await waitUntil(
+        `${SESSION} settled`,
+        async () => (await settled()) || null,
+        20_000,
+      ).then(
+        () => true,
+        () => false,
+      ))
+        ? 1
+        : 2;
+      if (stops === 2) await api(`/sessions/${session.id}/stop`, { method: "POST", body: "{}" });
+      await waitUntil(`${SESSION} settled`, async () => (await settled()) || null, 180_000);
+      // By here the fake login reads as needing reconnecting, and Mend refuses a resume until then.
+      const connected = await world.cli(["connect", "claude", "--from-stdin"], cliEnv(state), {
+        input: FAKES.claude,
+        allowFailure: true,
+      });
+      expect(connected.status === 0, `mend connect claude exited ${connected.status}`);
+      await api(`/sessions/${session.id}/resume`, {
+        method: "POST",
+        body: JSON.stringify({ harness: null }),
+      });
+      const agent = await waitUntil(
+        `${SESSION} running on a new agent-pty`,
+        async () => {
+          const now = await lane.sessionRead(session.id);
+          return now.session.status === "running"
+            ? (now.processes.find(
+                (row) => row.kind === "agent-pty" && row.exitedAt === null && row.id !== old?.id,
+              ) ?? null)
+            : null;
+        },
+        600_000,
+      );
+      return {
+        observed: `${stops} Stop${stops === 1 ? "" : "s"} · claude ${old?.id.slice(0, 8)} → ${agent.id.slice(0, 8)}`,
+        id: agent.id,
+      };
+    },
+    { via: "setup" },
+  );
+
+  await step(`edge · after the resume her threads read "${EARLIER}"`, async () => {
+    await select(SESSION);
+    const seen = await sectionUntil(
+      `her five comments reading "${EARLIER}"`,
+      (now) =>
+        heldRows(now).length === 5 &&
+        heldRows(now).every((row) => row.description.endsWith(EARLIER)) &&
+        !commentsOf(now).includes(PASTED),
+    );
+    await shot("edge-resumed-threads-pasted-into-earlier");
+    return said(seen);
+  });
+
+  await step(
+    "edge · a review after the resume: one more comment, and Send review composes the whole review on its own, with no More comments",
+    async () => {
+      await openFile("limit.ts", "limit.ts (");
+      await commentOnLine(h, 7, SIXTH);
+      await sectionUntil("Comments · 2 pending", (now) => commentsOf(now).startsWith("2 pending"));
+      await clickChangeAction(h, "Send review");
+      const end = await waitUntil(
+        "the review's editor with the new comment",
+        async () => {
+          const now = await editorEnd();
+          return now.includes(SIXTH) ? now : null;
+        },
+        30_000,
+      );
+      await shot("edge-resumed-review-editor-end");
+      await page().keyboard.press("Control+Home");
+      await sleep(300);
+      const top = await editorLines(h);
+      await shot("edge-resumed-review-editor-top");
+      expect(
+        top[0] === `# Review for ${SESSION}` &&
+          !top.includes("## More comments") &&
+          !end.includes("## More comments"),
+        `the editor is not a review on its own: top ${JSON.stringify(top)} · end ${JSON.stringify(end)}`,
+      );
+      return `top ${JSON.stringify(top)} · end ${JSON.stringify(end)}`;
+    },
+  );
+
+  await step(
+    "edge · Send to session: the new claude's input gains one paste, the whole review Mend holds",
+    async () => {
+      await clickEditorTitle(h, "Send to session");
+      const followUp = await waitUntil(
+        "Mend's follow-up with the new comment",
+        async () => {
+          const now = await api(`/sessions/${session.id}/follow-up`);
+          return now?.instruction.includes(SIXTH) ? now : null;
+        },
+        60_000,
+      );
+      const held = followUp.instruction;
+      expect(
+        [FIRST, SECOND, THIRD, FOURTH, FIFTH, SIXTH].every((words) => times(held, words) === 1) &&
+          !held.includes("## More comments"),
+        `Mend holds ${JSON.stringify(held)}`,
+      );
+      const after = await waitUntil(
+        "a paste in the new claude's input",
+        async () => {
+          const rows = (await h.terminal().read()).join("\n");
+          return pastes(rows).length > 0 ? rows : null;
+        },
+        60_000,
+      );
+      await sleep(4_000);
+      const settled = (await h.terminal().read()).join("\n");
+      await shot("edge-resumed-review-in-new-claudes-terminal");
+      const folds = pastes(settled);
+      // claude folds a paste of n newlines as `+m lines`; the first paste of the run gives m − n.
+      const newlines = (text) => times(text, "\n");
+      const offset = (pastes(firstPaste)[0]?.lines ?? 0) - newlines(firstHeld);
+      expect(
+        !/401|API Error|authentication_error/i.test(settled),
+        `claude ran the review: ${settled.slice(-400)}`,
+      );
+      expect(
+        folds.length === 1 && folds[0].lines === newlines(held) + offset,
+        `the new claude's input holds ${JSON.stringify(folds)}, Mend's review is ${newlines(held)} newlines (+${offset}): ${settled.slice(-600)}`,
+      );
+      const rows = await lane.followUpRows(session.id);
+      return `agent ${resumed.id.slice(0, 8)} · pastes ${JSON.stringify(folds)} · Mend holds ${newlines(held)} newlines, ${JSON.stringify(held)} · rows ${JSON.stringify(rows.map((row) => row.replace(/:[0-9a-f-]{36}:/, ":<change>:")))} · claude reads ${JSON.stringify(after.slice(-300))}`;
+    },
+  );
+
+  await step(
+    `edge · after the review into the new claude her threads read "${PASTED}"`,
+    async () => {
+      const seen = await sectionUntil(
+        `her six comments reading "${PASTED}"`,
+        (now) =>
+          heldRows(now, [SIXTH]).length === 6 &&
+          heldRows(now, [SIXTH]).every((row) => row.description.endsWith(PASTED)) &&
+          !commentsOf(now).includes(EARLIER),
+      );
+      await openFile("limit.ts", "limit.ts (");
+      const threads = await commentThreads(h);
+      await shot("edge-resumed-threads-pasted");
+      return `${said(seen)} · ${JSON.stringify(threads.map((thread) => thread.comments.map((one) => one.label)))}`;
+    },
+  );
+
+  note(
+    "G12 not built: Mend holds a terminal agent's follow-up pending and nothing flushes it; the extension pastes the review into claude's input for her to press Enter (Yiannis's fallback, 2026-10-19).",
+  );
+};

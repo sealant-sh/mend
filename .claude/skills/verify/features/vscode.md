@@ -572,6 +572,40 @@ the row takes the job's name.
     `Mend could not read this change: The connected account was rejected by the provider — reconnect it. (Inference failed: authentication_failed)`.
     The world's logins are fake, so drafts, Accept, Dismiss and Show record from a draft are
     `verified-unreachable · inference`.
+  - Steps 6 and 7 and the edge cases: `recipes/vscode-review-send.mjs`. Two comments, **Send
+    review** opens `review · <label>.md` (`## 1 · src/auth/limit.ts:12`, `## 2 · …:13`), a typed
+    line, **Send to session** (`clickEditorTitle`): the panel attaches `claude · <label>` and
+    `terminal().read()` shows `❯ [Pasted text #1 +12 lines]` (claude folds a long paste), no 401;
+    `follow_ups` holds one row, `vscode-follow-up:<change>:<uuid>|pending` (`followUpRows`, psql in
+    the world's Postgres); the threads read `follow-up pending · pasted into claude's terminal`. The
+    next round (the shell, a mark) adds `worktree changed since this review · 2 new files` and
+    `since my last review · 2 files`; there the sent threads sit on the left of
+    `limit.ts (checkpoint 4 ↔ checkpoint 6)`, and Addressed then Reopen reach Mend. Offline: the
+    disabled `Mend is offline; your comments are kept`.
+  - A second review before Enter (runs `r2s1`, `r2s2`): a third comment (line 9), **Send review**
+    again. The editor holds the first review as she sent it, her typed line included, then
+    `## More comments` and `## 3 · src/auth/limit.ts:9`. **Send to session** leaves claude's input
+    at `❯ [Pasted text #1 +12 lines][Pasted text #2 +7 lines]`: the first review once, then only the
+    new part (the whole review again would fold to more lines than the first). `follow_ups` reads
+    the first row `superseded` and a second `pending`, whose instruction holds the first review
+    once, as edited, then `## More comments` and the third comment; the section reads
+    `3 sent · follow-up pending · pasted into claude's terminal`.
+  - Ana's stopped claude session: shared control off, no **Send review**; on, the disabled button
+    `Only the session's owner sends it a review: Mend types it into a terminal agent, live or started for the stopped session`,
+    the same words in its tooltip, and no **Send review**. Mend starts a stopped terminal agent only
+    for its owner.
+  - Delivery fails on a stopped session after `mend connect claude --remove`:
+    `1 delivery failed · retryable`, one toast
+    `Mend could not deliver the review: Connect Claude to start a session here. …` with **Retry
+    delivery**, one `delivery_failed` row. Retry after reconnecting moves the same row on (same
+    key), to `delivering`, the thread `sending`. Mend then starts the session with the review as its
+    first prompt: a new `agent-pty`, running, whose argv carries the review base64-encoded
+    (`sh -c <decode> sh <chunks…>`, decoded by the recipe's `promptOf`) and reads
+    `# Review for <label>-stopped …`; the row reads `delivered`, the thread `sent`, the section
+    `1 sent`. The transcript read no events in `r2s1`. Before #1095 the deliver never answered (a
+    notify inside the transaction waited for a second pooled connection); if the step times out
+    again, its error carries the rows and what Mend's Postgres connections are doing
+    (`serverActivity()`).
 - **e. Dana wants to drive by hand.** `recipes/vscode-open.mjs`, from the default `up`.
   - The gesture is Open; typing into the attached `claude · add-rate-limit` is story c's last lane.
   - **Continue here.** `contextMenu("Mend: Open in New Window")` on `from-phone`: the tab

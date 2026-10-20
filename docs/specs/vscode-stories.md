@@ -212,7 +212,7 @@ _The agent says it is done. Dana wants to read the change, comment, and send it 
      that agent exits (packages/sessions/src/follow-up-delivery.ts:341-345). A TUI claude stays open
      between turns, so the review would wait. Until G12 lands, **Send to session** also attaches the
      agent's terminal in her panel and pastes the instruction there for her to press Enter. The
-     threads read `follow-up pending · in claude's terminal`.
+     threads read `follow-up pending · pasted into claude's terminal`.
 7. **Watching it address the comments.** When the turn ends, the row reads `completed · observed`.
    The Change section offers **since my last review · 2 files**.
    - She opens it. Each sent comment sits at its anchor over the new diff.

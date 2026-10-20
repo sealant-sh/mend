@@ -413,6 +413,70 @@ session.
   any more (a later resume started a new one), it opens nothing and says so. **Show record** in the
   section's `...` menu opens the selected session's transcript.
 
+### Send the review back
+
+- **Send review** in the section's title opens an editor, `review · <session>.md`, with the
+  instruction Mend will send: your comments in the diff's order, each under its file and line, and
+  what to do. Edit it freely. **Send to session** in the editor's title sends it.
+- Mend records the follow-up with one idempotency key, kept with the review on this machine, so a
+  retry never sends a second one.
+- While the session's agent runs in a terminal, Mend holds the follow-up `pending` until that agent
+  exits. VS Code then attaches the agent's terminal in your panel, as **Answer** does, and pastes
+  the review into its input without pressing Enter. The threads read
+  `follow-up pending · pasted into claude's terminal`; press Enter in claude to send it. The label
+  says what VS Code did. VS Code does not see Enter, a reload or your own edits in claude's input
+  after the paste.
+  - The paste goes only into that agent, while Mend still lists it running. If it exited first,
+    nothing is pasted, not even into a shell of the session, and a notification says so with **Retry
+    delivery**, which starts the stopped session on the review. If VS Code could not attach the
+    agent's terminal here, the threads read `follow-up pending · not pasted into claude's terminal`
+    and **Retry delivery** pastes it again.
+  - The paste carries your words and line breaks only: carriage returns, tabs and other control
+    characters are dropped or turned into spaces, so nothing in it acts as a key.
+  - Send another review before you press Enter, and its editor holds the first review as you sent
+    it, then only the new comments under `More comments`. Only the new part is pasted after the
+    first. If you change the part VS Code already pasted, nothing is pasted and a notification says
+    why; line endings alone are not a change. Mend still holds the whole review as you sent it, and
+    the comments VS Code did not paste read `follow-up pending · not pasted into claude's terminal`.
+    Your next **Send review** is composed on what VS Code pasted, and pastes every comment it left
+    out.
+  - A paste goes into one claude process. Stop the session and resume it, and VS Code has pasted
+    nothing into the new claude: the threads read
+    `follow-up pending · pasted into an earlier claude`, and the next **Send review** pastes the
+    whole review into the new claude, every comment Mend holds and the new ones.
+  - The section counts a review Mend holds by what VS Code did with its words, such as
+    `2 follow-up pending · pasted into claude's terminal`, never as `sent`.
+- Once that agent exits, a review Mend still holds `pending` offers **Retry delivery**, in its
+  threads and the section's title: the same key starts the stopped session on the review. Comments a
+  held review carries also go out with your next **Send review**, and Mend then replaces the held
+  one.
+- **Send to session** sends the comments the editor lists. If your comments changed after it opened,
+  an edited word included, nothing is sent and your text stays in the editor; open **Send review**
+  again to compose the review anew. Two windows sending the same review record it once, under one
+  key, and one window drives it. A review composed before another went out, in any window, sends
+  nothing and says so.
+- When a Mend draft in a review on its way is dismissed (on the web, or in another window), the
+  review stops before it is delivered, since its text still asks for that draft. A notification says
+  so and offers **Show its text**, your wording, to copy from; **Send review** composes the review
+  again without the draft.
+- A stopped session starts on the review as its prompt. The threads read `sent` once Mend reads each
+  comment back as sent to the session.
+- When delivery fails, the threads read `delivery failed · retryable`, one notification says why,
+  and **Retry delivery** sends the same key and text again. VS Code cannot close a notification, so
+  **Retry delivery** reads the review first: once it reads `sent`, Retry sends nothing and the
+  status bar says so.
+- When the agent's next round moves the worktree on, the slice stays pinned and the section adds
+  `worktree changed since this review · 3 new files`, with **Review the newer change** (or **since
+  my last review** once you sent one). There each sent comment sits at its line; mark it
+  **Addressed**, and an addressed one **Reopen**. Mend never says a comment was addressed.
+- Offline, **Send review** is disabled and says `Mend is offline; your comments are kept`; the diff
+  stays readable and your pending comments stay.
+- **Send review** is offered on your own sessions, and on another person's while they have shared
+  control on. A terminal agent takes a review from its owner only, live or started for a stopped
+  session, so on another person's terminal session **Send review** is disabled and says why.
+- The **Comments** row counts each comment by what was observed of it: `2 sent`, `1 sending`,
+  `1 delivery failed · retryable`, `1 follow-up pending`.
+
 ## Other commands
 
 | Command                         | What it does                                                  |

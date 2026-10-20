@@ -20,6 +20,18 @@ patch number is the extension's own.
   authored `Mend · draft` with their evidence, **Accept** and **Dismiss** (a draft about the whole
   change on the change's own note), and **Show record** opens the transcript of the session the
   evidence cites, read-only. The Comments panel lists them all.
+- **Send review** opens the instruction Mend will send, your comments in order with file and line,
+  for you to edit; **Send to session** records the follow-up under one idempotency key. A terminal
+  agent's follow-up waits `pending` in Mend, so VS Code attaches its terminal and pastes the review
+  there without Enter (`follow-up pending · pasted into claude's terminal`), into that agent only,
+  and with no control character. A second review before Enter pastes only its new comments, and
+  after one that pasted nothing the next pastes every comment VS Code left out. After a stop and a
+  resume VS Code has pasted nothing into the new claude, so the next review is pasted whole. A
+  failed delivery reads `delivery failed · retryable` with **Retry delivery** on the same key; a
+  review Mend holds `pending` offers **Retry delivery** once the agent exits, or when its paste did
+  not happen; and a Retry that finds the review `sent` sends nothing and says so. When the worktree
+  moves on the slice stays pinned and the section says so; you mark each sent comment **Addressed**
+  or **Reopen**. Offline, **Send review** is disabled and your comments stay.
 - The Mend view is **Sessions**: **Needs you**, **Since you last looked**, **Running**, then
   **Projects**, collapsed. Each row reads `<word> · <fact>` as Mend observed it, such as
   `waiting · claude needs your permission to use Bash · since 02:14` or

@@ -309,6 +309,56 @@
         "command": "mend.review.cancel",
         "title": "Cancel",
         "category": "Mend"
+      },
+      {
+        "command": "mend.change.sendReview",
+        "title": "Send review",
+        "category": "Mend"
+      },
+      {
+        "command": "mend.change.retryDelivery",
+        "title": "Retry delivery",
+        "category": "Mend"
+      },
+      {
+        "command": "mend.change.sendReviewOffline",
+        "title": "Mend is offline; your comments are kept",
+        "icon": "$(comment-discussion)",
+        "enablement": "false"
+      },
+      {
+        "command": "mend.change.sendReviewNotHers",
+        "title": "Only the session's owner sends it a review: Mend types it into a terminal agent, live or started for the stopped session",
+        "icon": "$(comment-discussion)",
+        "enablement": "false"
+      },
+      {
+        "command": "mend.change.sendToSession",
+        "title": "Send to session",
+        "category": "Mend"
+      },
+      {
+        "command": "mend.change.repin",
+        "title": "Review the newer change",
+        "category": "Mend"
+      },
+      {
+        "command": "mend.review.addressed",
+        "title": "Addressed",
+        "category": "Mend",
+        "icon": "$(check)"
+      },
+      {
+        "command": "mend.review.reopen",
+        "title": "Reopen",
+        "category": "Mend",
+        "icon": "$(issue-reopened)"
+      },
+      {
+        "command": "mend.review.retry",
+        "title": "Retry delivery",
+        "category": "Mend",
+        "icon": "$(sync)"
       }
     ],
     "menus": {
@@ -392,6 +442,42 @@
         {
           "command": "mend.review.cancel",
           "when": "false"
+        },
+        {
+          "command": "mend.change.sendReview",
+          "when": "mend.change.send == ready"
+        },
+        {
+          "command": "mend.change.retryDelivery",
+          "when": "mend.change.send == retry"
+        },
+        {
+          "command": "mend.change.sendReviewOffline",
+          "when": "false"
+        },
+        {
+          "command": "mend.change.sendReviewNotHers",
+          "when": "false"
+        },
+        {
+          "command": "mend.change.sendToSession",
+          "when": "resourceScheme == mend-review"
+        },
+        {
+          "command": "mend.change.repin",
+          "when": "mend.change.ready"
+        },
+        {
+          "command": "mend.review.addressed",
+          "when": "false"
+        },
+        {
+          "command": "mend.review.reopen",
+          "when": "false"
+        },
+        {
+          "command": "mend.review.retry",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -439,6 +525,26 @@
           "command": "mend.change.showRecord",
           "when": "view == mend.change && mend.change.ready",
           "group": "overflow@3"
+        },
+        {
+          "command": "mend.change.sendReview",
+          "when": "view == mend.change && mend.change.send == ready",
+          "group": "navigation@3"
+        },
+        {
+          "command": "mend.change.retryDelivery",
+          "when": "view == mend.change && mend.change.send == retry",
+          "group": "navigation@3"
+        },
+        {
+          "command": "mend.change.sendReviewOffline",
+          "when": "view == mend.change && mend.change.send == offline",
+          "group": "navigation@3"
+        },
+        {
+          "command": "mend.change.sendReviewNotHers",
+          "when": "view == mend.change && mend.change.send == notHers",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -550,6 +656,21 @@
           "command": "mend.review.delete",
           "group": "inline@2",
           "when": "commentController =~ /^mend\\.review(\\.note)?$/ && comment =~ /^mend\\.comment\\.(pending|accepted)$/"
+        },
+        {
+          "command": "mend.review.addressed",
+          "group": "inline@1",
+          "when": "commentController =~ /^mend\\.review(\\.note)?$/ && comment =~ /^mend\\.comment\\.(sent|waiting|held)$/"
+        },
+        {
+          "command": "mend.review.reopen",
+          "group": "inline@1",
+          "when": "commentController =~ /^mend\\.review(\\.note)?$/ && comment == mend.comment.addressed"
+        },
+        {
+          "command": "mend.review.retry",
+          "group": "inline@1",
+          "when": "commentController =~ /^mend\\.review(\\.note)?$/ && comment =~ /^mend\\.comment\\.(failed|held)$/"
         }
       ],
       "comments/comment/context": [
@@ -562,6 +683,13 @@
           "command": "mend.review.cancel",
           "group": "inline@2",
           "when": "commentController =~ /^mend\\.review(\\.note)?$/ && comment =~ /^mend\\.comment\\.(pending|accepted)$/"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "mend.change.sendToSession",
+          "when": "resourceScheme == mend-review",
+          "group": "navigation@1"
         }
       ]
     },

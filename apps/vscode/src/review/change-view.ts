@@ -12,6 +12,7 @@ import {
   type CommentRow,
   type FileRow,
 } from "./change-rows.js";
+import { OFFLINE_WORDS } from "./instruction.js";
 import { recordText } from "./record-text.js";
 import type { RecordContent } from "./record.js";
 import type { ReviewStore } from "./review-store.js";
@@ -90,8 +91,8 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
       vscode.commands.registerCommand("mend.change.pickSlice", () => this.#pickSlice()),
       vscode.commands.registerCommand("mend.change.openInWeb", () => this.#openInWeb()),
       vscode.commands.registerCommand("mend.change.refresh", () => store.reread()),
-      vscode.commands.registerCommand("mend.change.repin", () =>
-        store.repin().catch((cause: unknown) => this.onError(cause)),
+      vscode.commands.registerCommand("mend.change.repin", (sinceLastReview?: unknown) =>
+        store.repin(sinceLastReview === true).catch((cause: unknown) => this.onError(cause)),
       ),
       vscode.commands.registerCommand("mend.change.readNewer", () => store.readNewer()),
       vscode.commands.registerCommand("mend.change.read", () => store.readChange()),
@@ -141,6 +142,17 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
       state.kind === "ready" && state.read.diff.files.length > 0,
     );
     void vscode.commands.executeCommand("setContext", "mend.change.ready", state.kind === "ready");
+    // Which Send review the title shows: ready, retry, or disabled with why, each its own button.
+    const offer = this.store.offer();
+    void vscode.commands.executeCommand(
+      "setContext",
+      "mend.change.send",
+      offer.kind === "disabled"
+        ? offer.why === OFFLINE_WORDS
+          ? "offline"
+          : "notHers"
+        : offer.kind,
+    );
     const drawn = JSON.stringify([this.#view.message, this.#rows]);
     if (drawn === this.#drawn) return;
     this.#drawn = drawn;
@@ -169,7 +181,11 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
         const item = new vscode.TreeItem(node.label, vscode.TreeItemCollapsibleState.None);
         item.id = node.id;
         item.iconPath = new vscode.ThemeIcon("arrow-right");
-        item.command = { command: node.command, title: node.label };
+        item.command = {
+          command: node.command,
+          title: node.label,
+          arguments: [node.sinceLastReview],
+        };
         return item;
       }
       case "file": {
