@@ -168,6 +168,23 @@ describe("Store.admitHandoff", () => {
     expect(refusalMessage(outcome)).toMatch(/git said: /);
   });
 
+  it.each([
+    { tree: "a .git entry", entries: [{ name: ".git", content: "gitdir: /tmp/elsewhere\n" }] },
+    {
+      tree: "a .gitmodules whose url is an option",
+      entries: [
+        {
+          name: ".gitmodules",
+          content: '[submodule "x"]\n\tpath = x\n\turl = --upload-pack=touch /tmp/pwned\n',
+        },
+      ],
+    },
+  ])("refuses a snapshot whose tree holds $tree as damaged", async ({ entries }) => {
+    const bundle = buildHandoffBundle(world.checkout, { hostileEntries: entries });
+    const outcome = await expectRefusal(bundle.bytes, "damaged");
+    expect(refusalMessage(outcome)).toMatch(/git said: /);
+  });
+
   it("refuses a base the store has not seen as base-unknown, and admits it once a freshen brings it", async () => {
     fs.writeFileSync(path.join(world.origin, "later.txt"), "later\n");
     sh(world.origin, ["add", "-A"]);

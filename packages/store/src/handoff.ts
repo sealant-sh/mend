@@ -73,6 +73,8 @@ export interface AdmitHandoffInput {
 export interface BundleHeader {
   readonly refs: ReadonlyArray<{ readonly sha: string; readonly name: string }>;
   readonly prerequisites: ReadonlyArray<string>;
+  /** Where the pack starts: the byte after the header's blank line. */
+  readonly packStart: number;
 }
 
 const BUNDLE_SIGNATURES = ["# v2 git bundle", "# v3 git bundle"];
@@ -106,7 +108,7 @@ export const parseBundleHeader = (bytes: Uint8Array): BundleHeader | null => {
     else if (space === -1) return null;
     else refs.push({ sha, name: body.slice(space + 1) });
   }
-  return { refs, prerequisites };
+  return { refs, prerequisites, packStart: end + 2 };
 };
 
 const refuse = (reason: HandoffRefusedError["reason"], message: string) =>
@@ -171,7 +173,7 @@ export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHan
         stderr: `git ${args[0] ?? ""} did not finish within ${Duration.format(timeout)}`,
       }),
     );
-  const run = (args: ReadonlyArray<string>, stdin?: string) =>
+  const run = (args: ReadonlyArray<string>, stdin?: string | Uint8Array) =>
     git(args, repo, undefined, undefined, stdin).pipe(
       Effect.timeoutOrElse({ duration: timeout, orElse: () => timedOut(args) }),
     );
@@ -243,16 +245,12 @@ export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHan
       return yield* damagedOr(verified.failure);
     }
 
-    yield* run([
-      "-c",
-      "fetch.fsckObjects=true",
-      "fetch",
-      "--quiet",
-      "--no-tags",
-      "--no-write-fetch-head",
-      file,
-      `${HANDOFF_SNAPSHOT_REF}:${HANDOFF_SNAPSHOT_REF}`,
-    ]).pipe(Effect.mapError(damagedOr));
+    // `index-pack --strict` checks every object on any git: `fetch` from a bundle ignores
+    // `fetch.fsckObjects` on the server image's git 2.39.
+    yield* run(
+      ["index-pack", "--stdin", "--fix-thin", "--strict"],
+      input.bundle.subarray(header.packStart),
+    ).pipe(Effect.mapError(damagedOr));
 
     const [index, ...otherParentsOfW] = yield* parentsOf(checkpoint);
     if (index === undefined || otherParentsOfW.length > 0) {

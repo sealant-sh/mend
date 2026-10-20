@@ -122,7 +122,7 @@ export const git = (
   env?: Record<string, string>,
   okExitCodes?: ReadonlyArray<number>,
   /** Bytes written to git's stdin, then closed (`pack-objects` reads its object list there). */
-  stdin?: string,
+  stdin?: string | Uint8Array,
 ): Effect.Effect<string, GitError> =>
   Effect.callback<string, GitError>((resume) => {
     const child = execFile(

@@ -99,6 +99,8 @@ export interface HandoffBundleKnobs {
   readonly message?: string;
   readonly shape?: "linear" | "merge" | "root";
   readonly extraRefs?: ReadonlyArray<string>;
+  /** Entries added to the snapshot's worktree tree as written, unchecked: a tree git refuses. */
+  readonly hostileEntries?: ReadonlyArray<{ readonly name: string; readonly content: string }>;
 }
 
 export interface HandoffBundle {
@@ -128,7 +130,11 @@ export const buildHandoffBundle = (
   const indexTree = sh(checkout, ["write-tree"], { env: { GIT_INDEX_FILE: indexCopy } });
   const workIndex = path.join(scratch, "work-index");
   sh(checkout, ["add", "-A"], { env: { GIT_INDEX_FILE: workIndex } });
-  const worktreeTree = sh(checkout, ["write-tree"], { env: { GIT_INDEX_FILE: workIndex } });
+  const cleanTree = sh(checkout, ["write-tree"], { env: { GIT_INDEX_FILE: workIndex } });
+  const worktreeTree =
+    knobs.hostileEntries === undefined
+      ? cleanTree
+      : writeTreeUnchecked(checkout, cleanTree, knobs.hostileEntries);
   const index = sh(checkout, ["commit-tree", indexTree, "-p", head], {
     input: "mend handoff index\n",
   });
@@ -163,6 +169,40 @@ export const buildHandoffBundle = (
   const bytes = new Uint8Array(fs.readFileSync(file));
   fs.rmSync(scratch, { recursive: true, force: true });
   return { bytes, head, index, checkpoint, mergeBase, cut, defaultTip, worktreeTree, indexTree };
+};
+
+/**
+ * `tree` with `entries` added as blobs, written with `hash-object --literally` so git's own
+ * checks never see it: the snapshot a hostile client could send.
+ */
+const writeTreeUnchecked = (
+  checkout: string,
+  tree: string,
+  entries: ReadonlyArray<{ readonly name: string; readonly content: string }>,
+): string => {
+  const listed = sh(checkout, ["ls-tree", tree])
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => {
+      const [meta = "", name = ""] = line.split("\t");
+      const [mode = "", , sha = ""] = meta.split(" ");
+      return { mode: mode.replace(/^0/, ""), name, sha };
+    });
+  const sortKey = (entry: { readonly mode: string; readonly name: string }) =>
+    entry.mode === "40000" ? `${entry.name}/` : entry.name;
+  const added = entries.map(({ name, content }) => ({
+    mode: "100644",
+    name,
+    sha: sh(checkout, ["hash-object", "-w", "--stdin"], { input: content }),
+  }));
+  const body = [...listed, ...added]
+    .toSorted((a, b) => Buffer.compare(Buffer.from(sortKey(a)), Buffer.from(sortKey(b))))
+    .map(({ mode, name, sha }) =>
+      Buffer.concat([Buffer.from(`${mode} ${name}\0`), Buffer.from(sha, "hex")]),
+    );
+  return sh(checkout, ["hash-object", "-w", "--literally", "-t", "tree", "--stdin"], {
+    input: Buffer.concat(body),
+  });
 };
 
 export const makeMergedMainCheckout = (world: HandoffWorld): string => {
