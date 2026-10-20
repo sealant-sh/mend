@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { changeAddress, changeUri } from "./change-content.js";
 import { noteUri } from "./change-note.js";
 import type { ReviewStore } from "./review-store.js";
+import { retryDelivery } from "./review-toast.js";
 import { commentableLines, evidenceLine, threadsOf, type ThreadView } from "./threads.js";
 
 /**
@@ -147,7 +148,7 @@ export class ReviewComments implements vscode.Disposable {
           comment instanceof ShownComment && comment.thread.sendKey !== null
             ? store.retryOf(comment.thread.sendKey)
             : null;
-        return target === null ? undefined : store.retry(target);
+        return target === null ? undefined : retryDelivery(store, target);
       }),
     ];
     this.#draw();

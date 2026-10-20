@@ -87,7 +87,9 @@ export type PastePlan =
 export type PasteStep =
   | { readonly kind: "due" }
   /** Pasted, or nothing to paste and she was told why: what the agent's input holds now. */
-  | { readonly kind: "done"; readonly input: TerminalInput };
+  | { readonly kind: "done"; readonly input: TerminalInput }
+  /** VS Code could not attach the live agent's terminal here: Retry delivery pastes it again. */
+  | { readonly kind: "failed" };
 
 export interface SendRecord {
   /** The follow-up's idempotency key: the same on every retry. */
@@ -144,10 +146,10 @@ export type SendEvent =
   /** Nothing was pasted, and she was told why: the input holds what it held. */
   | { readonly kind: "skipped" }
   /**
-   * Nothing was pasted: her terminal could not be attached here, or the agent process is gone.
-   * Mend still holds the follow-up pending.
+   * Nothing was pasted, and Mend still holds the follow-up pending: the agent process is gone
+   * (`gone`), or her terminal could not be attached here.
    */
-  | { readonly kind: "paste-failed" }
+  | { readonly kind: "paste-failed"; readonly gone: boolean }
   | { readonly kind: "failed"; readonly words: string; readonly retryable: boolean }
   /**
    * Retry delivery, with everything kept: from a failure, or from a follow-up Mend holds pending
@@ -282,8 +284,12 @@ export const terminalInput = (
   records: ReadonlyArray<SendRecord>,
 ): { readonly input: TerminalInput; readonly agent: string } | null => {
   const latest = records.findLast((record) => record.phase.kind !== "refused");
-  return latest?.phase.kind === "in-terminal" && latest.phase.paste.kind === "done"
-    ? { input: latest.phase.paste.input, agent: latest.phase.agent }
+  if (latest?.phase.kind !== "in-terminal") return null;
+  const { agent, paste } = latest.phase;
+  if (paste.kind === "done") return { input: paste.input, agent };
+  // Nothing was pasted: the input holds what this review was composed onto.
+  return paste.kind === "failed" && latest.paste.kind !== "all"
+    ? { input: latest.paste.onto, agent }
     : null;
 };
 
@@ -354,9 +360,10 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
           }
         : record;
     case "paste-failed":
-      return record.phase.kind === "in-terminal"
+      if (record.phase.kind !== "in-terminal") return record;
+      return event.gone
         ? { ...record, phase: { kind: "pending" } }
-        : record;
+        : { ...record, phase: { ...record.phase, paste: { kind: "failed" } } };
     case "failed":
       return record.phase.kind === "sending" || record.phase.kind === "delivering"
         ? {
@@ -384,9 +391,19 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
           }
         : record;
     case "retry":
-      return mayRetry(record, event.agent)
-        ? { ...record, phase: { kind: "sending", since: event.at } }
-        : record;
+      if (!mayRetry(record, event.agent)) return record;
+      // Mend holds it pending for her live agent: only the paste is done again.
+      return record.phase.kind === "in-terminal" && event.agent?.kind === "terminal"
+        ? {
+            ...record,
+            phase: {
+              kind: "in-terminal",
+              agent: event.agent.name,
+              processId: event.agent.processId,
+              paste: { kind: "due" },
+            },
+          }
+        : { ...record, phase: { kind: "sending", since: event.at } };
     case "loaded":
       return record.phase.kind === "sending"
         ? {
@@ -421,12 +438,26 @@ export const DRAFT_GONE =
   "A Mend draft in this review was dismissed before it was sent, and the review's text still asks for it, so nothing was sent";
 
 /**
- * Retry delivery is offered on a failed record, and on a follow-up Mend holds pending once the
- * session has no live agent: the same key then launches the stopped session on the review.
+ * Retry delivery is offered on a failed record; on a follow-up Mend holds pending once the session
+ * has no live agent, when the same key launches the stopped session on the review; and on one whose
+ * paste did not happen while her agent lives, when it is pasted again.
  */
 export const mayRetry = (record: SendRecord, agent: LiveAgent | null): boolean =>
   record.phase.kind === "failed" ||
-  ((record.phase.kind === "pending" || record.phase.kind === "in-terminal") && agent === null);
+  ((record.phase.kind === "pending" || record.phase.kind === "in-terminal") && agent === null) ||
+  (record.phase.kind === "in-terminal" &&
+    record.phase.paste.kind === "failed" &&
+    agent?.kind === "terminal" &&
+    agent.hers);
+
+/**
+ * A record a toast of hers offered Retry delivery on, and that still waits for it: failed, or held
+ * pending with nothing pasted. One sent, or retried meanwhile, does not.
+ */
+export const awaitsRetry = (record: SendRecord): boolean =>
+  record.phase.kind === "failed" ||
+  record.phase.kind === "pending" ||
+  (record.phase.kind === "in-terminal" && record.phase.paste.kind === "failed");
 
 const isHeld = (record: SendRecord): boolean =>
   record.phase.kind === "pending" || record.phase.kind === "in-terminal";
@@ -487,9 +518,14 @@ export const recordLabel = (phase: SendPhase): string => {
     case "delivering":
       return "delivery in progress";
     case "in-terminal":
-      return phase.paste.kind === "done"
-        ? `follow-up pending · in ${phase.agent}'s terminal`
-        : "follow-up pending";
+      switch (phase.paste.kind) {
+        case "done":
+          return `follow-up pending · in ${phase.agent}'s terminal`;
+        case "failed":
+          return `follow-up pending · not pasted into ${phase.agent}'s terminal`;
+        case "due":
+          return "follow-up pending";
+      }
     case "pending":
       return "follow-up pending";
     case "delivered":

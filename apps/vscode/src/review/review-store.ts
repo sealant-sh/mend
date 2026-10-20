@@ -12,6 +12,7 @@ import type { Pasted } from "./agent-paste.js";
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
 import {
+  awaitsRetry,
   commentIds,
   commentTarget,
   DRAFT_GONE,
@@ -22,6 +23,7 @@ import {
   nextAction,
   openRecord,
   postedComment,
+  recordLabel,
   retryRecord,
   startSend,
   step,
@@ -37,6 +39,7 @@ import {
   addedText,
   composeAddition,
   composeInstruction,
+  OFFLINE_WORDS,
   sendOffer,
   textToSend,
   type InstructionComment,
@@ -138,6 +141,9 @@ export interface Composed {
   readonly base: { readonly input: TerminalInput; readonly agent: string } | null;
 }
 
+/** Whether Retry delivery sent the review again; when not, what it found instead. */
+export type Retried = { readonly retried: true } | { readonly retried: false; readonly words: string };
+
 /** Whether Send to session recorded the review; when not, why, in Mend's words. */
 export type Sent = { readonly sent: true } | { readonly sent: false; readonly words: string };
 
@@ -185,7 +191,7 @@ const asListed = (comment: PendingComment | ServerComment): InstructionComment =
 const pasteWords = (pasted: Exclude<Pasted, "pasted">, agent: string): string =>
   pasted === "agent-gone"
     ? `${agent} exited before the review was pasted, so nothing was pasted. Mend holds the follow-up pending: Retry delivery sends it to the stopped session.`
-    : `VS Code could not attach ${agent}'s terminal here, so nothing was pasted. Mend holds the follow-up pending.`;
+    : `VS Code could not attach ${agent}'s terminal here, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it again.`;
 
 const TEXT_STAYS = "Your text stays in this editor.";
 
@@ -754,18 +760,26 @@ export class ReviewStore implements vscode.Disposable {
    * of that session with that key, failed, or held pending by Mend once the session has no live
    * agent (the route then launches the stopped session on the review).
    */
-  async retry(target: RetryTarget): Promise<void> {
-    if (this.#offline) return;
+  async retry(target: RetryTarget): Promise<Retried> {
+    if (this.#offline) return { retried: false, words: `Retry delivery sent nothing: ${OFFLINE_WORDS}` };
     const record = (await this.kept.read(target.place)).review.sends.find(
       (candidate) => candidate.key === target.key,
     );
-    if (record === undefined) return;
+    if (record === undefined)
+      return {
+        retried: false,
+        words: "Retry delivery sent nothing: VS Code no longer keeps this review",
+      };
     const [detail, viewer] = await Promise.all([
       this.sessions.sessionDetail(target.place.sessionId),
       this.sessions.viewerId(),
     ]);
     const agent = liveAgent(detail, viewer);
-    if (detail.changeId === null || !mayRetry(record, agent)) return;
+    if (detail.changeId === null || !mayRetry(record, agent))
+      return {
+        retried: false,
+        words: `Retry delivery sent nothing: this review already reads ${recordLabel(record.phase)}`,
+      };
     const context: SendContext = {
       place: target.place,
       changeId: detail.changeId,
@@ -777,7 +791,9 @@ export class ReviewStore implements vscode.Disposable {
       at: new Date().toISOString(),
       agent,
     });
-    if (retried?.phase.kind === "sending") await this.#drive(context, target.key);
+    if (retried !== null && nextAction(retried).kind !== "idle")
+      await this.#drive(context, target.key);
+    return { retried: true };
   }
 
   /** Addressed or Reopen (story d, step 7): her call on a sent comment, never Mend's. */
@@ -981,11 +997,9 @@ export class ReviewStore implements vscode.Disposable {
               await this.#step(context, key, { kind: "pasted" });
               break;
             }
-            await this.#step(context, key, { kind: "paste-failed" });
+            await this.#step(context, key, { kind: "paste-failed", gone: pasted === "agent-gone" });
             const agent = record.phase.kind === "in-terminal" ? record.phase.agent : "the agent";
-            this.#fail(`paste:${key}`, pasteWords(pasted, agent), {
-              retry: pasted === "agent-gone" ? retry : null,
-            });
+            this.#fail(`paste:${key}`, pasteWords(pasted, agent), { retry });
             break;
           }
           case "skip-paste":
@@ -1073,7 +1087,7 @@ export class ReviewStore implements vscode.Disposable {
     if (retry === null) return true;
     void this.reloadReview();
     return (await this.kept.read(retry.place)).review.sends.some(
-      (record) => record.key === retry.key && record.phase.kind === "failed",
+      (record) => record.key === retry.key && awaitsRetry(record),
     );
   }
 

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import type { Composed, ReviewStore } from "./review-store.js";
+import { retryDelivery } from "./review-toast.js";
 
 /**
  * Send review (story d, step 6): an editor with the instruction Mend will send, which she edits
@@ -86,7 +87,7 @@ export class SendEditor implements vscode.Disposable {
       ),
       vscode.commands.registerCommand("mend.change.retryDelivery", () => {
         const target = store.retryTarget();
-        return target === null ? undefined : store.retry(target);
+        return target === null ? undefined : retryDelivery(store, target);
       }),
       // The disabled twins of Send review: their titles say why, and they do nothing.
       vscode.commands.registerCommand("mend.change.sendReviewOffline", () => undefined),

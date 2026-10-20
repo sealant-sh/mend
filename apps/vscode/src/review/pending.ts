@@ -253,6 +253,7 @@ const parseInput = (value: unknown): TerminalInput | null => {
 };
 
 const parsePasteStep = (value: unknown): PasteStep => {
+  if (isRecord(value) && value["kind"] === "failed") return { kind: "failed" };
   const input = isRecord(value) && value["kind"] === "done" ? parseInput(value["input"]) : null;
   return input === null ? { kind: "due" } : { kind: "done", input };
 };
