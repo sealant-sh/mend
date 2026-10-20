@@ -2,14 +2,15 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { ProjectId } from "@mend/domain";
-import { SessionEngine } from "@mend/sessions";
+import type { Session } from "@mend/domain/workbench";
+import { SessionEngine, startFromBase } from "@mend/sessions";
 import { skippedFreshen, Store, type AdmittedHandoff } from "@mend/store";
 import { buildHandoffBundle, sh } from "@mend/store/testing";
 import { it } from "@mend/test-ci/effect-vitest";
 import { Effect, Result } from "effect";
 import { describe, expect } from "vitest";
 
-import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
+import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
 import { setup, withEngine, type World } from "./engine/fixture.ts";
 
 const checkoutIn = (tmp: string) => {
@@ -54,6 +55,25 @@ const checkpointsOf = (world: World, worktreeId: string) =>
     .toSorted((a, b) => a.ordinal - b.ordinal)
     .map((checkpoint) => [checkpoint.ordinal, checkpoint.sha]);
 
+/** What a crash right after the worktree row leaves: the row, and nothing it should own. */
+const crashAfterRow = (world: World, memory: MemoryCaptureStore, session: Session) => {
+  const worktreeId = session.worktreeId;
+  world.sessions.delete(session.id);
+  world.checkpoints.splice(
+    0,
+    world.checkpoints.length,
+    ...world.checkpoints.filter((checkpoint) => checkpoint.worktreeId !== worktreeId),
+  );
+  for (const [id, change] of world.changes) {
+    if (change.worktreeId === worktreeId) world.changes.delete(id);
+  }
+  memory.chains.delete(worktreeId);
+  memory.leases.delete(worktreeId);
+  for (const [id, capture] of memory.captures) {
+    if (capture.worktreeId === worktreeId) memory.captures.delete(id);
+  }
+};
+
 describe("SessionEngine handoff", () => {
   it("anchors Review at the base: ordinal 0 is M, the session-start and the next checkpoint are W, the change's base is M", async () => {
     const memory = makeMemoryCaptureStore();
@@ -92,20 +112,7 @@ describe("SessionEngine handoff", () => {
           const admitted = yield* admitIn(project.storePath, bundle.bytes);
           const first = yield* provisionHandoff(project.id, "fix-login", admitted);
           const worktreeId = first.worktreeId;
-          world.sessions.delete(first.id);
-          world.checkpoints.splice(
-            0,
-            world.checkpoints.length,
-            ...world.checkpoints.filter((checkpoint) => checkpoint.worktreeId !== worktreeId),
-          );
-          for (const [id, change] of world.changes) {
-            if (change.worktreeId === worktreeId) world.changes.delete(id);
-          }
-          memory.chains.delete(worktreeId);
-          memory.leases.delete(worktreeId);
-          for (const [id, capture] of memory.captures) {
-            if (capture.worktreeId === worktreeId) memory.captures.delete(id);
-          }
+          crashAfterRow(world, memory, first);
           const engine = yield* SessionEngine;
           const replayed = yield* engine.provisionSessionIn(worktreeId, {
             harness: "codex",
@@ -135,6 +142,41 @@ describe("SessionEngine handoff", () => {
           expect(
             [...world.changes.values()].filter((change) => change.worktreeId === worktreeId),
           ).toHaveLength(1);
+        }),
+      { captured: memory },
+    );
+  });
+
+  it("finishes a creation that died after its row when a named join (`mend claude --worktree <name>`) is the next session in it", async () => {
+    const memory = makeMemoryCaptureStore();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const bundle = buildHandoffBundle(checkoutIn(tmp));
+          const admitted = yield* admitIn(project.storePath, bundle.bytes);
+          const first = yield* provisionHandoff(project.id, "fix-login", admitted);
+          crashAfterRow(world, memory, first);
+          const engine = yield* SessionEngine;
+          const joined = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "fix-login",
+            start: startFromBase(null),
+            ownerUserId: "user-fixture",
+          });
+          expect(joined.worktreeId).toBe(first.worktreeId);
+          expect(memory.chains.get(first.worktreeId)?.headN).toBe(0);
+          expect(checkpointsOf(world, first.worktreeId)).toEqual([
+            [0, bundle.mergeBase],
+            [1, bundle.checkpoint],
+          ]);
+          expect(
+            [...world.changes.values()]
+              .filter((change) => change.worktreeId === first.worktreeId)
+              .map((change) => change.baseSha),
+          ).toEqual([bundle.mergeBase]);
         }),
       { captured: memory },
     );

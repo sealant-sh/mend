@@ -259,7 +259,7 @@ checkpoint past ordinal 0 (the first session-start, a Review open) is `W` itself
 `M..W`, exactly the local diff. `ensureForWorktree(M)` makes the change's base `M`. Capture 0 exists
 before `provisionInWorktree`, so a hot claim keeps it. `capture-verify.ts` walks the listed packs
 together, so a multi-pack capture 0 verifies. The creation tail (capture 0, ordinal 0, the change
-row) is idempotent and runs again when a session is provisioned in a handed-off worktree.
+row) is idempotent and runs again whenever a session is provisioned in or joins a worktree.
 
 **Engine verb.** `HandoffStart.receiveAs(caller, projectId, query, bytes)`
 (`apps/api/src/handoff-start.ts`, provided once as `HandoffStartLive`) runs:
@@ -295,7 +295,7 @@ it. The CLI shows it in `sessionRowFacts` (`idle · handed off from dana-mbp · 
 | admission         | quarantine dir                                                     | `ensuring` removes it; boot removes `handoff-q-*` older than 1 h                                                         |
 | delta pack upload | an unreferenced recorded pack under `captures/<worktree>/0/packs/` | the retry re-puts the same key; capture retention retires the orphan after the grace                                     |
 | branch ref        | `store_refs` branch at H, no row                                   | the ref keeps its name: the retry, like any other handoff of the branch, finds the name taken and takes the next suffix  |
-| row               | worktree with seed, no capture 0                                   | the replay finishes the creation tail (capture 0, ordinal 0, the change row), as does the next session provisioned in it |
+| row               | worktree with seed, no capture 0                                   | the replay finishes the creation tail (capture 0, ordinal 0, the change row), as does any next session in it, a join too |
 | capture 0         | worktree, no session                                               | replay provisions the session                                                                                            |
 | session           | `starting`                                                         | replay re-applies the hold; otherwise `mend attach` resumes it                                                           |
 
@@ -311,8 +311,6 @@ it. The CLI shows it in `sessionRowFacts` (`idle · handed off from dana-mbp · 
   until the first install. This is a follow-up.
 - A replay by another account of the project is refused as `StoreFailure` with the words
   `received before, for another account`; the contract has no closer refusal.
-- A base worktree whose creation died after its row is not finished by the next session in it; only
-  a handed-off worktree's creation tail runs again. Pre-existing, outside this feature.
 
 - `holdWorkspace` opens the workspace with a shell resume and then ends that resume's shell, so the
   TUI's session row for a held session reads `agent ended <n> ago` where no agent ran.

@@ -8689,6 +8689,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const existing = yield* worktreesRepo.byName(project.id, input.name);
           if (existing !== null) {
             yield* refuseBaseConflict(existing, input.start.base);
+            yield* completeWorktreeCreation(project, existing);
             return existing;
           }
         }
@@ -8729,6 +8730,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return row;
       });
 
+      /**
+       * The rest of a worktree's creation once its row exists: capture 0, the ordinal-0
+       * checkpoint and the change row. Each step does only what is missing, so every path that
+       * hands a worktree to a session runs it, and a creation that died after its row is finished
+       * by whichever session comes next.
+       */
       const completeWorktreeCreation = Effect.fn("SessionEngine.completeWorktreeCreation")(
         function* (project: Project, row: Worktree) {
           if (sessionRepo.attachWorktree !== undefined) {
@@ -8747,7 +8754,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             );
           }
-          yield* changes.ensureForWorktree(project.id, row.id, row.branch, row.baseSha);
+          if ((yield* changes.byWorktree(row.id)) === null) {
+            yield* changes.ensureForWorktree(project.id, row.id, row.branch, row.baseSha);
+          }
         },
       );
 
@@ -24120,7 +24129,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const worktree = yield* worktreesRepo.byId(worktreeId);
             const project = yield* projects.byId(worktree.projectId);
             yield* refuseUnsupportedProject(project);
-            if (worktree.handoff !== null) yield* completeWorktreeCreation(project, worktree);
+            yield* completeWorktreeCreation(project, worktree);
             return yield* provisionInWorktree(project, worktree, input);
           }).pipe(asSealantUser(input.ownerUserId)),
         attachRun: (sessionId, sealantRunId, workspaceId) =>
