@@ -478,8 +478,8 @@ untracked files. The checkout is not written to. Git runs against copies of `HEA
 and every object it writes goes to a scratch repository, so no file, index, ref or object of the
 checkout changes. With a prompt, the session's agent (`--with`, default `claude`) starts on it and
 the command returns without attaching; when the agent does not start, the CLI says the prompt was
-not sent and names `mend resume`. Without one, Mend holds the workspace with no agent, and the CLI
-prints the session's status as the server answered it.
+not sent and names `mend <harness> --worktree <name>`. Without one, Mend holds the workspace with a
+shell and no agent, and the CLI prints `✓ held · idle, no agent`.
 
 ```text
 ✓ project newsroom-api · main · from origin

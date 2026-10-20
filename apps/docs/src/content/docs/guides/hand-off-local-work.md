@@ -46,7 +46,8 @@ terminal, and the web app, the dashboard and the phone list it like any other se
 picks the agent: `claude` (the default), `codex`, `opencode` or `pi`.
 
 When the agent does not start, the handoff is still there and the CLI says what happened to the
-prompt: `… · the prompt was not sent · mend resume 3f2a1c0d starts an agent in the handoff`. The
+prompt:
+`… · the prompt was not sent · mend claude --worktree fix-login starts claude in the handoff`. The
 command exits with code 1.
 
 ## Hand off without a prompt
@@ -55,13 +56,14 @@ command exits with code 1.
 mend handoff
 ```
 
-Mend holds the workspace with no agent, and the last block reads the session's status as the server
-answered it: `✓ held · idle, no agent`. The session row reads `idle · handed off from dana-mbp`,
-where `dana-mbp` is the name of the machine you handed off from, and `mend sessions` names the
-machine the same way. Attach to it, start an agent in it later, or open it from another device.
+Mend holds the workspace with a shell and no agent, and the last block reads
+`✓ held · idle, no agent`. A hold still coming up reads `  starting · the hold is still coming up`.
+The session row reads `idle · handed off from dana-mbp`, where `dana-mbp` is the name of the machine
+you handed off from, and `mend sessions` names the machine the same way. Attach to it, start an
+agent in it later, or open it from another device.
 
 When the hold fails, the block reads `! not held · failed · <why>`, the command exits with code 1,
-and `mend resume <session>` starts the session again.
+and `mend resume <session> --with shell` opens the workspace with a shell.
 
 ## What travels and what stays
 
@@ -127,7 +129,8 @@ A detached `HEAD` hands off too, as `handoff-<sha>`:
 
 ## When the CLI refuses
 
-Each refusal ends with `nothing was created`.
+Each refusal ends with `nothing was created`. A refusal after the CLI adopted the repository ends
+with `nothing was handed off · <project> stays adopted` instead.
 
 | The CLI says                                                       | What to do                                        |
 | ------------------------------------------------------------------ | ------------------------------------------------- |
