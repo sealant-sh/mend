@@ -44,7 +44,7 @@ const provisionHandoff = (
       harness: "codex",
       label: null,
       name,
-      start: { kind: "handoff", admitted, ownerUserId: owner },
+      start: { kind: "handoff", admitted, ownerUserId: owner, previous: null },
       ownerUserId: owner,
     }),
   );

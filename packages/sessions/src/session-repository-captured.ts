@@ -262,6 +262,8 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             indexTree: HexSha.make(admitted.indexTree),
             ownerUserId,
             deltaPack: delta.key,
+            commitsAhead: admitted.commitsAhead,
+            previous: start.previous,
           };
           return {
             name: identity.directory,

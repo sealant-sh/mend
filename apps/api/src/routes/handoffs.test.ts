@@ -83,7 +83,11 @@ const unlaunched = (id: SessionId, worktreeId: WorktreeId, owner: string): Sessi
 
 const uniqueViolation = (constraint: string) => ({ code: "23505", constraint });
 
-const worldWith = async (limits: Parameters<typeof createTenancyApi>[0] = {}, seen: Seen) => {
+const worldWith = async (
+  limits: Parameters<typeof createTenancyApi>[0] = {},
+  seen: Seen,
+  sessions: ReadonlyArray<Session> = [],
+) => {
   let count = 0;
   const checkpoints = new Set<string>();
   const provision: SessionEngine["Service"]["provision"] = (input) =>
@@ -121,6 +125,8 @@ const worldWith = async (limits: Parameters<typeof createTenancyApi>[0] = {}, se
         indexTree: HexSha.make(admitted.indexTree),
         ownerUserId,
         deltaPack: `captures/${worktreeId}/0/packs/${"d".repeat(64)}`,
+        commitsAhead: admitted.commitsAhead,
+        previous: input.start.previous,
       };
       api?.world.addWorktree(
         new Worktree({
@@ -139,6 +145,7 @@ const worldWith = async (limits: Parameters<typeof createTenancyApi>[0] = {}, se
       return unlaunched(sessionId, worktreeId, ownerUserId);
     });
   return createTenancyApi(limits, {
+    sessions,
     implement: {
       store: {
         freshenBase: (_storePath, baseRef) =>
@@ -237,6 +244,10 @@ const earlierHandoff = (
   bundle: ReturnType<typeof buildHandoffBundle>,
   owner: string,
   localBranch: string | null = "fix/login",
+  answered: { readonly commitsAhead: number; readonly previous: string | null } = {
+    commitsAhead: 2,
+    previous: null,
+  },
 ) =>
   new Worktree({
     id: WorktreeId.make(id),
@@ -258,10 +269,25 @@ const earlierHandoff = (
       indexTree: HexSha.make(bundle.indexTree),
       ownerUserId: owner,
       deltaPack: `captures/${id}/0/packs/${"d".repeat(64)}`,
+      ...answered,
     },
     createdAt: NOW,
     updatedAt: NOW,
   });
+
+/** The same bundle with its prerequisites described in other words: other bytes, the same W. */
+const relabelled = (bytes: Uint8Array): Uint8Array => {
+  const text = Buffer.from(bytes).toString("latin1");
+  const end = text.indexOf("\n\n");
+  const header = text
+    .slice(0, end)
+    .split("\n")
+    .map((line) => (line.startsWith("-") ? `${line.split(" ")[0]} described again` : line))
+    .join("\n");
+  return new Uint8Array(
+    Buffer.concat([Buffer.from(header, "latin1"), Buffer.from(bytes.subarray(end))]),
+  );
+};
 
 const until = async (condition: () => boolean, what: string) => {
   for (let tick = 0; tick < 200; tick += 1) {
@@ -431,15 +457,83 @@ describe("POST /projects/:id/handoffs", () => {
     expect(await replayed.json()).toMatchObject({
       replayed: true,
       previous: null,
-      commitsAhead: Number(
-        sh(world.checkout, ["rev-list", "--count", `${bundle.mergeBase}..${bundle.head}`]),
-      ),
+      commitsAhead: 2,
       worktree: { id: "worktree-earlier" },
       session: { status: "idle" },
     });
+    expect(api.world.calls).not.toContain("store.admitHandoff");
     expect(seen.provisions).toEqual([]);
     expect(seen.sessionsIn).toEqual(["worktree-earlier"]);
     expect(seen.holds).toEqual(["session-again-worktree-earlier:alice"]);
+  });
+
+  it("answers a replay from what the first receipt stored, admitting nothing: a file budget lowered since, the earlier handoff it named", async () => {
+    const seen = freshSeen();
+    api = await worldWith({ handoffFileBytes: 64 * 1024 }, seen);
+    fs.mkdirSync(path.join(world.checkout, "assets"));
+    fs.writeFileSync(path.join(world.checkout, "assets", "demo.bin"), Buffer.alloc(100 * 1024, 7));
+    const bundle = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T09:30:00.000Z" });
+    fs.rmSync(path.join(world.checkout, "assets"), { recursive: true, force: true });
+    const first = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T09:20:00.000Z" });
+    api.world.addWorktree(earlierHandoff("worktree-first", "fix-login", first, "alice"));
+    api.world.addWorktree(
+      earlierHandoff("worktree-second", "fix-login-2", bundle, "alice", "fix/login", {
+        commitsAhead: 3,
+        previous: "fix-login",
+      }),
+    );
+    api.world.calls.splice(0, api.world.calls.length);
+    const response = await post(api, "alice", bundle.bytes, "harness=claude&hold=false");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      replayed: true,
+      commitsAhead: 3,
+      previous: { name: "fix-login" },
+      worktree: { id: "worktree-second" },
+    });
+    expect(api.world.calls).not.toContain("store.admitHandoff");
+    expect(seen.provisions).toEqual([]);
+  });
+
+  it("returns and holds only the receiving account's own session on a replay: a teammate's session in the worktree is neither", async () => {
+    const seen = freshSeen();
+    const bundle = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T09:40:00.000Z" });
+    const carols = unlaunched(
+      SessionId.make("session-carol"),
+      WorktreeId.make("worktree-earlier"),
+      "carol",
+    );
+    api = await worldWith({}, seen, [carols]);
+    api.world.addWorktree(earlierHandoff("worktree-earlier", "fix-login", bundle, "alice"));
+    const response = await post(api, "alice", bundle.bytes);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      replayed: true,
+      session: { id: "session-again-worktree-earlier", ownerUserId: "alice" },
+    });
+    expect(seen.sessionsIn).toEqual(["worktree-earlier"]);
+    expect(seen.holds).toEqual(["session-again-worktree-earlier:alice"]);
+  });
+
+  it("provisions one session for two different uploads of the same W by one account at once", async () => {
+    const seen = freshSeen();
+    api = await worldWith({}, seen);
+    const bundle = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T09:50:00.000Z" });
+    const gate = Deferred.makeUnsafe<void>();
+    seen.provisionGates.push(gate);
+    const one = post(api, "alice", bundle.bytes);
+    await until(() => seen.provisions.length === 1, "the first provision");
+    const two = post(api, "alice", relabelled(bundle.bytes));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    Deferred.doneUnsafe(gate, Exit.void);
+    const answers = await Promise.all([one, two]);
+    expect(answers.map((answer) => answer.status)).toEqual([200, 200]);
+    const bodies = await Promise.all(answers.map((answer) => answer.json()));
+    expect(bodies.map((body) => body.session.id)).toEqual([
+      "session-handoff-1",
+      "session-handoff-1",
+    ]);
+    expect(seen.provisions).toHaveLength(1);
   });
 
   it("refuses a replay by another account of the project, after admitting its bytes once", async () => {

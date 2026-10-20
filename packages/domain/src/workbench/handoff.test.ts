@@ -198,6 +198,8 @@ describe("WorktreeHandoff", () => {
     indexTree: "f".repeat(40),
     ownerUserId: "user-dana",
     deltaPack: "packs/pack-0123.pack",
+    commitsAhead: 2,
+    previous: null,
   };
 
   it("decodes the jsonb value and encodes it back unchanged", () => {

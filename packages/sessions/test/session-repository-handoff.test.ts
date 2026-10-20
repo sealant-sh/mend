@@ -95,7 +95,7 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
         const created = yield* repo.createWorktree(
           world.project.id,
           { id: worktreeId, directory: worktreeId, branch },
-          { kind: "handoff", admitted, ownerUserId: "user-dana" },
+          { kind: "handoff", admitted, ownerUserId: "user-dana", previous: "fix-login" },
           null,
         );
         const row = yield* rows.create({
@@ -173,6 +173,10 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
         worktreeTree: bundle.worktreeTree,
         indexTree: bundle.indexTree,
         ownerUserId: "user-dana",
+        commitsAhead: Number(
+          sh(checkout, ["rev-list", "--count", `${bundle.mergeBase}..${bundle.head}`]),
+        ),
+        previous: "fix-login",
       },
     });
     expect(bundle.mergeBase).toBe(world.baseSha);
@@ -225,7 +229,12 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
           noFreshen,
         );
         const identity = { id: worktreeId, directory: worktreeId, branch };
-        const start: WorktreeStart = { kind: "handoff", admitted, ownerUserId: "user-dana" };
+        const start: WorktreeStart = {
+          kind: "handoff",
+          admitted,
+          ownerUserId: "user-dana",
+          previous: null,
+        };
         yield* repo.createWorktree(world.project.id, identity, start, null);
         return yield* repo
           .createWorktree(world.project.id, identity, start, null)

@@ -19,6 +19,7 @@ import {
   type Project,
   type Session,
   type Worktree,
+  type WorktreeHandoff,
 } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import {
@@ -52,7 +53,7 @@ type HandoffError = NotFound | HandoffRefused | BudgetExceeded | StoreFailure;
 const NAME_TRIES = 5;
 
 type ProvisionOutcome =
-  | { readonly kind: "made"; readonly session: Session; readonly name: string }
+  | { readonly kind: "made"; readonly session: Session }
   | { readonly kind: "name-taken"; readonly name: string }
   | { readonly kind: "replayed" };
 
@@ -85,33 +86,24 @@ const unheld = (session: Session) =>
 
 const BRANCH_PREFIX = "refs/heads/mend/";
 
+/** The newest of the account's handoffs of `localBranch` among the names this one passed over. */
 const previousOf = (
   rows: ReadonlyArray<Worktree>,
-  chosen: string,
+  passed: ReadonlySet<string>,
   userId: string,
-  admitted: AdmittedHandoff,
-): { readonly name: string } | null => {
-  const passed = new Set<string>();
-  for (;;) {
-    const name = handoffWorktreeName(admitted.trailers.localBranch, admitted.head, (candidate) =>
-      passed.has(candidate),
-    );
-    if (name === chosen) break;
-    passed.add(name);
-  }
-  const earlier = rows
+  localBranch: string | null,
+): string | null =>
+  rows
     .filter(
       (row) =>
         passed.has(row.name) &&
         row.handoff !== null &&
         row.handoff.ownerUserId === userId &&
         row.handoff.localBranch !== null &&
-        row.handoff.localBranch === admitted.trailers.localBranch,
+        row.handoff.localBranch === localBranch,
     )
     .toSorted((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-    .at(0);
-  return earlier === undefined ? null : { name: earlier.name };
-};
+    .at(0)?.name ?? null;
 
 export const makeHandoffStart = Effect.gen(function* () {
   const access = yield* ProjectAccess;
@@ -243,9 +235,11 @@ export const makeHandoffStart = Effect.gen(function* () {
     userId: string,
     query: HandoffQueryInput,
   ) {
-    const first = (yield* sessions.listForWorktree(worktree.id)).at(-1);
+    const own = (yield* sessions.listForWorktree(worktree.id))
+      .filter((session) => session.ownerUserId === userId)
+      .at(-1);
     return (
-      first ??
+      own ??
       (yield* engine
         .provisionSessionIn(worktree.id, {
           harness: query.harness,
@@ -263,39 +257,40 @@ export const makeHandoffStart = Effect.gen(function* () {
     );
   });
 
+  /** The account's earlier receipt of the same W, answered from what it stored then. */
   const replay = Effect.fn("HandoffStart.replay")(function* (
     project: Project,
     earlier: Worktree,
+    seed: WorktreeHandoff,
     userId: string,
     query: HandoffQueryInput,
-    admitted: AdmittedHandoff,
   ) {
-    if (earlier.handoff?.ownerUserId !== userId) {
-      return yield* new StoreFailure({
-        message: "this handoff was received before, for another account · nothing was created",
-      });
-    }
     const session = yield* sessionIn(project, earlier, userId, query);
     const answered =
       query.hold === "true" && unheld(session) ? yield* hold(session, userId) : session;
     return new HandoffReceived({
       session: answered,
       worktree: earlier,
-      commitsAhead: admitted.commitsAhead,
+      commitsAhead: seed.commitsAhead,
       replayed: true,
-      previous: null,
+      previous: seed.previous === null ? null : { name: seed.previous },
     });
+  });
+
+  const foreign = new StoreFailure({
+    message: "this handoff was received before, for another account · nothing was created",
   });
 
   const takenNames = Effect.fn("HandoffStart.takenNames")(function* (projectId: ProjectId) {
     const rows = yield* worktrees.listForProject(projectId);
     const refs = yield* storeRefs.list(projectId);
-    return new Set([
+    const taken = new Set([
       ...rows.map((row) => row.name),
       ...refs
         .filter((ref) => ref.name.startsWith(BRANCH_PREFIX))
         .map((ref) => ref.name.slice(BRANCH_PREFIX.length)),
     ]);
+    return { rows, taken };
   });
 
   const provision = Effect.fn("HandoffStart.provision")(function* (
@@ -304,26 +299,28 @@ export const makeHandoffStart = Effect.gen(function* () {
     query: HandoffQueryInput,
     admitted: AdmittedHandoff,
   ) {
-    const taken = yield* takenNames(project.id);
+    const { rows, taken } = yield* takenNames(project.id);
+    const localBranch = admitted.trailers.localBranch;
+    // Every name passed over, taken before the look or lost to another create since.
     const passed = new Set<string>();
     for (let attempt = 0; attempt <= NAME_TRIES; attempt += 1) {
-      const name = handoffWorktreeName(
-        admitted.trailers.localBranch,
-        admitted.head,
-        (candidate) => taken.has(candidate) || passed.has(candidate),
-      );
+      const name = handoffWorktreeName(localBranch, admitted.head, (candidate) => {
+        if (taken.has(candidate)) passed.add(candidate);
+        return passed.has(candidate);
+      });
+      const previous = previousOf(rows, passed, userId, localBranch);
       const outcome = yield* engine
         .provision({
           projectId: project.id,
           harness: query.harness,
           label: null,
           name,
-          start: { kind: "handoff", admitted, ownerUserId: userId },
+          start: { kind: "handoff", admitted, ownerUserId: userId, previous },
           ownerUserId: userId,
           origin: "mend",
         })
         .pipe(
-          Effect.map((session): ProvisionOutcome => ({ kind: "made", session, name })),
+          Effect.map((session): ProvisionOutcome => ({ kind: "made", session })),
           Effect.catchTags({
             ProjectNotFoundError: () => Effect.fail(new NotFound({ id: project.id })),
             GitError: (error) => Effect.fail(new StoreFailure({ message: error.stderr })),
@@ -347,17 +344,7 @@ export const makeHandoffStart = Effect.gen(function* () {
           }),
         );
       if (outcome.kind === "replayed") return null;
-      if (outcome.kind === "made") {
-        return {
-          ...outcome,
-          previous: previousOf(
-            yield* worktrees.listForProject(project.id),
-            outcome.name,
-            userId,
-            admitted,
-          ),
-        };
-      }
+      if (outcome.kind === "made") return { session: outcome.session, previous };
       passed.add(outcome.name);
     }
     return yield* new StoreFailure({
@@ -370,29 +357,33 @@ export const makeHandoffStart = Effect.gen(function* () {
     userId: string,
     query: HandoffQueryInput,
     bytes: Uint8Array,
+    snapshot: Sha | null,
   ) {
-    const snapshot = parseBundleHeader(bytes)?.refs[0]?.sha;
     const earlier =
-      snapshot === undefined
-        ? null
-        : yield* worktrees.byHandoffCheckpoint(project.id, Sha.make(snapshot));
-    if (earlier === null) {
-      yield* requireSessionRoom(userId, project.organizationId).pipe(
-        Effect.provideService(Budgets, budgets),
-        Effect.provideService(SessionsRepo, sessions),
-      );
+      snapshot === null ? null : yield* worktrees.byHandoffCheckpoint(project.id, snapshot);
+    if (earlier !== null && earlier.handoff !== null) {
+      if (earlier.handoff.ownerUserId === userId) {
+        return yield* replay(project, earlier, earlier.handoff, userId, query);
+      }
+      // Bytes that only name another account's W are verified before anything is said of it.
+      yield* admit(project, userId, bytes);
+      return yield* foreign;
     }
+    yield* requireSessionRoom(userId, project.organizationId).pipe(
+      Effect.provideService(Budgets, budgets),
+      Effect.provideService(SessionsRepo, sessions),
+    );
     const admitted = yield* admit(project, userId, bytes);
-    if (earlier !== null) return yield* replay(project, earlier, userId, query, admitted);
     const made = yield* provision(project, userId, query, admitted);
     if (made === null) {
       const raced = yield* worktrees.byHandoffCheckpoint(project.id, admitted.snapshot);
-      if (raced === null) {
+      if (raced === null || raced.handoff === null) {
         return yield* new StoreFailure({
           message: "the handoff's worktree was made elsewhere and cannot be found · hand off again",
         });
       }
-      return yield* replay(project, raced, userId, query, admitted);
+      if (raced.handoff.ownerUserId !== userId) return yield* foreign;
+      return yield* replay(project, raced, raced.handoff, userId, query);
     }
     const worktree = yield* worktrees
       .byId(made.session.worktreeId)
@@ -415,7 +406,7 @@ export const makeHandoffStart = Effect.gen(function* () {
       worktree,
       commitsAhead: admitted.commitsAhead,
       replayed: false,
-      previous: made.previous,
+      previous: made.previous === null ? null : { name: made.previous },
     });
   });
 
@@ -427,13 +418,17 @@ export const makeHandoffStart = Effect.gen(function* () {
   ) {
     const project = yield* access.projectAs(userId, projectId);
     yield* admissible(project);
-    const key = `${userId}:${project.id}:${sha256Hex(bytes)}`;
+    const header = parseBundleHeader(bytes)?.refs[0]?.sha;
+    const snapshot = header === undefined ? null : Sha.make(header);
+    // One receipt of a W per account at a time, whatever bytes carry it: the database dedupes on
+    // W, and so does this join.
+    const key = `${userId}:${project.id}:${snapshot ?? sha256Hex(bytes)}`;
     const joined = inFlight.get(key);
     if (joined !== undefined) return yield* Deferred.await(joined);
     const deferred = Deferred.makeUnsafe<HandoffReceived, HandoffError>();
     inFlight.set(key, deferred);
     yield* engine.detach(
-      budgets.withHandoffSlot(userId, receive(project, userId, query, bytes)).pipe(
+      budgets.withHandoffSlot(userId, receive(project, userId, query, bytes, snapshot)).pipe(
         Effect.flatMap((received) =>
           received === null
             ? budgetExceeded("accountHandoffsInFlight", budgets.limits)

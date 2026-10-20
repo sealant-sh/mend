@@ -165,6 +165,13 @@ export const WorktreeHandoff = Schema.Struct({
   ownerUserId: Schema.String,
   /** The bucket key of the pack holding `W ^M`. */
   deltaPack: Schema.NonEmptyString,
+  /** Commits in `M..H`, as admission counted them. A replay answers it as the first answer did. */
+  commitsAhead: Schema.Int,
+  /**
+   * The receiving account's earlier handoff of the same branch whose name this one passed over,
+   * as the first answer named it; null when there was none.
+   */
+  previous: Schema.NullOr(Schema.String),
 });
 export type WorktreeHandoff = typeof WorktreeHandoff.Type;
 

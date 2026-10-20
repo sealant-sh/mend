@@ -61,6 +61,8 @@ const provenance: WorktreeHandoff = {
   indexTree: HexSha.make("f".repeat(40)),
   ownerUserId: "user-dana",
   deltaPack: "captures/handoff-a/0/packs/" + "e".repeat(64),
+  commitsAhead: 2,
+  previous: null,
 };
 
 const row = (id: string, projectId: ProjectId, handoff: WorktreeHandoff | null) => ({

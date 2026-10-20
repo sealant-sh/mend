@@ -146,6 +146,8 @@ describe("Project detail worktree groups", () => {
         indexTree: HexSha.make("f".repeat(40)),
         ownerUserId: "user-dana",
         deltaPack: "captures/wt/0/packs/" + "e".repeat(64),
+        commitsAhead: 2,
+        previous: null,
       },
     };
     expect(handedOffFrom(handedOff)).toBe("handed off from dana-mbp");

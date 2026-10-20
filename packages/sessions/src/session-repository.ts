@@ -19,6 +19,8 @@ export type WorktreeStart =
       readonly kind: "handoff";
       readonly admitted: AdmittedHandoff;
       readonly ownerUserId: string;
+      /** The receiving account's earlier handoff of the branch, as the answer names it. */
+      readonly previous: string | null;
     };
 
 export const startFromBase = (base: string | null): WorktreeStart => ({ kind: "base", base });

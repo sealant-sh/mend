@@ -239,11 +239,12 @@ refuses a handoff start as `WorktreeStartUnsupportedError`.
 
 **Provenance, replay key and seed in one place.** Migration 0135 adds `worktrees.handoff jsonb`,
 nullable and decoded by `WorktreeHandoff`:
-`{machine, localBranch, cutAt, head, index, checkpoint, mergeBase, worktreeTree, indexTree, ownerUserId, deltaPack}`.
+`{machine, localBranch, cutAt, head, index, checkpoint, mergeBase, worktreeTree, indexTree, ownerUserId, deltaPack, commitsAhead, previous}`.
 A unique index covers `(project_id, (handoff->>'checkpoint'))`. The column rides the `ExactKeys`
 seam, `Worktree` and its DTOs; a server from before handoffs leaves the key out, and clients decode
 that as null. `worktreesRepo.create` writes it in the same insert as the row. It is the replay key,
-the provenance (the receiving account included) and the capture-0 seed.
+the provenance (the receiving account included), the capture-0 seed, and the answer a replay gives
+(`commitsAhead` and `previous`, as the first answer had them).
 
 **Capture 0.** `attachWorktree` derives `captureZeroSource(row)`:
 
@@ -266,13 +267,16 @@ row) is idempotent and runs again whenever a session is provisioned in or joins 
 
 1. access;
 2. co-located store or unsupported repository refusals;
-3. the receive itself, detached from the request and keyed by the caller, the project and the sha256
-   of the bytes: a dropped connection ends only its wait, and a retry of the same bytes by the same
-   account joins the work under way. The caller's in-flight handoffs are bounded by
-   `accountHandoffsInFlight`; past it the upload is refused as a budget. Inside:
-4. the replay lookup by `W`. A replay belongs to the account the seed records; it finishes the
-   creation tail, returns the worktree and its first session (provisioned if there is none), and
-   re-applies the hold to a session still `starting`. It runs before the session budget;
+3. the receive itself, detached from the request and keyed by the caller, the project and `W`, read
+   from the bundle header (the bytes' sha256 when the header does not parse): a dropped connection
+   ends only its wait, and any upload of the same `W` by the same account joins the work under way.
+   The caller's in-flight handoffs are bounded by `accountHandoffsInFlight`; past it the upload is
+   refused as a budget. Inside:
+4. the replay lookup by `W`, before any admission. A replay belongs to the account the seed records;
+   it answers from the seed, with no admission, and returns the worktree and the oldest of that
+   account's sessions in it (provisioned if there is none, which finishes the creation tail). It
+   re-applies the hold to a session still `starting` with no launch under way. It runs before the
+   session budget. Bytes naming another account's `W` are admitted once, then refused;
 5. `requireSessionRoom`;
 6. `admitHandoff`, once;
 7. `engine.provision({start: Handoff})` under the branch's name. Taken names are the worktree rows
