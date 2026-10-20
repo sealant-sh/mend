@@ -104,6 +104,7 @@ interface Seeded {
   readonly sessionId: SessionId;
   readonly changeId: ChangeId;
   readonly agentId: SessionProcessId;
+  readonly shellId: SessionProcessId;
 }
 
 const finishedTurn = () =>
@@ -159,12 +160,17 @@ const seedSession = (
         argv: [kind],
       });
     const agent = yield* create("agent-pty");
-    yield* create("shell");
+    const shell = yield* create("shell");
     if (wait !== null) {
       const set = yield* processes.setWaiting(agent.id, sessionId, null, wait);
       expect(set, "the agent holds its finished turn").toBe(true);
     }
-    return { sessionId, changeId: change.id, agentId: agent.id } satisfies Seeded;
+    return {
+      sessionId,
+      changeId: change.id,
+      agentId: agent.id,
+      shellId: shell.id,
+    } satisfies Seeded;
   });
 
 /** Above `eventually`'s deadline, so a missing push fails on its assertion, not on vitest's clock. */
@@ -276,8 +282,15 @@ const pushesFor = (observed: Observed, sessionId: SessionId) =>
 const run = <A, E>(effect: Effect.Effect<A, E, Repos | Scope.Scope>) =>
   Effect.runPromise(effect.pipe(Effect.scoped, Effect.provide(reposLayer)));
 
-/** A resumed turn whose agent exits, leaving the session idle with its shell. */
-const turnThatEnds = Effect.fn("turnThatEnds")(function* (seeded: Seeded, turn: string) {
+/**
+ * A resumed agent that exits, written in `resumeSession`'s order: the session reads `running`
+ * before the agent's row exists.
+ */
+const resumedAgentExits = Effect.fn("resumedAgentExits")(function* (
+  seeded: Seeded,
+  turn: string,
+  harness = "claude",
+) {
   const sessions = yield* SessionsRepo;
   const processes = yield* SessionProcessesRepo;
   yield* sessions.reopen(seeded.sessionId, "running");
@@ -286,12 +299,29 @@ const turnThatEnds = Effect.fn("turnThatEnds")(function* (seeded: Seeded, turn: 
     sealantWorkspaceId: SealantWorkspaceId.make(`ws-${seeded.sessionId}`),
     sealantSessionId: `pty-${seeded.sessionId}-${turn}`,
     kind: "agent-pty",
-    harness: "claude",
+    harness,
     label: turn,
-    argv: ["claude", "--resume"],
+    argv: [harness, "--resume"],
   });
   yield* processes.markExited(agent.id, "exited", 0);
-  yield* sessions.setStatus(seeded.sessionId, "idle");
+});
+
+/** A resumed turn whose agent exits, leaving the session idle with its shell. */
+const turnThatEnds = Effect.fn("turnThatEnds")(function* (seeded: Seeded, turn: string) {
+  yield* resumedAgentExits(seeded, turn);
+  yield* (yield* SessionsRepo).setStatus(seeded.sessionId, "idle");
+});
+
+/** A resumed turn with nothing else live: its agent's exit settles the session `completed`. */
+const turnThatCompletes = Effect.fn("turnThatCompletes")(function* (seeded: Seeded, turn: string) {
+  yield* resumedAgentExits(seeded, turn);
+  yield* (yield* SessionsRepo).settle(seeded.sessionId, "completed", null);
+});
+
+/** The session's shell ends, and with nothing left live the session settles `completed`. */
+const shellEnds = Effect.fn("shellEnds")(function* (seeded: Seeded) {
+  yield* (yield* SessionProcessesRepo).markExited(seeded.shellId, "exited", 0);
+  yield* (yield* SessionsRepo).settle(seeded.sessionId, "completed", null);
 });
 
 /** Polls `ready` until it holds or ten seconds pass. */
@@ -595,6 +625,237 @@ describe.skipIf(postgres.skip)("a terminal agent's exit under a live shell, thro
             ...reviewPasses(seeded.changeId),
             ...reviewPasses(seeded.changeId),
           ]);
+        }),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "prepares a resumed turn read late that ended completed, with nothing else live",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const processes = yield* SessionProcessesRepo;
+          const seeded = yield* seedSession("unseen-completed", "idle", finishedTurn());
+          const marker = yield* seedSession("unseen-completed-marker", "idle", finishedTurn());
+          let diff = BILLING_DIFF;
+          const lag = yield* Latch.make(true);
+          const workers = yield* startWorkers(() => diff, undefined, lag);
+
+          yield* processes.markExited(seeded.agentId, "exited", 0);
+          yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 2);
+          yield* shellEnds(seeded);
+          diff = `${BILLING_DIFF}+export const ceiling = 99;\n`;
+          yield* lag.close;
+          yield* turnThatCompletes(seeded, "an edit");
+          yield* processes.markExited(marker.agentId, "exited", 0);
+          yield* lag.open;
+
+          yield* eventually(() => jobsFor(workers.observed(), marker.changeId).length >= 2);
+          expect(jobsFor(workers.observed(), seeded.changeId)).toEqual([
+            ...reviewPasses(seeded.changeId),
+            ...reviewPasses(seeded.changeId),
+          ]);
+        }),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "prepares an idle turn that was stopped before review prep read it",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const sessions = yield* SessionsRepo;
+          const processes = yield* SessionProcessesRepo;
+          const seeded = yield* seedSession("unseen-stopped", "idle", finishedTurn());
+          const marker = yield* seedSession("unseen-stopped-marker", "idle", finishedTurn());
+          let diff = BILLING_DIFF;
+          const lag = yield* Latch.make(true);
+          const workers = yield* startWorkers(() => diff, undefined, lag);
+
+          yield* processes.markExited(seeded.agentId, "exited", 0);
+          yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 2);
+          diff = `${BILLING_DIFF}+export const ceiling = 99;\n`;
+          yield* lag.close;
+          yield* turnThatEnds(seeded, "an edit");
+          yield* sessions.setStatus(seeded.sessionId, "stopping");
+          yield* processes.markExited(seeded.shellId, "stopped", null);
+          yield* sessions.settle(seeded.sessionId, "stopped", null);
+          yield* processes.markExited(marker.agentId, "exited", 0);
+          yield* lag.open;
+
+          yield* eventually(() => jobsFor(workers.observed(), marker.changeId).length >= 2);
+          expect(jobsFor(workers.observed(), seeded.changeId)).toEqual([
+            ...reviewPasses(seeded.changeId),
+            ...reviewPasses(seeded.changeId),
+          ]);
+        }),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "prepares a run attached with no process row, read late",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const sessions = yield* SessionsRepo;
+          const processes = yield* SessionProcessesRepo;
+          const seeded = yield* seedSession("unseen-attached", "idle", finishedTurn());
+          const marker = yield* seedSession("unseen-attached-marker", "idle", finishedTurn());
+          let diff = BILLING_DIFF;
+          const lag = yield* Latch.make(true);
+          const workers = yield* startWorkers(() => diff, undefined, lag);
+
+          yield* processes.markExited(seeded.agentId, "exited", 0);
+          yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 2);
+          diff = `${BILLING_DIFF}+export const ceiling = 99;\n`;
+          yield* lag.close;
+          // `attachRun`'s session write; its run is supervised with no process row of its own.
+          yield* sessions.setStatus(seeded.sessionId, "running");
+          yield* sessions.settle(seeded.sessionId, "completed", null);
+          yield* processes.markExited(marker.agentId, "exited", 0);
+          yield* lag.open;
+
+          yield* eventually(() => jobsFor(workers.observed(), marker.changeId).length >= 2);
+          expect(jobsFor(workers.observed(), seeded.changeId)).toEqual([
+            ...reviewPasses(seeded.changeId),
+            ...reviewPasses(seeded.changeId),
+          ]);
+        }),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "prepares nothing for an agent row that no live session write came with",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const processes = yield* SessionProcessesRepo;
+          const seeded = yield* seedSession("row-only", "idle", finishedTurn());
+          const marker = yield* seedSession("row-only-marker", "idle", finishedTurn());
+          let diff = BILLING_DIFF;
+          const lag = yield* Latch.make(true);
+          const workers = yield* startWorkers(() => diff, undefined, lag);
+
+          yield* processes.markExited(seeded.agentId, "exited", 0);
+          yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 2);
+          diff = `${BILLING_DIFF}+export const ceiling = 99;\n`;
+          yield* lag.close;
+          const shell = yield* processes.create({
+            sessionId: seeded.sessionId,
+            sealantWorkspaceId: SealantWorkspaceId.make(`ws-${seeded.sessionId}`),
+            sealantSessionId: `pty-${seeded.sessionId}-workbench`,
+            kind: "agent-pty",
+            harness: "shell",
+            label: "shell",
+            argv: ["zsh"],
+          });
+          yield* processes.markExited(shell.id, "exited", 0);
+          yield* processes.markExited(marker.agentId, "exited", 0);
+          yield* lag.open;
+
+          yield* eventually(() => jobsFor(workers.observed(), marker.changeId).length >= 2);
+          expect(jobsFor(workers.observed(), seeded.changeId)).toEqual(
+            reviewPasses(seeded.changeId),
+          );
+        }),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "does not prepare a prepared agent again when a shell reopens its settled session idle",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const sessions = yield* SessionsRepo;
+          const processes = yield* SessionProcessesRepo;
+          const seeded = yield* seedSession("shell-rejoins", "idle", finishedTurn());
+          const marker = yield* seedSession("shell-rejoins-marker", "idle", finishedTurn());
+          let diff = BILLING_DIFF;
+          const workers = yield* startWorkers(() => diff);
+
+          yield* processes.markExited(seeded.agentId, "exited", 0);
+          yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 2);
+          yield* shellEnds(seeded);
+          diff = `${BILLING_DIFF}+export const ceiling = 99;\n`;
+          yield* turnThatCompletes(seeded, "an edit");
+          yield* eventually(() => jobsFor(workers.observed(), seeded.changeId).length >= 4);
+          // A shell rejoins the retained workspace and edits: support work, not an agent's turn.
+          yield* processes.create({
+            sessionId: seeded.sessionId,
+            sealantWorkspaceId: SealantWorkspaceId.make(`ws-${seeded.sessionId}`),
+            sealantSessionId: `pty-${seeded.sessionId}-shell-2`,
+            kind: "shell",
+            harness: null,
+            label: "shell 2",
+            argv: ["zsh"],
+          });
+          yield* sessions.reopen(seeded.sessionId, "idle");
+          diff = `${diff}+export const floor = 1;\n`;
+          yield* processes.markExited(marker.agentId, "exited", 0);
+
+          yield* eventually(() => jobsFor(workers.observed(), marker.changeId).length >= 2);
+          expect(jobsFor(workers.observed(), seeded.changeId)).toEqual([
+            ...reviewPasses(seeded.changeId),
+            ...reviewPasses(seeded.changeId),
+          ]);
+        }),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "prepares a new session whose first turn ended before review prep read it",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const processes = yield* SessionProcessesRepo;
+          const lag = yield* Latch.make(true);
+          const workers = yield* startWorkers(() => BILLING_DIFF, undefined, lag);
+
+          yield* lag.close;
+          const fresh = yield* seedSession("born-behind", "idle", finishedTurn());
+          yield* processes.markExited(fresh.agentId, "exited", 0);
+          const marker = yield* seedSession("born-behind-marker", "idle", finishedTurn());
+          yield* processes.markExited(marker.agentId, "exited", 0);
+          yield* lag.open;
+
+          yield* eventually(() => jobsFor(workers.observed(), marker.changeId).length >= 2);
+          expect(jobsFor(workers.observed(), fresh.changeId)).toEqual(reviewPasses(fresh.changeId));
+        }),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "records a session that settled before review prep began silently",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const sessions = yield* SessionsRepo;
+          const processes = yield* SessionProcessesRepo;
+          const settled = yield* seedSession("settled-before", "idle", finishedTurn());
+          const marker = yield* seedSession("settled-before-marker", "idle", finishedTurn());
+          yield* processes.markExited(settled.agentId, "exited", 0);
+          yield* shellEnds(settled);
+          const workers = yield* startWorkers();
+
+          yield* sessions.setLabel(settled.sessionId, "renamed after it settled");
+          yield* processes.markExited(marker.agentId, "exited", 0);
+
+          yield* eventually(() => jobsFor(workers.observed(), marker.changeId).length >= 2);
+          expect(jobsFor(workers.observed(), settled.changeId)).toEqual([]);
         }),
       );
     },
