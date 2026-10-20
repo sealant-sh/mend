@@ -25,6 +25,7 @@ import {
   postedComment,
   recordLabel,
   retryRecord,
+  sendGeneration,
   startSend,
   step,
   stepReview,
@@ -134,6 +135,8 @@ export interface Composed {
   readonly open: ReadonlyArray<string>;
   /** Every comment it lists with its words as they were: an edit since reads as a change. */
   readonly digest: string;
+  /** The reviews it was composed after (`sendGeneration`): one sent since makes it stale. */
+  readonly generation: string;
   /**
    * What the agent's input holds, as VS Code pasted it, that this review is composed on top of:
    * Send to session pastes only what follows it. Null for a review on its own.
@@ -196,6 +199,8 @@ const pasteWords = (pasted: Exclude<Pasted, "pasted">, agent: string): string =>
 const TEXT_STAYS = "Your text stays in this editor.";
 
 const COMMENTS_CHANGED = `Your comments changed since this review was composed, so nothing was sent. ${TEXT_STAYS} Close it and choose Send review again to compose the review with your comments as they are now.`;
+
+const ANOTHER_WENT_OUT = `Another review of this session went out since this one was composed, so nothing was sent. ${TEXT_STAYS} Close it and choose Send review again to compose the review on top of the one sent.`;
 
 const offerWords = (offer: SendOffer): string => {
   switch (offer.kind) {
@@ -651,6 +656,7 @@ export class ReviewStore implements vscode.Disposable {
       pending: this.#review.pending.map((pending) => pending.id),
       open: open.map((comment) => comment.id),
       digest: digestOf(this.#review.pending, open),
+      generation: sendGeneration(this.#review.sends),
     };
     const base = terminalInput(this.#review.sends);
     if (base !== null) {
@@ -709,10 +715,12 @@ export class ReviewStore implements vscode.Disposable {
         : addedText(instruction, composed.base.input, composed.base.agent);
     const key = `vscode-follow-up:${read.changeId}:${randomUUID()}`;
     let next: SessionReview;
+    let stale = false;
     try {
       // Checked again as kept, under the lock: another window may have sent these comments.
-      next = await this.#keepAt(place, (review) =>
-        digestOf(review.pending, open) !== composed.digest
+      next = await this.#keepAt(place, (review) => {
+        stale = sendGeneration(review.sends) !== composed.generation;
+        return stale || digestOf(review.pending, open) !== composed.digest
           ? review
           : (startSend(review, {
               key,
@@ -727,8 +735,8 @@ export class ReviewStore implements vscode.Disposable {
               pending: composed.pending,
               open: composed.open,
               now: new Date().toISOString(),
-            }) ?? review),
-      );
+            }) ?? review);
+      });
     } catch (cause) {
       return {
         sent: false,
@@ -736,7 +744,7 @@ export class ReviewStore implements vscode.Disposable {
       };
     }
     if (!next.sends.some((record) => record.key === key))
-      return { sent: false, words: COMMENTS_CHANGED };
+      return { sent: false, words: stale ? ANOTHER_WENT_OUT : COMMENTS_CHANGED };
     void this.#drive(this.#context(read, place), key);
     return { sent: true };
   }

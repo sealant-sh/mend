@@ -293,6 +293,13 @@ export const terminalInput = (
     : null;
 };
 
+/**
+ * The reviews a composition was made after: the newest one kept, and what her agent's input holds.
+ * One composed before another review went out, in any window, no longer says what it would send.
+ */
+export const sendGeneration = (records: ReadonlyArray<SendRecord>): string =>
+  JSON.stringify([records.at(-1)?.key ?? null, terminalInput(records)?.input.text ?? null]);
+
 const withPost = (record: SendRecord, pendingId: string, post: PostState): SendRecord => ({
   ...record,
   items: record.items.map((item) =>
