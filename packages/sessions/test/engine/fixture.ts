@@ -2222,6 +2222,7 @@ export const sessionsLayer = (world: World) => {
     listForWorktree: (worktreeId) =>
       Effect.succeed([...world.sessions.values()].filter((s) => s.worktreeId === worktreeId)),
     listActive: () => Effect.succeed([]),
+    liveMarkNow: () => Effect.succeed(0),
     listActiveView: () => Effect.die("not in test"),
     listForProjectView: () => Effect.die("not in test"),
     viewById: () => Effect.die("not in test"),

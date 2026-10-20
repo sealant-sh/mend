@@ -70,6 +70,7 @@ const session: SessionDto = {
   executorStartedAt: null,
   removalRequestedAt: null,
   status: "idle",
+  liveMark: 0,
   summary: null,
   lastSeenSequence: 0n,
   recordHistoryComplete: true,

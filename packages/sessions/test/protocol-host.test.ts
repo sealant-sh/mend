@@ -266,6 +266,7 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   listForProject: () => Effect.succeed([]),
   listForWorktree: () => Effect.succeed([]),
   listActive: () => Effect.succeed([]),
+  liveMarkNow: () => Effect.succeed(0),
   listActiveView: () => Effect.succeed([]),
   listForProjectView: () => Effect.die("not in test"),
   viewById: () => Effect.die("not in test"),
