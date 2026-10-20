@@ -372,6 +372,18 @@ export default async (h) => {
   await step(
     "a stopped session: selecting it shows the same change, and a file still opens",
     async () => {
+      // The Sessions tree redraws when it hears the Stop, and the redraw can fold Projects away
+      // from under a click: the row is clicked only once it reads the settled word.
+      const { status } = (await sessionRead(session.id)).session;
+      await waitUntil(
+        `${SESSION}'s row reads ${status}`,
+        async () => {
+          await revealSession(SESSION);
+          const row = (await h.viewRows("Sessions")).rows.find((one) => one.label === SESSION);
+          return row?.description.startsWith(status) ? row : null;
+        },
+        30_000,
+      );
       await revealSession(SESSION);
       await treeItem(SESSION, { pane: "Sessions" }).click();
       await h.palette("Mend: Read the change again");
