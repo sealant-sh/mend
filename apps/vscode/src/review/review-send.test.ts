@@ -614,3 +614,133 @@ describe("a window whose send another window took over while a POST was on its w
     expect(server.delivered).toHaveLength(1);
   });
 });
+
+/** The store reads the session again until it sees this claude process live. */
+const sees = async (store: ReviewStore, processId: string): Promise<void> => {
+  store.reread();
+  await vi.waitFor(() => {
+    const agent = store.ready()?.facts.agent;
+    expect(agent?.kind === "terminal" ? agent.processId : null).toBe(processId);
+  });
+};
+
+describe("claude is replaced between two Sends, before she pressed Enter", () => {
+  const CLAUDE_2: SessionProcess = { ...CLAUDE, id: "agent-2" };
+
+  /** Dana's session `s1`, its live claude the one last `replace`d in. */
+  const replaceable = () => {
+    let agent = CLAUDE;
+    return {
+      replace: (next: SessionProcess) => {
+        agent = next;
+      },
+      reads: {
+        ...sessionReads("change-1"),
+        sessionDetail: async (sessionId: string): Promise<SessionDetail> => ({
+          session: { ...session(sessionId), ownerUserId: "dana" },
+          processes: [agent],
+          currentAgent: agent,
+          changeId: "change-1",
+        }),
+      },
+    };
+  };
+
+  /** A window with its own kept files over `directory`, each paste kept with its process. */
+  const windowOver = async (
+    directory: string,
+    mend: FakeMend,
+    reads: ReturnType<typeof replaceable>["reads"],
+  ) => {
+    const pastes: Array<{ readonly processId: string; readonly text: string }> = [];
+    const store = new ReviewStore(
+      reads,
+      mend,
+      new ReviewMemory(memento()),
+      keptIn(directory),
+      async (_sessionId, processId, text) => {
+        pastes.push({ processId, text });
+        return "pasted";
+      },
+    );
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+    return { store, pastes };
+  };
+
+  it("pastes the whole review into the new claude, and the first review no longer reads in its terminal", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    const directory = await storage();
+    const world = replaceable();
+    const { store, pastes } = await windowOver(directory, mend, world.reads);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const first = store.compose();
+    if (first === null) throw new Error("nothing composed");
+    await store.send(first, first.text);
+    await vi.waitFor(() => expect(pastes).toHaveLength(1));
+    expect(pastes[0]?.processId).toBe("agent-1");
+
+    world.replace(CLAUDE_2);
+    await sees(store, "agent-2");
+    const read = store.ready();
+    if (read === null) throw new Error("not read");
+    const limiter = threadsOf(read, store.review(), "Dana").find(({ body }) =>
+      body.includes("Use the shared limiter"),
+    );
+    expect(limiter?.label).toBe("follow-up pending · not in claude's terminal");
+
+    // A second window, its own kept files over the same storage, reads what the first kept.
+    const other = await windowOver(directory, mend, world.reads);
+    await sees(other.store, "agent-2");
+    await other.store.comment(onLine(5, "Name the constant"));
+    const second = other.store.compose();
+    if (second === null) throw new Error("nothing composed");
+    // A review on its own: the new claude's input holds nothing it would go on top of.
+    expect(second.base).toBeNull();
+    expect(second.text).toContain("Use the shared limiter");
+    expect(await other.store.send(second, second.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(other.pastes).toHaveLength(1));
+    const into = other.pastes[0];
+    expect(into?.processId).toBe("agent-2");
+    expect(into?.text).toContain("Use the shared limiter");
+    expect(into?.text).toContain("Name the constant");
+    expect(mend.delivered.at(-1)?.instruction).toBe(textToSend(into?.text ?? "", "add-rate-limit"));
+    const after = other.store.ready();
+    if (after === null) throw new Error("not read");
+    const labels = threadsOf(after, other.store.review(), "Dana")
+      .filter(({ body }) => body.includes("limiter") || body.includes("constant"))
+      .map(({ label }) => label);
+    expect(labels).toEqual([
+      "follow-up pending · in claude's terminal",
+      "follow-up pending · in claude's terminal",
+    ]);
+  });
+
+  it("pastes the whole review when claude was replaced after she composed onto the old one", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    const world = replaceable();
+    const { store, pastes } = await windowOver(await storage(), mend, world.reads);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const first = store.compose();
+    if (first === null) throw new Error("nothing composed");
+    await store.send(first, first.text);
+    await vi.waitFor(() => expect(pastes).toHaveLength(1));
+
+    await store.comment(onLine(5, "Name the constant"));
+    const second = store.compose();
+    if (second === null) throw new Error("nothing composed");
+    expect(second.base).not.toBeNull();
+    world.replace(CLAUDE_2);
+    await sees(store, "agent-2");
+    expect(await store.send(second, second.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(pastes).toHaveLength(2));
+    expect(pastes[1]?.processId).toBe("agent-2");
+    expect(pastes[1]?.text).toContain("Use the shared limiter");
+    expect(pastes[1]?.text).toContain("Name the constant");
+    expect(mend.delivered.at(-1)?.instruction).toBe(
+      textToSend(pastes[1]?.text ?? "", "add-rate-limit"),
+    );
+  });
+});
