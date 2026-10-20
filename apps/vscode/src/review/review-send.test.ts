@@ -710,6 +710,66 @@ describe("a window that loads its kept reviews while another window sends one", 
   });
 });
 
+/** Mend that never answers a follow-up it was asked to deliver, as one a window closed on. */
+class Unanswered extends FakeMend {
+  readonly #asked = Promise.withResolvers<void>();
+  /** Settles once a follow-up reaches Mend. */
+  readonly asked = this.#asked.promise;
+
+  override async deliver(): ReturnType<FakeMend["deliver"]> {
+    this.#asked.resolve();
+    return new Promise(() => undefined);
+  }
+}
+
+describe("a window reloaded while its send was on its way to Mend", () => {
+  it("reads the send failed, with Retry delivery, once the closed window's lease goes stale", async () => {
+    const directory = await storage();
+    const mend = new Unanswered();
+    mend.serverComments = [comment({ id: "c1" })];
+    const closing = await window(keptIn(directory), mend);
+    const fromClosing = closing.store.compose();
+    if (fromClosing === null) throw new Error("nothing composed");
+    await closing.store.send(fromClosing, fromClosing.text);
+    await mend.asked;
+
+    // The reloaded window loads while the closed window's lease is still fresh, and leaves it.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let late = 0;
+      const { promise: loaded, resolve: load } = Promise.withResolvers<void>();
+      const reloaded = await window(
+        new KeptReviews(
+          directory,
+          {
+            ...NODE_FILES,
+            rm: async (path) => {
+              await NODE_FILES.rm(path);
+              if (path.endsWith(".lock")) load();
+            },
+          },
+          () => Date.now() + late,
+        ),
+        mend,
+      );
+      await loaded;
+      expect(reloaded.store.review().sends.map(({ phase }) => phase.kind)).toEqual(["sending"]);
+      late += DRIVE_STALE_MS;
+      await vi.advanceTimersByTimeAsync(DRIVE_STALE_MS);
+      vi.useRealTimers();
+      await vi.waitFor(() =>
+        expect(reloaded.store.review().sends.map(({ phase }) => phase)).toEqual([
+          { kind: "failed", words: "VS Code closed before Mend answered" },
+        ]),
+      );
+      expect(reloaded.store.offer()).toEqual({ kind: "retry" });
+      expect(reloaded.store.retryTarget()).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 /** Mend whose first follow-up fails on its side, and whose next waits until the test answers it. */
 class FailsThenHolds extends FakeMend {
   #failing = true;
