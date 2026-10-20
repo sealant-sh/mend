@@ -1,6 +1,12 @@
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
-import { mayRetry, recordLabel, type LiveAgent, type SendRecord } from "./delivery.js";
+import {
+  commentLabel,
+  mayRetry,
+  recordLabel,
+  type LiveAgent,
+  type SendRecord,
+} from "./delivery.js";
 import { acceptedDrafts, type PendingComment, type SessionReview } from "./pending.js";
 import type { CommentAnchor, RecordLink, ServerComment } from "./review-wire.js";
 
@@ -144,8 +150,10 @@ const anchoredAt = (read: ChangeRead, anchor: CommentAnchor, file: string): Chan
 const fromRecord = (
   record: SendRecord,
   agent: LiveAgent | null,
+  /** The comment on Mend the thread shows; null for one not on Mend yet. */
+  commentId: string | null,
 ): { readonly kind: ThreadKind; readonly label: string; readonly sendKey: string } => {
-  const label = recordLabel(record.phase);
+  const label = commentId === null ? recordLabel(record.phase) : commentLabel(record, commentId);
   const sendKey = record.key;
   switch (record.phase.kind) {
     case "sending":
@@ -186,7 +194,7 @@ export const threadsOf = (
       else
         threads.push({
           ...pendingThread(read, item.pending, you),
-          ...fromRecord(record, read.facts.agent),
+          ...fromRecord(record, read.facts.agent, null),
         });
     }
   }
@@ -197,7 +205,7 @@ export const threadsOf = (
     const { kind, label, sendKey } =
       record === undefined || state === "addressed"
         ? { kind: state, label: LABELS[state], sendKey: null }
-        : fromRecord(record, read.facts.agent);
+        : fromRecord(record, read.facts.agent, comment.id);
     const author = acceptedIn.has(comment.id)
       ? `${you} · accepted from Mend`
       : comment.author.kind === "mend"

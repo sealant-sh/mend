@@ -49,13 +49,13 @@ export type SendPhase =
   | { readonly kind: "delivering" }
   /**
    * G12 fallback: Mend holds it pending while the terminal agent lives, and the extension pastes it
-   * into that one agent process, never another (`pasted` once the paste step is done).
+   * into that one agent process, never another.
    */
   | {
       readonly kind: "in-terminal";
       readonly agent: string;
       readonly processId: string;
-      readonly pasted: boolean;
+      readonly paste: PasteStep;
     }
   /** Mend holds it pending, and this window had no terminal of hers to paste it into. */
   | { readonly kind: "pending" }
@@ -65,14 +65,29 @@ export type SendPhase =
   | { readonly kind: "refused"; readonly words: string };
 
 /**
+ * What the agent's input holds as VS Code pasted it, not entered: the text, exactly, and the
+ * comments whose words are in it. Mend's follow-up can hold more, after a paste that was skipped.
+ */
+export interface TerminalInput {
+  readonly text: string;
+  readonly ids: ReadonlyArray<string>;
+}
+
+/**
  * What Send to session pastes into the agent's terminal (G12 fallback): the whole text; only what
- * she added to a review already pasted there, since its input still holds that one; or nothing,
- * with why, when she changed the part already pasted.
+ * she added onto what its input holds; or nothing, with why, when she changed the part already
+ * there. `onto` is what the input held when she composed it.
  */
 export type PastePlan =
   | { readonly kind: "all" }
-  | { readonly kind: "added"; readonly text: string }
-  | { readonly kind: "none"; readonly words: string };
+  | { readonly kind: "added"; readonly text: string; readonly onto: TerminalInput }
+  | { readonly kind: "none"; readonly words: string; readonly onto: TerminalInput };
+
+/** The paste step of a review Mend holds pending in her agent's terminal. */
+export type PasteStep =
+  | { readonly kind: "due" }
+  /** Pasted, or nothing to paste and she was told why: what the agent's input holds now. */
+  | { readonly kind: "done"; readonly input: TerminalInput };
 
 export interface SendRecord {
   /** The follow-up's idempotency key: the same on every retry. */
@@ -124,8 +139,10 @@ export type SendEvent =
       readonly error: string | null;
       readonly agent: LiveAgent;
     }
-  /** The paste step is done: pasted, or nothing to paste, and she was told why. */
+  /** The paste reached the agent's input. */
   | { readonly kind: "pasted" }
+  /** Nothing was pasted, and she was told why: the input holds what it held. */
+  | { readonly kind: "skipped" }
   /**
    * Nothing was pasted: her terminal could not be attached here, or the agent process is gone.
    * Mend still holds the follow-up pending.
@@ -217,7 +234,7 @@ export const deliverRequest = (record: SendRecord, ids: ReadonlyArray<string>): 
  */
 export const nextAction = (record: SendRecord): SendAction => {
   if (record.phase.kind === "in-terminal") {
-    if (record.phase.pasted) return { kind: "idle" };
+    if (record.phase.paste.kind !== "due") return { kind: "idle" };
     const { processId } = record.phase;
     switch (record.paste.kind) {
       case "all":
@@ -245,6 +262,31 @@ export const nextAction = (record: SendRecord): SendAction => {
     : { kind: "deliver", request: deliverRequest(record, ids) };
 };
 
+/** What the agent's input holds after this record's paste step: what it was pasted onto, and the paste. */
+const inputAfter = (record: SendRecord, pasted: boolean): TerminalInput => {
+  const ids = commentIds(record) ?? [];
+  switch (record.paste.kind) {
+    case "all":
+      return pasted ? { text: record.instruction, ids } : { text: "", ids: [] };
+    case "added":
+      return pasted
+        ? { text: `${record.paste.onto.text}${record.paste.text}`, ids }
+        : record.paste.onto;
+    case "none":
+      return record.paste.onto;
+  }
+};
+
+/** What her agent's input holds, by the newest review not refused; null when nothing of hers is. */
+export const terminalInput = (
+  records: ReadonlyArray<SendRecord>,
+): { readonly input: TerminalInput; readonly agent: string } | null => {
+  const latest = records.findLast((record) => record.phase.kind !== "refused");
+  return latest?.phase.kind === "in-terminal" && latest.phase.paste.kind === "done"
+    ? { input: latest.phase.paste.input, agent: latest.phase.agent }
+    : null;
+};
+
 const withPost = (record: SendRecord, pendingId: string, post: PostState): SendRecord => ({
   ...record,
   items: record.items.map((item) =>
@@ -260,7 +302,12 @@ const answeredPhase = (
   switch (status) {
     case "pending":
       return agent.kind === "terminal" && agent.hers
-        ? { kind: "in-terminal", agent: agent.name, processId: agent.processId, pasted: false }
+        ? {
+            kind: "in-terminal",
+            agent: agent.name,
+            processId: agent.processId,
+            paste: { kind: "due" },
+          }
         : { kind: "pending" };
     // Delivered is concluded from the comments read back as sent, by the watch.
     case "delivering":
@@ -296,8 +343,15 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
         ? { ...record, phase: answeredPhase(event.status, event.error, event.agent) }
         : record;
     case "pasted":
-      return record.phase.kind === "in-terminal"
-        ? { ...record, phase: { ...record.phase, pasted: true } }
+    case "skipped":
+      return record.phase.kind === "in-terminal" && record.phase.paste.kind === "due"
+        ? {
+            ...record,
+            phase: {
+              ...record.phase,
+              paste: { kind: "done", input: inputAfter(record, event.kind === "pasted") },
+            },
+          }
         : record;
     case "paste-failed":
       return record.phase.kind === "in-terminal"
@@ -433,7 +487,9 @@ export const recordLabel = (phase: SendPhase): string => {
     case "delivering":
       return "delivery in progress";
     case "in-terminal":
-      return `follow-up pending · in ${phase.agent}'s terminal`;
+      return phase.paste.kind === "done"
+        ? `follow-up pending · in ${phase.agent}'s terminal`
+        : "follow-up pending";
     case "pending":
       return "follow-up pending";
     case "delivered":
@@ -444,6 +500,17 @@ export const recordLabel = (phase: SendPhase): string => {
       return "not sent";
   }
 };
+
+/**
+ * What the thread of one comment in this record reads: in her terminal, whether its words are in
+ * the agent's input.
+ */
+export const commentLabel = (record: SendRecord, commentId: string): string =>
+  record.phase.kind === "in-terminal" &&
+  record.phase.paste.kind === "done" &&
+  !record.phase.paste.input.ids.includes(commentId)
+    ? `follow-up pending · not in ${record.phase.agent}'s terminal`
+    : recordLabel(record.phase);
 
 /** A record whose comments were handed to the session: its head is where her last review was. */
 export const handedOver = (record: SendRecord): boolean =>

@@ -1,10 +1,12 @@
 import type {
   CommentTarget,
   PastePlan,
+  PasteStep,
   PostState,
   SendItem,
   SendPhase,
   SendRecord,
+  TerminalInput,
 } from "./delivery.js";
 import type { CommentAnchor, RecordLink } from "./review-wire.js";
 
@@ -227,7 +229,7 @@ const parsePhase = (value: unknown): SendPhase | null => {
             kind: "in-terminal",
             agent: text(value, "agent") ?? "the agent",
             processId,
-            pasted: value["pasted"] === true,
+            paste: parsePasteStep(value["paste"]),
           };
     }
     case "pending":
@@ -243,13 +245,28 @@ const parsePhase = (value: unknown): SendPhase | null => {
   }
 };
 
-const parsePaste = (value: unknown): PastePlan => {
-  if (!isRecord(value)) return { kind: "all" };
+const parseInput = (value: unknown): TerminalInput | null => {
+  if (!isRecord(value) || !Array.isArray(value["ids"])) return null;
+  const input = text(value, "text");
+  const ids = value["ids"].flatMap((id) => (typeof id === "string" ? [id] : []));
+  return input === null || ids.length !== value["ids"].length ? null : { text: input, ids };
+};
+
+const parsePasteStep = (value: unknown): PasteStep => {
+  const input = isRecord(value) && value["kind"] === "done" ? parseInput(value["input"]) : null;
+  return input === null ? { kind: "due" } : { kind: "done", input };
+};
+
+/** What a review pastes; null for a plan that does not read back, so it is never pasted whole. */
+const parsePaste = (value: unknown): PastePlan | null => {
+  if (!isRecord(value) || value["kind"] === "all") return { kind: "all" };
   const pasted = text(value, "text");
   const words = text(value, "words");
-  if (value["kind"] === "added" && pasted !== null) return { kind: "added", text: pasted };
-  if (value["kind"] === "none" && words !== null) return { kind: "none", words };
-  return { kind: "all" };
+  const onto = parseInput(value["onto"]);
+  if (onto === null) return null;
+  if (value["kind"] === "added" && pasted !== null) return { kind: "added", text: pasted, onto };
+  if (value["kind"] === "none" && words !== null) return { kind: "none", words, onto };
+  return null;
 };
 
 const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
@@ -262,6 +279,7 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
   const instruction = text(value, "instruction");
   const createdAt = text(value, "createdAt");
   const phase = parsePhase(value["phase"]);
+  const paste = parsePaste(value["paste"]);
   const items = value["items"].flatMap(parseItem);
   if (
     key === null ||
@@ -272,6 +290,7 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
     instruction === null ||
     createdAt === null ||
     phase === null ||
+    paste === null ||
     items.length !== value["items"].length
   )
     return [];
@@ -283,7 +302,7 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
       headId,
       diffDigest,
       instruction,
-      paste: parsePaste(value["paste"]),
+      paste,
       items,
       phase,
       createdAt,

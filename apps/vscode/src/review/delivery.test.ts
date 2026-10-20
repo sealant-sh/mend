@@ -168,7 +168,7 @@ describe("sending a review (story d, step 6)", () => {
       kind: "in-terminal",
       agent: "claude",
       processId: "agent-1",
-      pasted: false,
+      paste: { kind: "due" },
     });
     // Into the agent process Mend held it for, never another terminal of the session.
     expect(nextAction(only(inTerminal))).toEqual({

@@ -1,6 +1,6 @@
 import { maySteer, ownsSession } from "../session-capability.js";
 import type { Session } from "../types.js";
-import type { LiveAgent } from "./delivery.js";
+import type { LiveAgent, PastePlan, TerminalInput } from "./delivery.js";
 import type { ChangeFile, RecordLink } from "./review-wire.js";
 import { filesLine } from "./slices.js";
 
@@ -109,32 +109,28 @@ export const composeAddition = (input: {
   ].join("\n");
 
 /**
- * What to paste for a review on top of one already in the agent's terminal: only what she added
- * after the earlier text; nothing, with why, when she changed the earlier text, since the
- * terminal's input still holds it as it was.
+ * What to paste for a review on top of what the agent's input holds: only what she added after
+ * that text; nothing, with why, when she changed it, since the input still holds it as it was.
  */
 export const addedText = (
   sent: string,
-  earlier: string,
+  onto: TerminalInput,
   agent: string,
-):
-  | { readonly kind: "added"; readonly text: string }
-  | {
-      readonly kind: "none";
-      readonly words: string;
-    } => {
-  if (!sent.startsWith(earlier))
+): Exclude<PastePlan, { readonly kind: "all" }> => {
+  if (!sent.startsWith(onto.text))
     return {
       kind: "none",
       words: `You changed the part of this review already in ${agent}'s terminal, so VS Code pasted nothing there: its input still holds the earlier text. Mend holds the review as you sent it.`,
+      onto,
     };
-  const added = sent.slice(earlier.length);
+  const added = sent.slice(onto.text.length);
   return added.trim() === ""
     ? {
         kind: "none",
         words: `Nothing was added to the review already in ${agent}'s terminal, so VS Code pasted nothing there.`,
+        onto,
       }
-    : { kind: "added", text: added };
+    : { kind: "added", text: added, onto };
 };
 
 /** The editor's text as Mend sends it: the note line, and the blank line after it, left out. */

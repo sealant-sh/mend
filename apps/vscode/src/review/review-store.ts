@@ -30,6 +30,8 @@ import {
   type PastePlan,
   type SendEvent,
   type SendRecord,
+  type TerminalInput,
+  terminalInput,
 } from "./delivery.js";
 import {
   addedText,
@@ -130,10 +132,10 @@ export interface Composed {
   /** Every comment it lists with its words as they were: an edit since reads as a change. */
   readonly digest: string;
   /**
-   * The review already pasted into the agent's terminal that this one is composed on top of, as
-   * she sent it: Send to session pastes only what follows it. Null for a review on its own.
+   * What the agent's input holds, as VS Code pasted it, that this review is composed on top of:
+   * Send to session pastes only what follows it. Null for a review on its own.
    */
-  readonly base: { readonly text: string; readonly agent: string } | null;
+  readonly base: { readonly input: TerminalInput; readonly agent: string } | null;
 }
 
 /** Whether Send to session recorded the review; when not, why, in Mend's words. */
@@ -179,12 +181,6 @@ const asListed = (comment: PendingComment | ServerComment): InstructionComment =
         evidence: comment.evidence,
         createdAt: comment.createdAt,
       };
-
-/** The review pasted into the agent's terminal and not yet answered past: the next one adds to it. */
-const pastedRecord = (records: ReadonlyArray<SendRecord>): SendRecord | null => {
-  const latest = records.findLast((record) => record.phase.kind !== "refused");
-  return latest?.phase.kind === "in-terminal" && latest.phase.pasted ? latest : null;
-};
 
 const pasteWords = (pasted: Exclude<Pasted, "pasted">, agent: string): string =>
   pasted === "agent-gone"
@@ -650,16 +646,16 @@ export class ReviewStore implements vscode.Disposable {
       open: open.map((comment) => comment.id),
       digest: digestOf(this.#review.pending, open),
     };
-    const pasted = pastedRecord(this.#review.sends);
-    if (pasted !== null && pasted.phase.kind === "in-terminal") {
-      const inTerminal = new Set(commentIds(pasted) ?? []);
+    const base = terminalInput(this.#review.sends);
+    if (base !== null) {
+      const inTerminal = new Set(base.input.ids);
       return {
         ...listed,
-        base: { text: pasted.instruction, agent: pasted.phase.agent },
+        base,
         text: composeAddition({
           sessionName: read.sessionName,
-          sent: pasted.instruction,
-          sentCount: pasted.items.length,
+          sent: base.input.text,
+          sentCount: base.input.ids.length,
           files: read.pinnedDiff.files,
           comments: [
             ...this.#review.pending,
@@ -704,7 +700,7 @@ export class ReviewStore implements vscode.Disposable {
     const paste: PastePlan =
       composed.base === null
         ? { kind: "all" }
-        : addedText(instruction, composed.base.text, composed.base.agent);
+        : addedText(instruction, composed.base.input, composed.base.agent);
     const key = `vscode-follow-up:${read.changeId}:${randomUUID()}`;
     let next: SessionReview;
     try {
@@ -993,7 +989,7 @@ export class ReviewStore implements vscode.Disposable {
             break;
           }
           case "skip-paste":
-            await this.#step(context, key, { kind: "pasted" });
+            await this.#step(context, key, { kind: "skipped" });
             this.#fail(`paste:${key}`, action.words, { tone: "warning" });
             break;
           case "watch": {
