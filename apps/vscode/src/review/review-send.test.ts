@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SessionDetail, SessionProcess } from "../types.js";
 import type { Pasted } from "./agent-paste.js";
@@ -6,7 +6,9 @@ import { DRAFT_GONE } from "./delivery.js";
 import type { KeptReviews } from "./kept-reviews.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { textToSend } from "./instruction.js";
+import { fake, window as vscodeWindow } from "../test-vscode.js";
 import { ReviewStore, type NewComment, type ReviewFailure } from "./review-store.js";
+import { reviewToast } from "./review-toast.js";
 import {
   comment,
   FakeMend,
@@ -90,6 +92,10 @@ const onLine = (line: number, body: string): NewComment => ({
   endLine: line,
   lineText: "",
   body,
+});
+
+beforeEach(() => {
+  fake.reset();
 });
 
 const failures = (store: ReviewStore): Array<ReviewFailure> => {
@@ -391,5 +397,122 @@ describe("a comment edited in another window after this one composed the review"
     await b.store.edit(theirs.id, "Use guard.ts instead");
     expect(await a.store.send(composed, composed.text)).toMatchObject({ sent: false });
     expect(mend.delivered).toEqual([]);
+  });
+});
+
+describe("Retry from the toast when nothing was pasted", () => {
+  const claims = {
+    claim: async () => true,
+    release: async () => undefined,
+  };
+
+  it("delivers the same key to the stopped session once claude exited before the paste", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    let agent: SessionProcess = CLAUDE;
+    const reads = {
+      ...withAgent(CLAUDE),
+      sessionDetail: async (sessionId: string): Promise<SessionDetail> => ({
+        session: { ...session(sessionId), ownerUserId: "dana" },
+        processes: [agent],
+        currentAgent: agent,
+        changeId: "change-1",
+      }),
+    };
+    const { store } = await window(keptIn(await storage()), mend, reads, "agent-gone");
+    const told = failures(store);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    await store.send(composed, composed.text);
+    await vi.waitFor(() => expect(told).toHaveLength(1));
+    agent = { ...CLAUDE, status: "exited", exitedAt: "2026-10-20T10:00:00.000Z" };
+    mend.answer = "delivering";
+    vscodeWindow.showErrorMessage.mockResolvedValueOnce("Retry delivery");
+    const [failure] = told;
+    if (failure === undefined) throw new Error("no failure");
+    await reviewToast(store, claims, () => undefined)(failure);
+    expect(vscodeWindow.showErrorMessage).toHaveBeenCalledWith(
+      expect.stringMatching(/claude exited before the review was pasted/),
+      "Retry delivery",
+    );
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(2));
+    expect(mend.delivered[1]?.idempotencyKey).toBe(mend.delivered[0]?.idempotencyKey);
+  });
+
+  it("pastes again into the live agent when its terminal could not be attached here", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    const pastes: Array<string> = [];
+    const answers: Array<Pasted> = ["not-attached", "pasted"];
+    const store = new ReviewStore(
+      withAgent(CLAUDE),
+      mend,
+      new ReviewMemory(memento()),
+      keptIn(await storage()),
+      async (_sessionId, _processId, text) => {
+        pastes.push(text);
+        return answers.shift() ?? "pasted";
+      },
+    );
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+    const told = failures(store);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    await store.send(composed, composed.text);
+    await vi.waitFor(() => expect(told).toHaveLength(1));
+    expect(told[0]?.retry).not.toBeNull();
+    vscodeWindow.showErrorMessage.mockResolvedValueOnce("Retry delivery");
+    const [failure] = told;
+    if (failure === undefined) throw new Error("no failure");
+    await reviewToast(store, claims, () => undefined)(failure);
+    expect(vscodeWindow.showErrorMessage).toHaveBeenCalledWith(
+      expect.stringMatching(/could not attach claude's terminal here/),
+      "Retry delivery",
+    );
+    await vi.waitFor(() => expect(pastes).toHaveLength(2));
+    expect(pastes[1]).toBe(pastes[0]);
+    expect(mend.delivered).toHaveLength(1);
+    await vi.waitFor(() =>
+      expect(store.review().sends.at(-1)?.phase).toMatchObject({
+        kind: "in-terminal",
+        paste: { kind: "done" },
+      }),
+    );
+  });
+
+  it("sends nothing, and says so, once the review it offered to retry reads sent", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    const directory = await storage();
+    const { store } = await window(keptIn(directory), mend, withAgent(CLAUDE), "agent-gone");
+    const told = failures(store);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    await store.send(composed, composed.text);
+    await vi.waitFor(() => expect(told).toHaveLength(1));
+    const [failure] = told;
+    if (failure === undefined || failure.retry === null) throw new Error("no retry offered");
+    const { place } = failure.retry;
+    // The toast is up; meanwhile Retry from the section delivered it, and Mend reads it sent.
+    vscodeWindow.showErrorMessage.mockImplementationOnce(async () => {
+      await keptIn(directory).update(place, (review) => ({
+        ...review,
+        sends: review.sends.map((record) => ({
+          ...record,
+          phase: { kind: "delivered", at: "2026-10-20T10:05:00.000Z" },
+        })),
+      }));
+      return "Retry delivery";
+    });
+    await reviewToast(store, claims, () => undefined)(failure);
+    expect(mend.delivered).toHaveLength(1);
+    expect(vscodeWindow.setStatusBarMessage).toHaveBeenCalledWith(
+      "Retry delivery sent nothing: this review already reads sent",
+      expect.any(Number),
+    );
   });
 });
