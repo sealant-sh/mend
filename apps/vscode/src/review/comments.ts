@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import { changeAddress, changeUri } from "./change-content.js";
+import { noteUri } from "./change-note.js";
 import type { ReviewStore } from "./review-store.js";
 import { commentableLines, evidenceLine, threadsOf, type ThreadView } from "./threads.js";
 
@@ -50,7 +51,7 @@ const bodyOf = (thread: ThreadView): vscode.MarkdownString => {
     markdown.appendMarkdown(`\n\n\`${evidenceLine(link).replaceAll("`", "'")}\``);
   const [first] = thread.evidence;
   if (first !== undefined) {
-    const args = encodeURIComponent(JSON.stringify([first.sequence, first.excerpt]));
+    const args = encodeURIComponent(JSON.stringify([first.runId, first.sequence, first.excerpt]));
     markdown.appendMarkdown(`\n\n[Show record](command:${RECORD_COMMAND}?${args})`);
   }
   return markdown;
@@ -74,6 +75,8 @@ const sameThread = (left: ThreadView, right: ThreadView): boolean =>
 export class ReviewComments implements vscode.Disposable {
   readonly #controller: vscode.CommentController;
   readonly #threads = new Map<string, { view: ThreadView; thread: vscode.CommentThread }>();
+  /** Threads whose Add, Accept or Dismiss is still being kept: a second click waits it out. */
+  readonly #busy = new Set<vscode.CommentThread>();
   readonly #disposables: ReadonlyArray<vscode.Disposable>;
 
   constructor(private readonly store: ReviewStore) {
@@ -96,7 +99,7 @@ export class ReviewComments implements vscode.Disposable {
       this.#controller,
       store.onDidChange(() => this.#draw()),
       vscode.commands.registerCommand("mend.review.addComment", (reply: vscode.CommentReply) =>
-        this.#add(reply),
+        this.#once(reply.thread, () => this.#add(reply)),
       ),
       vscode.commands.registerCommand("mend.review.accept", (reply: vscode.CommentReply) =>
         this.#onDraft(reply, (id, text) => store.accept(id, text)),
@@ -130,8 +133,7 @@ export class ReviewComments implements vscode.Disposable {
   /** Draws every thread the store's read holds; a thread whose document moved is drawn anew. */
   #draw(): void {
     const read = this.store.ready();
-    const views =
-      read === null ? [] : threadsOf(read, this.store.review(), this.store.you()).threads;
+    const views = read === null ? [] : threadsOf(read, this.store.review(), this.store.you());
     const wanted = new Map(views.map((view) => [view.key, view]));
     for (const [key, drawn] of this.#threads) {
       const next = wanted.get(key);
@@ -141,13 +143,14 @@ export class ReviewComments implements vscode.Disposable {
       }
     }
     for (const view of views) {
+      if (read === null) break;
       const drawn = this.#threads.get(view.key);
       if (drawn !== undefined && sameThread(drawn.view, view)) continue;
       const range = new vscode.Range(view.line - 1, 0, view.endLine - 1, 0);
-      const thread =
-        drawn?.thread ?? this.#controller.createCommentThread(changeUri(view.at), range, []);
+      const uri = view.at === null ? noteUri(read.changeId) : changeUri(view.at);
+      const thread = drawn?.thread ?? this.#controller.createCommentThread(uri, range, []);
       thread.range = range;
-      thread.label = `${view.at.path} · line ${view.line}`;
+      thread.label = view.at === null ? "the whole change" : `${view.at.path} · line ${view.line}`;
       thread.contextValue = `mend.thread.${view.kind}`;
       thread.canReply = view.kind === "draft";
       thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
@@ -198,7 +201,18 @@ export class ReviewComments implements vscode.Disposable {
   ): Promise<void> {
     const drawn = [...this.#threads.values()].find(({ thread }) => thread === reply.thread);
     const draftId = drawn?.view.commentId ?? null;
-    if (draftId !== null) await act(draftId, reply.text);
+    if (draftId !== null) await this.#once(reply.thread, () => act(draftId, reply.text));
+  }
+
+  /** One gesture per thread at a time: a double click keeps one comment, not two. */
+  async #once(thread: vscode.CommentThread, act: () => Promise<void>): Promise<void> {
+    if (this.#busy.has(thread)) return;
+    this.#busy.add(thread);
+    try {
+      await act();
+    } finally {
+      this.#busy.delete(thread);
+    }
   }
 
   #mode(comment: unknown, mode: vscode.CommentMode): void {

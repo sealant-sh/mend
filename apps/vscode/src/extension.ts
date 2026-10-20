@@ -632,6 +632,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const review = startReview({
     client,
     memento: context.globalState,
+    keptDirectory: path.join(context.globalStorageUri.fsPath, "reviews"),
     onError: (cause) => void showError(cause),
     claims,
   });

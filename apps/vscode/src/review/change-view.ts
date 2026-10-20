@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 
 import { displaySession } from "../session-lines.js";
 import { changeUri } from "./change-content.js";
+import { noteUri } from "./change-note.js";
 import {
   changeRows,
   fileRow,
@@ -99,7 +100,8 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
       ),
       vscode.commands.registerCommand(
         "mend.change.showRecord",
-        (sequence?: unknown, excerpt?: unknown) => this.#showRecord(sequence, excerpt),
+        (runId?: unknown, sequence?: unknown, excerpt?: unknown) =>
+          this.#showRecord(runId, sequence, excerpt),
       ),
     ];
     // The header's `40 s ago` keeps counting while the section is on screen.
@@ -199,12 +201,11 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
         item.id = node.id;
         item.description = node.description;
         item.iconPath = new vscode.ThemeIcon(node.mend ? "sparkle" : "comment");
-        if (node.thread !== null)
-          item.command = {
-            command: "mend.change.openComment",
-            title: "Show the comment",
-            arguments: [node],
-          };
+        item.command = {
+          command: "mend.change.openComment",
+          title: "Show the comment",
+          arguments: [node],
+        };
         return item;
       }
       case "checkpoints": {
@@ -238,43 +239,50 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
     const read = this.store.ready();
     if (thread === null || read === null) return;
     const selection = new vscode.Range(thread.line - 1, 0, thread.line - 1, 0);
-    if (thread.at.slice !== read.pinned.id) {
-      await vscode.window.showTextDocument(changeUri(thread.at), { selection, preview: true });
+    const at = thread.at;
+    if (at === null) {
+      await vscode.window.showTextDocument(noteUri(read.changeId), { selection, preview: true });
       return;
     }
-    const file = read.pinnedDiff.files.find((candidate) => candidate.newPath === thread.at.path);
-    const left = {
-      ...thread.at,
-      at: read.pinned.base.id,
-      path: file?.oldPath ?? thread.at.path,
-      slice: null,
-    };
+    if (at.slice !== read.pinned.id) {
+      await vscode.window.showTextDocument(changeUri(at), { selection, preview: true });
+      return;
+    }
+    const file = read.pinnedDiff.files.find((candidate) => candidate.newPath === at.path);
+    const left = { ...at, at: read.pinned.base.id, path: file?.oldPath ?? at.path, slice: null };
     await vscode.commands.executeCommand(
       "vscode.diff",
       changeUri(left),
-      changeUri(thread.at),
-      `${thread.at.path.split("/").at(-1) ?? thread.at.path} (${read.chain.baseName} ↔ checkpoint ${read.pinned.head.ordinal})`,
+      changeUri(at),
+      `${at.path.split("/").at(-1) ?? at.path} (${read.chain.baseName} ↔ checkpoint ${read.pinned.head.ordinal})`,
       { preview: true, selection },
     );
   }
 
-  /** Show record (G9): the session's whole transcript, the evidence it was asked for on top. */
-  async #showRecord(sequence: unknown, excerpt: unknown): Promise<void> {
-    const followed = this.store.followed();
-    if (followed === null) return;
+  /**
+   * Show record (G9): the whole transcript of the session whose run the evidence cites, the
+   * evidence it was asked for on top.
+   */
+  async #showRecord(runId: unknown, sequence: unknown, excerpt: unknown): Promise<void> {
     try {
-      const transcript = await this.store.transcript();
-      if (transcript === null) return;
+      const cited =
+        typeof sequence === "string" ? { runId: typeof runId === "string" ? runId : null } : null;
+      const shown = await this.store.record(cited);
+      if (shown === null) return;
+      if (shown.kind === "not-found") {
+        void vscode.window.showWarningMessage(shown.words);
+        return;
+      }
       await this.record.show(
-        followed.session.id,
-        transcript.name,
+        shown.sessionId,
+        shown.name,
         recordText({
-          name: transcript.name,
+          name: shown.name,
           evidence:
             typeof sequence === "string" && typeof excerpt === "string"
-              ? evidenceLine({ sequence, excerpt })
+              ? evidenceLine({ runId: null, sequence, excerpt })
               : null,
-          entries: transcript.entries,
+          entries: shown.entries,
         }),
       );
     } catch (cause) {

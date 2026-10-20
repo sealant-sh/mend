@@ -34,6 +34,8 @@ export interface Session {
   readonly projectId: string;
   /** Present once the server is worktree-aware. */
   readonly worktreeId?: string;
+  /** The Sealant run recording it now: what a review's evidence cites. Older servers omit it. */
+  readonly sealantRunId?: string;
   readonly harness: string;
   /** The model the session was started with (docs/models-audit.md); null when not recorded. */
   readonly model: string | null;

@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { addPending } from "./pending.js";
 import { parseServerMemory, ReviewMemory, type ReviewMemento } from "./review-memory.js";
-import { pending } from "./test-fixtures.js";
 
 /** `globalState` as one VS Code keeps it across window reloads: a value that outlives its readers. */
 const memento = (): ReviewMemento & { readonly saved: Map<string, unknown> } => {
@@ -37,45 +35,5 @@ describe("the key that pins a change's slice", () => {
   it("reads anything unreadable as nothing kept", () => {
     expect(parseServerMemory("garbage")).toEqual({ pins: {} });
     expect(parseServerMemory({ pins: { a: "k", b: 3 } })).toEqual({ pins: { a: "k" } });
-  });
-});
-
-describe("a session's review as this window reads it", () => {
-  it("never goes back to an older value VS Code hands back late", async () => {
-    const kept = memento();
-    const memory = new ReviewMemory(kept);
-    await memory.updateSession("http://mend", "s1", (review) =>
-      addPending(review, pending({ id: "p1", body: "first" })),
-    );
-    const key = [...kept.saved.keys()][0];
-    if (key === undefined) throw new Error("nothing kept");
-    const earlier = kept.saved.get(key);
-    await memory.updateSession("http://mend", "s1", (review) =>
-      addPending(review, pending({ id: "p2", body: "second" })),
-    );
-    // The main process sends back the first write after the second: globalState now reads it.
-    kept.saved.set(key, earlier);
-    const bodies = () => memory.readSession("http://mend", "s1").pending.map(({ body }) => body);
-    expect(bodies()).toEqual(["first", "second"]);
-    await memory.updateSession("http://mend", "s1", (review) =>
-      addPending(review, pending({ id: "p3", body: "third" })),
-    );
-    expect(bodies()).toEqual(["first", "second", "third"]);
-  });
-
-  it("takes another window's newer write", async () => {
-    const kept = memento();
-    const mine = new ReviewMemory(kept);
-    const theirs = new ReviewMemory(kept);
-    await mine.updateSession("http://mend", "s1", (review) =>
-      addPending(review, pending({ id: "p1", body: "mine" })),
-    );
-    await theirs.updateSession("http://mend", "s1", (review) =>
-      addPending(review, pending({ id: "p2", body: "theirs" })),
-    );
-    expect(mine.readSession("http://mend", "s1").pending.map(({ body }) => body)).toEqual([
-      "mine",
-      "theirs",
-    ]);
   });
 });

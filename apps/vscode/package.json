@@ -544,7 +544,7 @@
         {
           "command": "mend.review.edit",
           "group": "inline@1",
-          "when": "commentController == mend.review && comment == mend.comment.pending"
+          "when": "commentController == mend.review && comment =~ /^mend\\.comment\\.(pending|accepted)$/"
         },
         {
           "command": "mend.review.delete",
@@ -556,12 +556,12 @@
         {
           "command": "mend.review.save",
           "group": "inline@1",
-          "when": "commentController == mend.review && comment == mend.comment.pending"
+          "when": "commentController == mend.review && comment =~ /^mend\\.comment\\.(pending|accepted)$/"
         },
         {
           "command": "mend.review.cancel",
           "group": "inline@2",
-          "when": "commentController == mend.review && comment == mend.comment.pending"
+          "when": "commentController == mend.review && comment =~ /^mend\\.comment\\.(pending|accepted)$/"
         }
       ]
     },

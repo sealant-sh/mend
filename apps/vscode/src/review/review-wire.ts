@@ -237,6 +237,8 @@ export type CommentState = (typeof COMMENT_STATES)[number];
 
 /** One record entry a comment carries as its evidence: `seq 214 · pnpm test auth · never ran`. */
 export interface RecordLink {
+  /** The Sealant run whose record it cites: Show record opens that run's session, no other. */
+  readonly runId: string | null;
   readonly sequence: string;
   readonly excerpt: string;
 }
@@ -286,6 +288,7 @@ const parseRecordLink = (value: unknown): RecordLink => {
   const raw = record(value, "evidence");
   const sequence = raw["sequence"];
   return {
+    runId: textOrNull(raw, "sealantRunId"),
     sequence: typeof sequence === "string" || typeof sequence === "number" ? String(sequence) : "",
     excerpt: text(raw, "excerpt", "evidence"),
   };
@@ -323,8 +326,25 @@ export const parseComments = (value: unknown): ReadonlyArray<ServerComment> =>
 /** Mend's last read of the change (`POST /changes/:id/read`), as `GET …/passes` reports it. */
 export type ReadPass =
   | { readonly kind: "reading"; readonly since: string }
-  | { readonly kind: "read"; readonly at: string; readonly findings: number | null }
-  | { readonly kind: "failed"; readonly at: string; readonly words: string };
+  | {
+      readonly kind: "read";
+      readonly startedAt: string;
+      readonly at: string;
+      readonly findings: number | null;
+    }
+  | {
+      readonly kind: "failed";
+      readonly startedAt: string;
+      readonly at: string;
+      readonly words: string;
+    };
+
+/**
+ * Which pass this is, by Mend's own clock: a change keeps one read pass, and a new one starts
+ * at a new time. Compared only with another pass's, never with this machine's clock.
+ */
+export const passStart = (pass: ReadPass | null): string | null =>
+  pass === null ? null : pass.kind === "reading" ? pass.since : pass.startedAt;
 
 /** The `read` pass among a change's passes; null when Mend never read it. */
 export const parseReadPass = (value: unknown): ReadPass | null => {
@@ -341,11 +361,12 @@ export const parseReadPass = (value: unknown): ReadPass | null => {
     case "failed":
       return {
         kind: "failed",
+        startedAt,
         at,
         words: textOrNull(pass, "detail") ?? "Mend could not read this change.",
       };
     default:
-      return { kind: "read", at, findings: lineOrNull(pass, "findings") };
+      return { kind: "read", startedAt, at, findings: lineOrNull(pass, "findings") };
   }
 };
 

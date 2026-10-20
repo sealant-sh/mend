@@ -1,5 +1,10 @@
-import type { Project, Session, SessionDetail } from "../types.js";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import type { Project, ProjectDetail, Session, SessionDetail } from "../types.js";
 import type { ChangeRead } from "./change-rows.js";
+import { KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
 import type { PendingComment } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
 import type {
@@ -163,18 +168,50 @@ export const sessionReads = (changeId: string | null) => ({
     changeId,
   }),
   connection: async () => ({ url: "http://mend", token: null }),
-  viewerId: async () => "dana",
+  viewerId: async (): Promise<string | null> => "dana",
   memberNames: async () => [{ userId: "dana", name: "Dana" }],
+  projectDetail: async (): Promise<ProjectDetail> => ({ project: PROJECT, sessions: [] }),
 });
+
+/** One VS Code's global storage, of its own, for a test's kept reviews. */
+export const storage = (): Promise<string> => mkdtemp(join(tmpdir(), "mend-kept-reviews-"));
+
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * One window's file reads and writes, each read and write held back `ms`: two windows reading
+ * one review at once both read it before either writes, as two VS Code windows can.
+ */
+export const slowFiles = (ms: number): KeptFiles => ({
+  ...NODE_FILES,
+  readFile: async (path) => {
+    try {
+      return await NODE_FILES.readFile(path);
+    } finally {
+      await pause(ms);
+    }
+  },
+  writeFile: async (path, text) => {
+    await pause(ms);
+    await NODE_FILES.writeFile(path, text);
+  },
+});
+
+/** A window's own kept reviews over a shared storage directory. */
+export const keptIn = (directory: string, files: KeptFiles = NODE_FILES): KeptReviews =>
+  new KeptReviews(directory, files);
 
 /** Mend as the review reads it: one change, its pinned slice, and the comments it holds. */
 export class FakeMend extends ReviewClient {
   serverComments: ReadonlyArray<ServerComment> = [];
 
   constructor() {
-    super(async () => {
-      throw new Error("the fake answers every route the store reads");
-    });
+    super(
+      async () => {
+        throw new Error("the fake answers every route the store reads");
+      },
+      () => undefined,
+    );
   }
 
   override async openReview(): Promise<PinnedSlice> {
@@ -205,3 +242,43 @@ export class FakeMend extends ReviewClient {
 
 /** Long enough for a store's read of the fakes to land. */
 export const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
+
+const missing = (path: string): Error =>
+  Object.assign(new Error(`ENOENT: no such file, '${path}'`), { code: "ENOENT" });
+
+/**
+ * One machine's disk in memory, for tests that run on fake timers: every window's kept reviews
+ * share it, as the windows of one VS Code share its global storage.
+ */
+export const memoryFiles = (): KeptFiles => {
+  const files = new Map<string, { readonly text: string; readonly at: number }>();
+  return {
+    mkdir: async () => undefined,
+    readFile: async (path) => {
+      const found = files.get(path);
+      if (found === undefined) throw missing(path);
+      return found.text;
+    },
+    create: async (path, text) => {
+      if (files.has(path)) throw Object.assign(new Error(`EEXIST: '${path}'`), { code: "EEXIST" });
+      files.set(path, { text, at: Date.now() });
+    },
+    writeFile: async (path, text) => {
+      files.set(path, { text, at: Date.now() });
+    },
+    rename: async (from, to) => {
+      const found = files.get(from);
+      if (found === undefined) throw missing(from);
+      files.delete(from);
+      files.set(to, found);
+    },
+    rm: async (path) => {
+      files.delete(path);
+    },
+    readdir: async (path) =>
+      [...files.keys()].flatMap((name) =>
+        name.startsWith(`${path}/`) ? [name.slice(path.length + 1)] : [],
+      ),
+    modified: async (path) => files.get(path)?.at ?? null,
+  };
+};

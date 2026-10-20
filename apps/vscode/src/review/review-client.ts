@@ -1,5 +1,5 @@
 import type { MendConnection } from "../config.js";
-import { requestMend } from "../mend-http.js";
+import { MendApiError, requestMend } from "../mend-http.js";
 import {
   parseComment,
   parseComments,
@@ -23,17 +23,28 @@ const segment = encodeURIComponent;
 
 /** The review's reads and writes on Mend, each answer parsed into the review's types. */
 export class ReviewClient {
-  constructor(private readonly connection: () => Promise<MendConnection>) {}
+  constructor(
+    private readonly connection: () => Promise<MendConnection>,
+    /** A token Mend refused, dropped as every reader of Mend drops it (`MendClient.refused`). */
+    private readonly refused: (connection: MendConnection) => void,
+  ) {}
+
+  private async request(path: string, init?: RequestInit): Promise<unknown> {
+    const connection = await this.connection();
+    try {
+      return await requestMend(connection, path, init);
+    } catch (cause) {
+      if (cause instanceof MendApiError && cause.status === 401) this.refused(connection);
+      throw cause;
+    }
+  }
 
   private async get(path: string): Promise<unknown> {
-    return requestMend(await this.connection(), path);
+    return this.request(path);
   }
 
   private async post(path: string, payload: unknown): Promise<unknown> {
-    return requestMend(await this.connection(), path, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
+    return this.request(path, { method: "POST", body: JSON.stringify(payload) });
   }
 
   /** Pins a slice, base to a checkpoint taken now; the same key answers the same slice. */

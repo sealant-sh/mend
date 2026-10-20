@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { EMPTY_REVIEW } from "./pending.js";
 import { checkpoint, CHECKPOINTS, comment, pending, PINNED, readOf } from "./test-fixtures.js";
-import { commentableLines, commentsLine, threadsOf } from "./threads.js";
+import { commentableLines, commentsLine, threadPlace, threadsOf } from "./threads.js";
 
 const pinnedDoc = {
   worktreeId: "w1",
@@ -34,7 +34,7 @@ describe("where a comment may be written (G10)", () => {
 
 describe("a change's comments as threads", () => {
   it("shows her pending comment as hers, pending, on the pinned new side", () => {
-    const { threads } = threadsOf(readOf({ kind: "pinned" }), { pending: [pending({})] }, "Dana");
+    const threads = threadsOf(readOf({ kind: "pinned" }), { pending: [pending({})] }, "Dana");
     expect(threads).toMatchObject([
       { kind: "pending", author: "Dana", label: "pending", at: pinnedDoc, line: 12 },
     ]);
@@ -47,10 +47,10 @@ describe("a change's comments as threads", () => {
       line: 13,
       author: { kind: "mend", name: "Mend" },
       body: "Nothing in this session ran the tests after limit.ts changed.",
-      evidence: [{ sequence: "214", excerpt: "pnpm test auth · never ran" }],
+      evidence: [{ runId: "run-1", sequence: "214", excerpt: "pnpm test auth · never ran" }],
     });
     const read = readOf({ kind: "pinned" }, { comments: [draft] });
-    expect(threadsOf(read, EMPTY_REVIEW, "Dana").threads).toMatchObject([
+    expect(threadsOf(read, EMPTY_REVIEW, "Dana")).toMatchObject([
       { kind: "draft", author: "Mend · draft", label: "draft", commentId: "d1" },
     ]);
     const accepted = threadsOf(
@@ -66,7 +66,7 @@ describe("a change's comments as threads", () => {
         ],
       },
       "Dana",
-    ).threads;
+    );
     expect(accepted).toMatchObject([
       { kind: "accepted", author: "Dana · accepted from Mend", label: "pending" },
     ]);
@@ -92,7 +92,7 @@ describe("a change's comments as threads", () => {
       { ...later, pinned: { ...PINNED, id: "slice-2", head: checkpoint(4, "review-open") } },
       EMPTY_REVIEW,
       "Dana",
-    ).threads;
+    );
     expect(thread).toMatchObject({
       kind: "sent",
       label: "sent",
@@ -102,28 +102,55 @@ describe("a change's comments as threads", () => {
     expect(later.slice.from.id).toBe("cp2");
   });
 
-  it("shows nothing of a dismissed comment, and a draft about the whole change apart", () => {
-    const { threads, loose } = threadsOf(
-      readOf(
-        { kind: "pinned" },
-        {
-          comments: [
-            comment({ id: "x", state: "dismissed" }),
-            comment({
-              id: "w",
-              state: "draft",
-              file: null,
-              line: null,
-              author: { kind: "mend", name: "Mend" },
-            }),
-          ],
-        },
-      ),
+  it("shows nothing of a dismissed comment, and a draft about the whole change on the change's note", () => {
+    const whole = comment({
+      id: "w",
+      state: "draft",
+      file: null,
+      line: null,
+      author: { kind: "mend", name: "Mend" },
+      body: "No test ran after the change.\nThe record never shows pnpm test.",
+      evidence: [{ runId: "run-1", sequence: "9", excerpt: "turn ended" }],
+    });
+    const threads = threadsOf(
+      readOf({ kind: "pinned" }, { comments: [comment({ id: "x", state: "dismissed" }), whole] }),
       EMPTY_REVIEW,
       "Dana",
     );
-    expect(threads).toEqual([]);
-    expect(loose).toMatchObject([{ kind: "draft" }]);
-    expect(commentsLine(threads, loose)).toBe("1 Mend draft");
+    expect(threads).toMatchObject([
+      {
+        kind: "draft",
+        at: null,
+        line: 1,
+        body: whole.body,
+        evidence: whole.evidence,
+        commentId: "w",
+      },
+    ]);
+    expect(commentsLine(threads)).toBe("1 Mend draft");
+    const [thread] = threads;
+    if (thread === undefined) throw new Error("no thread");
+    expect(threadPlace(thread)).toBe("the whole change");
+  });
+
+  it("hangs a comment written on the old side at its slice's base, not on the pinned new side", () => {
+    const old = comment({
+      id: "o1",
+      file: "README",
+      line: 1,
+      anchor: { sliceId: PINNED.id, baseId: PINNED.base.id, headId: PINNED.head.id, side: "old" },
+    });
+    const [thread] = threadsOf(
+      readOf({ kind: "pinned" }, { comments: [old] }),
+      EMPTY_REVIEW,
+      "Dana",
+    );
+    expect(thread?.at).toEqual({
+      worktreeId: "w1",
+      absent: false,
+      path: "README",
+      at: PINNED.base.id,
+      slice: null,
+    });
   });
 });

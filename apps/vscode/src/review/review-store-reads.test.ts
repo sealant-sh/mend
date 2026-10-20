@@ -14,6 +14,7 @@ import type {
   SliceDiff,
   WorktreeChain,
 } from "./review-wire.js";
+import { keptIn, memoryFiles } from "./test-fixtures.js";
 
 vi.mock("vscode", () => import("../test-vscode.js"));
 
@@ -94,7 +95,10 @@ class World extends ReviewClient {
   missing = new Set<string>();
 
   constructor() {
-    super(async () => ({ url: "http://mend.test", token: "t" }));
+    super(
+      async () => ({ url: "http://mend.test", token: "t" }),
+      () => undefined,
+    );
   }
 
   /** The agent wrote: a checkpoint of `trigger` holding `files` files. */
@@ -195,7 +199,8 @@ const storeOver = (
         }
       },
       connection: async () => ({ url: "http://mend.test", token: "t" }),
-      viewerId: async () => options.viewer ?? "dana",
+      viewerId: async (): Promise<string | null> => options.viewer ?? "dana",
+      projectDetail: async () => ({ project, sessions: [] }),
       memberNames: async () => [
         { userId: "dana", name: "Dana" },
         { userId: "ana", name: "Ana" },
@@ -203,6 +208,7 @@ const storeOver = (
     },
     world,
     new ReviewMemory(options.kept ?? memento()),
+    keptIn("/global-storage/reviews", memoryFiles()),
   );
   return { store, reads };
 };

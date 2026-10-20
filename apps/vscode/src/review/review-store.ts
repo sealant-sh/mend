@@ -9,17 +9,24 @@ import { accessChanged } from "../session-reads.js";
 import type { Project, Session } from "../types.js";
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
+import { samePlace, type KeptReviews, type ReviewPlace } from "./kept-reviews.js";
 import {
   addPending,
   editPending,
   EMPTY_REVIEW,
+  MAX_PENDING,
   removePending,
   type PendingComment,
   type SessionReview,
 } from "./pending.js";
 import type { ReviewClient } from "./review-client.js";
 import type { ReviewMemory } from "./review-memory.js";
-import type { SliceDiff, TranscriptEntry } from "./review-wire.js";
+import {
+  passStart,
+  type ServerComment,
+  type SliceDiff,
+  type TranscriptEntry,
+} from "./review-wire.js";
 import {
   checkpointName,
   lastReviewHead,
@@ -32,7 +39,7 @@ import {
 /**
  * The review's one owner: which session's change the section follows, every read of it, what she
  * chose to read, and her pending comments. Surfaces map `state()` and `review()` and ask through
- * its methods; none of them reads Mend or writes `globalState`.
+ * its methods; none of them reads Mend or keeps anything on this machine.
  */
 
 export type Followed = { readonly project: Project; readonly session: Session };
@@ -65,6 +72,18 @@ export interface ReviewFailure {
   readonly cause: unknown;
 }
 
+/** A transcript Show record opens: the session whose record the evidence cites. */
+export type ShownRecord =
+  | {
+      readonly kind: "found";
+      readonly sessionId: string;
+      readonly name: string;
+      readonly entries: ReadonlyArray<TranscriptEntry>;
+    }
+  | { readonly kind: "not-found"; readonly words: string };
+
+const TOO_MANY = `This session's review already holds ${MAX_PENDING} pending comments, so this one is not kept. Its words are still in the thread: send the review, or delete a comment, first.`;
+
 /** Frames come in bursts while an agent works: the change is read again at most this often. */
 const REREAD_MS = 1_500;
 
@@ -84,11 +103,17 @@ export class ReviewStore implements vscode.Disposable {
   /** What she chose to read, per session; the pinned slice until she picks another. */
   readonly #choices = new Map<string, SliceChoice>();
   #review: SessionReview = EMPTY_REVIEW;
-  /** Where `#review` is kept: the server and session it belongs to. */
-  #kept: { readonly url: string; readonly sessionId: string } | null = null;
+  /** Where `#review` is kept: her account on the server, and the session. */
+  #place: ReviewPlace | null = null;
+  /** Who she is on each server, as Mend last said: a read that cannot say keeps her place. */
+  readonly #viewers = new Map<string, string>();
   #you = "You";
-  /** The read of a change she asked for, until it ends: its failure toasts once. */
-  #asked: { readonly changeId: string; readonly at: string } | null = null;
+  /**
+   * The read of a change she asked for, until it ends: its failure toasts once. `before` is when
+   * the pass Mend held before she asked started, by Mend's clock: a pass that started at another
+   * time is hers.
+   */
+  #asked: { readonly changeId: string; readonly before: string | null } | null = null;
   #generation = 0;
   #reread: NodeJS.Timeout | null = null;
   /** One read in flight, and at most one after it for whatever asked meanwhile (as flow 2). */
@@ -99,10 +124,13 @@ export class ReviewStore implements vscode.Disposable {
   constructor(
     private readonly sessions: Pick<
       MendClient,
-      "sessionDetail" | "connection" | "viewerId" | "memberNames"
+      "sessionDetail" | "connection" | "viewerId" | "memberNames" | "projectDetail"
     >,
     private readonly client: ReviewClient,
+    /** The keys pinning each change's slice. */
     private readonly memory: ReviewMemory,
+    /** Her pending comments, per person and session, shared by every window. */
+    private readonly kept: KeptReviews,
   ) {}
 
   /** How many files a choice reads, for the picker, and whether Mend cut the listing. */
@@ -153,7 +181,7 @@ export class ReviewStore implements vscode.Disposable {
     if (this.followed()?.session.id === session.id) return;
     this.#generation++;
     this.#review = EMPTY_REVIEW;
-    this.#kept = null;
+    this.#place = null;
     this.#set({ kind: "reading", followed: { project, session } });
     this.#request();
   }
@@ -163,7 +191,8 @@ export class ReviewStore implements vscode.Disposable {
     if (this.#state.kind === "idle") return;
     this.#generation++;
     this.#review = EMPTY_REVIEW;
-    this.#kept = null;
+    this.#place = null;
+    this.#viewers.clear();
     this.#asked = null;
     this.#set({ kind: "idle" });
   }
@@ -192,9 +221,12 @@ export class ReviewStore implements vscode.Disposable {
   }
 
   /** Another window of this VS Code may have written her comments: read what it kept. */
-  reloadReview(): void {
-    if (this.#kept === null) return;
-    this.#review = this.memory.readSession(this.#kept.url, this.#kept.sessionId);
+  async reloadReview(): Promise<void> {
+    const place = this.#place;
+    if (place === null) return;
+    const { review } = await this.kept.read(place);
+    if (!samePlace(this.#place, place)) return;
+    this.#review = review;
     this.#changed.fire();
   }
 
@@ -262,58 +294,52 @@ export class ReviewStore implements vscode.Disposable {
       createdAt: new Date().toISOString(),
       origin: { kind: "own" },
     };
+    let full = false;
     try {
-      await this.#keep((review) => addPending(review, added));
+      await this.#keepAt(this.#place, (review) => {
+        full = review.pending.length >= MAX_PENDING;
+        return full ? review : addPending(review, added);
+      });
     } catch (cause) {
       return {
         kept: false,
         words: `VS Code could not keep your comment: ${errorWords(cause)} Its words are still in the thread.`,
       };
     }
-    return { kept: true };
+    return full ? { kept: false, words: TOO_MANY } : { kept: true };
   }
 
   /** G1: a pending comment is hers to edit until Send review. */
   async edit(pendingId: string, body: string): Promise<void> {
     if (body.trim() === "") return;
-    await this.#keep((review) => editPending(review, pendingId, body.trim()));
+    await this.#keepAt(this.#place, (review) => editPending(review, pendingId, body.trim()));
   }
 
   async remove(pendingId: string): Promise<void> {
-    await this.#keep((review) => removePending(review, pendingId));
+    await this.#keepAt(this.#place, (review) => removePending(review, pendingId));
   }
 
   /**
    * Accept makes a Mend draft hers: pending like her own comments, with its evidence, until Send
    * review opens it on Mend. Words she typed under it are a comment of her own on the same lines.
+   * A draft she already accepted, in this window or another, is accepted once.
    */
   async accept(draftId: string, reply: string): Promise<void> {
     const read = this.ready();
+    const place = this.#place;
     const draft = read?.comments.find((comment) => comment.id === draftId);
-    if (read === null || draft === undefined || draft.file === null) return;
-    const line = draft.line ?? 1;
-    const base: Omit<PendingComment, "id" | "body" | "origin"> = {
-      sliceId: read.pinned.id,
-      headId: read.pinned.head.id,
-      path: draft.file,
-      line,
-      endLine: Math.max(line, draft.endLine ?? line),
-      lineText: "",
-      createdAt: new Date().toISOString(),
-    };
-    const accepted: PendingComment = {
-      ...base,
-      id: randomUUID(),
-      body: draft.body,
-      origin: { kind: "accepted", draftId, evidence: draft.evidence },
-    };
-    const own: PendingComment = {
-      ...base,
-      id: randomUUID(),
-      body: reply.trim(),
-      origin: { kind: "own" },
-    };
-    await this.#keep((review) => {
+    if (read === null || draft === undefined) return;
+    const accepted = onDraft(read, draft, draft.body, {
+      kind: "accepted",
+      draftId,
+      evidence: draft.evidence,
+    });
+    const own = onDraft(read, draft, reply.trim(), { kind: "own" });
+    await this.#keepAt(place, (review) => {
+      const already = review.pending.some(
+        (comment) => comment.origin.kind === "accepted" && comment.origin.draftId === draftId,
+      );
+      if (already) return review;
       const next = addPending(review, accepted);
       return own.body === "" ? next : addPending(next, own);
     });
@@ -322,6 +348,8 @@ export class ReviewStore implements vscode.Disposable {
   /** Dismiss removes a Mend draft, on Mend for everyone; words she typed stay as her own comment. */
   async dismiss(draftId: string, reply: string): Promise<void> {
     const read = this.ready();
+    // Where her words go is decided now: she may follow another session before Mend answers.
+    const place = this.#place;
     const draft = read?.comments.find((comment) => comment.id === draftId);
     if (read === null || draft === undefined) return;
     try {
@@ -330,32 +358,20 @@ export class ReviewStore implements vscode.Disposable {
       this.#fail("error", cause);
       return;
     }
-    if (reply.trim() !== "" && draft.file !== null) {
-      const line = draft.line ?? 1;
-      const own: PendingComment = {
-        id: randomUUID(),
-        sliceId: read.pinned.id,
-        headId: read.pinned.head.id,
-        path: draft.file,
-        line,
-        endLine: Math.max(line, draft.endLine ?? line),
-        lineText: "",
-        body: reply.trim(),
-        createdAt: new Date().toISOString(),
-        origin: { kind: "own" },
-      };
-      await this.#keep((review) => addPending(review, own));
-    }
-    this.reread();
+    if (reply.trim() !== "")
+      await this.#keepAt(place, (review) =>
+        addPending(review, onDraft(read, draft, reply.trim(), { kind: "own" })),
+      );
+    this.#rereadIfFollowed(read.sessionId);
   }
 
   /** Read this change: Mend reads it and writes drafts with their evidence, never a verdict. */
   async readChange(): Promise<void> {
     const read = this.ready();
     if (read === null) return;
-    // A second of slack: Mend's clock and this one may disagree about when she asked.
-    this.#asked = { changeId: read.changeId, at: new Date(Date.now() - 1_000).toISOString() };
     try {
+      const before = passStart(await this.client.readPass(read.changeId));
+      this.#asked = { changeId: read.changeId, before };
       await this.client.readChange(read.changeId);
     } catch (cause) {
       this.#asked = null;
@@ -365,16 +381,44 @@ export class ReviewStore implements vscode.Disposable {
     this.reread();
   }
 
-  /** The followed session's transcript, for Show record (G9: the whole of it). */
-  async transcript(): Promise<{
-    readonly name: string;
-    readonly entries: ReadonlyArray<TranscriptEntry>;
-  } | null> {
+  /**
+   * Show record (G9: the whole transcript). From evidence, the transcript of the session whose run
+   * the evidence cites, which need not be the session the section follows, since every session in
+   * a worktree adds to its one change. Mend's transcript is per session, so a run no session
+   * records now (one a later resume replaced) opens nothing, and says so. With no evidence (the
+   * section's menu), the followed session's own.
+   */
+  async record(cited: { readonly runId: string | null } | null): Promise<ShownRecord | null> {
     const followed = this.followed();
     if (followed === null) return null;
+    if (cited === null)
+      return {
+        kind: "found",
+        sessionId: followed.session.id,
+        name: displaySession(followed.session),
+        entries: await this.client.transcript(followed.session.id),
+      };
+    const { runId } = cited;
+    if (runId === null)
+      return {
+        kind: "not-found",
+        words: "This evidence does not say which run recorded it, so Mend cannot open its record.",
+      };
+    const ofRun = (sessions: ReadonlyArray<Session>): Session | undefined =>
+      sessions.find((candidate) => candidate.sealantRunId === runId);
+    const session =
+      ofRun([(await this.sessions.sessionDetail(followed.session.id)).session]) ??
+      ofRun((await this.sessions.projectDetail(followed.project.id)).sessions);
+    if (session === undefined)
+      return {
+        kind: "not-found",
+        words: `No session of ${followed.project.name} is recorded by run ${runId} now: it may be an earlier run of a session that was resumed since. Mend keeps one transcript per session, so this record does not open.`,
+      };
     return {
-      name: displaySession(followed.session),
-      entries: await this.client.transcript(followed.session.id),
+      kind: "found",
+      sessionId: session.id,
+      name: displaySession(session),
+      entries: await this.client.transcript(session.id),
     };
   }
 
@@ -391,18 +435,26 @@ export class ReviewStore implements vscode.Disposable {
     return !(failure.key.startsWith("review-read:") && this.ready()?.pass?.kind === "reading");
   }
 
-  /** Applies `update` to her comments as kept now, so another window's writes stay. */
-  async #keep(update: (review: SessionReview) => SessionReview): Promise<void> {
-    const kept = this.#kept;
-    if (kept === null) {
-      this.#review = update(this.#review);
+  #rereadIfFollowed(sessionId: string): void {
+    if (this.followed()?.session.id === sessionId) this.reread();
+  }
+
+  /**
+   * Applies `update` to the review kept at `place`, as it is kept now, so another window's writes
+   * stay. The section shows what was kept only once it is kept, and only while it still shows
+   * that place. With no place (the change is still being read), nothing is kept.
+   */
+  async #keepAt(
+    place: ReviewPlace | null,
+    update: (review: SessionReview) => SessionReview,
+  ): Promise<SessionReview> {
+    if (place === null) throw new Error("Mend has not finished reading this session.");
+    const { review } = await this.kept.update(place, update);
+    if (samePlace(this.#place, place)) {
+      this.#review = review;
       this.#changed.fire();
-      return;
     }
-    const next = await this.memory.updateSession(kept.url, kept.sessionId, update);
-    if (this.#kept !== kept) return;
-    this.#review = next;
-    this.#changed.fire();
+    return review;
   }
 
   #set(state: ReviewState): void {
@@ -456,7 +508,7 @@ export class ReviewStore implements vscode.Disposable {
     const asked = this.#asked;
     const pass = read.pass;
     if (asked === null || asked.changeId !== read.changeId || pass?.kind !== "failed") return;
-    if (Date.parse(pass.at) < Date.parse(asked.at)) return;
+    if (pass.startedAt === asked.before) return;
     this.#asked = null;
     this.#failed.fire({
       key: `review-read:${read.changeId}`,
@@ -468,14 +520,26 @@ export class ReviewStore implements vscode.Disposable {
 
   async #readChange(followed: Followed): Promise<ReviewState> {
     const { session } = followed;
-    const detail = await this.sessions.sessionDetail(session.id);
+    const [detail, { url }, viewer] = await Promise.all([
+      this.sessions.sessionDetail(session.id),
+      this.sessions.connection(),
+      this.sessions.viewerId(),
+    ]);
     const worktreeId = detail.session.worktreeId;
-    const { url } = await this.sessions.connection();
+    if (viewer !== null) this.#viewers.set(url, viewer);
+    const place: ReviewPlace = {
+      url,
+      viewer: this.#viewers.get(url) ?? "unknown",
+      sessionId: session.id,
+    };
     // Only the followed session's own read loads its comments: a read of the one followed before,
     // landing late, must not put that session's comments under this one.
-    if (this.followed()?.session.id === session.id && this.#kept?.sessionId !== session.id) {
-      this.#kept = { url, sessionId: session.id };
-      this.#review = this.memory.readSession(url, session.id);
+    if (this.followed()?.session.id === session.id && !samePlace(this.#place, place)) {
+      const { review } = await this.kept.read(place);
+      if (this.followed()?.session.id === session.id && !samePlace(this.#place, place)) {
+        this.#place = place;
+        this.#review = review;
+      }
     }
     if (detail.changeId === null || worktreeId === undefined)
       return {
@@ -494,12 +558,11 @@ export class ReviewStore implements vscode.Disposable {
         return { kind: "empty", followed, words: cause.message };
       throw cause;
     }
-    const [chain, pinnedDiff, comments, pass, viewer, members] = await Promise.all([
+    const [chain, pinnedDiff, comments, pass, members] = await Promise.all([
       this.client.chain(worktreeId),
       this.client.sliceDiff(changeId, pinned.id),
       this.client.comments(changeId),
       this.client.readPass(changeId),
-      this.sessions.viewerId(),
       this.sessions.memberNames(),
     ]);
     // Mend writes her name on her comments, or her email when her name is empty.
@@ -575,3 +638,25 @@ export class ReviewStore implements vscode.Disposable {
     }
   }
 }
+
+/** A pending comment on a Mend draft's place: its lines on the pinned slice, or the whole change. */
+const onDraft = (
+  read: ChangeRead,
+  draft: ServerComment,
+  body: string,
+  origin: PendingComment["origin"],
+): PendingComment => {
+  const line = draft.file === null ? 1 : (draft.line ?? 1);
+  return {
+    id: randomUUID(),
+    sliceId: read.pinned.id,
+    headId: read.pinned.head.id,
+    path: draft.file,
+    line,
+    endLine: draft.file === null ? 1 : Math.max(line, draft.endLine ?? line),
+    lineText: "",
+    body,
+    createdAt: new Date().toISOString(),
+    origin,
+  };
+};

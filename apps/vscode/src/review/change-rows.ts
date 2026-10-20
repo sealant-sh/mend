@@ -21,7 +21,7 @@ import {
   statusLetter,
   type Slice,
 } from "./slices.js";
-import { commentsLine, threadsOf, type ThreadView } from "./threads.js";
+import { commentsLine, threadPlace, threadsOf, type ThreadView } from "./threads.js";
 
 /**
  * The Change section as rows, from one read of a session's change (story d, steps 1, 2 and 5).
@@ -74,7 +74,7 @@ export interface CommentRow {
   readonly label: string;
   readonly description: string;
   readonly mend: boolean;
-  readonly thread: ThreadView | null;
+  readonly thread: ThreadView;
 }
 
 export interface CheckpointRow {
@@ -204,7 +204,7 @@ export const changeRows = (
       label: `newer checkpoints · read ${sliceSpan(newerSlice, base)}`,
       command: "mend.change.readNewer",
     });
-  const { threads, loose } = threadsOf(read, review, you);
+  const threads = threadsOf(read, review, you);
   const rows: Array<ChangeRow> = [];
   if (read.pass?.kind === "reading")
     rows.push({
@@ -238,29 +238,17 @@ export const changeRows = (
     {
       kind: "comments",
       id: "comments",
-      description: commentsLine(threads, loose),
-      comments: [
-        ...threads.map(
-          (thread): CommentRow => ({
-            kind: "comment",
-            id: thread.key,
-            label: thread.body.split("\n")[0] ?? "",
-            description: `${thread.at.path.split("/").at(-1) ?? thread.at.path}:${thread.line} · ${thread.author === "Mend · draft" ? "Mend · draft" : thread.label}`,
-            mend: thread.kind === "draft",
-            thread,
-          }),
-        ),
-        ...loose.map(
-          (comment): CommentRow => ({
-            kind: "comment",
-            id: comment.key,
-            label: comment.body.split("\n")[0] ?? "",
-            description: `the whole change · ${comment.kind === "draft" ? "Mend · draft" : comment.label}`,
-            mend: comment.kind === "draft",
-            thread: null,
-          }),
-        ),
-      ],
+      description: commentsLine(threads),
+      comments: threads.map(
+        (thread): CommentRow => ({
+          kind: "comment",
+          id: thread.key,
+          label: thread.body.split("\n")[0] ?? "",
+          description: `${threadPlace(thread)} · ${thread.kind === "draft" ? "Mend · draft" : thread.label}`,
+          mend: thread.kind === "draft",
+          thread,
+        }),
+      ),
     },
     {
       kind: "checkpoints",

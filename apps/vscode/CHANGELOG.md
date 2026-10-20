@@ -15,10 +15,11 @@ patch number is the extension's own.
   and **Review the newer change** pins it. A session row's **Open in Mend** moves from its buttons
   to its right-click menu.
 - Comment threads on the change. **+** on a line of `main → now` writes a pending comment that this
-  VS Code keeps, per server and session, until you send the review; you edit or delete it until
-  then. **Read this change** asks Mend to read it: drafts arrive authored `Mend · draft` with their
-  evidence, **Accept** and **Dismiss**, and **Show record** opens the session's transcript
-  read-only. The Comments panel lists them all.
+  VS Code keeps, per server, account and session and safe across windows, until you send the review;
+  you edit or delete it until then. **Read this change** asks Mend to read it: drafts arrive
+  authored `Mend · draft` with their evidence, **Accept** and **Dismiss** (a draft about the whole
+  change on the change's own note), and **Show record** opens the transcript of the session the
+  evidence cites, read-only. The Comments panel lists them all.
 - The Mend view is **Sessions**: **Needs you**, **Since you last looked**, **Running**, then
   **Projects**, collapsed. Each row reads `<word> · <fact>` as Mend observed it, such as
   `waiting · claude needs your permission to use Bash · since 02:14` or

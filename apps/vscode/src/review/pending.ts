@@ -3,8 +3,12 @@ import type { RecordLink } from "./review-wire.js";
 /**
  * Her pending comments (story d, step 4): held by the extension, like a pending review in GitHub
  * Pull Requests, until Send review. Comment draft state is a proposed VS Code API and Mend has no
- * pending state, so they live in `globalState` per server and session, and survive a reload.
+ * pending state, so they are kept on this machine per person and session (`kept-reviews.ts`), and
+ * survive a reload.
  */
+
+/** As many pending comments as one session's review holds. */
+export const MAX_PENDING = 200;
 
 /** Where a pending comment came from: her own words, or a Mend draft she accepted. */
 export type PendingOrigin =
@@ -21,8 +25,9 @@ export interface PendingComment {
   /** The pinned slice she wrote it on, and its head: its hunks anchor it when it is sent. */
   readonly sliceId: string;
   readonly headId: string;
-  readonly path: string;
-  /** Lines on the slice's new side, from 1. */
+  /** Null for a comment on the change as a whole, as a Mend draft about the whole change is. */
+  readonly path: string | null;
+  /** Lines on the slice's new side, from 1; 1 for the whole change. */
   readonly line: number;
   readonly endLine: number;
   /** The first commented line as it read: what carries the comment to a newer slice. */
@@ -58,7 +63,9 @@ const parseEvidence = (value: unknown): ReadonlyArray<RecordLink> =>
         if (!isRecord(item)) return [];
         const sequence = text(item, "sequence");
         const excerpt = text(item, "excerpt");
-        return sequence === null || excerpt === null ? [] : [{ sequence, excerpt }];
+        return sequence === null || excerpt === null
+          ? []
+          : [{ runId: text(item, "runId"), sequence, excerpt }];
       })
     : [];
 
@@ -76,7 +83,7 @@ const parsePending = (value: unknown): ReadonlyArray<PendingComment> => {
   const id = text(value, "id");
   const sliceId = text(value, "sliceId");
   const headId = text(value, "headId");
-  const path = text(value, "path");
+  const path = value["path"] === null ? null : text(value, "path");
   const line = whole(value, "line");
   const endLine = whole(value, "endLine");
   const lineText = text(value, "lineText");
@@ -87,7 +94,7 @@ const parsePending = (value: unknown): ReadonlyArray<PendingComment> => {
     id === null ||
     sliceId === null ||
     headId === null ||
-    path === null ||
+    (path === null && value["path"] !== null) ||
     line === null ||
     endLine === null ||
     lineText === null ||

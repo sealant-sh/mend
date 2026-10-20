@@ -5,8 +5,10 @@ import { refusedSignIn } from "../error-toast.js";
 import type { ToastClaims } from "../toast-claims.js";
 import type { Project, Session } from "../types.js";
 import { CHANGE_SCHEME, ChangeContent } from "./change-content.js";
+import { ChangeNote, NOTE_SCHEME } from "./change-note.js";
 import { ChangeView } from "./change-view.js";
 import { ReviewComments } from "./comments.js";
+import { KeptReviews } from "./kept-reviews.js";
 import { RECORD_SCHEME, RecordContent } from "./record.js";
 import { ReviewClient } from "./review-client.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
@@ -26,12 +28,23 @@ export interface Review extends vscode.Disposable {
 export const startReview = (deps: {
   readonly client: MendClient;
   readonly memento: ReviewMemento;
+  /** Where her pending comments are kept, in the global storage every window shares. */
+  readonly keptDirectory: string;
   readonly onError: (cause: unknown) => void;
   /** The toast claims every window of this VS Code shares with the notifier. */
   readonly claims: Pick<ToastClaims, "claim" | "release">;
 }): Review => {
-  const client = new ReviewClient(() => deps.client.connection());
-  const store = new ReviewStore(deps.client, client, new ReviewMemory(deps.memento));
+  const client = new ReviewClient(
+    () => deps.client.connection(),
+    (connection) => deps.client.refused(connection),
+  );
+  const store = new ReviewStore(
+    deps.client,
+    client,
+    new ReviewMemory(deps.memento),
+    new KeptReviews(deps.keptDirectory),
+  );
+  const note = new ChangeNote(() => store.ready());
   const record = new RecordContent();
   const view = new ChangeView(
     store,
@@ -61,12 +74,15 @@ export const startReview = (deps: {
   const disposables: ReadonlyArray<vscode.Disposable> = [
     vscode.workspace.registerTextDocumentContentProvider(CHANGE_SCHEME, content),
     vscode.workspace.registerTextDocumentContentProvider(RECORD_SCHEME, record),
+    vscode.workspace.registerTextDocumentContentProvider(NOTE_SCHEME, note),
+    store.onDidChange(() => note.redraw()),
     store.onDidFail((failure) => void toast(failure)),
     // Her comments are kept per machine: a window coming to the front reads what another kept.
     vscode.window.onDidChangeWindowState((state) => {
-      if (state.focused) store.reloadReview();
+      if (state.focused) void store.reloadReview();
     }),
     comments,
+    note,
     record,
     view,
     store,

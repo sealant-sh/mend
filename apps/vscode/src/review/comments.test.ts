@@ -3,7 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ReviewComments } from "./comments.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore } from "./review-store.js";
-import { FakeMend, PINNED, PROJECT, session, sessionReads, settle } from "./test-fixtures.js";
+import {
+  FakeMend,
+  keptIn,
+  PINNED,
+  PROJECT,
+  session,
+  sessionReads,
+  settle,
+  slowFiles,
+  storage,
+} from "./test-fixtures.js";
 
 const ui = vi.hoisted(() => ({
   commands: new Map<string, (...args: ReadonlyArray<unknown>) => unknown>(),
@@ -98,6 +108,7 @@ describe("submitting a comment from its thread", () => {
       sessionReads("change-1"),
       new FakeMend(),
       new ReviewMemory(memento()),
+      keptIn(await storage()),
     );
     const comments = new ReviewComments(store);
     const reply = replyOnLine3("Use the shared limiter");
@@ -113,6 +124,7 @@ describe("submitting a comment from its thread", () => {
       sessionReads("change-1"),
       new FakeMend(),
       new ReviewMemory(memento()),
+      keptIn(await storage()),
     );
     store.follow(PROJECT, session("s1"));
     await settle();
@@ -122,6 +134,24 @@ describe("submitting a comment from its thread", () => {
     expect(reply.thread.dispose).toHaveBeenCalled();
     expect(store.review().pending.map(({ body }) => body)).toEqual(["Use the shared limiter"]);
     expect(ui.warn).not.toHaveBeenCalled();
+    comments.dispose();
+  });
+});
+
+describe("a double click", () => {
+  it("on Add keeps one pending comment, not two", async () => {
+    const store = new ReviewStore(
+      sessionReads("change-1"),
+      new FakeMend(),
+      new ReviewMemory(memento()),
+      keptIn(await storage(), slowFiles(30)),
+    );
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+    const comments = new ReviewComments(store);
+    const reply = replyOnLine3("Use the shared limiter");
+    await Promise.all([submit(reply), submit(reply)]);
+    expect(store.review().pending.map(({ body }) => body)).toEqual(["Use the shared limiter"]);
     comments.dispose();
   });
 });
