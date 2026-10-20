@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { MendApiError } from "../mend-http.js";
 import { fake, window as vscodeWindow } from "../test-vscode.js";
 import type { SessionDetail, SessionProcess } from "../types.js";
 import type { Pasted } from "./agent-paste.js";
@@ -653,7 +654,86 @@ describe("a window that loads its kept reviews while another window sends one", 
     await b.store.reloadReview();
     expect(b.store.review().sends.map(({ phase }) => phase.kind)).toEqual(["in-terminal"]);
   });
+
+  it("leaves a failed send that window's Retry claims while this one waits to load it", async () => {
+    const directory = await storage();
+    const mend = new FailsThenHolds();
+    mend.answer = "pending";
+    mend.serverComments = [comment({ id: "c1" })];
+    const a = await window(keptIn(directory), mend);
+    const told = failures(a.store);
+    const fromA = a.store.compose();
+    if (fromA === null) throw new Error("nothing composed");
+    await a.store.send(fromA, fromA.text);
+    await vi.waitFor(() => expect(told).toHaveLength(1));
+    const target = a.store.retryTarget();
+    if (target === null) throw new Error("no Retry delivery offered");
+
+    // The second window reads the failed send undriven, then waits on the lock to load it.
+    const { promise: locking, resolve: lock } = Promise.withResolvers<void>();
+    const { promise: allowed, resolve: allow } = Promise.withResolvers<void>();
+    const { promise: loaded, resolve: load } = Promise.withResolvers<void>();
+    let first = true;
+    await window(
+      keptIn(directory, {
+        ...NODE_FILES,
+        create: async (path, text) => {
+          if (first && path.endsWith(".lock")) {
+            first = false;
+            lock();
+            await allowed;
+          }
+          await NODE_FILES.create(path, text);
+        },
+        rm: async (path) => {
+          await NODE_FILES.rm(path);
+          if (path.endsWith(".lock")) load();
+        },
+      }),
+      mend,
+    );
+    await locking;
+    // Meanwhile Retry delivery claims the send here, keeps it sending, and asks Mend again.
+    const retried = a.store.retry(target);
+    await mend.reached;
+    allow();
+    await loaded;
+    mend.answers();
+    expect(await retried).toEqual({ retried: true });
+    await vi.waitFor(() => expect(a.pastes).toHaveLength(1));
+    expect(mend.delivered.map(({ idempotencyKey }) => idempotencyKey)).toEqual([target.key]);
+    // The one failure said is the first delivery's; nothing reads VS Code closed.
+    expect(told).toHaveLength(1);
+    expect(told[0]?.words).toMatch(/^Mend could not deliver the review: .*Mend is restarting/);
+    const kept = await keptIn(directory).read(target.place);
+    expect(kept.review.sends.map(({ phase }) => phase.kind)).toEqual(["in-terminal"]);
+  });
 });
+
+/** Mend whose first follow-up fails on its side, and whose next waits until the test answers it. */
+class FailsThenHolds extends FakeMend {
+  #failing = true;
+  readonly #reached = Promise.withResolvers<void>();
+  readonly #answered = Promise.withResolvers<void>();
+  /** Settles once a follow-up after the failed one reaches Mend. */
+  readonly reached = this.#reached.promise;
+
+  answers(): void {
+    this.#answered.resolve();
+  }
+
+  override async deliver(
+    ...args: Parameters<FakeMend["deliver"]>
+  ): ReturnType<FakeMend["deliver"]> {
+    if (this.#failing) {
+      this.#failing = false;
+      throw new MendApiError("Mend is restarting", 503);
+    }
+    this.#reached.resolve();
+    await this.#answered.promise;
+    return super.deliver(...args);
+  }
+}
 
 describe("a second window sends a review composed before the first window's went out", () => {
   it("sends nothing once the first was pasted into claude's terminal, and a new review with more still goes", async () => {
