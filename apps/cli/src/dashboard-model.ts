@@ -88,7 +88,6 @@ export interface WorktreeDto {
   readonly baseSha: string;
   readonly baseRef: string | null;
   readonly createdAt: string;
-  /** Absent on older servers. */
   readonly handoff?: { readonly machine: string } | null;
 }
 

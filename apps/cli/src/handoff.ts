@@ -420,7 +420,6 @@ export const handoffCommand = async (
   if (scratchIssue !== null) return fail(scratchIssue);
   const scratch = scratchDir();
   const removeScratch = () => fs.rmSync(scratch, { recursive: true, force: true });
-  // fail() exits the process, and an exit skips finally blocks.
   process.once("exit", removeScratch);
   try {
     const snapshot = cut({
