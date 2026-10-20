@@ -259,7 +259,8 @@ export class KeptReviews {
 
   /**
    * Renews `owner`'s hold on `path` every `everyMs` while it still has it. Asking whether it does
-   * waits for the renewal in flight, which rewrites the file and reads as no holder until done.
+   * waits for the renewal in flight. A renewal renames a new hold over the old one, so another
+   * window never reads a hold half written: an empty one would count by the file's age instead.
    */
   #renew(path: string, owner: string, everyMs: number): Renewed {
     let last: Promise<unknown> = Promise.resolve();
@@ -270,8 +271,15 @@ export class KeptReviews {
     };
     const timer = setInterval(() => {
       void queue(async () => {
-        if (await this.#holds(path, owner))
-          await this.files.writeFile(path, holdText(this.now(), owner));
+        if (!(await this.#holds(path, owner))) return;
+        const renewal = `${path}.${randomUUID()}.tmp`;
+        try {
+          await this.files.writeFile(renewal, holdText(this.now(), owner));
+          await this.files.rename(renewal, path);
+        } catch (cause) {
+          await this.files.rm(renewal).catch(() => undefined);
+          throw cause;
+        }
       }).catch(() => undefined);
     }, everyMs);
     return {

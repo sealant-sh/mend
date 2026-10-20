@@ -70,10 +70,10 @@ const heldWrite = (): {
     files: {
       ...NODE_FILES,
       writeFile: async (path, text) => {
-        if (path.endsWith(".tmp")) {
+        if (path.endsWith(".tmp") && !path.includes(".lock.")) {
           reached();
           await allowed;
-        } else {
+        } else if (!path.endsWith(".tmp")) {
           // A write in place is truncated before it is written; another window can read between.
           await NODE_FILES.writeFile(path, "");
           await pause(40);
