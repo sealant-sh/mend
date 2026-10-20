@@ -32,6 +32,7 @@ const CONTEXT_MENU_ITEM = ".context-view .monaco-menu .action-item:not(.disabled
 const HOVER = ".monaco-hover.workbench-hover";
 const CONTEXT_MENU = ".context-view .monaco-menu";
 const STATUS_ITEM = ".part.statusbar .statusbar-item";
+const WELCOME = ".welcome-view-content";
 const VIEW_ACTION =
   ".part.sidebar .title-actions .action-label, .part.sidebar .pane-header .actions .action-label";
 
@@ -485,6 +486,19 @@ export const workbenchHelpers = async (context, options) => {
       page()
         .locator(QUICK_INPUT_BOX)
         .evaluate((box) => [box.selectionStart, box.selectionEnd]),
+    /**
+     * The input's validation as drawn: `{ message, severity }` (`info`, `warning` or `error`, the
+     * class VS Code puts on the input box), or null while the line under it is only the prompt.
+     */
+    validation: async () =>
+      page().evaluate((widgetSelector) => {
+        const widget = document.querySelector(widgetSelector);
+        const box = widget?.querySelector(".monaco-inputbox");
+        const severity = ["error", "warning", "info"].find((kind) => box?.classList.contains(kind));
+        if (severity === undefined) return null;
+        const message = widget.querySelector(".quick-input-message");
+        return { message: (message?.textContent ?? "").replace(/\s+/g, " ").trim(), severity };
+      }, QUICK_INPUT),
     placeholder: async () =>
       (await page().locator(QUICK_INPUT_BOX).getAttribute("placeholder")) ?? "",
     /** Whether the widget's progress bar runs (the input is busy). */
@@ -655,7 +669,124 @@ export const workbenchHelpers = async (context, options) => {
       !(await page().locator(".part.sidebar .composite.title", { hasText: name }).isVisible())
     )
       await entry.first().click();
-    await page().locator(".part.sidebar .monaco-list").first().waitFor({ timeout });
+    // A view with an empty tree draws its welcome instead of the list.
+    await page()
+      .locator(`.part.sidebar .monaco-list:visible, .part.sidebar ${WELCOME}:visible`)
+      .first()
+      .waitFor({ timeout });
+  };
+
+  /** The view's welcome as VS Code draws it over an empty tree; null while the tree shows. */
+  const welcome = async () =>
+    page().evaluate((selector) => {
+      const content = [...document.querySelectorAll(`.part.sidebar ${selector}`)].find(
+        (element) => element.offsetParent !== null && element.childElementCount > 0,
+      );
+      if (content === undefined) return null;
+      const clean = (element) => (element.textContent ?? "").replace(/\s+/g, " ").trim();
+      return {
+        lines: [...content.querySelectorAll("p")].map(clean),
+        buttons: [...content.querySelectorAll(".monaco-button")].map(clean),
+        links: [...content.querySelectorAll("p a")].map(clean),
+      };
+    }, WELCOME);
+
+  /** A welcome button or link, by its label. */
+  const welcomeAction = (label) => {
+    const found = () =>
+      page()
+        .locator(`.part.sidebar ${WELCOME} .monaco-button, .part.sidebar ${WELCOME} p a`, {
+          hasText: label,
+        })
+        .first();
+    return {
+      waitFor: (limit = timeout) => found().waitFor({ timeout: limit }),
+      click: async () => {
+        await found().waitFor({ timeout });
+        await found().click();
+      },
+    };
+  };
+
+  /**
+   * The Accounts menu of the Activity Bar, as a person opens it: every entry's label, then Escape.
+   * With `signOut`, the entry whose label holds it is hovered and its Sign Out clicked instead;
+   * with `shot`, the open menu is shot under that slug first.
+   */
+  const accounts = async ({ signOut, shot: slug } = {}) => {
+    const entry = page()
+      .locator(".activitybar .global-activity .action-item, .activitybar .action-item", {
+        has: page().locator('.action-label[aria-label^="Accounts"]'),
+      })
+      .first();
+    await entry.waitFor({ timeout });
+    await entry.click();
+    await page().locator(CONTEXT_MENU).first().waitFor({ timeout });
+    const items = await page()
+      .locator(`${CONTEXT_MENU} .action-item .action-label`)
+      .evaluateAll((labels) =>
+        labels.map((label) => (label.textContent ?? "").replace(/\s+/g, " ").trim()),
+      );
+    if (slug !== undefined) await shot(slug);
+    if (signOut === undefined) {
+      await page().keyboard.press("Escape");
+      return items.filter((item) => item !== "");
+    }
+    await page().locator(`${CONTEXT_MENU} .action-item`, { hasText: signOut }).first().hover();
+    // The submenu's item, by its own text: the account's entry holds its submenu's text too.
+    const button = page()
+      .locator(`${CONTEXT_MENU} .action-item`, { hasText: /^Sign Out$/ })
+      .last()
+      .locator(".action-menu-item, .action-label")
+      .first();
+    await button.waitFor({ timeout });
+    // A click while the submenu still opens lands on nothing (runs fr1a try4 and try5).
+    await sleep(1_000);
+    await button.click();
+    return items.filter((item) => item !== "");
+  };
+
+  /** Every URL the editor handed its external browser, in order (`up` records instead of opening). */
+  const browserOpened = () => {
+    try {
+      return readFileSync(state.browserLog, "utf8")
+        .split("\n")
+        .filter((line) => line !== "");
+    } catch {
+      return [];
+    }
+  };
+
+  /**
+   * A browser of her own, Playwright's chromium apart from the editor's Electron: the web as she
+   * uses it. `signIn()` fills the web's sign-in page as the run's account; `shot(slug)` numbers
+   * its screenshots among the editor's.
+   */
+  const browser = async () => {
+    const launched = await options.launchBrowser();
+    const web = await (
+      await launched.newContext({ viewport: { width: 1100, height: 760 } })
+    ).newPage();
+    return {
+      page: web,
+      goto: (url) => web.goto(url, { waitUntil: "domcontentloaded" }),
+      text: () => text(web),
+      signIn: async () => {
+        await web.locator('input[type="email"]').waitFor({ timeout });
+        await web.locator('input[type="email"]').fill(options.account.email);
+        await web.locator("#login-password").fill(options.account.password);
+        await web.getByRole("button", { name: "Sign in", exact: true }).click();
+      },
+      click: async (name) => {
+        const button = web.getByRole("button", { name, exact: true });
+        await button.waitFor({ timeout });
+        await button.click();
+      },
+      waitForText: (pattern, limit = timeout) =>
+        waitForText(pattern, { page: web, timeout: limit }),
+      shot: (slug) => shot(slug, web),
+      close: () => launched.close(),
+    };
   };
 
   /** A context menu left open covers the workbench: Escape closes it. */
@@ -915,10 +1046,10 @@ export const workbenchHelpers = async (context, options) => {
    * or a registered value keeps no image: `<name>.png.withheld` says why; a kept image gets
    * `<name>.png.checked` with its digest (the evidence scan refuses one without).
    */
-  const shot = async (slug) => {
+  const shot = async (slug, target = page()) => {
     shots += 1;
     const name = `${String(shots).padStart(2, "0")}-${slug.replace(/[^A-Za-z0-9._-]+/g, "-")}`;
-    const body = await text().catch(() => "");
+    const body = await text(target).catch(() => "");
     const kinds = CREDENTIAL_PATTERNS.filter(({ pattern }) =>
       new RegExp(pattern.source, pattern.flags).test(body),
     ).map(({ kind }) => kind);
@@ -933,7 +1064,7 @@ export const workbenchHelpers = async (context, options) => {
       lastShot = `${name}.png.withheld`;
       return lastShot;
     }
-    const png = await page().screenshot();
+    const png = await target.screenshot();
     writeFileSync(file, png);
     writeFileSync(
       `${file}.checked`,
@@ -1082,6 +1213,11 @@ export const workbenchHelpers = async (context, options) => {
     view,
     viewActions,
     viewAction,
+    welcome,
+    welcomeAction,
+    accounts,
+    browser,
+    browserOpened,
     treeItem,
     notification,
     notifications,

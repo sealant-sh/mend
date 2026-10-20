@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { MendApiError } from "./mend-http.js";
 import type { OpenAction, OpenState } from "./open-flow.js";
 import { OpenRunner, type OpenEffects, type OpenTarget } from "./open-runner.js";
 import { rowCapability, type RowCapability } from "./session-capability.js";
@@ -62,7 +63,7 @@ const world = (
     remoteSshInstalled: () => true,
     installRemoteSsh: vi.fn(async () => undefined),
     workspaceSsh: async (): Promise<"ready" | "needsSetup"> => "ready",
-    sshConsent: (): "given" | "never" => "given",
+    sshConsent: async (): Promise<"given" | "never"> => "given",
     askSshConsent: vi.fn(async () => true),
     setUpWorkspaceSsh: vi.fn(async () => undefined),
     seedRemotePlatform: vi.fn(async () => undefined),
@@ -196,6 +197,7 @@ describe("OpenRunner, a session Ana launched", () => {
       "session-1",
       "Mend could not read who you are on this server, so it did not open add-rate-limit",
       "Retry",
+      null,
     );
   });
 });
@@ -281,6 +283,7 @@ describe("OpenRunner", () => {
       "session-1",
       "add-rate-limit's workspace did not start in time",
       "Retry",
+      null,
     );
   });
 
@@ -305,7 +308,7 @@ describe("OpenRunner", () => {
   it("asks the one consent question when SSH was never set up, and stops quietly on no", async () => {
     const { effects, runner } = world({
       workspaceSsh: async () => "needsSetup",
-      sshConsent: () => "never",
+      sshConsent: async () => "never",
       askSshConsent: vi.fn(async () => false),
     });
     expect(await runner.open(target(), "follow-setting")).toBe("cancelled");
@@ -318,7 +321,7 @@ describe("OpenRunner", () => {
   it("sets SSH up after a yes, then opens", async () => {
     const { effects, runner } = world({
       workspaceSsh: async () => "needsSetup",
-      sshConsent: () => "never",
+      sshConsent: async () => "never",
     });
     expect(await runner.open(target(), "follow-setting")).toBe("opened");
     expect(effects.askSshConsent).toHaveBeenCalledTimes(1);
@@ -454,8 +457,26 @@ describe("OpenRunner", () => {
       "session-1",
       "~/.ssh/config is not writable",
       "Set up",
+      new Error("~/.ssh/config is not writable"),
     );
     expect(effects.openFolder).not.toHaveBeenCalled();
+  });
+
+  it("hands a refused sign-in to the toast as Mend's own refusal", async () => {
+    const refused = new MendApiError("Signed out — sign in again.", 401, "Unauthorized");
+    const { effects, runner } = world({
+      sessionNow: vi.fn(async () => {
+        throw refused;
+      }),
+    });
+    expect(await runner.open(target(), "follow-setting")).toBe("failed");
+    expect(effects.report).toHaveBeenCalledTimes(1);
+    expect(effects.report).toHaveBeenCalledWith(
+      "session-1",
+      "Signed out — sign in again.",
+      "Retry",
+      refused,
+    );
   });
 
   it("runs a new open when she picks Retry", async () => {
@@ -473,6 +494,7 @@ describe("OpenRunner", () => {
       "session-1",
       "Remote-SSH refused the window",
       "Retry",
+      new Error("Remote-SSH refused the window"),
     );
   });
 });

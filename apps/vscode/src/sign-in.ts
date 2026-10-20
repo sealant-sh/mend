@@ -79,42 +79,29 @@ const isTailnetHost = (hostname: string): boolean => {
 };
 
 /**
- * An address or name on a local network: RFC 1918, link-local, IPv6 unique-local and link-local,
- * mDNS (`.local`), `.lan`, `.home.arpa`, or a bare single-label name.
- */
-const isLocalNetworkHost = (hostname: string): boolean => {
-  const bare = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  const octets = ipv4Octets(bare);
-  if (octets !== null) {
-    const [a = 0, b = 0] = octets;
-    return (
-      a === 10 ||
-      (a === 172 && b >= 16 && b < 32) ||
-      (a === 192 && b === 168) ||
-      (a === 169 && b === 254)
-    );
-  }
-  if (isIP(bare) === 6) return /^f[cd]/.test(bare) || /^fe[89ab]/.test(bare);
-  return (
-    !bare.includes(".") ||
-    bare.endsWith(".local") ||
-    bare.endsWith(".lan") ||
-    bare.endsWith(".home.arpa")
-  );
-};
-
-/**
- * Said before a token is chosen for a plain-http server another machine serves, short enough for a
- * quick pick's placeholder (the title already names the server). Null for https, for this machine,
- * and for a tailnet, which encrypts the connection itself.
+ * Said in Connect's URL input before anything is sent, for a plain-http server another machine
+ * serves. Null for https, for this machine, and for a tailnet, which encrypts the connection itself.
  */
 export const plainHttpWarning = (url: string): string | null => {
   const parsed = new URL(url);
   if (parsed.protocol !== "http:" || isLoopbackHost(parsed.hostname)) return null;
   if (isTailnetHost(parsed.hostname)) return null;
-  return isLocalNetworkHost(parsed.hostname)
-    ? "Plain http: anyone on this local network can read the token."
-    : "Plain http: the token crosses the network unencrypted.";
+  return "Plain http: the token travels unencrypted";
+};
+
+/**
+ * What Connect's URL input says under what she typed: an error for what is not a server URL (it
+ * cannot be accepted), a warning for plain http (it can be), else nothing.
+ */
+export const urlNotice = (
+  typed: string,
+): { readonly severity: "error" | "warning"; readonly message: string } | null => {
+  const url = normalizeServerUrl(typed);
+  if (url === null) {
+    return { severity: "error", message: "Enter an http or https URL, or host:port." };
+  }
+  const warning = plainHttpWarning(url);
+  return warning === null ? null : { severity: "warning", message: warning };
 };
 
 /** The code as both screens show it: `ABCD-EFGH`. */
@@ -187,6 +174,9 @@ export class SignInError extends Error {
   }
 }
 
+/** Nothing answered: a poll retries once, so one dropped request does not end the sign-in. */
+class Unanswered extends SignInError {}
+
 export interface SignInDeps {
   readonly fetch: typeof fetch;
   /**
@@ -226,7 +216,7 @@ const post = async (
       signal: AbortSignal.timeout(30_000),
     });
   } catch (cause) {
-    throw new SignInError(`Cannot reach Mend at ${new URL(url).origin}.${transportReason(cause)}`);
+    throw new Unanswered(`Cannot reach Mend at ${new URL(url).origin}.${transportReason(cause)}`);
   }
   const receivedAt = (deps.now ?? Date.now)();
   const text = await response.text();
@@ -298,7 +288,7 @@ export const browserSignIn = async (base: string, deps: SignInDeps): Promise<Sig
     console.warn(failureLogLine("POST /api/cli/auth", started.status, started.json));
     throw new SignInError(
       failureWords(started.status, started.json).serverWords ??
-        `Mend at ${base} did not open a sign-in request. Try again; the server log has the detail.`,
+        `Mend at ${base} did not open a sign-in request; the server log has the detail.`,
     );
   }
   const request = parseAuthorizeRequest(started.json);
@@ -311,10 +301,19 @@ export const browserSignIn = async (base: string, deps: SignInDeps): Promise<Sig
   // "open the external website?" dialog still waits for an answer.
   void deps.openExternal(page).catch(() => false);
   const deadline = pollDeadline(request, started.receivedAt, started.date);
+  let unanswered = false;
   while (now() < deadline) {
     await deps.sleep(pollDelayMs(request.intervalSeconds));
     if (deps.cancelled()) return null;
-    const poll = await post(deps, `${base}/api/cli/auth/token`, { deviceCode: request.deviceCode });
+    let poll: Awaited<ReturnType<typeof post>>;
+    try {
+      poll = await post(deps, `${base}/api/cli/auth/token`, { deviceCode: request.deviceCode });
+    } catch (cause) {
+      if (!(cause instanceof Unanswered) || unanswered) throw cause;
+      unanswered = true;
+      continue;
+    }
+    unanswered = false;
     const result = poll.status >= 200 && poll.status < 300 ? parsePoll(poll.json) : null;
     if (deps.cancelled()) {
       return finishBrowserSignIn(
@@ -326,21 +325,20 @@ export const browserSignIn = async (base: string, deps: SignInDeps): Promise<Sig
       await deps.sleep(retryAfterMs(poll.json));
       continue;
     }
-    if (poll.status === 403) throw new SignInError("Denied in the browser. Nothing was granted.");
+    if (poll.status === 403) throw new SignInError("Sign-in denied in the browser.");
     if (poll.status === 404 || poll.status === 410) {
-      throw new SignInError("The sign-in request is no longer open. Sign in again.");
+      throw new SignInError("The sign-in request is no longer open.");
     }
     if (poll.status < 200 || poll.status >= 300) {
       console.warn(failureLogLine("POST /api/cli/auth/token", poll.status, poll.json));
       throw new SignInError(
         failureWords(poll.status, poll.json).serverWords ??
-          "Mend refused while waiting. Sign in again; the server log has the detail.",
+          "Mend refused while waiting; the server log has the detail.",
       );
     }
-    if (result === null)
-      throw new SignInError("Mend's answer stopped making sense. Sign in again.");
+    if (result === null) throw new SignInError("Mend's answer stopped making sense.");
     if (result === "pending") continue;
     return { url: base, ...result };
   }
-  throw new SignInError("The sign-in request expired before anyone approved it. Sign in again.");
+  throw new SignInError("The sign-in request expired before anyone approved it.");
 };

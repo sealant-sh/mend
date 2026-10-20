@@ -83,8 +83,24 @@
     "viewsWelcome": [
       {
         "view": "mend.sessions",
-        "contents": "Nothing adopted yet.\n[Adopt a project…](command:mend.adoptProject)",
-        "when": "mend.hasProjects == false"
+        "contents": "Connect VS Code to your Mend server.\n[Connect](command:mend.connect)",
+        "when": "mend.welcome == connect"
+      },
+      {
+        "view": "mend.sessions",
+        "contents": "Open sessions in VS Code: needs Remote-SSH and an SSH key for Mend\n[Set up](command:mend.setupWorkspaceSsh)\nEverything but Open works without it. [Skip for now](command:mend.skipWorkspaceSsh)",
+        "when": "mend.welcome == setUp"
+      },
+      {
+        "view": "mend.sessions",
+        "contents": "Nothing adopted yet.\n[Adopt a repository…](command:mend.adoptProject)",
+        "when": "mend.welcome == adoptRepository"
+      }
+    ],
+    "authentication": [
+      {
+        "id": "mend",
+        "label": "Mend"
       }
     ],
     "commands": [
@@ -98,12 +114,24 @@
         "title": "Mend: Connect to server"
       },
       {
+        "command": "mend.useCli",
+        "title": "Mend: Use the Mend CLI's sign-in"
+      },
+      {
         "command": "mend.signOut",
         "title": "Mend: Sign out"
       },
       {
+        "command": "mend.skipWorkspaceSsh",
+        "title": "Mend: Skip workspace SSH setup for now"
+      },
+      {
+        "command": "mend.adoptHere",
+        "title": "Mend: Adopt this repository"
+      },
+      {
         "command": "mend.adoptProject",
-        "title": "Mend: Adopt a project…",
+        "title": "Mend: Adopt a repository…",
         "icon": "$(cloud-download)"
       },
       {
@@ -193,6 +221,18 @@
         {
           "command": "mend.newSessionOffline",
           "when": "false"
+        },
+        {
+          "command": "mend.useCli",
+          "when": "mend.welcome == useCli"
+        },
+        {
+          "command": "mend.skipWorkspaceSsh",
+          "when": "mend.welcome == setUp"
+        },
+        {
+          "command": "mend.adoptHere",
+          "when": "mend.welcome == adopt"
         }
       ],
       "view/title": [

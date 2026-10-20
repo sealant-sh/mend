@@ -38,6 +38,27 @@ patch number is the extension's own.
   `starting · launch refused · …` while the server still reads it starting. Its error notification
   offers **Retry** when a read says it failed or never started. Retry launches the same session
   again.
+- First run: the Mend view says `Connect VS Code to your Mend server.` with **Connect**, which asks
+  one thing, the server URL, and warns there when it is plain http to another machine. The browser
+  opens Mend's approve page while one notification shows the code, and one notification confirms the
+  sign-in (before, two did). A denial, an expired request or an unreachable server ends in one error
+  with **Try again**. The token and no-token choices are gone. When the Mend CLI on this machine is
+  signed in, the view offers **Use it** with its server and account: one click.
+- Upgrading with the Mend CLI signed in and no `mend.serverUrl` set: the editor no longer connects
+  on the CLI's sign-in by itself. The Mend view offers **Use it** first, one click.
+- The account shows in VS Code's Accounts menu, and **Sign Out** there revokes the editor's device.
+  When Mend refuses the editor's token (the device was revoked under Settings → Devices), the
+  account leaves the Accounts menu in every window and one notification says
+  `Signed out — sign in again.` with **Connect to server**. Connecting again while connected revokes
+  the device it replaces. A sign-out says what Mend answered: the device revoked, already signed
+  out, or Mend not reached.
+- Consent to workspace SSH is kept per server: consenting for one server never writes another
+  server's `Host` block.
+- After you connect, **Set up** installs Remote-SSH if it is missing, registers an SSH key, writes
+  one `Host` block to `~/.ssh/config` and sets its Remote-SSH platform, once; no open asks after it.
+  **Skip for now** leaves the one question to the first open.
+- With no project yet, the view offers to adopt the window's repository in one click when no project
+  matches its origin, or **Adopt a repository…**, which asks only for a clone URL.
 - **Mend: New worktree without an agent…** is removed: choose the `shell` harness in **Change…**.
 - **Mend: New session in this worktree…** opens the same input. Who else runs in the worktree is on
   its line instead of a dialog.

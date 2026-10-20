@@ -8,20 +8,29 @@ import {
   canonicalServerUrl,
   credentialFor,
   parseCredentialStore,
+  refusedIn,
+  replacedDeviceWarning,
+  revokeOutcomeOf,
   serializeCredentialStore,
+  signOutMessage,
   signOutOf,
   tokenFor,
   withCredential,
-  type StoredCredential,
+  withoutCredential,
+  type CliCredential,
+  type CredentialStore,
+  type RevokeOutcome,
 } from "./credentials.js";
-import { requestMend } from "./mend-http.js";
 import {
-  browserSignIn,
-  finishBrowserSignIn,
-  normalizeServerUrl,
-  plainHttpWarning,
-  type SignedIn,
-} from "./sign-in.js";
+  connectionOf,
+  runConnect,
+  TRY_AGAIN,
+  type Connection,
+  type ConnectEffects,
+  type SignInOutcome,
+} from "./first-run.js";
+import { MendApiError, REQUEST_TIMEOUT_MS, requestMend } from "./mend-http.js";
+import { browserSignIn, finishBrowserSignIn, normalizeServerUrl, urlNotice } from "./sign-in.js";
 
 export interface MendConnection {
   readonly url: string;
@@ -29,10 +38,6 @@ export interface MendConnection {
 }
 
 const TOKEN_KEY = "mend.serverToken";
-
-interface ConnectPick extends vscode.QuickPickItem {
-  readonly method: "browser" | "token" | "none";
-}
 
 const mendHome = (): string => {
   const xdg = process.env["XDG_CONFIG_HOME"];
@@ -44,7 +49,7 @@ const mendHome = (): string => {
   return fs.existsSync(legacy) && !fs.existsSync(preferred) ? legacy : preferred;
 };
 
-const cliConfig = (): MendConnection | null => {
+const cliConfig = (): CliCredential | null => {
   const file = path.join(mendHome(), "cli.json");
   if (!fs.existsSync(file)) return null;
   try {
@@ -62,215 +67,247 @@ const cliConfig = (): MendConnection | null => {
   }
 };
 
+/** A browser sign-in's device, which signing out or signing in again revokes. */
+interface Device {
+  readonly url: string;
+  readonly token: string;
+  readonly deviceId: string;
+}
+
+/** `DELETE /me/devices/:id` with the device's own token, bounded like a read: a sign-out waits on it. */
+const revokeDevice = async (device: Device): Promise<RevokeOutcome> => {
+  try {
+    await requestMend(device, `/me/devices/${encodeURIComponent(device.deviceId)}`, {
+      method: "DELETE",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    return { kind: "revoked" };
+  } catch (cause) {
+    return revokeOutcomeOf(cause instanceof MendApiError ? cause.status : null);
+  }
+};
+
+const configuredUrl = (): string | null => {
+  const configured = vscode.workspace.getConfiguration("mend").get<string>("serverUrl")?.trim();
+  return configured === undefined || configured === "" ? null : canonicalServerUrl(configured);
+};
+
 /** One connection shared by the tree, status item, URI handler, and commands. */
 export class ConnectionStore {
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  /** The Connect running now: a second one joins it instead of opening another sign-in request. */
+  #connecting: Promise<boolean> | null = null;
+  /** The device a sign-in just replaced, revoked once the editor reads with the new token. */
+  #replaced: Device | null = null;
+
+  constructor(
+    private readonly context: { readonly secrets: Pick<vscode.SecretStorage, "get" | "store"> },
+  ) {}
 
   async get(): Promise<MendConnection> {
-    const configured = vscode.workspace.getConfiguration("mend").get<string>("serverUrl")?.trim();
     const discovered = cliConfig();
     // Every spelling of a server is one server: the setting, the CLI's URL and the stored entries
     // all compare in the canonical form Connect writes.
-    const url = canonicalServerUrl(
-      (configured === undefined || configured === "" ? discovered?.url : configured) ??
-        "http://localhost:3105",
-    );
-    const store = parseCredentialStore(await this.context.secrets.get(TOKEN_KEY));
-    return { url, token: tokenFor(url, credentialFor(store, url), discovered) };
+    const url = configuredUrl() ?? discovered?.url ?? "http://localhost:3105";
+    return { url, token: tokenFor(url, credentialFor(await this.#stored(), url), discovered) };
   }
 
-  /**
-   * Point the editor at a server and sign in: through the browser by default (the `mend login`
-   * walk), with a pasted device token, or with none for a local server that needs none.
-   */
-  async configure(): Promise<boolean> {
-    const current = await this.get();
-    const typed = await vscode.window.showInputBox({
-      title: "Connect Mend",
-      prompt: "Mend server URL, as this machine reaches it (http://mend-mini.local:3105)",
-      value: current.url,
-      ignoreFocusOut: true,
-      validateInput: (value) =>
-        normalizeServerUrl(value) === null ? "Enter an http or https URL, or host:port." : null,
+  /** Whether the editor is connected, and from where; what Connect and Use it start from if not. */
+  async state(): Promise<Connection> {
+    const configured = configuredUrl();
+    return connectionOf({
+      configured,
+      own: configured === null ? null : credentialFor(await this.#stored(), configured),
+      cli: cliConfig(),
     });
-    if (typed === undefined) return false;
-    const url = normalizeServerUrl(typed);
-    if (url === null) return false;
-    const method = await vscode.window.showQuickPick<ConnectPick>(
-      [
-        {
-          label: "$(globe) Sign in with the browser",
-          detail: `Opens ${url}/authorize. Approve there when it shows the same code.`,
-          method: "browser",
-        },
-        {
-          label: "$(key) Paste a device token",
-          detail: "A token minted in Mend under Settings → Devices.",
-          method: "token",
-        },
-        {
-          label: "$(circle-slash) No token",
-          detail: "For a local server that does not require one.",
-          method: "none",
-        },
-      ],
-      {
-        title: `Connect Mend · ${url}`,
-        placeHolder: plainHttpWarning(url) ?? "How this editor signs in",
-        ignoreFocusOut: true,
-      },
-    );
-    if (method === undefined) return false;
-    // The browser walk can turn into a pasted token midway: the person chose that instead.
-    const signedIn = method.method === "browser" ? await this.browserSignIn(url) : undefined;
-    if (signedIn === null) return false;
-    let stored: StoredCredential;
-    if (signedIn !== undefined && signedIn !== "token") {
-      stored = { kind: "token", url, token: signedIn.token, deviceId: signedIn.deviceId };
-      void vscode.window.showInformationMessage(
-        `Signed in to Mend at ${url} as ${signedIn.email}. Revoke this editor under Settings → Devices.`,
-      );
-    } else if (method.method === "none") {
-      // "No token" means none: not the CLI's sign-in for the same URL either.
-      stored = { kind: "none", url };
-    } else {
-      const token = await vscode.window.showInputBox({
-        title: `Connect Mend · ${url}`,
-        prompt: "Device token",
-        password: true,
-        ignoreFocusOut: true,
-      });
-      if (token === undefined || token.trim() === "") return false;
-      stored = { kind: "token", url, token: token.trim(), deviceId: null };
-    }
-    // The token first: changing the setting restarts the event stream, which reads it.
-    const store = parseCredentialStore(await this.context.secrets.get(TOKEN_KEY));
-    await this.context.secrets.store(
-      TOKEN_KEY,
-      serializeCredentialStore(withCredential(store, stored)),
-    );
+  }
+
+  /** The account this editor's own sign-in to `url` approved, when it kept one. */
+  async signedInEmail(url: string): Promise<string | null> {
+    const own = credentialFor(await this.#stored(), url);
+    return own?.kind === "token" ? (own.email ?? null) : null;
+  }
+
+  async #stored(): Promise<CredentialStore> {
+    return parseCredentialStore(await this.context.secrets.get(TOKEN_KEY));
+  }
+
+  /** The token first: changing the setting restarts the event stream, which reads it. */
+  async #point(url: string, store: CredentialStore): Promise<void> {
+    await this.context.secrets.store(TOKEN_KEY, serializeCredentialStore(store));
     await vscode.workspace
       .getConfiguration("mend")
       .update("serverUrl", url, vscode.ConfigurationTarget.Global);
-    return true;
+  }
+
+  /** The effects Connect and Use it run on (story h). */
+  effects(): ConnectEffects {
+    return {
+      askUrl: async (prefill) => {
+        const typed = await vscode.window.showInputBox({
+          title: "Connect to your Mend server",
+          prompt: "Mend server URL, as this machine reaches it",
+          placeHolder: "http://mend-mini.local:3105",
+          value: prefill ?? "",
+          ignoreFocusOut: true,
+          validateInput: (value) => {
+            const notice = urlNotice(value);
+            return notice === null
+              ? null
+              : {
+                  message: notice.message,
+                  severity:
+                    notice.severity === "error"
+                      ? vscode.InputBoxValidationSeverity.Error
+                      : vscode.InputBoxValidationSeverity.Warning,
+                };
+          },
+        });
+        return typed === undefined ? undefined : (normalizeServerUrl(typed) ?? undefined);
+      },
+      signIn: (url) => this.#browserSignIn(url),
+      toast: (message) => void vscode.window.showInformationMessage(message),
+      fail: async (reason) =>
+        (await vscode.window.showErrorMessage(reason, TRY_AGAIN)) === TRY_AGAIN
+          ? TRY_AGAIN
+          : undefined,
+      useCliSignIn: async (url) => this.#point(url, withoutCredential(await this.#stored(), url)),
+    };
+  }
+
+  /** Connect: the server URL, Mend's approve page in the browser, one toast. */
+  connect(): Promise<boolean> {
+    this.#connecting ??= this.state()
+      .then((state) =>
+        runConnect(state.kind === "notConnected" ? state.prefill : state.url, this.effects()),
+      )
+      .finally(() => {
+        this.#connecting = null;
+      });
+    return this.#connecting;
   }
 
   /**
-   * The browser walk. Null when cancelled; "token" when the person chose to paste a device token
-   * instead. The link and code are shown with their own actions from the start: VS Code's "open
-   * the external website?" dialog can hide behind other windows, and the walk must not depend on it.
-   * The notification hides itself after a while, and cannot be clicked while that dialog is up, so
-   * a status bar item keeps the code for the whole walk and reopens the link and both actions
-   * (RC 0.36.0-next.768, a MacBook).
+   * Revokes the device the last sign-in replaced, best effort, and says once when Mend did not.
+   * Called once the editor reads with the new token: a read still out on the old one would
+   * otherwise come back refused and toast a sign-out.
    */
-  private async browserSignIn(url: string): Promise<SignedIn | "token" | null> {
-    let switchedToToken = false;
-    let settled = false;
+  async revokeReplaced(): Promise<void> {
+    const replaced = this.#replaced;
+    this.#replaced = null;
+    if (replaced === null) return;
+    const warning = replacedDeviceWarning(replaced.url, await revokeDevice(replaced));
+    if (warning !== null) void vscode.window.showWarningMessage(warning);
+  }
+
+  /**
+   * Mend refused `connection`'s token (401): the editor holds no token for that server from now
+   * on, so the Accounts menu, the extensions it was shared with, and every window (through the
+   * secret's change) drop it. A token the editor no longer sends is left alone.
+   */
+  async refused(connection: { readonly url: string; readonly token: string }): Promise<void> {
+    const next = refusedIn(await this.#stored(), connection, cliConfig());
+    if (next !== null) await this.context.secrets.store(TOKEN_KEY, serializeCredentialStore(next));
+  }
+
+  /**
+   * The browser walk under one cancellable progress notification. The status bar keeps the code
+   * for the whole walk, and a click on it opens the approve page again: VS Code's "open the
+   * external website?" dialog can hide behind other windows, and the notification hides itself
+   * after a while (RC 0.36.0-next.768, a MacBook).
+   */
+  async #browserSignIn(url: string): Promise<SignInOutcome> {
     const reminder = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 31);
+    reminder.name = "Mend sign-in";
     let reopen: vscode.Disposable | undefined;
-    const offer = async (code: string, page: string): Promise<void> => {
-      const choice = await vscode.window.showInformationMessage(
-        `Mend sign-in: open ${page} and approve if it shows ${code}. The status bar keeps this link and code after this message hides.`,
-        "Copy link",
-        "Paste a device token instead",
-      );
-      if (settled) return;
-      if (choice === "Copy link") await vscode.env.clipboard.writeText(page);
-      if (choice === "Paste a device token instead") switchedToToken = true;
-    };
-    const remind = (code: string, page: string): void => {
-      reopen?.dispose();
-      reopen = vscode.commands.registerCommand("mend.signInReminder", () => offer(code, page));
-      reminder.text = `$(key) Mend sign-in · ${code}`;
-      reminder.tooltip = `Open ${page} and approve if it shows ${code}. Click for Copy link or Paste a device token instead.`;
-      reminder.command = "mend.signInReminder";
-      reminder.show();
-    };
-    let cancelled = () => switchedToToken;
+    let cancellation: vscode.CancellationToken | null = null;
     const completion = {
       fetch,
       deviceName: `VS Code on ${os.hostname()}`,
-      cancelled: () => cancelled(),
+      cancelled: () => cancellation?.isCancellationRequested === true,
       onWarning: (message: string) => {
         void vscode.window.showWarningMessage(message);
       },
     };
     try {
       const result = await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: "Mend sign-in",
-          cancellable: true,
-        },
-        (progress, cancellation) => {
-          cancelled = () => switchedToToken || cancellation.isCancellationRequested;
+        { location: vscode.ProgressLocation.Notification, cancellable: true },
+        (progress, token) => {
+          cancellation = token;
+          progress.report({ message: `Asking ${new URL(url).host} for a sign-in code` });
           return browserSignIn(url, {
             ...completion,
             openExternal: (page) =>
               Promise.resolve(vscode.env.openExternal(vscode.Uri.parse(page))),
             onCode: (code, page) => {
-              progress.report({ message: `approve in the browser if it shows ${code}` });
-              remind(code, page);
-              void offer(code, page);
+              progress.report({ message: `Approve in the browser if it shows ${code}` });
+              reopen?.dispose();
+              reopen = vscode.commands.registerCommand(
+                "mend.signInReminder",
+                () => void vscode.env.openExternal(vscode.Uri.parse(page)),
+              );
+              reminder.text = `$(key) Mend sign-in · ${code}`;
+              reminder.tooltip = `Approve at ${page} if it shows ${code}. Click to open the page again.`;
+              reminder.command = "mend.signInReminder";
+              reminder.show();
             },
             sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
           });
         },
       );
-      // The host has settled; stop offering a switch while checking its final cancellation state.
-      settled = true;
       const signedIn = await finishBrowserSignIn(result, completion);
-      return signedIn ?? (switchedToToken ? "token" : null);
-    } catch (cause) {
-      void vscode.window.showErrorMessage(
-        cause instanceof Error ? cause.message : "Mend sign-in failed.",
+      if (signedIn === null) return { kind: "cancelled" };
+      const stored = await this.#stored();
+      const replaced = credentialFor(stored, url);
+      await this.#point(
+        url,
+        withCredential(stored, {
+          kind: "token",
+          url,
+          token: signedIn.token,
+          deviceId: signedIn.deviceId,
+          email: signedIn.email,
+        }),
       );
-      return null;
+      if (
+        replaced?.kind === "token" &&
+        replaced.deviceId !== null &&
+        replaced.deviceId !== signedIn.deviceId
+      )
+        this.#replaced = { url, token: replaced.token, deviceId: replaced.deviceId };
+      return { kind: "signedIn", email: signedIn.email };
+    } catch (cause) {
+      return {
+        kind: "failed",
+        reason: cause instanceof Error ? cause.message : "Mend sign-in failed.",
+      };
     } finally {
-      settled = true;
       reminder.dispose();
       reopen?.dispose();
     }
   }
 
   /**
-   * Forget this editor's token. A browser sign-in's device is revoked on the server first, so the
-   * token stops working everywhere, not only here.
+   * Sign this editor out of `url` (by default the server it is connected to now), and only that
+   * one: its own entry there is revoked (a browser sign-in's device) and replaced by "no token", so
+   * the editor does not fall back to the CLI's sign-in there. Other servers' entries stay as they
+   * were.
    */
-  /**
-   * Sign this editor out of the server it is connected to now, and only that one: its own entry for
-   * that URL is revoked (a browser sign-in's device) and replaced by "no token", so the editor does
-   * not fall back to the CLI's sign-in there. Entries for other servers stay as they were.
-   */
-  async signOut(): Promise<string> {
-    const current = await this.get();
-    const { own, next } = signOutOf(
-      current.url,
-      parseCredentialStore(await this.context.secrets.get(TOKEN_KEY)),
-    );
-    if (own === null && current.token === null) {
-      return `This editor holds no Mend sign-in for ${current.url}.`;
+  async signOut(url?: string): Promise<string> {
+    const server = url === undefined ? (await this.get()).url : canonicalServerUrl(url);
+    const stored = await this.#stored();
+    const { own, next } = signOutOf(server, stored);
+    if (own === null && tokenFor(server, credentialFor(stored, server), cliConfig()) === null) {
+      return `This editor holds no Mend sign-in for ${server}.`;
     }
-    let revoked = false;
-    if (own !== null && own.deviceId !== null) {
-      try {
-        await requestMend(own, `/me/devices/${encodeURIComponent(own.deviceId)}`, {
-          method: "DELETE",
-        });
-        revoked = true;
-      } catch {
-        revoked = false;
-      }
-    }
+    const outcome =
+      own === null || own.deviceId === null
+        ? null
+        : await revokeDevice({ url: server, token: own.token, deviceId: own.deviceId });
     await this.context.secrets.store(TOKEN_KEY, serializeCredentialStore(next));
-    if (own === null) {
-      return `Signed out of Mend at ${current.url} in this editor. The Mend CLI on this machine keeps its own sign-in; mend logout ends it.`;
-    }
-    if (own.deviceId === null) {
-      return `Signed out of Mend at ${current.url}. The pasted token stays valid until it is revoked under Settings → Devices.`;
-    }
-    return revoked
-      ? `Signed out of Mend at ${current.url}, and revoked this editor's device.`
-      : `Signed out of Mend at ${current.url}; Mend could not be reached to revoke this editor's device. Revoke it under Settings → Devices.`;
+    if (own === null) return signOutMessage(server, { kind: "cliFallback" });
+    return signOutMessage(
+      server,
+      outcome === null ? { kind: "pastedToken" } : { kind: "device", outcome },
+    );
   }
 }

@@ -40,8 +40,9 @@ export interface OpenEffects {
   /** Resolves once the extension is present. */
   readonly installRemoteSsh: () => Promise<void>;
   readonly workspaceSsh: () => Promise<"ready" | "needsSetup">;
-  readonly sshConsent: () => "given" | "never";
-  /** The one question an open may ask: first-run setup was skipped on this machine. */
+  /** What she consented to for this server's Host block. */
+  readonly sshConsent: () => Promise<"given" | "never">;
+  /** The one question an open may ask: first-run setup was skipped for this server. */
   readonly askSshConsent: () => Promise<boolean>;
   /** Registers the key, writes the Host block, records consent, seeds the platform. */
   readonly setUpWorkspaceSsh: () => Promise<void>;
@@ -57,17 +58,22 @@ export interface OpenEffects {
     options: OpenFolderOptions,
   ) => Promise<void>;
   readonly render: (sessionId: string, sessionName: string, state: OpenState) => void;
-  /** The one error toast; resolves with the action she picked. */
+  /**
+   * The one error toast; resolves with the action she picked. `cause` is what failed, null when
+   * nothing threw: a refused sign-in says so in its own words.
+   */
   readonly report: (
     sessionId: string,
     reason: string,
     action: OpenAction | null,
+    cause: unknown,
   ) => Promise<OpenAction | undefined>;
 }
 
 interface Failure {
   readonly reason: string;
   readonly action: OpenAction | null;
+  readonly cause: unknown;
 }
 
 interface Settled {
@@ -142,7 +148,11 @@ export class OpenRunner {
         effects.refuse({ ...target, session }, capability.why, notYoursOffer(capability));
         return { outcome: "refused", failure: null };
       }
-      const failure = { reason: `${capability.why}, so it did not open ${name}`, action: RETRY };
+      const failure = {
+        reason: `${capability.why}, so it did not open ${name}`,
+        action: RETRY,
+        cause: null,
+      };
       fire({ kind: "failed", ...failure });
       return { outcome: "failed", failure };
     };
@@ -158,7 +168,7 @@ export class OpenRunner {
         await effects.installRemoteSsh();
       }
       if ((await effects.workspaceSsh()) === "needsSetup") {
-        if (effects.sshConsent() === "never") {
+        if ((await effects.sshConsent()) === "never") {
           fire({ kind: "consent" });
           if (!(await effects.askSshConsent())) {
             fire({ kind: "cancelled" });
@@ -177,7 +187,11 @@ export class OpenRunner {
       const workspace = await this.#workspace(ready.session, fire);
       if (workspace.kind === "denied") return deny(workspace);
       if (workspace.kind === "timedOut") {
-        const failure = { reason: `${name}'s workspace did not start in time`, action };
+        const failure = {
+          reason: `${name}'s workspace did not start in time`,
+          action,
+          cause: null,
+        };
         fire({ kind: "failed", ...failure });
         return { outcome: "failed", failure };
       }
@@ -197,7 +211,7 @@ export class OpenRunner {
       fire({ kind: "opened" });
       return { outcome: "opened", failure: null };
     } catch (cause) {
-      const failure = { reason: reasonOf(cause, name), action };
+      const failure = { reason: reasonOf(cause, name), action, cause };
       fire({ kind: "failed", ...failure });
       return { outcome: "failed", failure };
     }
@@ -249,7 +263,12 @@ export class OpenRunner {
   }
 
   async #offer(target: OpenTarget, mode: OpenMode, failure: Failure): Promise<void> {
-    const chosen = await this.effects.report(target.session.id, failure.reason, failure.action);
+    const chosen = await this.effects.report(
+      target.session.id,
+      failure.reason,
+      failure.action,
+      failure.cause,
+    );
     if (chosen === "Set up") {
       try {
         await this.effects.setUpWorkspaceSsh();
@@ -257,6 +276,7 @@ export class OpenRunner {
         await this.#offer(target, mode, {
           reason: reasonOf(cause, displaySession(target.session)),
           action: "Set up",
+          cause,
         });
         return;
       }

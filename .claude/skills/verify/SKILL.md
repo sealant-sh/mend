@@ -580,7 +580,8 @@ outlives one call, like the desktop's app:
 # (`--image <ref>`), or one built now from the checkout's Dockerfile (`--build`, 20 to 40 minutes)
 VSCODE_BIN=$(dirname "$(readlink -f "$(which code)")")/../lib/vscode/code \
   node $skill/scripts/drive-vscode.mjs up --version 0.36.0-next.1033 [--extension <checkout>] \
-    [--signed-out] [--no-ssh-setup] [--no-remote-ssh] [--no-video] [--repo <url>] [--run <name>]
+    [--signed-out | --cli-only] [--no-ssh-setup] [--no-remote-ssh] [--no-video] [--repo <url>] \
+    [--run <name>]
 export MEND_VERIFY_VSCODE_RUN=<the run `up` printed>
 node $skill/scripts/drive-vscode.mjs run <recipe.mjs> --out "$E_vscode/<feature>" [--timeout <ms>]
 node $skill/scripts/drive-vscode.mjs logs            # the editor's logs and the server's, redacted
@@ -596,18 +597,22 @@ context, the project), so two runs on one machine do not collide and nothing of 
 is touched. The ledger `~/.cache/mend-verify/vscode/st-verify-vscode-<run>/state.json` holds the
 pids, the display, the CDP port, the server URL and every path, written as each resource appears, so
 `down` converges after a crash too (twice in a row is fine). The private directory beside it holds
-the account's token (`token.secret`, the run's registry); the evidence goes to
+the account's token and its web password (`token.secret`, `password.secret`, both in the run's
+registry); the evidence goes to
 `${XDG_STATE_HOME:-~/.local/state}/mend-verify/st-verify-vscode-<run>/`: `display.mp4` (ffmpeg's
 x11grab of the display, 5 frames a second, when ffmpeg is on PATH; `nix shell nixpkgs#ffmpeg` has
 it), each recipe's `--out`, and `logs/`. `down` scans that evidence against the registry before the
 private directory goes.
 
-The editor starts **signed in** (the CLI connection the extension reads, `cli.json` in the scratch
-HOME, written as `mend login` writes it) with **workspace SSH set up** (`mend ssh setup` in that
-HOME, and `remote.SSH.remotePlatform` seeded for the alias, as it is after story h's first run).
-`--signed-out` and `--no-ssh-setup` start the first-run stories instead; `--no-remote-ssh` leaves
-Remote-SSH uninstalled, so the first open installs it from the gallery (`state.remoteSsh` is
-`false`).
+The editor starts **signed in** (the CLI connection, `cli.json` in the scratch HOME, written as
+`mend login` writes it, and `mend.serverUrl` naming its server, as after story h's **Use it**) with
+**workspace SSH set up** (`mend ssh setup` in that HOME, and `remote.SSH.remotePlatform` seeded for
+the alias, as it is after story h's first run). `--signed-out` (no CLI connection, no setting),
+`--cli-only` (the CLI signed in, the editor not connected: the view offers **Use it**) and
+`--no-ssh-setup` start the first-run stories instead; `--no-remote-ssh` leaves Remote-SSH
+uninstalled, so the first open installs it from the gallery (`state.remoteSsh` is `false`). The
+editor's `workbench.externalBrowser` is a recorder in the scratch: a link VS Code opens is appended
+to `state.browserLog` and never reaches a browser on this machine's desktop.
 
 A recipe is a module whose default export is `async (helpers) => {}`. The helpers act like a person;
 each is a gesture on the real workbench DOM:
@@ -622,7 +627,17 @@ each is a gesture on the real workbench DOM:
   `buttons` by tooltip, `focused`), `.buttons()` (every button by tooltip and where: the title bar,
   the input box, a row), `.button(tooltip)` (one clicked: the title bar's or the input box's, else a
   row's with the pointer on its row), `.back()` (the title bar's Back), `.busy()`, `.items()`,
-  `.isOpen()`, `.watch()` (every time the widget is shown from now, until `stop()`);
+  `.isOpen()`, `.validation()` (`{ message, severity }` while the input shows a validation, null
+  while the line under it is only the prompt), `.watch()` (every time the widget is shown from now,
+  until `stop()`);
+- `welcome()` (the view's welcome over an empty tree: its `lines`, `buttons` and `links`; null while
+  the tree shows), `welcomeAction(label)` with `.click()` (a welcome button or link);
+  `accounts({ signOut, shot })` (the Accounts menu's entries, then Escape; with `signOut`, the entry
+  holding it is hovered and its **Sign Out** clicked, and VS Code then asks in a dialog; with
+  `shot`, the open menu is shot first); `browserOpened()` (every URL the editor handed its external
+  browser, from `up`'s recorder); `browser()` (Playwright's own chromium, apart from the editor:
+  `.goto(url)`, `.signIn()` on the web's sign-in page as the run's account, `.click(name)` on a
+  button, `.waitForText()`, `.text()`, `.shot(slug)` numbered among the editor's, `.close()`);
 - `view(name)` (the Activity Bar entry), `viewActions()` (the view's title bar buttons, each
   `{ title, disabled }`), `viewAction(title | pattern)` with `.disabled()`, `.title()`, `.tooltip()`
   (the pointer rests on it until the hover shows; a disabled button too) and `.click()`,
@@ -678,7 +693,11 @@ either build of the extension: today's fails at the double-click, the redesign p
 `recipes/vscode-open-as-built.mjs` (#1080's extension as built), `recipes/vscode-view.mjs` (the Mend
 view, badge, status bar and toasts: stories f, a4 and b on a server with G4),
 `recipes/vscode-new-session.mjs` (story a with flow 3: New session's one quick input, Change…, an
-unpushed base, a folder no project matched, a launch that fails and Retry, offline); the map's
+unpushed base, a folder no project matched, a launch that fails and Retry, offline),
+`recipes/vscode-first-run.mjs` (story h with flow 4: from
+`up --signed-out --no-ssh-setup --no-remote-ssh`, Connect, the approve page denied then authorized
+in `browser()`, Set up, Adopt and Sign Out from the Accounts menu; from
+`up --cli-only --no-ssh-setup`, Use it, Set up skipped and Open's one deferred question); the map's
 [vscode.md](features/vscode.md) has the flows by story. `recipes/g4-terminal-agent-waits.mjs` drives
 no editor: it replays claude's hooks through `scripts/fixtures/claude-standin.mjs` in a shell beside
 a real (signed-out) claude agent and reads the session's `waiting` from the API and `/api/events`

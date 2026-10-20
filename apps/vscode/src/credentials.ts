@@ -1,8 +1,8 @@
 /**
  * Which token the editor sends to a server, from what it keeps in its secret storage and what the
  * Mend CLI saved on this machine (`cli.json`). The editor's own entry wins for its URL, and that
- * includes an entry that says "no token": after a sign-out, or a connect with no token, the editor
- * must not quietly fall back to the CLI's sign-in, which may be another account.
+ * includes an entry that says "no token": after a sign-out the editor must not quietly fall back to
+ * the CLI's sign-in, which may be another account.
  */
 
 /** What the editor keeps for one server URL. */
@@ -13,8 +13,15 @@ export type StoredCredential =
       readonly token: string;
       /** The device a browser sign-in created; sign-out revokes it. Null for a pasted token. */
       readonly deviceId: string | null;
+      /** The account the sign-in approved, for the Accounts menu while Mend cannot be read. */
+      readonly email?: string;
     }
-  | { readonly kind: "none"; readonly url: string };
+  | { readonly kind: "none"; readonly url: string }
+  /**
+   * Mend refused the CLI's token there: that token is not sent again, and the CLI's sign-in applies
+   * once it holds another (`mend login`). Kept by its sha256, never the token itself.
+   */
+  | { readonly kind: "cliRefused"; readonly url: string; readonly tokenHash: string };
 
 /** The CLI's saved sign-in, when there is one. */
 export interface CliCredential {
@@ -22,7 +29,15 @@ export interface CliCredential {
   readonly token: string | null;
 }
 
+import { createHash } from "node:crypto";
+
 import { normalizeServerUrl } from "./sign-in.js";
+
+const fingerprint = (token: string): string => createHash("sha256").update(token).digest("hex");
+
+/** Whether `token`, the CLI's, is the one Mend refused at the entry's server. */
+export const cliTokenRefused = (stored: StoredCredential | null, token: string): boolean =>
+  stored?.kind === "cliRefused" && stored.tokenHash === fingerprint(token);
 
 /**
  * The one form a server URL is kept and compared in: what Connect writes (lowercase scheme and
@@ -41,9 +56,20 @@ const credentialOf = (value: unknown): StoredCredential | null => {
   const token = value["token"];
   if (typeof token === "string") {
     const deviceId = value["deviceId"];
-    return { kind: "token", url, token, deviceId: typeof deviceId === "string" ? deviceId : null };
+    const email = value["email"];
+    return {
+      kind: "token",
+      url,
+      token,
+      deviceId: typeof deviceId === "string" ? deviceId : null,
+      ...(typeof email === "string" ? { email } : {}),
+    };
   }
-  return token === null ? { kind: "none", url } : null;
+  if (token !== null) return null;
+  const refused = value["refusedCliToken"];
+  return typeof refused === "string"
+    ? { kind: "cliRefused", url, tokenHash: refused }
+    : { kind: "none", url };
 };
 
 /** What the editor keeps, one entry per server URL. */
@@ -77,12 +103,29 @@ export const parseCredentialStore = (value: string | undefined): CredentialStore
 
 export const serializeCredentialStore = (store: CredentialStore): string =>
   JSON.stringify({
-    entries: [...store.values()].map((credential) =>
-      credential.kind === "token"
-        ? { url: credential.url, token: credential.token, deviceId: credential.deviceId }
-        : { url: credential.url, token: null },
-    ),
+    entries: [...store.values()].map((credential) => {
+      switch (credential.kind) {
+        case "token":
+          return {
+            url: credential.url,
+            token: credential.token,
+            deviceId: credential.deviceId,
+            ...(credential.email === undefined ? {} : { email: credential.email }),
+          };
+        case "none":
+          return { url: credential.url, token: null };
+        case "cliRefused":
+          return { url: credential.url, token: null, refusedCliToken: credential.tokenHash };
+      }
+    }),
   });
+
+/** The store with no entry of its own for `url`: the CLI's sign-in for it applies again. */
+export const withoutCredential = (store: CredentialStore, url: string): CredentialStore => {
+  const next = new Map(store);
+  next.delete(canonicalServerUrl(url));
+  return next;
+};
 
 /** The store with `credential` as its server's entry, every other server's left as it was. */
 export const withCredential = (
@@ -104,10 +147,11 @@ export const tokenFor = (
   cli: CliCredential | null,
 ): string | null => {
   const server = canonicalServerUrl(url);
-  if (stored !== null && canonicalServerUrl(stored.url) === server) {
-    return stored.kind === "token" ? stored.token : null;
-  }
-  return cli !== null && canonicalServerUrl(cli.url) === server ? cli.token : null;
+  const own = stored !== null && canonicalServerUrl(stored.url) === server ? stored : null;
+  if (own?.kind === "token") return own.token;
+  if (own?.kind === "none") return null;
+  const token = cli !== null && canonicalServerUrl(cli.url) === server ? cli.token : null;
+  return token === null || cliTokenRefused(own, token) ? null : token;
 };
 
 /**
@@ -127,4 +171,83 @@ export const signOutOf = (
     own: entry !== undefined && entry.kind === "token" ? entry : null,
     next: withCredential(store, { kind: "none", url: server }),
   };
+};
+
+/**
+ * Mend refused `token` at `url` (401), so every window and the Accounts menu drop the account
+ * together: the editor's own sign-in there ends ("no token"), or, when the token was the CLI's,
+ * that token is not sent again. Null when the editor no longer sends that token there (a sign-in
+ * or a sign-out since), so a late refusal never undoes a newer sign-in.
+ */
+export const refusedIn = (
+  store: CredentialStore,
+  refused: { readonly url: string; readonly token: string },
+  cli: CliCredential | null,
+): CredentialStore | null => {
+  const own = credentialFor(store, refused.url);
+  if (tokenFor(refused.url, own, cli) !== refused.token) return null;
+  return withCredential(
+    store,
+    own?.kind === "token"
+      ? { kind: "none", url: refused.url }
+      : { kind: "cliRefused", url: refused.url, tokenHash: fingerprint(refused.token) },
+  );
+};
+
+/** What Mend answered when asked to revoke a device (`DELETE /me/devices/:id`). */
+export type RevokeOutcome =
+  | { readonly kind: "revoked" }
+  /** 401 or 404: the device's token no longer signs in, or the device is gone. */
+  | { readonly kind: "alreadySignedOut" }
+  | { readonly kind: "unreachable" }
+  | { readonly kind: "refused"; readonly status: number };
+
+/** A revoke's outcome from the status Mend answered with; null when nothing answered. */
+export const revokeOutcomeOf = (status: number | null): RevokeOutcome => {
+  if (status === null) return { kind: "unreachable" };
+  if (status === 401 || status === 404) return { kind: "alreadySignedOut" };
+  return { kind: "refused", status };
+};
+
+/** What a sign-out ended: the editor's own device, a pasted token, or only the CLI's fallback. */
+export type SignedOut =
+  | { readonly kind: "device"; readonly outcome: RevokeOutcome }
+  | { readonly kind: "pastedToken" }
+  | { readonly kind: "cliFallback" };
+
+/** The one message of a sign-out she chose, in what Mend answered. */
+export const signOutMessage = (url: string, signedOut: SignedOut): string => {
+  switch (signedOut.kind) {
+    case "cliFallback":
+      return `Signed out of Mend at ${url} in this editor. The Mend CLI on this machine keeps its own sign-in; mend logout ends it.`;
+    case "pastedToken":
+      return `Signed out of Mend at ${url}. The pasted token stays valid until it is revoked under Settings → Devices.`;
+    case "device":
+      switch (signedOut.outcome.kind) {
+        case "revoked":
+          return `Signed out of Mend at ${url}, and revoked this editor's device.`;
+        case "alreadySignedOut":
+          return `Signed out of Mend at ${url}. This device was already signed out.`;
+        case "unreachable":
+          return `Signed out of Mend at ${url}; Mend could not be reached to revoke this editor's device. Revoke it under Settings → Devices.`;
+        case "refused":
+          return `Signed out of Mend at ${url}; Mend answered ${signedOut.outcome.status} when asked to revoke this editor's device. Revoke it under Settings → Devices.`;
+      }
+  }
+};
+
+/**
+ * Said once when a new sign-in replaced this editor's earlier device and Mend did not revoke it;
+ * null when it is gone.
+ */
+export const replacedDeviceWarning = (url: string, outcome: RevokeOutcome): string | null => {
+  switch (outcome.kind) {
+    case "revoked":
+    case "alreadySignedOut":
+      return null;
+    case "unreachable":
+      return `Signed in again to Mend at ${url}; Mend could not be reached to revoke this editor's earlier device. Revoke it under Settings → Devices.`;
+    case "refused":
+      return `Signed in again to Mend at ${url}; Mend answered ${outcome.status} when asked to revoke this editor's earlier device. Revoke it under Settings → Devices.`;
+  }
 };

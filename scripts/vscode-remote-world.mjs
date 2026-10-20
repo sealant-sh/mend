@@ -278,12 +278,18 @@ export const installServer = async ({
   return { mendContainer: mendId };
 };
 
-/** The first account, signed up at the server's own origin; its bearer token is returned. */
-export const signUp = async (origin, { email, name }) => {
+/**
+ * The first account, signed up at the server's own origin; its bearer token is returned. A caller
+ * that signs in on the web later passes the password; otherwise it is random and forgotten.
+ */
+export const signUp = async (
+  origin,
+  { email, name, password = randomBytes(24).toString("hex") },
+) => {
   const response = await fetch(`${origin}/api/auth/sign-up/email`, {
     method: "POST",
     headers: { origin, "content-type": "application/json" },
-    body: JSON.stringify({ email, password: randomBytes(24).toString("hex"), name }),
+    body: JSON.stringify({ email, password, name }),
   });
   const token = response.headers.get("set-auth-token");
   if (!response.ok || !token) throw new Error(`signup at ${origin} failed: ${response.status}`);

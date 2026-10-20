@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import { MendApiError, type MendClient, type StreamSignal } from "./client.js";
+import { refusedSignIn } from "./error-toast.js";
 import { canonicalPaths, realPathFor, repositoryFacts } from "./git.js";
 import { comparedPaths, matchProject } from "./project-match.js";
 import type { MemberName } from "./session-lines.js";
@@ -123,10 +124,6 @@ const isLastSeen = (value: unknown): value is LastSeen => {
   );
 };
 
-/** Mend refused this sign-in: what it read before is no longer hers to see. */
-const refusedSignIn = (cause: unknown): boolean =>
-  cause instanceof MendApiError && cause.status === 401;
-
 /**
  * Every read the Mend view, status bar, badge and notifier rest on: one snapshot, kept current by
  * the event stream with a targeted re-read per frame, and what this VS Code last looked at. It
@@ -216,6 +213,26 @@ export class SessionStore implements vscode.Disposable {
     this.#wantSessions.clear();
     this.#subscription = this.client.subscribe((signal) => this.#signal(signal));
     this.refresh();
+  }
+
+  /** Not connected (story h): no stream, no reads, nothing remembered of the last sign-in. */
+  stop(): void {
+    this.#subscription?.dispose();
+    this.#subscription = null;
+    this.#generation += 1;
+    this.#invalidate();
+    this.#refused = false;
+    this.#error = null;
+    for (const timer of [this.#timer, this.#retry]) if (timer !== null) clearTimeout(timer);
+    if (this.#ticker !== null) clearInterval(this.#ticker);
+    this.#timer = null;
+    this.#retry = null;
+    this.#ticker = null;
+    this.#wantAll = false;
+    this.#wantProjects.clear();
+    this.#wantSessions.clear();
+    this.#wantedSince = null;
+    this.#connection = { state: "connecting" };
   }
 
   /** Read everything again (`Mend: Refresh`). */
@@ -556,7 +573,6 @@ export class SessionStore implements vscode.Disposable {
     this.#read = true;
     await this.#matchWindow();
     this.#prune();
-    void vscode.commands.executeCommand("setContext", "mend.hasProjects", projects.length > 0);
   }
 
   async #readProject(projectId: string, generation: number): Promise<void> {
