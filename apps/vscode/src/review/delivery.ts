@@ -104,7 +104,7 @@ export type PastePlan =
 /** The paste step of a review Mend holds pending in her agent's terminal. */
 export type PasteStep =
   | { readonly kind: "due" }
-  /** Pasted, or nothing to paste and she was told why: what the agent's input holds now. */
+  /** Pasted, or nothing to paste and she was told why: what VS Code pasted into the agent's input. */
   | { readonly kind: "done"; readonly input: TerminalInput }
   /** VS Code could not attach the live agent's terminal here: Retry delivery pastes it again. */
   | { readonly kind: "failed" };
@@ -570,7 +570,7 @@ export const recordLabel = (phase: SendPhase): string => {
     case "in-terminal":
       switch (phase.paste.kind) {
         case "done":
-          return `follow-up pending · in ${phase.agent}'s terminal`;
+          return `follow-up pending · pasted into ${phase.agent}'s terminal`;
         case "failed":
           return `follow-up pending · not pasted into ${phase.agent}'s terminal`;
         case "due":
@@ -589,8 +589,8 @@ export const recordLabel = (phase: SendPhase): string => {
 
 /**
  * What the thread of a comment in this record reads (`commentId` null for one not on Mend yet): in
- * her terminal, whether its words are in the input of her live agent, the process they were pasted
- * into. A new process, after a stop and a resume, holds none of them.
+ * her terminal, whether VS Code pasted its words, and into which agent process. Only what VS Code
+ * did: Enter, a reload or her own edits since are not observed.
  */
 export const commentLabel = (
   record: SendRecord,
@@ -599,10 +599,11 @@ export const commentLabel = (
 ): string => {
   const { phase } = record;
   if (phase.kind !== "in-terminal" || phase.paste.kind !== "done") return recordLabel(phase);
-  const here = agent?.kind === "terminal" && agent.processId === phase.processId;
-  return here && (commentId === null || phase.paste.input.ids.includes(commentId))
+  if (commentId !== null && !phase.paste.input.ids.includes(commentId))
+    return `follow-up pending · not pasted into ${phase.agent}'s terminal`;
+  return agent?.kind === "terminal" && agent.processId === phase.processId
     ? recordLabel(phase)
-    : `follow-up pending · not in ${phase.agent}'s terminal`;
+    : `follow-up pending · pasted into an earlier ${phase.agent}`;
 };
 
 /** A record whose comments were handed to the session: its head is where her last review was. */

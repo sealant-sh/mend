@@ -253,7 +253,7 @@ export const commentableLines = (
 };
 
 /**
- * `2 pending · 1 Mend draft`, `2 follow-up pending · in claude's terminal`: the change's comments
+ * `2 pending · 1 Mend draft`, `2 follow-up pending · pasted into claude's terminal`: the change's comments
  * counted by the state each was observed in; a follow-up Mend holds, by where its words are.
  */
 export const commentsLine = (

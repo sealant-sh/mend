@@ -110,8 +110,8 @@ export const composeAddition = (input: {
   ].join("\n");
 
 /**
- * What to paste for a review on top of what the agent's input holds: only what she added after
- * that text; nothing, with why, when she changed it, since the input still holds it as it was.
+ * What to paste for a review on top of what VS Code pasted into the agent's input: only what she
+ * added after that text; nothing, with why, when she changed that part.
  */
 export const addedText = (
   sent: string,
@@ -120,7 +120,7 @@ export const addedText = (
   if (!sent.startsWith(onto.text))
     return {
       kind: "none",
-      words: `You changed the part of this review already in ${agent}'s terminal, so VS Code pasted nothing there: its input still holds the earlier text. Mend holds the review as you sent it.`,
+      words: `You changed the part of this review VS Code already pasted into ${agent}'s terminal, so VS Code pasted nothing there. Mend holds the review as you sent it.`,
       onto,
       processId,
     };
@@ -128,7 +128,7 @@ export const addedText = (
   return added.trim() === ""
     ? {
         kind: "none",
-        words: `Nothing was added to the review already in ${agent}'s terminal, so VS Code pasted nothing there.`,
+        words: `Nothing was added to the review VS Code already pasted into ${agent}'s terminal, so VS Code pasted nothing there.`,
         onto,
         processId,
       }
