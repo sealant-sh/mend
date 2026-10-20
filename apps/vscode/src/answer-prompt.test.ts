@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { RequestPrompts, WRITE_AN_ANSWER } from "./answer-prompt.js";
+import { RequestPrompts, requestToAnswer, WRITE_AN_ANSWER } from "./answer-prompt.js";
 import { MendApiError } from "./mend-http.js";
 import { Answers, requestView, toastChoices, type AgentResponse } from "./request-answer.js";
-import { pendingRequest, whichDatabase } from "./test-requests.js";
+import { pendingRequest, requestWait, whichDatabase } from "./test-requests.js";
 import { fake, window } from "./test-vscode.js";
 
 vi.mock("vscode", () => import("./test-vscode.js"));
@@ -190,6 +190,25 @@ describe("More…", () => {
     await Promise.all([first, second]);
     expect(window.showQuickPick).toHaveBeenCalledTimes(1);
     expect(server.respond).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the row's Answer (rule 8)", () => {
+  const terminal = {
+    via: "terminal" as const,
+    key: "permission:2026-10-19T08:59:00.000Z",
+    words: "claude needs your permission to use Bash",
+    since: "2026-10-19T08:59:00.000Z",
+  };
+
+  it("opens the quick pick for a conversation she may answer, and attaches a terminal agent", () => {
+    expect(requestToAnswer({ needsYou: true, wait: requestWait() })).toEqual(bash);
+    expect(requestToAnswer({ needsYou: true, wait: terminal })).toBeNull();
+  });
+
+  it("answers nothing she may not answer: Ana's request without shared control", () => {
+    expect(requestToAnswer({ needsYou: false, wait: requestWait() })).toBeNull();
+    expect(requestToAnswer(undefined)).toBeNull();
   });
 });
 

@@ -4,7 +4,7 @@ import { repositoryCloneUrlIssue } from "@mend/domain/workbench";
 import * as vscode from "vscode";
 
 import { attachTerminal, memberName, pasteInto, terminalProcess } from "./agent-terminal.js";
-import { RequestPrompts } from "./answer-prompt.js";
+import { RequestPrompts, requestToAnswer } from "./answer-prompt.js";
 import { AUTH_PROVIDER_ID, MendAuthenticationProvider } from "./auth-provider.js";
 import { MendClient } from "./client.js";
 import { ConnectionStore } from "./config.js";
@@ -142,6 +142,7 @@ class MendCommands {
     private readonly runner: OpenRunner,
     private readonly newSessionInput: NewSessionInput,
     private readonly review: Review,
+    private readonly prompts: RequestPrompts,
   ) {}
 
   /** Adopt a repository…: one input for its clone URL; the project takes the repository's name. */
@@ -215,14 +216,19 @@ class MendCommands {
   }
 
   /**
-   * Answer a session that waits (rule 8): its agent's tab in this window's panel, attached or
-   * shown again, and no window opens. A conversation gets its tab, where Continue here moves it
-   * into a terminal, until the Answer flow answers its request in place.
+   * Answer a session that waits (rule 8): a conversation's request in a quick pick, and a terminal
+   * agent's tab in this window's panel, attached or shown again. No window opens.
    */
   async answer(argument?: unknown): Promise<void> {
     try {
       const location = await this.sessionLocation(argument);
       if (location === null) return;
+      const view = this.store.model()?.sessions.get(location.session.id);
+      const request = requestToAnswer(view);
+      if (view !== undefined && request !== null) {
+        await this.prompts.answer(request, view.name);
+        return;
+      }
       await this.workspaceWindow.answer(location.session.id);
     } catch (cause) {
       void showError(cause);
@@ -676,6 +682,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     opens.runner,
     newSessionInput,
     review,
+    prompts,
   );
   const viewTree = new FirstRunTree(tree);
   const view = vscode.window.createTreeView("mend.sessions", {

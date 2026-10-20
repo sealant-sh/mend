@@ -156,6 +156,12 @@
         "enablement": "!mend.offline"
       },
       {
+        "command": "mend.answerOffline",
+        "title": "Mend is offline",
+        "icon": "$(comment-discussion)",
+        "enablement": "false"
+      },
+      {
         "command": "mend.pickSession",
         "title": "Mend: Choose a session"
       },
@@ -369,6 +375,10 @@
           "when": "false"
         },
         {
+          "command": "mend.answerOffline",
+          "when": "false"
+        },
+        {
           "command": "mend.useCli",
           "when": "mend.welcome == useCli"
         },
@@ -551,7 +561,12 @@
       "view/item/context": [
         {
           "command": "mend.answer",
-          "when": "view == mend.sessions && viewItem =~ /\\.needs$/",
+          "when": "view == mend.sessions && viewItem =~ /\\.needs$/ && !mend.offline",
+          "group": "inline@0"
+        },
+        {
+          "command": "mend.answerOffline",
+          "when": "view == mend.sessions && viewItem =~ /\\.needs$/ && mend.offline",
           "group": "inline@0"
         },
         {

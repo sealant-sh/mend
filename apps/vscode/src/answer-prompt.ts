@@ -89,6 +89,15 @@ const pickResponse = async (
 };
 
 /**
+ * The request a row's Answer answers in the quick pick (rule 8); null for a terminal agent, whose
+ * Answer attaches its terminal.
+ */
+export const requestToAnswer = (
+  view: Pick<SessionView, "needsYou" | "wait"> | undefined,
+): RequestView | null =>
+  view?.needsYou === true && view.wait?.via === "conversation" ? view.wait.request : null;
+
+/**
  * What her gestures at a conversation's request do: a toast button sends its answer or opens the
  * quick pick, and every answer goes through `Answers`. Whatever the answer found, she is told once:
  * nothing more for an answer taken, the session's current line for a request already answered,
