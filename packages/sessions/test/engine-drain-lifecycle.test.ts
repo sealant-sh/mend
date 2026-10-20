@@ -1,3 +1,4 @@
+import type { SessionsRepo } from "@mend/db";
 import { SessionId } from "@mend/domain";
 import {
   type HostUserNamespaces,
@@ -208,6 +209,52 @@ const settleFor = (steps: number) =>
       yield* Effect.yieldNow;
     }
   });
+
+/** A plan another writer put in the column: a pickup no launch of the case wrote. */
+const ANOTHER_PLAN = JSON.stringify({ kind: "pickup", harness: "codex", id: "another" });
+
+/** Each read of the session's plan, by its id (`read:<id>`, `read:none`), and each swap's answer. */
+const planTrail = () => {
+  const trail: Array<string> = [];
+  const idOf = (stored: string | null) =>
+    stored === null ? "none" : String(planId(JSON.parse(stored)));
+  const wrap = (inner: SessionsRepo["Service"]): SessionsRepo["Service"] => ({
+    ...inner,
+    relaunchOf: (id) =>
+      inner
+        .relaunchOf(id)
+        .pipe(Effect.tap((stored) => Effect.sync(() => trail.push(`read:${idOf(stored)}`)))),
+    swapRelaunch: (id, expected, next) =>
+      inner
+        .swapRelaunch(id, expected, next)
+        .pipe(Effect.tap((wrote) => Effect.sync(() => trail.push(`swap:${wrote}`)))),
+  });
+  return { trail, wrap };
+};
+
+/**
+ * The next swap of a session's plan, once armed, waits before it compares until `release`;
+ * `read` is the plan the column held when it began.
+ */
+const pausedSwap = (world: World, changed: () => void) => {
+  let armed: SessionId | null = null;
+  let read: string | null = null;
+  const open = Promise.withResolvers<void>();
+  world.beforeRelaunchSwap.current = () => {
+    if (armed === null) return Promise.resolve();
+    read = world.relaunches.get(armed) ?? "";
+    armed = null;
+    changed();
+    return open.promise;
+  };
+  return {
+    arm: (sessionId: SessionId) => {
+      armed = sessionId;
+    },
+    read: () => read,
+    release: Effect.sync(() => open.resolve()),
+  };
+};
 
 describe("SessionEngine capture drain (no loss of work product)", () => {
   it.effect(
@@ -3101,6 +3148,98 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
           },
         );
         expect(seen).toEqual({ launch: "SessionNotFoundError", plans: 1, created: 0, left: false });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a launch's cleanup ends only its own plan: another writer's plan, installed while the cleanup is paused, survives the failed swap and the read after it (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, changed, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const plans = planTrail();
+        const cleanup = pausedSwap(world, changed);
+        let own: unknown = null;
+        let launched = "";
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              yield* shipHarnessCapture(
+                dir,
+                memory,
+                session.worktreeId,
+                memory.leases.get(session.worktreeId)?.epoch ?? 0,
+                crypto.randomUUID(),
+              );
+              cleanup.arm(session.id);
+              const relaunching = yield* engine
+                .launch(session.id, ["codex"], { over: Restart })
+                .pipe(Effect.result, Effect.forkChild);
+              yield* untilChanged(() => cleanup.read() !== null, "the launch's cleanup");
+              own = planId(JSON.parse(cleanup.read() ?? "null"));
+              world.relaunches.set(session.id, ANOTHER_PLAN);
+              yield* cleanup.release;
+              launched = (yield* Fiber.join(relaunching))._tag;
+              expect(world.relaunches.get(session.id)).toBe(ANOTHER_PLAN);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            sealantLayer: signalling(lifecycleLayer(created)),
+            wrapSessions: plans.wrap,
+          },
+        );
+        expect(launched).toBe("Success");
+        expect(own).not.toBe(planId(JSON.parse(ANOTHER_PLAN)));
+        expect(plans.trail.slice(-3)).toEqual([`read:${own}`, "swap:moved", "read:another"]);
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "the reaper's end of a recovered plan ends only that plan: another writer's plan, installed while that end is paused, survives the failed swap and the read after it (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, changed, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const plans = planTrail();
+        const end = pausedSwap(world, changed);
+        const recovered = JSON.stringify({ kind: "pickup", harness: "codex", id: "recovered" });
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const createdBefore = created.length;
+              // What a restart finds: a pickup planned over the agent that is live.
+              world.relaunches.set(session.id, recovered);
+              end.arm(session.id);
+              yield* engine.reapCaptureLeases();
+              yield* untilChanged(() => end.read() !== null, "the reaper's end of the plan");
+              expect(end.read()).toBe(recovered);
+              world.relaunches.set(session.id, ANOTHER_PLAN);
+              yield* end.release;
+              yield* settleFor(20);
+              expect(world.relaunches.get(session.id)).toBe(ANOTHER_PLAN);
+              expect(created.length - createdBefore).toBe(0);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            sealantLayer: signalling(lifecycleLayer(created)),
+            wrapSessions: plans.wrap,
+          },
+        );
+        expect(plans.trail.slice(-3)).toEqual(["read:recovered", "swap:moved", "read:another"]);
       }),
     { timeout: 20_000 },
   );
