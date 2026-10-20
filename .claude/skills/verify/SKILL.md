@@ -622,7 +622,10 @@ each is a gesture on the real workbench DOM:
   context menu item, then Escape), `.actions()` (the inline action titles), `.tooltip()`,
   `.selected()`, `.text()`, `.description()` (a session row's status);
 - `notification(text)` with `.click(button)`, `.text()`, `.dismiss()`; `notifications()`;
-  `dialog(text)` with `.click(button)`; `dialogs()`; `statusBar(text)`;
+  `dialog(text)` with `.click(button)`; `dialogs()`; `statusBar(text)`; `statusBarItems()` (every
+  item's text, left to right); `viewRows()` (the sidebar tree's rows with their depth, label,
+  description and open state, and the view's message); `badge(name)` (the number on an Activity Bar
+  entry, `""` without one);
 - `terminal()` with `.type(line)`, `.read()` (the xterm rows from the DOM), `.waitForText()`,
   `.tabs()` (`{ names, active, focused }`: the panel's terminal tabs, the active one, whether the
   keyboard is in a terminal);
@@ -658,7 +661,8 @@ with `via: "api"` or `via: "setup"`, and only ever for setup or for reading what
 never for the action under test. The recipes: `recipes/vscode-open.mjs` (stories c and e against
 either build of the extension: today's fails at the double-click, the redesign passes),
 `recipes/vscode-open-first.mjs` (the first open without Remote-SSH, from `up --no-remote-ssh`) and
-`recipes/vscode-open-as-built.mjs` (#1080's extension as built); the map's
+`recipes/vscode-open-as-built.mjs` (#1080's extension as built), `recipes/vscode-view.mjs` (the Mend
+view, badge, status bar and toasts: stories f, a4 and b on a server with G4); the map's
 [vscode.md](features/vscode.md) has the flows by story. `recipes/g4-terminal-agent-waits.mjs` drives
 no editor: it replays claude's hooks through `scripts/fixtures/claude-standin.mjs` in a shell beside
 a real (signed-out) claude agent and reads the session's `waiting` from the API and `/api/events`

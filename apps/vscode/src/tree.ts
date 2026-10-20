@@ -1,283 +1,234 @@
 import * as vscode from "vscode";
 
 import type { MendClient } from "./client.js";
+import { mayStop, rowContextValue, type RowCapability } from "./session-capability.js";
+import { sessionLines, workspaceReads } from "./session-lines.js";
+import type { SessionView, WindowModel, Word } from "./session-model.js";
+import type { SessionStore } from "./session-store.js";
 import {
-  mayStop,
-  rowCapability,
-  rowContextValue,
-  type RowCapability,
-} from "./session-capability.js";
-import { displaySession, readProjects, sessionLines, workspaceReads } from "./session-lines.js";
-import type { Project, ProjectDetail, Session } from "./types.js";
+  layoutOf,
+  nodeId,
+  redraws,
+  ROOT,
+  rowsOfGroup,
+  type GroupKind,
+  type Layout,
+  type MendNode,
+  type Placed,
+} from "./tree-layout.js";
+import type { Project, Session } from "./types.js";
 
-const LIVE_STATUSES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
+export type { MendNode, ProjectNode, SessionNode } from "./tree-layout.js";
 
-type GroupNode = { readonly kind: "group"; readonly group: "needs" | "projects" };
-export type ProjectNode = { readonly kind: "project"; readonly project: Project };
-export type SessionNode = {
-  readonly kind: "session";
-  readonly project: Project;
-  readonly session: Session;
+const GROUP_LABELS: Readonly<Record<GroupKind, string>> = {
+  needs: "Needs you",
+  since: "Since you last looked",
+  running: "Running",
+  projects: "Projects",
 };
-type MessageNode = { readonly kind: "message"; readonly label: string; readonly detail?: string };
-export type MendNode = GroupNode | ProjectNode | SessionNode | MessageNode;
-
-interface Snapshot {
-  readonly projects: ReadonlyArray<Project>;
-  readonly details: ReadonlyMap<string, ProjectDetail>;
-  /** Who reads the tree: the shared workspace line names everyone else. */
-  readonly viewer: string | null;
-}
 
 /** A session's tooltip: where it is, then what it says about its workspace, a line each. */
 export const sessionTooltip = (
   project: Project,
   session: Session,
   lines: ReadonlyArray<string>,
-): string => [`${project.name} · ${session.branch} · ${session.status}`, ...lines].join("\n");
+): string => [`${project.name} · ${session.branch}`, ...lines].join("\n");
 
 const whyLine = (capability: RowCapability): ReadonlyArray<string> =>
   capability.kind === "open" ? [] : [capability.why];
 
-const statusIcon = (status: string): vscode.ThemeIcon => {
-  switch (status) {
+/** The status dot of DESIGN.md: one colour per word, contributed as a theme colour. */
+export const statusColor = (word: Word): string => {
+  switch (word) {
     case "waiting":
-      return new vscode.ThemeIcon(
-        "bell-dot",
-        new vscode.ThemeColor("notificationsWarningIcon.foreground"),
-      );
+      return "mend.status.waiting";
     case "starting":
     case "running":
     case "idle":
-      return new vscode.ThemeIcon("play-circle", new vscode.ThemeColor("charts.blue"));
+    case "stopping":
+      return "mend.status.running";
     case "completed":
-      return new vscode.ThemeIcon("pass-filled", new vscode.ThemeColor("testing.iconPassed"));
+    case "landed":
+      return "mend.status.observed";
     case "failed":
-      return new vscode.ThemeIcon("error", new vscode.ThemeColor("testing.iconFailed"));
-    default:
-      return new vscode.ThemeIcon("circle-outline");
+      return "mend.status.failed";
+    case "stopped":
+      return "mend.status.settled";
   }
 };
 
-/** Native VS Code tree for Mend's attention list and adopted projects. */
+const dot = (word: Word): vscode.ThemeIcon =>
+  new vscode.ThemeIcon(
+    word === "stopped" ? "circle-large-outline" : "circle-filled",
+    new vscode.ThemeColor(statusColor(word)),
+  );
+
+/**
+ * The Mend view: it maps the store's model, and reads only what a hovered row's tooltip needs.
+ * Each node keeps the object VS Code first got for its id, and every read of it goes to the
+ * latest layout by that id, so a redraw can name just the nodes that moved (`redraws`).
+ */
 export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
-  private readonly changed = new vscode.EventEmitter<MendNode | undefined | null | void>();
-  readonly onDidChangeTreeData = this.changed.event;
-  private current: Snapshot | null = null;
-  private loading: Promise<Snapshot> | null = null;
-  private error: string | null = null;
-  private workspaceProjectId: string | null = null;
-  private showingAllProjects = false;
+  readonly #changed = new vscode.EventEmitter<Array<MendNode> | undefined>();
+  readonly onDidChangeTreeData = this.#changed.event;
+  #layout: Layout | null = null;
+  #latest = new Map<string, Placed>();
+  /** The object VS Code holds for each id: a redraw of that id must name it. */
+  readonly #given = new Map<string, MendNode>();
 
-  constructor(private readonly client: MendClient) {}
+  constructor(
+    private readonly store: SessionStore,
+    private readonly client: MendClient,
+  ) {}
 
-  setWorkspaceProject(projectId: string | null): void {
-    if (projectId !== this.workspaceProjectId) this.showingAllProjects = false;
-    this.workspaceProjectId = projectId;
-    void vscode.commands.executeCommand(
-      "setContext",
-      "mend.hasWorkspaceProject",
-      projectId !== null,
-    );
-    void vscode.commands.executeCommand(
-      "setContext",
-      "mend.projectScoped",
-      this.activeProjectId() !== null,
-    );
-    this.changed.fire();
-  }
-
-  toggleAllProjects(): void {
-    if (this.workspaceProjectId === null) return;
-    this.showingAllProjects = !this.showingAllProjects;
-    void vscode.commands.executeCommand(
-      "setContext",
-      "mend.projectScoped",
-      this.activeProjectId() !== null,
-    );
-    this.changed.fire();
-  }
-
-  private activeProjectId(): string | null {
-    return this.showingAllProjects ? null : this.workspaceProjectId;
-  }
-
-  refresh(): void {
-    this.current = null;
-    this.loading = null;
-    this.error = null;
-    this.changed.fire();
-  }
-
-  /** The viewer the last snapshot read, without a request; null when it could not say. */
-  knownViewer(): string | null {
-    return this.current?.viewer ?? null;
-  }
-
-  async snapshot(): Promise<Snapshot> {
-    if (this.current !== null) return this.current;
-    if (this.loading !== null) return this.loading;
-    this.loading = this.load();
-    try {
-      this.current = await this.loading;
-      return this.current;
-    } finally {
-      this.loading = null;
+  /** The model changed: redraw what moved, and nothing else. */
+  changed(model: WindowModel | null): void {
+    const error = this.store.error();
+    const next = layoutOf({
+      model,
+      hasRead: this.store.hasRead(),
+      error:
+        error === null ? null : error instanceof Error ? error.message : "Could not read Mend.",
+      viewer: this.store.viewer(),
+    });
+    const redraw = redraws(this.#layout, next);
+    this.#layout = next;
+    this.#latest = new Map([...next.values()].flat().map((placed) => [placed.id, placed]));
+    for (const id of this.#given.keys()) if (!this.#latest.has(id)) this.#given.delete(id);
+    if (redraw === "all") this.#changed.fire(undefined);
+    else {
+      const nodes = redraw.flatMap((id) => this.#given.get(id) ?? []);
+      if (nodes.length > 0) this.#changed.fire(nodes);
     }
   }
 
-  private async load(): Promise<Snapshot> {
-    try {
-      // The project view carries who is live and the retirement's state (docs/adr/0016).
-      const { projects, details, viewer } = await readProjects(this.client);
-      this.error = null;
-      await vscode.commands.executeCommand("setContext", "mend.hasProjects", projects.length > 0);
-      return {
-        projects,
-        details: new Map(details.map((detail) => [detail.project.id, detail])),
-        viewer,
-      };
-    } catch (cause) {
-      this.error = cause instanceof Error ? cause.message : "Could not read Mend.";
-      await vscode.commands.executeCommand("setContext", "mend.hasProjects", true);
-      return { projects: [], details: new Map(), viewer: null };
-    }
+  /** The node as the latest layout has it: the one VS Code passes may be from an earlier one. */
+  current(element: MendNode): MendNode {
+    return this.#latest.get(nodeId(element))?.node ?? element;
   }
 
   getTreeItem(element: MendNode): vscode.TreeItem {
-    switch (element.kind) {
+    const node = this.current(element);
+    switch (node.kind) {
       case "group": {
+        const count =
+          node.group.kind === "projects"
+            ? node.group.projects.length
+            : rowsOfGroup(node.group).length;
+        // VS Code takes a node's collapsible state only the first time it sees its id: a group
+        // drawn empty must already be Expanded, or it stays collapsed once rows come.
         const item = new vscode.TreeItem(
-          element.group === "needs" ? "Needs you" : "Projects",
-          vscode.TreeItemCollapsibleState.Expanded,
+          GROUP_LABELS[node.group.kind],
+          node.group.kind === "projects"
+            ? vscode.TreeItemCollapsibleState.Collapsed
+            : vscode.TreeItemCollapsibleState.Expanded,
         );
-        item.iconPath = new vscode.ThemeIcon(element.group === "needs" ? "bell" : "repo");
-        item.contextValue = `mend.group.${element.group}`;
+        item.id = nodeId(node);
+        item.description = count === 0 ? "nothing" : String(count);
+        item.contextValue = `mend.group.${node.group.kind}`;
         return item;
       }
+      case "project-rows":
       case "project": {
-        const item = new vscode.TreeItem(
-          element.project.name,
-          vscode.TreeItemCollapsibleState.Expanded,
-        );
-        item.description = element.project.defaultBranch;
-        item.tooltip = element.project.originUrl ?? element.project.storePath;
+        const project = node.kind === "project" ? node.project : node.rows.project;
+        const item = new vscode.TreeItem(project.name, vscode.TreeItemCollapsibleState.Collapsed);
+        item.id = nodeId(node);
+        item.description =
+          node.kind === "project-rows" ? String(node.rows.rows.length) : project.defaultBranch;
+        item.tooltip = project.originUrl ?? project.storePath;
         item.iconPath = new vscode.ThemeIcon("repo");
         item.contextValue = "mend.project";
         return item;
       }
       case "session": {
-        const item = new vscode.TreeItem(
-          displaySession(element.session),
-          vscode.TreeItemCollapsibleState.None,
-        );
-        item.description = element.session.status;
-        const capability = this.capabilityOf(element.session);
-        item.tooltip = sessionTooltip(element.project, element.session, [
-          ...sessionLines({
-            session: element.session,
-            viewer: this.current?.viewer ?? null,
-            waitLine: null,
-            retirement: null,
-            members: [],
-          }),
-          ...whyLine(capability),
-        ]);
-        item.iconPath = statusIcon(element.session.status);
-        item.contextValue = rowContextValue(
-          element.session,
-          capability,
-          mayStop(element.session, this.current?.viewer ?? null),
-        );
+        const { view } = node;
+        const item = new vscode.TreeItem(view.name, vscode.TreeItemCollapsibleState.None);
+        item.id = nodeId(node);
+        item.description = view.line;
+        item.tooltip = this.#tooltip(view, []);
+        item.iconPath = dot(view.word);
+        const steer = mayStop(view.session, this.store.viewer());
+        item.contextValue = `${rowContextValue(view.session, view.capability, steer)}${view.needsYou ? ".needs" : ""}`;
+        return item;
+      }
+      case "others": {
+        const item = new vscode.TreeItem(node.line, vscode.TreeItemCollapsibleState.None);
+        item.id = nodeId(node);
+        item.command = { command: "mend.pickSession", title: "Choose a session" };
+        item.contextValue = "mend.others";
         return item;
       }
       case "message": {
-        const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
-        if (element.detail !== undefined) item.description = element.detail;
+        const item = new vscode.TreeItem(node.label, vscode.TreeItemCollapsibleState.None);
+        item.id = nodeId(node);
+        if (node.detail !== undefined) item.description = node.detail;
         item.iconPath = new vscode.ThemeIcon("info");
         return item;
       }
     }
   }
 
+  #tooltip(view: SessionView, lines: ReadonlyArray<string>): string {
+    return sessionTooltip(view.project, view.session, [
+      view.line,
+      ...lines,
+      ...whyLine(view.capability),
+      ...(this.store.model()?.offline === true ? ["Mend is offline"] : []),
+    ]);
+  }
+
   /**
    * A live session's tooltip, read when it is hovered: the waiting line and the retirement line
-   * cost a request each, so the tree does not read them for every row on every refresh, and
-   * asks only for those the row says are worth it (`workspaceReads`).
+   * cost a request each, so they are read only for the hovered row, and only where the row says
+   * they are worth it (`workspaceReads`).
    */
   async resolveTreeItem(item: vscode.TreeItem, element: MendNode): Promise<vscode.TreeItem> {
-    if (element.kind !== "session" || !LIVE_STATUSES.has(element.session.status)) return item;
-    const reads = workspaceReads(element.session);
+    const node = this.current(element);
+    if (node.kind !== "session" || !node.view.live) return item;
+    const reads = workspaceReads(node.session);
     const [waitLine, retirement] = await Promise.all([
-      reads.waiting ? this.client.waitLine(element.session.id) : null,
-      reads.retirement ? this.client.workspaceRetirement(element.session.id) : null,
+      reads.waiting ? this.client.waitLine(node.session.id) : null,
+      reads.retirement ? this.client.workspaceRetirement(node.session.id) : null,
     ]);
     const members =
       retirement === null || retirement.launcher === null ? [] : await this.client.memberNames();
-    item.tooltip = sessionTooltip(element.project, element.session, [
-      ...sessionLines({
-        session: element.session,
-        viewer: this.current?.viewer ?? null,
+    item.tooltip = this.#tooltip(
+      node.view,
+      sessionLines({
+        session: node.session,
+        viewer: this.store.viewer(),
         waitLine,
         retirement,
         members,
       }),
-      ...whyLine(this.capabilityOf(element.session)),
-    ]);
+    );
     return item;
   }
 
-  /** What the row offers the viewer the last snapshot read; names fall back through who is live. */
-  private capabilityOf(session: Session): RowCapability {
-    return rowCapability({ session, viewer: this.current?.viewer ?? null, members: [] });
-  }
-
-  async getChildren(element?: MendNode): Promise<MendNode[]> {
-    const snapshot = await this.snapshot();
-    if (element === undefined) {
-      if (this.error !== null)
-        return [{ kind: "message", label: this.error, detail: "Run Mend: Connect to server" }];
-      if (snapshot.projects.length === 0) return [];
-      const activeProjectId = this.activeProjectId();
-      const waiting = [...snapshot.details.values()].some(
-        (detail) =>
-          (activeProjectId === null || detail.project.id === activeProjectId) &&
-          detail.sessions.some((session) => session.status === "waiting"),
-      );
-      return [
-        ...(waiting ? [{ kind: "group", group: "needs" } satisfies GroupNode] : []),
-        { kind: "group", group: "projects" },
-      ];
-    }
-    if (element.kind === "group" && element.group === "needs") {
-      const activeProjectId = this.activeProjectId();
-      return [...snapshot.details.values()]
-        .filter((detail) => activeProjectId === null || detail.project.id === activeProjectId)
-        .flatMap((detail) =>
-          detail.sessions
-            .filter((session) => session.status === "waiting")
-            .map((session): SessionNode => ({ kind: "session", project: detail.project, session })),
-        )
-        .toSorted((left, right) => right.session.createdAt.localeCompare(left.session.createdAt));
-    }
-    if (element.kind === "group" && element.group === "projects") {
-      const activeProjectId = this.activeProjectId();
-      return snapshot.projects
-        .filter((project) => activeProjectId === null || project.id === activeProjectId)
-        .map((project): ProjectNode => ({ kind: "project", project }));
-    }
-    if (element.kind === "project") {
-      const sessions = snapshot.details.get(element.project.id)?.sessions ?? [];
-      return sessions
-        .toSorted((left, right) => right.createdAt.localeCompare(left.createdAt))
-        .map((session): SessionNode => ({ kind: "session", project: element.project, session }));
-    }
-    return [];
+  getChildren(element?: MendNode): Array<MendNode> {
+    const children = this.#layout?.get(element === undefined ? ROOT : nodeId(element)) ?? [];
+    return children.map(({ id, node }) => {
+      const given = this.#given.get(id);
+      if (given !== undefined) return given;
+      this.#given.set(id, node);
+      return node;
+    });
   }
 }
 
-export const isSessionNode = (value: unknown): value is SessionNode =>
-  typeof value === "object" && value !== null && Reflect.get(value, "kind") === "session";
+export const isSessionNode = (
+  value: unknown,
+): value is { readonly kind: "session"; readonly project: Project; readonly session: Session } =>
+  typeof value === "object" &&
+  value !== null &&
+  Reflect.get(value, "kind") === "session" &&
+  typeof Reflect.get(value, "session") === "object";
 
-export const isProjectNode = (value: unknown): value is ProjectNode =>
+export const isProjectNode = (
+  value: unknown,
+): value is { readonly kind: "project"; readonly project: Project } =>
   typeof value === "object" && value !== null && Reflect.get(value, "kind") === "project";
+
+/** The session a row stands for, by id, for the view's selection. */
+export const sessionIdOf = (node: MendNode): string | null =>
+  node.kind === "session" ? node.session.id : null;

@@ -262,31 +262,3 @@ export const joinLineOf = async (
     knownViewer ?? (worktreeListsPeople(sessions, worktreeId) ? await client.viewerId() : null);
   return worktreeJoinLine(sessions, worktreeId, viewer);
 };
-
-/**
- * A live session's lines from its project view row: the viewer only where someone is listed live,
- * the waiting line and the retirement only where the row says they are worth it, the roster only
- * to name a retirement's launcher. With per-person homes off, no request at all.
- */
-export const liveSessionLines = async (
-  session: Pick<
-    Session,
-    | "id"
-    | "livePeople"
-    | "sharedControlEnabledAt"
-    | "workspaceRetirement"
-    | "workspaceLauncherUserId"
-  >,
-  client: WorkspaceLineReads,
-): Promise<ReadonlyArray<string>> => {
-  if (!hasPersonFacts([session])) return [];
-  const reads = workspaceReads(session);
-  const [viewer, waitLine, retirement] = await Promise.all([
-    session.livePeople.length > 0 ? client.viewerId() : null,
-    reads.waiting ? client.waitLine(session.id) : null,
-    reads.retirement ? client.workspaceRetirement(session.id) : null,
-  ]);
-  const members =
-    retirement === null || retirement.launcher === null ? [] : await client.memberNames();
-  return sessionLines({ session, viewer, waitLine, retirement, members });
-};

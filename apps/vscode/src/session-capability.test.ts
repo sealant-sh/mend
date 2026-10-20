@@ -62,19 +62,22 @@ describe("a session Ana launched, as Dana sees it", () => {
 describe("a session picker", () => {
   it("lists Ana's session with what helps instead of Open", () => {
     const shared = { ...anas, sharedControlEnabledAt: "2026-10-19T09:00:00.000Z" };
-    expect(
-      pickDescription(shared, rowCapability({ session: shared, viewer: "dana", members })),
-    ).toBe("running · Watch terminal");
-    expect(pickDescription(anas, rowCapability({ session: anas, viewer: "dana", members }))).toBe(
-      "running · Review",
+    const line = "running · reading src/auth";
+    expect(pickDescription(line, rowCapability({ session: shared, viewer: "dana", members }))).toBe(
+      "running · reading src/auth · Watch terminal",
+    );
+    expect(pickDescription(line, rowCapability({ session: anas, viewer: "dana", members }))).toBe(
+      "running · reading src/auth · Review",
     );
   });
 
-  it("lists Dana's own session by its status: picking it opens", () => {
+  it("lists Dana's own session by how its row reads: picking it opens", () => {
     const danas = { ...anas, ownerUserId: "dana", workspaceLauncherUserId: "dana" };
     const capability = rowCapability({ session: danas, viewer: "dana", members });
     expect(rowOffer(capability)).toBe("Open");
-    expect(pickDescription(danas, capability)).toBe("running");
+    expect(pickDescription("waiting · claude needs your permission to use Bash", capability)).toBe(
+      "waiting · claude needs your permission to use Bash",
+    );
   });
 });
 
@@ -107,7 +110,7 @@ describe("Open", () => {
     });
     expect(rowOffer(capability)).toBe("Review");
     expect(rowContextValue(anas, capability, mayStop(anas, null))).toBe("mend.session.live.review");
-    expect(pickDescription(anas, capability)).toBe("running · Review");
+    expect(pickDescription("running", capability)).toBe("running · Review");
   });
 
   it("is not offered when no one launched the workspace and Mend could not read who the viewer is", () => {

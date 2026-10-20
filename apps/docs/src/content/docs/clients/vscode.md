@@ -54,11 +54,43 @@ that server-side path for your own use.
 
 ## The Mend view
 
-The Mend icon in the Activity Bar opens **Projects and sessions**. It groups sessions waiting for
-you under **Needs you**, then lists projects with their sessions and each session's status. Clicking
-a session opens it. The status bar shows the project the open folder belongs to and how many
-sessions are waiting. When the open folder belongs to an adopted project, the view shows that
-project only; **Mend: Toggle current project scope** switches between it and every project.
+The Mend icon in the Activity Bar opens **Sessions**. In any window that is not a session's
+workspace it has four groups, in this order:
+
+- **Needs you**: sessions that wait for you and that **Answer** lets you answer. Each waits for its
+  owner alone, even with shared control on. Only the owner types in a terminal agent's terminal, and
+  only the owner gets **Continue here** on a conversation, which is how **Answer** answers its
+  request for now. A row says what the session waits for, as Mend observed it:
+  `waiting · claude needs your permission to use Bash · since 02:14`. A session that waits for a
+  reason Mend has not read yet, or that waits for someone else, stays under **Running**.
+- **Since you last looked**: sessions that completed, failed or landed since this VS Code last
+  showed them. A session counts as shown once you select its row, or while its workspace window is
+  focused. VS Code keeps this per server and per machine. Past eight rows the group lists projects.
+- **Running**: sessions that are starting, running or idle. A terminal agent that finished its turn
+  reads `idle · claude finished its turn`: it asks nobody, so it is not under **Needs you**.
+- **Projects**, collapsed: every project with all of its sessions.
+
+A group with no sessions stays in its place and reads `nothing`.
+
+Every row reads `<word> · <fact>` as Mend observed it, for example `completed · observed`,
+`failed · exit 1 at 03:40` or `landed by Ana · pull request #415 · merged · observed`. The Mend icon
+shows a badge with the number of sessions under **Needs you**. The status bar says the same in one
+item, `Mend · 1 needs you · 2 finished`; clicking it shows the view.
+
+Clicking a row selects it; **Open** is the row's button. **Answer** on a waiting row attaches the
+agent's terminal in this window's panel and opens no window.
+
+In a session's workspace window the view shows that session only, and one line for the rest,
+`2 other sessions · 1 needs you`. The status bar reads `● add-rate-limit · running`. The line and
+the status bar both open the session picker.
+
+Only the focused VS Code window shows a notification, and only when a session waits for you or a
+session you started finished, and that window is not already showing it: selected in the view, the
+window's own session, or the session whose agent terminal is in front after **Answer**. One wait
+shows one notification across all your VS Code windows, and none once it is a week old. Other
+windows show the badge. When Mend cannot be reached, the view reads `last heard from Mend at 23:10`,
+the rows keep the last words Mend reported with `· last seen 2 min ago`, and **New session** and
+**Answer** are disabled.
 
 With no project adopted, the view offers **Adopt a project…**, which asks for a Git clone URL and a
 project name.
@@ -241,6 +273,8 @@ URL the extension uses. A session with no change yet says so.
 | ------------------------------- | ------------------------------------------------------------- |
 | **Mend: Open**                  | Open the session's workspace, as your window setting says     |
 | **Mend: Open in New Window**    | Open the session's workspace in a new window                  |
+| **Mend: Answer**                | Attach a waiting session's agent terminal in this window      |
+| **Mend: Choose a session**      | Pick a session that needs you, finished or runs               |
 | **Mend: Open terminal**         | Open the session's terminal in a VS Code terminal tab         |
 | **Mend: Review change**         | Open the session's change in Mend's review                    |
 | **Mend: Open in Mend**          | Open the session or project in the web app                    |

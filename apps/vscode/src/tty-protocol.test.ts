@@ -17,6 +17,7 @@ const process = (overrides: Partial<SessionProcess>): SessionProcess => ({
   id: "p",
   kind: "shell",
   harness: null,
+  waiting: null,
   status: "running",
   exitedAt: null,
   providerSessionId: null,

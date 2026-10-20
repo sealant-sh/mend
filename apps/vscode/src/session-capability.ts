@@ -1,4 +1,4 @@
-import { canSteerSession } from "@mend/domain/workbench";
+import { canSteerSession, canTypeInTerminal } from "@mend/domain/workbench";
 
 import { displaySession, type MemberName } from "./session-lines.js";
 import type { Session } from "./types.js";
@@ -76,6 +76,26 @@ export const rowCapability = (facts: {
 };
 
 /**
+ * Whether Answer lets `viewer` answer the session's wait (rule 8), by how its agent asks. A
+ * terminal agent asks in its terminal, which only its owner types in, even while control is shared
+ * (`canTypeInTerminal`), and Answer attaches it only where the workspace's launcher gate admits
+ * her. Until Answer can answer a conversation's request itself, it answers one through Continue
+ * here, which only the conversation's owner is offered: anyone else sharing control gets a
+ * read-only tab, so that wait is its owner's alone too. Mend not knowing who she is answers
+ * nothing.
+ */
+export const mayAnswer = (
+  session: SteeringFacts & Pick<Session, "workspaceLauncherUserId">,
+  viewer: string | null,
+  via: "terminal" | "conversation",
+): boolean => {
+  if (viewer === null) return false;
+  if (via === "conversation") return ownsSession(session, viewer);
+  const launcher = session.workspaceLauncherUserId;
+  return canTypeInTerminal(session, viewer) && (launcher === null || launcher === viewer);
+};
+
+/**
  * The one thing a gesture at the session does for this viewer, wherever it comes from (the row,
  * the palette, the status bar's pick, a deep link): Open, or what helps instead.
  */
@@ -112,11 +132,11 @@ export const rowContextValue = (
   return `mend.session.${phase}.${OFFER_KEYS[rowOffer(capability)]}${steer ? ".steer" : ""}`;
 };
 
-/** A session picker's words beside a name: its status, and what picking it does when not Open. */
-export const pickDescription = (
-  session: Pick<Session, "status">,
-  capability: RowCapability,
-): string => {
+/**
+ * A session picker's words beside a name: how its row reads (`waiting · claude needs your
+ * permission to use Bash`), and what picking it does when not Open.
+ */
+export const pickDescription = (line: string, capability: RowCapability): string => {
   const offer = rowOffer(capability);
-  return offer === "Open" ? session.status : `${session.status} · ${offer}`;
+  return offer === "Open" ? line : `${line} · ${offer}`;
 };

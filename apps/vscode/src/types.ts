@@ -46,6 +46,8 @@ export interface Session {
   /** What the session line says after its status (`building the workspace image …`); older servers omit it. */
   readonly summary: string | null;
   readonly createdAt: string;
+  /** When it last settled; null while live, and from older servers. */
+  readonly settledAt: string | null;
   /** Who started the session; null on older rows and from older servers. */
   readonly ownerUserId: string | null;
   /**
@@ -131,6 +133,15 @@ export interface SessionProcess {
   readonly providerSessionId: string | null;
   /** The process's human name ("claude", "shell", "web"); null when unnamed and from older servers. */
   readonly label: string | null;
+  /** An `agent-pty`'s reported wait (G4); null while it works, and from older servers. */
+  readonly waiting: AgentWaitView | null;
+}
+
+/** Why a terminal agent waits, as its own hooks reported it (G4, `AgentWait` in @mend/domain). */
+export interface AgentWaitView {
+  readonly kind: "permission" | "question" | "prompt";
+  readonly tool: string | null;
+  readonly since: string;
 }
 
 /** GET /sessions/:id — the session with every process it has held. */

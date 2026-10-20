@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /** As long as an open may take: an intent no window took by then names no open in flight. */
@@ -31,12 +31,18 @@ export class OpenIntents {
     await mkdir(this.directory, { recursive: true });
     const file = this.#file(intent.workspaceId);
     const written = `${file}.${randomUUID()}.tmp`;
-    await writeFile(written, JSON.stringify({ sessionId: intent.sessionId, at: this.now() }));
-    await rename(written, file);
+    try {
+      await writeFile(written, JSON.stringify({ sessionId: intent.sessionId, at: this.now() }));
+      await rename(written, file);
+    } catch (cause) {
+      await rm(written, { force: true });
+      throw cause;
+    }
   }
 
   /** The session the latest open into this workspace meant, once; null when none is fresh. */
   async take(workspaceId: string): Promise<string | null> {
+    await this.#sweep();
     const file = this.#file(workspaceId);
     const taken = `${file}.${randomUUID()}.taken`;
     try {
@@ -58,6 +64,30 @@ export class OpenIntents {
     } finally {
       await rm(taken, { force: true });
     }
+  }
+
+  /**
+   * What a crash left behind: a `.tmp` a write never renamed, a `.taken` a take never removed.
+   * Each is past use once older than the expiry, so it goes; a newer one may belong to an open in
+   * flight and stays. Best effort. An intent nobody took stays for its workspace's next take,
+   * which refuses it as stale: another window may rename a fresh intent onto that name between
+   * any look at it here and its removal.
+   */
+  async #sweep(): Promise<void> {
+    const names = await readdir(this.directory).catch(() => []);
+    await Promise.all(
+      names
+        .filter((name) => /\.(tmp|taken)$/.test(name))
+        .map(async (name) => {
+          const path = join(this.directory, name);
+          const changed = await stat(path).then(
+            (found) => found.mtimeMs,
+            () => null,
+          );
+          if (changed !== null && this.now() - changed >= OPEN_INTENT_TTL_MS)
+            await rm(path, { force: true });
+        }),
+    );
   }
 
   #file(workspaceId: string): string {

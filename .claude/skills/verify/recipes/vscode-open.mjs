@@ -37,6 +37,14 @@ const world = await import(
 
 /** The row's open button on either manifest. */
 const OPEN = /^Mend: Open( in VS Code)?$/;
+/**
+ * A workspace window's own row, on either build: its label is the session's name with its line
+ * beside it, or (before #1088's round 2) the line itself.
+ */
+const ownRow = (name) =>
+  new RegExp(
+    `^(?:${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*)?(?:starting|running|waiting|idle|stopping|stopped|completed|failed|landed)`,
+  );
 /** What Remote-SSH would refuse, said where Open would have been. */
 const ANA_WHY = "Ana launched this workspace · Remote-SSH opens it only for them";
 
@@ -99,17 +107,52 @@ export default async (h) => {
     opens,
     page,
     sleep,
+    viewRows,
+    statusBarItems,
   } = h;
   const project = state.project;
   const stoppedName = "fresh worktree";
 
+  /**
+   * The Mend view with its Projects group and the project open: every session, the stopped one
+   * included, has a row there (Needs you, Since you last looked and Running list only some).
+   */
+  const mendView = async () => {
+    await view("Mend");
+    // The view draws its groups once its first read lands; a workspace window has none.
+    await waitUntil(
+      "the Mend view's first rows",
+      async () =>
+        (await viewRows()).rows.some(
+          (one) => one.label === "Projects" || /other sessions?$/.test(one.label),
+        )
+          ? true
+          : null,
+      120_000,
+    );
+    for (const label of ["Projects", project.name]) {
+      const row = (await viewRows()).rows.find((one) => one.label === label);
+      if (row?.expanded === "false") {
+        await treeItem(label).click();
+        await waitUntil(
+          `${label} open`,
+          async () =>
+            (await viewRows()).rows.find((one) => one.label === label)?.expanded === "true"
+              ? true
+              : null,
+          15_000,
+        );
+      }
+    }
+  };
+
   await step("the Mend view lists the project", async () => {
     await useWindow(await homeWindow());
     if (await quickInput.isOpen()) await quickInput.cancel();
-    await view("Mend");
+    await mendView();
     await treeItem(project.name).waitFor();
     await shot("mend-view");
-    return `row "${await treeItem(project.name).text()}" · status bar "${await statusBar("Mend:").text()}" · opens ${await opens()} · windows ${(await windows()).length}`;
+    return `row "${await treeItem(project.name).text()}" · status bar "${(await statusBarItems()).filter((text) => text.includes("Mend")).join(" | ")}" · opens ${await opens()} · windows ${(await windows()).length}`;
   });
 
   const listedBefore = await api(`/projects/${project.id}`);
@@ -185,7 +228,7 @@ export default async (h) => {
       await shot("start-window");
       const result = await closeWindow(opened[0]);
       await useWindow(await homeWindow());
-      await view("Mend");
+      await mendView();
       return `1 window · opens ${opensBeforeStart} → ${after} · tabs ${JSON.stringify(tabs?.names ?? [])} · active "${tabs?.active ?? ""}" · focused ${tabs?.focused ?? false} · terminal ${JSON.stringify(rows.slice(0, 2))} · ${result}`;
     },
   );
@@ -279,7 +322,7 @@ export default async (h) => {
   await step(
     "the Mend view lists both claude sessions, then rests",
     async () => {
-      await view("Mend");
+      await mendView();
       await treeItem(agent.name).waitFor(60_000);
       await treeItem(conversation.name).waitFor(60_000);
       await sleep(5_000);
@@ -309,17 +352,60 @@ export default async (h) => {
     const after = await opens();
     await closeWindow(opened[0]);
     await useWindow(await homeWindow());
-    await view("Mend");
+    await mendView();
     return { title, asked, before, after };
   };
 
-  await step("calibration: the row's open button twice with a gap, opens +1 then +2", async () => {
-    const first = await openOnce(session.name);
-    expect(first.after - first.before === 1, `first open: opens ${first.before} → ${first.after}`);
-    const second = await openOnce(session.name);
-    expect(second.after - first.before === 2, `two opens: opens ${first.before} → ${second.after}`);
-    return `button "${first.title}" · first ${answered(first)}, opens ${first.before} → ${first.after} · second ${answered(second)}, opens ${second.before} → ${second.after}`;
-  });
+  /**
+   * Open attempts by the server's log: bursts of the reads only an open makes, a burst being reads
+   * less than 3 s apart. Every open reads the workspace SSH facts; today's extension (its button is
+   * `Mend: Open in VS Code`) reads the session first and may stop at its takeover question before
+   * that, so on it the session's reads count too. The redesign's Mend view reads a session
+   * whenever an event names it, so on it only the workspace SSH reads tell an open.
+   */
+  let asBuilt = false;
+  const openAttempts = async (id) => {
+    const needles = [`'/api/workspace-ssh'`, ...(asBuilt ? [`'/api/sessions/${id}'`] : [])];
+    const times = (await serverLogs())
+      .split("\n")
+      .filter((line) => needles.some((needle) => line.includes(needle)))
+      .map((line) => Date.parse(`${line.slice(0, 23)}Z`))
+      .filter((at) => Number.isFinite(at))
+      .toSorted((left, right) => left - right);
+    let bursts = 0;
+    let last = Number.NEGATIVE_INFINITY;
+    for (const at of times) {
+      if (at - last > 3_000) bursts += 1;
+      last = at;
+    }
+    return bursts;
+  };
+
+  await step(
+    "calibration: the row's open button twice with a gap, opens +1 then +2, and open attempts +1 then +2",
+    async () => {
+      asBuilt = (await treeItem(session.name).actions()).includes("Mend: Open in VS Code");
+      const attemptsBefore = await openAttempts(session.id);
+      const first = await openOnce(session.name);
+      const attemptsFirst = await openAttempts(session.id);
+      expect(
+        first.after - first.before === 1,
+        `first open: opens ${first.before} → ${first.after}`,
+      );
+      const second = await openOnce(session.name);
+      const attemptsSecond = await openAttempts(session.id);
+      expect(
+        second.after - first.before === 2,
+        `two opens: opens ${first.before} → ${second.after}`,
+      );
+      const said = `button "${first.title}" · first ${answered(first)}, opens ${first.before} → ${first.after} · second ${answered(second)}, opens ${second.before} → ${second.after} · open attempts ${attemptsBefore} → ${attemptsFirst} → ${attemptsSecond}`;
+      expect(
+        attemptsFirst - attemptsBefore === 1 && attemptsSecond - attemptsBefore === 2,
+        `the open attempts counter is not calibrated: ${said}`,
+      );
+      return said;
+    },
+  );
 
   const resumes = async () =>
     linesMatching(await serverLogs(), `'/api/sessions/${state.warmSession}/resume'`);
@@ -341,14 +427,13 @@ export default async (h) => {
    * One gesture on a row that must open nothing and ask nothing. Everything seen is in the
    * failure's message too, so a failing line names what showed.
    */
-  const sessionReads = async (id) => linesMatching(await serverLogs(), `'/api/sessions/${id}'`);
 
   const selectsOnly = async (rowName, id, gesture, slug) => {
     const row = treeItem(rowName);
     await row.waitFor();
     const known = await windows();
     const before = await counts();
-    const readsBefore = await sessionReads(id);
+    const readsBefore = await openAttempts(id);
     const watching = await watch();
     await gesture(row);
     await sleep(3_000);
@@ -358,8 +443,8 @@ export default async (h) => {
     const seen = await watching.stop();
     const selected = await row.selected().catch(() => false);
     const after = await counts();
-    const readsAfter = await sessionReads(id);
-    const observed = `GET /api/sessions/${id.slice(0, 8)}… ${readsBefore} → ${readsAfter} · opens ${before.opens} → ${after.opens} · windows opened ${opened.length} · quick input left open ${leftOpen === null ? "none" : `"${leftOpen}"`} · row selected ${selected} · ${shown(seen)} · ${delta(before, after)}`;
+    const readsAfter = await openAttempts(id);
+    const observed = `open attempts ${readsBefore} → ${readsAfter} (session ${id.slice(0, 8)}) · opens ${before.opens} → ${after.opens} · windows opened ${opened.length} · quick input left open ${leftOpen === null ? "none" : `"${leftOpen}"`} · row selected ${selected} · ${shown(seen)} · ${delta(before, after)}`;
     if (leftOpen !== null) await quickInput.cancel();
     // The watch lists each distinct title once, and the pick left open is one of them.
     const asked = [
@@ -371,7 +456,7 @@ export default async (h) => {
     ];
     expect(
       readsAfter === readsBefore,
-      `${readsAfter - readsBefore} open(s) ran, by the session reads: ${observed}`,
+      `${readsAfter - readsBefore} open(s) ran, by the server's reads: ${observed}`,
     );
     expect(after.opens === before.opens, `an open ran: ${observed}`);
     expect(opened.length === 0, `a window opened: ${observed}`);
@@ -430,7 +515,7 @@ export default async (h) => {
   await step("that window closed", async () => {
     const result = await closeWindow(twice.page);
     await useWindow(await homeWindow());
-    await view("Mend");
+    await mendView();
     return result;
   });
 
@@ -503,8 +588,8 @@ export default async (h) => {
       const url = alongside.page.url();
       const before = await counts();
       const watching = await watch();
-      await view("Mend");
-      const { title } = await treeItem(session.name).inline(OPEN);
+      await mendView();
+      const { title } = await treeItem(ownRow(session.name)).inline(OPEN);
       const tabs = await waitUntil(
         "the attached tab to be active and focused",
         async () => {
@@ -531,7 +616,7 @@ export default async (h) => {
     async () => {
       const home = await homeWindow();
       await useWindow(home);
-      await view("Mend");
+      await mendView();
       const homeUrl = home.url();
       const homeTitle = await home.title();
       const known = await windows();
@@ -558,7 +643,7 @@ export default async (h) => {
     const results = [];
     for (const window of extra) results.push(await closeWindow(window));
     await useWindow(home);
-    await view("Mend");
+    await mendView();
     return `${extra.length} closed · ${results.join(" · ")}`;
   });
 
@@ -609,15 +694,15 @@ export default async (h) => {
   await step("that window closed", async () => {
     const result = await closeWindow(stopped.page);
     await useWindow(await homeWindow());
-    await view("Mend");
+    await mendView();
     return result;
   });
 
   const caughtStopping = await step(
-    `the open button on ${stoppedName} while it stops: the open waits it out, resumes it once, one window, nothing asks`,
+    `SLNT-143: the open button on ${stoppedName} the moment its row turns from running: the open targets it, waits the stop out, resumes it once, one window, no Choose a session`,
     async () => {
       await useWindow(await homeWindow());
-      await view("Mend");
+      await mendView();
       const known = await windows();
       const opensBefore = await opens();
       const resumesBefore = await resumes();
@@ -632,7 +717,14 @@ export default async (h) => {
         60_000,
       );
       const watching = await watch();
-      await treeItem(stoppedName).inline(OPEN);
+      // The click lands as the row's own status redraws (SLNT-143): a redraw that dropped the row
+      // ran Open with no row, which asks `Choose a session`.
+      const row = treeItem(stoppedName);
+      const before = await row.description();
+      let redrawn = before;
+      for (const until = Date.now() + 60_000; Date.now() < until && /^running/.test(redrawn); )
+        redrawn = await row.description();
+      await row.inline(OPEN);
       await stopping;
       const opened = await newWindows(known, { settle: 10_000, limit: 600_000 });
       const seen = await watching.stop();
@@ -643,10 +735,20 @@ export default async (h) => {
       const opensAfter = await opens();
       await sleep(5_000);
       const resumesAfter = await resumes();
+      const bar = await statusBarItems();
       await shot("stopping-opened");
-      const observed = `the server read "${atClick}" at the click · windows opened ${opened.length} · opens ${opensBefore} → ${opensAfter} · resumes ${resumesBefore} → ${resumesAfter} · ${shown(seen)}`;
+      const observed = `the server read "${atClick}" · the row read "${before}", then "${redrawn}" at the click · windows opened ${opened.length} · its status bar ${JSON.stringify(bar.filter((text) => text.includes(stoppedName) || text.includes("SSH:")))} · opens ${opensBefore} → ${opensAfter} · resumes ${resumesBefore} → ${resumesAfter} · ${shown(seen)}`;
+      expect(!/^running/.test(redrawn), `the row never turned from running: ${observed}`);
       expect(seen !== null && seen.dialogs.length === 0, `dialogs: ${observed}`);
+      expect(
+        !seen.quickInputs.some((title) => title.includes("Choose a session")),
+        `Choose a session: ${observed}`,
+      );
       expect(seen.quickInputs.length === 0, `quick inputs: ${observed}`);
+      expect(
+        bar.some((text) => text.includes(stoppedName)),
+        `the window is not ${stoppedName}'s: ${observed}`,
+      );
       expect(opensAfter - opensBefore === 1, `opens: ${observed}`);
       expect(resumesAfter - resumesBefore === 1, `resumes: ${observed}`);
       return { observed, page: opened[0] };
@@ -656,7 +758,7 @@ export default async (h) => {
   await step("that window closed", async () => {
     const result = await closeWindow(caughtStopping.page);
     await useWindow(await homeWindow());
-    await view("Mend");
+    await mendView();
     return result;
   });
 
@@ -687,7 +789,7 @@ export default async (h) => {
     "context menu Mend: Open in New Window on the conversation: its tab says it runs as a conversation, with Continue here",
     async () => {
       await useWindow(await homeWindow());
-      await view("Mend");
+      await mendView();
       const known = await windows();
       await treeItem(conversation.name).contextMenu("Mend: Open in New Window");
       const opened = await newWindows(known, { settle: 10_000, limit: 120_000 });
@@ -767,7 +869,7 @@ export default async (h) => {
   await step("that window closed", async () => {
     const result = await closeWindow(elsewhere.page);
     await useWindow(await homeWindow());
-    await view("Mend");
+    await mendView();
     return result;
   });
 
@@ -843,7 +945,7 @@ export default async (h) => {
     "Ana's row, shared control on: Watch terminal and Review change offered, no Open, the tooltip says why",
     async () => {
       await useWindow(await homeWindow());
-      await view("Mend");
+      await mendView();
       await palette("Mend: Refresh");
       const row = treeItem("ana");
       await row.waitFor(60_000);
@@ -982,7 +1084,7 @@ export default async (h) => {
       const tabs = await terminal().tabs();
       const toasts = await notifications();
       await shot("ana-shared-control-off");
-      await view("Mend");
+      await mendView();
       await palette("Mend: Refresh");
       const row = treeItem("ana");
       const actions = await waitUntil(
@@ -1028,22 +1130,21 @@ export default async (h) => {
   );
 
   await step(
-    "the status bar's Mend item, shared control off: its pick lists Ana's session with Review, not Open; nothing opens",
+    "Mend: Choose a session, shared control off: its pick lists Ana's session with Review, not Open; nothing opens",
     async () => {
       await useWindow(await homeWindow());
       const before = await openCounts();
-      const item = statusBar("Mend:");
-      const itemText = await item.text();
-      await item.click();
+      const itemText = (await statusBarItems()).filter((text) => text.includes("Mend")).join(" | ");
+      await palette("Mend: Choose a session");
       await quickInput.waitFor();
       const title = await quickInput.title();
       const items = (await quickInput.items()).map((entry) => entry.replace(/\s+/g, " ").trim());
       const anas = items.find((entry) => entry.includes(ANA_WHY)) ?? null;
-      await shot("status-bar-pick-ana");
+      await shot("session-pick-ana");
       await quickInput.cancel();
       const after = await openCounts();
       const observed = `status bar "${itemText}" · pick "${title}" · Ana's item "${anas}" · items ${JSON.stringify(items)} · ${delta(before, after)}`;
-      expect(anas !== null && anas.includes("running · Review"), observed);
+      expect(anas !== null && /running.* · Review/.test(anas), observed);
       expect(!anas.includes("Watch terminal"), observed);
       expect(after.opens === before.opens && after.windows === before.windows, observed);
       return observed;
@@ -1099,7 +1200,7 @@ export default async (h) => {
     `the open button on ${agent.name}, the older of the two (the setting is on, so a new window): its claude is attached and focused, not second-look's`,
     async () => {
       await useWindow(await homeWindow());
-      await view("Mend");
+      await mendView();
       await palette("Mend: Refresh");
       await treeItem(second.name).waitFor(60_000);
       const known = await windows();
@@ -1131,13 +1232,16 @@ export default async (h) => {
   );
 
   await step(
-    `in ${agent.name}'s window, the open button on second-look, which shares the workspace: its own claude attached and focused, nothing opens`,
+    `in ${agent.name}'s window, second-look picked from the others line (it shares the workspace): its own claude attached and focused, nothing opens`,
     async () => {
       const url = older.page.url();
       const before = await openCounts();
       const watching = await watch();
-      await view("Mend");
-      await treeItem(second.name).inline(OPEN);
+      await mendView();
+      // The workspace window lists only its own session; the others line opens the picker.
+      await treeItem(/other sessions?/).click();
+      await quickInput.waitFor();
+      await quickInput.pick(second.name);
       const tabs = await waitUntil(
         `the tab "${second.tab}" attached, active and focused`,
         async () => {
@@ -1159,19 +1263,19 @@ export default async (h) => {
   );
 
   await step(
-    `in that window, which is the workspace, context menu Open in New Window on ${agent.name}: VS Code keeps one window per folder, so it shows ${agent.name}'s agent here, nothing asks`,
+    `in that window, now ${second.name}'s workspace, context menu Open in New Window on its own row: VS Code keeps one window per folder, so it focuses ${second.name}'s agent here, nothing asks`,
     async () => {
       const url = older.page.url();
       const known = await windows();
       const before = await openCounts();
       const watching = await watch();
-      await view("Mend");
-      await treeItem(agent.name).contextMenu("Mend: Open in New Window");
+      await mendView();
+      await treeItem(ownRow(second.name)).contextMenu("Mend: Open in New Window");
       const tabs = await waitUntil(
-        `the tab "${agent.tab}" active and focused again`,
+        `the tab "${second.tab}" active and focused again`,
         async () => {
           const read = await terminal().tabs();
-          return read.active === agent.tab && read.focused ? read : null;
+          return read.active === second.tab && read.focused ? read : null;
         },
         60_000,
       );
@@ -1223,7 +1327,7 @@ export default async (h) => {
       const resumedBefore = await resumesOf();
       const watching = await watch();
       await view("Mend");
-      await treeItem(second.name).inline(OPEN);
+      await treeItem(ownRow(second.name)).inline(OPEN);
       const starting = statusBar(`starting ${second.name}'s workspace`);
       const caught = await starting
         .waitFor(60_000)
@@ -1263,7 +1367,7 @@ export default async (h) => {
   await step("that workspace window closed, back to the local window", async () => {
     const result = await closeWindow(older.page);
     await useWindow(await homeWindow());
-    await view("Mend");
+    await mendView();
     return result;
   });
 
@@ -1282,7 +1386,7 @@ export default async (h) => {
     async () => {
       const home = await homeWindow();
       await useWindow(home);
-      await view("Mend");
+      await mendView();
       if (await quickInput.isOpen()) await quickInput.cancel();
       const titleBefore = await home.title();
       const before = await counts();

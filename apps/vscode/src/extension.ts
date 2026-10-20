@@ -10,7 +10,7 @@ import * as vscode from "vscode";
 import { attachTerminal, memberName } from "./agent-terminal.js";
 import { MendApiError, MendClient, normalizeProjectName } from "./client.js";
 import { ConnectionStore } from "./config.js";
-import { currentBranch, pathContains, repositoryFacts, worktreePath } from "./git.js";
+import { currentBranch, worktreePath } from "./git.js";
 import { modelPickRows } from "./model-picks.js";
 import { OFFER_COMMANDS, openRunner, setUpWorkspaceSsh } from "./open-command.js";
 import type { OpenMode } from "./open-flow.js";
@@ -26,11 +26,16 @@ import {
   type RowCapability,
   type RowOffer,
 } from "./session-capability.js";
-import { displaySession, joinLineOf, liveSessionLines } from "./session-lines.js";
+import { displaySession, joinLineOf } from "./session-lines.js";
+import { ownLine, type SessionView } from "./session-model.js";
+import { SessionStore } from "./session-store.js";
+import { MendStatusBar, Notifier } from "./session-surfaces.js";
+import { ToastClaims } from "./toast-claims.js";
 import {
   MendTreeProvider,
   isProjectNode,
   isSessionNode,
+  sessionIdOf,
   type ProjectNode,
   type SessionNode,
 } from "./tree.js";
@@ -70,117 +75,6 @@ const showError = async (cause: unknown): Promise<void> => {
   if (action === "Connect to server") await vscode.commands.executeCommand("mend.connect");
 };
 
-class WorkspaceScope implements vscode.Disposable {
-  private readonly status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 30);
-  private location: SessionLocation | null = null;
-  private project: Project | null = null;
-  private detail: ProjectDetail | null = null;
-  private folder: vscode.WorkspaceFolder | null = null;
-
-  constructor(
-    private readonly client: MendClient,
-    private readonly onProject: (projectId: string | null) => void,
-  ) {
-    this.status.command = "mend.showQuickPick";
-    this.status.name = "Mend";
-  }
-
-  dispose(): void {
-    this.status.dispose();
-  }
-
-  currentProject(): Project | null {
-    return this.project;
-  }
-
-  currentDetail(): ProjectDetail | null {
-    return this.detail;
-  }
-
-  currentLocation(): SessionLocation | null {
-    return this.location;
-  }
-
-  currentFolder(): vscode.WorkspaceFolder | null {
-    return this.folder;
-  }
-
-  async refresh(): Promise<void> {
-    const folders = vscode.workspace.workspaceFolders ?? [];
-    if (folders.length === 0) {
-      this.clear();
-      return;
-    }
-    try {
-      let matched: {
-        readonly detail: ProjectDetail;
-        readonly folder: vscode.WorkspaceFolder;
-        readonly session: Session | undefined;
-      } | null = null;
-      for (const folder of folders) {
-        const facts = await repositoryFacts(folder);
-        const resolution = await this.client.resolveProject(facts);
-        if (resolution.status !== "matched") continue;
-        const detail = await this.client.projectDetail(resolution.project.id);
-        const session = detail.sessions.find((candidate) =>
-          pathContains(facts.path, worktreePath(detail.project, candidate)),
-        );
-        matched = { detail, folder, session };
-        if (session !== undefined) break;
-      }
-      if (matched === null) {
-        this.clear();
-        return;
-      }
-      const { detail, folder, session } = matched;
-      this.project = detail.project;
-      this.folder = folder;
-      this.detail = detail;
-      this.onProject(detail.project.id);
-      this.location =
-        session === undefined
-          ? null
-          : {
-              project: detail.project,
-              session,
-              worktreePath: worktreePath(detail.project, session),
-            };
-      const waiting = detail.sessions.filter((candidate) => candidate.status === "waiting").length;
-      this.status.text =
-        session === undefined
-          ? `$(pulse) Mend: ${detail.project.name} · ${detail.sessions.length} session${detail.sessions.length === 1 ? "" : "s"}${waiting === 0 ? "" : ` · ${waiting} waiting`}`
-          : `$(pulse) Mend: ${detail.project.name} › ${displaySession(session)}`;
-      this.status.tooltip =
-        session === undefined
-          ? "Open this project's Mend sessions"
-          : [
-              `${session.branch} · ${session.status} · open session actions`,
-              ...(liveStatuses.has(session.status) ? await this.workspaceLines(session) : []),
-            ].join("\n");
-      this.status.show();
-    } catch {
-      this.clear();
-    }
-  }
-
-  /**
-   * What this window's live session says about its workspace (docs/adr/0016), from its project
-   * view row: the row says which reads are worth a request (`liveSessionLines`).
-   */
-  private async workspaceLines(session: Session): Promise<ReadonlyArray<string>> {
-    return liveSessionLines(session, this.client);
-  }
-
-  private clear(): void {
-    this.project = null;
-    this.detail = null;
-    this.folder = null;
-    this.location = null;
-    this.onProject(null);
-    this.status.hide();
-  }
-}
-
 interface ProjectPick extends vscode.QuickPickItem {
   readonly project: Project;
 }
@@ -201,10 +95,10 @@ interface OfferPick extends SessionPick {
  */
 const capabilitiesOf = async (
   client: MendClient,
-  tree: MendTreeProvider,
+  store: SessionStore,
   sessions: ReadonlyArray<Session>,
 ): Promise<(session: Session) => RowCapability> => {
-  const viewer = tree.knownViewer() ?? (await client.viewerId());
+  const viewer = store.viewer() ?? (await client.viewerId());
   const named = sessions.some(
     (session) => rowCapability({ session, viewer, members: [] }).kind === "notYours",
   );
@@ -212,15 +106,19 @@ const capabilitiesOf = async (
   return (session) => rowCapability({ session, viewer, members });
 };
 
+/** How a session's row reads, from the store's last read; from the session alone before one. */
+const lineOf = (store: SessionStore, session: Session): string =>
+  store.model()?.sessions.get(session.id)?.line ?? ownLine(session);
+
 const offerPick = (
   session: Session,
   capability: RowCapability,
-  item: { readonly label: string; readonly detail?: string },
+  item: { readonly label: string; readonly line: string; readonly detail?: string },
 ): OfferPick => {
   const detail = capability.kind === "notYours" ? capability.why : item.detail;
   return {
     label: item.label,
-    description: pickDescription(session, capability),
+    description: pickDescription(item.line, capability),
     ...(detail === undefined ? {} : { detail }),
     action: "session",
     session,
@@ -264,21 +162,23 @@ const NEW_SHELL: TerminalPick = {
 
 type ScopePick = OfferPick | ActionPick;
 
+/** The session picker's order, the view's: needs you, since you last looked, running, the rest. */
+const pickOrder = (view: SessionView): number =>
+  view.needsYou ? 0 : view.sinceYouLastLooked ? 1 : view.live ? 2 : 3;
+
 class MendCommands {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly connections: ConnectionStore,
     private readonly client: MendClient,
-    private readonly tree: MendTreeProvider,
-    private readonly scope: WorkspaceScope,
+    private readonly store: SessionStore,
     private readonly workspaceWindow: WorkspaceWindow,
     private readonly runner: OpenRunner,
   ) {}
 
   async connect(): Promise<boolean> {
     if (!(await this.connections.configure())) return false;
-    this.tree.refresh();
-    await this.scope.refresh();
+    this.store.refresh();
     try {
       const connection = await this.client.connection();
       await this.client.listProjects();
@@ -317,8 +217,7 @@ class MendCommands {
         { location: vscode.ProgressLocation.Notification, title: `Adopting ${name.trim()}…` },
         () => this.client.adoptProject(name.trim(), source),
       );
-      this.tree.refresh();
-      await this.scope.refresh();
+      this.store.refresh();
       void vscode.window.showInformationMessage(`Adopted ${project.name}.`);
     } catch (cause) {
       void showError(cause);
@@ -350,10 +249,13 @@ class MendCommands {
     sessions: ReadonlyArray<Session>,
     mode: OpenMode,
   ): Promise<Session | null> {
-    const capability = await capabilitiesOf(this.client, this.tree, sessions);
+    const capability = await capabilitiesOf(this.client, this.store, sessions);
     const picked = await vscode.window.showQuickPick<OfferPick>(
       sessions.map((session) =>
-        offerPick(session, capability(session), { label: displaySession(session) }),
+        offerPick(session, capability(session), {
+          label: displaySession(session),
+          line: lineOf(this.store, session),
+        }),
       ),
       { title: `Choose a session · ${project.name}`, ignoreFocusOut: true },
     );
@@ -370,6 +272,56 @@ class MendCommands {
   }
 
   /**
+   * Answer a session that waits (rule 8): its agent's tab in this window's panel, attached or
+   * shown again, and no window opens. A conversation gets its tab, where Continue here moves it
+   * into a terminal, until the Answer flow answers its request in place.
+   */
+  async answer(argument?: unknown): Promise<void> {
+    try {
+      const location = await this.sessionLocation(argument);
+      if (location === null) return;
+      await this.workspaceWindow.answer(location.session.id);
+    } catch (cause) {
+      void showError(cause);
+    }
+  }
+
+  /**
+   * Every session that needs her, settled since she last looked, or runs, in the view's order:
+   * what the workspace window's others line and its status bar open. Picking one does what its
+   * row offers.
+   */
+  async pickSession(): Promise<void> {
+    const model = this.store.model();
+    if (model === null) return;
+    const own = model.kind === "workspace" ? model.session?.session.id : undefined;
+    const picks = [...model.sessions.values()]
+      .filter((view) => view.session.id !== own && pickOrder(view) < 3)
+      .toSorted((left, right) => pickOrder(left) - pickOrder(right))
+      .map(
+        (view): OfferPick =>
+          offerPick(view.session, view.capability, {
+            label: view.name,
+            line: view.line,
+            detail: view.project.name,
+          }),
+      );
+    const picked = await vscode.window.showQuickPick<OfferPick>(picks, {
+      title: "Mend sessions",
+      placeHolder: picks.length === 0 ? "Nothing else needs you or runs" : "Choose a session",
+      ignoreFocusOut: true,
+    });
+    if (picked === undefined) return;
+    const view = model.sessions.get(picked.session.id);
+    if (view === undefined) return;
+    await this.act(
+      { kind: "session", project: view.project, session: view.session },
+      picked.offer,
+      "follow-setting",
+    );
+  }
+
+  /**
    * The session's terminal in a VS Code terminal tab, over Mend's terminal data plane: its agent's
    * PTY or one of its shells, or a new shell. No SSH is involved, so it works wherever the API does.
    * Only the session's owner types; anyone else watches.
@@ -380,7 +332,7 @@ class MendCommands {
       if (location === null) return;
       const detail = await this.client.sessionDetail(location.session.id);
       const live = attachableProcesses(detail.processes);
-      const viewer = this.tree.knownViewer() ?? (await this.client.viewerId());
+      const viewer = this.store.viewer() ?? (await this.client.viewerId());
       // The server lets into a session's terminal whoever may steer it: its owner, and others only
       // while shared control is on, and then they watch (`canSteerSession`, apps/api tty route).
       if (viewer !== null && !maySteer(detail.session, viewer)) {
@@ -457,8 +409,7 @@ class MendCommands {
 
   async signOut(): Promise<void> {
     const said = await this.connections.signOut();
-    this.tree.refresh();
-    await this.scope.refresh();
+    this.store.refresh();
     void vscode.window.showInformationMessage(said);
   }
 
@@ -477,14 +428,14 @@ class MendCommands {
         );
         return;
       }
-      const location = this.scope.currentLocation();
-      const project = this.scope.currentProject();
+      const here = this.workspaceWindow.session();
+      const project = this.store.windowProject()?.project ?? null;
       const route =
-        location === null
+        here === null
           ? project === null
             ? ""
             : `/projects/${project.id}`
-          : `/sessions/${location.session.id}`;
+          : `/sessions/${here.session.id}`;
       await vscode.env.openExternal(vscode.Uri.parse(`${connection.url}${route}`));
     } catch (cause) {
       void showError(cause);
@@ -526,8 +477,7 @@ class MendCommands {
     if (answer !== "Stop session") return;
     try {
       await this.client.stopSession(location.session.id);
-      this.tree.refresh();
-      await this.scope.refresh();
+      this.store.refresh();
     } catch (cause) {
       void showError(cause);
     }
@@ -607,12 +557,7 @@ class MendCommands {
     const worktreeId = location.session.worktreeId;
     if (worktreeId === undefined) return true;
     const detail = await this.client.projectDetail(location.project.id);
-    const line = await joinLineOf(
-      detail.sessions,
-      worktreeId,
-      this.tree.knownViewer(),
-      this.client,
-    );
+    const line = await joinLineOf(detail.sessions, worktreeId, this.store.viewer(), this.client);
     if (line === null) return true;
     const answer = await vscode.window.showInformationMessage(line, { modal: true }, "New session");
     return answer === "New session";
@@ -640,8 +585,7 @@ class MendCommands {
           return created;
         },
       );
-      this.tree.refresh();
-      await this.scope.refresh();
+      this.store.refresh();
       await this.open(session.id, "new-window");
     } catch (cause) {
       void showError(cause);
@@ -680,8 +624,7 @@ class MendCommands {
           return created;
         },
       );
-      this.tree.refresh();
-      await this.scope.refresh();
+      this.store.refresh();
       await this.open(session.id, "new-window");
     } catch (cause) {
       void showError(cause);
@@ -691,8 +634,8 @@ class MendCommands {
   /** The base for quick flows — the open window's branch when it IS the project; else the default. */
   private async quietBase(project: Project): Promise<string | null> {
     const branch =
-      this.scope.currentProject()?.id === project.id
-        ? await currentBranch(this.scope.currentFolder() ?? undefined)
+      this.store.windowProject()?.project.id === project.id
+        ? await currentBranch(this.store.windowProject()?.folder)
         : null;
     return branch;
   }
@@ -724,8 +667,8 @@ class MendCommands {
   /** The base question, prefilled with the open window's branch when it IS the project. */
   private async askBase(project: Project, title: string): Promise<string | undefined> {
     const branch =
-      this.scope.currentProject()?.id === project.id
-        ? await currentBranch(this.scope.currentFolder() ?? undefined)
+      this.store.windowProject()?.project.id === project.id
+        ? await currentBranch(this.store.windowProject()?.folder)
         : null;
     return vscode.window.showInputBox({
       title,
@@ -833,8 +776,7 @@ class MendCommands {
           return created;
         },
       );
-      this.tree.refresh();
-      await this.scope.refresh();
+      this.store.refresh();
       await this.open({ kind: "session", project, session } satisfies SessionNode, "new-window");
     } catch (cause) {
       void showError(cause);
@@ -851,8 +793,8 @@ class MendCommands {
     });
     if (label === undefined || label.trim() === "") return;
     const branch =
-      this.scope.currentProject()?.id === project.id
-        ? await currentBranch(this.scope.currentFolder() ?? undefined)
+      this.store.windowProject()?.project.id === project.id
+        ? await currentBranch(this.store.windowProject()?.folder)
         : null;
     const base = await vscode.window.showInputBox({
       title: `New worktree · ${project.name}`,
@@ -869,7 +811,7 @@ class MendCommands {
         base.trim() || null,
       );
       await this.client.stopSession(session.id);
-      this.tree.refresh();
+      this.store.refresh();
       await this.open(
         {
           kind: "session",
@@ -884,14 +826,10 @@ class MendCommands {
   }
 
   async showQuickPick(): Promise<void> {
-    const project = this.scope.currentProject() ?? (await this.pickProject());
+    const project = await this.pickProject();
     if (project === null) return;
-    const detail =
-      this.scope.currentDetail()?.project.id === project.id
-        ? this.scope.currentDetail()
-        : await this.client.projectDetail(project.id);
-    if (detail === null) return;
-    const capability = await capabilitiesOf(this.client, this.tree, detail.sessions);
+    const detail = await this.client.projectDetail(project.id);
+    const capability = await capabilitiesOf(this.client, this.store, detail.sessions);
     const sessions: OfferPick[] = detail.sessions
       .toSorted((left, right) => {
         if (left.status === "waiting" && right.status !== "waiting") return -1;
@@ -901,6 +839,7 @@ class MendCommands {
       .map((session) =>
         offerPick(session, capability(session), {
           label: `${session.status === "waiting" ? "$(bell-dot)" : "$(circle-filled)"} ${displaySession(session)}`,
+          line: lineOf(this.store, session),
           detail: session.branch,
         }),
       );
@@ -943,8 +882,8 @@ class MendCommands {
   private async pickProject(argument?: unknown): Promise<Project | null> {
     if (isProjectNode(argument)) return argument.project;
     if (isSessionNode(argument)) return argument.project;
-    const current = this.scope.currentProject();
-    if (current !== null) return current;
+    const current = this.store.windowProject();
+    if (current !== null) return current.project;
     try {
       const projects = await this.client.listProjects();
       const item = await vscode.window.showQuickPick<ProjectPick>(
@@ -970,14 +909,12 @@ class MendCommands {
     ) => this.chooseSession(project, sessions),
   ): Promise<SessionLocation | null> {
     if (isSessionNode(argument)) {
-      return {
-        project: argument.project,
-        session: argument.session,
-        worktreePath: worktreePath(argument.project, argument.session),
-      };
+      // A row VS Code kept from an earlier read: the session as the store read it last.
+      const { project, session } = this.store.find(argument.session.id) ?? argument;
+      return { project, session, worktreePath: worktreePath(project, session) };
     }
     if (typeof argument === "string") {
-      const found = await this.client.findSession(argument);
+      const found = await this.store.locate(argument);
       return found === null
         ? null
         : {
@@ -987,9 +924,7 @@ class MendCommands {
     }
     const here = this.workspaceWindow.session();
     if (here !== null) return { ...here, worktreePath: worktreePath(here.project, here.session) };
-    const current = this.scope.currentLocation();
-    if (current !== null) return current;
-    const project = this.scope.currentProject();
+    const project = this.store.windowProject()?.project ?? null;
     if (project === null) return null;
     const detail = await this.client.projectDetail(project.id);
     const session = await choose(project, detail.sessions);
@@ -1005,7 +940,7 @@ class MendCommands {
     const picked = await vscode.window.showQuickPick<SessionPick>(
       sessions.map((session) => ({
         label: displaySession(session),
-        description: session.status,
+        description: lineOf(this.store, session),
         action: "session",
         session,
       })),
@@ -1045,17 +980,23 @@ export const onSessionSelected = (_node: SessionNode): void => {};
 export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const connections = new ConnectionStore(context);
   const client = new MendClient(connections);
-  const tree = new MendTreeProvider(client);
-  const scope = new WorkspaceScope(client, (projectId) => tree.setWorkspaceProject(projectId));
+  const role = windowRole(
+    vscode.env.remoteName,
+    (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.authority),
+  );
   const intents = new OpenIntents(path.join(context.globalStorageUri.fsPath, "open-intents"));
   const workspaceWindow = new WorkspaceWindow(
     client,
-    windowRole(
-      vscode.env.remoteName,
-      (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.authority),
-    ),
+    role,
     intents,
     (cause) => void showError(cause),
+  );
+  const store = new SessionStore(context, client, role, workspaceWindow);
+  const tree = new MendTreeProvider(store, client);
+  const statusBar = new MendStatusBar();
+  const notifier = new Notifier(
+    store,
+    new ToastClaims(path.join(context.globalStorageUri.fsPath, "toasts")),
   );
   const opens = openRunner({
     context,
@@ -1075,8 +1016,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     context,
     connections,
     client,
-    tree,
-    scope,
+    store,
     workspaceWindow,
     opens.runner,
   );
@@ -1085,36 +1025,35 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     showCollapseAll: true,
   });
 
-  let refreshTimer: NodeJS.Timeout | null = null;
-  const refresh = () => {
-    if (refreshTimer !== null) clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(() => {
-      refreshTimer = null;
-      tree.refresh();
-      void scope.refresh();
-    }, 150);
-  };
-
-  let eventSubscription = client.subscribe(refresh);
-  const restartEvents = () => {
-    eventSubscription.dispose();
-    eventSubscription = client.subscribe(refresh);
-  };
-
   context.subscriptions.push(
+    store,
     view,
+    statusBar,
     workspaceWindow,
     opens.disposable,
+    store.onDidChange((change) => {
+      const { next } = change;
+      tree.changed(next);
+      if (store.hasRead() || next.offline || store.error() !== null) statusBar.update(next);
+      view.badge =
+        next.badge === 0
+          ? undefined
+          : {
+              value: next.badge,
+              tooltip: `${next.badge} ${next.badge === 1 ? "session needs" : "sessions need"} you`,
+            };
+      view.message = next.message ?? "";
+      notifier.changed(change);
+    }),
+    view.onDidChangeVisibility((event) => store.setVisible(event.visible)),
     view.onDidChangeSelection((event) => {
+      store.select(event.selection.flatMap((node) => sessionIdOf(node) ?? []));
       const [node] = event.selection;
       if (event.selection.length === 1 && isSessionNode(node)) onSessionSelected(node);
     }),
-    scope,
-    new vscode.Disposable(() => eventSubscription.dispose()),
-    vscode.commands.registerCommand("mend.refresh", refresh),
-    vscode.commands.registerCommand("mend.toggleAllProjects", () => tree.toggleAllProjects()),
+    vscode.commands.registerCommand("mend.refresh", () => store.refresh()),
     vscode.commands.registerCommand("mend.connect", async () => {
-      if (await commands.connect()) restartEvents();
+      if (await commands.connect()) store.start();
     }),
     vscode.commands.registerCommand("mend.adoptProject", () => commands.adoptProject()),
     vscode.commands.registerCommand("mend.open", (argument?: unknown) =>
@@ -1123,6 +1062,10 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     vscode.commands.registerCommand("mend.openInNewWindow", (argument?: unknown) =>
       commands.open(argument, "new-window"),
     ),
+    vscode.commands.registerCommand("mend.answer", (argument?: unknown) =>
+      commands.answer(argument),
+    ),
+    vscode.commands.registerCommand("mend.pickSession", () => commands.pickSession()),
     vscode.commands.registerCommand("mend.newSessionInWorktree", (argument?: unknown) =>
       commands.newSessionInWorktree(argument),
     ),
@@ -1154,25 +1097,21 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     ),
     vscode.commands.registerCommand("mend.signOut", async () => {
       await commands.signOut();
-      restartEvents();
+      store.start();
     }),
     vscode.window.registerUriHandler({ handleUri: (uri) => commands.openFromUri(uri) }),
-    vscode.workspace.onDidChangeWorkspaceFolders(() => void scope.refresh()),
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration("mend.serverUrl")) restartEvents();
-      if (event.affectsConfiguration("mend")) refresh();
-    }),
-    new vscode.Disposable(() => {
-      if (refreshTimer !== null) clearTimeout(refreshTimer);
+      if (event.affectsConfiguration("mend.serverUrl")) store.start();
+      else if (event.affectsConfiguration("mend")) store.refresh();
     }),
   );
 
-  void scope.refresh();
-  void tree.snapshot();
+  store.setVisible(view.visible);
+  store.start();
   workspaceWindow.start();
   const editor = startWorkspaceEditor(context);
   return {
-    projects: async () => [...(await tree.snapshot()).details.values()],
+    projects: async () => store.details(),
     workspaceEditor: () => editor.settled(),
   };
 }
