@@ -326,6 +326,43 @@ describe("where a comment goes on Mend", () => {
     );
     expect(commentTarget(FILES, pending({ path: "gone.ts" })).target.newPath).toBe(null);
   });
+
+  it("is the old side's lines for her reply under a Mend draft on a deleted line", () => {
+    const files = FILES.map((file) =>
+      file.oldPath === "README"
+        ? { ...file, hunks: [{ oldStart: 1, oldLines: 5, newStart: 0, newLines: 0, contextHash: "r1" }] }
+        : file,
+    );
+    const reply = pending({
+      path: "README",
+      line: 3,
+      endLine: 3,
+      body: "and keep the install steps",
+      anchor: { sliceId: PINNED.id, baseId: PINNED.base.id, headId: PINNED.head.id, side: "old" },
+    });
+    expect(commentTarget(files, reply)).toEqual({
+      target: {
+        oldPath: "README",
+        newPath: null,
+        side: "old",
+        startLine: 3,
+        endLine: 3,
+        hunkContextHash: "r1",
+      },
+      body: "and keep the install steps",
+    });
+    expect(commentTarget(FILES, reply)).toEqual({
+      target: {
+        oldPath: "README",
+        newPath: null,
+        side: null,
+        startLine: null,
+        endLine: null,
+        hunkContextHash: null,
+      },
+      body: "line 3: and keep the install steps",
+    });
+  });
 });
 
 describe("the worktree moved on while she reviewed", () => {
