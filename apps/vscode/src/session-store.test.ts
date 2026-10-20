@@ -54,7 +54,7 @@ const event = (
   type: string,
   sessionId: string | null,
   facet: string | null = null,
-): EventPointer => ({ type, sessionId, projectId: newsroom.id, facet });
+): EventPointer => ({ type, sessionId, projectId: newsroom.id, changeId: null, facet });
 
 /** A Mend server in memory: what it holds now, what it was asked, and reads held back on demand. */
 class FakeMend implements StoreClient {
@@ -622,5 +622,15 @@ describe("access lost (S9)", () => {
     await tick(200);
     expect(store.model()?.sessions.size).toBe(0);
     expect(store.model()?.badge).toBe(0);
+  });
+
+  it("tells whoever follows the frames to read again when the stream reopens", async () => {
+    const { mend, store } = world();
+    const heard: Array<string> = [];
+    store.onDidHearEvent((frame) => heard.push(frame.type));
+    store.start();
+    await tick(200);
+    mend.signal({ kind: "opened" });
+    expect(heard).toEqual(["resync"]);
   });
 });

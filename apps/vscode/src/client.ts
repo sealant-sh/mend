@@ -245,6 +245,8 @@ export interface EventPointer {
   readonly type: string;
   readonly sessionId: string | null;
   readonly projectId: string | null;
+  /** The change a `session-change` or `review-comment` frame is about. */
+  readonly changeId: string | null;
   /** A `user` frame's part of the account: `access` when it was removed or lost its sign-in. */
   readonly facet: string | null;
 }
@@ -261,6 +263,7 @@ const parseEventPointer = (data: string): EventPointer | null => {
     type: value["type"],
     sessionId: typeof value["sessionId"] === "string" ? value["sessionId"] : null,
     projectId: typeof value["projectId"] === "string" ? value["projectId"] : null,
+    changeId: typeof value["changeId"] === "string" ? value["changeId"] : null,
     facet: typeof value["facet"] === "string" ? value["facet"] : null,
   };
 };

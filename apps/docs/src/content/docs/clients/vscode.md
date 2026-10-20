@@ -353,8 +353,40 @@ the fully supported path.
 
 ## Review a change
 
-**Mend: Review change** opens the session's change in Mend's review, in your browser, at the server
-URL the extension uses. A session with no change yet says so.
+Review happens in VS Code. Select a session's row and the **Change** section under the Sessions view
+shows its change; in a session's workspace window it shows that session's change with nothing
+selected. A stopped session reviews the same way: no live workspace is needed. While first run shows
+a step (Connect, Set up, Adopt), the Change section is hidden, and signing out clears it.
+
+- The header reads the slice and what Mend observed of it, for example
+  `main → now · 4 files · +120 −18 · observed · 40 s ago`. Mend pins the slice when you first select
+  the session (base to a checkpoint taken then), and the same slice shows after a reload and in
+  every window. When Mend lists only the first files of a large slice, the header says
+  `listing cut at 200 files` instead of `observed`.
+- When the worktree moves on after the slice was pinned, the slice stays as it was and the section
+  says `worktree changed since this review · 3 new files`. **Review the newer change** pins a new
+  slice of the worktree as it is now; reloads and other windows show that one.
+- Each file is a row with its letter (**A**, **M**, **D**). Clicking it opens VS Code's own diff
+  editor, base on the left and the pinned checkpoint on the right, titled
+  `limit.ts (main ↔ checkpoint 6)`. The files are read-only documents read from Mend; what was read
+  stays readable while Mend is offline, for the account that read it. A file larger than 1 MiB is
+  not shown: Mend reads a file only up to 1 MiB, so its sides say so instead of comparing part of
+  it.
+- **Open all changes** in the section's title opens every file in one multi-diff editor.
+- Click the header to choose what to review: **main → now**, **since my last review** (from the
+  checkpoint your own last sent review was pinned to), **last turn** (from the checkpoint before the
+  agent's last completed turn to the one taken when it ended), or **between two checkpoints…**. Each
+  choice says its two checkpoints and its file count, and keeps them: when newer checkpoints arrive,
+  the section offers `newer checkpoints · read checkpoint 4 → checkpoint 7`. A slice other than
+  `main → now` can be read but not commented on; the section says
+  `viewing · comments go on main → now`. A slice that can no longer be read goes back to
+  `main → now` and says why.
+- **Comments** and **Checkpoints** list the change's comments and its checkpoint chain.
+- **Open in Mend (web)** is in the section's `...` menu, and a session row's **Mend: Open in Mend**
+  is in the row's right-click menu. No button and no click in the Mend view opens the browser.
+
+**Mend: Review change**, and a row's **Review** button, bring the section on screen for that
+session.
 
 ## Other commands
 
@@ -365,7 +397,7 @@ URL the extension uses. A session with no change yet says so.
 | **Mend: Answer**                | Attach a waiting session's agent terminal in this window      |
 | **Mend: Choose a session**      | Pick a session that needs you, finished or runs               |
 | **Mend: Open terminal**         | Open the session's terminal in a VS Code terminal tab         |
-| **Mend: Review change**         | Open the session's change in Mend's review                    |
+| **Mend: Review change**         | Show the session's change in the Change section               |
 | **Mend: Open in Mend**          | Open the session or project in the web app                    |
 | **Mend: Stop session**          | Stop a live session; the worktree and its change remain       |
 | **Mend: Show project sessions** | Pick a session of the current project, or start something new |

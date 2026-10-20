@@ -424,8 +424,9 @@ _Dana installs the extension for the first time. Her Mend server is the Mac mini
     - the panel: the agent's terminal, attached;
     - no project list.
 11. **Review lives where the code is.** The Change section, diff editors, comment threads and the
-    Comments panel work the same from any window. Nothing opens the web app; **Open in Mend (web)**
-    stays only in the overflow menu.
+    Comments panel work the same from any window. No button or click opens the web app: **Open in
+    Mend (web)** stays only in the Change section's overflow menu, and a session row's **Open in
+    Mend** only in its right-click menu.
 
 ### Notifications
 
