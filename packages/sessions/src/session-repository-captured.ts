@@ -71,7 +71,8 @@ const gitFailure = (cwd: string, what: string, detail: string) =>
 
 export interface CaptureZeroSource {
   readonly head: Sha;
-  readonly checkpoint: Sha;
+  /** Checkpoint ordinal 0, where Review anchors: a handoff's M, never its snapshot W. */
+  readonly baseCheckpoint: Sha;
   readonly trees: { readonly worktreeTree: Sha; readonly indexTree: Sha } | null;
   readonly basePackTip: Sha;
   readonly extraPacks: ReadonlyArray<string>;
@@ -85,7 +86,7 @@ export const captureZeroSource = (
     const handoff = worktree.handoff;
     return {
       head: Sha.make(handoff.head),
-      checkpoint: Sha.make(handoff.mergeBase),
+      baseCheckpoint: Sha.make(handoff.mergeBase),
       trees: {
         worktreeTree: Sha.make(handoff.worktreeTree),
         indexTree: Sha.make(handoff.indexTree),
@@ -95,8 +96,8 @@ export const captureZeroSource = (
     };
   }
   const head = legacy?.headSha ?? worktree.baseSha;
-  const checkpoint = legacy?.checkpointSha ?? worktree.baseSha;
-  return { head, checkpoint, trees: null, basePackTip: checkpoint, extraPacks: [] };
+  const baseCheckpoint = legacy?.checkpointSha ?? worktree.baseSha;
+  return { head, baseCheckpoint, trees: null, basePackTip: baseCheckpoint, extraPacks: [] };
 };
 
 /** Seed the virtual harness root so sealantd materializes and watches it before startup. */
@@ -308,7 +309,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         const packs = [basePack.key, ...source.extraPacks];
         const trees =
           source.trees ??
-          (yield* git(["rev-parse", `${source.checkpoint}^{tree}`], project.storePath).pipe(
+          (yield* git(["rev-parse", `${source.baseCheckpoint}^{tree}`], project.storePath).pipe(
             Effect.map((tree) => ({ worktreeTree: Sha.make(tree), indexTree: Sha.make(tree) })),
           ));
         // The project's object format (e2e8 F4): capture 0 of a SHA-256 project named 64-digit
@@ -325,7 +326,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             Effect.annotateLogs({
               worktreeId,
               headSha: source.head,
-              checkpointSha: source.checkpoint,
+              checkpointSha: source.baseCheckpoint,
               directory: legacyDir,
             }),
           );
@@ -380,7 +381,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             },
             checkpoint: {
               ordinal: 0,
-              sha: source.checkpoint,
+              sha: source.baseCheckpoint,
               ref: checkpointRef(worktreeId, 0),
             },
           };
@@ -409,7 +410,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
               ),
             );
           yield* refs
-            .set(projectId, checkpointRef(worktreeId, 0), source.checkpoint, null)
+            .set(projectId, checkpointRef(worktreeId, 0), source.baseCheckpoint, null)
             .pipe(Effect.ignore);
           if (legacy !== null) {
             yield* refs
