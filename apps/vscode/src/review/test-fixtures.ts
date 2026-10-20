@@ -213,7 +213,9 @@ const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 /**
  * One window's file reads and writes, each read and write held back `ms`: two windows reading
- * one review at once both read it before either writes, as two VS Code windows can.
+ * one review at once both read it before either writes, as two VS Code windows can. A write in
+ * place, not to a `.tmp` renamed over its file, is truncated `ms` before it is written, as a
+ * write can be: another window reads it empty between.
  */
 export const slowFiles = (ms: number): KeptFiles => ({
   ...NODE_FILES,
@@ -226,6 +228,10 @@ export const slowFiles = (ms: number): KeptFiles => ({
   },
   writeFile: async (path, text) => {
     await pause(ms);
+    if (!path.endsWith(".tmp")) {
+      await NODE_FILES.writeFile(path, "");
+      await pause(ms);
+    }
     await NODE_FILES.writeFile(path, text);
   },
 });

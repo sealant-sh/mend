@@ -76,7 +76,7 @@ const heldWrite = (): {
     files: {
       ...NODE_FILES,
       writeFile: async (path, text) => {
-        if (path.endsWith(".tmp") && !path.includes(".lock.")) {
+        if (path.endsWith(".tmp") && !/\.(lock|drive)\./.test(path)) {
           reached();
           await allowed;
         } else if (!path.endsWith(".tmp")) {
@@ -286,6 +286,40 @@ describe("the window that drives a send", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("stays a live driver's while it renews it past the stale age: no window reads it empty", async () => {
+    const directory = await storage();
+    let late = 0;
+    const clock = (): number => Date.now() + late;
+    const { promise: torn, resolve: tear } = Promise.withResolvers<void>();
+    const { promise: mended, resolve: mend } = Promise.withResolvers<void>();
+    // A write in place is truncated, then held there until the test lets it finish.
+    const driver = new KeptReviews(
+      directory,
+      {
+        ...NODE_FILES,
+        writeFile: async (path, text) => {
+          if (!path.endsWith(".tmp")) {
+            await NODE_FILES.writeFile(path, "");
+            tear();
+            await mended;
+          }
+          await NODE_FILES.writeFile(path, text);
+        },
+      },
+      clock,
+    );
+    const other = new KeptReviews(directory, NODE_FILES, clock);
+    expect(await driver.claimDrive(DANA, "key-1")).toBe(true);
+    late += DRIVE_STALE_MS + 1_000;
+    const renewing = driver.renewDrive(DANA, "key-1");
+    await Promise.race([torn, renewing]);
+    expect(await other.drivenElsewhere(DANA, "key-1")).toBe(true);
+    expect(await other.claimDrive(DANA, "key-1")).toBe(false);
+    mend();
+    expect(await renewing).toBe(true);
+    await driver.releaseDrive(DANA, "key-1");
   });
 
   it("tells a window that lost it that it drives it no more, and that window leaves it be", async () => {
