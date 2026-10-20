@@ -73,6 +73,10 @@ const heldWrite = (): {
         if (path.endsWith(".tmp")) {
           reached();
           await allowed;
+        } else {
+          // A write in place is truncated before it is written; another window can read between.
+          await NODE_FILES.writeFile(path, "");
+          await pause(40);
         }
         await NODE_FILES.writeFile(path, text);
       },
