@@ -13,6 +13,7 @@ import {
   type WindowModel,
 } from "./session-model.js";
 import { Notifier } from "./session-surfaces.js";
+import { pendingRequest, requestWait } from "./test-requests.js";
 import { commands, fake, window } from "./test-vscode.js";
 import { TOAST_CLAIM_TTL_MS, ToastClaims } from "./toast-claims.js";
 import type { Session } from "./types.js";
@@ -130,17 +131,7 @@ const read = (
     ],
     viewer: "dana",
     members: [],
-    waits: new Map([
-      [
-        "s",
-        {
-          key: "r1",
-          words: "run pnpm db:migrate?",
-          since: new Date().toISOString(),
-          via: "conversation",
-        },
-      ],
-    ]),
+    waits: new Map([["s", requestWait(pendingRequest({ createdAt: new Date().toISOString() }))]]),
     landings: new Map(),
     launches,
     lastSeen: { baseline: waiting.createdAt, sessions: {} },

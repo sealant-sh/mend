@@ -845,6 +845,9 @@ importers:
 
   apps/vscode:
     dependencies:
+      '@mend/agent-conversation':
+        specifier: workspace:*
+        version: link:../../packages/agent-conversation
       '@mend/domain':
         specifier: workspace:*
         version: link:../../packages/domain

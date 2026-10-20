@@ -143,6 +143,11 @@ export interface SessionProcess {
   readonly providerSessionId: string | null;
   /** The process's human name ("claude", "shell", "web"); null when unnamed and from older servers. */
   readonly label: string | null;
+  /**
+   * Whose Linux user it runs as in a person-layout workspace (docs/adr/0016): only that person may
+   * answer its requests. Null for a shared workspace, and from older servers.
+   */
+  readonly runsAs: string | null;
   /** An `agent-pty`'s reported wait (G4); null while it works, and from older servers. */
   readonly waiting: AgentWaitView | null;
 }

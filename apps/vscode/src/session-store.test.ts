@@ -14,6 +14,7 @@ import {
   type WindowSessions,
 } from "./session-store.js";
 import { Notifier } from "./session-surfaces.js";
+import { pendingRequest } from "./test-requests.js";
 import { EventEmitter, fake, window } from "./test-vscode.js";
 import type { Project, ProjectDetail, Session, SessionDetail, SessionProcess } from "./types.js";
 
@@ -312,7 +313,7 @@ describe("how fast the store reads (B3, round 3)", () => {
     store.start();
     await tick(300);
     mend.add(session({ id: "a", status: "waiting" }), session({ id: "b", status: "failed" }));
-    mend.requests.set("a", [{ id: "r1", title: "run it?", createdAt: START.toISOString() }]);
+    mend.requests.set("a", [pendingRequest({ sessionId: "a", createdAt: START.toISOString() })]);
     mend.hold("requests:a");
     mend.signal({ kind: "event", event: event("session", "a") });
     mend.signal({ kind: "event", event: event("session", "b") });
@@ -501,11 +502,7 @@ describe("an explicit session id (B2)", () => {
 });
 
 describe("wait facts and toasts (S1, S2)", () => {
-  const request: PendingRequest = {
-    id: "r1",
-    title: "run pnpm db:migrate?",
-    createdAt: "2026-10-19T08:59:00.000Z",
-  };
+  const request = pendingRequest();
 
   it("toasts a wait once, only when Mend has read why it waits", async () => {
     const { mend, store } = world();
@@ -577,6 +574,7 @@ describe("a finished terminal turn (idle, #1089)", () => {
         status: "running",
         exitedAt: null,
         providerSessionId: null,
+        runsAs: null,
         label: null,
         waiting: { kind: "prompt", tool: null, since: START.toISOString() },
       },

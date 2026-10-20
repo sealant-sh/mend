@@ -1,6 +1,7 @@
 import { canSteerSession, canTypeInTerminal } from "@mend/domain/workbench";
 
 import { displaySession, type MemberName } from "./session-lines.js";
+import type { WaitFact } from "./session-model.js";
 import type { Session } from "./types.js";
 
 /**
@@ -79,18 +80,18 @@ export const rowCapability = (facts: {
  * Whether Answer lets `viewer` answer the session's wait (rule 8), by how its agent asks. A
  * terminal agent asks in its terminal, which only its owner types in, even while control is shared
  * (`canTypeInTerminal`), and Answer attaches it only where the workspace's launcher gate admits
- * her. Until Answer can answer a conversation's request itself, it answers one through Continue
- * here, which only the conversation's owner is offered: anyone else sharing control gets a
- * read-only tab, so that wait is its owner's alone too. Mend not knowing who she is answers
- * nothing.
+ * her. A conversation's request is answered as the server allows: by anyone who may steer the
+ * session, and only by the person its asking process runs as when it runs as someone. Mend not
+ * knowing who she is answers nothing.
  */
 export const mayAnswer = (
   session: SteeringFacts & Pick<Session, "workspaceLauncherUserId">,
   viewer: string | null,
-  via: "terminal" | "conversation",
+  wait: WaitFact,
 ): boolean => {
   if (viewer === null) return false;
-  if (via === "conversation") return ownsSession(session, viewer);
+  if (wait.via === "conversation")
+    return maySteer(session, viewer) && (wait.answerer === null || wait.answerer === viewer);
   const launcher = session.workspaceLauncherUserId;
   return canTypeInTerminal(session, viewer) && (launcher === null || launcher === viewer);
 };

@@ -1,8 +1,9 @@
 import { AgentWait, agentWaitWords } from "@mend/domain/workbench";
 
 import type { EventPointer, PendingRequest } from "./client.js";
+import { requestView } from "./request-answer.js";
 import type { WaitFact } from "./session-model.js";
-import type { SessionDetail } from "./types.js";
+import type { SessionDetail, SessionProcess } from "./types.js";
 
 /**
  * What the store reads, decided without reading: which re-reads a run of event frames asks for,
@@ -98,17 +99,25 @@ export const terminalWait = (detail: Pick<SessionDetail, "processes">): WaitFact
   return { key: `${wait.kind}:${wait.since}`, words, since: wait.since, via: "terminal" };
 };
 
-/** A conversation's wait: its oldest pending request, in the request's own title. */
-export const conversationWait = (requests: ReadonlyArray<PendingRequest>): WaitFact | null => {
+/**
+ * A conversation's wait: its oldest pending request, in its own question, and who may answer it:
+ * the person its asking process runs as, when it runs as someone.
+ */
+export const conversationWait = (
+  requests: ReadonlyArray<PendingRequest>,
+  processes: ReadonlyArray<Pick<SessionProcess, "id" | "runsAs">>,
+): WaitFact | null => {
   const [request] = requests.toSorted((left, right) =>
     left.createdAt.localeCompare(right.createdAt),
   );
-  return request === undefined
-    ? null
-    : {
-        key: request.id,
-        words: request.title ?? "a request",
-        since: request.createdAt,
-        via: "conversation",
-      };
+  if (request === undefined) return null;
+  const view = requestView(request);
+  return {
+    via: "conversation",
+    key: request.id,
+    words: view.question,
+    since: request.createdAt,
+    request: view,
+    answerer: processes.find((process) => process.id === request.processId)?.runsAs ?? null,
+  };
 };

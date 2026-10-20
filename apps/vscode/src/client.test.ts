@@ -47,5 +47,54 @@ describe("a conversation's pending requests", () => {
       "http://mend-mini:3105/api/sessions/s/requests?pending=1",
     ]);
     expect(requests.map((request) => request.id)).toEqual(["r2"]);
+    expect(requests[0]).toMatchObject({ sessionId: "s", processId: "p", kind: "tool-permission" });
+  });
+
+  it("answers one with POST /requests/:id/respond and the response as its body", async () => {
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response("{}"));
+    vi.stubGlobal("fetch", fetch);
+    await client().respond("r 1", { answers: { q1: ["Postgres"] } });
+    const [url, init] = fetch.mock.calls[0] ?? [];
+    expect(url).toBe("http://mend-mini:3105/api/requests/r%201/respond");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify({ answers: { q1: ["Postgres"] } }));
+  });
+});
+
+describe("a session's processes", () => {
+  it("say whom each runs as, and nobody from an older server", async () => {
+    const process = (id: string, runsAs?: string) => ({
+      id,
+      kind: "agent-protocol",
+      harness: "claude",
+      status: "running",
+      exitedAt: null,
+      providerSessionId: null,
+      ...(runsAs === undefined ? {} : { runsAs }),
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              session: {
+                id: "s",
+                projectId: "p1",
+                harness: "claude",
+                label: null,
+                worktree: "w",
+                branch: "b",
+                status: "waiting",
+                createdAt: "2026-10-20T08:00:00.000Z",
+              },
+              processes: [process("p", "ana"), process("q")],
+              currentAgent: null,
+            }),
+          ),
+      ),
+    );
+    const detail = await client().sessionDetail("s");
+    expect(detail.processes.map((one) => one.runsAs)).toEqual(["ana", null]);
   });
 });

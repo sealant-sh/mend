@@ -1,3 +1,4 @@
+import type { RequestView } from "./request-answer.js";
 import { mayAnswer, rowCapability, type RowCapability } from "./session-capability.js";
 import { displaySession, type MemberName } from "./session-lines.js";
 import type { Project, ProjectDetail, Session, SessionStatus } from "./types.js";
@@ -10,14 +11,26 @@ import type { Project, ProjectDetail, Session, SessionStatus } from "./types.js"
  */
 
 /** Why a session waits for a person, as Mend observed it. */
-export interface WaitFact {
-  /** The same for one wait: a terminal agent's kind and `since`, or a conversation's request id. */
-  readonly key: string;
-  /** `claude needs your permission to use Bash`, or the request's own title. */
-  readonly words: string;
-  readonly since: string;
-  readonly via: "terminal" | "conversation";
-}
+export type WaitFact =
+  | {
+      readonly via: "terminal";
+      /** The same for one wait: the agent's reported kind and `since`. */
+      readonly key: string;
+      /** `claude needs your permission to use Bash`. */
+      readonly words: string;
+      readonly since: string;
+    }
+  | {
+      readonly via: "conversation";
+      /** The request's id. */
+      readonly key: string;
+      /** The request's question: `run pnpm db:migrate?`. */
+      readonly words: string;
+      readonly since: string;
+      readonly request: RequestView;
+      /** Who the asking process runs as: only they may answer it. Null when anyone steering may. */
+      readonly answerer: string | null;
+    };
 
 /** A session's newest landing that reached origin, as `GET /sessions/:id/landings` reports it. */
 export interface LandingFact {
@@ -276,7 +289,7 @@ const sessionView = (
   const reported = waiting || session.status === "idle";
   const wait = reported ? (input.waits.get(session.id) ?? null) : null;
   // Only a wait Mend observed needs her, and only one Answer lets her answer.
-  const canAnswer = waiting && wait !== null && mayAnswer(session, viewer, wait.via);
+  const canAnswer = waiting && wait !== null && mayAnswer(session, viewer, wait);
   const landed = live ? null : (input.landings.get(session.id) ?? null);
   // A landing of an earlier turn says nothing about a turn that settled after it.
   const landing =

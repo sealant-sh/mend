@@ -1,4 +1,4 @@
-import { mayAnswer, maySteer, ownsSession, rowCapability } from "./session-capability.js";
+import { maySteer, ownsSession, rowCapability } from "./session-capability.js";
 import type { Session, SessionDetail } from "./types.js";
 import {
   agentTab,
@@ -157,13 +157,14 @@ export class AgentTabs {
         return;
       }
       const want = agentTab(detail.session, detail.processes);
-      // Answer shows a conversation's tab to its owner, wherever launched (`mayAnswer`). Otherwise
-      // only the workspace's launcher types into its agent; anyone else, and anyone Mend cannot
-      // name, gets nothing here (Watch terminal is the read-only way in).
+      // Answer shows a conversation's tab to its owner, wherever launched. Otherwise only the
+      // workspace's launcher types into its agent; anyone else, and anyone Mend cannot name, gets
+      // nothing here (Watch terminal is the read-only way in).
       const answering =
         workspaceId === null &&
         want.kind === "conversation" &&
-        mayAnswer(detail.session, viewer, "conversation");
+        viewer !== null &&
+        ownsSession(detail.session, viewer);
       const capability = rowCapability({ session: detail.session, viewer, members: [] });
       if (!answering && capability.kind !== "open") {
         effects.refused(`${capability.why} · no agent attached`);

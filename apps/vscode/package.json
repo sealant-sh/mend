@@ -48,6 +48,7 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit && tsgo -p test/e2e/tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@mend/agent-conversation": "workspace:*",
     "@mend/domain": "workspace:*",
     "@mend/workspace-ssh": "workspace:*"
   },
