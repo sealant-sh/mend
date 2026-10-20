@@ -256,7 +256,7 @@ export const changeRows = (
     {
       kind: "comments",
       id: "comments",
-      description: commentsLine(threads, review.sends),
+      description: commentsLine(threads),
       comments: threads.map(
         (thread): CommentRow => ({
           kind: "comment",

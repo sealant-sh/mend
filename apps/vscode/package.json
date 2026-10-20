@@ -660,7 +660,7 @@
         {
           "command": "mend.review.addressed",
           "group": "inline@1",
-          "when": "commentController =~ /^mend\\.review(\\.note)?$/ && comment == mend.comment.sent"
+          "when": "commentController =~ /^mend\\.review(\\.note)?$/ && comment =~ /^mend\\.comment\\.(sent|waiting|held)$/"
         },
         {
           "command": "mend.review.reopen",

@@ -31,8 +31,10 @@ export type ThreadKind =
   | "sending"
   /** In a review whose delivery failed: [Retry delivery]. */
   | "failed"
-  /** In a review Mend holds pending while the session has no live agent: [Retry delivery]. */
+  /** In a review Mend holds pending that Retry delivery acts on now: [Retry delivery]. */
   | "held"
+  /** In a review Mend holds pending for her live agent, in its terminal or on its way there. */
+  | "waiting"
   /** Handed to the session, as Mend observed it: [Addressed]. */
   | "sent"
   /** She marked it addressed: [Reopen]. Mend never says so itself. */
@@ -118,6 +120,7 @@ const LABELS: Readonly<Record<ThreadKind, string>> = {
   sending: "sending",
   failed: "delivery failed · retryable",
   held: "follow-up pending",
+  waiting: "follow-up pending",
   sent: "sent",
   addressed: "addressed",
 };
@@ -164,7 +167,7 @@ const fromRecord = (
       return { kind: "failed", label, sendKey };
     case "in-terminal":
     case "pending":
-      return { kind: mayRetry(record, agent) ? "held" : "sent", label, sendKey };
+      return { kind: mayRetry(record, agent) ? "held" : "waiting", label, sendKey };
     case "delivered":
       return { kind: "sent", label, sendKey };
   }
@@ -256,31 +259,26 @@ export const commentableLines = (
 };
 
 /**
- * `2 pending · 1 Mend draft`, `2 sent · follow-up pending · in claude's terminal`: the change's
- * comments counted by the state each was observed in, and, for the ones handed over, where her
- * last review's follow-up is until it is delivered.
+ * `2 pending · 1 Mend draft`, `2 follow-up pending · in claude's terminal`: the change's comments
+ * counted by the state each was observed in; a follow-up Mend holds, by where its words are.
  */
 export const commentsLine = (
-  threads: ReadonlyArray<Pick<ThreadView, "kind">>,
-  sends: ReadonlyArray<SendRecord> = [],
+  threads: ReadonlyArray<Pick<ThreadView, "kind" | "label">>,
 ): string => {
   const count = (kind: ThreadKind): number =>
     threads.filter((thread) => thread.kind === kind).length;
   const pending = count("pending") + count("accepted");
-  const sent = count("sent");
-  const latest = sends.findLast((record) => record.phase.kind !== "refused");
-  const where =
-    sent > 0 && (latest?.phase.kind === "in-terminal" || latest?.phase.kind === "pending")
-      ? recordLabel(latest.phase)
-      : null;
+  const held = new Map<string, number>();
+  for (const thread of threads)
+    if (thread.kind === "held" || thread.kind === "waiting")
+      held.set(thread.label, (held.get(thread.label) ?? 0) + 1);
   const parts = [
     pending > 0 ? `${pending} pending` : null,
     count("open") > 0 ? `${count("open")} open` : null,
     count("sending") > 0 ? `${count("sending")} sending` : null,
     count("failed") > 0 ? `${count("failed")} delivery failed · retryable` : null,
-    count("held") > 0 ? `${count("held")} follow-up pending` : null,
-    sent > 0 ? `${sent} sent` : null,
-    where,
+    ...[...held].map(([label, n]) => `${n} ${label}`),
+    count("sent") > 0 ? `${count("sent")} sent` : null,
     count("addressed") > 0 ? `${count("addressed")} addressed` : null,
     count("draft") > 0
       ? `${count("draft")} Mend ${count("draft") === 1 ? "draft" : "drafts"}`
