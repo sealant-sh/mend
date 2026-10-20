@@ -21,13 +21,12 @@ import { WebSocketTicketsLive } from "./tickets.ts";
 export const MendClientFetchLive = MendClientLive.pipe(Layer.provide(FetchHttpClient.layer));
 
 /**
- * The routes with every service they need, given a config. State, tickets and the Mend client
- * are built once and shared by every route.
+ * The routes with every service they need, given a config and find's parser. State, tickets and
+ * the Mend client are built once and shared by every route.
  */
 export const GatewayAppLive = GatewayRoutesLive.pipe(
   Layer.provide(GatewayAuthLive),
   Layer.provide(ProjectionsLive),
-  Layer.provide(findParserLayer()),
   Layer.provideMerge(WebSocketTicketsLive),
   Layer.provideMerge(AssetUrlsLive),
   Layer.provideMerge(AssetTracingDisabledLive),
@@ -41,6 +40,7 @@ export const GatewayServerLive = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* GatewayConfig;
     return HttpRouter.serve(GatewayAppLive).pipe(
+      Layer.provide(findParserLayer()),
       Layer.provide(NodeHttpServer.layer(createServer, { host: config.host, port: config.port })),
     );
   }),
