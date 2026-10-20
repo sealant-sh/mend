@@ -590,7 +590,9 @@ import {
   SessionRepository,
   startFromBase,
   type SessionRepositoryError,
+  type WorktreeNameTakenError,
   type WorktreeStart,
+  type WorktreeStartUnsupportedError,
 } from "./session-repository.ts";
 import {
   SESSION_SOCKET_MOUNT_PATH,
@@ -2117,7 +2119,12 @@ export class SessionEngine extends Context.Service<
       input: ProvisionInput,
     ) => Effect.Effect<
       Session,
-      ProjectNotFoundError | GitError | WorktreeBaseConflictError | HarnessLayoutNotAppliedError
+      | ProjectNotFoundError
+      | GitError
+      | WorktreeBaseConflictError
+      | WorktreeNameTakenError
+      | WorktreeStartUnsupportedError
+      | HarnessLayoutNotAppliedError
     >;
     /**
      * The container half of provisioning: return the named worktree (join) or
@@ -2129,7 +2136,14 @@ export class SessionEngine extends Context.Service<
       input: { readonly name: string | null; readonly start: WorktreeStart },
       /** Whose git credential freshens the base (their Mend key, or their bridge). */
       ownerUserId: string | null,
-    ) => Effect.Effect<Worktree, ProjectNotFoundError | GitError | WorktreeBaseConflictError>;
+    ) => Effect.Effect<
+      Worktree,
+      | ProjectNotFoundError
+      | GitError
+      | WorktreeBaseConflictError
+      | WorktreeNameTakenError
+      | WorktreeStartUnsupportedError
+    >;
     /** A new conversation inside an existing worktree. */
     readonly provisionSessionIn: (
       worktreeId: WorktreeId,
@@ -16484,6 +16498,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           target,
           { name: worktreeName, start: startFromBase(null) },
           session.ownerUserId,
+        ).pipe(
+          Effect.catchTags({
+            WorktreeNameTakenError: () =>
+              Effect.fail(
+                refuse(
+                  "worktree-taken",
+                  `project ${target.name} already has a worktree named ${worktreeName} · pick another with --worktree`,
+                ),
+              ),
+            WorktreeStartUnsupportedError: Effect.die,
+          }),
         );
         const row = yield* sessionRepositories
           .create({

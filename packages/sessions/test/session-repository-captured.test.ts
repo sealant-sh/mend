@@ -129,7 +129,7 @@ describe("SessionRepositoryCapturedLive", () => {
     );
     // A SHA-1 project names no object format (sealantd reads absent as `sha1`).
     expect("object_format" in manifest.sections.git).toBe(false);
-    // A second worktree on the same branch name is refused like the co-located adapter does.
+    // A second worktree on the same branch name is refused as taken.
     const clash = await run(
       Effect.gen(function* () {
         const repo = yield* SessionRepository;
@@ -143,7 +143,7 @@ describe("SessionRepositoryCapturedLive", () => {
           .pipe(Effect.flip);
       }),
     );
-    expect(clash._tag).toBe("GitError");
+    expect(clash._tag).toBe("WorktreeNameTakenError");
   });
 
   it("prepareStandby builds the same real empty harness root", async () => {

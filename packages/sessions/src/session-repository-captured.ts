@@ -28,11 +28,11 @@ import {
   WORKTREE_TREE_REF,
   worktreePathOf,
 } from "@mend/store";
-import { Clock, Duration, Effect, Layer, Result } from "effect";
+import { Clock, Duration, Effect, Layer } from "effect";
 
 import { CaptureChannel } from "./capture-channel.ts";
 import { bulkSectionOfCache, readDependencyCache } from "./dependency-cache.ts";
-import { SessionRepository } from "./session-repository.ts";
+import { SessionRepository, WorktreeNameTakenError } from "./session-repository.ts";
 import { derivedPackPrefix, ensureCaptureCache } from "./worktree-reads.ts";
 
 /**
@@ -68,11 +68,6 @@ const checkpointRef = (worktreeId: string, index: number) =>
 
 const gitFailure = (cwd: string, what: string, detail: string) =>
   new GitError({ args: ["capture", what], cwd, exitCode: null, stderr: detail });
-
-const NAME_TAKEN = "already exists in this project";
-
-export const isWorktreeNameTaken = (error: GitError): boolean =>
-  error.args[0] === "capture" && error.args[1] === "create" && error.stderr.includes(NAME_TAKEN);
 
 export interface CaptureZeroSource {
   readonly head: Sha;
@@ -224,20 +219,6 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         Effect.mapError((error) => gitFailure("", "manifest", `${row.manifestKey}: ${error._tag}`)),
       );
 
-    const claimBranchAt = Effect.fn("SessionRepositoryCaptured.claimBranchAt")(function* (
-      projectId: ProjectId,
-      branch: string,
-      sha: Sha,
-      taken: GitError,
-    ) {
-      const inserted = yield* refs
-        .set(projectId, `refs/heads/${branch}`, sha, null)
-        .pipe(Effect.result);
-      if (Result.isSuccess(inserted)) return;
-      const existing = yield* refs.get(projectId, `refs/heads/${branch}`);
-      if (existing?.sha !== sha) return yield* taken;
-    });
-
     const createWorktree: SessionRepository["Service"]["createWorktree"] = (
       projectId,
       identity,
@@ -246,11 +227,19 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
     ) =>
       Effect.gen(function* () {
         const project = yield* projects.byId(projectId);
-        const taken = gitFailure(
-          project.storePath,
-          "create",
-          `branch "${identity.branch}" ${NAME_TAKEN} — pick another worktree name`,
-        );
+        // The branch is the worktree's ref, moved only by Mend (`store_refs`), and inserted only:
+        // a name already taken is refused the way the co-located adapter refuses an existing
+        // branch.
+        const claimBranchAt = (sha: Sha) =>
+          refs.set(projectId, `refs/heads/${identity.branch}`, sha, null).pipe(
+            Effect.mapError(
+              () =>
+                new WorktreeNameTakenError({
+                  branch: identity.branch,
+                  message: `branch "${identity.branch}" already exists in this project — pick another worktree name`,
+                }),
+            ),
+          );
         if (start.kind === "handoff") {
           const { admitted, ownerUserId } = start;
           const delta = yield* putPack(
@@ -259,7 +248,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             admitted.deltaPack.pack,
             admitted.deltaPack.idx,
           );
-          yield* claimBranchAt(projectId, identity.branch, admitted.head, taken);
+          yield* claimBranchAt(admitted.head);
           const handoff: WorktreeHandoff = {
             machine: admitted.trailers.machine,
             localBranch: admitted.trailers.localBranch,
@@ -282,11 +271,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
           };
         }
         const resolved = yield* store.resolveBase(project.storePath, start.base, remoteEnv);
-        // The branch is the worktree's ref, moved only by Mend (`store_refs`); a name already
-        // taken is refused the way the co-located adapter refuses an existing branch.
-        yield* refs
-          .set(projectId, `refs/heads/${identity.branch}`, resolved.baseSha, null)
-          .pipe(Effect.mapError(() => taken));
+        yield* claimBranchAt(resolved.baseSha);
         return {
           name: identity.directory,
           branch: identity.branch,

@@ -156,10 +156,10 @@ describe("SessionEngine handoff", () => {
           const refused = yield* provisionHandoff(project.id, "fix-login", admitted).pipe(
             Effect.result,
           );
-          if (Result.isFailure(refused) && refused.failure._tag === "GitError") {
-            expect(refused.failure.stderr).toMatch(/already exists/);
+          if (Result.isFailure(refused) && refused.failure._tag === "WorktreeNameTakenError") {
+            expect(refused.failure.branch).toBe("mend/fix-login");
           } else {
-            expect.unreachable("the taken name was not refused with a GitError");
+            expect.unreachable("the taken name was not refused as taken");
           }
           expect([...world.worktrees.values()].map((worktree) => worktree.id)).toEqual([taken.id]);
           expect(world.worktrees.get(taken.id)?.handoff).toBeNull();

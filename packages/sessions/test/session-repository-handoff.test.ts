@@ -18,7 +18,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CaptureChannel } from "../src/capture-channel.ts";
 import { CaptureGitVerifier, CaptureGitVerifierLive } from "../src/capture-verify.ts";
 import { SessionRepositoryCapturedLive } from "../src/session-repository-captured.ts";
-import { SessionRepository } from "../src/session-repository.ts";
+import { SessionRepository, type WorktreeStart } from "../src/session-repository.ts";
 import { WorktreeReads, WorktreeReadsCapturedLive } from "../src/worktree-reads.ts";
 import { makeCaptureWorld, newWorktreeId } from "./capture-world.ts";
 
@@ -209,12 +209,9 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
     expect(expected).toEqual(["a.txt", "login.ts", "notes.txt", "staged.ts"]);
   });
 
-  it("takes the same admitted handoff again after a crash between the branch ref and the row, and refuses another handoff on the taken name", async () => {
+  it("refuses a name whose branch ref exists, even for the same admitted handoff: a retry takes the next name", async () => {
     const checkout = makeCheckout("checkout-two");
     const bundle = buildHandoffBundle(checkout, { cutAt: "2026-10-18T08:00:00.000Z" });
-    sh(checkout, ["commit", "-q", "-am", "more"]);
-    const other = buildHandoffBundle(checkout, { cutAt: "2026-10-18T08:00:01.000Z" });
-    expect(other.head).not.toBe(bundle.head);
     const worktreeId = newWorktreeId();
     const branch = `mend/${worktreeId}`;
     const outcome = await run(
@@ -227,41 +224,18 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
           bundle.bytes,
           noFreshen,
         );
-        const first = yield* repo.createWorktree(
-          world.project.id,
-          { id: worktreeId, directory: worktreeId, branch },
-          { kind: "handoff", admitted, ownerUserId: "user-dana" },
-          null,
-        );
-        const again = yield* repo.createWorktree(
-          world.project.id,
-          { id: worktreeId, directory: worktreeId, branch },
-          { kind: "handoff", admitted, ownerUserId: "user-dana" },
-          null,
-        );
-        const otherAdmitted = yield* store.admitHandoff(
-          world.storePath,
-          "main",
-          other.bytes,
-          noFreshen,
-        );
-        const taken = yield* repo
-          .createWorktree(
-            world.project.id,
-            { id: worktreeId, directory: worktreeId, branch },
-            { kind: "handoff", admitted: otherAdmitted, ownerUserId: "user-dana" },
-            null,
-          )
+        const identity = { id: worktreeId, directory: worktreeId, branch };
+        const start: WorktreeStart = { kind: "handoff", admitted, ownerUserId: "user-dana" };
+        yield* repo.createWorktree(world.project.id, identity, start, null);
+        return yield* repo
+          .createWorktree(world.project.id, identity, start, null)
           .pipe(Effect.result);
-        return { first, again, taken };
       }),
     );
-    expect(outcome.again).toEqual(outcome.first);
-    expect(Result.isFailure(outcome.taken)).toBe(true);
-    if (Result.isFailure(outcome.taken) && outcome.taken.failure._tag === "GitError") {
-      expect(outcome.taken.failure.stderr).toMatch(/already exists/);
+    if (Result.isFailure(outcome) && outcome.failure._tag === "WorktreeNameTakenError") {
+      expect(outcome.failure.branch).toBe(branch);
     } else {
-      expect.unreachable("the taken name was not refused with a GitError");
+      expect.unreachable("the taken name was not refused as taken");
     }
   });
 });

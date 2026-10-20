@@ -3,14 +3,14 @@ import type { ProjectId, Sha, WorktreeId } from "@mend/domain";
 import type { WorktreeHandoff } from "@mend/domain/workbench";
 import {
   type AdmittedHandoff,
-  GitError,
+  type GitError,
   Store,
   worktreePathOf,
   type CaptureManifest,
   type CheckpointSnapshot,
   type GitRemoteEnvironment,
 } from "@mend/store";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 export type WorktreeStart =
@@ -22,6 +22,18 @@ export type WorktreeStart =
     };
 
 export const startFromBase = (base: string | null): WorktreeStart => ({ kind: "base", base });
+
+/** The worktree's branch is another worktree's: the name is taken. */
+export class WorktreeNameTakenError extends Schema.TaggedError<WorktreeNameTakenError>()(
+  "WorktreeNameTakenError",
+  { branch: Schema.String, message: Schema.String },
+) {}
+
+/** This adapter makes no worktree from this kind of start. */
+export class WorktreeStartUnsupportedError extends Schema.TaggedError<WorktreeStartUnsupportedError>()(
+  "WorktreeStartUnsupportedError",
+  { start: Schema.Literal("handoff"), message: Schema.String },
+) {}
 
 /**
  * The session workspace AUTHORITY, keyed by identity — the deployment-strategy port
@@ -64,7 +76,10 @@ export class SessionRepository extends Context.Service<
       identity: { readonly id: WorktreeId; readonly directory: string; readonly branch: string },
       start: WorktreeStart,
       remoteEnv: GitRemoteEnvironment | null,
-    ) => Effect.Effect<SessionWorktreeSummary, SessionRepositoryError>;
+    ) => Effect.Effect<
+      SessionWorktreeSummary,
+      SessionRepositoryError | WorktreeNameTakenError | WorktreeStartUnsupportedError
+    >;
     /**
      * Capture mode only (ADR-0002): once the worktree ROW exists, bind the authority's own
      * bookkeeping to it — capture 0 from the base, the lease and chain rows. Absent on the
@@ -158,26 +173,23 @@ export const SessionRepositoryLocalLive: Layer.Layer<
 
     return {
       createWorktree: (projectId, identity, start, remoteEnv) =>
-        projects.byId(projectId).pipe(
-          Effect.flatMap((project) =>
-            start.kind === "base"
-              ? store.createWorktree(project.storePath, identity, start.base, remoteEnv)
-              : new GitError({
-                  args: ["mend", "handoff"],
-                  cwd: project.storePath,
-                  exitCode: null,
-                  stderr:
-                    "this server keeps worktrees in the co-located store, which takes no handoffs",
-                }),
-          ),
-          Effect.map(({ name, branch, baseSha, baseRef }) => ({
-            name,
-            branch,
-            baseSha,
-            baseRef,
-            handoff: null,
-          })),
-        ),
+        Effect.gen(function* () {
+          if (start.kind === "handoff") {
+            return yield* new WorktreeStartUnsupportedError({
+              start: start.kind,
+              message:
+                "this server keeps worktrees in the co-located store, which takes no handoffs",
+            });
+          }
+          const project = yield* projects.byId(projectId);
+          const { name, branch, baseSha, baseRef } = yield* store.createWorktree(
+            project.storePath,
+            identity,
+            start.base,
+            remoteEnv,
+          );
+          return { name, branch, baseSha, baseRef, handoff: null };
+        }),
       renameBranch: (projectId, worktreeName, newBranch) =>
         projects
           .byId(projectId)

@@ -174,6 +174,12 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
             Effect.catchTag("GitError", (error) =>
               Effect.fail(new StoreFailure({ message: error.stderr })),
             ),
+            Effect.catchTags({
+              WorktreeNameTakenError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              WorktreeStartUnsupportedError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+            }),
             // Unreachable after the byName check above, but the type is honest.
             Effect.catchTag("WorktreeBaseConflictError", (error) =>
               Effect.fail(new StoreFailure({ message: `worktree "${error.name}" already exists` })),

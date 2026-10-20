@@ -20,7 +20,7 @@ import {
   type Session,
   type Worktree,
 } from "@mend/domain/workbench";
-import { isWorktreeNameTaken, SessionEngine } from "@mend/sessions";
+import { SessionEngine } from "@mend/sessions";
 import {
   AgentBridge,
   DeploymentConfig,
@@ -326,12 +326,13 @@ export const makeHandoffStart = Effect.gen(function* () {
           Effect.map((session): ProvisionOutcome => ({ kind: "made", session, name })),
           Effect.catchTags({
             ProjectNotFoundError: () => Effect.fail(new NotFound({ id: project.id })),
-            GitError: (error): Effect.Effect<ProvisionOutcome, StoreFailure> =>
-              isWorktreeNameTaken(error)
-                ? Effect.succeed({ kind: "name-taken", name })
-                : Effect.fail(new StoreFailure({ message: error.stderr })),
+            GitError: (error) => Effect.fail(new StoreFailure({ message: error.stderr })),
+            WorktreeNameTakenError: (): Effect.Effect<ProvisionOutcome> =>
+              Effect.succeed({ kind: "name-taken", name }),
             WorktreeBaseConflictError: (): Effect.Effect<ProvisionOutcome> =>
               Effect.succeed({ kind: "name-taken", name }),
+            WorktreeStartUnsupportedError: (error) =>
+              Effect.fail(refused("store-co-located", error.message)),
             HarnessLayoutNotAppliedError: (error) =>
               Effect.fail(new StoreFailure({ message: error.message })),
           }),

@@ -240,6 +240,12 @@ export const makeSessionStart = Effect.gen(function* () {
             }),
           ),
         ),
+        Effect.catchTags({
+          WorktreeNameTakenError: (error) =>
+            Effect.fail(new StoreFailure({ message: error.message })),
+          WorktreeStartUnsupportedError: (error) =>
+            Effect.fail(new StoreFailure({ message: error.message })),
+        }),
         Effect.catchTag("WorktreeBaseConflictError", (error) =>
           Effect.fail(
             new StoreFailure({

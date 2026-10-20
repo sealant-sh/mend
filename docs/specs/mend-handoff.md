@@ -233,8 +233,9 @@ own capture prefix (`captures/<worktree>/0/packs/<sha256>`, `recordPacks`), so c
 keeps it while the chain lives and reclaims it after the grace when the row never came or once the
 worktree is gone; inserts `refs/heads/mend/<name>` at `H`; and returns `baseSha = M` and
 `baseRef = project.defaultBranch`. The branch ref insert is create-only, so it must start at `H`.
-Inserting it at the base and moving it later would silently leave it at the base. An existing ref
-already at `H` is a crash replay. The co-located adapter refuses.
+Inserting it at the base and moving it later would silently leave it at the base. A name whose ref
+exists is refused as `WorktreeNameTakenError`, whatever the ref points at. The co-located adapter
+refuses a handoff start as `WorktreeStartUnsupportedError`.
 
 **Provenance, replay key and seed in one place.** Migration 0135 adds `worktrees.handoff jsonb`,
 nullable and decoded by `WorktreeHandoff`:
@@ -293,7 +294,7 @@ it. The CLI shows it in `sessionRowFacts` (`idle · handed off from dana-mbp · 
 | ----------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | admission         | quarantine dir                                                     | `ensuring` removes it; boot removes `handoff-q-*` older than 1 h                                                         |
 | delta pack upload | an unreferenced recorded pack under `captures/<worktree>/0/packs/` | the retry re-puts the same key; capture retention retires the orphan after the grace                                     |
-| branch ref        | `store_refs` branch at H, no row                                   | the retry accepts a ref already at H; any other handoff of the branch finds the name taken and takes the next suffix     |
+| branch ref        | `store_refs` branch at H, no row                                   | the ref keeps its name: the retry, like any other handoff of the branch, finds the name taken and takes the next suffix  |
 | row               | worktree with seed, no capture 0                                   | the replay finishes the creation tail (capture 0, ordinal 0, the change row), as does the next session provisioned in it |
 | capture 0         | worktree, no session                                               | replay provisions the session                                                                                            |
 | session           | `starting`                                                         | replay re-applies the hold; otherwise `mend attach` resumes it                                                           |
