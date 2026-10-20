@@ -1122,10 +1122,12 @@ export class ReviewStore implements vscode.Disposable {
   }
 
   /**
-   * Whether a failure still says something true when its toast is about to show: a delivery that
-   * was retried meanwhile, in this window or another, is not failed any more.
+   * Whether a failure still says something true when its toast is about to show: a read Mend has
+   * begun again since, or a delivery that was retried meanwhile, in this window or another, is not
+   * failed any more.
    */
   async stillFails(failure: ReviewFailure): Promise<boolean> {
+    if (failure.key.startsWith("review-read:")) return this.ready()?.pass?.kind !== "reading";
     const { retry } = failure;
     if (retry === null) return true;
     void this.reloadReview();
