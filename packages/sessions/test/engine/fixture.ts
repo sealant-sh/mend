@@ -2393,8 +2393,9 @@ export const sessionsLayer = (world: World) => {
             : {}),
         });
       }),
-    planRelaunch: (id, resume, at) =>
+    planRelaunch: (id, expected, resume, at) =>
       Effect.sync(() => {
+        if ((world.relaunches.get(id) ?? null) !== expected) return false;
         const current = world.sessions.get(id);
         world.relaunches.set(id, resume);
         update(id, {
@@ -2402,8 +2403,15 @@ export const sessionsLayer = (world: World) => {
           captureDrainRequestedAt: current?.captureDrainRequestedAt ?? at,
           captureDrainProgressAt: current?.captureDrainProgressAt ?? at,
         });
+        return true;
       }),
-    planResume: (id, resume) => Effect.sync(() => void world.relaunches.set(id, resume)),
+    swapRelaunch: (id, expected, next) =>
+      Effect.sync(() => {
+        if ((world.relaunches.get(id) ?? null) !== expected) return false;
+        if (next === null) world.relaunches.delete(id);
+        else world.relaunches.set(id, next);
+        return true;
+      }),
     clearRelaunch: (id) => Effect.sync(() => void world.relaunches.delete(id)),
     stopCaptureDrain: (id) =>
       Effect.sync(() => {

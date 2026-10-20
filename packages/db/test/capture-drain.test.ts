@@ -98,31 +98,58 @@ describe.skipIf(postgres.skip)("a session's capture drain, in Postgres", () => {
     );
   });
 
-  it("keeps a replacement's held-off pickup as a resume with no drain before it, until it is cleared (SLNT-167)", async () => {
+  it("keeps a replacement's held-off pickup with no drain before it, and swaps a plan only from the one its writer read (SLNT-167)", async () => {
     const at = new Date("2026-10-20T10:00:00.000Z");
-    const plan = JSON.stringify({ kind: "resume", harness: "claude" });
+    const pickup = JSON.stringify({ kind: "pickup", harness: "claude", id: "pickup-1" });
+    const launch = JSON.stringify({ kind: "launch", argv: ["claude"], id: "launch-1" });
     const result = await run(
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
-        yield* sessions.planResume(PICKUP, plan, at);
+        const wrote = yield* sessions.swapRelaunch(PICKUP, null, pickup);
         const planned = yield* sessions.byId(PICKUP);
         const listed = (yield* sessions.listCaptureDrains()).map((session) => session.id);
-        const resume = yield* sessions.relaunchOf(PICKUP);
-        yield* sessions.clearRelaunch(PICKUP);
+        // A second writer that read nothing planned is refused: the pickup stands.
+        const overNothing = yield* sessions.swapRelaunch(PICKUP, null, launch);
+        const relaunchOverNothing = yield* sessions.planRelaunch(PICKUP, null, launch, at);
+        const afterRefused = yield* sessions.relaunchOf(PICKUP);
+        // One that read the pickup replaces it.
+        const relaunchOverPickup = yield* sessions.planRelaunch(PICKUP, pickup, launch, at);
+        const replaced = yield* sessions.relaunchOf(PICKUP);
+        // The pickup's own clear no longer matches: the launch's plan stands.
+        const staleClear = yield* sessions.swapRelaunch(PICKUP, pickup, null);
+        const afterStaleClear = yield* sessions.relaunchOf(PICKUP);
+        const clear = yield* sessions.swapRelaunch(PICKUP, launch, null);
+        yield* sessions.endCaptureDrain(PICKUP);
         const listedAfterClear = (yield* sessions.listCaptureDrains()).map((session) => session.id);
         return {
+          wrote,
           drain: planned.captureDrain,
           listed: listed.includes(PICKUP),
-          resume,
+          overNothing,
+          relaunchOverNothing,
+          afterRefused,
+          relaunchOverPickup,
+          replaced,
+          staleClear,
+          afterStaleClear,
+          clear,
           resumeAfterClear: yield* sessions.relaunchOf(PICKUP),
           listedAfterClear: listedAfterClear.includes(PICKUP),
         };
       }),
     );
     expect(result).toEqual({
+      wrote: true,
       drain: null,
       listed: true,
-      resume: plan,
+      overNothing: false,
+      relaunchOverNothing: false,
+      afterRefused: pickup,
+      relaunchOverPickup: true,
+      replaced: launch,
+      staleClear: false,
+      afterStaleClear: launch,
+      clear: true,
       resumeAfterClear: null,
       listedAfterClear: false,
     });
@@ -138,7 +165,7 @@ describe.skipIf(postgres.skip)("a session's capture drain, in Postgres", () => {
         yield* sessions.setExecutorStartedAt(DRAINING, t0);
         yield* sessions.beginCaptureDrain(DRAINING, "stop", t0);
         // A relaunch behind the stop is asked explicitly; the drain's history stands.
-        yield* sessions.planRelaunch(DRAINING, "claude", t1);
+        yield* sessions.planRelaunch(DRAINING, null, "claude", t1);
         // A sweep's stop after it (a restart's settle) does not turn the relaunch into a stop.
         yield* sessions.beginCaptureDrain(DRAINING, "stop", t2);
         const resumeAsked = yield* sessions.relaunchOf(DRAINING);
@@ -240,7 +267,7 @@ describe.skipIf(postgres.skip)("a session's capture drain, in Postgres", () => {
         const settled = yield* sessions.byId(STOPPING);
         // A relaunch drain is not a stop: a settle while it runs settles.
         yield* sessions.reopen(STOPPING, "running");
-        yield* sessions.planRelaunch(STOPPING, "claude", t0);
+        yield* sessions.planRelaunch(STOPPING, null, "claude", t0);
         yield* sessions.settle(STOPPING, "failed", "resume failed");
         const relaunching = yield* sessions.byId(STOPPING);
         // The owner's stop turns it into a stop drain: unsettled again.

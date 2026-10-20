@@ -1,5 +1,10 @@
 import { SessionId } from "@mend/domain";
-import { type HostUserNamespaces, Session, captureStatusLine } from "@mend/domain/workbench";
+import {
+  type HostUserNamespaces,
+  Session,
+  SessionProcess,
+  captureStatusLine,
+} from "@mend/domain/workbench";
 import { LAUNCH_WAITING_PREFIX, LAUNCH_WAITING_SAVING } from "@mend/domain/workbench";
 import {
   type CaptureFlushKind,
@@ -10,6 +15,8 @@ import {
 import {
   captureHoldWords,
   NoLiveAgent,
+  ProtocolHost,
+  ProtocolHostNotLiveError,
   Restart,
   SessionEngine,
   WorkspaceHostUserNamespaces,
@@ -37,6 +44,7 @@ import {
 } from "./engine/clock-fixture.ts";
 import {
   drawnLine,
+  recordingProtocolHostLayer,
   sealantLaunchLayer,
   servedSocketApis,
   setup,
@@ -164,6 +172,33 @@ const signalledWorld = () =>
       drivingCheckpointWaits,
     };
   });
+
+/** The relaunch plan the session's row holds, as stored. */
+const storedPlan = (world: World, session: Session): unknown => {
+  const stored = world.relaunches.get(session.id);
+  return stored === undefined ? null : JSON.parse(stored);
+};
+const planId = (plan: unknown): unknown =>
+  typeof plan === "object" && plan !== null && "id" in plan ? plan.id : null;
+const owesPickup = (world: World, session: Session) =>
+  (world.relaunches.get(session.id) ?? "").includes('"pickup":"codex"');
+
+/** The PTY agent exits on its own while its executor drains for the replacement. */
+const agentExitsOnItsOwn = (world: World) => {
+  for (const process of world.processes.values()) {
+    if (process.kind !== "agent-pty" || process.exitedAt !== null) continue;
+    world.processes.set(
+      process.id,
+      new SessionProcess({
+        ...process,
+        status: "exited",
+        exitCode: 0,
+        exitedAt: new Date(),
+        updatedAt: new Date(),
+      }),
+    );
+  }
+};
 
 describe("SessionEngine capture drain (no loss of work product)", () => {
   it.effect(
@@ -2396,7 +2431,10 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
   /**
    * A session whose executor is replaced ahead of the platform's cap, its drain under way. The
    * scenario saves it (`save`: the executor terminates and the pickup follows), and can hold the
-   * next launch past its admission (`holdNextLaunch`), answering it as the host would.
+   * next launch past its admission (`holdNextLaunch`), answering it as the host would, hold the
+   * next executor create (`holdNextCreate`: a launch past its relaunch plan), and fail the next
+   * agent open (`failNextOpen`). `endExecutor`: the platform reports the current executor stopped
+   * until the next create, as Core does for one it ended.
    */
   const capReplacement = (
     scenario: (run: {
@@ -2405,16 +2443,34 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
       readonly world: World;
       readonly created: ReadonlyArray<CreateOptions>;
       readonly untilChanged: (condition: () => boolean, label: string) => Effect.Effect<void>;
+      readonly drivingCheckpointWaits: <A, E>(
+        self: Effect.Effect<A, E, SessionEngine>,
+      ) => Effect.Effect<A, E, SessionEngine>;
       readonly save: Effect.Effect<void>;
       readonly holdNextLaunch: Effect.Effect<{
         readonly held: Effect.Effect<void>;
         readonly answer: (observed: HostUserNamespaces | null) => Effect.Effect<void>;
       }>;
+      readonly holdNextCreate: Effect.Effect<{
+        readonly held: Effect.Effect<void>;
+        readonly release: Effect.Effect<void>;
+      }>;
+      readonly failNextOpen: Effect.Effect<void>;
+      readonly endExecutor: Effect.Effect<void>;
+      /** The host refuses the next turn it is given: a protocol agent that took no opening turn. */
+      readonly refuseNextTurn: Effect.Effect<void>;
     }) => Effect.Effect<void, never, SessionEngine>,
   ) =>
     Effect.gen(function* () {
-      const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
-        yield* signalledWorld();
+      const {
+        world,
+        memory,
+        tmp,
+        untilChanged,
+        signalling,
+        wrapCaptureChannel,
+        drivingCheckpointWaits,
+      } = yield* signalledWorld();
       const created: Array<CreateOptions> = [];
       const events: string[] = [];
       let saveNow = false;
@@ -2423,6 +2479,13 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
         readonly held: Deferred.Deferred<void>;
         readonly answer: Deferred.Deferred<HostUserNamespaces | null>;
       } | null = null;
+      let createHold: {
+        readonly held: Deferred.Deferred<void>;
+        readonly release: Deferred.Deferred<void>;
+      } | null = null;
+      let failNextOpen = false;
+      let endedUntilCreate = false;
+      let refuseNextTurn = false;
       const heldLaunch = Layer.succeed(WorkspaceHostUserNamespaces, {
         observe: () =>
           Effect.suspend(() => {
@@ -2458,7 +2521,15 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               session,
               world,
               created,
-              untilChanged,
+              // A wait that never ends fails with what it waited for, not the test's timeout.
+              untilChanged: (condition, label) =>
+                Effect.raceFirst(
+                  untilChanged(condition, label),
+                  Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10_000))).pipe(
+                    Effect.andThen(Effect.die(new Error(`never observed: ${label}`))),
+                  ),
+                ),
+              drivingCheckpointWaits,
               save: Effect.gen(function* () {
                 saveNow = true;
                 yield* TestClock.adjust(pollInterval);
@@ -2473,6 +2544,24 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
                   answer: (observed) => Deferred.succeed(answer, observed).pipe(Effect.asVoid),
                 };
               }),
+              holdNextCreate: Effect.gen(function* () {
+                const held = yield* Deferred.make<void>();
+                const release = yield* Deferred.make<void>();
+                createHold = { held, release };
+                return {
+                  held: Deferred.await(held),
+                  release: Deferred.succeed(release, undefined).pipe(Effect.asVoid),
+                };
+              }),
+              failNextOpen: Effect.sync(() => {
+                failNextOpen = true;
+              }),
+              endExecutor: Effect.sync(() => {
+                endedUntilCreate = true;
+              }),
+              refuseNextTurn: Effect.sync(() => {
+                refuseNextTurn = true;
+              }),
             });
           }),
         {
@@ -2480,6 +2569,19 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
           captured: memory,
           wrapCaptureChannel,
           hostUserNamespaces: heldLaunch,
+          protocolHostLayer: Layer.effect(
+            ProtocolHost,
+            Effect.map(ProtocolHost, (host) => ({
+              ...host,
+              submitTurn: (sessionId, input, author, correlation) =>
+                Effect.suspend(() => {
+                  if (!refuseNextTurn)
+                    return host.submitTurn(sessionId, input, author, correlation);
+                  refuseNextTurn = false;
+                  return Effect.fail(new ProtocolHostNotLiveError({ processId: "refused" }));
+                }),
+            })),
+          ).pipe(Layer.provide(recordingProtocolHostLayer([], []))),
           drainPolicy: {
             pollInterval,
             executorMaxSeconds: 1000,
@@ -2493,6 +2595,22 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               captureOps: {
                 flushed: events,
                 flush: () => Effect.succeed(saveNow ? flushReport(0, 2) : flushReport(1, 1)),
+                status: (stopAsked) => (endedUntilCreate || stopAsked ? "stopped" : undefined),
+                beforeCreate: () =>
+                  Effect.suspend(() => {
+                    endedUntilCreate = false;
+                    const current = createHold;
+                    if (current === null) return Effect.void;
+                    createHold = null;
+                    return Deferred.succeed(current.held, undefined).pipe(
+                      Effect.andThen(Deferred.await(current.release)),
+                    );
+                  }),
+                openFails: () => {
+                  const fails = failNextOpen;
+                  failNextOpen = false;
+                  return fails;
+                },
               },
             }),
           ),
@@ -2605,6 +2723,228 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
           created: 2,
           planLeft: false,
         });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a pickup's plan still there once the launch that held it off started the agent is consumed by the live-agent refusal, with nothing started (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        let present: unknown = null;
+        const seen = { holder: "", agentLive: false, created: 0, planLeft: true };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            // A protocol launch whose agent starts and then takes no opening turn: it fails with
+            // its agent live, and leaves the pickup its plan owed.
+            agentExitsOnItsOwn(run.world);
+            const create = yield* run.holdNextCreate;
+            yield* run.refuseNextTurn;
+            const launching = yield* run.engine
+              .launchProtocol(
+                run.session.id,
+                { mode: "protocol", prompt: "fix the login form" },
+                "user-fixture",
+                null,
+                false,
+                { over: Restart },
+              )
+              .pipe(Effect.result, Effect.forkChild);
+            yield* run.untilChanged(
+              () => run.world.relaunches.has(run.session.id),
+              "the launch's relaunch plan",
+            );
+            yield* run.save;
+            yield* TestClock.adjust(Duration.seconds(61));
+            yield* run.untilChanged(
+              () => owesPickup(run.world, run.session),
+              "the pickup owed by the launch's plan",
+            );
+            yield* create.held;
+            yield* create.release;
+            seen.holder = (yield* Fiber.join(launching))._tag;
+            present = storedPlan(run.world, run.session);
+            seen.agentLive = [...run.world.processes.values()].some(
+              (process) => process.kind === "agent-protocol" && process.exitedAt === null,
+            );
+            const createdBefore = run.created.length;
+            yield* run.engine.reapCaptureLeases();
+            yield* run.untilChanged(
+              () => !run.world.relaunches.has(run.session.id),
+              "the plan consumed",
+            );
+            seen.created = run.created.length - createdBefore;
+            seen.planLeft = run.world.relaunches.has(run.session.id);
+          }),
+        );
+        expect(present).toMatchObject({ kind: "pickup", harness: "codex" });
+        expect(seen).toEqual({ holder: "Failure", agentLive: true, created: 0, planLeft: false });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a pickup held off by a protocol launch keeps that launch's plan, its opening prompt and its correlation (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        let planned: unknown = null;
+        let owed: unknown = null;
+        const seen = { holder: "", left: true };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            // A protocol launch, which never starts over a live agent, is admitted once the agent
+            // exits, and plans its launch over the drain.
+            agentExitsOnItsOwn(run.world);
+            const create = yield* run.holdNextCreate;
+            const launching = yield* run.engine
+              .launchProtocol(
+                run.session.id,
+                { mode: "protocol", prompt: "fix the login form" },
+                "user-fixture",
+                null,
+                false,
+                { over: Restart },
+              )
+              .pipe(Effect.result, Effect.forkChild);
+            yield* run.untilChanged(
+              () => run.world.relaunches.has(run.session.id),
+              "the launch's relaunch plan",
+            );
+            planned = storedPlan(run.world, run.session);
+            const asPlanned = run.world.relaunches.get(run.session.id);
+            yield* run.save;
+            yield* TestClock.adjust(Duration.seconds(61));
+            yield* run.untilChanged(
+              () => run.world.relaunches.get(run.session.id) !== asPlanned,
+              "the pickup's write to the column",
+            );
+            owed = storedPlan(run.world, run.session);
+            yield* create.held;
+            yield* create.release;
+            seen.holder = (yield* Fiber.join(launching))._tag;
+            seen.left = run.world.relaunches.has(run.session.id);
+          }),
+        );
+        expect(planned).toMatchObject({
+          kind: "launch",
+          start: { mode: "protocol", prompt: "fix the login form" },
+          author: "user-fixture",
+        });
+        expect(owed).toEqual({
+          ...(typeof planned === "object" ? planned : {}),
+          pickup: "codex",
+        });
+        expect(seen).toEqual({ holder: "Success", left: false });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a pickup held off by a launch past its relaunch plan is owed by that plan, and outlives the launch failing to start: the reaper resumes it (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        let planned: unknown = null;
+        let owed: unknown = null;
+        let left: unknown = null;
+        const seen = { holder: "", createdByHolder: 0, created: 0, status: "" };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            const create = yield* run.holdNextCreate;
+            yield* run.failNextOpen;
+            const restarting = yield* run.engine
+              .launch(run.session.id, ["codex"], { over: Restart })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* run.untilChanged(
+              () => run.world.relaunches.has(run.session.id),
+              "the launch's relaunch plan",
+            );
+            planned = storedPlan(run.world, run.session);
+            yield* run.save;
+            // The launch's new executor holds the worktree's lease: the replacement's wait for
+            // the old one's runs out before its pickup.
+            yield* TestClock.adjust(Duration.seconds(61));
+            yield* run.untilChanged(
+              () => owesPickup(run.world, run.session),
+              "the pickup owed by the launch's plan",
+            );
+            owed = storedPlan(run.world, run.session);
+            yield* create.held;
+            yield* create.release;
+            seen.holder = (yield* Fiber.join(restarting))._tag;
+            seen.createdByHolder = run.created.length;
+            left = storedPlan(run.world, run.session);
+            yield* run.endExecutor;
+            yield* run.engine.reapCaptureLeases();
+            yield* run.untilChanged(
+              () =>
+                !run.world.relaunches.has(run.session.id) &&
+                run.world.sessions.get(run.session.id)?.status === "running",
+              "the pickup's resume",
+            );
+            seen.created = run.created.length;
+            seen.status = run.world.sessions.get(run.session.id)?.status ?? "";
+          }),
+        );
+        expect(planned).toMatchObject({ kind: "resume", harness: "codex" });
+        expect(owed).toMatchObject({ kind: "resume", harness: "codex", pickup: "codex" });
+        expect(planId(owed)).toBe(planId(planned));
+        expect(left).toMatchObject({ kind: "pickup", harness: "codex" });
+        expect(seen).toEqual({
+          holder: "Failure",
+          createdByHolder: 2,
+          created: 3,
+          status: "running",
+        });
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a pickup's plan that a launch's own plan replaces is owed by it, and outlives that launch failing to start (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        let pickup: unknown = null;
+        let taken: unknown = null;
+        let left: unknown = null;
+        const seen = { holder: "", created: 0, status: "" };
+        yield* capReplacement((run) =>
+          Effect.gen(function* () {
+            const holder = yield* run.holdNextLaunch;
+            const restarting = yield* run.engine
+              .launch(run.session.id, ["codex"], { over: Restart })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* holder.held;
+            yield* run.save;
+            yield* run.untilChanged(
+              () => run.world.relaunches.has(run.session.id),
+              "the pickup's plan",
+            );
+            pickup = storedPlan(run.world, run.session);
+            const create = yield* run.holdNextCreate;
+            yield* run.failNextOpen;
+            yield* holder.answer(null);
+            yield* create.held;
+            taken = storedPlan(run.world, run.session);
+            yield* create.release;
+            seen.holder = (yield* Fiber.join(restarting))._tag;
+            left = storedPlan(run.world, run.session);
+            yield* run.endExecutor;
+            yield* run.engine.reapCaptureLeases();
+            yield* run.untilChanged(
+              () =>
+                !run.world.relaunches.has(run.session.id) &&
+                run.world.sessions.get(run.session.id)?.status === "running",
+              "the pickup's resume",
+            );
+            seen.created = run.created.length;
+            seen.status = run.world.sessions.get(run.session.id)?.status ?? "";
+          }),
+        );
+        expect(pickup).toMatchObject({ kind: "pickup", harness: "codex" });
+        expect(taken).toMatchObject({ kind: "resume", harness: "codex", pickup: "codex" });
+        expect(planId(taken)).not.toBe(planId(pickup));
+        expect(left).toMatchObject({ kind: "pickup", harness: "codex" });
+        expect(seen).toEqual({ holder: "Failure", created: 3, status: "running" });
       }),
     { timeout: 20_000 },
   );

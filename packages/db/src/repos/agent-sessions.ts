@@ -446,15 +446,27 @@ export class SessionsRepo extends Context.Service<
     ) => Effect.Effect<void>;
     /**
      * A relaunch drains the old executor, then launches `resume` (a harness, or `shell`): both
-     * steps durable, so a restart between them finishes the relaunch.
+     * steps durable, so a restart between them finishes the relaunch. Written only over the plan
+     * `expected` (null: none), so the caller decides what it replaces; false when another writer
+     * changed it first.
      */
-    readonly planRelaunch: (id: SessionId, resume: string, at: Date) => Effect.Effect<void>;
+    readonly planRelaunch: (
+      id: SessionId,
+      expected: string | null,
+      resume: string,
+      at: Date,
+    ) => Effect.Effect<boolean>;
     /**
-     * A resume owed with no drain before it (SLNT-167): an executor replacement's pickup that a
-     * launch under way kept from running. Taken up as a relaunch's last step (`relaunchOf`).
+     * The relaunch plan becomes `next` (null: none) only while it is still `expected` (SLNT-167):
+     * a replacement's pickup owed with no drain before it, and the end of a plan whose launch ran
+     * its course. False when another writer changed it first. Taken up by `relaunchOf`.
      */
-    readonly planResume: (id: SessionId, resume: string, at: Date) => Effect.Effect<void>;
-    /** The relaunch ran its course, or the user's stop cancelled it. */
+    readonly swapRelaunch: (
+      id: SessionId,
+      expected: string | null,
+      next: string | null,
+    ) => Effect.Effect<boolean>;
+    /** The user's stop cancels whatever relaunch is planned. */
     readonly clearRelaunch: (id: SessionId) => Effect.Effect<void>;
     /**
      * The user's stop wins over a drain under way for another reason (a replacement, a
@@ -784,6 +796,12 @@ export const disableOwnerSharedControl = Effect.fn("SessionsRepo.disableOwnerSha
       .pipe(Effect.orDie);
   },
 );
+
+/** The row's relaunch plan is still the one its writer read (null: none). */
+const plannedAs = (expected: string | null) =>
+  expected === null
+    ? isNull(agentSessions.captureDrainResume)
+    : eq(agentSessions.captureDrainResume, expected);
 
 export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClient.PgClient> =
   Layer.effect(
@@ -1557,10 +1575,11 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
 
       const planRelaunch = Effect.fn("SessionsRepo.planRelaunch")(function* (
         id: SessionId,
+        expected: string | null,
         resume: string,
         at: Date,
       ) {
-        yield* db
+        const rows = yield* db
           .update(agentSessions)
           .set({
             captureDrain: "relaunch",
@@ -1569,22 +1588,28 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             captureDrainProgressAt: sql`COALESCE(${agentSessions.captureDrainProgressAt}, ${at})`,
             updatedAt: at,
           })
-          .where(eq(agentSessions.id, id))
+          .where(and(eq(agentSessions.id, id), plannedAs(expected)))
+          .returning({ id: agentSessions.id })
           .pipe(Effect.orDie);
+        if (rows.length === 0) return false;
         yield* notify(id);
+        return true;
       });
 
-      const planResume = Effect.fn("SessionsRepo.planResume")(function* (
+      const swapRelaunch = Effect.fn("SessionsRepo.swapRelaunch")(function* (
         id: SessionId,
-        resume: string,
-        at: Date,
+        expected: string | null,
+        next: string | null,
       ) {
-        yield* db
+        const rows = yield* db
           .update(agentSessions)
-          .set({ captureDrainResume: resume, updatedAt: at })
-          .where(eq(agentSessions.id, id))
+          .set({ captureDrainResume: next })
+          .where(and(eq(agentSessions.id, id), plannedAs(expected)))
+          .returning({ id: agentSessions.id })
           .pipe(Effect.orDie);
-        yield* notify(id);
+        if (rows.length === 0) return false;
+        if (next !== null) yield* notify(id);
+        return true;
       });
 
       const clearRelaunch = Effect.fn("SessionsRepo.clearRelaunch")(function* (id: SessionId) {
@@ -2306,7 +2331,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         recordCaptureObservation,
         beginCaptureDrain,
         planRelaunch,
-        planResume,
+        swapRelaunch,
         clearRelaunch,
         stopCaptureDrain,
         relaunchOf,

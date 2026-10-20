@@ -1773,7 +1773,15 @@ export class NothingUnsavedError extends Schema.TaggedError<NothingUnsavedError>
  * - `resume`: a plain resume with the harness (or `shell`); nothing was asked of the agent;
  * - `launch`: the exact launch that was asked — its argv (a PTY follow-up's prompt rides in it),
  *   the protocol start with its opening prompt, who asked, and the correlation id the process and
- *   the opening turn carry, so the launch and its opening turn happen exactly once.
+ *   the opening turn carry, so the launch and its opening turn happen exactly once;
+ * - `pickup`: an executor replacement's resume of the holder's agent, which a launch under way
+ *   held off (SLNT-167).
+ *
+ * The column holds one plan, and every writer but the owner's Stop swaps it only from what it
+ * read (`SessionsRepo.swapRelaunch`). `id` is whose plan it is: the launch that wrote it ends only
+ * its own (`endPlannedLaunch`). `pickup` is a replacement's pickup this plan owes: a pickup held
+ * off by a launch is added to that launch's plan rather than written over it, and is left as a
+ * plan of its own if that launch starts nothing.
  */
 const RelaunchStart = Schema.Struct({
   mode: Schema.optional(Schema.Literals(["pty", "protocol"])),
@@ -1783,8 +1791,12 @@ const RelaunchStart = Schema.Struct({
   permissionMode: Schema.optional(Schema.Literals(PERMISSION_MODES)),
   speed: Schema.optional(Schema.Literals(SPEED_MODES)),
 });
+const PlanOwnership = {
+  id: Schema.optional(Schema.String),
+  pickup: Schema.optional(Schema.NullOr(Schema.String)),
+};
 const RelaunchPlan = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("resume"), harness: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("resume"), harness: Schema.String, ...PlanOwnership }),
   Schema.Struct({
     kind: Schema.Literal("launch"),
     argv: Schema.Array(Schema.String),
@@ -1792,7 +1804,9 @@ const RelaunchPlan = Schema.Union([
     start: Schema.NullOr(RelaunchStart),
     author: Schema.NullOr(Schema.String),
     resumeId: Schema.NullOr(Schema.String),
+    ...PlanOwnership,
   }),
+  Schema.Struct({ kind: Schema.Literal("pickup"), harness: Schema.String, id: Schema.String }),
 ]);
 type RelaunchPlan = typeof RelaunchPlan.Type;
 const RelaunchPlanJson = Schema.fromJsonString(RelaunchPlan);
@@ -1815,10 +1829,12 @@ const relaunchPlanOf = (input: {
   readonly start: LaunchStart | null;
   readonly author: string | null;
   readonly resumeId: string | null;
-}): RelaunchPlan => {
-  const resume: RelaunchPlan = {
+}): Exclude<RelaunchPlan, { readonly kind: "pickup" }> & { readonly id: string } => {
+  const id = crypto.randomUUID();
+  const resume: Extract<RelaunchPlan, { readonly kind: "resume" }> & { readonly id: string } = {
     kind: "resume",
     harness: input.argv[0] === "bash" ? "shell" : input.harness,
+    id,
   };
   if (input.hasNativeImport) return resume;
   if (input.launchCorrelationId === null && input.start === null) return resume;
@@ -1829,6 +1845,7 @@ const relaunchPlanOf = (input: {
     start: input.start,
     author: input.author,
     resumeId: input.resumeId,
+    id,
   };
 };
 
@@ -1841,6 +1858,50 @@ const readRelaunchPlan = (stored: string): RelaunchPlan =>
       harness: stored,
     }),
   );
+
+/** Whose a stored plan is: its id, or, for one stored before plans had ids, the text itself. */
+const planIdOf = (stored: string): string => readRelaunchPlan(stored).id ?? stored;
+
+/** The harness whose pickup a stored plan owes, or null. */
+const pickupOwedBy = (plan: RelaunchPlan): string | null =>
+  plan.kind === "pickup" ? plan.harness : (plan.pickup ?? null);
+
+/**
+ * A replacement's pickup that a launch under way held off: a plan of its own when none is
+ * planned, else owed by the plan there, which is kept as it is. A launch plan's opening prompt
+ * outlives the pickup; a plan that already owes one is left alone.
+ */
+const owingPickup = (stored: string | null, harness: string): string => {
+  if (stored === null) {
+    return encodeRelaunchPlan({ kind: "pickup", harness, id: crypto.randomUUID() });
+  }
+  const plan = readRelaunchPlan(stored);
+  if (plan.kind === "pickup" || plan.pickup != null) return stored;
+  return encodeRelaunchPlan({ ...plan, id: plan.id ?? stored, pickup: harness });
+};
+
+/**
+ * The pickup a launch's plan takes over from the plan it replaces: whatever that plan owed. A
+ * pickup plan this very launch is carrying out (`carrying`) is not owed again: it is this launch.
+ */
+const pickupTakenOver = (stored: string | null, carrying: string | undefined): string | null => {
+  if (stored === null) return null;
+  const plan = readRelaunchPlan(stored);
+  if (plan.kind === "pickup" && planIdOf(stored) === carrying) return null;
+  return pickupOwedBy(plan);
+};
+
+/**
+ * What a plan's launch leaves once it has run its course: nothing when it started an agent, which
+ * the pickup it owed resumes too; a pickup plan of its own when it started nothing and owed one.
+ */
+const afterPlannedLaunch = (stored: string, launched: boolean): string | null => {
+  const plan = readRelaunchPlan(stored);
+  const owed = plan.kind === "pickup" ? null : pickupOwedBy(plan);
+  return launched || owed === null
+    ? null
+    : encodeRelaunchPlan({ kind: "pickup", harness: owed, id: crypto.randomUUID() });
+};
 
 /**
  * A landing asked for the worktree as its executor holds it now, and the registered captures did
@@ -6910,24 +6971,47 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** Stops asked and not yet answered: a planned relaunch picked up meanwhile launches nothing. */
       const stopsUnderWay = new Map<SessionId, number>();
       const stopUnderWay = (sessionId: SessionId) => (stopsUnderWay.get(sessionId) ?? 0) > 0;
-      /** Sessions whose planned relaunch a launch in this process is carrying out. */
-      const relaunching = new Set<SessionId>();
+      /**
+       * Sessions whose planned relaunch a launch in this process is carrying out, with the id of
+       * the plan it carries out (`planIdOf`).
+       */
+      const relaunching = new Map<SessionId, string>();
+
+      /** The relaunch plan becomes `next(stored)`, from what was read, however often it moved. */
+      const updatePlan = (
+        sessionId: SessionId,
+        next: (stored: string | null) => string | null,
+      ): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          while (true) {
+            const stored = yield* sessions.relaunchOf(sessionId);
+            const wanted = next(stored);
+            if (wanted === stored || (yield* sessions.swapRelaunch(sessionId, stored, wanted))) {
+              return;
+            }
+          }
+        });
+
+      /** A launch carrying out plan `own` ran its course: that plan ends; another writer's stays. */
+      const endPlannedLaunch = (sessionId: SessionId, own: string, launched: boolean) =>
+        updatePlan(sessionId, (stored) =>
+          stored === null || planIdOf(stored) !== own
+            ? stored
+            : afterPlannedLaunch(stored, launched),
+        );
 
       /**
        * An executor replacement's pickup: the holder's agent resumes, in the launch gate
        * (SLNT-167). A launch under way may yet start nothing (refused, or failed early), so the
-       * pickup it held off is kept as a resume plan, which the reaper takes up once the gate is
-       * free (`resumeDrain`); the resume then refuses over an agent that launch did start.
+       * pickup it held off is owed by the plan in the column (`owingPickup`), which the reaper
+       * takes up once the gate is free (`resumeDrain`); the resume then refuses over an agent that
+       * launch did start.
        */
       const pickUpReplaced = (session: Session, failed: string) =>
         oneLaunch(session.id)(resumeSession(session.id, null)).pipe(
           Effect.catch((error) =>
             error instanceof SealantPlatformError && error.code === "session_starting"
-              ? sessions.planResume(
-                  session.id,
-                  encodeRelaunchPlan({ kind: "resume", harness: session.harness }),
-                  new Date(clock.currentTimeMillisUnsafe()),
-                )
+              ? updatePlan(session.id, (stored) => owingPickup(stored, session.harness))
               : Effect.logWarning(failed).pipe(
                   Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
                 ),
@@ -7121,7 +7205,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 return;
               }
               const plan = readRelaunchPlan(stored);
-              relaunching.add(session.id);
+              relaunching.set(session.id, planIdOf(stored));
               yield* Effect.logInfo(
                 "session engine: capture mode · finishing a relaunch after a restart",
               ).pipe(Effect.annotateLogs({ sessionId: session.id, kind: plan.kind }));
@@ -7145,9 +7229,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               yield* attempt.pipe(
                 Effect.onExit((exit) =>
                   Effect.suspend(() => {
+                    // The plan carried out now: a launch it ran may have planned its own, and a
+                    // launch that ended took it out already (`launchInternal`).
+                    const own = relaunching.get(session.id);
                     relaunching.delete(session.id);
-                    return Exit.isSuccess(exit) && exit.value === "done"
-                      ? sessions.clearRelaunch(session.id)
+                    return own !== undefined && Exit.isSuccess(exit) && exit.value === "done"
+                      ? endPlannedLaunch(session.id, own, true)
                       : Effect.void;
                   }),
                 ),
@@ -16602,12 +16689,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 resumeId: protocolResumeId,
               });
               if (plan.kind === "launch") correlationId = plan.launchCorrelationId;
-              yield* sessions.planRelaunch(
-                sessionId,
-                encodeRelaunchPlan(plan),
-                new Date(clock.currentTimeMillisUnsafe()),
-              );
-              relaunching.add(sessionId);
+              // This launch's plan replaces what is planned (it was admitted in the gate), and
+              // owes the pickup that plan owed.
+              const carrying = relaunching.get(sessionId);
+              const at = new Date(clock.currentTimeMillisUnsafe());
+              while (true) {
+                const stored = yield* sessions.relaunchOf(sessionId);
+                const next = encodeRelaunchPlan({
+                  ...plan,
+                  pickup: pickupTakenOver(stored, carrying),
+                });
+                if (yield* sessions.planRelaunch(sessionId, stored, next, at)) break;
+              }
+              relaunching.set(sessionId, plan.id);
             }
             const outcome = yield* stopWorkspaceQuietly(sessionId, {
               force: true,
@@ -16625,9 +16719,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return yield* error;
             }
             // The owner stopped the session while its old executor saved: nothing relaunches.
+            const planned = capture === null ? null : yield* sessions.relaunchOf(sessionId);
             if (
               capture !== null &&
-              (stopUnderWay(sessionId) || (yield* sessions.relaunchOf(sessionId)) === null)
+              (stopUnderWay(sessionId) ||
+                planned === null ||
+                planIdOf(planned) !== relaunching.get(sessionId))
             ) {
               return yield* new SealantPlatformError({
                 code: "relaunch_cancelled",
@@ -18040,18 +18137,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * A launch, and the end of any relaunch it planned: once it has run its course — launched,
-       * refused or failed — nothing is left for a restart to finish. A process that dies first
-       * leaves the plan for the reaper (`resumeDrain`).
+       * refused or failed — nothing of its plan is left for a restart to finish, but a pickup it
+       * owed and did not start is (`endPlannedLaunch`). A process that dies first leaves the plan
+       * for the reaper (`resumeDrain`).
        */
       const launchInternal: typeof launchInternalBody = (sessionId, ...rest) =>
         launchInternalBody(sessionId, ...rest).pipe(
           Effect.onExit((exit) =>
-            Effect.suspend(() =>
+            Effect.suspend(() => {
+              const own = relaunching.get(sessionId);
+              relaunching.delete(sessionId);
               // Interrupted (a shutdown, a scope closing): the plan stays for the next start.
-              relaunching.delete(sessionId) && !interruptedOnly(exit)
-                ? sessions.clearRelaunch(sessionId)
-                : Effect.void,
-            ),
+              return own === undefined || interruptedOnly(exit)
+                ? Effect.void
+                : endPlannedLaunch(sessionId, own, Exit.isSuccess(exit));
+            }),
           ),
         );
 
