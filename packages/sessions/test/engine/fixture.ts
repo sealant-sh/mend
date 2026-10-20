@@ -2403,6 +2403,7 @@ export const sessionsLayer = (world: World) => {
           captureDrainProgressAt: current?.captureDrainProgressAt ?? at,
         });
       }),
+    planResume: (id, resume) => Effect.sync(() => void world.relaunches.set(id, resume)),
     clearRelaunch: (id) => Effect.sync(() => void world.relaunches.delete(id)),
     stopCaptureDrain: (id) =>
       Effect.sync(() => {

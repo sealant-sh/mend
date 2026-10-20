@@ -307,6 +307,7 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   recordCaptureObservation: () => Effect.void,
   beginCaptureDrain: () => Effect.void,
   planRelaunch: () => Effect.void,
+  planResume: () => Effect.void,
   clearRelaunch: () => Effect.void,
   stopCaptureDrain: () => Effect.void,
   relaunchOf: () => Effect.succeed(null),

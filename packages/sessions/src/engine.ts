@@ -6914,6 +6914,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const relaunching = new Set<SessionId>();
 
       /**
+       * An executor replacement's pickup: the holder's agent resumes, in the launch gate
+       * (SLNT-167). A launch under way may yet start nothing (refused, or failed early), so the
+       * pickup it held off is kept as a resume plan, which the reaper takes up once the gate is
+       * free (`resumeDrain`); the resume then refuses over an agent that launch did start.
+       */
+      const pickUpReplaced = (session: Session, failed: string) =>
+        oneLaunch(session.id)(resumeSession(session.id, null)).pipe(
+          Effect.catch((error) =>
+            error instanceof SealantPlatformError && error.code === "session_starting"
+              ? sessions.planResume(
+                  session.id,
+                  encodeRelaunchPlan({ kind: "resume", harness: session.harness }),
+                  new Date(clock.currentTimeMillisUnsafe()),
+                )
+              : Effect.logWarning(failed).pipe(
+                  Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
+                ),
+          ),
+        );
+
+      /**
        * Replacement ahead of the platform's cap (`planExecutorCap`): drain, then terminate, then a
        * pickup that launches anywhere with the head plan. Death, the cap, sandbox replacement and
        * platform moves are one path. A drain that does not save postpones the replacement: the
@@ -6964,14 +6985,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ).pipe(Effect.annotateLogs({ sessionId: session.id }));
             return;
           }
-          // In the launch gate (SLNT-167): a launch under way starts the agent itself.
-          yield* oneLaunch(session.id)(resumeSession(session.id, null)).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("session engine: replacement pickup failed").pipe(
-                Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
-              ),
-            ),
-          );
+          yield* pickUpReplaced(session, "session engine: replacement pickup failed");
         });
         yield* attempt.pipe(
           Effect.ensuring(
@@ -15611,14 +15625,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         yield* harnessLayouts.clearRetirement(workspaceId);
         if (plan.relaunch) {
-          // In the launch gate (SLNT-167): a launch under way starts the agent itself.
-          yield* oneLaunch(holder.id)(resumeSession(holder.id, null)).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("session engine: the replacement's relaunch failed").pipe(
-                Effect.annotateLogs({ sessionId: holder.id, error: String(error) }),
-              ),
-            ),
-          );
+          yield* pickUpReplaced(holder, "session engine: the replacement's relaunch failed");
         }
         for (const name of plan.restart) {
           yield* runServiceRecipe(holder.id, name).pipe(

@@ -17,6 +17,7 @@ import { AgentTurn, type WorkspaceRetirement, Session } from "@mend/domain/workb
 import { type CaptureFlushKind, SealantPlatformError } from "@mend/sealant";
 import {
   ProtocolHost,
+  Restart,
   SessionEngine,
   SessionTurnRefusedError,
   WorkspaceReplaceRefusedError,
@@ -288,6 +289,46 @@ describe("pre-release executors and the migration of their shared home (docs/adr
       );
       expect([...run.state.retirements.values()]).toEqual([]);
     },
+  );
+
+  it.effect(
+    "a launch while a pre-release replacement's pickup holds the gate is refused, and the pickup starts the one agent (SLNT-167)",
+    () =>
+      Effect.gen(function* () {
+        const open = yield* Deferred.make<void>();
+        /** The pickup reached its agent's open, inside the launch gate, and is held there. */
+        const opening = yield* Deferred.make<void>();
+        let holding = false;
+        let during = "";
+        const run = yield* retiringWorldEffect(
+          (engine, _world, { session }) =>
+            Effect.gen(function* () {
+              holding = true;
+              const sweeping = yield* Effect.forkChild(engine.sweepRetirements());
+              yield* Deferred.await(opening);
+              const launched = yield* engine
+                .launch(session.id, ["codex"], { over: Restart })
+                .pipe(Effect.result);
+              during = launched._tag === "Failure" ? launched.failure._tag : "launched";
+              yield* Deferred.succeed(open, undefined);
+              yield* Fiber.join(sweeping);
+            }),
+          {
+            aroundOpen: () =>
+              Effect.suspend(() => {
+                if (!holding) return Effect.void;
+                holding = false;
+                return Deferred.succeed(opening, undefined).pipe(
+                  Effect.andThen(Deferred.await(open)),
+                );
+              }),
+          },
+        );
+        expect(during).toBe("SessionAgentLiveError");
+        expect(run.created).toHaveLength(2);
+        expect([...run.state.retirements.values()]).toEqual([]);
+      }),
+    { timeout: 30_000 },
   );
 
   it(

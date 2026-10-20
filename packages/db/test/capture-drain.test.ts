@@ -37,6 +37,7 @@ const REMOVING = SessionId.make("s-removing");
 const STOPPING = SessionId.make("s-stopping");
 const FAILING = SessionId.make("s-failing");
 const FENCED = SessionId.make("s-fenced");
+const PICKUP = SessionId.make("s-pickup");
 
 /** A reading with one capture pending, taken at `at`. */
 const observed = (at: Date) => ({
@@ -68,7 +69,7 @@ describe.skipIf(postgres.skip)("a session's capture drain, in Postgres", () => {
         yield* sql`
           INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
           VALUES (${WORKTREE}, ${PROJECT}, 'wt-1', 'wt-1', 'mend/wt-1', 'abc')`;
-        for (const id of [DRAINING, REMOVING, STOPPING, FAILING]) {
+        for (const id of [DRAINING, REMOVING, STOPPING, FAILING, PICKUP]) {
           yield* sessions.create({
             id,
             projectId: PROJECT,
@@ -95,6 +96,36 @@ describe.skipIf(postgres.skip)("a session's capture drain, in Postgres", () => {
         yield* sql.unsafe(`DROP DATABASE IF EXISTS ${SCRATCH_DB} WITH (FORCE)`);
       }),
     );
+  });
+
+  it("keeps a replacement's held-off pickup as a resume with no drain before it, until it is cleared (SLNT-167)", async () => {
+    const at = new Date("2026-10-20T10:00:00.000Z");
+    const plan = JSON.stringify({ kind: "resume", harness: "claude" });
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        yield* sessions.planResume(PICKUP, plan, at);
+        const planned = yield* sessions.byId(PICKUP);
+        const listed = (yield* sessions.listCaptureDrains()).map((session) => session.id);
+        const resume = yield* sessions.relaunchOf(PICKUP);
+        yield* sessions.clearRelaunch(PICKUP);
+        const listedAfterClear = (yield* sessions.listCaptureDrains()).map((session) => session.id);
+        return {
+          drain: planned.captureDrain,
+          listed: listed.includes(PICKUP),
+          resume,
+          resumeAfterClear: yield* sessions.relaunchOf(PICKUP),
+          listedAfterClear: listedAfterClear.includes(PICKUP),
+        };
+      }),
+    );
+    expect(result).toEqual({
+      drain: null,
+      listed: true,
+      resume: plan,
+      resumeAfterClear: null,
+      listedAfterClear: false,
+    });
   });
 
   it("keeps a drain's first request and progress across a second ask, and records one stall", async () => {

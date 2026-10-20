@@ -526,6 +526,7 @@ const testLayer = (world: TestWorld) => {
     recordCaptureObservation: () => Effect.die("not in test"),
     beginCaptureDrain: () => Effect.die("not in test"),
     planRelaunch: () => Effect.die("not in test"),
+    planResume: () => Effect.die("not in test"),
     clearRelaunch: () => Effect.void,
     stopCaptureDrain: () => Effect.void,
     relaunchOf: () => Effect.succeed(null),

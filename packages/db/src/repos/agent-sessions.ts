@@ -449,6 +449,11 @@ export class SessionsRepo extends Context.Service<
      * steps durable, so a restart between them finishes the relaunch.
      */
     readonly planRelaunch: (id: SessionId, resume: string, at: Date) => Effect.Effect<void>;
+    /**
+     * A resume owed with no drain before it (SLNT-167): an executor replacement's pickup that a
+     * launch under way kept from running. Taken up as a relaunch's last step (`relaunchOf`).
+     */
+    readonly planResume: (id: SessionId, resume: string, at: Date) => Effect.Effect<void>;
     /** The relaunch ran its course, or the user's stop cancelled it. */
     readonly clearRelaunch: (id: SessionId) => Effect.Effect<void>;
     /**
@@ -1569,6 +1574,19 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
+      const planResume = Effect.fn("SessionsRepo.planResume")(function* (
+        id: SessionId,
+        resume: string,
+        at: Date,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ captureDrainResume: resume, updatedAt: at })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+        yield* notify(id);
+      });
+
       const clearRelaunch = Effect.fn("SessionsRepo.clearRelaunch")(function* (id: SessionId) {
         yield* db
           .update(agentSessions)
@@ -2288,6 +2306,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         recordCaptureObservation,
         beginCaptureDrain,
         planRelaunch,
+        planResume,
         clearRelaunch,
         stopCaptureDrain,
         relaunchOf,
