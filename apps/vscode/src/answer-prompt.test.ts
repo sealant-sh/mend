@@ -131,6 +131,16 @@ describe("More…", () => {
     expect(server.respond.mock.calls).toEqual([["r1", { answers: { q1: ["MySQL"] } }]]);
   });
 
+  it("sends a typed answer exactly as she typed it, spaces and all", async () => {
+    const server = mend();
+    pickLabelled(WRITE_AN_ANSWER);
+    window.showInputBox.mockResolvedValueOnce("  keep this indentation  ");
+    await server.prompts.answer(database, NAME);
+    expect(server.respond.mock.calls).toEqual([
+      ["r1", { answers: { q1: ["  keep this indentation  "] } }],
+    ]);
+  });
+
   it("holds Enter on an empty answer, which would send nothing", async () => {
     const server = mend();
     pickLabelled(WRITE_AN_ANSWER);
