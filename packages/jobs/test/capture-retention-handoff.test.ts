@@ -91,7 +91,7 @@ describe("CaptureRetention and a handoff awaiting capture 0", () => {
           const created = yield* repo.createWorktree(
             world.project.id,
             { id: worktreeId, directory: worktreeId, branch: `mend/${worktreeId}` },
-            { kind: "handoff", admitted, ownerUserId: "user-dana" },
+            { kind: "handoff", admitted, ownerUserId: "user-dana", previous: null },
             null,
           );
           yield* (yield* WorktreesRepo).create({
