@@ -17,7 +17,7 @@ import {
 import { SealantPlatformError } from "@mend/sealant";
 import type { SessionEngine } from "@mend/sessions";
 import { skippedFreshen, Store, StoreConfig } from "@mend/store";
-import { buildHandoffBundle, makeHandoffWorld, sh } from "@mend/store/testing/handoff";
+import { buildHandoffBundle, makeHandoffWorld, sh } from "@mend/store/testing";
 import { Deferred, Effect, Exit, Layer } from "effect";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 

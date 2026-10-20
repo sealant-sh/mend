@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { ProjectId } from "@mend/domain";
 import { SessionEngine } from "@mend/sessions";
 import { skippedFreshen, Store, type AdmittedHandoff } from "@mend/store";
-import { buildHandoffBundle, sh } from "@mend/store/testing/handoff";
+import { buildHandoffBundle, sh } from "@mend/store/testing";
 import { it } from "@mend/test-ci/effect-vitest";
 import { Effect, Result } from "effect";
 import { describe, expect } from "vitest";

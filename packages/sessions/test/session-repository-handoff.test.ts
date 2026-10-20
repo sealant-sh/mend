@@ -10,7 +10,7 @@ import {
   Store,
   WORKTREE_TREE_REF,
 } from "@mend/store";
-import { buildHandoffBundle, sh } from "@mend/store/testing/handoff";
+import { buildHandoffBundle, sh } from "@mend/store/testing";
 import { Effect, Exit, Layer, Result, Scope } from "effect";
 import type * as Context from "effect/Context";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
