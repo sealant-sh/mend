@@ -1,6 +1,9 @@
 // Stories c and e, driven the same way against any build of the extension: today's (main's
 // `apps/vscode`, whose row button is `Mend: Open in VS Code`) and the redesign (`Mend: Open`). The
-// counter is calibrated first: the row's open button twice with a gap must read `opens` +1, then +2.
+// lanes open a shell session started from the palette: with flow 3 from `Mend: New session`
+// (`workbench` typed as its name, Change… → harness shell), which opens no window; on main's from
+// `Mend: New Session…` (Workbench), whose window is the counter's first +1. The counter is then
+// calibrated: the row's open button twice with a gap must read `opens` +1, then +2.
 // Then every step asserts the story: a double-click and a click open nothing and ask nothing (today's
 // extension fails here, at the double-click), two fast Opens make one window, Open in New Window
 // makes one, the workspace window attaches the session's live terminal, a stopped session opens
@@ -81,6 +84,7 @@ export default async (h) => {
   const {
     view,
     palette,
+    paletteRows,
     quickInput,
     treeItem,
     notification,
@@ -160,16 +164,73 @@ export default async (h) => {
   const windowsBeforeStart = await windows();
   const opensBeforeStart = await opens();
 
-  await step("Mend: New Session… from the palette, Workbench picked", async () => {
-    await palette("Mend: New Session…");
-    await quickInput.waitFor();
-    if ((await quickInput.title()) === "Choose a Mend project") await quickInput.pick(project.name);
-    const title = await quickInput.title();
-    const kinds = (await quickInput.items()).map((item) => item.split("\n")[0].trim());
-    await shot("new-session-kinds");
-    await quickInput.pick("Workbench");
-    return `quick input "${title}" offered ${kinds.join(" | ")}`;
-  });
+  // Main's extension starts a Workbench from `Mend: New Session…` and opens its window; flow 3's
+  // `Mend: New session` starts a shell from Change… and opens nothing.
+  const asBuiltStart = (await paletteRows("Mend: New Session")).some(
+    (row) => row.label === "Mend: New Session…",
+  );
+
+  await step(
+    asBuiltStart
+      ? "Mend: New Session… from the palette, Workbench picked"
+      : "Mend: New session from the palette: the name workbench typed, Change… → harness shell, the rest kept, Enter",
+    async () => {
+      if (asBuiltStart) {
+        await palette("Mend: New Session…");
+        await quickInput.waitFor();
+        if ((await quickInput.title()) === "Choose a Mend project")
+          await quickInput.pick(project.name);
+        const title = await quickInput.title();
+        const kinds = (await quickInput.items()).map((item) => item.split("\n")[0].trim());
+        await shot("new-session-kinds");
+        await quickInput.pick("Workbench");
+        return `quick input "${title}" offered ${kinds.join(" | ")}`;
+      }
+      await palette("Mend: New session");
+      await quickInput.waitFor();
+      await quickInput.type("workbench");
+      const keyOf = async () =>
+        `${(await quickInput.step())?.step ?? null}|${await quickInput.placeholder()}`;
+      let last = await keyOf();
+      await quickInput.button("Change…");
+      const trail = [];
+      // The title changes a moment before the list: a step is read once two samples agree.
+      let sampled = null;
+      for (let guard = 0; guard < 8; guard += 1) {
+        const seen = await waitUntil(
+          "a step of Change…, or the prompt again",
+          async () => {
+            const key = await keyOf();
+            const rows = await quickInput.rows();
+            const counter = (await quickInput.step())?.step ?? null;
+            const sample = `${key}|${rows.map((row) => row.label).join(",")}`;
+            const settled = sample === sampled;
+            sampled = sample;
+            // Change…'s steps are lists; the prompt step is an input box with no rows.
+            return settled && key !== last && (rows.length > 0 || counter === null)
+              ? { key, step: counter, rows, placeholder: await quickInput.placeholder() }
+              : null;
+          },
+          30_000,
+        );
+        last = seen.key;
+        if (seen.step === null) {
+          await shot("new-session-shell");
+          const line = (await quickInput.message())?.text ?? "";
+          expect(line.startsWith("shell · "), `the dim line reads "${line}"`);
+          await quickInput.accept();
+          return `${trail.join(" · ")} · prompt step "${seen.placeholder}", value "${await quickInput.value().catch(() => "")}", dim line "${line}"`;
+        }
+        const pick =
+          seen.placeholder === "Harness"
+            ? "shell"
+            : (seen.rows.find((row) => row.icons.includes("check"))?.label ?? seen.rows[0].label);
+        await quickInput.pick(pick, { exact: true });
+        trail.push(`${seen.step} ${seen.placeholder} → ${pick}`);
+      }
+      throw new Error(`Change… did not return to the prompt: ${JSON.stringify(trail)}`);
+    },
+  );
 
   const session = await step("the new session's row reads running", async () => {
     const created = await waitUntil(
@@ -184,7 +245,7 @@ export default async (h) => {
     const row = treeItem(name);
     await waitUntil(
       "the row to read running",
-      async () => ((await row.description()) === "running" ? true : null),
+      async () => ((await row.description()).startsWith("running") ? true : null),
       300_000,
     );
     await shot("row-running");
@@ -207,8 +268,18 @@ export default async (h) => {
   const banner = `Mend · ${session.name} · closing this tab detaches`;
 
   await step(
-    "the start opens one window on either extension (story a is not built): opens +1, its terminal recorded",
+    asBuiltStart
+      ? "the start opens one window on main's extension: opens +1, its terminal recorded"
+      : "the start opened no window: opens and windows unchanged (calibrated by the open button next)",
     async () => {
+      if (!asBuiltStart) {
+        const opened = await newWindows(windowsBeforeStart, { settle: 10_000, limit: 30_000 });
+        const after = await opens();
+        await shot("start-no-window");
+        const observed = `windows opened ${opened.length} · opens ${opensBeforeStart} → ${after}`;
+        expect(opened.length === 0 && after === opensBeforeStart, observed);
+        return observed;
+      }
       const opened = await newWindows(windowsBeforeStart, { settle: 10_000, limit: 120_000 });
       expect(opened.length === 1, `the start opened ${opened.length} windows`);
       await useWindow(opened[0]);

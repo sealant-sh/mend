@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
 
-import { MendApiError, matchProject, type MendClient, type StreamSignal } from "./client.js";
-import { repositoryFacts } from "./git.js";
+import { MendApiError, type MendClient, type StreamSignal } from "./client.js";
+import { canonicalPaths, realPathFor, repositoryFacts } from "./git.js";
+import { comparedPaths, matchProject } from "./project-match.js";
 import type { MemberName } from "./session-lines.js";
 import {
   mergeLastSeen,
@@ -10,6 +11,7 @@ import {
   type Connection,
   type LandingFact,
   type LastSeen,
+  type LaunchAttempt,
   type WaitFact,
   type WindowModel,
 } from "./session-model.js";
@@ -97,6 +99,14 @@ type Facts = {
   readonly landing: LandingFact | null;
 };
 
+/** A window folder that is a git clone no one adopted project matched. */
+export interface UnmatchedRepository {
+  readonly folder: vscode.WorkspaceFolder;
+  readonly originUrl: string | null;
+  /** Adopted projects that match it equally (one origin, several projects): New session asks which. */
+  readonly candidates: ReadonlyArray<Project>;
+}
+
 export interface StoreChange {
   readonly prev: WindowModel | null;
   readonly next: WindowModel;
@@ -151,6 +161,9 @@ export class SessionStore implements vscode.Disposable {
   #wantedSince: number | null = null;
   #lastWantAt = 0;
   #lastBatchAt = Number.NEGATIVE_INFINITY;
+  #unmatched: UnmatchedRepository | null = null;
+  /** Launches this VS Code sent, by session: the latest attempt, until a read shows it ran. */
+  readonly #launches = new Map<string, LaunchAttempt>();
   #timer: NodeJS.Timeout | null = null;
   /** Sessions read now, one read each: a frame meanwhile reads that session again after it. */
   readonly #reading = new Set<string>();
@@ -269,6 +282,26 @@ export class SessionStore implements vscode.Disposable {
     return this.#windowProject;
   }
 
+  /** This window's repository when no adopted project matched it: what New session offers to adopt. */
+  unmatchedRepository(): UnmatchedRepository | null {
+    return this.#windowProject === null ? this.#unmatched : null;
+  }
+
+  /**
+   * A session this window just created: its row shows at once, and a read of it is wanted as a
+   * frame's would be.
+   */
+  showCreated(session: Session): void {
+    const detail = this.#snapshot.details.get(session.projectId);
+    if (detail !== undefined && !detail.sessions.some((known) => known.id === session.id)) {
+      const details = new Map(this.#snapshot.details);
+      details.set(session.projectId, { ...detail, sessions: [...detail.sessions, session] });
+      this.#snapshot = { ...this.#snapshot, details };
+    }
+    this.#want({ all: false, projects: new Set(), sessions: new Set([session.id]) });
+    this.#emit();
+  }
+
   /**
    * The session this window is the workspace of: the one its Open meant, as the window found it
    * (`open-intent.ts`); until then the workspace's live session. Null in any other window.
@@ -305,6 +338,13 @@ export class SessionStore implements vscode.Disposable {
   /** The view's selection changed: a selected session is looked at now. */
   select(sessionIds: ReadonlyArray<string>): void {
     this.#selected = sessionIds;
+    this.#emit();
+  }
+
+  /** A launch this window sent, or what its server answered: the session is read again. */
+  attempted(sessionId: string, attempt: LaunchAttempt): void {
+    this.#launches.set(sessionId, attempt);
+    this.#want({ all: false, projects: new Set(), sessions: new Set([sessionId]) });
     this.#emit();
   }
 
@@ -638,18 +678,28 @@ export class SessionStore implements vscode.Disposable {
   }
 
   async #matchWindow(): Promise<void> {
-    if (this.role.kind === "workspace") {
-      this.#windowProject = null;
-      return;
-    }
-    for (const folder of vscode.workspace.workspaceFolders ?? []) {
-      const resolution = matchProject(this.#snapshot.projects, await repositoryFacts(folder));
+    let unmatched: UnmatchedRepository | null = null;
+    for (const folder of this.role.kind === "workspace"
+      ? []
+      : (vscode.workspace.workspaceFolders ?? [])) {
+      const facts = await repositoryFacts(folder);
+      const { projects } = this.#snapshot;
+      const real = await canonicalPaths(comparedPaths(projects, facts), realPathFor(folder));
+      const resolution = matchProject(projects, facts, real);
       if (resolution.status === "matched") {
         this.#windowProject = { project: resolution.project, folder };
+        this.#unmatched = null;
         return;
       }
+      unmatched ??=
+        resolution.status === "ambiguous"
+          ? { folder, originUrl: facts.originUrl, candidates: resolution.candidates }
+          : facts.originUrl === null
+            ? null
+            : { folder, originUrl: facts.originUrl, candidates: [] };
     }
     this.#windowProject = null;
+    this.#unmatched = unmatched;
   }
 
   /**
@@ -699,6 +749,11 @@ export class SessionStore implements vscode.Disposable {
 
   #emit(): void {
     const now = new Date();
+    // A launch that ran is over: a failure after it is the run's, not the launch's.
+    for (const sessionId of this.#launches.keys()) {
+      const status = this.find(sessionId)?.session.status ?? "starting";
+      if (status !== "starting" && status !== "failed") this.#launches.delete(sessionId);
+    }
     if (this.#serverUrl !== null) this.#lastSeen = this.#syncLastSeen(this.#serverUrl, now);
     const prev = this.#modelRead ? this.#model : null;
     const next = sessionModel({
@@ -708,6 +763,7 @@ export class SessionStore implements vscode.Disposable {
       members: this.#snapshot.members,
       waits: this.#snapshot.waits,
       landings: this.#snapshot.landings,
+      launches: this.#launches,
       lastSeen: this.#lastSeen,
       connection: this.#connection,
       window:

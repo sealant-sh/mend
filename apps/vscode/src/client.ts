@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 
 import type { ConnectionStore, MendConnection } from "./config.js";
 import { requestMend } from "./mend-http.js";
+import type { CreateRequest } from "./new-session.js";
 import {
   parseLivePeople,
   parseRetirementState,
@@ -28,8 +29,6 @@ import {
   type AgentWaitView,
   type WorkspaceSshView,
   type Worktree,
-  type ProjectResolution,
-  type RepositoryFacts,
 } from "./types.js";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -338,20 +337,9 @@ export class MendClient {
    * conversation inside it; the server refuses a conflicting base) and otherwise creates it;
    * null derives an anonymous worktree.
    */
-  async createSession(
-    projectId: string,
-    harness: string,
-    label: string | null,
-    base: string | null,
-    name: string | null = null,
-  ): Promise<Session> {
+  async createSession(projectId: string, request: CreateRequest): Promise<Session> {
     return parseSession(
-      await this.post(`/projects/${encodeURIComponent(projectId)}/sessions`, {
-        harness,
-        label,
-        base,
-        name,
-      }),
+      await this.post(`/projects/${encodeURIComponent(projectId)}/sessions`, request),
     );
   }
 
@@ -415,35 +403,6 @@ export class MendClient {
     return parseSession(
       await this.post(`/sessions/${encodeURIComponent(sessionId)}/launch`, start),
     );
-  }
-
-  /**
-   * Follow a launch the server answered while it was still under way (`starting`: it waits for the
-   * worktree's previous session to save, builds the workspace image, boots): each new session
-   * line goes to `onLine` until the session runs. A launch that settles instead fails with its
-   * own words.
-   */
-  async untilStarted(
-    session: Session,
-    onLine: (line: string) => void,
-    options: { readonly intervalMs?: number; readonly limitMs?: number } = {},
-  ): Promise<Session> {
-    const intervalMs = options.intervalMs ?? 3000;
-    const deadline = Date.now() + (options.limitMs ?? 40 * 60 * 1000);
-    let current = session;
-    let said: string | null = null;
-    while (current.status === "starting") {
-      const line = current.summary === null ? "starting" : `starting · ${current.summary}`;
-      if (line !== said) onLine(line);
-      said = line;
-      if (Date.now() >= deadline) throw new Error(`the session is still ${line}`);
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-      current = (await this.sessionDetail(current.id)).session;
-    }
-    if (current.status === "failed" || current.status === "stopped") {
-      throw new Error(current.summary === null ? `the session ${current.status}` : current.summary);
-    }
-    return current;
   }
 
   async stopSession(sessionId: string): Promise<Session> {
@@ -609,79 +568,3 @@ export class MendClient {
     }
   }
 }
-
-const normalizeRemoteUrl = (raw: string | null): string | null => {
-  if (raw === null) return null;
-  const trimmed = raw.trim();
-  const scp = /^(?:[^@\s/]+@)?([^:/\s]+):(?!\/)(.+)$/.exec(trimmed);
-  const url = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]+@)?([^/\s:]+)(?::\d+)?\/(.+)$/i.exec(trimmed);
-  const parts = url ?? scp;
-  if (parts === null) return null;
-  const host = parts[1];
-  const rest = parts[2];
-  if (host === undefined || rest === undefined) return null;
-  return `${host.toLowerCase()}/${rest
-    .replace(/\/+$/, "")
-    .replace(/\.git$/i, "")
-    .toLowerCase()}`;
-};
-
-export const normalizeProjectName = (raw: string): string => {
-  const slug = raw
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^[^a-z0-9]+/, "")
-    .replace(/-+$/, "");
-  return slug === "" ? "project" : slug.slice(0, 64);
-};
-
-const normalizePath = (value: string): string | null => {
-  const trimmed = value.trim().replaceAll("\\", "/").replace(/\/+$/, "");
-  return trimmed === "" || trimmed.includes("://") ? null : trimmed;
-};
-
-const sameOrInside = (candidate: string, root: string): boolean => {
-  const normalizedCandidate = normalizePath(candidate);
-  const normalizedRoot = normalizePath(root);
-  return (
-    normalizedCandidate !== null &&
-    normalizedRoot !== null &&
-    (normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}/`))
-  );
-};
-
-/** Which adopted project a local folder is a clone of: its origin URL, then its name, then its path. */
-export const matchProject = (
-  projects: ReadonlyArray<Project>,
-  facts: RepositoryFacts,
-): ProjectResolution => {
-  const normalizedOrigin = normalizeRemoteUrl(facts.originUrl);
-  const byRemote =
-    normalizedOrigin === null
-      ? undefined
-      : projects.find((project) => normalizeRemoteUrl(project.originUrl) === normalizedOrigin);
-  if (byRemote !== undefined) return { status: "matched", project: byRemote, matchedBy: "origin" };
-
-  const normalizedName = normalizeProjectName(facts.folder);
-  const byName = projects.find((project) => project.name === normalizedName);
-  if (byName !== undefined) return { status: "matched", project: byName, matchedBy: "folder-name" };
-
-  const byPath = projects.filter((project) => {
-    if (
-      project.originUrl !== null &&
-      normalizePath(project.originUrl) !== null &&
-      sameOrInside(facts.path, project.originUrl)
-    ) {
-      return true;
-    }
-    const store = normalizePath(project.storePath);
-    if (store === null) return false;
-    const separator = store.lastIndexOf("/");
-    return separator > 0 && sameOrInside(facts.path, store.slice(0, separator));
-  });
-  if (byPath.length === 1 && byPath[0] !== undefined) {
-    return { status: "matched", project: byPath[0], matchedBy: "path" };
-  }
-  if (byPath.length > 1) return { status: "ambiguous", candidates: byPath, matchedBy: "path" };
-  return { status: "not-found" };
-};

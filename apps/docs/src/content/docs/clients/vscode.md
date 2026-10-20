@@ -88,8 +88,10 @@ Only the focused VS Code window shows a notification, and only when a session wa
 session you started finished, and that window is not already showing it: selected in the view, the
 window's own session, or the session whose agent terminal is in front after **Answer**. One wait
 shows one notification across all your VS Code windows, and none once it is a week old. Other
-windows show the badge. When Mend cannot be reached, the view reads `last heard from Mend at 23:10`,
-the rows keep the last words Mend reported with `· last seen 2 min ago`, and **New session** and
+windows show the badge. A launch you started that fails, or that the server refuses, is the
+exception: its notification shows even while its row is on screen, because only the notification
+offers **Retry**. When Mend cannot be reached, the view reads `last heard from Mend at 23:10`, the
+rows keep the last words Mend reported with `· last seen 2 min ago`, and **New session** and
 **Answer** are disabled.
 
 With no project adopted, the view offers **Adopt a project…**, which asks for a Git clone URL and a
@@ -97,27 +99,110 @@ project name.
 
 ## Start a session
 
-Click **+** in the view, or run **Mend: New Session…**, and pick one of:
+Click **+** in the view, or run **Mend: New session**. One quick input opens. When the window's
+folder is a clone of an adopted project, matched by its origin URL, the input is that project's,
+titled `New session · <project>`, and nothing asks which project. Two origins match when they name
+the same host and path: `https://`, `ssh://` and `git@host:path` forms are alike, the host is
+compared without case, the path exactly, a trailing `.git` is dropped, and a port other than the
+scheme's default counts. A folder with an origin never matches a project by its folder name. Where
+the folder sits matches only when its Git root is the adopted source itself or one of the project's
+worktrees, with symlinks resolved on both sides: a separate repository nested inside the source,
+with an origin of its own, is matched by that origin, and gets **Adopt this repository** when it is
+not adopted. Type what the agent should do and press Enter. The prompt is an input box, so a pasted
+log of any length reaches Mend whole. One line under it says what Enter starts:
 
-- **Workbench**: a fresh worktree whose workspace is held open by a shell. VS Code opens in it, and
-  you run `claude` or `codex` yourself in the terminal. Mend observes and records it, within the
-  limits under [Agents you run yourself](#agents-you-run-yourself).
-- **Claude agent** or **Codex agent**: Mend starts the harness on a prompt you type, and the
-  workspace opens in VS Code beside it. An empty prompt starts the harness without one.
-- **Agent with options…**: choose the harness (Claude, Codex, opencode or pi), model, thinking
-  level, permissions (skip permission prompts, or ask before acting) and base branch. The model list
-  is the server's, the same one every other client offers, with the server's default listed first.
-  For Claude and opencode the list leads with the harness's own choice (`claude's own choice`,
-  `opencode's own choice`), which sends no model: Claude Code runs the model your Claude settings
-  name, else its own default, as a `claude` you run yourself does, and opencode's config decides.
+```text
+claude · default model · from main
+```
 
-**Mend: New session in this worktree…** on a session starts a second session in the same worktree:
-the same files and branch, with a new conversation. Each session keeps its own harness state, so the
-new session does not see the first session's conversation. To continue that conversation, take the
-session over instead.
+Mend creates the session (`POST /projects/:id/sessions`) and launches the harness on your prompt as
+a terminal agent: the claude TUI in the session's terminal (`POST /sessions/:id/launch`, PTY mode).
+The launch is not awaited. The session's row shows in the view at once and reads
+`starting · <what it is doing>`, such as `starting · building the workspace image`, until the agent
+runs. No window opens and no notification shows. **Open** opens its workspace when you want it. An
+empty prompt starts the harness without one.
 
-**Mend: New worktree without an agent…** asks for a name and a base, creates the worktree, and opens
-it.
+The line reads `<harness> · <model> · <thinking> · <permissions> · from <base>`, with only the parts
+you chose: `default model` until you choose one, `high thinking`, and `asks before acting`.
+
+### The base
+
+A new worktree starts from the window's branch when origin has every commit of it. Mend checks
+`origin/<branch>`, else the branch's upstream, with `git merge-base --is-ancestor HEAD`, against
+what this machine last fetched; it does not fetch. The upstream is read once, and HEAD is checked
+against that commit, so a fetch in between cannot prove a commit that lacks HEAD. A branch on origin
+is sent by its name there, so `fix/login` tracking `origin/main` starts from `main`, and the line
+reads `from main`. The server resolves the name on origin when it creates the worktree; origin
+moving on since the check only adds commits after the one that holds HEAD, unless someone rewrote
+the branch. An upstream on another remote is sent as the commit HEAD was checked against, and the
+line reads `from upstream/main`.
+
+When origin lacks commits of the branch, or the branch has no remote-tracking ref, the session
+starts from the project's default branch and the line says so before you press Enter:
+`from main · your branch fix/login isn't pushed`, or
+`from main · your commits on main aren't pushed` on the default branch itself. When git does not
+answer within 3 seconds, fails, or says no in a shallow clone, whose boundary can hide that HEAD is
+on origin, the line reads `from main · couldn't read your branch`. When the server's store does not
+know the ref at create, even after fetching origin, the input stays open with your prompt and the
+line reads `from main · Mend's store couldn't find fix/login`; Enter then starts from the default
+branch. Any other failure to create, such as a fetch or `git worktree add` failing, shows its own
+reason and keeps your prompt and your base. A window on another repository, or on a detached HEAD,
+starts from the default branch.
+
+### Change…
+
+**Change…**, the gear on the input's title bar, steps through the options as lists in the same
+place, with a step counter and Back:
+
+- **Harness**: claude, codex, opencode, pi, or shell. A `shell` session runs no agent: what you type
+  names it, and its shell holds the workspace. Mend observes and records what you run there, within
+  the limits under [Agents you run yourself](#agents-you-run-yourself).
+- **Model**: `default model` first, then the server's list, the same one every other client offers.
+  `default model` sends no model: Claude Code runs the model your Claude settings name, else its own
+  default, as a `claude` you run yourself does, and opencode's config decides. The step shows before
+  the list arrives, with `default model` and your remembered model. Once the list is read, a
+  remembered model it no longer has is dropped, and the line says so once:
+  `· the server no longer lists <model>`.
+- **Thinking**: the levels the model takes, or the harness's default. A model that takes none has no
+  thinking step.
+- **Permissions**: skip permission prompts, or ask before acting. A shell has no permissions step.
+- **Base**: this window's branch (its line says what that resolves to), the default branch, or a
+  branch or commit you type. A session in an existing worktree has no base step.
+
+Each choice is remembered at once, for that project on this server, on this machine. The current
+choice is checked and reads `remembered for <project>`. After the last step the prompt comes back
+with what you typed, and the line reads your choices.
+
+### When it can't start
+
+- **No project matches the window.** The first step lists the projects, with **Adopt this
+  repository** on top when the window's origin URL is set and not adopted. Adopting clones it
+  (`POST /projects`) while the input waits, then goes on to the prompt.
+- **Mend is offline.** **New session** is disabled; the view's **+** reads
+  `Mend is offline · retrying`. An input already open says the same on its line, and Enter does
+  nothing. What you typed is kept, per project, for the next **New session** in this window.
+- **More than one project has the window's origin.** The first step lists those projects only.
+- **The prompt can't be one argument.** A prompt with a NUL, one that starts with `-`, or one over
+  120,000 UTF-8 bytes is not sent: the line under it turns to a warning that says why, such as
+  `the prompt is 130,000 bytes · claude takes at most 120,000`, and Enter keeps the input open with
+  the prompt. The prompt reaches the agent as one argument, and Linux takes at most 131,072 bytes
+  per argument.
+- **The launch fails.** The row reads what the server holds. A launch the server refused while it
+  still reads the session `starting` reads `starting · launch refused · <its words>`, such as
+  `starting · launch refused · Connect Claude to start a session here. …`. One that failed reads
+  `failed · <the launch's line>`. An error notification says so and offers **Retry** when a read of
+  the session just then says it failed, or that the refused launch never started. Retry reads it
+  again before it sends, and launches the same session again. A session that reads `starting` under
+  another launch, or runs, is never sent again: a launch whose answer was lost, or that an edge
+  answered with a 5xx, may be running. Retry shows only in the window that launched it. A failure
+  the server settled shows one notification across your VS Code windows, the launching one included.
+
+**Mend: New session in this worktree…** on a session opens the same input for a second session in
+the same worktree: the same files and branch, with a new conversation. Its title ends
+`· in <worktree>`, or `· in <session>'s worktree` for a worktree with no name of its own, its line
+reads the same, and when another person's session runs there the line says so. Each session keeps
+its own harness state, so the new session does not see the first session's conversation. To continue
+that conversation, open that session.
 
 ## Open a session
 
@@ -259,8 +344,8 @@ window is connected over Remote-SSH. Its conversations land where a terminal `cl
 observes them the same way, as you: a turn in the panel showed up after 8 s on 0.36.
 
 To have Mend run the agent, so you can prompt it, follow it, steer it from any device and stop it,
-start it from Mend: **+** → an agent, or **Claude agent** / **Codex agent** under
-[Start a session](#start-a-session). That is the fully supported path.
+start it from Mend: **+**, a prompt and Enter, under [Start a session](#start-a-session). That is
+the fully supported path.
 
 ## Review a change
 

@@ -204,7 +204,11 @@ const world = () => {
   const mend = new FakeMend();
   const here = new FakeWindow();
   const store = new SessionStore({ globalState: memento() }, mend, { kind: "local" }, here);
-  const notifier = new Notifier(store, { claim: async () => true, release: async () => undefined });
+  const notifier = new Notifier(
+    store,
+    { claim: async () => true, release: async () => undefined },
+    { offer: async () => ({ kind: "none" }), relaunch: async () => {} },
+  );
   store.onDidChange((change) => notifier.changed(change));
   return { mend, here, store };
 };
@@ -332,6 +336,48 @@ describe("how fast the store reads (B3, round 3)", () => {
     mend.release("detail");
     await tick(300);
     expect(ids.every((id) => mend.count(`detail:${id}`) === 1)).toBe(true);
+  });
+});
+
+/** How long after `from` the first read of session `id` began; infinite if none did. */
+const firstRead = (mend: FakeMend, id: string, from: number) =>
+  (mend.made.find(({ call, at }) => call === `detail:${id}` && at >= from)?.at ??
+    Number.POSITIVE_INFINITY) - from;
+
+describe("a session this window created (flow 3)", () => {
+  it("shows its row at once and reads it within MIN_GAP_MS", async () => {
+    const { mend, store } = world();
+    store.start();
+    await tick(300);
+    const created = session({ id: "new", status: "starting" });
+    mend.add(created);
+    const from = Date.now();
+    store.showCreated(created);
+    expect(wordOf(store, "new")).toBe("starting");
+    mend.add(session({ id: "new", status: "running" }));
+    await tick(MIN_GAP_MS);
+    expect(firstRead(mend, "new", from)).toBeLessThanOrEqual(MIN_GAP_MS);
+    expect(wordOf(store, "new")).toBe("running");
+  });
+
+  it("reads it within MAX_WAIT_MS while another session streams a frame every 10 ms", async () => {
+    const { mend, store } = world();
+    mend.add(session({ id: "busy" }));
+    store.start();
+    await tick(300);
+    const busy = async (ms: number) => {
+      for (let elapsed = 0; elapsed < ms; elapsed += 10) {
+        mend.signal({ kind: "event", event: event("session-process", "busy") });
+        await tick(10);
+      }
+    };
+    await busy(500);
+    const created = session({ id: "new", status: "starting" });
+    mend.add(created);
+    const from = Date.now();
+    store.showCreated(created);
+    await busy(MAX_WAIT_MS);
+    expect(firstRead(mend, "new", from)).toBeLessThanOrEqual(MAX_WAIT_MS);
   });
 });
 

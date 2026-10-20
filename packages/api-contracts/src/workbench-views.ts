@@ -56,7 +56,15 @@ export class PathsOutsideGit extends Schema.Class<PathsOutsideGit>("PathsOutside
 /** A store or git operation that could not complete — the observed reason, verbatim. */
 export class StoreFailure extends Schema.TaggedError<StoreFailure>()(
   "StoreFailure",
-  { message: Schema.String },
+  {
+    message: Schema.String,
+    /**
+     * Set when creating a session refused its base because the store does not know it, even after
+     * fetching origin: that base, as requested. A client may start from another base then; any
+     * other failure (a fetch, `git worktree add`, the disk) leaves it unset. Older servers omit it.
+     */
+    unknownBase: Schema.optionalKey(Schema.String),
+  },
   { httpApiStatus: 422 },
 ) {}
 

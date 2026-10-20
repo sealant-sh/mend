@@ -18,6 +18,8 @@ export class MendApiError extends Error {
     readonly status: number | null,
     /** The refusal's `_tag`, for code that branches on what the server said. */
     readonly tag: string | null = null,
+    /** The base a session create named that the store does not know (`StoreFailure.unknownBase`). */
+    readonly unknownBase: string | null = null,
   ) {
     super(message);
     this.name = "MendApiError";
@@ -80,7 +82,14 @@ export const requestMend = async (
   if (!response.ok) {
     console.warn(failureLogLine(`${method} /api${requestPath}`, response.status, body));
     const failure = failureWords(response.status, body);
-    throw new MendApiError(failure.words, response.status, failure.tag);
+    const unknownBase: unknown =
+      typeof body === "object" && body !== null ? Reflect.get(body, "unknownBase") : null;
+    throw new MendApiError(
+      failure.words,
+      response.status,
+      failure.tag,
+      typeof unknownBase === "string" ? unknownBase : null,
+    );
   }
   return body;
 };

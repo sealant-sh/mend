@@ -24,7 +24,7 @@ the last failure verbatim.
   creator and organization owners. The status refreshes every five seconds.
 - CLI, TUI, desktop, mobile: a new session started there claims a standby the same way; none of them
   shows the pool.
-- VS Code: `Mend: New Session…` and `Mend: New session in this worktree…` launch through the same
+- VS Code: `Mend: New session` and `Mend: New session in this worktree…` launch through the same
   provisioning path; neither shows the pool.
 - Slack: `@mend project=<project> <prompt>` starts a session through that path; Slack has no pool
   editor or count.
@@ -60,10 +60,13 @@ Preconditions:
   for `1 ready` again. A missed `warming` state is inconclusive about rewarming.
 - **Upper bound.** Choose `Keep one more workspace ready` until the count reads `8`. The button is
   then disabled. Lower it back to `0` before cleanup: each ready standby is a live container.
-- **VS Code launch.** `not drivable yet`: the verify stack has no VS Code driver. The entry points
-  are `Mend: New Session…` and `Mend: New session in this worktree…`; choose `Claude agent` or
-  `Codex agent` and give a prompt. The session appears in Mend and the workspace opens in VS Code.
-  Pool readback is on the web as above.
+- **VS Code launch.** The VS Code driver runs its own server, not this map's stack (see
+  [VS Code extension](./vscode.md), story a). There `palette("Mend: New session")` opens one quick
+  input whose dim line reads `claude · default model · from <base>`. To start Codex, click
+  `quickInput.button("Change…")` and pick `codex` at `Harness`. Type a prompt and press Enter. The
+  session's row reads `starting · …`, then `running`, and no window opens. No recipe sets a hot
+  count in that world, so this step shows the entry point, not a claim. Prove the claim with
+  `mend run` above.
 - **Slack launch.** `not drivable yet`: the verify stack has no Slack driver. From a linked Slack
   account, mention `@mend project=<project> List the files and change nothing.` in a new thread. The
   thread reports the created session and its status; pool readback is on the web.

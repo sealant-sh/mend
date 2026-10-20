@@ -36,9 +36,11 @@ agent.
   `New shell in focused session (Ctrl+Shift+T)`), opens a shell tab in the focused session; the
   launcher's `Open a shell` starts a shell-harness session.
 - Mobile: the session screen's `Shell` header action opens `/terminal/<id>?process=<processId>`.
-- VS Code: `Mend: New worktree without an agent…` starts a shell-harness session in a new worktree.
-  Not drivable yet: this map has no VS Code driver; the end state is a new `shell` session in
-  `mend sessions`.
+- VS Code: `Mend: New session` with Change… → `Harness` → `shell` (described
+  `no agent: a shell holds the workspace`) starts a shell-harness session in a new worktree. Enter
+  with no prompt, or with a name typed at `A name for this shell (optional)`. The VS Code driver
+  drives it in its own world (see [VS Code extension](./vscode.md), story c's start); the end state
+  is a new `shell` session over the API (`via: "api"`) and its row reading `running`.
 
 ## Driving it with verify
 
@@ -99,8 +101,8 @@ Preconditions:
 ## Gotchas
 
 - `mend shell` and `Ctrl+Shift+T` open a shell in an existing session. The web's `Open a shell` and
-  `Start shell session`, the TUI's `shell` harness and VS Code's `New worktree without an agent…`
-  start a new session in a new worktree. Do not prove one with the other.
+  `Start shell session`, the TUI's `shell` harness and VS Code's `Mend: New session` with harness
+  `shell` start a new session in a new worktree. Do not prove one with the other.
 - A worktree's own right-click menu and its `New session in <worktree>` menu offer only `claude`,
   `codex`, `opencode` and `pi`; there is no shell in an existing worktree from the web.
 - The web terminal has two elements named `Terminal input` with role `textbox` (the canvas host and

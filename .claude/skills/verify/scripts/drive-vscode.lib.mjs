@@ -193,6 +193,22 @@ export const resolves = (userData) =>
     .flatMap((file) => readFileSync(file, "utf8").split("\n"))
     .filter((line) => /SSH Resolver called for "ssh-remote\+[^"]*", attempt 1$/.test(line)).length;
 
+/**
+ * A quick input's title as VS Code draws it, split: a multi-step input appends its counter in
+ * parentheses (`New session · api (2/5)`, or `(2)` with no total; the counter alone when the input
+ * has no title). `step` and `total` are null when no counter shows.
+ */
+export const quickInputStep = (shown) => {
+  const text = (shown ?? "").trim();
+  const counter = /^(?:(.*?) )?\((\d+)(?:\/(\d+))?\)$/.exec(text) ?? /^()(\d+)\/(\d+)$/.exec(text);
+  if (counter === null) return { title: text, step: null, total: null };
+  return {
+    title: counter[1] ?? "",
+    step: Number(counter[2]),
+    total: counter[3] === undefined ? null : Number(counter[3]),
+  };
+};
+
 /** The state file read, or an empty ledger when none is there. */
 export const readState = (stateFile) =>
   existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")) : {};

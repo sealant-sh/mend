@@ -3,11 +3,11 @@
 The server owns one model catalog per harness: each model's id and label, the harness's default, and
 the efforts a model takes when they are fewer than the harness's. Every client offers that one list
 (`mend models`, the web and desktop composers' model and settings menus, the phone's chips, VS
-Code's quick picks) and preselects the server's default. A launch sends the chosen model, effort and
-speed; the server resolves a missing model to the default, keeps an effort within what the model
-takes, and records what the session was started with. The CLI's human session listing, web session
-facts and desktop terminal header show the model and any recorded effort. Web project rows and
-mobile session rows and headers show the model without effort. TUI rows show the harness without
+Code's New session input) and preselects the server's default. A launch sends the chosen model,
+effort and speed; the server resolves a missing model to the default, keeps an effort within what
+the model takes, and records what the session was started with. The CLI's human session listing, web
+session facts and desktop terminal header show the model and any recorded effort. Web project rows
+and mobile session rows and headers show the model without effort. TUI rows show the harness without
 model or effort; VS Code tree rows omit model and effort. A resume keeps the recorded model; a
 resume on another harness clears it.
 
@@ -20,7 +20,8 @@ resume on another harness clears it.
   settings menu.
 - `desktop-picker` does the same in the desktop launcher.
 - `mobile-picker` picks model, thinking and priority chips under each harness row.
-- `vscode-picker` picks model and thinking in `Mend: New Session…`'s quick picks.
+- `vscode-picker` picks model and thinking in the `Model for <harness>` and `Thinking for <model>`
+  steps of `Mend: New session`'s Change….
 - `model-shown` shows model and recorded effort in the CLI's human listing, web session facts and
   desktop terminal header; web project rows and mobile rows and headers show model only. TUI rows
   show harness only, and VS Code tree rows omit model and effort.
@@ -43,9 +44,14 @@ resume on another harness clears it.
   row shows `model` chips only with catalog entries, `thinking` only with several effort choices,
   `base` only with fetched branches, and `priority` only when the catalog reports `fastCapable`
   (Codex; Claude has none). Session rows and the session header show model without effort.
-- VS Code: `Mend: New Session…` asks `Harness`, then `Model`, then `Thinking`, then `Permissions`.
-  The session tree omits model and effort; it shows harness only in the fallback label when a
-  session has no label. Not drivable yet: no VS Code driver exists in the verify stack.
+- VS Code: `Mend: New session` is one quick input. Its dim line reads `default model` until a model
+  is chosen. Its Change… steps through `Harness`, `Model for <harness>`, `Thinking for <model>`,
+  `Permissions` and `Base: a branch or commit` in the same input, with a step counter and Back. A
+  harness the server lists no models for has no model step, and a model that takes no effort has no
+  thinking step. The dim line then reads the choice (`codex · <model> · …`). The session tree omits
+  model and effort; it shows harness only in the fallback label when a session has no label. The VS
+  Code driver drives the picks in its own world (see [VS Code extension](./vscode.md), story a's
+  Change… lane).
 - Slack: `model=` in a mention (see [Slack](./slack.md)). Not drivable yet: no Slack driver exists
   in the verify stack.
 

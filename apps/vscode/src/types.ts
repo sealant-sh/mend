@@ -87,6 +87,8 @@ export interface RepositoryFacts {
   readonly path: string;
   readonly folder: string;
   readonly originUrl: string | null;
+  /** Git did not answer in time: the folder may have an origin, so its name proves nothing. */
+  readonly originUnknown: boolean;
 }
 
 export type ProjectResolution =
@@ -151,11 +153,6 @@ export interface SessionDetail {
   readonly currentAgent: SessionProcess | null;
   /** The worktree's change once it has one: what review opens. Null before, and from older servers. */
   readonly changeId: string | null;
-}
-
-/** Joining an existing worktree: the new session becomes another conversation inside it. */
-export interface WorktreeJoin {
-  readonly name: string;
 }
 
 export interface SessionLocation {

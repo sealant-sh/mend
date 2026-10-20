@@ -186,7 +186,12 @@ export const makeSessionStart = Effect.gen(function* () {
         ),
         Effect.catchTag("ProjectNotFoundError", () => Effect.fail(new NotFound({ id: projectId }))),
         Effect.catchTag("GitError", (error) =>
-          Effect.fail(new StoreFailure({ message: error.stderr })),
+          Effect.fail(
+            new StoreFailure({
+              message: error.stderr,
+              ...(error.unknownBase === undefined ? {} : { unknownBase: error.unknownBase }),
+            }),
+          ),
         ),
         Effect.catchTag("WorktreeBaseConflictError", (error) =>
           Effect.fail(

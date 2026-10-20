@@ -8,7 +8,15 @@ import { Clock, Effect, Fiber, Layer, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { noSignerGitEnv } from "./git-auth.ts";
-import { type CappedBytes, git, gitCapped, gitCappedBytes, GitError, gitHead } from "./git.ts";
+import {
+  type CappedBytes,
+  git,
+  gitCapped,
+  gitCappedBytes,
+  gitCommitOf,
+  GitError,
+  gitHead,
+} from "./git.ts";
 import {
   type BundleEmptyError,
   type BundleInput,
@@ -1368,8 +1376,9 @@ export class Store extends Context.Service<
        * every fetch — so the remote-tracking name is the current answer and the local name is
        * the fallback (shas, tags, and never-pushed local branches). A base the store does not
        * know at all gets one authenticated fetch (a branch pushed but never fetched — adopt
-       * configures the refspec for exactly this). If the retry still cannot resolve it, a successful
-       * fetch reports the unknown base; a failed fetch or refusal keeps its original reason.
+       * configures the refspec for exactly this). If git then proves both names missing, a
+       * successful fetch reports the unknown base; a failed fetch or refusal keeps its original
+       * reason, and a resolution that failed any other way keeps its own.
        */
       const resolveBaseSha = Effect.fn("Store.resolveBaseSha")(function* (
         storePath: string,
@@ -1394,18 +1403,25 @@ export class Store extends Context.Service<
                 Effect.result,
               );
               // A ref that became available locally still wins after a failed best-effort fetch.
-              return yield* tryResolve(baseRef).pipe(
-                Effect.catch(() => tryResolve(`origin/${baseRef}`)),
-                Effect.mapError((cause) =>
-                  Result.isFailure(fetched)
-                    ? fetched.failure
-                    : new GitError({
-                        args: ["rev-parse", `${baseRef}^{commit}`],
-                        cwd: storePath,
-                        exitCode: cause.exitCode,
-                        stderr: `base "${baseRef}" is not a branch, tag, or commit this project's store knows (origin was fetched and it is still unknown) — push it to the project origin or start from another base`,
-                      }),
+              const commit = yield* gitCommitOf(baseRef, storePath).pipe(
+                Effect.flatMap((found) =>
+                  found === null
+                    ? gitCommitOf(`origin/${baseRef}`, storePath)
+                    : Effect.succeed(found),
                 ),
+                Effect.mapError((cause) => (Result.isFailure(fetched) ? fetched.failure : cause)),
+              );
+              if (commit !== null) return commit;
+              return yield* Effect.fail(
+                Result.isFailure(fetched)
+                  ? fetched.failure
+                  : new GitError({
+                      args: ["rev-parse", `${baseRef}^{commit}`],
+                      cwd: storePath,
+                      exitCode: 1,
+                      stderr: `base "${baseRef}" is not a branch, tag, or commit this project's store knows (origin was fetched and it is still unknown) — push it to the project origin or start from another base`,
+                      unknownBase: baseRef,
+                    }),
               );
             }),
           ),

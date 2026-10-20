@@ -187,6 +187,54 @@ describe("offline (stories a and b)", () => {
   });
 });
 
+const menu = (key: string): ReadonlyArray<MenuEntry> => {
+  const menus = contributed("menus");
+  const entries: unknown =
+    typeof menus === "object" && menus !== null ? Reflect.get(menus, key) : undefined;
+  return Array.isArray(entries) ? entries.filter(isMenuEntry) : [];
+};
+
+describe("New session (story a)", () => {
+  it("is titled in the stories' words", () => {
+    expect(commandEntries().find((entry) => entry.command === "mend.newSession")?.title).toBe(
+      "Mend: New session",
+    );
+  });
+
+  it("has an offline twin in the view's title bar: disabled, and its tooltip says why", () => {
+    expect(commandEntries().find((entry) => entry.command === "mend.newSessionOffline")).toEqual({
+      command: "mend.newSessionOffline",
+      title: "Mend is offline · retrying",
+      icon: "$(add)",
+      enablement: "false",
+    });
+    const title = menu("view/title");
+    expect(title.find((entry) => entry.command === "mend.newSession")).toMatchObject({
+      when: "view == mend.sessions && !mend.offline",
+      group: "navigation@1",
+    });
+    expect(title.find((entry) => entry.command === "mend.newSessionOffline")).toMatchObject({
+      when: "view == mend.sessions && mend.offline",
+      group: "navigation@1",
+    });
+    expect(menu("commandPalette")).toContainEqual({
+      command: "mend.newSessionOffline",
+      when: "false",
+    });
+  });
+
+  it("has no New worktree without an agent: a shell from Change… covers it", () => {
+    expect(commandEntries().map((entry) => entry.command)).not.toContain("mend.newManualWorktree");
+    expect(itemContextMenu().map((entry) => entry.command)).not.toContain("mend.newManualWorktree");
+  });
+
+  it("keeps New session in this worktree on a row she can open", () => {
+    expect(groupsOn("mend.newSessionInWorktree", "mend.session.live.open.steer")).toEqual([
+      "1_open@3",
+    ]);
+  });
+});
+
 describe("the commands", () => {
   it("have no takeover and no Open in VS Code", () => {
     const commands = contributed("commands");

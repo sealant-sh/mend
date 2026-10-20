@@ -63,16 +63,39 @@ open stops with a message.
 
 ## Start a session
 
-Click **+** in the view, or run **Mend: New Session…**:
+Click **+** in the view, or run **Mend: New session**. One quick input opens on the project whose
+origin URL matches the window's folder, titled `New session · <project>`. Type what the agent should
+do and press Enter. One dim line under the prompt says what Enter starts:
+`claude · default model · from main`.
 
-- **Workbench**: a fresh worktree held open by a shell. VS Code opens in it, and you run `claude` or
-  `codex` yourself in the terminal.
-- **Claude agent** or **Codex agent**: Mend starts the agent on your prompt, and the workspace opens
-  beside it.
-- **Agent with options…**: harness, model, thinking level, permissions and base branch.
+Mend creates the session and launches claude on your prompt in the session's terminal. Its row shows
+in the view at once and reads `starting · <what it is doing>` until the agent runs. No window opens
+and no notification shows. **Open** opens its workspace when you want it.
 
-**Mend: New session in this worktree…** starts another session on the same files and branch, with a
-new conversation.
+- The base is the window's branch on origin (`origin/<branch>`, else its upstream) when that has its
+  commits, sent as that ref: `fix/login` tracking `origin/main` starts from `main`. When it does
+  not, the session starts from the default branch, and the line says so before you press Enter:
+  `from main · your branch fix/login isn't pushed`. When git does not answer within 3 seconds the
+  line reads `from main · couldn't read your branch`. Mend reads what this machine last fetched and
+  does not fetch.
+- **Change…**, the gear on the line, steps through harness, model, thinking, permissions and base in
+  the same input, with a step counter and Back. Each choice is remembered for the project on this
+  machine. The harness `shell` runs no agent: what you type names the session, and its shell holds
+  the workspace.
+- When no project matches the window, the first step lists the projects, with **Adopt this
+  repository** on top when the window's origin URL is not adopted.
+- While Mend is offline the line reads `Mend is offline · retrying` and Enter does nothing. What you
+  typed is kept for the next **New session**.
+- A prompt with a NUL, one that starts with `-`, or one over 120,000 UTF-8 bytes is not sent, and
+  the line says why: the prompt reaches the agent as one argument.
+- When the launch fails, the row reads what the server holds: `failed · <the launch's line>`, or
+  `starting · launch refused · <its words>` while the server still reads a refused launch starting.
+  An error notification offers **Retry** when a read just then says it failed or never started.
+  Retry launches the same session again, and never while it runs or reads starting under another
+  launch.
+
+**Mend: New session in this worktree…** opens the same input for another session on the same files
+and branch, with a new conversation. Its line reads `in <worktree>`, and says who else runs there.
 
 ## Open
 
