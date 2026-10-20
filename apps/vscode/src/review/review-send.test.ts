@@ -516,3 +516,35 @@ describe("Retry from the toast when nothing was pasted", () => {
     );
   });
 });
+
+describe("a second window sends a review composed before the first window's went out", () => {
+  it("sends nothing once the first is held in claude's terminal, and a new review with more still goes", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    mend.serverComments = [comment({ id: "c1" }), comment({ id: "c2", line: 13 })];
+    const a = await window(keptIn(directory, slowFiles(20)), mend);
+    const b = await window(keptIn(directory, slowFiles(20)), mend);
+    const fromA = a.store.compose();
+    const fromB = b.store.compose();
+    if (fromA === null || fromB === null) throw new Error("nothing composed");
+    expect(await a.store.send(fromA, fromA.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(a.pastes).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(a.store.review().sends.at(-1)?.phase).toMatchObject({ paste: { kind: "done" } }),
+    );
+    expect(await b.store.send(fromB, fromB.text)).toMatchObject({ sent: false });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(mend.delivered).toHaveLength(1);
+    expect(b.pastes).toEqual([]);
+
+    await b.store.reloadReview();
+    await b.store.comment(onLine(5, "Name the constant"));
+    const more = b.store.compose();
+    if (more === null) throw new Error("nothing composed");
+    expect(await b.store.send(more, more.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(b.pastes).toHaveLength(1));
+    expect(b.pastes[0]).toContain("Name the constant");
+    expect(b.pastes[0]).not.toContain(fromA.text.split("\n")[0]);
+  });
+});
