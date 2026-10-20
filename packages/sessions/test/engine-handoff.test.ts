@@ -2,16 +2,17 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { ProjectId } from "@mend/domain";
-import type { Session } from "@mend/domain/workbench";
+import { Session } from "@mend/domain/workbench";
 import { SessionEngine, startFromBase } from "@mend/sessions";
 import { skippedFreshen, Store, type AdmittedHandoff } from "@mend/store";
 import { buildHandoffBundle, sh } from "@mend/store/testing";
 import { it } from "@mend/test-ci/effect-vitest";
+import type { CreateOptions } from "@sealant/sdk";
 import { Effect, Result } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
-import { setup, withEngine, type World } from "./engine/fixture.ts";
+import { sealantLaunchLayer, setup, withEngine, type World } from "./engine/fixture.ts";
 
 const checkoutIn = (tmp: string) => {
   const checkout = path.join(tmp, "checkout");
@@ -179,6 +180,62 @@ describe("SessionEngine handoff", () => {
           ).toEqual([bundle.mergeBase]);
         }),
       { captured: memory },
+    );
+  });
+
+  it("recovers a handed-off session whose harness never ran by launching it, not by resuming it", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const bundle = buildHandoffBundle(checkoutIn(tmp));
+          const admitted = yield* admitIn(project.storePath, bundle.bytes);
+          const engine = yield* SessionEngine;
+          const refused = yield* provisionHandoff(project.id, "fix-login", admitted);
+          world.sessions.set(
+            refused.id,
+            new Session({
+              ...refused,
+              status: "failed",
+              settledAt: world.clock.now(),
+              summary:
+                "launch failed: budget reached · 4 launches starting at once for one account",
+            }),
+          );
+          const resumed = yield* engine.resumeSession(refused.id, null).pipe(Effect.result);
+          if (Result.isFailure(resumed) && resumed.failure._tag === "HarnessStateNotFoundError") {
+            expect(resumed.failure.message).toBe(
+              `Saved harness state is missing for session ${refused.id}.`,
+            );
+          } else {
+            expect.unreachable("resume started a session whose harness never ran");
+          }
+          const launched = yield* engine.launch(refused.id, ["codex", "finish the tests"]);
+          expect(launched.status).toBe("running");
+
+          const held = yield* engine.holdWorkspace(
+            (yield* provisionHandoff(
+              project.id,
+              "fix-login-2",
+              yield* admitIn(
+                project.storePath,
+                buildHandoffBundle(path.join(tmp, "checkout"), {
+                  cutAt: "2026-10-18T09:00:00.000Z",
+                }).bytes,
+              ),
+            )).id,
+          );
+          expect(held.status).toBe("idle");
+          const agent = yield* engine.launch(held.id, ["codex", "finish the tests"]);
+          expect(agent.status).toBe("running");
+          expect(
+            [...world.processes.values()]
+              .filter((process) => process.sessionId === held.id && process.exitedAt === null)
+              .map((process) => process.kind),
+          ).toContain("agent-pty");
+        }),
+      { captured: makeMemoryCaptureStore(), sealantLayer: sealantLaunchLayer(created) },
     );
   });
 
