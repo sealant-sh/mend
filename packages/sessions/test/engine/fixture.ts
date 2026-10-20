@@ -3191,6 +3191,15 @@ const countingSessionReads = (
     })),
   ).pipe(Layer.provide(base));
 
+/** The sessions repo given, through `wrap` when a case gives one. */
+const wrappedSessions = (
+  wrap: ((inner: SessionsRepo["Service"]) => SessionsRepo["Service"]) | undefined,
+  base: Layer.Layer<SessionsRepo>,
+): Layer.Layer<SessionsRepo> =>
+  wrap === undefined
+    ? base
+    : Layer.effect(SessionsRepo, Effect.map(SessionsRepo, wrap)).pipe(Layer.provide(base));
+
 /** Dependencies and persisted fixture state used by one engine scope. */
 interface EngineOptions {
   /** Observe real channel waits without replacing registration or timeout behavior. */
@@ -3289,6 +3298,8 @@ interface EngineOptions {
   };
   /** Every session row read by id (`SessionsRepo.byId`), in order. */
   readonly sessionReads?: Array<string>;
+  /** Wraps the sessions repo the engine reads, so a case can hold one reader inside its read. */
+  readonly wrapSessions?: (inner: SessionsRepo["Service"]) => SessionsRepo["Service"];
 }
 
 /** Run a live adapter scenario, including AbortSignal-driven interruption. */
@@ -3441,9 +3452,12 @@ export const withPreparedEngineEffect = <B, A, E>(
       Layer.provide(settingsLayer(options.workspaceImage)),
       Layer.provide(projectsLayer(world)),
       Layer.provide(
-        options.sessionReads === undefined
-          ? sessionsLayer(world)
-          : countingSessionReads(options.sessionReads, sessionsLayer(world)),
+        wrappedSessions(
+          options.wrapSessions,
+          options.sessionReads === undefined
+            ? sessionsLayer(world)
+            : countingSessionReads(options.sessionReads, sessionsLayer(world)),
+        ),
       ),
       Layer.provide(sessionRunsLayer(world)),
       Layer.provide(sessionProcessesLayer(world)),

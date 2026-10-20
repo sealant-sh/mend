@@ -42,18 +42,45 @@ import {
 const sessionSettled = (world: World, sessionId: SessionId) =>
   world.sessions.get(sessionId)?.settledAt != null;
 
+/** The reaper's word as it takes up a drain, said in the tick itself, before the drain is forked. */
+const DRAIN_TAKEN_UP = "session engine: capture mode · a drain no fiber runs · taken up";
+
+/** The session's agent processes the store still has live. */
+const liveAgents = (world: World, sessionId: SessionId) =>
+  [...world.processes.values()].filter(
+    (process) =>
+      process.sessionId === sessionId &&
+      (process.kind === "agent-pty" || process.kind === "agent-protocol") &&
+      process.exitedAt === null,
+  );
+
 /**
- * Room for a drain the reaper took up to flush, terminate and release the lease (SLNT-111), ended
- * early once the workspace stop is recorded. Each round also yields to the event loop, where the
- * fake platform's promises settle and the fibers waiting on them resume.
+ * One step a case holds: armed, the pass after `skip` more waits there (`reached`) until `release`;
+ * unarmed, every pass goes at once. The wait is interruptible, as the call it stands in for is.
  */
-const reaperWindow = (events: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
-    for (let round = 0; round < 200 && !events.includes("workspace-1"); round++) {
-      yield* TestClock.adjust(Duration.millis(10));
-      yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
-    }
-  });
+const heldStep = (changed: () => void) => {
+  let skips: number | null = null;
+  let reached = false;
+  const open = Promise.withResolvers<void>();
+  return {
+    arm: (skip = 0) => {
+      skips = skip;
+    },
+    reached: () => reached,
+    release: () => open.resolve(),
+    pass: Effect.suspend(() => {
+      if (skips === null) return Effect.void;
+      if (skips > 0) {
+        skips -= 1;
+        return Effect.void;
+      }
+      skips = null;
+      reached = true;
+      changed();
+      return Effect.promise(() => open.promise);
+    }),
+  };
+};
 
 /**
  * `launchOnce` for the TestClock cases: `setup` runs as `withPreparedEngineEffect`'s `before`,
@@ -447,6 +474,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
         const events: string[] = [];
         const close = Promise.withResolvers<void>();
         let closeReached = false;
+        const takenUp = yield* logged(DRAIN_TAKEN_UP);
         yield* withPreparedEngineEffect(
           (_world, dir) => setup(dir, world),
           (_world, _dir, project) =>
@@ -457,17 +485,15 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               yield* untilChanged(() => closeReached, "the stop at the agent's close");
               expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
               yield* engine.reapCaptureLeases();
-              yield* reaperWindow(events);
+              expect(yield* Deferred.isDone(takenUp.seen)).toBe(false);
               close.resolve();
               yield* Fiber.join(stopping);
               yield* untilChanged(() => events.includes("workspace-1"), "the workspace stop");
-              for (let look = 0; look < 100 && !sessionSettled(world, session.id); look++) {
-                yield* TestClock.adjust(Duration.millis(10));
-              }
+              yield* untilChanged(() => sessionSettled(world, session.id), "the settle");
               const after = world.sessions.get(session.id);
               expect(after?.status).toBe("stopped");
-              expect(after?.settledAt).not.toBeNull();
               expect(after?.captureDrain).toBeNull();
+              expect(liveAgents(world, session.id)).toEqual([]);
             }),
           {
             fixture: { world, tmp },
@@ -494,7 +520,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               },
             ),
           },
-        );
+        ).pipe(Effect.provide(takenUp.layer));
       }),
     { timeout: 20_000 },
   );
@@ -510,6 +536,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
         const close = Promise.withResolvers<void>();
         let closeReached = false;
         let pending = 2;
+        const takenUp = yield* logged(DRAIN_TAKEN_UP);
         yield* withPreparedEngineEffect(
           (_world, dir) => setup(dir, world),
           (_world, _dir, project) =>
@@ -519,7 +546,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               const stopping = yield* Effect.forkChild(engine.stop(session.id));
               yield* untilChanged(() => closeReached, "the stop at the agent's close");
               yield* engine.reapCaptureLeases();
-              yield* reaperWindow(events);
+              expect(yield* Deferred.isDone(takenUp.seen)).toBe(false);
               close.resolve();
               yield* Fiber.join(stopping);
               // Nothing moves for the stall window (1 s): the Stop's drain keeps the workspace.
@@ -534,11 +561,12 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               pending = 0;
               yield* TestClock.adjust(Duration.seconds(10));
               yield* engine.reapCaptureLeases();
-              yield* reaperWindow(events);
-              expect(events).toContain("workspace-1");
-              for (let look = 0; look < 100 && !sessionSettled(world, session.id); look++) {
-                yield* TestClock.adjust(Duration.millis(10));
-              }
+              expect(yield* Deferred.isDone(takenUp.seen)).toBe(true);
+              yield* untilChanged(
+                () => events.includes("workspace-1"),
+                "the reaper's workspace stop",
+              );
+              yield* untilChanged(() => sessionSettled(world, session.id), "the settle");
               const after = world.sessions.get(session.id);
               expect(after?.status).toBe("stopped");
               expect(after?.captureDrain).toBeNull();
@@ -569,7 +597,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               },
             ),
           },
-        );
+        ).pipe(Effect.provide(takenUp.layer));
       }),
     { timeout: 20_000 },
   );
@@ -1080,6 +1108,23 @@ const slowCloses = (
               }),
             ),
           ),
+      }),
+    ),
+  ).pipe(Layer.provide(inner));
+
+/** `inner`, whose PTY lookups pass `step` first: a close asked of the platform starts with one. */
+const heldPtyLookups = (
+  inner: Layer.Layer<SealantClient>,
+  step: Effect.Effect<void>,
+): Layer.Layer<SealantClient> =>
+  Layer.effect(
+    SealantClient,
+    Effect.map(
+      SealantClient,
+      (client): SealantClientShape => ({
+        ...client,
+        getSession: (workspace, sessionId) =>
+          step.pipe(Effect.andThen(client.getSession(workspace, sessionId))),
       }),
     ),
   ).pipe(Layer.provide(inner));
@@ -3092,5 +3137,404 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
         },
       );
     },
+  );
+});
+
+/** A stand-in platform whose executor saves at once and ends when asked. */
+const savingPlatform = (
+  created: Array<CreateOptions>,
+  events: string[],
+  status: (stopAsked: boolean) => "ready" | "stopped" | "failed" = (stopAsked) =>
+    stopAsked ? "stopped" : "ready",
+) =>
+  lifecycleLayer(created, {
+    events,
+    captureOps: { status, flush: () => Effect.succeed(flushReport(0, 1)) },
+  });
+
+/** What a session the reaper took over must end as: settled `stopped`, nothing of it live. */
+const settledStopped = (world: World, sessionId: SessionId) => {
+  const after = world.sessions.get(sessionId);
+  expect({
+    status: after?.status,
+    settled: after?.settledAt != null,
+    captureDrain: after?.captureDrain,
+    liveAgents: liveAgents(world, sessionId).length,
+  }).toEqual({ status: "stopped", settled: true, captureDrain: null, liveAgents: 0 });
+};
+
+describe("SessionEngine Stop against every takeover of its drain (SLNT-111)", () => {
+  it.effect(
+    "a lease that lapses while a Stop still closes its agent, on an executor the platform keeps and then ends: the session settles `stopped`, never `running` without an agent",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, changed, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const events: string[] = [];
+        const close = Promise.withResolvers<void>();
+        let closeReached = false;
+        let killed = false;
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const stopping = yield* Effect.forkChild(engine.stop(session.id));
+              yield* untilChanged(() => closeReached, "the stop at the agent's close");
+              expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
+              // The executor dies on its runtime and Core keeps it; its heartbeats stop.
+              killed = true;
+              const lapsed = memory.clock.now() + 1_000_000;
+              memory.clock.now = () => lapsed;
+              yield* engine.reapCaptureLeases();
+              yield* untilChanged(
+                () => liveAgents(world, session.id).length === 0,
+                "the reaper's reap of the agent",
+              );
+              yield* untilChanged(() => events.includes("workspace-1"), "the workspace stop");
+              yield* untilChanged(
+                () => world.sessions.get(session.id)?.captureDrain === null,
+                "the drain's end",
+              );
+              close.resolve();
+              yield* Fiber.join(stopping);
+              // The Stop's answer folds what is live now, not the rows it read before its close.
+              expect(world.sessions.get(session.id)?.status).not.toBe("running");
+              yield* untilChanged(() => sessionSettled(world, session.id), "the settle");
+              settledStopped(world, session.id);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            drainPolicy: {
+              pollInterval: Duration.millis(10),
+              terminationWait: Duration.seconds(5),
+            },
+            sealantLayer: slowCloses(
+              signalling(
+                savingPlatform(created, events, (stopAsked) =>
+                  !killed ? "ready" : stopAsked ? "stopped" : "failed",
+                ),
+              ),
+              () => {
+                closeReached = true;
+                changed();
+                return close.promise;
+              },
+            ),
+          },
+        );
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "an executor the platform keeps and then ends at the reaper's stop, with no Stop asked: the session settles, never `running` without an agent",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const events: string[] = [];
+        let killed = false;
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              killed = true;
+              const lapsed = memory.clock.now() + 1_000_000;
+              memory.clock.now = () => lapsed;
+              yield* engine.reapCaptureLeases();
+              yield* untilChanged(() => events.includes("workspace-1"), "the workspace stop");
+              yield* untilChanged(() => sessionSettled(world, session.id), "the settle");
+              const after = world.sessions.get(session.id);
+              expect(after?.status).not.toBe("running");
+              expect(after?.captureDrain).toBeNull();
+              expect(liveAgents(world, session.id)).toEqual([]);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            drainPolicy: {
+              pollInterval: Duration.millis(10),
+              terminationWait: Duration.seconds(5),
+            },
+            sealantLayer: signalling(
+              savingPlatform(created, events, (stopAsked) =>
+                !killed ? "ready" : stopAsked ? "stopped" : "failed",
+              ),
+            ),
+          },
+        );
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a planned replacement that a reaper tick starts after the owner's Stop began saves and ends the executor and relaunches nothing: the session settles `stopped`",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, changed, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const events: string[] = [];
+        const close = Promise.withResolvers<void>();
+        let closeReached = false;
+        // The tick reads the session as it was before the Stop, and decides after it began.
+        const unsettledRead = heldStep(changed);
+        const stood = yield* logged(
+          "session engine: capture mode · stopped during the replacement · nothing relaunched",
+        );
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              yield* shipHarnessCapture(
+                dir,
+                memory,
+                session.worktreeId,
+                memory.leases.get(session.worktreeId)?.epoch ?? 0,
+                crypto.randomUUID(),
+              );
+              unsettledRead.arm();
+              const tick = yield* Effect.forkChild(engine.reapCaptureLeases());
+              yield* untilChanged(unsettledRead.reached, "the tick's read of the sessions");
+              const stopping = yield* Effect.forkChild(engine.stop(session.id));
+              yield* untilChanged(() => closeReached, "the stop at the agent's close");
+              unsettledRead.release();
+              yield* Fiber.join(tick);
+              // The replacement saves, ends the executor, and decides what it relaunches.
+              yield* untilChanged(() => events.includes("workspace-1"), "the replacement's stop");
+              yield* Effect.raceFirst(
+                Deferred.await(stood.seen),
+                untilChanged(() => created.length > 1, "a relaunch"),
+              );
+              expect(created).toHaveLength(1);
+              close.resolve();
+              yield* Fiber.join(stopping);
+              // The Stop's answer folds what is live now, not the rows it read before its close.
+              expect(world.sessions.get(session.id)?.status).not.toBe("running");
+              yield* untilChanged(() => sessionSettled(world, session.id), "the settle");
+              settledStopped(world, session.id);
+              expect(created).toHaveLength(1);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            wrapSessions: (inner) => ({
+              ...inner,
+              listUnsettled: () => unsettledRead.pass.pipe(Effect.andThen(inner.listUnsettled())),
+            }),
+            drainPolicy: {
+              pollInterval: Duration.millis(10),
+              executorMaxSeconds: 1000,
+              drainEstimateSeconds: 600,
+              deadlineMarginSeconds: 400,
+              terminationWait: Duration.seconds(5),
+            },
+            sealantLayer: slowCloses(signalling(savingPlatform(created, events)), () => {
+              closeReached = true;
+              changed();
+              return close.promise;
+            }),
+          },
+        ).pipe(Effect.provide(stood.layer));
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a Stop interrupted after it took the drain and before it asked the close: the reaper takes the drain up and the session settles `stopped`",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, changed, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const events: string[] = [];
+        const ptyLookup = heldStep(changed);
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              ptyLookup.arm();
+              const stopping = yield* Effect.forkChild(engine.stop(session.id));
+              yield* untilChanged(ptyLookup.reached, "the stop on its way to the close");
+              expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
+              // The client hangs up: the request's fiber is interrupted.
+              yield* Fiber.interrupt(stopping);
+              yield* engine.reapCaptureLeases();
+              yield* untilChanged(() => events.includes("workspace-1"), "the workspace stop");
+              yield* untilChanged(() => sessionSettled(world, session.id), "the settle");
+              settledStopped(world, session.id);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            drainPolicy: {
+              pollInterval: Duration.millis(10),
+              terminationWait: Duration.seconds(5),
+            },
+            sealantLayer: heldPtyLookups(
+              signalling(savingPlatform(created, events)),
+              ptyLookup.pass,
+            ),
+          },
+        );
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a Stop interrupted in the middle of its close: the reaper takes the drain up and the session settles `stopped`",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, changed, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const events: string[] = [];
+        const close = Promise.withResolvers<void>();
+        let closeReached = false;
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const stopping = yield* Effect.forkChild(engine.stop(session.id));
+              yield* untilChanged(() => closeReached, "the stop at the agent's close");
+              yield* Fiber.interrupt(stopping);
+              yield* engine.reapCaptureLeases();
+              yield* untilChanged(() => events.includes("workspace-1"), "the workspace stop");
+              yield* untilChanged(() => sessionSettled(world, session.id), "the settle");
+              settledStopped(world, session.id);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            drainPolicy: {
+              pollInterval: Duration.millis(10),
+              terminationWait: Duration.seconds(5),
+            },
+            sealantLayer: slowCloses(signalling(savingPlatform(created, events)), () => {
+              closeReached = true;
+              changed();
+              return close.promise;
+            }),
+          },
+        );
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "two Stops overlap and the second is interrupted inside its first read: the first still owns its drain, and the reaper leaves it alone",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, changed, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const events: string[] = [];
+        const close = Promise.withResolvers<void>();
+        let closeReached = false;
+        const sessionRead = heldStep(changed);
+        const takenUp = yield* logged(DRAIN_TAKEN_UP);
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const first = yield* Effect.forkChild(engine.stop(session.id));
+              yield* untilChanged(() => closeReached, "the first stop at the agent's close");
+              // The first read is the owner's lookup around the Stop; the second is the Stop's own.
+              sessionRead.arm(1);
+              const second = yield* Effect.forkChild(engine.stop(session.id));
+              yield* untilChanged(sessionRead.reached, "the second stop inside its read");
+              yield* Fiber.interrupt(second);
+              yield* engine.reapCaptureLeases();
+              expect(yield* Deferred.isDone(takenUp.seen)).toBe(false);
+              close.resolve();
+              yield* Fiber.join(first);
+              yield* untilChanged(() => sessionSettled(world, session.id), "the settle");
+              settledStopped(world, session.id);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            wrapSessions: (inner) => ({
+              ...inner,
+              byId: (id) => sessionRead.pass.pipe(Effect.andThen(inner.byId(id))),
+            }),
+            drainPolicy: {
+              pollInterval: Duration.millis(10),
+              terminationWait: Duration.seconds(5),
+            },
+            sealantLayer: slowCloses(signalling(savingPlatform(created, events)), () => {
+              closeReached = true;
+              changed();
+              return close.promise;
+            }),
+          },
+        ).pipe(Effect.provide(takenUp.layer));
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a close that never returns: past the Stop's close deadline the drain ends the executor, and the session settles `stopped`",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, changed, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const events: string[] = [];
+        let closeReached = false;
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const stopping = yield* Effect.forkChild(engine.stop(session.id));
+              yield* untilChanged(() => closeReached, "the stop at the agent's close");
+              yield* TestClock.adjust(Duration.seconds(29));
+              expect(events).not.toContain("workspace-1");
+              yield* TestClock.adjust(Duration.seconds(1));
+              yield* Fiber.join(stopping);
+              yield* untilChanged(() => events.includes("workspace-1"), "the workspace stop");
+              yield* untilChanged(() => sessionSettled(world, session.id), "the settle");
+              settledStopped(world, session.id);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            drainPolicy: {
+              pollInterval: Duration.millis(10),
+              terminationWait: Duration.seconds(5),
+            },
+            sealantLayer: slowCloses(signalling(savingPlatform(created, events)), () => {
+              closeReached = true;
+              changed();
+              return new Promise<void>(() => {});
+            }),
+          },
+        );
+      }),
+    { timeout: 20_000 },
   );
 });
