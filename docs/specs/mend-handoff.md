@@ -283,10 +283,13 @@ row) is idempotent and runs again whenever a session is provisioned in or joins 
    and the store's `mend/<name>` branch refs; a name lost between the look and the create (the
    name's unique key, or the branch ref) takes the next suffix, a bounded number of times;
 8. the audit event `worktree.handed_off`;
-9. with `hold`, `engine.holdWorkspace(id, caller)`, forked past the answer: the workspace a shell
-   resume opens, a shell process of the caller's in it, and the resume's own shell ended, so the
-   fold reads `idle`. The answer carries the session as it stands afterwards: `idle`, still
-   `starting` when the hold outlived the answer window, or `failed · hold failed: …`.
+9. with `hold`, `engine.holdWorkspace(id)`, forked past the answer and under one of the account's
+   launch slots (`accountLaunchesInFlight`) for its whole course. The launch opens the workspace
+   and, in place of an agent, the owner's login shell, recorded as a shell process. The session's
+   PTY pointer names that shell, so `mend attach` reaches it, and the fold reads `idle`. No run of
+   the harness is recorded. A hold the slot refuses, or that fails at any stage, settles the session
+   `failed` with its words. The answer carries the session as it stands afterwards: `idle`, still
+   `starting` while the hold outlives the answer window, or `failed`.
 
 **Rows.** `handed off from <machine>` is a fact of the worktree and shows on every session line in
 it. The CLI shows it in `sessionRowFacts` (`idle · handed off from dana-mbp · claude · 1 shell`) and
@@ -315,9 +318,6 @@ it. The CLI shows it in `sessionRowFacts` (`idle · handed off from dana-mbp · 
   until the first install. This is a follow-up.
 - A replay by another account of the project is refused as `StoreFailure` with the words
   `received before, for another account`; the contract has no closer refusal.
-
-- `holdWorkspace` opens the workspace with a shell resume and then ends that resume's shell, so the
-  TUI's session row for a held session reads `agent ended <n> ago` where no agent ran.
 
 These alternatives were weighed and not taken, so a reviewer should not report their absence.
 

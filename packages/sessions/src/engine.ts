@@ -858,6 +858,9 @@ const interactiveShellArgv = (image: WorkspaceImage | null): ReadonlyArray<strin
  * with arguments (`mend run -- bash -c '…'`) is the person's own program and runs as itself, its
  * argv untouched: swapping in the login shell ran bash scripts in zsh (RC 0.36.0-next.761).
  */
+/** What a launch starts in the workspace it opens: the session's agent, or a shell that holds it. */
+type LaunchRole = "agent" | "hold";
+
 const asksInteractiveShell = (argv: ReadonlyArray<string>): boolean =>
   argv.length === 1 && argv[0] === "bash";
 
@@ -2575,9 +2578,12 @@ export class SessionEngine extends Context.Service<
       | SessionLaunchSetupError
       | DotfilesResolveError
     >;
+    /**
+     * Open the session's workspace with no agent in it: its owner's login shell holds it, and is
+     * what the session's terminal attaches to.
+     */
     readonly holdWorkspace: (
       sessionId: SessionId,
-      openedBy: string,
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
@@ -16661,6 +16667,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         protocolStart: LaunchStart | null = null,
         protocolAuthor: string | null = null,
         protocolResumeId: string | null = null,
+        role: LaunchRole = "agent",
       ) {
         // Capture mode: a create of this session whose answer is not on its row holds the
         // session's ownership until it is reconciled (review 2026-09-28 (3) #5) — whoever
@@ -18013,28 +18020,37 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           settleOnFailure,
         );
         const sealantRunId = SealantRunId.make(pty.runId);
-        // Refused in words only over a run of the session still live, which the gates above
-        // rule out: the PTY just opened closes, and its executor goes as after any failed launch.
-        yield* createSessionRun({
-          sessionId,
-          harness: session.harness,
-          sealantRunId,
-          sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
-          sealantSessionId: pty.id,
-          ...environmentManifest,
-        }).pipe(
-          Effect.tapError((error) =>
-            closeProcessPty(SealantWorkspaceId.make(workspace.id), pty.id).pipe(
-              Effect.andThen(abandonExecutor(workspace, error.message)),
+        const holds = role === "hold";
+        // A held workspace runs no agent: no run of the session's harness, and (capture mode, where
+        // the accepted executor is on the row already) no run on the row either, so a later
+        // launch of its agent starts as the session's first.
+        if (!holds) {
+          // Refused in words only over a run of the session still live, which the gates above
+          // rule out: the PTY just opened closes, and its executor goes as after any failed
+          // launch.
+          yield* createSessionRun({
+            sessionId,
+            harness: session.harness,
+            sealantRunId,
+            sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
+            sealantSessionId: pty.id,
+            ...environmentManifest,
+          }).pipe(
+            Effect.tapError((error) =>
+              closeProcessPty(SealantWorkspaceId.make(workspace.id), pty.id).pipe(
+                Effect.andThen(abandonExecutor(workspace, error.message)),
+              ),
             ),
-          ),
-          Effect.onError(() => releaseTake),
-        );
-        yield* sessions.setSealantIds(
-          sessionId,
-          sealantRunId,
-          SealantWorkspaceId.make(workspace.id),
-        );
+            Effect.onError(() => releaseTake),
+          );
+        }
+        if (!holds || capture === null) {
+          yield* sessions.setSealantIds(
+            sessionId,
+            sealantRunId,
+            SealantWorkspaceId.make(workspace.id),
+          );
+        }
         yield* sessions.setExecutorStartedAt(sessionId, executorStartedAt);
         yield* sessions.setSealantSessionId(sessionId, pty.id);
         // The skeleton is consumed: the session row now owns the workspace,
@@ -18050,42 +18066,57 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           protocolStart !== null && session.harness === "claude" && claudeSessionFlag >= 0
             ? (shapedArgv.at(claudeSessionFlag + 1) ?? null)
             : null;
-        const agentProcess = yield* processes
-          .create({
-            sessionId,
-            sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
-            sealantSessionId: pty.id,
-            sealantRunId,
-            launchCorrelationId: correlationId,
-            kind: protocolStart === null ? "agent-pty" : "agent-protocol",
-            harness: interactiveShell ? "shell" : session.harness,
-            providerSessionId: interactiveShell
-              ? null
-              : (nativeImport?.providerSessionId ??
-                (manifest !== null && manifest.harness === session.harness
-                  ? manifest.providerSessionId
-                  : (protocolProviderSessionId ?? protocolResumeId)) ??
-                claudePin.providerSessionId),
-            protocolOptions:
-              protocolStart === null
-                ? null
-                : {
-                    model: protocolStart.model ?? null,
-                    effort: protocolStart.effort ?? null,
-                    permissionMode: protocolStart.permissionMode ?? "bypass",
-                  },
-            label: session.harness,
-            argv: shapedArgv,
-            // The person a process runs as is recorded on it (docs/adr/0016, decision 1).
-            runsAs: startAs === null ? null : ownerUserId,
-          })
+        // A held workspace's process is the owner's shell, not an agent: the PTY pointer above makes
+        // it the session's terminal, and the fold reads `idle`.
+        const launchedProcess = yield* processes
+          .create(
+            holds
+              ? {
+                  sessionId,
+                  sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
+                  sealantSessionId: pty.id,
+                  sealantRunId,
+                  kind: "shell",
+                  label: "shell 1",
+                  argv: shapedArgv,
+                  runsAs: startAs === null ? null : ownerUserId,
+                }
+              : {
+                  sessionId,
+                  sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
+                  sealantSessionId: pty.id,
+                  sealantRunId,
+                  launchCorrelationId: correlationId,
+                  kind: protocolStart === null ? "agent-pty" : "agent-protocol",
+                  harness: interactiveShell ? "shell" : session.harness,
+                  providerSessionId: interactiveShell
+                    ? null
+                    : (nativeImport?.providerSessionId ??
+                      (manifest !== null && manifest.harness === session.harness
+                        ? manifest.providerSessionId
+                        : (protocolProviderSessionId ?? protocolResumeId)) ??
+                      claudePin.providerSessionId),
+                  protocolOptions:
+                    protocolStart === null
+                      ? null
+                      : {
+                          model: protocolStart.model ?? null,
+                          effort: protocolStart.effort ?? null,
+                          permissionMode: protocolStart.permissionMode ?? "bypass",
+                        },
+                  label: session.harness,
+                  argv: shapedArgv,
+                  // The person a process runs as is recorded on it (docs/adr/0016, decision 1).
+                  runsAs: startAs === null ? null : ownerUserId,
+                },
+          )
           .pipe(Effect.onError(() => releaseTake));
         if (inConversation !== null && inConversation.fence !== null) {
-          yield* bindConversationProcess(agentProcess, inConversation.fence).pipe(
+          yield* bindConversationProcess(launchedProcess, inConversation.fence).pipe(
             Effect.tapError(() =>
               closeProcessPty(SealantWorkspaceId.make(workspace.id), pty.id).pipe(
                 Effect.andThen(
-                  endAgentProcess(agentProcess, {
+                  endAgentProcess(launchedProcess, {
                     how: "stopped",
                     exitCode: null,
                     outcome: "stopped",
@@ -18100,7 +18131,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         if (opencodeAtLaunch !== null) {
           yield* writeOpencodeLaunchSnapshot(
-            processStatePathOf(project.storePath, sessionId, agentProcess.id),
+            processStatePathOf(project.storePath, sessionId, launchedProcess.id),
             opencodeAtLaunch,
           ).pipe(
             Effect.catch((error) =>
@@ -18113,33 +18144,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (protocolStart !== null) {
           yield* protocolHost
             .attach({
-              process: agentProcess,
+              process: launchedProcess,
               pipe: pty,
               cwd: "/workspace/repo",
               model: protocolStart.model,
               effort: protocolStart.effort,
               permissionMode: protocolStart.permissionMode ?? "bypass",
-              hooks: protocolHooksFor(agentProcess),
+              hooks: protocolHooksFor(launchedProcess),
               // The session's own workspace, created or claimed with its owner's login.
               launchedWithLoginOf: session.ownerUserId,
               resumePath: inConversation?.resumePath ?? null,
-              runsAs: agentProcess.runsAs,
+              runsAs: launchedProcess.runsAs,
             })
             .pipe(
               Effect.tapError((error) =>
                 Effect.gen(function* () {
-                  yield* protocolHost.detach(agentProcess.id);
-                  yield* conversations.cancelOpenForProcess(agentProcess.id);
-                  yield* closeProcessPty(agentProcess.sealantWorkspaceId, pty.id).pipe(
+                  yield* protocolHost.detach(launchedProcess.id);
+                  yield* conversations.cancelOpenForProcess(launchedProcess.id);
+                  yield* closeProcessPty(launchedProcess.sealantWorkspaceId, pty.id).pipe(
                     Effect.ignore,
                   );
-                  const recorded = yield* endAgentProcess(agentProcess, {
+                  const recorded = yield* endAgentProcess(launchedProcess, {
                     how: "exited",
                     exitCode: null,
                     outcome: "failed",
                     summary: `protocol initialization failed: ${error.message}`,
                   }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(false)));
-                  if (recorded) yield* finishAgentProcess(agentProcess, "turn-boundary");
+                  if (recorded) yield* finishAgentProcess(launchedProcess, "turn-boundary");
                 }).pipe(Effect.ignore),
               ),
             );
@@ -18153,7 +18184,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // already settled (a failed first attempt retried) must clear
         // settled_at, or the first-settle-wins guard ignores this run's exit
         // and the row reads "running" forever — unstoppable and undeletable.
-        yield* sessions.reopen(sessionId, "running");
+        if (holds) yield* reconcileSession(sessionId, { sweep: false });
+        else yield* sessions.reopen(sessionId, "running");
         yield* clearStaleStartSummary(sessionId);
         // After the stale words go, as the setup line does: said before, it went with them.
         if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
@@ -18190,13 +18222,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? agentStartingWords(session.harness, true)
             : null;
         if (startingWords !== null) yield* noteLaunchWords(sessionId, startingWords);
-        yield* forkSupervision(sessionId, sealantRunId);
+        if (!holds) yield* forkSupervision(sessionId, sealantRunId);
 
         // The agent process ends on its own; the fold over every process decides the session.
-        yield* Effect.forkIn(watchProcess(agentProcess), scope);
+        yield* Effect.forkIn(watchProcess(launchedProcess), scope);
         // The runtime is launched by now, where it may not have been at the create.
         yield* noteExecutorResource(sessionId, workspace);
-        yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
+        yield* renewWorkspaceLease(sessionId, launchedProcess.sealantWorkspaceId);
         if (protocolStart !== null) {
           const openingInput = protocolStart.prompt?.trim() ?? "";
           if (openingInput !== "") {
@@ -20745,23 +20777,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
+      /**
+       * A workspace held for its owner with no agent: the launch opens the workspace and, instead
+       * of an agent, the owner's login shell, recorded as a shell. The fold reads `idle`. A hold
+       * that fails settles the session `failed`, whatever stage it reached.
+       */
       const holdWorkspace = Effect.fn("SessionEngine.holdWorkspace")(function* (
         sessionId: SessionId,
-        openedBy: string,
       ) {
-        yield* resumeSession(sessionId, "shell");
-        yield* openShell(sessionId, openedBy);
-        const agent = currentAgentProcess(yield* processes.listForSession(sessionId));
-        if (
-          agent !== null &&
-          isLiveProcess(agent) &&
-          agent.harness === "shell" &&
-          agent.sealantSessionId !== null &&
-          (yield* closeProcessPty(agent.sealantWorkspaceId, agent.sealantSessionId))
-        ) {
-          yield* endProcess(agent, "stopped", null);
-        }
-        return yield* sessions.byId(sessionId);
+        return yield* launchInternal(
+          sessionId,
+          ["bash"],
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "hold",
+        ).pipe(
+          Effect.tapCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.void
+              : settleSession(sessionId, "failed", launchEndWords(Cause.squash(cause))).pipe(
+                  Effect.ignore,
+                ),
+          ),
+        );
       });
 
       /**
@@ -24215,8 +24257,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           detached(
             owned(sessionId)(oneLaunch(sessionId)(resumeSession(sessionId, harness, fresh))),
           ),
-        holdWorkspace: (sessionId, openedBy) =>
-          detached(owned(sessionId)(oneLaunch(sessionId)(holdWorkspace(sessionId, openedBy)))),
+        holdWorkspace: (sessionId) =>
+          detached(owned(sessionId)(oneLaunch(sessionId)(holdWorkspace(sessionId)))),
         switchMode: (sessionId, to, start, author) =>
           detached(
             owned(sessionId)(oneLaunch(sessionId)(switchMode(sessionId, to, start, author))),

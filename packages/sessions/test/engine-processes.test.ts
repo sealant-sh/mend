@@ -13,6 +13,7 @@ import {
   WorktreeId,
 } from "@mend/domain";
 import {
+  currentAgentProcess,
   Project,
   Session,
   SessionProcess,
@@ -28,9 +29,10 @@ import {
 } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions } from "@sealant/sdk";
-import { Effect, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer, Result } from "effect";
 import { describe, expect } from "vitest";
 
+import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { provisionIn } from "./engine/capture-fixture.ts";
 import { makeEngineClock } from "./engine/clock-fixture.ts";
 import {
@@ -1646,9 +1648,9 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("holds a provisioned session's workspace with no agent: the fold reads idle, a shell holds it, the resume's shell is ended", async () => {
+  it("holds a provisioned session's workspace with no agent: one live shell, which is the session's terminal, and no run of its harness", async () => {
     const created: CreateOptions[] = [];
-    const stopped: string[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
     await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
@@ -1662,21 +1664,123 @@ describe("SessionEngine", () => {
             ownerUserId: "user-fixture",
             start: { kind: "base", base: null },
           });
-          const held = yield* engine.holdWorkspace(session.id, "user-fixture");
+          const held = yield* engine.holdWorkspace(session.id);
           expect(held.status).toBe("idle");
           expect(held.settledAt).toBeNull();
-          expect(world.sessions.get(session.id)?.status).toBe("idle");
-          const rows = [...world.processes.values()].toSorted(
-            (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+          const rows = [...world.processes.values()].filter(
+            (process) => process.sessionId === session.id,
           );
-          expect(rows.map((process) => [process.kind, process.harness, process.status])).toEqual([
-            ["agent-pty", "shell", "stopped"],
-            ["shell", null, "running"],
+          expect(rows.map((process) => [process.kind, process.label, process.status])).toEqual([
+            ["shell", "shell 1", "running"],
           ]);
-          expect(created).toHaveLength(1);
-          expect(stopped).toEqual([]);
+          // The session TTY route attaches to the newest agent's PTY, else to the session's own
+          // PTY pointer: with no agent, that pointer is the live shell.
+          expect(currentAgentProcess(rows)).toBeNull();
+          expect(held.sealantSessionId).toBe(rows[0]?.sealantSessionId);
+          expect(held.sealantRunId).toBeNull();
+          expect(
+            [...world.sessionRuns.values()].filter((run) => run.sessionId === session.id),
+          ).toEqual([]);
+          expect(spawned).toHaveLength(1);
         }),
-      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned),
+      },
+    );
+  });
+
+  it("reads a hold still opening as starting, with its launch under way, and idle once the shell holds it", async () => {
+    const created: CreateOptions[] = [];
+    const opening = Effect.runSync(Deferred.make<void>());
+    const release = Effect.runSync(Deferred.make<void>());
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const holding = yield* Effect.forkChild(engine.holdWorkspace(session.id));
+          yield* Deferred.await(opening);
+          expect(world.sessions.get(session.id)?.status).toBe("starting");
+          expect(engine.launchUnderWay(session.id)).toBe(true);
+          yield* Deferred.succeed(release, undefined);
+          const held = yield* Fiber.join(holding);
+          expect(held.status).toBe("idle");
+          expect(engine.launchUnderWay(session.id)).toBe(false);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            aroundOpen: () =>
+              Deferred.succeed(opening, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          },
+        ),
+      },
+    );
+  });
+
+  it("settles a hold failed when its shell cannot open in the workspace it made, and records no process", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const outcome = yield* engine.holdWorkspace(session.id).pipe(Effect.result);
+          expect(Result.isFailure(outcome)).toBe(true);
+          expect(created).toHaveLength(1);
+          const row = world.sessions.get(session.id);
+          expect(row?.status).toBe("failed");
+          expect(row?.summary).toMatch(/the platform did not open the session/);
+          expect(
+            [...world.processes.values()].filter((process) => process.sessionId === session.id),
+          ).toEqual([]);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { openFails: () => true },
+        ),
+      },
     );
   });
 
