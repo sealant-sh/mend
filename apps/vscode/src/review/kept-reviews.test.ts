@@ -281,10 +281,10 @@ describe("the window that drives a send", () => {
     ]);
     expect(claims.toSorted()).toEqual([false, true]);
     const [driver, other] = claims[0] ? [first, second] : [second, first];
-    expect(await other.drivenElsewhere(DANA, "key-1")).toBe(true);
-    expect(await driver.drivenElsewhere(DANA, "key-1")).toBe(false);
+    expect(await other.drivenFor(DANA, "key-1")).not.toBeNull();
+    expect(await driver.drivenFor(DANA, "key-1")).toBeNull();
     await driver.releaseDrive(DANA, "key-1");
-    expect(await other.drivenElsewhere(DANA, "key-1")).toBe(false);
+    expect(await other.drivenFor(DANA, "key-1")).toBeNull();
     expect(await other.claimDrive(DANA, "key-1")).toBe(true);
   });
 
@@ -301,7 +301,7 @@ describe("the window that drives a send", () => {
       const renewing = clock();
       vi.advanceTimersByTime(DRIVE_STALE_MS + 1_000);
       await renewedBy(directory, "s1.json.key-1.drive", renewing);
-      expect(await other.drivenElsewhere(DANA, "key-1")).toBe(true);
+      expect(await other.drivenFor(DANA, "key-1")).not.toBeNull();
       expect(await other.claimDrive(DANA, "key-1")).toBe(false);
       await driver.releaseDrive(DANA, "key-1");
     } finally {
@@ -336,7 +336,7 @@ describe("the window that drives a send", () => {
     late += DRIVE_STALE_MS + 1_000;
     const renewing = driver.renewDrive(DANA, "key-1");
     await Promise.race([torn, renewing]);
-    expect(await other.drivenElsewhere(DANA, "key-1")).toBe(true);
+    expect(await other.drivenFor(DANA, "key-1")).not.toBeNull();
     expect(await other.claimDrive(DANA, "key-1")).toBe(false);
     mend();
     expect(await renewing).toBe(true);
@@ -354,7 +354,7 @@ describe("the window that drives a send", () => {
     expect(await next.claimDrive(DANA, "key-1")).toBe(true);
     expect(await stalled.renewDrive(DANA, "key-1")).toBe(false);
     await stalled.releaseDrive(DANA, "key-1");
-    expect(await stalled.drivenElsewhere(DANA, "key-1")).toBe(true);
+    expect(await stalled.drivenFor(DANA, "key-1")).not.toBeNull();
     expect(await next.renewDrive(DANA, "key-1")).toBe(true);
     await next.releaseDrive(DANA, "key-1");
   });
@@ -366,7 +366,7 @@ describe("the window that drives a send", () => {
     const next = new KeptReviews(directory, NODE_FILES, () => now);
     expect(await closed.claimDrive(DANA, "key-1")).toBe(true);
     now += DRIVE_STALE_MS + 1_000;
-    expect(await next.drivenElsewhere(DANA, "key-1")).toBe(false);
+    expect(await next.drivenFor(DANA, "key-1")).toBeNull();
     expect(await next.claimDrive(DANA, "key-1")).toBe(true);
   });
 });

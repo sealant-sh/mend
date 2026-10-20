@@ -195,12 +195,17 @@ export class KeptReviews {
     await this.#release(lease, this.#window);
   }
 
-  /** Whether another window drives this send now. */
-  async drivenElsewhere(place: ReviewPlace, key: string): Promise<boolean> {
+  /**
+   * How long another window drives this send for, in ms, unless it renews its lease: after that the
+   * lease is stale. Null when no other window drives it now.
+   */
+  async drivenFor(place: ReviewPlace, key: string): Promise<number | null> {
     const lease = this.#lease(place, key);
     const text = await this.#holdOf(lease);
-    if (text === null || heldBy(text) === this.#window) return false;
-    return !(await this.#stale(lease, text, DRIVE_STALE_MS));
+    if (text === null || heldBy(text) === this.#window) return null;
+    const at = heldAt(text) ?? (await this.files.modified(lease));
+    const left = at === null ? 0 : at + DRIVE_STALE_MS - this.now();
+    return left > 0 ? left : null;
   }
 
   #lease(place: ReviewPlace, key: string): string {

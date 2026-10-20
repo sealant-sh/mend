@@ -276,6 +276,8 @@ export class ReviewStore implements vscode.Disposable {
   #asked: { readonly changeId: string; readonly before: string | null } | null = null;
   #generation = 0;
   #reread: NodeJS.Timeout | null = null;
+  /** When this window loads its kept reviews again, for a send another window's lease holds. */
+  #loadAgain: NodeJS.Timeout | null = null;
   /** One read in flight, and at most one after it for whatever asked meanwhile (as flow 2). */
   #reading = false;
   #again = false;
@@ -317,6 +319,7 @@ export class ReviewStore implements vscode.Disposable {
     this.#disposed = true;
     this.#generation++;
     if (this.#reread !== null) clearTimeout(this.#reread);
+    if (this.#loadAgain !== null) clearTimeout(this.#loadAgain);
     this.#changed.dispose();
     this.#failed.dispose();
   }
@@ -859,15 +862,17 @@ export class ReviewStore implements vscode.Disposable {
     // Its leases are read under the lock: a window claims a send's drive before it keeps the send,
     // so a send kept sending since, by a new Send or a Retry, reads driven here.
     const undriven = new Set<string>();
+    /** How long each other window drives a send for, unless it renews its lease. */
+    const drivenFor: Array<number> = [];
     const loaded = await this.#keepAt(context.place, async (review) => {
       undriven.clear();
-      for (const record of review.sends)
-        if (
-          holdsComments(record) &&
-          !this.#driving.has(driveId(context, record.key)) &&
-          !(await this.kept.drivenElsewhere(context.place, record.key))
-        )
-          undriven.add(record.key);
+      drivenFor.length = 0;
+      for (const record of review.sends) {
+        if (!holdsComments(record) || this.#driving.has(driveId(context, record.key))) continue;
+        const left = await this.kept.drivenFor(context.place, record.key);
+        if (left === null) undriven.add(record.key);
+        else drivenFor.push(left);
+      }
       return {
         ...review,
         sends: review.sends.map((record) =>
@@ -878,6 +883,20 @@ export class ReviewStore implements vscode.Disposable {
     for (const record of loaded.sends)
       if (record.phase.kind === "delivering" && undriven.has(record.key))
         void this.#drive(context, record.key);
+    // A window reloaded during a send left its lease behind: once that lease goes stale, nobody
+    // drives the send, so this window loads it again then.
+    if (drivenFor.length > 0) this.#loadAgainIn(context.place, Math.min(...drivenFor));
+  }
+
+  #loadAgainIn(place: ReviewPlace, ms: number): void {
+    if (this.#loadAgain !== null) clearTimeout(this.#loadAgain);
+    this.#loadAgain = setTimeout(() => {
+      this.#loadAgain = null;
+      if (this.#place === null || !samePlace(this.#place, place)) return;
+      this.#unloaded = this.#place;
+      this.#request();
+    }, ms);
+    this.#loadAgain.unref();
   }
 
   #context(read: ChangeRead, place: ReviewPlace): SendContext {
