@@ -346,6 +346,16 @@ export class Session extends Schema.Class<Session>("Session")({
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
   status: SessionStatus,
+  /**
+   * Where the session's latest write of a live status (`starting`, `running`, `waiting`) falls, in
+   * one sequence shared by every session (`SessionsRepo.liveMarkNow`). A reader that sees a higher
+   * mark than it last read knows the session was live in between, even when both reads find it
+   * settled. Zero from older servers.
+   */
+  liveMark: Schema.Int.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(0)),
+    Schema.withConstructorDefault(Effect.succeed(0)),
+  ),
   /** What the harness reported at settle, when anything. */
   summary: Schema.NullOr(Schema.String),
   /** Latest run's progress mirror for list surfaces; supervision reads the per-run cursor. */

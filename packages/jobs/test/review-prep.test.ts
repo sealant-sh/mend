@@ -20,6 +20,7 @@ import {
   reviewReading,
   type ReviewReading,
   settledAfter,
+  settledBefore,
   settledForReview,
   shouldPrepareReview,
 } from "../src/review-prep.ts";
@@ -206,6 +207,32 @@ describe("review prep: a stop is one settle", () => {
 
   it("holds a settle still ahead for a session first seen stopping", () => {
     expect(prepsAlong(undefined, ["stopping", "settled"])).toEqual([1]);
+  });
+});
+
+describe("review prep: a turn read only after it ended", () => {
+  const since = 10;
+
+  it("reads a session settled again as live in between when its live mark moved", () => {
+    const previous = settledBefore({ settled: true, liveMark: 12 }, 14, since);
+    expect(previous).toBe(false);
+    expect(shouldPrepareReview(previous, true)).toBe(true);
+  });
+
+  it("keeps the reading while the live mark stays where it was read", () => {
+    expect(settledBefore({ settled: true, liveMark: 12 }, 12, since)).toBe(true);
+    expect(settledBefore({ settled: false, liveMark: 12 }, 12, since)).toBe(false);
+  });
+
+  it("prepares a session never read when it was live after the worker began", () => {
+    const previous = settledBefore(undefined, since + 1, since);
+    expect(previous).toBe(false);
+    expect(shouldPrepareReview(previous, true)).toBe(true);
+  });
+
+  it("records a session never read silently when it was last live before the worker began", () => {
+    expect(settledBefore(undefined, since, since)).toBeUndefined();
+    expect(settledBefore(undefined, 0, since)).toBeUndefined();
   });
 });
 

@@ -1468,6 +1468,11 @@ export const agentSessions = pgTable(
     // Removal asked while the workspace was up; the row goes once it has (0075).
     removalRequestedAt: timestamp({ mode: "date", withTimezone: true }),
     status: text().$type<SessionStatus>().notNull().default("starting"),
+    // Where the latest write of a live status falls, in one sequence shared by every session
+    // (0134): the insert's `starting` and every `running` or `waiting` after it take the next one.
+    liveMark: bigint({ mode: "number" })
+      .notNull()
+      .default(sql`nextval('session_live_marks')`),
     summary: text(),
     lastSeenSequence: bigint({ mode: "bigint" }).notNull().default(0n),
     recordHistoryComplete: boolean().notNull().default(false),

@@ -485,6 +485,7 @@ const testLayer = (world: TestWorld) => {
     listForProject: () => Effect.die("not in test"),
     listForWorktree: () => Effect.die("not in test"),
     listActive: () => Effect.die("not in test"),
+    liveMarkNow: () => Effect.die("not in test"),
     listActiveView: () => Effect.die("not in test"),
     listForProjectView: () => Effect.die("not in test"),
     viewById: () => Effect.die("not in test"),

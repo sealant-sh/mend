@@ -221,6 +221,7 @@ const makeWorld = (events: Events, options: Options) => {
   const dependencies = Layer.mergeAll(
     capture,
     Layer.mock(SessionsRepo, {
+      liveMarkNow: () => Effect.succeed(0),
       listActive: () => Effect.sync(() => (options.baseline === "unknown" ? [] : [session])),
       byId: (id) =>
         id === SESSION

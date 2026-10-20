@@ -107,6 +107,7 @@ export const sessionFixture = (patch: Partial<SessionDto> = {}): SessionDto => (
   executorStartedAt: null,
   removalRequestedAt: null,
   status: "running",
+  liveMark: 0,
   summary: null,
   lastSeenSequence: "0",
   recordHistoryComplete: true,

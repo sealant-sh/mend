@@ -284,6 +284,11 @@ export class SessionsRepo extends Context.Service<
     /** Sessions in a live state, across projects — the Now inbox reads this. */
     readonly listActive: () => Effect.Effect<ReadonlyArray<Session>>;
     /**
+     * The latest `liveMark` any session has taken, 0 before the first. A reader that takes it before
+     * it starts reading knows a session marked above it was live after that moment.
+     */
+    readonly liveMarkNow: () => Effect.Effect<number>;
+    /**
      * `listActive` as the API's session list reads it: each session with the people live in its
      * executor as their own user (docs/adr/0016, decision 13), in the same query.
      */
@@ -672,6 +677,12 @@ const roleIn = (userId: unknown) =>
   sql<string | null>`(SELECT m.role FROM organization_members m
     WHERE m.user_id = ${userId} AND m.organization_id = ${projects.organizationId})`;
 
+const LIVE_STATUSES: ReadonlySet<SessionStatus> = new Set(["starting", "running", "waiting"]);
+
+/** Every write of a live status takes the next `liveMark`, in the same statement. */
+const liveMarkFor = (status: SessionStatus) =>
+  LIVE_STATUSES.has(status) ? { liveMark: sql`nextval('session_live_marks')` } : {};
+
 const toSession = (row: typeof agentSessions.$inferSelect): Session =>
   new Session({
     ...row,
@@ -885,6 +896,14 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             and e.executor_launch_id is not null
           order by e.executor_started_at desc nulls last limit 1)`,
       };
+
+      const liveMarkNow = Effect.fn("SessionsRepo.liveMarkNow")(function* () {
+        const [row] = yield* pg<{ readonly mark: string }>`
+          SELECT COALESCE(pg_sequence_last_value('session_live_marks'), 0)::text AS mark`.pipe(
+          Effect.orDie,
+        );
+        return Number(row?.mark ?? 0);
+      });
 
       const listActiveView = Effect.fn("SessionsRepo.listActiveView")(function* () {
         const rows = yield* db
@@ -1180,6 +1199,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .update(agentSessions)
           .set({
             status,
+            ...liveMarkFor(status),
             updatedAt: yield* DateTime.nowAsDate,
             ...(status === "running"
               ? { startedAt: sql`COALESCE(${agentSessions.startedAt}, now())` }
@@ -1402,6 +1422,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .update(agentSessions)
           .set({
             status,
+            ...liveMarkFor(status),
             // Running from here: the first start is stamped once, as `setStatus` does. Every launch
             // reaches `running` through here, so without it a running session read `started_at`
             // null for its whole life (alpha 2026-09-30, cc05cb8a).
@@ -2232,6 +2253,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         countUnsettledForOrganization,
         listForWorktree,
         listActive,
+        liveMarkNow,
         listUnsettled,
         listRecentlySettled,
         setSealantIds,

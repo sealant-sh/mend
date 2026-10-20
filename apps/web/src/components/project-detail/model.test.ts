@@ -95,6 +95,7 @@ const session = (
   executorStartedAt: null,
   removalRequestedAt: null,
   status,
+  liveMark: 0,
   summary: null,
   lastSeenSequence: 0n,
   recordHistoryComplete: true,

@@ -3554,6 +3554,18 @@ const changeReviewPrepsMigration = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * Each session's latest live status write, as a mark in one sequence shared by every session:
+ * review prep reads a turn that started and ended before it caught up as a settle, whatever the
+ * turn ended in and whatever rows it left. Existing rows read 0, before any mark a worker takes.
+ */
+const sessionLiveMarksMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE SEQUENCE session_live_marks`;
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN live_mark bigint NOT NULL DEFAULT 0`;
+  yield* sql`ALTER TABLE agent_sessions ALTER COLUMN live_mark SET DEFAULT nextval('session_live_marks')`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3689,4 +3701,5 @@ export const migrations = {
   "0131_user_agent_logins": userAgentLoginsMigration,
   "0132_session_process_waiting": sessionProcessWaitingMigration,
   "0133_change_review_preps": changeReviewPrepsMigration,
+  "0134_session_live_marks": sessionLiveMarksMigration,
 };

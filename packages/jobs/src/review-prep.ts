@@ -40,6 +40,7 @@ import { queueReviewPass } from "./review-passes.ts";
  * - transition, not state: only a session seen leaving a live phase queues
  *   the passes; the settle event flapping or repeating cannot re-queue, and
  *   `stopping` is a settle in flight, so idle → stopping → completed is one.
+ *   A live mark above the last one read is a live phase read late (`settledBefore`).
  * - not twice in a row for one diff: each pass records the digest of the diff
  *   it was last queued for (`ChangePassesRepo.recordPrep`), so a restarted
  *   worker, another session of the worktree, or a resumed turn that wrote
@@ -49,9 +50,10 @@ import { queueReviewPass } from "./review-passes.ts";
  *   diff, so the request it absorbs records nothing and is retried when that
  *   pass ends (`follow`). A waiting pass reads the diff when it runs, so a
  *   request it absorbs is recorded.
- * - known baseline only: a session first seen already settled (reconnect,
- *   restart) records silently — prep belongs to the settle moment, and the
- *   review page still offers both passes on demand.
+ * - known baseline only: a session first seen already settled, with no live
+ *   mark since this worker began, records silently (reconnect, restart) — prep
+ *   belongs to the settle moment, and the review page still offers both passes
+ *   on demand.
  * - an empty change queues nothing: no diff, no tour, no suggestions — an
  *   inference pass over nothing is spend without evidence.
  * - a session started from Slack always queues the tour, whatever the switch
@@ -101,6 +103,26 @@ export const settledAfter = (previous: boolean | undefined, reading: ReviewReadi
  */
 export const shouldPrepareReview = (previous: boolean | undefined, settled: boolean): boolean =>
   previous === false && settled;
+
+/** What review prep last read of a session: settled or not, and its live mark then. */
+export interface SessionSeen {
+  readonly settled: boolean;
+  readonly liveMark: number;
+}
+
+/**
+ * The reading a session moves from. Events name a session, not its state, so a worker behind its
+ * events can read a whole turn only after it ended, settled before and settled after. A live mark
+ * above the one last read is that turn: the session was live in between. A session never read is
+ * measured against `since`, the mark taken as the worker began: above it, the session was live
+ * while the worker listened, so its settle is one to prepare; at or below it, the baseline is
+ * unknown.
+ */
+export const settledBefore = (
+  previous: SessionSeen | undefined,
+  liveMark: number,
+  since: number,
+): boolean | undefined => (liveMark > (previous?.liveMark ?? since) ? false : previous?.settled);
 
 /** The passes a settled session queues over a non-empty change. */
 export interface ReviewPasses {
@@ -209,7 +231,9 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
     const capture = yield* CaptureRuntime;
     const jobs = yield* JobRunner;
 
-    const lastSettled = new Map<string, boolean>();
+    // Taken before the baseline: a session marked live above it was live while this worker ran.
+    const since = yield* sessions.liveMarkNow();
+    const seen = new Map<SessionId, SessionSeen>();
     // Passes a running job absorbed, per change: that job read an older diff, so each waits for it
     // to end. Held in memory: after a restart the diff is still unrecorded, so the next settle
     // queues it.
@@ -390,7 +414,7 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
           const waiting = behind.get(changeId);
           if (waiting === undefined) return;
           // A session live again prepares at its next settle.
-          if (lastSettled.get(waiting.sessionId) !== true) {
+          if (seen.get(waiting.sessionId)?.settled !== true) {
             behind.delete(changeId);
             return;
           }
@@ -426,11 +450,11 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
       return reviewReading(session.status, read);
     });
 
-    const observe = Effect.fn("ReviewPrep.observe")(function* (sessionId: string) {
-      const session = yield* sessions.byId(SessionId.make(sessionId));
-      const previous = lastSettled.get(session.id);
+    const observe = Effect.fn("ReviewPrep.observe")(function* (sessionId: SessionId) {
+      const session = yield* sessions.byId(sessionId);
+      const previous = settledBefore(seen.get(session.id), session.liveMark, since);
       const settled = settledAfter(previous, yield* readingNow(session));
-      lastSettled.set(session.id, settled);
+      seen.set(session.id, { settled, liveMark: session.liveMark });
       if (!shouldPrepareReview(previous, settled)) return;
       yield* prepare(session.id);
     });
@@ -438,7 +462,8 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
     // Baseline: whatever exists right now settled before we were listening.
     const active = yield* sessions.listActive();
     for (const session of active) {
-      lastSettled.set(session.id, settledAfter(undefined, yield* readingNow(session)));
+      const settled = settledAfter(undefined, yield* readingNow(session));
+      seen.set(session.id, { settled, liveMark: session.liveMark });
     }
 
     yield* events.pipe(
@@ -448,7 +473,12 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
           // while a shell keeps the session `idle` changes only its process row.
           Effect.flatMap((event) =>
             event.type === "session" || event.type === "session-process"
-              ? observe(event.sessionId)
+              ? observe(SessionId.make(event.sessionId)).pipe(
+                  // A removed session's last event: forget it.
+                  Effect.catchTag("SessionNotFoundError", () =>
+                    Effect.sync(() => seen.delete(SessionId.make(event.sessionId))),
+                  ),
+                )
               : // A pass row's write: the pass a prep waits behind may have ended.
                 event.type === "session-change" && behind.has(ChangeId.make(event.changeId))
                 ? follow(ChangeId.make(event.changeId), "row write")
