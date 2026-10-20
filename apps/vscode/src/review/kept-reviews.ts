@@ -62,8 +62,9 @@ const LOCK_BEAT_MS = LOCK_STALE_MS / 4;
 const LOCK_WAIT_MS = 5_000;
 const LOCK_POLL_MS = 15;
 const SWEEP_EVERY_MS = 60 * 60 * 1000;
-/** A window driving a send renews its lease every step; one older than this belongs to no window. */
+/** A lease its window has not renewed this long belongs to no window. */
 export const DRIVE_STALE_MS = 2 * 60 * 1000;
+const DRIVE_BEAT_MS = DRIVE_STALE_MS / 4;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -86,7 +87,7 @@ const parseKept = (text: string): KeptReview => {
 
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** A lock reads `<ms> <owner>`: when its holder last renewed it, then who holds it. */
+/** A lock or lease reads `<ms> <owner>`: when its holder last renewed it, then who holds it. */
 const HOLD = /^(\d+) ?(.*)$/s;
 const holdText = (at: number, owner: string): string => `${at} ${owner}`;
 const heldAt = (text: string): number | null => {
@@ -95,9 +96,11 @@ const heldAt = (text: string): number | null => {
 };
 const heldBy = (text: string): string | null => HOLD.exec(text)?.[2] ?? null;
 
-/** A hold this window renews: whether it still has it, and the end of its renewing. */
+/** A hold this window renews: whether it still has it, a renewal now, and the end of renewing. */
 interface Renewed {
   readonly held: () => Promise<boolean>;
+  /** Renews it now, and answers whether this window still had it to renew. */
+  readonly beat: () => Promise<boolean>;
   readonly stop: () => Promise<void>;
 }
 
@@ -116,6 +119,8 @@ export class KeptReviews {
   readonly #window = randomUUID();
   /** When each person's directory was last swept. */
   readonly #swept = new Map<string, number>();
+  /** The leases this window drives sends under, by file, each renewed while it lasts. */
+  readonly #drives = new Map<string, Renewed>();
 
   constructor(
     private readonly directory: string,
@@ -158,62 +163,44 @@ export class KeptReviews {
 
   /**
    * One window drives a send: the one holding its lease, a file created only when absent and
-   * renewed every step. False when another window holds a fresh one; a lease past
-   * `DRIVE_STALE_MS` was left by a window that closed, and is taken over.
+   * renewed while that window lives, through every wait on Mend. False when another window holds
+   * a fresh one; a lease past `DRIVE_STALE_MS` was left by a window that closed, and is taken over.
    */
   async claimDrive(place: ReviewPlace, key: string): Promise<boolean> {
     const lease = this.#lease(place, key);
     await this.files.mkdir(dirname(lease));
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        await this.files.create(lease, this.#window);
+      if ((await this.#take(lease, this.#window)) || (await this.#holds(lease, this.#window))) {
+        if (!this.#drives.has(lease))
+          this.#drives.set(lease, this.#renew(lease, this.#window, DRIVE_BEAT_MS));
         return true;
-      } catch (cause) {
-        if (codeOf(cause) !== "EEXIST") throw cause;
       }
-      if ((await this.#holder(lease)) === this.#window) return true;
-      const made = await this.files.modified(lease);
-      if (made !== null && this.now() - made < DRIVE_STALE_MS) return false;
-      if (made !== null) {
-        const stale = `${lease}.${randomUUID()}.stale`;
-        await this.files.rename(lease, stale).then(
-          () => this.files.rm(stale),
-          () => undefined,
-        );
-      }
+      if (!(await this.#breakStale(lease, DRIVE_STALE_MS))) return false;
     }
     return false;
   }
 
-  /** This window still drives the send: its lease stays fresh. */
-  async renewDrive(place: ReviewPlace, key: string): Promise<void> {
-    const lease = this.#lease(place, key);
-    if ((await this.#holder(lease)) === this.#window)
-      await this.files.writeFile(lease, this.#window);
+  /**
+   * Renews this window's lease on the send, and answers whether it still drives it: false once
+   * another window took it over, after which this window must do nothing more for that send.
+   */
+  async renewDrive(place: ReviewPlace, key: string): Promise<boolean> {
+    return (await this.#drives.get(this.#lease(place, key))?.beat()) ?? false;
   }
 
   async releaseDrive(place: ReviewPlace, key: string): Promise<void> {
     const lease = this.#lease(place, key);
-    if ((await this.#holder(lease)) === this.#window) await this.files.rm(lease);
+    await this.#drives.get(lease)?.stop();
+    this.#drives.delete(lease);
+    await this.#release(lease, this.#window);
   }
 
   /** Whether another window drives this send now. */
   async drivenElsewhere(place: ReviewPlace, key: string): Promise<boolean> {
     const lease = this.#lease(place, key);
-    const [holder, made] = await Promise.all([this.#holder(lease), this.files.modified(lease)]);
-    return (
-      holder !== null &&
-      holder !== this.#window &&
-      made !== null &&
-      this.now() - made < DRIVE_STALE_MS
-    );
-  }
-
-  async #holder(lease: string): Promise<string | null> {
-    return this.files.readFile(lease).then(
-      (holder) => holder,
-      () => null,
-    );
+    const text = await this.#holdOf(lease);
+    if (text === null || heldBy(text) === this.#window) return false;
+    return !(await this.#stale(lease, text, DRIVE_STALE_MS));
   }
 
   #lease(place: ReviewPlace, key: string): string {
@@ -337,9 +324,9 @@ export class KeptReviews {
       last = next.catch(() => undefined);
       return next;
     };
-    const timer = setInterval(() => {
-      void queue(async () => {
-        if (!(await this.#holds(path, owner))) return;
+    const beat = (): Promise<boolean> =>
+      queue(async () => {
+        if (!(await this.#holds(path, owner))) return false;
         const renewal = `${path}.${randomUUID()}.tmp`;
         try {
           await this.files.writeFile(renewal, holdText(this.now(), owner));
@@ -348,10 +335,13 @@ export class KeptReviews {
           await this.files.rm(renewal).catch(() => undefined);
           throw cause;
         }
-      }).catch(() => undefined);
-    }, everyMs);
+        return true;
+      });
+    const timer = setInterval(() => void beat().catch(() => undefined), everyMs);
+    timer.unref();
     return {
       held: () => queue(() => this.#holds(path, owner)),
+      beat,
       stop: async () => {
         clearInterval(timer);
         await last;

@@ -161,6 +161,9 @@ interface SendContext {
 const driveId = (context: SendContext, key: string): string =>
   JSON.stringify([context.place.url, context.place.viewer, context.place.sessionId, key]);
 
+/** Another window took over a send this window was driving: this one does nothing more for it. */
+class DriveLost extends Error {}
+
 /** The comments a review lists, each with its words, as one string to compare. */
 const digestOf = (
   pending: ReadonlyArray<Pick<PendingComment, "id" | "body">>,
@@ -278,6 +281,8 @@ export class ReviewStore implements vscode.Disposable {
   #offline = false;
   /** Each record's drive, by server, session and key: one at a time per record. */
   readonly #driving = new Map<string, Promise<void>>();
+  /** The records this window holds the lease to drive, by drive. */
+  readonly #leased = new Set<string>();
 
   constructor(
     private readonly sessions: Pick<
@@ -867,6 +872,11 @@ export class ReviewStore implements vscode.Disposable {
 
   /** A record's next step, kept for its own session whichever session the section follows. */
   async #step(context: SendContext, key: string, event: SendEvent): Promise<SendRecord | null> {
+    if (
+      this.#leased.has(driveId(context, key)) &&
+      !(await this.kept.renewDrive(context.place, key))
+    )
+      throw new DriveLost();
     const now = new Date().toISOString();
     const next = await this.#keepAt(context.place, (review) => stepReview(review, key, event, now));
     return next.sends.find((record) => record.key === key) ?? null;
@@ -892,9 +902,14 @@ export class ReviewStore implements vscode.Disposable {
   /** One window drives a send, so one key is posted and delivered once. */
   async #driveOnce(context: SendContext, key: string): Promise<void> {
     if (!(await this.kept.claimDrive(context.place, key))) return;
+    const id = driveId(context, key);
+    this.#leased.add(id);
     try {
       await this.#run(context, key);
+    } catch (cause) {
+      if (!(cause instanceof DriveLost)) throw cause;
     } finally {
+      this.#leased.delete(id);
       await this.kept.releaseDrive(context.place, key).catch(() => undefined);
     }
   }
@@ -912,7 +927,7 @@ export class ReviewStore implements vscode.Disposable {
       return read;
     };
     for (let turns = 0; turns < MAX_TURNS; turns += 1) {
-      await this.kept.renewDrive(context.place, key);
+      if (!(await this.kept.renewDrive(context.place, key))) return;
       const record = (await this.kept.read(context.place)).review.sends.find(
         (candidate) => candidate.key === key,
       );
@@ -1039,6 +1054,7 @@ export class ReviewStore implements vscode.Disposable {
           }
         }
       } catch (cause) {
+        if (cause instanceof DriveLost) throw cause;
         // Unreachable or failing on Mend's side is worth a retry with the same key; a refusal is not.
         const retryable =
           !(cause instanceof MendApiError) || cause.status === null || cause.status >= 500;
