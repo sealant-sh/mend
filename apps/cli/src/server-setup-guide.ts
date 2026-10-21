@@ -22,6 +22,7 @@ import {
   parseMirrorSize,
   type ServerMirrors,
 } from "./server-mirrors.ts";
+import { shellWord } from "./shared.ts";
 
 /**
  * The guided `mend server setup`: questions in plain words on a terminal, answered one at a time,
@@ -184,9 +185,6 @@ export const flagsFor = (before: SetupSettings, after: SetupSettings): ReadonlyA
   }
   return flags;
 };
-
-const shellWord = (word: string): string =>
-  /^[A-Za-z0-9_./:@=,+-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`;
 
 /**
  * The command a script runs for the same result. With no answer flags it carries `--yes`: without

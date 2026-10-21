@@ -179,17 +179,31 @@ const capture = () => {
 
 const JOINED_ID = "7c1d2e3f-0a1b-4c2d-8e3f-4a5b6c7d8e9f";
 
+/** Another project adopted from the same origin, with a worktree of the same name. */
+const twin = { ...project, id: "project-0", name: "newsroom-api-2" };
+
+/** The words of the `mend …` command a refusal printed, as a shell splits them. */
+const printedCommand = (stderr: string): ReadonlyArray<string> => {
+  const printed = /· mend ((?:resume|claude) [^·\n]*?) (?:opens|starts) /u.exec(stderr)?.[1];
+  if (printed === undefined) throw new Error(`no command in ${stderr}`);
+  return execFileSync("sh", ["-c", `set -- ${printed}; printf '%s\\0' "$@"`], {
+    encoding: "utf8",
+  })
+    .split("\0")
+    .slice(0, -1);
+};
+
 /**
- * Runs the `mend …` command a refusal printed, in the same checkout, against a server whose
- * project holds the handoff's worktree and its never-launched session, until `reached` is seen.
+ * Runs the `mend …` command a refusal printed, in the same checkout, until `reached` is seen. The
+ * server holds the handoff's worktree and its never-launched session in `project`, and a worktree
+ * of the same name in a twin adopted from the same origin, listed first.
  */
 const runPrinted = async (
   stderr: string,
   cwd: string,
   reached: (route: string) => boolean,
 ): Promise<{ readonly bodies: Readonly<Record<string, unknown>> }> => {
-  const printed = /· mend ((?:resume|claude)[^·\n]*?) (?:opens|starts) /u.exec(stderr)?.[1];
-  if (printed === undefined) throw new Error(`no command in ${stderr}`);
+  const words = printedCommand(stderr);
   const routes: Array<string> = [];
   const bodies: Record<string, unknown> = {};
   const handoffSession = {
@@ -207,33 +221,41 @@ const runPrinted = async (
     settledAt: null,
     createdAt: new Date(0).toISOString(),
   };
+  const detailOf = (of: typeof project) => ({
+    project: of,
+    sessions: of.id === project.id ? [handoffSession] : [],
+    annotations: [],
+    worktrees: [{ id: `worktree-of-${of.id}`, name: "fix-login", branch: "mend/fix-login" }],
+  });
   const server = await startFakeMend((request, response) => {
     const route = `${request.method ?? "GET"} ${request.url ?? ""}`;
     routes.push(route);
     withBody(request, (body) => {
       if (body.length > 0) bodies[route] = JSON.parse(body.toString());
-      if (route === "GET /api/projects") json(response, [project]);
-      else if (route === `GET /api/projects/${project.id}`) {
+      const projectPost = /^POST \/api\/projects\/([^/]+)\/sessions$/u.exec(route)?.[1];
+      if (route === "GET /api/projects") json(response, [twin, project]);
+      else if (route === `GET /api/projects/${project.id}`) json(response, detailOf(project));
+      else if (route === `GET /api/projects/${twin.id}`) json(response, detailOf(twin));
+      else if (projectPost !== undefined) {
         json(response, {
-          project,
-          sessions: [handoffSession],
-          annotations: [],
-          worktrees: [{ id: "worktree-1", name: "fix-login", branch: "mend/fix-login" }],
+          ...handoffSession,
+          projectId: projectPost,
+          id: JOINED_ID,
+          status: "starting",
         });
-      } else if (route === `POST /api/projects/${project.id}/sessions`) {
-        json(response, { ...handoffSession, id: JOINED_ID, status: "starting" });
       } else if (route.startsWith("POST /api/sessions/")) {
         json(response, { ...handoffSession, status: "starting" });
       } else response.writeHead(404).end();
     });
   }, "hold");
-  const cli = startCli(server.url, printed.split(" "), {}, cwd);
+  const cli = startCli(server.url, words, {}, cwd);
   try {
-    await waitFor(() => routes.some(reached));
+    await waitFor(() => routes.some(reached) || cli.stderr() !== "");
   } finally {
     cli.child.kill("SIGKILL");
     await server.close();
   }
+  expect(routes.some(reached), cli.stderr()).toBe(true);
   return { bodies };
 };
 
@@ -389,7 +411,7 @@ describe("mend handoff", spawning, () => {
     );
     expect(failed.stdout).not.toContain("✓ held");
     expect(failed.stderr).toBe(
-      "mend: the hold failed · mend resume 3f2a1c0d --with shell opens the workspace with a shell\n",
+      "mend: the hold failed · mend resume 3f2a1c0d --project newsroom-api --with shell opens the workspace with a shell\n",
     );
     const resumed = await runPrinted(failed.stderr, dana, (route) =>
       route.startsWith(`POST /api/sessions/${SESSION_ID}/resume`),
@@ -397,29 +419,34 @@ describe("mend handoff", spawning, () => {
     expect(resumed.bodies[`POST /api/sessions/${SESSION_ID}/resume`]).toEqual({ harness: "shell" });
   }, 30_000);
 
-  it("says the prompt was not sent when the launch is refused, and how to start the agent", async () => {
+  it("says the prompt was not sent when the launch is refused, and the command that sends it", async () => {
     const w = world();
     const dana = newsroom(w);
-    const server = await handoffServer({
-      launch: (response) => {
-        response.writeHead(409, { "content-type": "application/json" });
-        response.end(JSON.stringify({ message: "no seat left for an agent" }));
-      },
-    });
-    const result = await run(server, ["finish the tests"], dana);
+    const refusing = () =>
+      handoffServer({
+        launch: (response) => {
+          response.writeHead(409, { "content-type": "application/json" });
+          response.end(JSON.stringify({ message: "no seat left for an agent" }));
+        },
+      });
+    const result = await run(await refusing(), ["finish the tests"], dana);
     expect(result.code).toBe(1);
     expect(result.stdout).toContain("✓ handed off as fix-login");
     expect(result.stdout).not.toContain("✓ running");
     expect(result.stderr).toMatch(
-      /^mend: .+ · the prompt was not sent · mend claude --worktree fix-login starts claude in the handoff\n$/u,
+      /^mend: .+ · the prompt was not sent · mend claude --project newsroom-api --worktree fix-login 'finish the tests' starts claude in the handoff with it\n$/u,
     );
-    const started = await runPrinted(result.stderr, dana, (route) =>
+    const prompt = "finish Dana's tests, then $HOME `ls`";
+    const quoted = await run(await refusing(), [prompt], dana);
+    const started = await runPrinted(quoted.stderr, dana, (route) =>
       route.startsWith(`POST /api/sessions/${JOINED_ID}/launch`),
     );
     expect(started.bodies[`POST /api/projects/${project.id}/sessions`]).toMatchObject({
       harness: "claude",
       name: "fix-login",
     });
+    expect(started.bodies[`POST /api/projects/${twin.id}/sessions`]).toBeUndefined();
+    expect(started.bodies[`POST /api/sessions/${JOINED_ID}/launch`]).toMatchObject({ prompt });
   }, 30_000);
 
   it("sends the same bytes again when a proxy answers 502", async () => {

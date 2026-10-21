@@ -454,12 +454,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "resume",
     section: "sessions",
     summary: "rejoin a settled session with its state restored",
-    synopsis: ["[session-id] [--with <harness>]"],
+    synopsis: ["[session-id] [--with <harness>] [--project <p>]"],
     description: [
       "Starts a new agent process from the saved harness state, so the conversation continues where it stopped. --with switches the harness; the conversation carries over between claude and codex.",
     ],
     options: [
       { flag: "--with <harness>", text: "claude or codex; default: the one the session used" },
+      { flag: "--project <p>", text: "the session's project; default: the cwd's" },
     ],
     see: ["stop", "rejoin"],
   },

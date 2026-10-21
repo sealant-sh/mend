@@ -28,6 +28,7 @@ import {
   normalizeProjectName,
   normalizeRemoteUrl,
   redactCredentials,
+  shellWord,
 } from "./shared.ts";
 
 const paint = (code: string) => (text: string) =>
@@ -537,9 +538,10 @@ const sendFrom = async (
     say(heldLine(received.session));
     if (received.session.status === "failed") {
       say(watch);
-      // A shell resume is the hold's own first step and needs no harness state.
+      // A held session never ran a harness, so a shell resume needs no harness state. --project:
+      // the session is looked up in a project, and another may share this checkout's origin.
       return refuse(
-        `the hold failed · mend resume ${id8} --with shell opens the workspace with a shell`,
+        `the hold failed · mend resume ${id8} --project ${shellWord(project.name)} --with shell opens the workspace with a shell`,
       );
     }
   } else {
@@ -547,9 +549,19 @@ const sendFrom = async (
     if (launched._tag !== "running") {
       say(watch);
       // A resume needs the state of a harness that ran; a new session in the worktree needs none.
+      // --project: another project may share this checkout's origin and the worktree's name.
+      const start = [
+        "mend",
+        harness,
+        "--project",
+        project.name,
+        "--worktree",
+        received.worktree.name,
+        prompt,
+      ];
       return refuse(
         launched._tag === "not-started"
-          ? `${launched.words} · the prompt was not sent · mend ${harness} --worktree ${received.worktree.name} starts ${harness} in the handoff`
+          ? `${launched.words} · the prompt was not sent · ${start.map(shellWord).join(" ")} starts ${harness} in the handoff with it`
           : `${launched.words} · the prompt may not have reached an agent · follow it: mend attach ${id8}`,
       );
     }

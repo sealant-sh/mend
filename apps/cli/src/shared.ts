@@ -594,6 +594,10 @@ export const firstPositional = (
 
 export const isFlag = (token: string): boolean => token.startsWith("-") && token !== "-";
 
+/** `word` as one shell word: as it is when nothing in it is special, single-quoted otherwise. */
+export const shellWord = (word: string): string =>
+  /^[A-Za-z0-9_./:@=,+-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`;
+
 export const takeFlagValue = (args: ReadonlyArray<string>, flag: string): string | null => {
   const at = args.indexOf(flag);
   if (at === -1) return null;

@@ -5253,9 +5253,9 @@ const resumeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
   const withFlag = args.indexOf("--with");
   const withHarness =
     withFlag !== -1 && args[withFlag + 1] !== undefined ? String(args[withFlag + 1]) : null;
-  const prefix = firstPositional(args, ["--with"]);
+  const prefix = firstPositional(args, ["--with", "--project"]);
 
-  const project = await findProject(config, null);
+  const project = await findProject(config, takeFlagValue(args, "--project"));
   const detail = await api<ProjectDetailDto>(config, "GET", `/projects/${project.id}`);
   const match =
     prefix === undefined
