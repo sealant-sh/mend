@@ -139,8 +139,8 @@ A detached `HEAD` hands off too, as `handoff-<sha>`:
 
 ## When the CLI refuses
 
-Each refusal ends with `nothing was created`. A refusal after the CLI adopted the repository ends
-with `nothing was handed off · <project> stays adopted` instead.
+The refusals below end with `nothing was created`. A refusal after the CLI adopted the repository
+ends with `nothing was handed off · <project> stays adopted` instead.
 
 | The CLI says                                                       | What to do                                              |
 | ------------------------------------------------------------------ | ------------------------------------------------------- |
@@ -153,6 +153,7 @@ with `nothing was handed off · <project> stays adopted` instead.
 | `handoff not sent · the bundle is … · the server's limit is …`     | Ask the operator about `MEND_BUDGET_BUNDLE_BYTES`       |
 | `handoff not sent · something in front of the Mend server refused` | Ask the operator to raise the proxy's body limit        |
 | `this Mend server (0.35.1) does not take handoffs · upgrade it, …` | Upgrade the server                                      |
+| `this server keeps worktrees in the co-located store, …`           | Ask the operator to run the capture store               |
 | `TMPDIR is …, inside this checkout`                                | Set `TMPDIR` to a directory outside the checkout        |
 | `this partial clone lacks objects a handoff reads`                 | Run the `git log -p` it names, then hand off            |
 
