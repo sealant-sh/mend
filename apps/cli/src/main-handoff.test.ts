@@ -322,6 +322,24 @@ describe("mend handoff", spawning, () => {
     expect(server.routes.filter((route) => route.endsWith("/launch"))).toEqual([]);
   }, 30_000);
 
+  it("names each file whose edit travels though it is hidden from git", async () => {
+    const w = world();
+    const dana = newsroom(w);
+    w.git(dana, ["update-index", "--skip-worktree", "b.txt"]);
+    w.git(dana, ["update-index", "--assume-unchanged", "docs/guide.md"]);
+    w.write(path.join(dana, "docs/guide.md"), "guide, edited\n");
+    const server = await handoffServer();
+    const result = await run(server, [], dana);
+    expect(result.code, result.stderr).toBe(0);
+    expect(lines(result.stdout).slice(1, 6)).toEqual([
+      "✓ fix/login · 2 commits ahead of main · 4 uncommitted files · 1 untracked",
+      "  stays here · gitignored files and .env files: .env.local",
+      "  travels though hidden from git · b.txt (skip-worktree)",
+      "  travels though hidden from git · docs/guide.md (assume-unchanged)",
+      "  left out · assets/demo.mov · 100 KiB, over the 64 KiB file limit",
+    ]);
+  }, 30_000);
+
   it("hands off a detached HEAD under its own name, and takes --with", async () => {
     const w = world();
     const dana = w.clone("newsroom-api");

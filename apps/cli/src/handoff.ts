@@ -183,6 +183,9 @@ export const snapshotLines = (
     ...snapshot.committedEnv.map(
       (committed) => `${amber("  travels in a commit")} · ${committed.path} (${committed.commit})`,
     ),
+    ...snapshot.hidden.map(
+      (file) => `${amber("  travels though hidden from git")} · ${file.path} (${file.bit})`,
+    ),
     ...snapshot.leftOut
       .filter((out): out is NamedLeftOut => out.reason !== "env")
       .map((out) => `${dim("  left out")} · ${out.path} · ${leftOutLine(out, fileBytes)}`),

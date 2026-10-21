@@ -424,17 +424,28 @@ describe("snapshotCheckout", () => {
     expect(snapshot.facts).toEqual({ commitsAhead: 0, uncommitted: 1, untracked: 1 });
   });
 
-  it("carries edits under assume-unchanged and skip-worktree", () => {
+  it("carries edits under assume-unchanged and skip-worktree, and names them", () => {
     const w = world();
     const dana = w.clone("hidden-edits");
     w.git(dana, ["update-index", "--assume-unchanged", "a.txt"]);
     w.write(path.join(dana, "a.txt"), "assumed unchanged, edited\n");
     w.git(dana, ["update-index", "--skip-worktree", "b.txt"]);
     w.write(path.join(dana, "b.txt"), "skipped, edited\n");
+    w.git(dana, ["update-index", "--assume-unchanged", "d.txt"]);
+    w.git(dana, ["update-index", "--skip-worktree", "d.txt"]);
+    w.write(path.join(dana, "d.txt"), "both, edited\n");
+    w.git(dana, ["update-index", "--skip-worktree", "docs/guide.md"]);
+    w.git(dana, ["update-index", "--assume-unchanged", "config/.env.shared"]);
+    w.write(path.join(dana, "config/.env.shared"), "x=2\n");
     const before = fingerprint(dana);
     const snapshot = snapshotOf(w, dana);
     expect(fingerprint(dana)).toEqual(before);
-    expect(snapshot.facts).toEqual({ commitsAhead: 0, uncommitted: 2, untracked: 0 });
+    expect(snapshot.hidden).toEqual([
+      { path: "a.txt", bit: "assume-unchanged" },
+      { path: "b.txt", bit: "skip-worktree" },
+      { path: "d.txt", bit: "assume-unchanged and skip-worktree" },
+    ]);
+    expect(snapshot.facts).toEqual({ commitsAhead: 0, uncommitted: 3, untracked: 0 });
     const store = storeWithBundle(w, snapshot);
     expect(w.git(store, ["show", `${snapshot.worktree}:a.txt`])).toBe("assumed unchanged, edited");
     expect(w.git(store, ["show", `${snapshot.worktree}:b.txt`])).toBe("skipped, edited");

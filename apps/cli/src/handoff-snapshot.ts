@@ -20,6 +20,14 @@ export interface CommittedEnv {
   readonly commit: string;
 }
 
+export type HiddenBit = "assume-unchanged" | "skip-worktree" | "assume-unchanged and skip-worktree";
+
+/** A file whose edit git status does not show, which travels all the same. */
+export interface Hidden {
+  readonly path: string;
+  readonly bit: HiddenBit;
+}
+
 export interface HandoffFacts {
   readonly commitsAhead: number;
   readonly uncommitted: number;
@@ -36,6 +44,7 @@ export interface HandoffSnapshot {
   readonly facts: HandoffFacts;
   readonly leftOut: ReadonlyArray<LeftOut>;
   readonly committedEnv: ReadonlyArray<CommittedEnv>;
+  readonly hidden: ReadonlyArray<Hidden>;
   readonly bundlePath: string;
   readonly bundleBytes: number;
   readonly cutAt: string;
@@ -532,6 +541,7 @@ interface Inspection {
   readonly leftOut: ReadonlyArray<Excluded>;
   readonly stays: ReadonlySet<GitPath>;
   readonly committedEnv: ReadonlyArray<CommittedEnv>;
+  readonly hidden: ReadonlyArray<{ readonly path: GitPath; readonly bit: HiddenBit }>;
   readonly commitsAhead: number;
 }
 
@@ -559,22 +569,37 @@ const indexEntries = (git: Git, checkout: Checkout, reads: Env): Buffer =>
   );
 
 // `ls-files -v`: lowercase is assume-unchanged, S skip-worktree.
-const HIDDEN_TAGS = new Set(["h", "S", "s"]);
+const HIDDEN_BY_TAG: ReadonlyMap<string, HiddenBit> = new Map([
+  ["h", "assume-unchanged"],
+  ["S", "skip-worktree"],
+  ["s", "assume-unchanged and skip-worktree"],
+]);
 
-// assume-unchanged and skip-worktree hide an edit from git status.
-const revealHiddenEdits = (git: Git, checkout: Checkout, reads: Env): void => {
+/**
+ * assume-unchanged and skip-worktree hide an edit from git status; the bits are cleared on the
+ * shadow index so status sees it. The files on disk that carried one, with the bit.
+ */
+const revealHiddenEdits = (
+  git: Git,
+  checkout: Checkout,
+  reads: Env,
+): ReadonlyMap<GitPath, HiddenBit> => {
   const listing = git.run(reads, ["ls-files", "-v", "-z", ...checkout.sparseFlag]);
-  const hidden = nulFields(listing).flatMap((field) => {
-    if (!HIDDEN_TAGS.has(leadOf(field)) || namesDirectory(field)) return [];
-    const file = pathOf(field.subarray(2));
-    return statOnDisk(checkout.top, file) === undefined ? [] : [file];
-  });
-  if (hidden.length > 0) {
+  const hidden = new Map(
+    nulFields(listing).flatMap((field): ReadonlyArray<readonly [GitPath, HiddenBit]> => {
+      const bit = HIDDEN_BY_TAG.get(leadOf(field));
+      if (bit === undefined || namesDirectory(field)) return [];
+      const file = pathOf(field.subarray(2));
+      return statOnDisk(checkout.top, file) === undefined ? [] : [[file, bit]];
+    }),
+  );
+  if (hidden.size > 0) {
     // One bit per call: update-index applies only the first of the two to each path.
     for (const bit of ["--no-assume-unchanged", "--no-skip-worktree"]) {
-      git.run(reads, ["update-index", bit, "-z", "--stdin"], nulList(hidden));
+      git.run(reads, ["update-index", bit, "-z", "--stdin"], nulList(hidden.keys()));
     }
   }
+  return hidden;
 };
 
 const committedEnvOf = (git: Git, base: Env, checkout: Checkout): ReadonlyArray<CommittedEnv> =>
@@ -608,7 +633,7 @@ const inspect = (
   reads: Env,
   maxFileBytes: number,
 ): Inspection | { readonly refused: string } => {
-  revealHiddenEdits(git, checkout, reads);
+  const hiddenBits = revealHiddenEdits(git, checkout, reads);
   const status = parseStatus(
     nulFields(
       git.run(reads, [
@@ -672,6 +697,7 @@ const inspect = (
     const out = excludedOf(file);
     return out === null ? [] : [out];
   });
+  const stays = new Set(leftOut.map((out) => out.path));
   const ignoredEnv = nulFields(
     git.run(reads, [
       "ls-files",
@@ -694,8 +720,14 @@ const inspect = (
     untracked,
     intentToAdd,
     leftOut: [...leftOut, ...ignoredEnv],
-    stays: new Set(leftOut.map((out) => out.path)),
+    stays,
     committedEnv: committedEnvOf(git, base, checkout),
+    hidden: tracked.flatMap((entry) => {
+      const bit = hiddenBits.get(entry.path);
+      return bit === undefined || entry.unstaged === "." || stays.has(entry.path)
+        ? []
+        : [{ path: entry.path, bit }];
+    }),
     commitsAhead: Number(
       git
         .run(base, ["rev-list", "--count", `${checkout.mergeBase}..${checkout.head}`])
@@ -855,6 +887,7 @@ const cutSnapshot = (request: SnapshotRequest): SnapshotOutcome => {
         },
         leftOut: inspection.leftOut.map(leftOutFor),
         committedEnv: inspection.committedEnv,
+        hidden: inspection.hidden.map((file) => ({ ...file, path: displayPath(file.path) })),
         bundlePath: bundle.bundlePath,
         bundleBytes: fs.statSync(bundle.bundlePath).size,
         cutAt: request.cutAt.toISOString(),
