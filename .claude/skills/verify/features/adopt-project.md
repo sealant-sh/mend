@@ -2,17 +2,18 @@
 
 Adoption brings a network Git repository into Mend's central store as a project. Sessions then run
 in git worktrees of it: a new name creates one, an existing name joins it. A user pastes a Git URL
-on the web Projects page or runs `mend adopt`, chooses how the store fetches (Mend key, bridge, or
-ambient) and who sees it (only them, or their organization), and then finds the project in the
-directory and on its own page. The dashboard offers to adopt the checkout it was opened in, the
-phone adopts from its Adopt project screen, and VS Code from a command.
+on the web Projects page or runs `mend adopt`, chooses how the store fetches (Mend key or bridge)
+and who sees it (only them, or their organization), and then finds the project in the directory and
+on its own page. The dashboard offers to adopt the checkout it was opened in, the phone adopts from
+its Adopt project screen, and VS Code from a command.
 
 ## Sub-features
 
 - `adopt-web` adopts a Git URL from the Projects page's adopt panel.
 - `adopt-invalid-url` refuses a URL that is not a cloneable network URL, with the reason, before
   anything is sent.
-- `adopt-access` picks the git access for this one adoption: `mend key`, `bridge` or `ambient`.
+- `adopt-access` picks the git access for this one adoption: `mend key` or `bridge`. `ambient` is
+  gone (0.36) and `mend adopt --auth ambient` is refused.
 - `adopt-visibility` picks `only you` (private, the default) or `everyone in <organization>`
   (shared).
 - `adopt-cli` adopts from the terminal with `mend adopt`.
@@ -28,9 +29,8 @@ phone adopts from its Adopt project screen, and VS Code from a command.
   `Adopt a repository` link in the first-run checklist when nothing is adopted yet. Both open
   `/projects`.
 - Web: on the Projects page (`/projects`), choose the `Adopt a repository` button.
-- CLI: run
-  `mend adopt [git-url] [--name <name>] [--auth ambient|mend-key|bridge] [--private|--shared]`. With
-  no URL, Mend uses the current checkout's origin.
+- CLI: run `mend adopt [git-url] [--name <name>] [--auth mend-key|bridge] [--private|--shared]`.
+  With no URL, Mend uses the current checkout's origin.
 - CLI: `mend projects` lists adopted projects with their live sessions.
 - TUI: run `mend ui` (or bare `mend`) inside a checkout whose origin is a network Git URL that no
   project has. Once the workbench loads, a box titled `adopt this repository URL?` offers it, once
@@ -51,11 +51,12 @@ Preconditions:
   handover signs both surfaces in as its first account. When the two surfaces are two accounts, a
   project adopted `only you` is visible to its creator only, so a check on one surface sees the
   other surface's adoption only when it was adopted `everyone in <organization>`.
-- `<repo-url>` is a disposable repository the server can clone with `ambient` access, and no project
-  named `<project>` exists.
+- `<repo-url>` is a disposable HTTP(S) repository the server can clone, and no project named
+  `<project>` exists. Either mode clones an HTTP(S) remote with no signer, so the default `mend key`
+  needs nothing added on the git host.
 - `mend projects` does not list `<project>`.
-- TUI steps: `<repo-url-2>` is a second disposable repository the server can clone with `ambient`
-  access, and no project has it as its origin. The dashboard needs Node 26 or newer.
+- TUI steps: `<repo-url-2>` is a second disposable HTTP(S) repository the server can clone, and no
+  project has it as its origin. The dashboard needs Node 26 or newer.
 - Mobile steps: the Expo web build runs (`pnpm --filter @mend/mobile web`) at the URL it prints
   (written `<mobile-web>`), in Playwright at 390x844, and is paired with this instance (see
   [Pairing devices](./pairing-devices.md)). The instance must accept that origin: the API answers
@@ -75,9 +76,11 @@ Preconditions:
   `await page.getByRole("textbox", { name: "Repository Git URL" }).fill("<repo-url>")` and
   `await page.getByRole("textbox", { name: "Project name (optional)" }).fill("<project>")`. The
   alert is gone and `Adopt` is enabled.
-- **Pick access and visibility.** Run `await page.getByRole("button", { name: "ambient" }).click()`.
-  The `ambient` button reports `aria-pressed="true"`. The `only you` button is pressed by default;
-  leave it.
+- **Pick access and visibility.** The access row `git access:` has `mend key` and `bridge`; the
+  account's own mode (Settings) is pressed. Run
+  `await page.getByRole("button", { name: "mend key" }).click()`. The `mend key` button reports
+  `aria-pressed="true"`, and the panel shows the account's Mend key card (choosing `mend key`
+  creates the key when the account has none). The `only you` button is pressed by default; leave it.
 - **Adopt.** Run `await page.getByRole("button", { name: "Adopt", exact: true }).click()`. The
   button reads `Adopting…`, then the panel closes and the toggle reads `Adopt a repository` again.
 - **Confirm in the directory.** Run
@@ -91,22 +94,26 @@ Preconditions:
   (`page.getByRole("heading", { name: "Worktrees", exact: true })`). Without `exact: true` the
   heading also matches `No worktrees yet`.
 - **CLI entry.** Adopt a second copy under another name. Run
-  `mend adopt <repo-url> --name <project>-cli --auth ambient`. Exit code `0`, and stdout starts with
-  `✓ adopted · <project>-cli · <store path>`, then `  default branch <branch>` and
-  `  visible to only you`.
+  `mend adopt <repo-url> --name <project>-cli --auth mend-key`. Exit code `0`, and stdout starts
+  with `✓ adopted · <project>-cli · <store path>`, then `  default branch <branch>`,
+  `  visible to only you` and `  git auth mode mend key (configured for SSH remotes)`.
 - **CLI refusal.** Run `mend adopt /tmp/not-a-url --name nope`. Exit code `1` and stderr starts with
   `mend: ` and states why the URL cannot be cloned. `mend projects` does not list `nope`.
+- **CLI: ambient is refused.** Run `mend adopt <repo-url> --name nope --auth ambient`. Exit code `1`
+  and stderr reads
+  `mend: Mend no longer has an ambient git mode: a packaged server holds no git or ssh credential of its own.`
+  followed by the two modes to use instead. Nothing is adopted.
 - **TUI: the offer.** Clone the second repository into a directory named for the project, and open
   the dashboard there. Run `git clone <repo-url-2> /tmp/verify-tui/<project>-tui`, then
   `tmux new-session -d -s mend-adopt -x 200 -y 50 -c /tmp/verify-tui/<project>-tui 'mend ui'`. Once
   the workbench loads, `tmux capture-pane -p -t mend-adopt` shows a box titled
   `adopt this repository URL?` with `<project>-tui · not in the store yet`, the URL, the line
-  `auth  ▸ ambient · mend-key · bridge`, the hint `the server machine's own git/ssh setup`, and
+  `auth  ▸ mend-key · bridge` (the marker starts on the account's saved mode, `mend-key` when it is
+  unknown), the hint `your Mend key · add its public half on the git host`, and
   `enter adopt · ←→ auth mode · esc not now`. The footer reads the same.
-- **TUI: pick the access.** Run `tmux send-keys -t mend-adopt Right`. The marker moves to
-  `▸ mend-key` and the hint reads
-  `the machine's Mend deploy key · add its public half on the git host`. Run
-  `tmux send-keys -t mend-adopt Left` to come back to `▸ ambient`.
+- **TUI: pick the access.** Run `tmux send-keys -t mend-adopt Right`. The marker moves to `▸ bridge`
+  and the hint reads ``your own ssh-agent, relayed while `mend keys share` runs``. Run
+  `tmux send-keys -t mend-adopt Left` to come back to `▸ mend-key`. The choice wraps at both ends.
 - **TUI: adopt.** Run `tmux send-keys -t mend-adopt Enter`. The status line reads
   `adopting <project>-tui · cloning into the store · <n>s elapsed`, then
   `adopted · <project>-tui · w starts a worktree`, and the projects section names `<project>-tui` as
@@ -159,8 +166,8 @@ Preconditions:
   `No worktrees yet`. On a project page two links are named `Projects` (the sidebar's and the page
   header's): scope to `main` or the `Primary` navigation.
 - Choosing `mend key` creates the user's Mend key and shows its public key. A private repository
-  then needs that key on the git host before the clone succeeds. Use `ambient` with a disposable
-  public repository unless the run is about git access.
+  then needs that key on the git host before an SSH clone succeeds. Use a disposable public HTTP(S)
+  repository unless the run is about git access: neither mode signs an HTTP(S) clone.
 - Project names are unique within an organization. Rerunning the recipe needs a fresh `<project>` or
   cleanup between runs.
 - Removing a project has no CLI command. On the web, the project's Setup tab has `Remove project…`,

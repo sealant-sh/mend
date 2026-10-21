@@ -5,9 +5,10 @@ chooses how the server reaches their remotes: `mend-key`, an ed25519 key of thei
 held on the server, whose public half they add to their git account (or to one repository as a
 deploy key); or `bridge`, which signs through the ssh-agent on their own machine while a `mend`
 command runs there, so a hardware key never leaves the desk. New projects adopt with that choice; a
-project's Setup page overrides it with `mend key`, `bridge` or `ambient` (the server's own git and
-ssh setup), and `mend adopt --auth` overrides it for one adoption. Mend reports what it observed:
-the key to add, and whether a signer is connected.
+project's Setup page overrides it with `mend key` or `bridge`, and `mend adopt --auth` overrides it
+for one adoption. The `ambient` mode (the server's own git and ssh setup) was removed in 0.36: a
+request for it is refused, and its projects moved to their creator's mode. Mend reports what it
+observed: the key to add, and whether a signer is connected.
 
 ## Sub-features
 
@@ -19,7 +20,7 @@ the key to add, and whether a signer is connected.
   deploy-key page on a GitHub project.
 - `bridge-share` relays the machine's ssh-agent (`mend keys share`, or any attaching `mend` command
   while the mode is `bridge`) and shows `signer connected · <machine>`.
-- `project-override` sets one project's mode on its Setup page (`mend key`, `bridge`, `ambient`).
+- `project-override` sets one project's mode on its Setup page (`mend key`, `bridge`).
 - `adopt-auth` picks the mode for one adoption (`mend adopt --auth`).
 
 ## How to get to it (user POV)
@@ -31,7 +32,7 @@ the key to add, and whether a signer is connected.
 - Web: a project's Setup tab (`/projects/<id>/setup`, section `#git`), the heading `Git access`.
 - Web: the adopt panel's access choice on `/projects` (see [Adopt a project](./adopt-project.md)).
 - CLI: `mend keys init`, `mend keys show`, `mend keys mode [mend-key|bridge]`, `mend keys share`,
-  and `mend adopt … --auth ambient|mend-key|bridge`.
+  and `mend adopt … --auth mend-key|bridge`.
 - Other surfaces have no git access controls.
 
 ## Driving it with verify
@@ -39,7 +40,7 @@ the key to add, and whether a signer is connected.
 Preconditions:
 
 - Mend is healthy at `<web>`, the browser and the CLI are signed in as the same account, and
-  `<project>` is adopted with `ambient` access.
+  `<project>` is adopted from an HTTP(S) remote (either mode clones it with no signer).
 - For `bridge`, the run's machine has an ssh-agent with a key loaded (`SSH_AUTH_SOCK` set).
 - The private adoption steps need a disposable git account or repository the run may add a key to
   and its SSH remote URL, written `<private-ssh-repo-url>` (`git@github.com:<owner>/<repo>.git` or
@@ -76,20 +77,24 @@ Preconditions:
 - **Project override.** Open `<project>`'s page from `/projects`, choose the link `Setup`, or run
   `await page.goto("<web>/projects/<id>/setup#git")` with `<id>` from the project page's URL. The
   heading `Git access` (`page.getByRole("heading", { name: "Git access" })`) is visible with the
-  buttons `mend key`, `bridge` and `ambient`. Run
+  buttons `mend key` and `bridge`. Run
   `await page.getByRole("button", { name: "mend key" }).click()`. The key card appears; on a GitHub
   origin its text links `<owner>/<repo>` for the deploy-key page. Choose `bridge`: the card reads
-  `no signer connected` and the hint naming `mend keys share`. Choose `ambient`: both go.
+  `no signer connected` and the hint naming `mend keys share`. Choose `mend key` again to restore
+  it.
 - **Adopt with the key.** After adding the public key to the disposable git account, run
   `mend adopt <private-ssh-repo-url> --name <project>-key --auth mend-key`. Stdout shows
   `✓ adopted · <project>-key · <store path>` and
-  `  git auth mend key (your Mend key signed this clone)`. Exit `0`.
+  `  git auth mode mend key (configured for SSH remotes)`. Exit `0`.
 - **Adopt over the bridge.** Set `mend keys mode bridge`, keep `mend keys share` running in its own
   PTY, and run `mend adopt <private-ssh-repo-url> --name <project>-bridge --auth bridge`. Stdout
-  shows ``  git auth bridge (signed through the connected `mend keys share`)``, and the share's
-  terminal prints `✎ signature requested by mend (…)` then `✓ signed (<n>s)`.
+  shows ``  git auth mode bridge (configured to use `mend keys share` for SSH remotes)``, and the
+  share's terminal prints `✎ signature requested by mend (…)` then `✓ signed (<n>s)`.
 - **Refused mode.** Run `mend adopt <repo-url> --auth nope`. Stderr reads
-  `mend: --auth takes "ambient", "mend-key", or "bridge", not "nope"`, exit `1`.
+  `mend: --auth takes "mend-key" or "bridge", not "nope"`, exit `1`. Run
+  `mend adopt <repo-url> --auth ambient`: stderr starts
+  `mend: Mend no longer has an ambient git mode:` and names `--auth mend-key` and `--auth bridge`,
+  exit `1`.
 - **Second view.** Run `mend projects`; the adopted projects are listed. Reload the Setup page of
   `<project>-key`: `mend key` is the chosen mode and the key card shows the same public key.
 - **Proof.** Save `await page.locator("body").ariaSnapshot()` and a screenshot of Settings → Git
@@ -98,9 +103,9 @@ Preconditions:
 
 ## Gotchas
 
-- Neither the Settings choice buttons nor the Setup buttons (`mend key`, `bridge`, `ambient`) report
-  which one is chosen: no `aria-pressed`, no `aria-checked`, only styling. Read the mode from what
-  the section shows (the key card or the signer line) or from `mend keys mode`. That is a finding.
+- Neither the Settings choice buttons nor the Setup buttons (`mend key`, `bridge`) report which one
+  is chosen: no `aria-pressed`, no `aria-checked`, only styling. Read the mode from what the section
+  shows (the key card or the signer line) or from `mend keys mode`. That is a finding.
 - The Settings choice buttons are named by their title and description together
   (`A Mend key on your git account Your own key, created on …`). Match them with an anchored regular
   expression.
@@ -115,7 +120,9 @@ Preconditions:
 - `mend keys` with no verb prints the key like `mend keys show`; `help.ts` documents only the verbs.
 - `mend doctor`'s help page says it reports "the git key", but `mend doctor` prints no git key line
   (product gap, `apps/cli/src/help.ts` against `apps/cli/src/doctor.ts`).
-- `ambient` uses the server process's own git and ssh setup; in the Docker deployment that reaches
-  only public remotes. Adopted with `ambient`, a private repository fails with the remote's own
-  words.
+- There is no `ambient` mode (0.36, `AMBIENT_REMOVED_GUIDANCE` in
+  `packages/domain/src/workbench/project.ts`): the CLI, the adopt route and the per-project switch
+  refuse it. An HTTP(S) remote runs with no signer under either mode, and an SSH remote with no
+  signer fails closed instead of falling back to the server process's own ssh setup.
+- A session's recorded git operations from before 0.36 may still say `ambient`; that is what ran.
 - Changing a mode applies to the next git operation; running workspaces are not rebuilt.

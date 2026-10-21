@@ -201,10 +201,11 @@ Preconditions:
 - **Adopt from the dashboard.** In the clone of `<repo-url-2>`, run
   `tmux new-session -d -s verify-adopt -x 200 -y 50 'cd <clone> && mend ui; echo "exit $?"; sleep 600'`.
   A modal titled `adopt this repository URL?` shows `<name> · not in the store yet`, the origin URL,
-  `auth  ▸ ambient · mend-key · bridge` and ` enter adopt · ←→ auth mode · esc not now`. Send
-  `Right`; the marker moves to `▸ mend-key` and its hint line changes. Send `Escape`; the status
-  line reads `not adopted · use mend adopt <url> any time`. To adopt instead, restart it and send
-  `Enter` with the mode the instance can clone with: the status line reads
+  `auth  ▸ mend-key · bridge` (the marker on the account's saved mode, `mend-key` when unknown) and
+  ` enter adopt · ←→ auth mode · esc not now`. Send `Right`; the marker moves to `▸ bridge` and its
+  hint line changes. Send `Escape`; the status line reads
+  `not adopted · use mend adopt <url> any time`. To adopt instead, restart it and send `Enter`
+  (either mode clones an HTTP(S) `<repo-url-2>` with no signer): the status line reads
   `adopting <name> · cloning into the store ·`, then `adopted · <name> · w starts a worktree`, and
   `mend projects` lists `<name>`.
 - **Node gate.** Run
@@ -246,10 +247,9 @@ Preconditions:
 - While a snake game has the keyboard (the session pane while a session starts, or `mend snake`),
   every dashboard key is swallowed; only its own keys act, and `Escape` or `q` hands the keyboard
   back. A step that sends a dashboard key then must leave the game first.
-- The adopt offer starts on `ambient` (`apps/cli/src/dashboard-adoption.ts:28`,
-  `apps/cli/src/dashboard.tsx:1195-1218`), while `mend adopt` defaults to the user's
-  `mend keys mode` (`mend-key` unless changed). Enter without moving adopts with the server's own
-  Git setup. A product inconsistency to report.
+- The adopt offer lists `mend-key` and `bridge` and starts on the account's saved mode
+  (`deriveAdoptOffer`, `apps/cli/src/dashboard-adoption.ts`), as `mend adopt` with no `--auth` does.
+  There is no `ambient` choice (0.36).
 - `clients/terminal` says the harness picker offers `codex`, `claude`, `opencode` or `shell`; the
   dashboard also offers `pi` (`apps/cli/src/shared.ts:12-19`). A docs gap.
 - `mend snake` reads `--no-tunnel` (`apps/cli/src/main.ts:5035-5036`), which `mend help snake` does
