@@ -392,7 +392,7 @@ const projectFor = async (
   }
   const issue = repositoryCloneUrlIssue(origin);
   if (issue !== null) return refuse(`${issue} · nothing was created`);
-  const local = preflightIssue({ checkout: checkout.top, defaultBranch: null });
+  const local = await inScratch((scratch) => preflightIssue({ checkout: checkout.top, scratch }));
   if (local !== null) return refuse(local);
   if (!(await serverTakesHandoffs(deps))) return oldServer(deps);
   // The terms answer for a project; before one is adopted the organization says the same store.
@@ -424,17 +424,12 @@ const SIGNALS: ReadonlyArray<readonly [NodeJS.Signals, number]> = [
 
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-interface Cut {
-  readonly snapshot: HandoffSnapshot;
-  readonly bundle: Uint8Array<ArrayBuffer>;
-}
-
 /**
- * The snapshot and its bundle's bytes. The scratch directory holds a copy of uncommitted work, so
- * it lives only inside this synchronous block. A signal meanwhile is held until the block has
- * removed it, then refuses the handoff.
+ * `work` with a scratch directory under TMPDIR. The directory holds copies of the checkout's index
+ * and uncommitted work, so it lives only inside this synchronous block. A signal meanwhile is held
+ * until the block has removed it, then refuses the handoff, whatever the block did.
  */
-const cutBundle = async (request: Omit<SnapshotRequest, "scratch">): Promise<Cut> => {
+const inScratch = async <T>(work: (scratch: string) => T): Promise<T> => {
   const caught: { code: number | null } = { code: null };
   const holds = SIGNALS.map(([signal, code]) => {
     const hold = () => {
@@ -443,21 +438,16 @@ const cutBundle = async (request: Omit<SnapshotRequest, "scratch">): Promise<Cut
     process.on(signal, hold);
     return () => process.off(signal, hold);
   });
-  let outcome: { readonly cut: Cut } | { readonly refused: string };
-  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-handoff-"));
+  let ended: { readonly value: T } | { readonly error: unknown };
   try {
-    const cut = snapshotCheckout({ ...request, scratch });
-    outcome =
-      cut._tag === "refused"
-        ? { refused: cut.message }
-        : {
-            cut: {
-              snapshot: cut.snapshot,
-              bundle: new Uint8Array(fs.readFileSync(cut.snapshot.bundlePath)),
-            },
-          };
-  } finally {
-    fs.rmSync(scratch, { recursive: true, force: true });
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-handoff-"));
+    try {
+      ended = { value: work(scratch) };
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  } catch (error) {
+    ended = { error };
   }
   // The loop's next poll dispatches a signal that arrived during the block. The second of two
   // immediates always runs after one, whatever phase the first is queued in.
@@ -465,6 +455,30 @@ const cutBundle = async (request: Omit<SnapshotRequest, "scratch">): Promise<Cut
   await nextTurn();
   for (const release of holds) release();
   if (caught.code !== null) throw new Refusal("interrupted · nothing was created", caught.code);
+  if ("error" in ended) throw ended.error;
+  return ended.value;
+};
+
+interface Cut {
+  readonly snapshot: HandoffSnapshot;
+  readonly bundle: Uint8Array<ArrayBuffer>;
+}
+
+/** The snapshot and its bundle's bytes. */
+const cutBundle = async (request: Omit<SnapshotRequest, "scratch">): Promise<Cut> => {
+  const outcome = await inScratch(
+    (scratch): { readonly cut: Cut } | { readonly refused: string } => {
+      const cut = snapshotCheckout({ ...request, scratch });
+      return cut._tag === "refused"
+        ? { refused: cut.message }
+        : {
+            cut: {
+              snapshot: cut.snapshot,
+              bundle: new Uint8Array(fs.readFileSync(cut.snapshot.bundlePath)),
+            },
+          };
+    },
+  );
   return "refused" in outcome ? refuse(outcome.refused) : outcome.cut;
 };
 

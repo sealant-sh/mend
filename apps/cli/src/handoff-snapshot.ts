@@ -310,8 +310,53 @@ const NO_COMMIT =
 const unmergedRefusal = (paths: number): string =>
   `${paths} unmerged ${paths === 1 ? "path" : "paths"} · finish or abort the merge, then hand off · nothing was created`;
 
+const notACheckout = (dir: string): string =>
+  `${dir} is not inside a git checkout · run mend handoff in one · nothing was created`;
+
+interface Opened {
+  readonly base: Env;
+  readonly paths: CheckoutPaths;
+  readonly git: Git;
+}
+
+/** The checkout, and the one git every read of it goes through. */
+const openCheckout = (dir: string, env: NodeJS.ProcessEnv): Opened | null => {
+  const base = scrubbed(env);
+  const paths = pathsOf(dir, base);
+  if (paths === null) return null;
+  const filters = filtersOff(gitIn(paths.top, SAFE_CONFIG), base);
+  return { base, paths, git: gitIn(paths.top, [...SAFE_CONFIG, ...filters]) };
+};
+
 const headOf = (git: Git, base: Env): string | null =>
   git.attempt(base, ["rev-parse", "--verify", "-q", "HEAD^{commit}"])?.trim() ?? null;
+
+const TRACKING = "refs/remotes/origin/";
+
+const commitAt = (git: Git, base: Env, ref: string): boolean =>
+  git.attempt(base, ["rev-parse", "--verify", "-q", `${ref}^{commit}`]) !== null;
+
+/**
+ * origin's default branch as this checkout knows it: `origin/HEAD` when it names a branch the
+ * checkout has. A clone that was never told (`git init` then a push) has none, and one renamed on
+ * origin and pruned here names a branch that is gone; adoption clones origin's own HEAD, so the
+ * common names stand in for it, in this order.
+ */
+const originDefaultOf = (git: Git, base: Env): string | { readonly refused: string } => {
+  const head = git.attempt(base, ["symbolic-ref", "-q", `${TRACKING}HEAD`])?.trim() ?? "";
+  if (head.startsWith(TRACKING) && commitAt(git, base, head)) return head.slice(TRACKING.length);
+  const known = ["main", "master"].find((name) => commitAt(git, base, `${TRACKING}${name}`));
+  if (known !== undefined) return known;
+  const tracked = (git.attempt(base, ["for-each-ref", "--format=%(refname)", TRACKING]) ?? "")
+    .split("\n")
+    .filter((ref) => ref !== "" && ref !== `${TRACKING}HEAD`);
+  return {
+    refused:
+      tracked.length === 0
+        ? "this checkout has fetched no branch from origin · run git fetch origin, then hand off again · nothing was created"
+        : "this checkout does not know origin's default branch · run git fetch origin && git remote set-head origin -a, then hand off again · nothing was created",
+  };
+};
 
 const basesOf = (
   git: Git,
@@ -319,7 +364,7 @@ const basesOf = (
   head: string,
   defaultBranch: string,
 ): { readonly defaultTip: string; readonly mergeBase: string } | { readonly refused: string } => {
-  const tracking = `refs/remotes/origin/${defaultBranch}`;
+  const tracking = `${TRACKING}${defaultBranch}`;
   const defaultTip =
     git.attempt(base, ["rev-parse", "--verify", "-q", `${tracking}^{commit}`])?.trim() ?? null;
   if (defaultTip === null) {
@@ -332,54 +377,6 @@ const basesOf = (
     return { refused: `HEAD shares no history with origin/${defaultBranch} · nothing was created` };
   }
   return { defaultTip, mergeBase };
-};
-
-/** origin's default branch as this checkout last fetched it (`origin/HEAD`), when it knows. */
-const originDefaultOf = (git: Git, base: Env): string | null => {
-  const ref = git.attempt(base, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"])?.trim() ?? "";
-  return ref.startsWith("refs/remotes/origin/") ? ref.slice("refs/remotes/origin/".length) : null;
-};
-
-export interface PreflightRequest {
-  readonly checkout: string;
-  readonly defaultBranch: string | null;
-  readonly env?: NodeJS.ProcessEnv;
-}
-
-const preflight = (request: PreflightRequest): string | null => {
-  const base = scrubbed(request.env ?? process.env);
-  const paths = pathsOf(request.checkout, base);
-  if (paths === null) {
-    return `${request.checkout} is not inside a git checkout · run mend handoff in one · nothing was created`;
-  }
-  const git = gitIn(paths.top, SAFE_CONFIG);
-  const head = headOf(git, base);
-  if (head === null) return NO_COMMIT;
-  const defaultBranch = request.defaultBranch ?? originDefaultOf(git, base);
-  if (defaultBranch !== null) {
-    const bases = basesOf(git, base, head, defaultBranch);
-    if ("refused" in bases) return bases.refused;
-  }
-  const unmerged = new Set(
-    nulFields(git.run(base, ["ls-files", "--unmerged", "-z"])).map((field) =>
-      pathOf(field.subarray(field.indexOf(TAB) + 1)),
-    ),
-  );
-  return unmerged.size === 0 ? null : unmergedRefusal(unmerged.size);
-};
-
-/**
- * What a snapshot of this checkout would refuse, read without a scratch directory or a server:
- * no commit, no origin/<default>, no shared history, unmerged paths. A null default branch is
- * origin's as the checkout knows it. Null when none applies.
- */
-export const preflightIssue = (request: PreflightRequest): string | null => {
-  try {
-    return preflight(request);
-  } catch (error) {
-    if (error instanceof GitFailure) return `${error.message} · nothing was created`;
-    throw error;
-  }
 };
 
 interface Checkout extends CheckoutPaths {
@@ -398,12 +395,15 @@ const locate = (
   git: Git,
   base: Env,
   paths: CheckoutPaths,
-  request: SnapshotRequest,
+  /** Null reads origin's from the checkout. */
+  defaultBranch: string | null,
 ): Checkout | { readonly refused: string } => {
   const text = (args: ReadonlyArray<string>) => git.run(base, args).toString().trim();
   const head = headOf(git, base);
   if (head === null) return { refused: NO_COMMIT };
-  const bases = basesOf(git, base, head, request.defaultBranch);
+  const branch = defaultBranch ?? originDefaultOf(git, base);
+  if (typeof branch !== "string") return branch;
+  const bases = basesOf(git, base, head, branch);
   if ("refused" in bases) return bases;
   const { defaultTip, mergeBase } = bases;
   const branchRef = git.attempt(base, ["symbolic-ref", "-q", "HEAD"])?.trim() ?? "";
@@ -485,6 +485,41 @@ const scratchFor = (git: Git, base: Env, checkout: Checkout, dir: string): Scrat
   };
 };
 
+export interface PreflightRequest {
+  readonly checkout: string;
+  readonly scratch: string;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+const preflight = (request: PreflightRequest): string | null => {
+  const opened = openCheckout(request.checkout, request.env ?? process.env);
+  if (opened === null) return notACheckout(request.checkout);
+  const { base, git, paths } = opened;
+  const checkout = locate(git, base, paths, null);
+  if ("refused" in checkout) return checkout.refused;
+  const { reads } = scratchFor(git, base, checkout, request.scratch);
+  const unmerged = new Set(
+    nulFields(git.run(reads, ["ls-files", "--unmerged", "-z", ...checkout.sparseFlag])).map(
+      (field) => pathOf(field.subarray(field.indexOf(TAB) + 1)),
+    ),
+  );
+  return unmerged.size === 0 ? null : unmergedRefusal(unmerged.size);
+};
+
+/**
+ * What a snapshot of this checkout would refuse, read the way a snapshot reads it, before any
+ * server knows a default branch: no commit, no default branch of origin's, no shared history,
+ * unmerged paths. Null when none applies.
+ */
+export const preflightIssue = (request: PreflightRequest): string | null => {
+  try {
+    return preflight(request);
+  } catch (error) {
+    if (error instanceof GitFailure) return `${error.message} · nothing was created`;
+    throw error;
+  }
+};
+
 type Excluded =
   | { readonly path: GitPath; readonly reason: "env" }
   | { readonly path: GitPath; readonly reason: "over-limit"; readonly bytes: number }
@@ -532,9 +567,7 @@ const revealHiddenEdits = (git: Git, checkout: Checkout, reads: Env): void => {
   const hidden = nulFields(listing).flatMap((field) => {
     if (!HIDDEN_TAGS.has(leadOf(field)) || namesDirectory(field)) return [];
     const file = pathOf(field.subarray(2));
-    return statOnDisk(checkout.top, file) === undefined
-      ? []
-      : [file];
+    return statOnDisk(checkout.top, file) === undefined ? [] : [file];
   });
   if (hidden.length > 0) {
     // One bit per call: update-index applies only the first of the two to each path.
@@ -794,18 +827,10 @@ const bundleOf = (
 const leftOutFor = (out: Excluded): LeftOut => ({ ...out, path: displayPath(out.path) });
 
 const cutSnapshot = (request: SnapshotRequest): SnapshotOutcome => {
-  const base = scrubbed(request.env ?? process.env);
-  const paths = pathsOf(request.checkout, base);
-  if (paths === null) {
-    return refused(
-      `${request.checkout} is not inside a git checkout · run mend handoff in one · nothing was created`,
-    );
-  }
-  const git = gitIn(paths.top, [
-    ...SAFE_CONFIG,
-    ...filtersOff(gitIn(paths.top, SAFE_CONFIG), base),
-  ]);
-  const checkout = locate(git, base, paths, request);
+  const opened = openCheckout(request.checkout, request.env ?? process.env);
+  if (opened === null) return refused(notACheckout(request.checkout));
+  const { base, git, paths } = opened;
+  const checkout = locate(git, base, paths, request.defaultBranch);
   if ("refused" in checkout) return refused(checkout.refused);
   try {
     const scratch = scratchFor(git, base, checkout, request.scratch);

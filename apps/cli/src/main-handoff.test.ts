@@ -564,8 +564,13 @@ describe("mend handoff", spawning, () => {
     w.git(conflicted, ["commit", "-q", "-am", "theirs"]);
     expect(() => w.git(conflicted, ["merge", "-q", "fix/login"])).toThrow();
 
-    const untracked = newsroom(w, "untracked-main");
-    w.git(untracked, ["update-ref", "-d", "refs/remotes/origin/main"]);
+    const nothingFetched = newsroom(w, "nothing-fetched");
+    w.git(nothingFetched, ["update-ref", "-d", "refs/remotes/origin/main"]);
+
+    const otherDefault = newsroom(w, "other-default");
+    w.git(otherDefault, ["update-ref", "refs/remotes/origin/trunk", "refs/remotes/origin/main"]);
+    w.git(otherDefault, ["update-ref", "-d", "refs/remotes/origin/main"]);
+    w.git(otherDefault, ["remote", "set-head", "origin", "-d"]);
 
     const cases: ReadonlyArray<readonly [string, string, "bind" | "sources"]> = [
       [
@@ -579,8 +584,13 @@ describe("mend handoff", spawning, () => {
         "sources",
       ],
       [
-        untracked,
-        "this checkout has no origin/main · run git fetch origin, then hand off again · nothing was created",
+        nothingFetched,
+        "this checkout has fetched no branch from origin · run git fetch origin, then hand off again · nothing was created",
+        "sources",
+      ],
+      [
+        otherDefault,
+        "this checkout does not know origin's default branch · run git fetch origin && git remote set-head origin -a, then hand off again · nothing was created",
         "sources",
       ],
       [
@@ -600,6 +610,59 @@ describe("mend handoff", spawning, () => {
       expect(fingerprint(checkout)).toEqual(before);
     }
   }, 60_000);
+
+  it("reads origin's default branch from its branches when origin/HEAD dangles or was never set", async () => {
+    const w = world();
+    w.git(w.origin, ["branch", "-m", "main", "master"]);
+    w.git(w.origin, ["symbolic-ref", "HEAD", "refs/heads/master"]);
+    const renamed = newsroom(w, "renamed");
+    w.git(w.origin, ["branch", "-m", "master", "main"]);
+    w.git(w.origin, ["symbolic-ref", "HEAD", "refs/heads/main"]);
+    w.git(renamed, ["remote", "set-url", "origin", w.origin]);
+    w.git(renamed, ["fetch", "-q", "--prune", "origin"]);
+    w.git(renamed, ["remote", "set-url", "origin", ORIGIN]);
+    expect(w.git(renamed, ["symbolic-ref", "refs/remotes/origin/HEAD"])).toBe(
+      "refs/remotes/origin/master",
+    );
+    expect(w.git(renamed, ["for-each-ref", "refs/remotes/origin/master"])).toBe("");
+
+    const unset = newsroom(w, "unset");
+    w.git(unset, ["remote", "set-head", "origin", "-d"]);
+
+    for (const checkout of [renamed, unset]) {
+      const before = fingerprint(checkout);
+      const server = await handoffServer({ projects: [] });
+      const result = await run(server, ["--yes"], checkout);
+      expect(result.code, result.stderr).toBe(0);
+      expect(server.adoptions).toHaveLength(1);
+      expect(result.stdout).toContain(
+        `  base main ${w.git(checkout, ["merge-base", "HEAD", "origin/main"]).slice(0, 7)}`,
+      );
+      expect(fingerprint(checkout)).toEqual(before);
+    }
+  }, 30_000);
+
+  it("leaves an unadopted sparse-index checkout byte-identical through the checks before adoption", async () => {
+    const w = world();
+    const dana = w.clone("sparse-api");
+    w.git(dana, ["remote", "set-url", "origin", ORIGIN]);
+    w.git(dana, ["sparse-checkout", "set", "--cone", "docs"]);
+    w.git(dana, ["config", "index.sparse", "true"]);
+    w.git(dana, ["sparse-checkout", "reapply"]);
+    w.write(path.join(dana, "docs/guide.md"), "guide, edited\n");
+    const before = fingerprint(dana);
+    const refusing = await handoffServer({ projects: [] });
+    const refused = await run(refusing, [], dana);
+    expect(refused.stderr).toBe(
+      "mend: non-interactive · pass --yes to adopt github.com/acme/newsroom-api and hand off · nothing was created\n",
+    );
+    expect(fingerprint(dana)).toEqual(before);
+    const adopting = await handoffServer({ projects: [] });
+    const adopted = await run(adopting, ["--yes"], dana);
+    expect(adopted.code, adopted.stderr).toBe(0);
+    expect(adopting.adoptions).toHaveLength(1);
+    expect(fingerprint(dana)).toEqual(before);
+  }, 30_000);
 
   it("says what it adopted when a refusal comes after the adoption", async () => {
     const w = world();
@@ -633,6 +696,32 @@ describe("mend handoff", spawning, () => {
     const cli = startCli(server.server.url, ["handoff"], env, dana);
     await waitFor(() => fs.existsSync(bundling));
     expect(fs.readdirSync(tmp)).not.toEqual([]);
+    cli.child.kill("SIGINT");
+    const { code } = await cli.exited;
+    await server.server.close();
+    expect(code, cli.stderr()).toBe(130);
+    expect(cli.stderr()).toBe("mend: interrupted · nothing was created\n");
+    expect(fs.readdirSync(tmp)).toEqual([]);
+    expect(server.routes.filter((route) => route.startsWith("POST"))).toEqual([]);
+  }, 30_000);
+
+  it("says Ctrl-C was pressed, and removes its copy, when the snapshot fails another way meanwhile", async () => {
+    const w = world();
+    const dana = newsroom(w);
+    const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    const shims = fs.mkdtempSync(path.join(w.root, "shims-"));
+    const bundling = path.join(w.root, "bundling");
+    // A bundle create that makes no bundle: reading it then fails, and that is not a refusal.
+    fs.writeFileSync(
+      path.join(shims, "git"),
+      `#!/bin/sh\ncase " $* " in *" bundle create "*) : > '${bundling}'; sleep 2; exit 0;; esac\nexec '${realGit}' "$@"\n`,
+      { mode: 0o755 },
+    );
+    const tmp = fs.mkdtempSync(path.join(w.root, "tmp-"));
+    const server = await handoffServer();
+    const env = { TMPDIR: tmp, PATH: `${shims}:${process.env["PATH"] ?? ""}` };
+    const cli = startCli(server.server.url, ["handoff"], env, dana);
+    await waitFor(() => fs.existsSync(bundling));
     cli.child.kill("SIGINT");
     const { code } = await cli.exited;
     await server.server.close();
@@ -721,6 +810,26 @@ describe("mend handoff's adoption offer at a terminal", () => {
     };
     return { calls, deps };
   };
+
+  it("gives Ctrl-C back when its scratch directory cannot be made", async () => {
+    const w = world();
+    const dana = newsroom(w);
+    capture();
+    const signals = ["SIGHUP", "SIGINT", "SIGTERM"] as const;
+    const before = signals.map((signal) => process.listenerCount(signal));
+    vi.stubEnv("TMPDIR", path.join(w.root, "no-such-dir"));
+    try {
+      await expect(
+        handoffCommand(inProcess([project]).deps, [], dana, {
+          interactive: false,
+          ask: async () => false,
+        }),
+      ).rejects.toThrow(/ENOENT/u);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(signals.map((signal) => process.listenerCount(signal))).toEqual(before);
+  });
 
   it("paints its marks with escape sequences at a terminal", async () => {
     const w = world();
