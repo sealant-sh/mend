@@ -56,6 +56,7 @@ import { AgentMemoryGroupLive } from "./agent-memory.ts";
 import { DevicePairingLive } from "./devices.ts";
 import { FoldersGroupLive } from "./folders.ts";
 import { GithubGroupLive } from "./github.ts";
+import { HandoffsGroupLive } from "./handoffs.ts";
 import { HarnessModelsGroupLive } from "./harness-models.ts";
 import { LandingsGroupLive } from "./landing.ts";
 import { MachineGroupLive } from "./machine.ts";
@@ -656,7 +657,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(ReferencesGroupLive),
   Layer.provide(SessionsGroupLive),
   Layer.provide(WorktreesGroupLive),
-  Layer.provide(Layer.merge(SessionChangesGroupLive, LandingsGroupLive)),
+  Layer.provide(Layer.mergeAll(SessionChangesGroupLive, LandingsGroupLive, HandoffsGroupLive)),
   Layer.provide(GithubGroupLive),
   Layer.provide(DevicesGroupLive),
   Layer.provide(

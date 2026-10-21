@@ -3,6 +3,7 @@ import {
   BundleTooLarge,
   ChangeLandingsView,
   CurrentUser,
+  GIT_BUNDLE_CONTENT_TYPE,
   LandingNotAllowed,
   LandingNotStarted,
   LandingReportView,
@@ -401,7 +402,7 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
           },
         });
         return HttpServerResponse.uint8Array(bundle.bytes, {
-          contentType: "application/x-git-bundle",
+          contentType: GIT_BUNDLE_CONTENT_TYPE,
           headers: {
             "content-disposition": bundleDisposition(bundle.branch),
             ...(headerCarries(bundle.branch) ? { [BUNDLE_HEADERS.branch]: bundle.branch } : {}),

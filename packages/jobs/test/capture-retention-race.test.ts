@@ -3,7 +3,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { PgClient } from "@effect/sql-pg";
-import { CaptureStoreRepo, CaptureStoreRepoLive, MendDBLive, migrations } from "@mend/db";
+import {
+  CaptureStoreRepo,
+  CaptureStoreRepoLive,
+  MendDBLive,
+  migrations,
+  WorktreesRepo,
+} from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
 import { ProjectId, WorktreeId } from "@mend/domain";
 import {
@@ -119,7 +125,10 @@ const worldOf = (
     Layer.provide(repoLayer),
     Layer.provide(blobs),
   );
-  const retention = CaptureRetentionLive.pipe(Layer.provide(runtime));
+  const retention = CaptureRetentionLive.pipe(
+    Layer.provide(runtime),
+    Layer.provide(Layer.mock(WorktreesRepo, { handoffPacks: () => Effect.succeed([]) })),
+  );
   return {
     blobRoot,
     layer: Layer.mergeAll(retention, channel, repoLayer, blobs),

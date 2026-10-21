@@ -3,7 +3,11 @@ import { ChevronRight, FolderGit2, Terminal } from "lucide-react";
 import { useId, useState, type ReactElement, type ReactNode } from "react";
 
 import { HiddenEndedSessionsNotice } from "#/components/project-detail/hidden-ended-sessions-notice";
-import { baseLabel, type WorktreeGroup } from "#/components/project-detail/model";
+import {
+  baseLabel,
+  handedOffFrom as handedOffLabel,
+  type WorktreeGroup,
+} from "#/components/project-detail/model";
 import { NewWorktreeSession } from "#/components/project-detail/new-worktree-session";
 import { ReviewLink, type DetailHandlers } from "#/components/project-detail/parts";
 import { PullRequestLink } from "#/components/pull-request-link";
@@ -85,12 +89,14 @@ function SessionCount({ total, live }: { readonly total: number; readonly live: 
   );
 }
 
-/** The worktree's machine facts: branch, base, open review work, follow-up. */
+/** The worktree's machine facts: branch, base, where it was handed off from, open review work, follow-up. */
 function WorktreeFactLine({ group }: { readonly group: WorktreeGroup }) {
   const { worktree, annotation } = group;
+  const handedOff = handedOffLabel(worktree);
   return (
     <p className="mt-0.5 truncate font-mono text-xs text-faint" title={worktree.directory}>
       {worktree.branch} · base {baseLabel(worktree)}
+      {handedOff === null ? "" : ` · ${handedOff}`}
       {annotation !== undefined && annotation.openComments > 0 && (
         <span className="text-ink-2">
           {" "}
@@ -107,11 +113,13 @@ function WorktreeFactLine({ group }: { readonly group: WorktreeGroup }) {
 /** One session child: lighter than its parent, with its own right-click verbs. */
 function SessionLine({
   session,
+  handedOffFrom,
   hold,
   last,
   handlers,
 }: {
   readonly session: SessionDto;
+  readonly handedOffFrom: string | null;
   /** Its agent is no longer live and its Services keep the workspace up; null otherwise. */
   readonly hold: string | null;
   readonly last: boolean;
@@ -136,6 +144,7 @@ function SessionLine({
           <span className="shrink-0 font-mono text-[11.5px] text-faint">
             {session.harness}
             {session.model === null ? "" : ` · ${session.model}`}
+            {handedOffFrom === null ? "" : ` · ${handedOffFrom}`}
           </span>
         </Link>
         {hold === null ? (
@@ -222,6 +231,7 @@ function WorktreeNode({
             <SessionLine
               key={session.id}
               session={session}
+              handedOffFrom={handedOffLabel(group.worktree)}
               hold={group.holds.get(session.id) ?? null}
               last={index === group.members.length - 1}
               handlers={handlers}

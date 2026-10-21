@@ -15,11 +15,14 @@ export interface LaunchGate {
   readonly run: (
     sessionId: string,
   ) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | SealantPlatformError, R>;
-  /** `run`, answering a refusal with `refused` (a public launch says why in its own terms). */
-  readonly runOr: <E2, R2>(
+  /**
+   * `run`, answering a refusal with `refused` (a public launch says why in its own terms; a hold
+   * answers the session as it stands).
+   */
+  readonly runOr: <A2, E2, R2>(
     sessionId: string,
-    refused: Effect.Effect<never, E2, R2>,
-  ) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | E2, R | R2>;
+    refused: Effect.Effect<A2, E2, R2>,
+  ) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A | A2, E | E2, R | R2>;
   /**
    * `run`, waiting for the launch under way to end instead of refusing. For Mend's own recovery
    * of an agent a restart left behind (SLNT-167): it must run, but only between launches, and it
@@ -47,10 +50,10 @@ export const makeLaunchGate = (): LaunchGate => {
     );
   };
   const runOr =
-    <E2, R2>(sessionId: string, refused: Effect.Effect<never, E2, R2>) =>
+    <A2, E2, R2>(sessionId: string, refused: Effect.Effect<A2, E2, R2>) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       Effect.suspend(
-        (): Effect.Effect<A, E | E2, R | R2> =>
+        (): Effect.Effect<A | A2, E | E2, R | R2> =>
           held.has(sessionId) ? refused : hold(sessionId, effect),
       );
   const runWhenFree =

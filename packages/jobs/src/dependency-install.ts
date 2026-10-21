@@ -6,6 +6,7 @@ import {
   mayRunIn,
   promoteBulkToCache,
   SessionEngine,
+  startFromBase,
 } from "@mend/sessions";
 import { BlobStore, decodeManifest } from "@mend/store";
 import { Duration, Effect, Layer, Schedule, Schema } from "effect";
@@ -178,7 +179,7 @@ export const InstallRunnerEngineLive: Layer.Layer<
           harness: "shell",
           label: INSTALL_SESSION_LABEL,
           name: null,
-          base: null,
+          start: startFromBase(null),
           ownerUserId,
         })
         .pipe(Effect.mapError((error) => failure(`provision: ${error._tag}`)));

@@ -253,7 +253,7 @@ describe("SessionEngine workspace git hooks", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
@@ -292,7 +292,7 @@ describe("SessionEngine workspace git hooks: pushes", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const api = servedSocketApis.get(session.id);
@@ -342,7 +342,7 @@ describe("SessionEngine git author", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
         }),
@@ -449,7 +449,7 @@ describe("SessionEngine default shell profile", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
         }),
@@ -593,7 +593,7 @@ describe("SessionEngine files into a captured workspace", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           // No workspace yet: nowhere a harness would read the file, so nothing is stored.
           const early = yield* engine
@@ -630,7 +630,7 @@ describe("SessionEngine files into a captured workspace", () => {
           label: null,
           name: null,
           ownerUserId: "user-fixture",
-          base: null,
+          start: { kind: "base", base: null },
         });
         const placed = yield* engine.storePastedImage(session.id, PNG, "user-fixture");
         const hostPath = path.join(
@@ -668,7 +668,7 @@ describe("SessionEngine files into a captured workspace", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const written = writtenFiles(execCalls);
@@ -798,7 +798,7 @@ describe("SessionEngine hot sessions", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           // The session adopted the skeleton's id, and brought a worktree of its own.
           expect(session.id).toBe(skeletonId);
@@ -892,7 +892,7 @@ describe("SessionEngine hot sessions", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           expect(session.id).not.toBe(skeletonId);
           yield* engine.launch(session.id, ["codex"]);
@@ -958,7 +958,7 @@ describe("SessionEngine hot sessions", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           // Claimed while the owner gave every login.
           expect(session.id).toBe(skeletonId);
@@ -1027,7 +1027,7 @@ describe("SessionEngine hot sessions", () => {
           // worktree-scoped verb — "s session here", the web's new conversation — claims too.
           const place = yield* engine.ensureWorktree(
             project.id,
-            { name: "shared-place", base: null },
+            { name: "shared-place", start: { kind: "base", base: null } },
             "user-fixture",
           );
           const session = yield* engine.provisionSessionIn(place.id, {
@@ -1106,7 +1106,7 @@ describe("SessionEngine hot sessions", () => {
           const engine = yield* SessionEngine;
           const place = yield* engine.ensureWorktree(
             project.id,
-            { name: "legacy-place", base: null },
+            { name: "legacy-place", start: { kind: "base", base: null } },
             "user-fixture",
           );
           execFileSync("git", ["-C", project.storePath, "config", "remote.origin.url", LEGACY_URL]);
@@ -1149,7 +1149,7 @@ describe("SessionEngine hot sessions", () => {
           const engine = yield* SessionEngine;
           const place = yield* engine.ensureWorktree(
             project.id,
-            { name: "claimed-place", base: null },
+            { name: "claimed-place", start: { kind: "base", base: null } },
             "user-fixture",
           );
           // Claimed while the store was clean (before an upgrade, say)…
@@ -1210,7 +1210,7 @@ describe("SessionEngine hot sessions", () => {
           const engine = yield* SessionEngine;
           const place = yield* engine.ensureWorktree(
             project.id,
-            { name: "reference-place", base: null },
+            { name: "reference-place", start: { kind: "base", base: null } },
             "user-fixture",
           );
           const session = yield* engine.provisionSessionIn(place.id, {
@@ -1537,7 +1537,7 @@ describe("SessionEngine dotfiles", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
 
@@ -1593,7 +1593,7 @@ describe("SessionEngine dotfiles gate", () => {
               label: null,
               name: null,
               ownerUserId: owner,
-              base: null,
+              start: { kind: "base", base: null },
             });
             const launched = yield* engine.launch(session.id, ["codex"]).pipe(Effect.exit);
 
@@ -1713,7 +1713,7 @@ describe("SessionEngine dotfiles gate", () => {
                 label: null,
                 name: null,
                 ownerUserId,
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(session.id, ["codex"]);
               return session;

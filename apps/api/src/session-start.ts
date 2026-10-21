@@ -27,7 +27,14 @@ import {
   type SessionOrigin,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
-import { Expected, NoLiveAgent, Restart, SessionEngine, type LaunchOver } from "@mend/sessions";
+import {
+  Expected,
+  NoLiveAgent,
+  Restart,
+  SessionEngine,
+  startFromBase,
+  type LaunchOver,
+} from "@mend/sessions";
 import { Duration, Effect, Fiber, Layer, Option } from "effect";
 import * as Context from "effect/Context";
 
@@ -100,6 +107,27 @@ const launchOverOf = (request: LaunchRequest): LaunchOver =>
     : request.restart === true
       ? Restart
       : NoLiveAgent;
+
+export const settleIfUnlaunched = Effect.fn("SessionStart.settleIfUnlaunched")(function* (
+  sessions: SessionsRepo["Service"],
+  session: Session,
+  summary: string,
+) {
+  const current = yield* sessions
+    .byId(session.id)
+    .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+  if (
+    current === null ||
+    current.status !== "starting" ||
+    current.settledAt !== null ||
+    current.sealantWorkspaceId !== null ||
+    current.sealantRunId !== null ||
+    (yield* sessions.executorCreateOf(session.id)) !== null
+  ) {
+    return;
+  }
+  yield* sessions.settle(session.id, "failed", summary);
+});
 
 /**
  * Starting a session, as a given account (docs/adr/0006-slack.md, "Slack starts sessions through
@@ -193,7 +221,7 @@ export const makeSessionStart = Effect.gen(function* () {
         harness: input.harness,
         label: input.label,
         name: input.name,
-        base: input.base,
+        start: startFromBase(input.base),
         ownerUserId: userId,
         origin: input.origin,
         autoLand: input.autoLand ?? null,
@@ -212,6 +240,12 @@ export const makeSessionStart = Effect.gen(function* () {
             }),
           ),
         ),
+        Effect.catchTags({
+          WorktreeNameTakenError: (error) =>
+            Effect.fail(new StoreFailure({ message: error.message })),
+          WorktreeStartUnsupportedError: (error) =>
+            Effect.fail(new StoreFailure({ message: error.message })),
+        }),
         Effect.catchTag("WorktreeBaseConflictError", (error) =>
           Effect.fail(
             new StoreFailure({
@@ -222,31 +256,8 @@ export const makeSessionStart = Effect.gen(function* () {
       );
   });
 
-  /**
-   * A launch that failed after its caller was answered, and left the session reading `starting`
-   * with nothing asked of the platform (no workspace, no run, no create on record): the session
-   * says why, instead of `starting` for good. Anything that did reach the platform is the engine's
-   * to settle (its own failure paths, the reaper for a create whose answer was lost).
-   */
-  const settleUnlaunched = Effect.fn("SessionStart.settleUnlaunched")(function* (
-    session: Session,
-    message: string,
-  ) {
-    const current = yield* sessions
-      .byId(session.id)
-      .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-    if (
-      current === null ||
-      current.status !== "starting" ||
-      current.settledAt !== null ||
-      current.sealantWorkspaceId !== null ||
-      current.sealantRunId !== null ||
-      (yield* sessions.executorCreateOf(session.id)) !== null
-    ) {
-      return;
-    }
-    yield* sessions.settle(session.id, "failed", `launch failed: ${message}`);
-  });
+  const settleUnlaunched = (session: Session, message: string) =>
+    settleIfUnlaunched(sessions, session, `launch failed: ${message}`);
 
   const launchAs = Effect.fn("SessionStart.launchAs")(function* (
     userId: string,

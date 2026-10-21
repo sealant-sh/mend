@@ -389,7 +389,7 @@ ingress:
   tls: { secretName: mend-tls }
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt
-    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/proxy-body-size: 72m
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
   controller:
@@ -433,15 +433,15 @@ What to check, because the chart cannot:
 
 ## Request bodies at the ingress
 
-Mend refuses a request body over its own budget before decoding it: 1 MiB, and 24 MiB on the routes
-that take a file ([budgets](operations/budgets.md)). Uploading into an organization folder sends up
-to 4 MiB of files per request, which is about 5.5 MiB once encoded, and a pasted image up to 8 MiB.
-An ingress that caps request bodies below that refuses the upload with 413 before Mend sees it. With
-ingress-nginx, whose default cap is 1 MiB, set the annotation on the ingress in front of the web
-tier:
+Mend refuses a request body over its own budget before decoding it: 1 MiB, 24 MiB on the routes that
+take a file, and 64 MiB on `POST /api/projects/:id/handoffs`, the git bundle `mend handoff` uploads
+([budgets](operations/budgets.md)). Uploading into an organization folder sends up to 4 MiB of files
+per request, which is about 5.5 MiB once encoded, and a pasted image up to 8 MiB. An ingress that
+caps request bodies below that refuses the upload with 413 before Mend sees it. With ingress-nginx,
+whose default cap is 1 MiB, set the annotation on the ingress in front of the web tier:
 
 ```yaml
-nginx.ingress.kubernetes.io/proxy-body-size: 8m
+nginx.ingress.kubernetes.io/proxy-body-size: 72m
 ```
 
 ## Adopting projects (git auth)

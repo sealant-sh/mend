@@ -89,7 +89,7 @@ const withTerminalSession = <A, E>(
           label: null,
           name: null,
           ownerUserId: "user-fixture",
-          base: null,
+          start: { kind: "base", base: null },
         });
         yield* engine.launch(session.id, [harness]);
         expect(agentOf(world, session.id)?.kind).toBe("agent-pty");

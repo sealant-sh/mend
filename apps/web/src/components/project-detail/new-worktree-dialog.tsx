@@ -1,3 +1,4 @@
+import { WORKTREE_NAME_PATTERN } from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
 import {
   Dialog,
@@ -15,13 +16,6 @@ import { useId, useState } from "react";
 import { createWorktree, type ProjectDto, type WorktreeDto } from "#/lib/api";
 import { failureWords, refusalTagOf } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
-
-/**
- * The shape `WorktreeName` accepts (packages/api-contracts/src/project-environment.ts).
- * Mirrored here so the draft is judged before the round trip; the server stays
- * the authority.
- */
-const NAME_SHAPE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 /** The contract's own guidance, in the reader's words. */
 const NAME_GUIDANCE =
@@ -96,7 +90,7 @@ export function NewWorktreeDialog({
 
   const submit = () => {
     if (pending) return;
-    if (trimmedName !== "" && !NAME_SHAPE.test(trimmedName)) {
+    if (trimmedName !== "" && !WORKTREE_NAME_PATTERN.test(trimmedName)) {
       setError(NAME_GUIDANCE);
       return;
     }

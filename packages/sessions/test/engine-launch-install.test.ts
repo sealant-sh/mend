@@ -461,7 +461,7 @@ describe("an agent's first screen (alpha 2026-09-30)", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           const launched = yield* engine.launch(session.id, ["claude"]);
 
@@ -517,7 +517,7 @@ describe("an agent's first screen (alpha 2026-09-30)", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               const launched = yield* engine.launch(session.id, ["codex"]);
               expect(launched.status).toBe("running");
@@ -586,7 +586,7 @@ describe("an agent's first screen (alpha 2026-09-30)", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           const launched = yield* engine.launch(session.id, ["make", "test"]);
           expect(launched.status).toBe("running");
@@ -610,7 +610,7 @@ describe("an agent's first screen (alpha 2026-09-30)", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["make", "test"]);
           yield* engine.stop(session.id);
@@ -646,7 +646,7 @@ describe("an agent's first screen (alpha 2026-09-30)", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(session.id, ["claude"]);
               const agent = () =>
@@ -714,7 +714,7 @@ describe("an agent's first screen (alpha 2026-09-30)", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(session.id, ["claude"]);
               yield* clock.untilChanged(
@@ -757,7 +757,7 @@ describe("an agent's first screen (alpha 2026-09-30)", () => {
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(session.id, ["claude"]);
             yield* engine.openShell(session.id);

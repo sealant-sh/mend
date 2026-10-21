@@ -389,7 +389,7 @@ describe("SessionEngine capture mode", () => {
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(session.id, ["codex"]);
           }),
@@ -687,7 +687,7 @@ describe("SessionEngine capture mode", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           // No workspace yet: the file is unobservable, which is a typed refusal, never a defect.
@@ -872,7 +872,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: "fix-login",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               // Nothing to add into before the workspace is live.
               const early = yield* engine
@@ -1021,7 +1021,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: "fix-login",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(session.id, ["codex"]);
               // What `mend repo projects` prints inside the workspace names the origin without it.
@@ -1074,7 +1074,7 @@ describe("SessionEngine capture mode", () => {
           label: null,
           name: "fix-login",
           ownerUserId: "user-fixture",
-          base: null,
+          start: { kind: "base", base: null },
         });
 
         // `fixture` is shared: every member can open this worktree and would receive vault's
@@ -1607,7 +1607,7 @@ describe("SessionEngine capture mode", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* replaceHeadWithRootlessWorkspace(tmp, memory, session.worktreeId);
           const immutableHead = memory.chains.get(session.worktreeId)?.headCapture;
@@ -1778,7 +1778,7 @@ describe("SessionEngine capture mode", () => {
       }),
   );
 
-  it("launch attaches a worktree that has no chain yet — made before captures — with capture 0 from its directory's current files", async () => {
+  it("the first session in a worktree that has no chain yet — made before captures — attaches it with capture 0 from its directory's current files, and its launch claims it", async () => {
     const created: Array<CreateOptions> = [];
     const memory = makeMemoryCaptureStore();
     await withEngine(
@@ -1805,6 +1805,7 @@ describe("SessionEngine capture mode", () => {
             branch,
             baseSha: base,
             baseRef: "main",
+            handoff: null,
           });
           const engine = yield* SessionEngine;
           const session = yield* engine.provisionSessionIn(worktree.id, {
@@ -1812,11 +1813,8 @@ describe("SessionEngine capture mode", () => {
             label: null,
             ownerUserId: "user-fixture",
           });
-          expect(memory.chains.get(worktreeId)?.headCapture ?? null).toBeNull();
-
           yield* engine.launch(session.id, ["codex"]);
 
-          // Capture 0 was registered at launch from the directory, and the launch claimed it.
           const chain = memory.chains.get(worktreeId);
           expect(chain?.headN).toBe(0);
           const cap0 = memory.captures.get(chain?.headCapture ?? "");

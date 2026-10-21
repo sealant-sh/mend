@@ -289,7 +289,7 @@ describe("SessionEngine capture mode", () => {
                   label: null,
                   name: null,
                   ownerUserId: "user-fixture",
-                  base: null,
+                  start: { kind: "base", base: null },
                 }),
               );
               expect(memory.leases.get(session.worktreeId)?.launchId).toBe(`standby:${session.id}`);
@@ -366,7 +366,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-late",
-                base: null,
+                start: { kind: "base", base: null },
               });
               expect(pool.entries.map((entry) => entry.id)).not.toContain(session.id);
               expect(
@@ -549,7 +549,7 @@ describe("SessionEngine capture mode", () => {
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.reconcileHotSessions(project.id);
             yield* clock.untilReady(
@@ -653,7 +653,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* clock.untilReady(
                 () =>
@@ -717,7 +717,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               expect(session.id).not.toBe(standby.id);
             }),
@@ -745,7 +745,7 @@ describe("SessionEngine capture mode", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const api = servedSocketApis.get(session.id);
@@ -832,7 +832,7 @@ describe("SessionEngine capture mode", () => {
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(session.id, ["codex"]);
             const api = servedSocketApis.get(session.id);
@@ -904,7 +904,7 @@ describe("SessionEngine capture mode", () => {
             label: null,
             name: null,
             ownerUserId: null,
-            base: null,
+            start: { kind: "base", base: null },
           });
           const failure = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
           expect(failure._tag === "SealantPlatformError" ? failure.code : failure._tag).toBe(
@@ -970,7 +970,7 @@ describe("SessionEngine capture mode", () => {
                     label: null,
                     name: null,
                     ownerUserId: "user-fixture",
-                    base: null,
+                    start: { kind: "base", base: null },
                   }),
                 );
                 expect(session.id).toBe(standby.id);
@@ -1149,7 +1149,7 @@ describe("SessionEngine capture mode", () => {
                   label: null,
                   name: null,
                   ownerUserId: "user-fixture",
-                  base: null,
+                  start: { kind: "base", base: null },
                 }),
               );
               const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
@@ -1355,7 +1355,7 @@ describe("SessionEngine capture mode", () => {
                   label: null,
                   name: null,
                   ownerUserId: "user-fixture",
-                  base: null,
+                  start: { kind: "base", base: null },
                 }),
               );
               expect(pool.entries.some((entry) => entry.id === session.id)).toBe(true);
@@ -1476,7 +1476,7 @@ describe("SessionEngine capture mode", () => {
                   label: null,
                   name: null,
                   ownerUserId: "user-fixture",
-                  base: null,
+                  start: { kind: "base", base: null },
                 }),
               );
               // The session adopted the standby's id; the worktree's lease is a FRESH epoch (capture
@@ -1587,7 +1587,7 @@ describe("SessionEngine capture mode", () => {
                   label: null,
                   name: "second",
                   ownerUserId: "user-fixture",
-                  base: null,
+                  start: { kind: "base", base: null },
                 }),
               );
               expect(second.id).toBe(replacement.id);
@@ -1647,7 +1647,7 @@ describe("SessionEngine capture mode", () => {
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(session.id, ["codex"]);
             const worktreeId = session.worktreeId;
@@ -1816,7 +1816,7 @@ describe("SessionEngine capture mode", () => {
                   label: null,
                   name: null,
                   ownerUserId: "user-fixture",
-                  base: null,
+                  start: { kind: "base", base: null },
                 }),
               );
               const startedAt = Date.now();
@@ -1947,7 +1947,7 @@ describe("SessionEngine capture mode", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           // Two completed claims before launch make this worktree's epoch differ independently.
           yield* Effect.gen(function* () {
@@ -2195,7 +2195,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               }),
             );
             expect(session.id).toBe(standby.id);
@@ -2263,7 +2263,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
                   label: null,
                   name: null,
                   ownerUserId: "user-fixture",
-                  base: null,
+                  start: { kind: "base", base: null },
                 }),
               );
               // The session adopts the standby's id: it was claimed.
@@ -2396,7 +2396,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
                   label: null,
                   name: null,
                   ownerUserId: "user-fixture",
-                  base: null,
+                  start: { kind: "base", base: null },
                 }),
               );
               expect(session.id).toBe(standby.id);
@@ -2467,7 +2467,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
                       label: null,
                       name: null,
                       ownerUserId: "user-fixture",
-                      base: null,
+                      start: { kind: "base", base: null },
                     }),
                   );
                   expect(session.id).toBe(standby?.id);
@@ -2519,7 +2519,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
                   label: null,
                   name: null,
                   ownerUserId,
-                  base: null,
+                  start: { kind: "base", base: null },
                   ...extra,
                 });
               // Maria's fresh worktree: never another person's standby (owner's rule).
@@ -2576,7 +2576,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
                   label: null,
                   name: null,
                   ownerUserId: "user-fixture",
-                  base: null,
+                  start: { kind: "base", base: null },
                 }),
               );
               expect(session.id).toBe(standby.id);
@@ -2656,7 +2656,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
                   label: null,
                   name: null,
                   ownerUserId: "user-fixture",
-                  base: null,
+                  start: { kind: "base", base: null },
                 }),
               );
               expect(session.id).toBe(standby.id);
@@ -2731,7 +2731,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
                   label: null,
                   name: null,
                   ownerUserId: "user-fixture",
-                  base: null,
+                  start: { kind: "base", base: null },
                 }),
               );
               expect(session.id).toBe(standby.id);
@@ -2849,7 +2849,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
                   label: null,
                   name: null,
                   ownerUserId: "user-fixture",
-                  base: null,
+                  start: { kind: "base", base: null },
                 }),
               );
               expect(session.id).toBe(standby?.id);

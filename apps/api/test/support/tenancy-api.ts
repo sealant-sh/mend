@@ -36,6 +36,7 @@ import {
   SessionGitOpsRepo,
   SessionRepositoriesRepo,
   SettingsRepo,
+  StoreRefsRepo,
   SlackDefaultsRepo,
   SlackInstallsRepo,
   SlackLinksRepo,
@@ -108,6 +109,7 @@ import {
 import { EventBus, makeEventBus } from "../../src/events-bus.ts";
 import { ExposureConfig, type ExposureOutcome } from "../../src/exposure.ts";
 import { GithubIdentityLive } from "../../src/github-identity.ts";
+import { HandoffStartLive } from "../../src/handoff-start.ts";
 import { MemberRemovalLive } from "../../src/member-removal.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
@@ -131,6 +133,13 @@ export interface TenancyApi {
     method: string,
     path: string,
     body?: unknown,
+  ) => Promise<Response>;
+  readonly postBytes: (
+    user: HarnessUser | null,
+    path: string,
+    body: Uint8Array,
+    contentType: string,
+    signal?: AbortSignal,
   ) => Promise<Response>;
   /** Publish one NOTIFY payload into the in-memory event bus, as Postgres would. */
   readonly notify: (event: MendEvent) => Promise<void>;
@@ -192,6 +201,7 @@ export const createTenancyApi = async (
     readonly dotfiles?: { readonly cloner: DotfilesCloner["Service"] };
     /** `MEND_TENANCY` and the source policy profile it brings; single (operator) unless stated. */
     readonly tenancy?: "single" | "multi";
+    readonly sessionStore?: DeploymentConfig["Service"]["sessionStore"];
     /**
      * What a few services answer, for tests that follow a request past authorization. Each is
      * still recorded; a method left out still fails as unimplemented.
@@ -199,6 +209,7 @@ export const createTenancyApi = async (
     /** How long a request that takes a checkpoint may run (`CheckpointRequestLimit`). */
     readonly checkpointRequestLimit?: Duration.Duration;
     readonly implement?: {
+      readonly storeRefs?: Layer.PartialEffectful<StoreRefsRepo["Service"]>;
       readonly slices?: Layer.PartialEffectful<ReviewSlicesRepo["Service"]>;
       readonly workspaceCaller?: Partial<WorkspaceCaller["Service"]>;
       readonly audit?: Layer.PartialEffectful<AuditEventsRepo["Service"]>;
@@ -409,6 +420,7 @@ export const createTenancyApi = async (
     ),
     Layer.mergeAll(
       recording(Store, "store", options.implement?.store ?? {}, calls),
+      recording(StoreRefsRepo, "storeRefs", options.implement?.storeRefs ?? {}, calls),
       recording(Gh, "gh", {}, calls),
       recording(SlackApi, "slackApi", {}, calls),
       recording(SlackDefaultsRepo, "slackDefaults", {}, calls),
@@ -440,7 +452,7 @@ export const createTenancyApi = async (
       Layer.succeed(DeploymentConfig, {
         mode: "local",
         sessionEndpoint: undefined,
-        sessionStore: "captured",
+        sessionStore: options.sessionStore ?? "captured",
       }),
       Layer.succeed(StoreConfig, { root: world.root }),
       Layer.succeed(TenancyConfig, { mode: options.tenancy ?? "single", gate: Effect.succeed([]) }),
@@ -484,6 +496,7 @@ export const createTenancyApi = async (
     SessionSteeringLive,
     GithubIdentityLive,
     MemberRemovalLive,
+    HandoffStartLive,
   ).pipe(
     Layer.provideMerge(ProjectAccessLive),
     Layer.provideMerge(connections),
@@ -566,6 +579,19 @@ export const createTenancyApi = async (
           headers,
           ...(options.requestSignal === undefined ? {} : { signal: options.requestSignal }),
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+        context,
+      );
+    },
+    postBytes: (user, path, body, contentType, signal) => {
+      const headers = new Headers({ "content-type": contentType });
+      if (user !== null) headers.set("authorization", `Bearer ${user}`);
+      return handler(
+        new Request(`http://api.internal${path}`, {
+          method: "POST",
+          headers,
+          body: new Uint8Array(body),
+          ...(signal === undefined ? {} : { signal }),
         }),
         context,
       );

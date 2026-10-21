@@ -36,6 +36,7 @@ import {
   type SessionOutcome,
   ProjectServiceRecipesRepo,
   SessionProcessesRepo,
+  type NewSessionProcess,
   type NewSessionRun,
   SessionRunsRepo,
   SessionsRepo,
@@ -429,6 +430,7 @@ import {
   refusalOf,
   underWayRefusal,
   type LaunchAdmission,
+  type LaunchSlot,
   type SessionAgentLiveError,
   type SessionMovedOnError,
 } from "./launch-admission.ts";
@@ -586,7 +588,14 @@ import {
   repositoryCloneScript,
   repositoryRelinkScript,
 } from "./session-repositories.ts";
-import { SessionRepository, type SessionRepositoryError } from "./session-repository.ts";
+import {
+  SessionRepository,
+  startFromBase,
+  type SessionRepositoryError,
+  type WorktreeNameTakenError,
+  type WorktreeStart,
+  type WorktreeStartUnsupportedError,
+} from "./session-repository.ts";
 import {
   SESSION_SOCKET_MOUNT_PATH,
   SessionSocketHost,
@@ -853,6 +862,88 @@ const interactiveShellArgv = (image: WorkspaceImage | null): ReadonlyArray<strin
  */
 const asksInteractiveShell = (argv: ReadonlyArray<string>): boolean =>
   argv.length === 1 && argv[0] === "bash";
+
+/**
+ * What a launch starts in the workspace it opens, a fresh executor or the lease holder's it joins:
+ * the session's agent, or (`hold`) its owner's login shell and nothing of an agent.
+ */
+type LaunchRole = "agent" | "hold";
+
+/** One launch's terms, the same for every executor it can land in. */
+interface LaunchPlan {
+  readonly role: LaunchRole;
+  readonly argv: ReadonlyArray<string>;
+  readonly nativeImport: ConvertedNativeSession | null;
+  /**
+   * The harness state a cold launch restores: absent reads the session's own, null restores none
+   * (a shell tolerates a session that never harvested state).
+   */
+  readonly state?: LocatedHarnessState | null;
+  readonly launchCorrelationId: string | null;
+  /** The provider conversation the launch continues, when its caller knows it. */
+  readonly resumeId: string | null;
+  readonly protocolStart: LaunchStart | null;
+  readonly protocolAuthor: string | null;
+}
+
+/** An agent launch of `argv`, with whatever else of its terms the caller knows. */
+const agentLaunch = (
+  argv: ReadonlyArray<string>,
+  terms: Partial<Omit<LaunchPlan, "role" | "argv">> = {},
+): LaunchPlan => ({
+  role: "agent",
+  argv,
+  nativeImport: null,
+  launchCorrelationId: null,
+  resumeId: null,
+  protocolStart: null,
+  protocolAuthor: null,
+  ...terms,
+});
+
+/**
+ * The hold: the owner's login shell holds the workspace. No harness state is read or restored, no
+ * run of the harness is recorded (on the row or anywhere else, so a later launch of its agent
+ * starts as the session's first), nothing is supervised, and the session reads what the fold
+ * says of a shell (`idle`).
+ */
+const HOLD_LAUNCH: LaunchPlan = { ...agentLaunch(["bash"], { state: null }), role: "hold" };
+
+/** What a launch records once its PTY is open, by its role (`launchRecords` in the engine). */
+interface LaunchRecords {
+  /** A run of the session's harness, recorded and named on the session's row. */
+  readonly recordsRun: boolean;
+  /** The process row, made from the one an agent launch writes. */
+  readonly process: (agent: NewSessionProcess) => NewSessionProcess;
+  /** The session once its process runs: `running`, or what the fold reads. */
+  readonly opened: (sessionId: SessionId) => Effect.Effect<void, SessionNotFoundError>;
+  readonly supervise: (sessionId: SessionId, sealantRunId: SealantRunId) => Effect.Effect<void>;
+}
+
+/** Where a launch into a retained executor runs, beyond the session's own current workspace. */
+interface RetainedLaunch {
+  /** Capture mode: the lease holder's workspace, where a join runs as one more process. */
+  readonly workspace?: Workspace;
+  /**
+   * With `workspace`: who owns the lease holder's session, so the home it writes into is known to
+   * be theirs (docs/adr/0010): a join into another person's executor receives no secret files of
+   * its own there.
+   */
+  readonly executorOwnerUserId?: string | null;
+  /**
+   * A hand-over of a shared conversation (docs/adr/0016, decision 6): the next process runs as
+   * `sender`, and `stop` ends the conversation's current one, beside the staging. A failure leaves
+   * the session as it is: the waiting turn fails with the words.
+   */
+  readonly handOver?: {
+    readonly sender: string;
+    readonly stop: Effect.Effect<void, SealantPlatformError>;
+    /** The process `stop` ends, which the conversation's take is made from. */
+    readonly replacing: string | null;
+    /** Asked right before the stop, after every preparation (review 2, P2-2). */
+    readonly beforeStop?: Effect.Effect<boolean>;
+  };
+}
 
 /**
  * A terminal launch of a session whose saved state is its own harness's continues the
@@ -1700,8 +1791,7 @@ export interface ProvisionInput {
    * null derives an anonymous worktree identity.
    */
   readonly name: string | null;
-  /** Branch or sha to base the worktree on; null = the project's default branch. */
-  readonly base: string | null;
+  readonly start: WorktreeStart;
   /** Who is provisioning — whose dotfiles apply at launch. Null when the caller is unknown. */
   readonly ownerUserId: string | null;
   /** Where the session was started from (docs/adr/0006-slack.md); absent is `mend`. */
@@ -1730,8 +1820,8 @@ const isLinkedProjectMountPath = (mountPath: string) => mountPath.startsWith("/w
 
 const worktreeIdentityFor = (worktreeId: WorktreeId, name: string | null) =>
   name === null
-    ? { directory: `wt-${worktreeId}`, branch: `mend/wt/${worktreeId}` }
-    : { directory: name, branch: `mend/${name}` };
+    ? { id: worktreeId, directory: `wt-${worktreeId}`, branch: `mend/wt/${worktreeId}` }
+    : { id: worktreeId, directory: name, branch: `mend/${name}` };
 
 /** A supporting process needs a current reachable workspace. */
 export class SessionNotLiveError extends Schema.TaggedError<SessionNotLiveError>()(
@@ -1977,6 +2067,12 @@ export class SessionTurnRefusedError extends Schema.TaggedError<SessionTurnRefus
   { sessionId: Schema.String, message: Schema.String },
 ) {}
 
+/** A workspace is held only in capture mode: the co-located store has no executor to hold. */
+export class HoldUnsupportedError extends Schema.TaggedError<HoldUnsupportedError>()(
+  "HoldUnsupportedError",
+  { sessionId: Schema.String, message: Schema.String },
+) {}
+
 /** The session's harness cannot continue in the requested mode (claude and codex only). */
 export class ModeSwitchUnsupportedError extends Schema.TaggedError<ModeSwitchUnsupportedError>()(
   "ModeSwitchUnsupportedError",
@@ -2113,7 +2209,12 @@ export class SessionEngine extends Context.Service<
       input: ProvisionInput,
     ) => Effect.Effect<
       Session,
-      ProjectNotFoundError | GitError | WorktreeBaseConflictError | HarnessLayoutNotAppliedError
+      | ProjectNotFoundError
+      | GitError
+      | WorktreeBaseConflictError
+      | WorktreeNameTakenError
+      | WorktreeStartUnsupportedError
+      | HarnessLayoutNotAppliedError
     >;
     /**
      * The container half of provisioning: return the named worktree (join) or
@@ -2122,10 +2223,17 @@ export class SessionEngine extends Context.Service<
      */
     readonly ensureWorktree: (
       projectId: ProjectId,
-      input: { readonly name: string | null; readonly base: string | null },
+      input: { readonly name: string | null; readonly start: WorktreeStart },
       /** Whose git credential freshens the base (their Mend key, or their bridge). */
       ownerUserId: string | null,
-    ) => Effect.Effect<Worktree, ProjectNotFoundError | GitError | WorktreeBaseConflictError>;
+    ) => Effect.Effect<
+      Worktree,
+      | ProjectNotFoundError
+      | GitError
+      | WorktreeBaseConflictError
+      | WorktreeNameTakenError
+      | WorktreeStartUnsupportedError
+    >;
     /** A new conversation inside an existing worktree. */
     readonly provisionSessionIn: (
       worktreeId: WorktreeId,
@@ -2548,6 +2656,27 @@ export class SessionEngine extends Context.Service<
       fresh?: boolean,
     ) => Effect.Effect<
       Session,
+      | SessionNotFoundError
+      | SessionNotLiveError
+      | LegacyBenchReadOnlyError
+      | ProjectNotFoundError
+      | SealantPlatformError
+      | HarnessStateError
+      | SessionLaunchSetupError
+      | DotfilesResolveError
+    >;
+    /**
+     * Open the session's workspace with no agent in it: its owner's login shell holds it, and is
+     * what the session's terminal attaches to. Admitted under the session's launch gate, and only
+     * for a session nothing was ever launched for; any other, or one another launch verb holds,
+     * is answered as it stands and nothing is settled. Capture mode only.
+     */
+    readonly holdWorkspace: (
+      sessionId: SessionId,
+      slot: LaunchSlot,
+    ) => Effect.Effect<
+      Session,
+      | HoldUnsupportedError
       | SessionNotFoundError
       | SessionNotLiveError
       | LegacyBenchReadOnlyError
@@ -7194,13 +7323,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           yield* launchInternalBody(
             sessionId,
-            plan.argv,
-            null,
-            state,
-            correlation,
-            plan.start,
-            plan.author,
-            plan.resumeId,
+            agentLaunch(plan.argv, {
+              state,
+              launchCorrelationId: correlation,
+              resumeId: plan.resumeId,
+              protocolStart: plan.start,
+              protocolAuthor: plan.author,
+            }),
           );
           plannedLaunchAttempts.delete(sessionId);
           return "done" as const;
@@ -8649,14 +8778,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const ensureWorktreeIn = Effect.fn("SessionEngine.ensureWorktreeIn")(function* (
         project: Project,
-        input: { readonly name: string | null; readonly base: string | null },
+        input: { readonly name: string | null; readonly start: WorktreeStart },
         ownerUserId: string | null,
       ) {
         yield* refuseUnsupportedProject(project);
-        if (input.name !== null) {
+        if (input.name !== null && input.start.kind === "base") {
           const existing = yield* worktreesRepo.byName(project.id, input.name);
           if (existing !== null) {
-            yield* refuseBaseConflict(existing, input.base);
+            yield* refuseBaseConflict(existing, input.start.base);
+            yield* completeWorktreeCreation(project, existing);
             return existing;
           }
         }
@@ -8671,7 +8801,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const createWorktreeIn = Effect.fn("SessionEngine.createWorktreeIn")(function* (
         project: Project,
-        input: { readonly name: string | null; readonly base: string | null },
+        input: { readonly name: string | null; readonly start: WorktreeStart },
         ownerUserId: string | null,
       ) {
         const remoteEnv = yield* provisionRemoteEnv(project, ownerUserId);
@@ -8680,7 +8810,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const created = yield* sessionRepo.createWorktree(
           project.id,
           identity,
-          input.base,
+          input.start,
           remoteEnv,
         );
         const row = yield* worktreesRepo.create({
@@ -8691,25 +8821,51 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           branch: created.branch,
           baseSha: created.baseSha,
           baseRef: created.baseRef,
+          handoff: created.handoff,
         });
-        // Capture mode: capture 0, the lease and the chain rows follow the worktree row at once
-        // (ADR-0002 "Decisions made here" 6); the co-located adapter has nothing to attach.
-        if (sessionRepo.attachWorktree !== undefined) {
-          yield* sessionRepo.attachWorktree(project.id, row.id);
-        }
-        yield* takeWorktreeCheckpoint(row, "session-start", null, {
-          sealantRunId: null,
-          sequence: 0n,
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("session engine: worktree-start checkpoint failed").pipe(
-              Effect.annotateLogs({ worktreeId: row.id, error: String(error) }),
-              Effect.as(null),
-            ),
-          ),
-        );
-        yield* changes.ensureForWorktree(project.id, row.id, row.branch, row.baseSha);
+        yield* completeWorktreeCreation(project, row);
         return row;
+      });
+
+      /**
+       * The rest of a worktree's creation once its row exists: capture 0 and the ordinal-0
+       * checkpoint, then the change row. Each step does only what is missing, so every path that
+       * hands a worktree to a session runs it, and a creation that died after its row is finished
+       * by whichever session comes next. A worktree with a checkpoint finished its creation: one
+       * made before captures has no chain, and its next launch attaches it (`ensureCaptureZero`),
+       * as it always has. One caller at a time per worktree, as checkpoints are written: a creator
+       * and a session joining its worktree meanwhile both run it, and the second finds it done.
+       */
+      const creationWriters = new Map<WorktreeId, Semaphore.Semaphore>();
+      const completeWorktreeCreation = (project: Project, row: Worktree) => {
+        const existing = creationWriters.get(row.id);
+        const writer = existing ?? Semaphore.makeUnsafe(1);
+        if (existing === undefined) creationWriters.set(row.id, writer);
+        return writer.withPermit(finishWorktreeCreation(project, row));
+      };
+      const finishWorktreeCreation = Effect.fn("SessionEngine.completeWorktreeCreation")(function* (
+        project: Project,
+        row: Worktree,
+      ) {
+        if ((yield* checkpoints.countForWorktree(row.id)) === 0) {
+          if (sessionRepo.attachWorktree !== undefined) {
+            yield* sessionRepo.attachWorktree(project.id, row.id);
+          }
+          yield* takeWorktreeCheckpoint(row, "session-start", null, {
+            sealantRunId: null,
+            sequence: 0n,
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: worktree-start checkpoint failed").pipe(
+                Effect.annotateLogs({ worktreeId: row.id, error: String(error) }),
+                Effect.as(null),
+              ),
+            ),
+          );
+        }
+        if ((yield* changes.byWorktree(row.id)) === null) {
+          yield* changes.ensureForWorktree(project.id, row.id, row.branch, row.baseSha);
+        }
       });
 
       /** A new conversation inside a worktree: session row + its start checkpoint. */
@@ -16457,8 +16613,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* refuseUnsupportedProject(target);
         const worktree = yield* createWorktreeIn(
           target,
-          { name: worktreeName, base: null },
+          { name: worktreeName, start: startFromBase(null) },
           session.ownerUserId,
+        ).pipe(
+          Effect.catchTags({
+            WorktreeNameTakenError: () =>
+              Effect.fail(
+                refuse(
+                  "worktree-taken",
+                  `project ${target.name} already has a worktree named ${worktreeName} · pick another with --worktree`,
+                ),
+              ),
+            WorktreeStartUnsupportedError: Effect.die,
+          }),
         );
         const row = yield* sessionRepositories
           .create({
@@ -16593,16 +16760,51 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return yield* sessionRepositories.listForSession(session.id);
       });
 
+      /**
+       * What a launch records once its PTY is open, by its role, wherever it runs. An agent is a
+       * run of the session's harness, named on the row, with its agent process, supervised; the
+       * session reads `running`. A hold records the owner's shell in the agent's place, which the
+       * row's PTY pointer makes the session's terminal, and nothing of an agent.
+       */
+      const launchRecords: Record<LaunchRole, LaunchRecords> = {
+        agent: {
+          recordsRun: true,
+          process: (agent: NewSessionProcess): NewSessionProcess => agent,
+          opened: (sessionId: SessionId) => sessions.reopen(sessionId, "running"),
+          supervise: (sessionId: SessionId, sealantRunId: SealantRunId) =>
+            forkSupervision(sessionId, sealantRunId).pipe(Effect.asVoid),
+        },
+        hold: {
+          recordsRun: false,
+          process: (agent: NewSessionProcess): NewSessionProcess => ({
+            sessionId: agent.sessionId,
+            sealantWorkspaceId: agent.sealantWorkspaceId,
+            sealantSessionId: agent.sealantSessionId,
+            sealantRunId: agent.sealantRunId ?? null,
+            kind: "shell",
+            label: "shell 1",
+            argv: agent.argv,
+            runsAs: agent.runsAs ?? null,
+          }),
+          opened: (sessionId: SessionId) =>
+            reconcileSession(sessionId, { sweep: false }).pipe(Effect.asVoid),
+          supervise: () => Effect.void,
+        },
+      };
+
       const launchInternalBody = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
-        argv: ReadonlyArray<string>,
-        nativeImport: ConvertedNativeSession | null,
-        stateOverride?: LocatedHarnessState | null,
-        launchCorrelationId: string | null = null,
-        protocolStart: LaunchStart | null = null,
-        protocolAuthor: string | null = null,
-        protocolResumeId: string | null = null,
+        plan: LaunchPlan,
       ) {
+        const {
+          argv,
+          nativeImport,
+          state: stateOverride,
+          launchCorrelationId,
+          protocolStart,
+          protocolAuthor,
+          resumeId: protocolResumeId,
+        } = plan;
         // Capture mode: a create of this session whose answer is not on its row holds the
         // session's ownership until it is reconciled (review 2026-09-28 (3) #5) — whoever
         // relaunches, the owning session included. Its key is asked first: an executor it made
@@ -16701,7 +16903,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // so a restart in between finishes it (`resumeDrain`). Cleared when this launch has
             // run its course, whichever way (`launchInternal`).
             if (capture !== null) {
-              const plan = relaunchPlanOf({
+              const relaunch = relaunchPlanOf({
                 harness: session.harness,
                 argv,
                 hasNativeImport: nativeImport !== null,
@@ -16710,7 +16912,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 author: protocolAuthor,
                 resumeId: protocolResumeId,
               });
-              if (plan.kind === "launch") correlationId = plan.launchCorrelationId;
+              if (relaunch.kind === "launch") correlationId = relaunch.launchCorrelationId;
               // This launch's plan replaces what is planned (it was admitted in the gate), and
               // owes the pickup that plan owed.
               const carrying = relaunching.get(sessionId);
@@ -16718,14 +16920,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               while (true) {
                 const stored = yield* sessions.relaunchOf(sessionId);
                 const next = encodeRelaunchPlan({
-                  ...plan,
+                  ...relaunch,
                   pickup: pickupTakenOver(stored, carrying),
                 });
                 const wrote = yield* sessions.planRelaunch(sessionId, stored, next, at);
                 if (wrote === "written") break;
                 if (wrote === "gone") return yield* new SessionNotFoundError({ sessionId });
               }
-              relaunching.set(sessionId, plan.id);
+              relaunching.set(sessionId, relaunch.id);
             }
             const outcome = yield* stopWorkspaceQuietly(sessionId, {
               force: true,
@@ -16948,16 +17150,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // A resume through a join opens the conversation it names, as a cold one does.
             return yield* launchInRetainedWorkspace(
               sessionId,
-              savedConversationArgv(session.harness, manifest, protocolStart, argv),
-              null,
-              correlationId,
-              manifest !== null && manifest.harness === session.harness
-                ? manifest.providerSessionId
-                : protocolResumeId,
-              protocolStart,
-              protocolAuthor,
-              holder.workspace,
-              holderOwner,
+              {
+                ...plan,
+                argv: savedConversationArgv(session.harness, manifest, protocolStart, argv),
+                nativeImport: null,
+                launchCorrelationId: correlationId,
+                resumeId:
+                  manifest !== null && manifest.harness === session.harness
+                    ? manifest.providerSessionId
+                    : protocolResumeId,
+              },
+              { workspace: holder.workspace, executorOwnerUserId: holderOwner },
             ).pipe(
               Effect.catchTag("SessionNotLiveError", (error) =>
                 Effect.fail(
@@ -17954,26 +18157,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           settleOnFailure,
         );
         const sealantRunId = SealantRunId.make(pty.runId);
-        // Refused in words only over a run of the session still live, which the gates above
-        // rule out: the PTY just opened closes, and its executor goes as after any failed launch.
-        yield* createSessionRun({
-          sessionId,
-          harness: session.harness,
-          sealantRunId,
-          sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
-          sealantSessionId: pty.id,
-          ...environmentManifest,
-        }).pipe(
-          Effect.tapError((error) =>
-            closeProcessPty(SealantWorkspaceId.make(workspace.id), pty.id).pipe(
-              Effect.andThen(abandonExecutor(workspace, error.message)),
+        const records = launchRecords[plan.role];
+        if (records.recordsRun) {
+          // Refused in words only over a run of the session still live, which the gates above
+          // rule out: the PTY just opened closes, and its executor goes as after any failed
+          // launch.
+          yield* createSessionRun({
+            sessionId,
+            harness: session.harness,
+            sealantRunId,
+            sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
+            sealantSessionId: pty.id,
+            ...environmentManifest,
+          }).pipe(
+            Effect.tapError((error) =>
+              closeProcessPty(SealantWorkspaceId.make(workspace.id), pty.id).pipe(
+                Effect.andThen(abandonExecutor(workspace, error.message)),
+              ),
             ),
-          ),
-          Effect.onError(() => releaseTake),
-        );
+            Effect.onError(() => releaseTake),
+          );
+        }
         yield* sessions.setSealantIds(
           sessionId,
-          sealantRunId,
+          records.recordsRun ? sealantRunId : null,
           SealantWorkspaceId.make(workspace.id),
         );
         yield* sessions.setExecutorStartedAt(sessionId, executorStartedAt);
@@ -17991,42 +18198,44 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           protocolStart !== null && session.harness === "claude" && claudeSessionFlag >= 0
             ? (shapedArgv.at(claudeSessionFlag + 1) ?? null)
             : null;
-        const agentProcess = yield* processes
-          .create({
-            sessionId,
-            sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
-            sealantSessionId: pty.id,
-            sealantRunId,
-            launchCorrelationId: correlationId,
-            kind: protocolStart === null ? "agent-pty" : "agent-protocol",
-            harness: interactiveShell ? "shell" : session.harness,
-            providerSessionId: interactiveShell
-              ? null
-              : (nativeImport?.providerSessionId ??
-                (manifest !== null && manifest.harness === session.harness
-                  ? manifest.providerSessionId
-                  : (protocolProviderSessionId ?? protocolResumeId)) ??
-                claudePin.providerSessionId),
-            protocolOptions:
-              protocolStart === null
+        const launchedProcess = yield* processes
+          .create(
+            records.process({
+              sessionId,
+              sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
+              sealantSessionId: pty.id,
+              sealantRunId,
+              launchCorrelationId: correlationId,
+              kind: protocolStart === null ? "agent-pty" : "agent-protocol",
+              harness: interactiveShell ? "shell" : session.harness,
+              providerSessionId: interactiveShell
                 ? null
-                : {
-                    model: protocolStart.model ?? null,
-                    effort: protocolStart.effort ?? null,
-                    permissionMode: protocolStart.permissionMode ?? "bypass",
-                  },
-            label: session.harness,
-            argv: shapedArgv,
-            // The person a process runs as is recorded on it (docs/adr/0016, decision 1).
-            runsAs: startAs === null ? null : ownerUserId,
-          })
+                : (nativeImport?.providerSessionId ??
+                  (manifest !== null && manifest.harness === session.harness
+                    ? manifest.providerSessionId
+                    : (protocolProviderSessionId ?? protocolResumeId)) ??
+                  claudePin.providerSessionId),
+              protocolOptions:
+                protocolStart === null
+                  ? null
+                  : {
+                      model: protocolStart.model ?? null,
+                      effort: protocolStart.effort ?? null,
+                      permissionMode: protocolStart.permissionMode ?? "bypass",
+                    },
+              label: session.harness,
+              argv: shapedArgv,
+              // The person a process runs as is recorded on it (docs/adr/0016, decision 1).
+              runsAs: startAs === null ? null : ownerUserId,
+            }),
+          )
           .pipe(Effect.onError(() => releaseTake));
         if (inConversation !== null && inConversation.fence !== null) {
-          yield* bindConversationProcess(agentProcess, inConversation.fence).pipe(
+          yield* bindConversationProcess(launchedProcess, inConversation.fence).pipe(
             Effect.tapError(() =>
               closeProcessPty(SealantWorkspaceId.make(workspace.id), pty.id).pipe(
                 Effect.andThen(
-                  endAgentProcess(agentProcess, {
+                  endAgentProcess(launchedProcess, {
                     how: "stopped",
                     exitCode: null,
                     outcome: "stopped",
@@ -18041,7 +18250,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         if (opencodeAtLaunch !== null) {
           yield* writeOpencodeLaunchSnapshot(
-            processStatePathOf(project.storePath, sessionId, agentProcess.id),
+            processStatePathOf(project.storePath, sessionId, launchedProcess.id),
             opencodeAtLaunch,
           ).pipe(
             Effect.catch((error) =>
@@ -18054,33 +18263,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (protocolStart !== null) {
           yield* protocolHost
             .attach({
-              process: agentProcess,
+              process: launchedProcess,
               pipe: pty,
               cwd: "/workspace/repo",
               model: protocolStart.model,
               effort: protocolStart.effort,
               permissionMode: protocolStart.permissionMode ?? "bypass",
-              hooks: protocolHooksFor(agentProcess),
+              hooks: protocolHooksFor(launchedProcess),
               // The session's own workspace, created or claimed with its owner's login.
               launchedWithLoginOf: session.ownerUserId,
               resumePath: inConversation?.resumePath ?? null,
-              runsAs: agentProcess.runsAs,
+              runsAs: launchedProcess.runsAs,
             })
             .pipe(
               Effect.tapError((error) =>
                 Effect.gen(function* () {
-                  yield* protocolHost.detach(agentProcess.id);
-                  yield* conversations.cancelOpenForProcess(agentProcess.id);
-                  yield* closeProcessPty(agentProcess.sealantWorkspaceId, pty.id).pipe(
+                  yield* protocolHost.detach(launchedProcess.id);
+                  yield* conversations.cancelOpenForProcess(launchedProcess.id);
+                  yield* closeProcessPty(launchedProcess.sealantWorkspaceId, pty.id).pipe(
                     Effect.ignore,
                   );
-                  const recorded = yield* endAgentProcess(agentProcess, {
+                  const recorded = yield* endAgentProcess(launchedProcess, {
                     how: "exited",
                     exitCode: null,
                     outcome: "failed",
                     summary: `protocol initialization failed: ${error.message}`,
                   }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(false)));
-                  if (recorded) yield* finishAgentProcess(agentProcess, "turn-boundary");
+                  if (recorded) yield* finishAgentProcess(launchedProcess, "turn-boundary");
                 }).pipe(Effect.ignore),
               ),
             );
@@ -18094,7 +18303,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // already settled (a failed first attempt retried) must clear
         // settled_at, or the first-settle-wins guard ignores this run's exit
         // and the row reads "running" forever — unstoppable and undeletable.
-        yield* sessions.reopen(sessionId, "running");
+        yield* records.opened(sessionId);
         yield* clearStaleStartSummary(sessionId);
         // After the stale words go, as the setup line does: said before, it went with them.
         if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
@@ -18131,13 +18340,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? agentStartingWords(session.harness, true)
             : null;
         if (startingWords !== null) yield* noteLaunchWords(sessionId, startingWords);
-        yield* forkSupervision(sessionId, sealantRunId);
+        yield* records.supervise(sessionId, sealantRunId);
 
         // The agent process ends on its own; the fold over every process decides the session.
-        yield* Effect.forkIn(watchProcess(agentProcess), scope);
+        yield* Effect.forkIn(watchProcess(launchedProcess), scope);
         // The runtime is launched by now, where it may not have been at the create.
         yield* noteExecutorResource(sessionId, workspace);
-        yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
+        yield* renewWorkspaceLease(sessionId, launchedProcess.sealantWorkspaceId);
         if (protocolStart !== null) {
           const openingInput = protocolStart.prompt?.trim() ?? "";
           if (openingInput !== "") {
@@ -18583,24 +18792,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const launch = (as: string, stopping: Effect.Effect<void, SealantPlatformError>) =>
               launchInRetainedWorkspace(
                 session.id,
-                composed,
-                null,
-                null,
-                providerSessionId,
-                start,
-                null,
-                workspace,
-                null,
-                stopped
-                  ? { sender: as, stop: stopping, replacing: null }
-                  : {
-                      sender: as,
-                      stop: stopping,
-                      replacing: agentProcess.id,
-                      // At the stop, after every preparation: the turn still waits and the
-                      // process is still quiescent, or nothing is stopped (review 2, P2-2).
-                      beforeStop: check.stillQuiescent,
-                    },
+                agentLaunch(composed, { resumeId: providerSessionId, protocolStart: start }),
+                {
+                  workspace,
+                  handOver: stopped
+                    ? { sender: as, stop: stopping, replacing: null }
+                    : {
+                        sender: as,
+                        stop: stopping,
+                        replacing: agentProcess.id,
+                        // At the stop, after every preparation: the turn still waits and the
+                        // process is still quiescent, or nothing is stopped (review 2, P2-2).
+                        beforeStop: check.stillQuiescent,
+                      },
+                },
               );
             yield* launch(sender, stop).pipe(
               Effect.catch((error) =>
@@ -18831,31 +19036,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             : yield* harnessStateFor(session).pipe(
                 Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
               );
-        const launchFresh = () =>
-          launchInternal(
-            sessionId,
-            composed,
-            null,
-            located,
-            launchCorrelationId,
-            start,
-            author,
-            providerSessionId ?? null,
-          );
+        const launchPlan = agentLaunch(composed, {
+          launchCorrelationId,
+          resumeId: providerSessionId ?? null,
+          protocolStart: start,
+          protocolAuthor: author,
+        });
+        const launchFresh = () => launchInternal(sessionId, { ...launchPlan, state: located });
         const retainCurrentWorkspace =
           !forceFreshWorkspace && (yield* retainedWorkspaceAvailable(session, handedOver));
         if (!retainCurrentWorkspace) {
           return yield* launchFresh();
         }
-        return yield* launchInRetainedWorkspace(
-          sessionId,
-          composed,
-          null,
-          launchCorrelationId,
-          providerSessionId ?? null,
-          start,
-          author,
-        ).pipe(Effect.catchTag("SessionNotLiveError", launchFresh));
+        return yield* launchInRetainedWorkspace(sessionId, launchPlan).pipe(
+          Effect.catchTag("SessionNotLiveError", launchFresh),
+        );
       });
 
       /** A person's own login, as Core said it stood within the last minute: active only. */
@@ -19420,36 +19615,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /** Start the next coding-agent run without replacing a workspace retained by live leases. */
       const launchInRetainedWorkspace = Effect.fn("SessionEngine.launchInRetainedWorkspace")(
-        function* (
-          sessionId: SessionId,
-          argv: ReadonlyArray<string>,
-          nativeImport: ConvertedNativeSession | null,
-          launchCorrelationId: string | null = null,
-          providerSessionId: string | null = null,
-          protocolStart: LaunchStart | null = null,
-          protocolAuthor: string | null = null,
-          /** Capture mode: the lease holder's workspace, where a join runs as one more process. */
-          workspaceOverride: Workspace | null = null,
-          /**
-           * With `workspaceOverride`: who owns the lease holder's session, so the home it writes
-           * into is known to be theirs (docs/adr/0010): a join into another person's executor
-           * receives no secret files of its own there.
-           */
-          executorOwnerUserId: string | null = null,
-          /**
-           * A hand-over of a shared conversation (docs/adr/0016, decision 6): the next process
-           * runs as `sender`, and `stop` ends the conversation's current one, beside the staging.
-           * A failure leaves the session as it is: the waiting turn fails with the words.
-           */
-          handOver: {
-            readonly sender: string;
-            readonly stop: Effect.Effect<void, SealantPlatformError>;
-            /** The process `stop` ends, which the conversation's take is made from. */
-            readonly replacing: string | null;
-            /** Asked right before the stop, after every preparation (review 2, P2-2). */
-            readonly beforeStop?: Effect.Effect<boolean>;
-          } | null = null,
-        ) {
+        function* (sessionId: SessionId, plan: LaunchPlan, retained: RetainedLaunch = {}) {
+          const {
+            argv,
+            nativeImport,
+            launchCorrelationId,
+            resumeId: providerSessionId,
+            protocolStart,
+            protocolAuthor,
+          } = plan;
+          const workspaceOverride = retained.workspace ?? null;
+          const executorOwnerUserId = retained.executorOwnerUserId ?? null;
+          const handOver = retained.handOver ?? null;
           const session = yield* sessions.byId(sessionId);
           // As at a cold launch: a run the session's settle left open takes its words first.
           yield* settleRunsOfSettled(sessionId);
@@ -19785,31 +19962,35 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
           const sealantRunId = SealantRunId.make(pty.runId);
-          const previousRun = yield* sessionRuns.latestForSession(sessionId);
-          // Refused in words only over a run of the session still live: the PTY just opened in
-          // the retained workspace closes, and the workspace stays with what holds it.
-          yield* createSessionRun({
-            sessionId,
-            harness: session.harness,
-            sealantRunId,
-            sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
-            sealantSessionId: pty.id,
-            ...(previousRun === null
-              ? {}
-              : {
-                  environmentRevision: previousRun.environmentRevision,
-                  environmentVariableNames: previousRun.environmentVariableNames,
-                  secretRevision: previousRun.secretRevision,
-                  secretNames: previousRun.secretNames,
-                }),
-          }).pipe(
-            Effect.tapError(() => closeProcessPty(SealantWorkspaceId.make(workspace.id), pty.id)),
-            // The take goes back with the start that failed, not 2 minutes later (review 2, P3-2).
-            Effect.onError(() => releaseRetainedTake),
-          );
+          const records = launchRecords[plan.role];
+          if (records.recordsRun) {
+            const previousRun = yield* sessionRuns.latestForSession(sessionId);
+            // Refused in words only over a run of the session still live: the PTY just opened in
+            // the retained workspace closes, and the workspace stays with what holds it.
+            yield* createSessionRun({
+              sessionId,
+              harness: session.harness,
+              sealantRunId,
+              sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
+              sealantSessionId: pty.id,
+              ...(previousRun === null
+                ? {}
+                : {
+                    environmentRevision: previousRun.environmentRevision,
+                    environmentVariableNames: previousRun.environmentVariableNames,
+                    secretRevision: previousRun.secretRevision,
+                    secretNames: previousRun.secretNames,
+                  }),
+            }).pipe(
+              Effect.tapError(() => closeProcessPty(SealantWorkspaceId.make(workspace.id), pty.id)),
+              // The take goes back with the start that failed, not 2 minutes later (review 2,
+              // P3-2).
+              Effect.onError(() => releaseRetainedTake),
+            );
+          }
           yield* sessions.setSealantIds(
             sessionId,
-            sealantRunId,
+            records.recordsRun ? sealantRunId : null,
             SealantWorkspaceId.make(workspace.id),
           );
           yield* sessions.setSealantSessionId(sessionId, pty.id);
@@ -19819,33 +20000,35 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ? (shapedArgv.at(claudeSessionFlag + 1) ?? null)
               : null;
           const agentProcess = yield* processes
-            .create({
-              sessionId,
-              sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
-              sealantSessionId: pty.id,
-              sealantRunId,
-              launchCorrelationId,
-              kind: protocolStart === null ? "agent-pty" : "agent-protocol",
-              harness: interactiveShell ? "shell" : session.harness,
-              providerSessionId: interactiveShell
-                ? null
-                : (nativeImport?.providerSessionId ??
-                  protocolProviderSessionId ??
-                  providerSessionId ??
-                  claudePin.providerSessionId),
-              protocolOptions:
-                protocolStart === null
+            .create(
+              records.process({
+                sessionId,
+                sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
+                sealantSessionId: pty.id,
+                sealantRunId,
+                launchCorrelationId,
+                kind: protocolStart === null ? "agent-pty" : "agent-protocol",
+                harness: interactiveShell ? "shell" : session.harness,
+                providerSessionId: interactiveShell
                   ? null
-                  : {
-                      model: protocolStart.model ?? null,
-                      effort: protocolStart.effort ?? null,
-                      permissionMode: protocolStart.permissionMode ?? "bypass",
-                    },
-              label: session.harness,
-              argv: shapedArgv,
-              // The person a process runs as is recorded on it (docs/adr/0016, decision 1).
-              runsAs: personStart === null ? null : (inConversation?.runsAs ?? sender),
-            })
+                  : (nativeImport?.providerSessionId ??
+                    protocolProviderSessionId ??
+                    providerSessionId ??
+                    claudePin.providerSessionId),
+                protocolOptions:
+                  protocolStart === null
+                    ? null
+                    : {
+                        model: protocolStart.model ?? null,
+                        effort: protocolStart.effort ?? null,
+                        permissionMode: protocolStart.permissionMode ?? "bypass",
+                      },
+                label: session.harness,
+                argv: shapedArgv,
+                // The person a process runs as is recorded on it (docs/adr/0016, decision 1).
+                runsAs: personStart === null ? null : (inConversation?.runsAs ?? sender),
+              }),
+            )
             .pipe(Effect.onError(() => releaseRetainedTake));
           if (inConversation !== null && inConversation.fence !== null) {
             yield* bindConversationProcess(agentProcess, inConversation.fence).pipe(
@@ -19915,7 +20098,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           // See launchInternal: reopen unconditionally so a retried row settles again, and before
           // the TTL renewal asks the platform anything.
-          yield* sessions.reopen(sessionId, "running");
+          yield* records.opened(sessionId);
           // The retained executor answered and started this process: what an earlier look at it
           // concluded (`executor not answering · …`) no longer holds (review 2026-09-28 (12) #5).
           yield* clearStaleStartSummary(sessionId);
@@ -19943,7 +20126,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ? agentStartingWords(session.harness, false)
               : null;
           if (startingWords !== null) yield* noteLaunchWords(sessionId, startingWords);
-          yield* forkSupervision(sessionId, sealantRunId);
+          yield* records.supervise(sessionId, sealantRunId);
           yield* Effect.forkIn(watchProcess(agentProcess), scope);
           yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
           if (protocolStart !== null) {
@@ -20132,8 +20315,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const retainCurrentWorkspace = yield* retainedWorkspaceAvailable(session);
         return yield* retainCurrentWorkspace
-          ? launchInRetainedWorkspace(sessionId, argv, null, launchCorrelationId)
-          : launchInternal(sessionId, argv, null, undefined, launchCorrelationId);
+          ? launchInRetainedWorkspace(sessionId, agentLaunch(argv, { launchCorrelationId }))
+          : launchInternal(sessionId, agentLaunch(argv, { launchCorrelationId }));
       });
 
       const resumeSession = Effect.fn("SessionEngine.resumeSession")(function* (
@@ -20255,8 +20438,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           yield* sessions.reopen(sessionId, "running");
           return yield* retainCurrentWorkspace
-            ? launchInRetainedWorkspace(sessionId, ["bash"], null)
-            : launchInternal(sessionId, ["bash"], null, located);
+            ? launchInRetainedWorkspace(sessionId, agentLaunch(["bash"]))
+            : launchInternal(sessionId, agentLaunch(["bash"], { state: located }));
         }
         const defaultArgv = HARNESS_ARGV[target];
         if (defaultArgv === undefined) {
@@ -20362,12 +20545,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return yield* retainCurrentWorkspace
           ? launchInRetainedWorkspace(
               sessionId,
-              argv,
-              nativeImport,
-              null,
-              manifest.harness === target ? manifest.providerSessionId : null,
+              agentLaunch(argv, {
+                nativeImport,
+                resumeId: manifest.harness === target ? manifest.providerSessionId : null,
+              }),
             )
-          : launchInternal(sessionId, argv, nativeImport, located);
+          : launchInternal(sessionId, agentLaunch(argv, { nativeImport, state: located }));
       });
 
       /**
@@ -20684,6 +20867,55 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           }),
         );
+      });
+
+      /**
+       * Whether nothing was ever launched for the session: it never settled, nothing opened a
+       * workspace, a run or a PTY for it or asked for an executor, and it has no process.
+       */
+      const neverLaunched = Effect.fn("SessionEngine.neverLaunched")(function* (session: Session) {
+        if (
+          session.status !== "starting" ||
+          session.settledAt !== null ||
+          session.sealantWorkspaceId !== null ||
+          session.sealantRunId !== null ||
+          session.sealantSessionId !== null ||
+          (yield* sessions.executorCreateOf(session.id)) !== null
+        ) {
+          return false;
+        }
+        return (yield* processes.listForSession(session.id)).length === 0;
+      });
+
+      /**
+       * A workspace held for its owner with no agent (`HOLD_LAUNCH`), run under the session's
+       * launch gate (`holdWorkspace` below). Only a session nothing was ever launched for is held,
+       * under the account's slot; any other is answered as it stands, its agent untouched. A hold
+       * that fails, or is refused a slot, settles the session `failed`: the gate rules out
+       * anything else launching it meanwhile.
+       */
+      const holdWorkspace = Effect.fn("SessionEngine.holdWorkspace")(function* (
+        sessionId: SessionId,
+        slot: LaunchSlot,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        if (!(yield* neverLaunched(session))) return session;
+        const held = yield* slot
+          .take(launchInternal(sessionId, HOLD_LAUNCH))
+          .pipe(
+            Effect.tapCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.void
+                : settleSession(sessionId, "failed", launchEndWords(Cause.squash(cause))).pipe(
+                    Effect.ignore,
+                  ),
+            ),
+          );
+        if (held !== null) return held;
+        yield* settleSession(sessionId, "failed", `hold failed: ${slot.refused}`).pipe(
+          Effect.ignore,
+        );
+        return yield* sessions.byId(sessionId);
       });
 
       /**
@@ -23394,7 +23626,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             : Effect.void,
         );
       const gatedLaunch =
-        <E2, R2>(sessionId: SessionId, refused: Effect.Effect<never, E2, R2>) =>
+        <A2, E2, R2>(sessionId: SessionId, refused: Effect.Effect<A2, E2, R2>) =>
         <A, E, R>(effect: Effect.Effect<A, E, R>) =>
           Effect.suspend(() =>
             launchGate.underWay(sessionId)
@@ -23991,7 +24223,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       );
 
       const launch = (sessionId: SessionId, argv: ReadonlyArray<string>) =>
-        launchInternal(sessionId, argv, null);
+        launchInternal(sessionId, agentLaunch(argv));
 
       /** Fibers in the engine's lifetime (`SessionEngine.detach`); they inherit the principal. */
       const detach = <A, E>(effect: Effect.Effect<A, E>) => Effect.forkIn(effect, scope);
@@ -24051,6 +24283,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const worktree = yield* worktreesRepo.byId(worktreeId);
             const project = yield* projects.byId(worktree.projectId);
             yield* refuseUnsupportedProject(project);
+            yield* completeWorktreeCreation(project, worktree);
             return yield* provisionInWorktree(project, worktree, input);
           }).pipe(asSealantUser(input.ownerUserId)),
         attachRun: (sessionId, sealantRunId, workspaceId) =>
@@ -24136,6 +24369,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           detached(
             owned(sessionId)(oneLaunch(sessionId)(resumeSession(sessionId, harness, fresh))),
           ),
+        // A hold that finds another launch verb under way answers the session as it stands, and
+        // settles nothing: that launch is the session's.
+        holdWorkspace: (sessionId, slot) =>
+          capture === null
+            ? Effect.fail(
+                new HoldUnsupportedError({
+                  sessionId,
+                  message:
+                    "this server keeps worktrees in the co-located store, where a workspace is not held without its agent · nothing was started",
+                }),
+              )
+            : detached(
+                owned(sessionId)(
+                  gatedLaunch(sessionId, sessions.byId(sessionId))(holdWorkspace(sessionId, slot)),
+                ),
+              ),
         switchMode: (sessionId, to, start, author) =>
           detached(
             owned(sessionId)(oneLaunch(sessionId)(switchMode(sessionId, to, start, author))),

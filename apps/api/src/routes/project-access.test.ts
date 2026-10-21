@@ -170,6 +170,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "skills.sync",
   // A landing's id resolves to its change first; landing.test.ts covers who may refresh it.
   "landings.refresh",
+  "handoffs.receive",
 ]);
 
 const project =
@@ -621,6 +622,7 @@ const CASES: ReadonlyArray<AccessCase> = [
   session("project-read", "GET", "/landings")("landings.forSession"),
   child("project-read", "change", "GET", "/api/changes", "/landings")("landings.forChange"),
   child("project-read", "change", "GET", "/api/changes", "/bundle")("landings.bundle"),
+  project("project-read", "GET", "/handoffs")("handoffs.terms"),
   child("land", "change", "POST", "/api/changes", "/pull-request/check")("landings.checkGitHub"),
   session("project-read", "GET", "/git-ops")("landings.gitOps"),
 ];
@@ -885,7 +887,7 @@ const ADMITTED: Readonly<
   "sessions.followUpPending": { status: 500, calls: ["followUps.activeForSession"] },
   "sessions.followUpDeliver": { status: 500, calls: ["followUpDelivery.deliver"] },
   "worktrees.create": { status: 500, calls: ["engine.ensureWorktree"] },
-  "worktrees.list": { status: 500, calls: ["worktrees.listForProject"] },
+  "worktrees.list": { status: 500, calls: ["worktrees.listForProject", "sessions.listForProject"] },
   "worktrees.detail": { status: 500, calls: ["changes.byWorktree", "checkpoints.listForWorktree"] },
   // Open-forward check masks capture/unlanded/disk/row removal.
   "worktrees.remove": { status: 500, calls: ["forwards.listOpen"] },
@@ -920,6 +922,11 @@ const ADMITTED: Readonly<
   "landings.forSession": { status: 500, calls: ["changes.byWorktree", "landings.listForChange"] },
   "landings.forChange": { status: 500, calls: ["landings.listForChange"] },
   "landings.bundle": { status: 500, calls: ["landing.bundle"] },
+  "handoffs.terms": {
+    status: 200,
+    calls: [],
+    body: { bundleBytes: 64 * 1024 * 1024, fileBytes: 8 * 1024 * 1024 },
+  },
   "landings.checkGitHub": { status: 500, calls: ["landing.adoptPullRequest"] },
   "landings.gitOps": { status: 500, calls: ["gitOps.listForSession"] },
 };

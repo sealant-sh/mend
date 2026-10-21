@@ -244,6 +244,7 @@ describe("Composed session launch", () => {
       branch: session.branch,
       baseRef: session.baseRef,
       baseSha: session.baseSha,
+      handoff: null,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
     };

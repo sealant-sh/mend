@@ -232,6 +232,7 @@ export interface TenancyWorld {
   readonly turns: Map<AgentTurnId, AgentTurn>;
   /** Flip a project's visibility, as an owner's `PUT /projects/:id/visibility` would. */
   readonly setVisibility: (project: HarnessProject, visibility: ProjectVisibility) => void;
+  readonly addWorktree: (worktree: Worktree) => void;
   /** Tokens: each user's bearer is their name. */
   readonly authLayer: Layer.Layer<Auth>;
   /** The authorization reads over the world, recorded like everything else. */
@@ -395,6 +396,7 @@ export const createTenancyWorld = async (
         branch: `mend/${projectKey}`,
         baseSha: Sha.make("0123456789abcdef"),
         baseRef: "main",
+        handoff: null,
         createdAt: NOW,
         updatedAt: NOW,
       }),
@@ -763,6 +765,20 @@ export const createTenancyWorld = async (
       "worktrees",
       {
         byId: (id) => found(worktrees, id, () => new WorktreeNotFoundError({ id })),
+        listForProject: (projectId) =>
+          Effect.succeed([...worktrees.values()].filter((row) => row.projectId === projectId)),
+        handoffPacks: () =>
+          Effect.succeed(
+            [...worktrees.values()].flatMap((row) =>
+              row.handoff === null ? [] : [row.handoff.deltaPack],
+            ),
+          ),
+        byHandoffCheckpoint: (projectId, checkpoint) =>
+          Effect.succeed(
+            [...worktrees.values()].find(
+              (row) => row.projectId === projectId && row.handoff?.checkpoint === checkpoint,
+            ) ?? null,
+          ),
         // A removal deletes the row; its sessions, change and chain cascade in the database.
         remove: (id) =>
           Effect.sync(() => {
@@ -864,6 +880,9 @@ export const createTenancyWorld = async (
     setVisibility: (key, visibility) => {
       const row = projects.get(ids(key).project);
       if (row !== undefined) projects.set(row.id, new Project({ ...row, visibility }));
+    },
+    addWorktree: (worktree) => {
+      worktrees.set(worktree.id, worktree);
     },
     authLayer,
     accessLayers,

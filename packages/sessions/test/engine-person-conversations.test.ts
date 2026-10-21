@@ -108,7 +108,7 @@ describe("readers per person (docs/adr/0016, Delivery 16)", () => {
                 label: null,
                 name: "shared",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(holder.id, ["claude"]);
               const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
@@ -257,7 +257,7 @@ describe("readers per person (docs/adr/0016, Delivery 16)", () => {
               label: null,
               name: "before",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             resumed = session.id;
             // The worktree's last shared executor: an earlier capture, then its final one, which
@@ -493,7 +493,7 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
               label: null,
               name: "shared",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             sessionId = session.id;
             if (options.shared) {
@@ -735,7 +735,7 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
             label: null,
             name: "shared",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           sessionId = session.id;
           const row = world.sessions.get(session.id);
@@ -833,7 +833,7 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
             label: null,
             name: "once-shared",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           sessionId = session.id;
           const row = world.sessions.get(session.id);
@@ -923,7 +923,7 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
             label: null,
             name: "shared",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           sessionId = session.id;
           const row = world.sessions.get(session.id);
@@ -1142,7 +1142,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             label: null,
             name: "shared",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           sessionId = session.id;
           const row = world.sessions.get(session.id);
@@ -1376,7 +1376,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
               label: null,
               name: "shared",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             sessionId = session.id;
             const row = world.sessions.get(session.id);
@@ -1670,7 +1670,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
               label: null,
               name: "shared",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             sessionId = session.id;
             const row = world.sessions.get(session.id);
@@ -1971,7 +1971,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             label: null,
             name: "shared",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           const row = world.sessions.get(session.id);
           if (row === undefined) return yield* Effect.die("no session");
@@ -2041,7 +2041,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             label: null,
             name: "shared",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           // Alice's own process in a person executor: it runs as her.
           yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
@@ -2130,7 +2130,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             label: null,
             name: "shared",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           const row = world.sessions.get(session.id);
           if (row === undefined) return yield* Effect.die("no session");
@@ -2327,7 +2327,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             label: null,
             name: "shared",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(holder.id, ["claude"]);
           const joined = yield* engine.provisionSessionIn(holder.worktreeId, {

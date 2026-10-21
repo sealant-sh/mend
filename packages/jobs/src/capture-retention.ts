@@ -1,6 +1,6 @@
 import * as crypto from "node:crypto";
 
-import type { CaptureRow, PackRow } from "@mend/db";
+import { WorktreesRepo, type CaptureRow, type PackRow } from "@mend/db";
 import { WorktreeId } from "@mend/domain";
 import { CaptureRuntime, PRESIGN_TTL_SECONDS } from "@mend/sessions";
 import { captureKeyOwner, keysOfSections, packIdxKeyOf, treePrefixesOfSections } from "@mend/store";
@@ -114,260 +114,267 @@ const epochOfKey = (worktreeId: string, key: string): number | null => {
   return match?.[1] === undefined ? null : Number(match[1]);
 };
 
-export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureRuntime> =
-  Layer.effect(
-    CaptureRetention,
-    Effect.gen(function* () {
-      const capture = yield* CaptureRuntime;
+export const CaptureRetentionLive: Layer.Layer<
+  CaptureRetention,
+  never,
+  CaptureRuntime | WorktreesRepo
+> = Layer.effect(
+  CaptureRetention,
+  Effect.gen(function* () {
+    const capture = yield* CaptureRuntime;
+    const worktrees = yield* WorktreesRepo;
 
-      const run = Effect.fn("CaptureRetention.run")(function* (passAt?: number) {
-        const now = passAt ?? (yield* Clock.currentTimeMillis);
-        const report = {
-          chains: 0,
-          capturesThinned: 0,
-          packsRetired: 0,
-          objectsRemoved: 0,
-          multipartAborted: 0,
-        };
-        if (!capture.enabled) return report;
-        const { repo, blobs } = capture;
-        /** Remove one object; false (logged) when the store refused. */
-        const remove = (key: string) =>
-          blobs.remove(key).pipe(
-            Effect.timeout(REMOVE_TIMEOUT),
-            Effect.tap(() => Effect.sync(() => (report.objectsRemoved += 1))),
-            Effect.as(true),
-            Effect.catch((error) =>
-              Effect.logWarning("capture retention: object removal failed").pipe(
-                Effect.annotateLogs({ key, error: String(error) }),
-                Effect.as(false),
-              ),
+    const run = Effect.fn("CaptureRetention.run")(function* (passAt?: number) {
+      const now = passAt ?? (yield* Clock.currentTimeMillis);
+      const report = {
+        chains: 0,
+        capturesThinned: 0,
+        packsRetired: 0,
+        objectsRemoved: 0,
+        multipartAborted: 0,
+      };
+      if (!capture.enabled) return report;
+      const { repo, blobs } = capture;
+      /** Remove one object; false (logged) when the store refused. */
+      const remove = (key: string) =>
+        blobs.remove(key).pipe(
+          Effect.timeout(REMOVE_TIMEOUT),
+          Effect.tap(() => Effect.sync(() => (report.objectsRemoved += 1))),
+          Effect.as(true),
+          Effect.catch((error) =>
+            Effect.logWarning("capture retention: object removal failed").pipe(
+              Effect.annotateLogs({ key, error: String(error) }),
+              Effect.as(false),
             ),
-          );
+          ),
+        );
 
-        // 1. Thin every chain; the head and the kept kinds stay by rule, and the SQL refuses
-        //    the head regardless of what this pass computed. Each chain's guard is read before
-        //    its rows: a register that lands after that read bumps it, and step 4 then
-        //    condemns nothing of that chain this pass.
-        const live = new Set<string>();
-        const liveTreePrefixes = new Set<string>();
-        const chains = yield* repo.listChains();
-        const guards = new Map<string, number>();
-        const headsByWorktree = new Map<WorktreeId, CaptureRow | null>();
-        for (const chain of chains) {
-          report.chains += 1;
-          guards.set(chain.worktreeId, chain.guard);
-          const rows = yield* repo.listChain(chain.worktreeId);
-          const drop = thinningPlan(rows, chain.headCapture, now);
-          if (drop.length > 0) {
-            const removed = yield* repo.deleteCaptures(
-              chain.worktreeId,
-              drop.map((row) => row.id),
-            );
-            report.capturesThinned += removed;
-            for (const row of drop) yield* remove(row.manifestKey);
-          }
-          const dropped = new Set(drop.map((row) => row.id));
-          for (const row of rows) {
-            if (dropped.has(row.id)) continue;
-            live.add(row.manifestKey);
-            for (const key of keysOfSections(row.sections)) live.add(key);
-            for (const prefix of treePrefixesOfSections(row.sections)) liveTreePrefixes.add(prefix);
-          }
-          headsByWorktree.set(
+      // 1. Thin every chain; the head and the kept kinds stay by rule, and the SQL refuses
+      //    the head regardless of what this pass computed. Each chain's guard is read before
+      //    its rows: a register that lands after that read bumps it, and step 4 then
+      //    condemns nothing of that chain this pass.
+      const live = new Set<string>();
+      const liveTreePrefixes = new Set<string>();
+      const chains = yield* repo.listChains();
+      const guards = new Map<string, number>();
+      const headsByWorktree = new Map<WorktreeId, CaptureRow | null>();
+      for (const chain of chains) {
+        report.chains += 1;
+        guards.set(chain.worktreeId, chain.guard);
+        const rows = yield* repo.listChain(chain.worktreeId);
+        const drop = thinningPlan(rows, chain.headCapture, now);
+        if (drop.length > 0) {
+          const removed = yield* repo.deleteCaptures(
             chain.worktreeId,
-            rows.find((row) => row.id === chain.headCapture) ?? null,
+            drop.map((row) => row.id),
           );
+          report.capturesThinned += removed;
+          for (const row of drop) yield* remove(row.manifestKey);
         }
-
-        // What each chain's pass would delete, by the chain its keys belong to. `keys` are the
-        // objects; `condemned` adds the `trees/` prefixes whose objects go (a register names a
-        // format-1 root, not the dir objects below it).
-        const doomed = new Map<
-          string,
-          { keys: Array<string>; condemned: Set<string>; retire: Array<PackRow> }
-        >();
-        const doomedOf = (owner: string) => {
-          const found = doomed.get(owner);
-          if (found !== undefined) return found;
-          const fresh = { keys: [], condemned: new Set<string>(), retire: [] };
-          doomed.set(owner, fresh);
-          return fresh;
-        };
-
-        // 2. Packs no remaining row names, after the grace.
-        const packs = yield* repo.listPacks();
-        for (const pack of packs) {
-          if (pack.state === "retired") continue;
-          if (!pack.key.startsWith("captures/")) continue;
-          if (live.has(pack.key)) continue;
-          if (now - pack.createdAt.getTime() < RETENTION_GRACE_MS) continue;
-          const owner = captureKeyOwner(pack.key);
-          if (owner === null) continue;
-          const plan = doomedOf(owner);
-          plan.retire.push(pack);
-          plan.keys.push(pack.key);
-          plan.condemned.add(pack.key);
-          // The index goes with its pack; the pack's tombstone stands for both.
-          if (pack.class === "git") plan.keys.push(packIdxKeyOf(pack.key));
+        const dropped = new Set(drop.map((row) => row.id));
+        for (const row of rows) {
+          if (dropped.has(row.id)) continue;
+          live.add(row.manifestKey);
+          for (const key of keysOfSections(row.sections)) live.add(key);
+          for (const prefix of treePrefixesOfSections(row.sections)) liveTreePrefixes.add(prefix);
         }
+        headsByWorktree.set(
+          chain.worktreeId,
+          rows.find((row) => row.id === chain.headCapture) ?? null,
+        );
+      }
 
-        // 3. Fenced epoch prefixes, swept of everything off-chain once the head has stood for
-        //    the grace period (every URL minted for the fenced epoch has lapsed by then).
-        //    Recorded packs are step 2's: they retire through their row, never from a listing.
-        const tracked = new Set<string>();
-        for (const pack of packs) {
-          if (pack.state === "retired") continue;
-          tracked.add(pack.key);
-          if (pack.class === "git") tracked.add(packIdxKeyOf(pack.key));
-        }
-        for (const [worktreeId, head] of headsByWorktree) {
-          if (head === null || now - head.createdAt.getTime() < RETENTION_GRACE_MS) continue;
-          const entries = yield* blobs
-            .list(`captures/${worktreeId}/`)
-            .pipe(Effect.catch(() => Effect.succeed([])));
-          for (const entry of entries) {
-            const epoch = epochOfKey(worktreeId, entry.key);
-            if (epoch === null || epoch >= head.epoch) continue;
-            if (live.has(entry.key) || tracked.has(entry.key)) continue;
-            // A format-1 dir object below a live root: only the root is named by the row.
-            const treePrefix = treePrefixOf(entry.key);
-            if (treePrefix !== null && liveTreePrefixes.has(treePrefix)) continue;
-            const plan = doomedOf(worktreeId);
-            plan.keys.push(entry.key);
-            // A `.idx` goes with its pack: a register names the pack, never the index.
-            plan.condemned.add(entry.key.replace(/\.idx$/, ""));
-            if (treePrefix !== null) plan.condemned.add(treePrefix);
-          }
-        }
+      // What each chain's pass would delete, by the chain its keys belong to. `keys` are the
+      // objects; `condemned` adds the `trees/` prefixes whose objects go (a register names a
+      // format-1 root, not the dir objects below it).
+      const doomed = new Map<
+        string,
+        { keys: Array<string>; condemned: Set<string>; retire: Array<PackRow> }
+      >();
+      const doomedOf = (owner: string) => {
+        const found = doomed.get(owner);
+        if (found !== undefined) return found;
+        const fresh = { keys: [], condemned: new Set<string>(), retire: [] };
+        doomed.set(owner, fresh);
+        return fresh;
+      };
 
-        // 4. Condemn, then delete: a chain's objects are tombstoned while its guard still reads
-        //    what step 1 read — no register named anything of it since — and only then retired
-        //    (rows first, bytes second, so a crash between the two leaves a retired row and a
-        //    stray object, never the reverse). A register that read the guard before this
-        //    misses its CAS and reads again; one after it finds the tombstones and is refused
-        //    for good — the content comes back only under a new key. A chain that moved
-        //    keeps everything until the next pass. Objects of a worktree with no chain left
-        //    need no tombstone: no register can name them (its guard is gone).
-        //
-        //    The condemnation holds a claim on every key it tombstones until this pass has
-        //    deleted them and settled the tombstones (`finishDeletion`). No register ever names a
-        //    condemned key again (review 2026-09-28 (3) #2): a delete that lands late reaches only
-        //    bytes no capture names, so the claim paces passes, it does not fence them. It is
-        //    renewed before the deletes and at least every `CLAIM_RENEW_MS` while they run; once a
-        //    renewal fails this pass deletes nothing more of that chain and leaves its tombstones
-        //    undeleted for the next pass.
-        for (const [owner, plan] of doomed) {
-          const guard = guards.get(owner);
-          const token = crypto.randomUUID();
-          const claimed = plan.condemned.size;
-          if (guard !== undefined) {
-            const condemned = yield* repo.condemn(
-              WorktreeId.make(owner),
-              guard,
-              [...plan.condemned],
-              { token, ttlSeconds: DELETION_CLAIM_TTL_SECONDS },
-            );
-            if (!condemned) {
-              yield* Effect.logInfo(
-                "capture retention: a register moved the chain during the pass · kept for the next",
-              ).pipe(Effect.annotateLogs({ worktreeId: owner }));
-              continue;
-            }
-          }
-          if (plan.retire.length > 0) {
-            yield* repo.setPackState(
-              plan.retire.map((pack) => pack.id),
-              "retired",
-            );
-            report.packsRetired += plan.retire.length;
-          }
-          let renewedAt = Number.NEGATIVE_INFINITY;
-          /** The claim still holds (renewed now if it is due); always true without a chain. */
-          const holds = Effect.gen(function* () {
-            if (guard === undefined) return true;
-            const at = yield* Clock.currentTimeMillis;
-            if (at - renewedAt < CLAIM_RENEW_MS) return true;
-            const renewed = yield* repo.renewDeletion(token, DELETION_CLAIM_TTL_SECONDS);
-            if (renewed < claimed) return false;
-            renewedAt = at;
-            return true;
-          });
-          const failed: Array<string> = [];
-          let lost = false;
-          for (const key of plan.keys) {
-            if (!(yield* holds)) {
-              lost = true;
-              break;
-            }
-            const removed = yield* remove(key);
-            if (!removed) failed.push(key);
-          }
-          // A retired pack row whose bytes may still be there goes back to `uploaded`, so the
-          // next pass weighs it again (a retired row is never condemned twice by step 2).
-          const unfinished = plan.retire.filter(
-            (pack) =>
-              lost || failed.some((key) => key === pack.key || key === packIdxKeyOf(pack.key)),
+      // 2. Packs no remaining row names, after the grace. A handoff's delta pack is named by
+      //    its worktree row before capture 0 names it (a crash, a failed attach, a base pack
+      //    slower than the grace): read after the packs, so a row that lands in between counts.
+      const packs = yield* repo.listPacks();
+      for (const key of yield* worktrees.handoffPacks()) live.add(key);
+      for (const pack of packs) {
+        if (pack.state === "retired") continue;
+        if (!pack.key.startsWith("captures/")) continue;
+        if (live.has(pack.key)) continue;
+        if (now - pack.createdAt.getTime() < RETENTION_GRACE_MS) continue;
+        const owner = captureKeyOwner(pack.key);
+        if (owner === null) continue;
+        const plan = doomedOf(owner);
+        plan.retire.push(pack);
+        plan.keys.push(pack.key);
+        plan.condemned.add(pack.key);
+        // The index goes with its pack; the pack's tombstone stands for both.
+        if (pack.class === "git") plan.keys.push(packIdxKeyOf(pack.key));
+      }
+
+      // 3. Fenced epoch prefixes, swept of everything off-chain once the head has stood for
+      //    the grace period (every URL minted for the fenced epoch has lapsed by then).
+      //    Recorded packs are step 2's: they retire through their row, never from a listing.
+      const tracked = new Set<string>();
+      for (const pack of packs) {
+        if (pack.state === "retired") continue;
+        tracked.add(pack.key);
+        if (pack.class === "git") tracked.add(packIdxKeyOf(pack.key));
+      }
+      for (const [worktreeId, head] of headsByWorktree) {
+        if (head === null || now - head.createdAt.getTime() < RETENTION_GRACE_MS) continue;
+        const entries = yield* blobs
+          .list(`captures/${worktreeId}/`)
+          .pipe(Effect.catch(() => Effect.succeed([])));
+        for (const entry of entries) {
+          const epoch = epochOfKey(worktreeId, entry.key);
+          if (epoch === null || epoch >= head.epoch) continue;
+          if (live.has(entry.key) || tracked.has(entry.key)) continue;
+          // A format-1 dir object below a live root: only the root is named by the row.
+          const treePrefix = treePrefixOf(entry.key);
+          if (treePrefix !== null && liveTreePrefixes.has(treePrefix)) continue;
+          const plan = doomedOf(worktreeId);
+          plan.keys.push(entry.key);
+          // A `.idx` goes with its pack: a register names the pack, never the index.
+          plan.condemned.add(entry.key.replace(/\.idx$/, ""));
+          if (treePrefix !== null) plan.condemned.add(treePrefix);
+        }
+      }
+
+      // 4. Condemn, then delete: a chain's objects are tombstoned while its guard still reads
+      //    what step 1 read — no register named anything of it since — and only then retired
+      //    (rows first, bytes second, so a crash between the two leaves a retired row and a
+      //    stray object, never the reverse). A register that read the guard before this
+      //    misses its CAS and reads again; one after it finds the tombstones and is refused
+      //    for good — the content comes back only under a new key. A chain that moved
+      //    keeps everything until the next pass. Objects of a worktree with no chain left
+      //    need no tombstone: no register can name them (its guard is gone).
+      //
+      //    The condemnation holds a claim on every key it tombstones until this pass has
+      //    deleted them and settled the tombstones (`finishDeletion`). No register ever names a
+      //    condemned key again (review 2026-09-28 (3) #2): a delete that lands late reaches only
+      //    bytes no capture names, so the claim paces passes, it does not fence them. It is
+      //    renewed before the deletes and at least every `CLAIM_RENEW_MS` while they run; once a
+      //    renewal fails this pass deletes nothing more of that chain and leaves its tombstones
+      //    undeleted for the next pass.
+      for (const [owner, plan] of doomed) {
+        const guard = guards.get(owner);
+        const token = crypto.randomUUID();
+        const claimed = plan.condemned.size;
+        if (guard !== undefined) {
+          const condemned = yield* repo.condemn(
+            WorktreeId.make(owner),
+            guard,
+            [...plan.condemned],
+            { token, ttlSeconds: DELETION_CLAIM_TTL_SECONDS },
           );
-          if (unfinished.length > 0) {
-            yield* repo.setPackState(
-              unfinished.map((pack) => pack.id),
-              "uploaded",
-            );
-          }
-          if (lost) {
-            // The tombstones stay undeleted (a register naming them is refused) and the claim
-            // rows lapse on their own; the next pass condemns and removes the rest.
-            yield* Effect.logWarning(
-              "capture retention: the deletion claim lapsed during the pass · stopped deleting, kept for the next",
+          if (!condemned) {
+            yield* Effect.logInfo(
+              "capture retention: a register moved the chain during the pass · kept for the next",
             ).pipe(Effect.annotateLogs({ worktreeId: owner }));
             continue;
           }
-          // A tombstone's bytes are gone once every object it stands for is: a pack with its
-          // index, a `trees/` prefix with every object below it that this pass deleted. One
-          // still there stays condemned; the next pass condemns and removes it again.
-          const settled = [...plan.condemned].filter(
-            (condemned) => !failed.some((key) => key === condemned || key.startsWith(condemned)),
+        }
+        if (plan.retire.length > 0) {
+          yield* repo.setPackState(
+            plan.retire.map((pack) => pack.id),
+            "retired",
           );
-          if (guard !== undefined) yield* repo.finishDeletion(token, settled);
+          report.packsRetired += plan.retire.length;
         }
-
-        // 5. Abort orphaned multipart uploads: every one under a fenced epoch, and every one
-        //    older than the URL TTL plus the grace under the live epoch. An upload whose age
-        //    the store does not report is left alone — nothing here judges by guesswork.
-        for (const [worktreeId, head] of headsByWorktree) {
-          const open = yield* blobs
-            .listMultipart(`captures/${worktreeId}/`)
-            .pipe(Effect.catch(() => Effect.succeed([])));
-          for (const upload of open) {
-            const epoch = epochOfKey(worktreeId, upload.key);
-            const fenced = head !== null && epoch !== null && epoch < head.epoch;
-            const stale =
-              upload.initiatedAt !== null &&
-              now - upload.initiatedAt.getTime() >= MULTIPART_ORPHAN_MS;
-            if (!fenced && !stale) continue;
-            yield* blobs.abortMultipart(upload.key, upload.uploadId).pipe(
-              Effect.tap(() => Effect.sync(() => (report.multipartAborted += 1))),
-              Effect.catch((error) =>
-                Effect.logWarning("capture retention: multipart abort failed").pipe(
-                  Effect.annotateLogs({
-                    key: upload.key,
-                    uploadId: upload.uploadId,
-                    error: String(error),
-                  }),
-                ),
-              ),
-            );
+        let renewedAt = Number.NEGATIVE_INFINITY;
+        /** The claim still holds (renewed now if it is due); always true without a chain. */
+        const holds = Effect.gen(function* () {
+          if (guard === undefined) return true;
+          const at = yield* Clock.currentTimeMillis;
+          if (at - renewedAt < CLAIM_RENEW_MS) return true;
+          const renewed = yield* repo.renewDeletion(token, DELETION_CLAIM_TTL_SECONDS);
+          if (renewed < claimed) return false;
+          renewedAt = at;
+          return true;
+        });
+        const failed: Array<string> = [];
+        let lost = false;
+        for (const key of plan.keys) {
+          if (!(yield* holds)) {
+            lost = true;
+            break;
           }
+          const removed = yield* remove(key);
+          if (!removed) failed.push(key);
         }
+        // A retired pack row whose bytes may still be there goes back to `uploaded`, so the
+        // next pass weighs it again (a retired row is never condemned twice by step 2).
+        const unfinished = plan.retire.filter(
+          (pack) =>
+            lost || failed.some((key) => key === pack.key || key === packIdxKeyOf(pack.key)),
+        );
+        if (unfinished.length > 0) {
+          yield* repo.setPackState(
+            unfinished.map((pack) => pack.id),
+            "uploaded",
+          );
+        }
+        if (lost) {
+          // The tombstones stay undeleted (a register naming them is refused) and the claim
+          // rows lapse on their own; the next pass condemns and removes the rest.
+          yield* Effect.logWarning(
+            "capture retention: the deletion claim lapsed during the pass · stopped deleting, kept for the next",
+          ).pipe(Effect.annotateLogs({ worktreeId: owner }));
+          continue;
+        }
+        // A tombstone's bytes are gone once every object it stands for is: a pack with its
+        // index, a `trees/` prefix with every object below it that this pass deleted. One
+        // still there stays condemned; the next pass condemns and removes it again.
+        const settled = [...plan.condemned].filter(
+          (condemned) => !failed.some((key) => key === condemned || key.startsWith(condemned)),
+        );
+        if (guard !== undefined) yield* repo.finishDeletion(token, settled);
+      }
 
-        yield* Effect.logInfo("capture retention: pass complete").pipe(Effect.annotateLogs(report));
-        return report;
-      });
+      // 5. Abort orphaned multipart uploads: every one under a fenced epoch, and every one
+      //    older than the URL TTL plus the grace under the live epoch. An upload whose age
+      //    the store does not report is left alone — nothing here judges by guesswork.
+      for (const [worktreeId, head] of headsByWorktree) {
+        const open = yield* blobs
+          .listMultipart(`captures/${worktreeId}/`)
+          .pipe(Effect.catch(() => Effect.succeed([])));
+        for (const upload of open) {
+          const epoch = epochOfKey(worktreeId, upload.key);
+          const fenced = head !== null && epoch !== null && epoch < head.epoch;
+          const stale =
+            upload.initiatedAt !== null &&
+            now - upload.initiatedAt.getTime() >= MULTIPART_ORPHAN_MS;
+          if (!fenced && !stale) continue;
+          yield* blobs.abortMultipart(upload.key, upload.uploadId).pipe(
+            Effect.tap(() => Effect.sync(() => (report.multipartAborted += 1))),
+            Effect.catch((error) =>
+              Effect.logWarning("capture retention: multipart abort failed").pipe(
+                Effect.annotateLogs({
+                  key: upload.key,
+                  uploadId: upload.uploadId,
+                  error: String(error),
+                }),
+              ),
+            ),
+          );
+        }
+      }
 
-      return { run };
-    }),
-  );
+      yield* Effect.logInfo("capture retention: pass complete").pipe(Effect.annotateLogs(report));
+      return report;
+    });
+
+    return { run };
+  }),
+);
 
 /** The hourly fiber; a no-op outside capture mode. */
 export const CaptureRetentionScheduleLive: Layer.Layer<

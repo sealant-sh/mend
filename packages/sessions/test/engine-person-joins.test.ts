@@ -229,7 +229,7 @@ const joinByAnotherPersonEffect = (
             label: null,
             name: "together",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(holder.id, ["claude"]);
           holderWorkspace = world.sessions.get(holder.id)?.sealantWorkspaceId ?? null;
@@ -494,7 +494,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
                 label: null,
                 name: "together",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(holder.id, ["claude"]);
               const joined = yield* engine.provisionSessionIn(holder.worktreeId, {

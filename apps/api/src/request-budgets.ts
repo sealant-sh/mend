@@ -15,15 +15,17 @@ const isLoopbackSocket = (address: string): boolean => {
   return bare === "::1" || bare.startsWith("127.");
 };
 
-/** Routes that take a file in their body, by method and path (docs/adr/0004, "Budgets"). */
-const UPLOAD_ROUTES: ReadonlyArray<readonly [string, RegExp]> = [
-  ["POST", /^\/api\/sessions\/[^/]+\/images$/],
-  ["POST", /^\/api\/skills\/sync$/],
-  ["PUT", /^\/api\/me\/pi-profile$/],
-  ["POST", /^\/api\/projects\/[^/]+\/memory\/import$/],
-  ["POST", /^\/api\/organization\/folders\/[^/]+\/files$/],
-  ["POST", /^\/api\/dotfiles\/snapshot$/],
-  ["PUT", /^\/api\/projects\/[^/]+\/workspace-image$/],
+export type BodyBudget = Extract<BudgetName, "bodyBytes" | "uploadBodyBytes" | "bundleBytes">;
+
+const BODY_ROUTES: ReadonlyArray<readonly [method: string, path: RegExp, budget: BodyBudget]> = [
+  ["POST", /^\/api\/sessions\/[^/]+\/images$/, "uploadBodyBytes"],
+  ["POST", /^\/api\/skills\/sync$/, "uploadBodyBytes"],
+  ["PUT", /^\/api\/me\/pi-profile$/, "uploadBodyBytes"],
+  ["POST", /^\/api\/projects\/[^/]+\/memory\/import$/, "uploadBodyBytes"],
+  ["POST", /^\/api\/organization\/folders\/[^/]+\/files$/, "uploadBodyBytes"],
+  ["POST", /^\/api\/dotfiles\/snapshot$/, "uploadBodyBytes"],
+  ["PUT", /^\/api\/projects\/[^/]+\/workspace-image$/, "uploadBodyBytes"],
+  ["POST", /^\/api\/projects\/[^/]+\/handoffs$/, "bundleBytes"],
 ];
 
 /**
@@ -40,8 +42,11 @@ export const routedPath = (pathname: string): string => {
   return decoded.toLowerCase().replace(/\/{2,}/g, "/");
 };
 
-export const isUploadRoute = (method: string, pathname: string): boolean =>
-  UPLOAD_ROUTES.some(([verb, path]) => verb === method && path.test(routedPath(pathname)));
+export const bodyBudgetFor = (method: string, pathname: string): BodyBudget => {
+  const routed = routedPath(pathname);
+  const row = BODY_ROUTES.find(([verb, path]) => verb === method && path.test(routed));
+  return row === undefined ? "bodyBytes" : row[2];
+};
 
 /**
  * Attempts at proving who you are. They get their own, tighter window, so guessing a password or
@@ -179,8 +184,7 @@ export const requestBudgets = (
           }
         }
 
-        const upload = isUploadRoute(request.method, pathname);
-        const bodyBudget: BudgetName = upload ? "uploadBodyBytes" : "bodyBytes";
+        const bodyBudget = bodyBudgetFor(request.method, pathname);
         const bodyLimit = limits[bodyBudget];
         if (bodyLimit <= 0) return yield* handler;
         const declared = Number(request.headers["content-length"] ?? "");

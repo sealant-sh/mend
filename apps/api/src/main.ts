@@ -215,6 +215,7 @@ import { ErrorDetail, ErrorDetailLive } from "./error-boundary.ts";
 import { EventBusLive } from "./events-bus.ts";
 import { ExposureConfigLive } from "./exposure.ts";
 import { GithubIdentityLive } from "./github-identity.ts";
+import { HandoffStartLive } from "./handoff-start.ts";
 import { apiMiddleware } from "./http-middleware.ts";
 import { TourRequestsLive } from "./landing-tours.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
@@ -660,6 +661,16 @@ const WorkerLive = Layer.mergeAll(
       yield* Effect.forkScoped(dispatcher.run());
     }),
   ),
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const removed = yield* (yield* Store).sweepHandoffQuarantines();
+      if (removed.length > 0) {
+        yield* Effect.logInfo("handoff: stale quarantines removed").pipe(
+          Effect.annotateLogs({ count: removed.length }),
+        );
+      }
+    }),
+  ),
   InferenceWorkersLive,
   // Constructing the engine resumes supervision of unsettled sessions.
   SessionEngineLayer,
@@ -796,8 +807,15 @@ const MainLive = Layer.unwrap(
     // The network session channel is a sibling service: it serves workspaces, nothing depends
     // on it, so it must be launched explicitly rather than provided.
     return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
-      // Session steering, and landing (docs/adr/0007-landing.md) for the landing routes.
-      Layer.provide(Layer.merge(SessionSteeringLive, landing)),
+      // Session steering, landing (docs/adr/0007-landing.md) for the landing routes, and
+      // receiving a handoff (docs/specs/mend-handoff.md) for the handoff routes.
+      Layer.provide(
+        Layer.mergeAll(
+          SessionSteeringLive,
+          landing,
+          HandoffStartLive.pipe(Layer.provide(captureStore)),
+        ),
+      ),
       // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.
       Layer.provide(Layer.merge(ProjectAccessLive, GithubIdentityLive)),
       // MEND_TENANCY: refuses to build (so nothing serves) when the mode may not run here.

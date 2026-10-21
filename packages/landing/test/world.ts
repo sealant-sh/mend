@@ -116,6 +116,7 @@ export const makeWorld = (options: WorldOptions = {}) => {
     branch,
     baseSha,
     baseRef: options.baseRef === undefined ? "main" : options.baseRef,
+    handoff: null,
     createdAt: NOW,
     updatedAt: NOW,
   });

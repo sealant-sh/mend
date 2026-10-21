@@ -67,8 +67,8 @@ describe("SessionRepositoryCapturedLive", () => {
         const repo = yield* SessionRepository;
         return yield* repo.createWorktree(
           world.project.id,
-          { directory: worktreeId, branch: `mend/wt/${worktreeId}` },
-          null,
+          { id: worktreeId, directory: worktreeId, branch: `mend/wt/${worktreeId}` },
+          { kind: "base", base: null },
           null,
         );
       }),
@@ -129,21 +129,21 @@ describe("SessionRepositoryCapturedLive", () => {
     );
     // A SHA-1 project names no object format (sealantd reads absent as `sha1`).
     expect("object_format" in manifest.sections.git).toBe(false);
-    // A second worktree on the same branch name is refused like the co-located adapter does.
+    // A second worktree on the same branch name is refused as taken.
     const clash = await run(
       Effect.gen(function* () {
         const repo = yield* SessionRepository;
         return yield* repo
           .createWorktree(
             world.project.id,
-            { directory: "other", branch: `mend/wt/${worktreeId}` },
-            null,
+            { id: worktreeId, directory: "other", branch: `mend/wt/${worktreeId}` },
+            { kind: "base", base: null },
             null,
           )
           .pipe(Effect.flip);
       }),
     );
-    expect(clash._tag).toBe("GitError");
+    expect(clash._tag).toBe("WorktreeNameTakenError");
   });
 
   it("prepareStandby builds the same real empty harness root", async () => {
@@ -176,8 +176,8 @@ describe("SessionRepositoryCapturedLive", () => {
           const repo = yield* SessionRepository;
           yield* repo.createWorktree(
             world.project.id,
-            { directory: worktreeId, branch },
-            null,
+            { id: worktreeId, directory: worktreeId, branch },
+            { kind: "base", base: null },
             null,
           );
           yield* repo.attachWorktree!(world.project.id, worktreeId);
@@ -508,7 +508,12 @@ describe("SessionRepositoryCapturedLive over a SHA-256 project", () => {
     const head = await run(
       Effect.gen(function* () {
         const repo = yield* SessionRepository;
-        yield* repo.createWorktree(world.project.id, { directory: worktreeId, branch }, null, null);
+        yield* repo.createWorktree(
+          world.project.id,
+          { id: worktreeId, directory: worktreeId, branch },
+          { kind: "base", base: null },
+          null,
+        );
         yield* repo.attachWorktree!(world.project.id, worktreeId);
         return (yield* (yield* CaptureStoreRepo).headOf(worktreeId))?.head ?? null;
       }),

@@ -29,6 +29,15 @@ export interface LaunchAdmission {
   readonly onAdmitted?: Effect.Effect<void>;
 }
 
+/**
+ * The launcher's share of launches, which a hold takes once it is admitted (the API's per-account
+ * launch slot): `take` answers null when none is free, and the hold settles in `refused`'s words.
+ */
+export interface LaunchSlot {
+  readonly take: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A | null, E>;
+  readonly refused: string;
+}
+
 export const Restart: LaunchOver = { _tag: "Restart" };
 export const NoLiveAgent: LaunchOver = { _tag: "NoLiveAgent" };
 export const Expected = (settledAt: Date | null): LaunchOver => ({ _tag: "Expected", settledAt });

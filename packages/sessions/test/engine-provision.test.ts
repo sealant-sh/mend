@@ -112,7 +112,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
 
@@ -167,7 +167,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
 
@@ -212,7 +212,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           const failure = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
           expect(failure).toBeInstanceOf(SealantPlatformError);
@@ -270,7 +270,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           // The harnesses' self-updaters are off in every workspace, whatever the project sets, and
@@ -324,7 +324,7 @@ describe("SessionEngine", () => {
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(session.id, ["codex"]);
             expect(created).toHaveLength(1);
@@ -392,7 +392,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
-            base: null,
+            start: { kind: "base", base: null },
           });
           const runId = SealantRunId.make("sealant-run-attached");
           yield* engine.attachRun(session.id, runId, SealantWorkspaceId.make("workspace-x"));
@@ -430,7 +430,7 @@ describe("SessionEngine", () => {
           projectId: project.id,
           harness: "codex",
           label: "fix the answer",
-          base: null,
+          start: { kind: "base", base: null },
         });
 
         expect(session.branch).toBe(`mend/wt/${session.worktreeId}`);
@@ -471,7 +471,7 @@ describe("SessionEngine", () => {
           projectId: project.id,
           harness: "codex",
           label: null,
-          base: null,
+          start: { kind: "base", base: null },
         });
         expect(first.branch).toBe("mend/fix-auth");
         expect(first.worktree).toBe("fix-auth");
@@ -482,7 +482,7 @@ describe("SessionEngine", () => {
           projectId: project.id,
           harness: "claude",
           label: "second opinion",
-          base: null,
+          start: { kind: "base", base: null },
         });
         expect(second.id).not.toBe(first.id);
         expect(second.worktreeId).toBe(first.worktreeId);
@@ -507,7 +507,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
-            base: "some-other-branch",
+            start: { kind: "base", base: "some-other-branch" },
           })
           .pipe(Effect.result);
         expect(conflict._tag).toBe("Failure");
@@ -525,7 +525,7 @@ describe("SessionEngine", () => {
         const engine = yield* SessionEngine;
         const worktree = yield* engine.ensureWorktree(
           project.id,
-          { name: "durable-place", base: null },
+          { name: "durable-place", start: { kind: "base", base: null } },
           null,
         );
         // A worktree with zero sessions is a legal durable place.
@@ -544,7 +544,7 @@ describe("SessionEngine", () => {
         // ensureWorktree on the same name joins, never duplicates.
         const again = yield* engine.ensureWorktree(
           project.id,
-          { name: "durable-place", base: null },
+          { name: "durable-place", start: { kind: "base", base: null } },
           null,
         );
         expect(again.id).toBe(worktree.id);
@@ -564,7 +564,7 @@ describe("SessionEngine", () => {
           projectId: project.id,
           harness: "codex",
           label: null,
-          base: null,
+          start: { kind: "base", base: null },
         });
         const firstRunId = SealantRunId.make("sealant-run-1");
         const secondRunId = SealantRunId.make("sealant-run-2");
@@ -628,7 +628,7 @@ describe("SessionEngine", () => {
           projectId: project.id,
           harness: "codex",
           label: null,
-          base: null,
+          start: { kind: "base", base: null },
         });
 
         const worktree = path.join(tmp, "store", "fixture", "worktrees", session.worktree);
@@ -666,7 +666,7 @@ describe("SessionEngine", () => {
           projectId: project.id,
           harness: "custom",
           label: null,
-          base: null,
+          start: { kind: "base", base: null },
         });
 
         yield* engine.stop(session.id);
@@ -693,7 +693,7 @@ describe("SessionEngine", () => {
           projectId: project.id,
           harness: "codex",
           label: null,
-          base: null,
+          start: { kind: "base", base: null },
         });
         world.sessions.set(
           session.id,
@@ -726,7 +726,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
-            base: null,
+            start: { kind: "base", base: null },
           });
           // A crashed agent process: it ran, its workspace died, no capture was harvested.
           const processId = SessionProcessId.make(crypto.randomUUID());
@@ -822,7 +822,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "claude",
             label: null,
-            base: null,
+            start: { kind: "base", base: null },
           });
           // The open workbench: a shell holds the workspace; no engine agent runs.
           yield* engine.launch(session.id, ["bash"]);
@@ -892,7 +892,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "claude",
             label: null,
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["bash"]);
 
@@ -952,7 +952,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "claude",
             label: null,
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["claude"]);
 

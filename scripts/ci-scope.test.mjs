@@ -6,7 +6,9 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 const script = new URL("./ci-scope.mjs", import.meta.url).pathname;
-const full = "mobile=true\npackaging=true\n";
+const full = "mobile=true\npackaging=true\nstore=true\n";
+const only = ({ mobile = false, packaging = false, store = false } = {}) =>
+  `mobile=${mobile}\npackaging=${packaging}\nstore=${store}\n`;
 const fixture = (t) => {
   const cwd = mkdtempSync(join(tmpdir(), "mend-ci-scope-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
@@ -44,15 +46,18 @@ const fixture = (t) => {
   return { cwd, git, write, commit, select };
 };
 
-test("selects dependent jobs from committed paths while root, manifests and unknowns run both", (t) => {
+test("selects dependent jobs from committed paths while root, manifests and unknowns run every extra", (t) => {
   const f = fixture(t);
   for (const [path, expected] of [
-    ["docs/operations/notes.md", "mobile=false\npackaging=false\n"],
-    ["apps/api/src/route.ts", "mobile=false\npackaging=true\n"],
-    ["apps/web/src/view.tsx", "mobile=false\npackaging=true\n"],
-    ["apps/mobile/src/view.tsx", full],
+    ["docs/operations/notes.md", only()],
+    ["apps/api/src/route.ts", only({ packaging: true })],
+    ["apps/web/src/view.tsx", only({ packaging: true })],
+    ["apps/mobile/src/view.tsx", only({ mobile: true, packaging: true })],
     ["packages/domain/src/id.ts", full],
-    ["packages/new-shared/src/value.ts", full],
+    ["packages/store/src/git.ts", full],
+    ["packages/sessions/src/engine.ts", only({ mobile: true, packaging: true })],
+    ["packages/new-shared/src/value.ts", only({ mobile: true, packaging: true })],
+    ["Dockerfile", full],
     ["apps/docs/package.json", full],
     [".github/workflows/ci.yml", full],
     [".claude/skills/verify/SKILL.md", full],
@@ -62,12 +67,15 @@ test("selects dependent jobs from committed paths while root, manifests and unkn
     ["unknown/new-input.txt", full],
     ["apps/mobile/src/line\nbreak.ts", full],
     // A package's tests and their helpers reach neither the mobile web build nor the packaging lane.
-    ["packages/sessions/test/engine-capture-joining.test.ts", "mobile=false\npackaging=false\n"],
-    ["packages/domain/src/id.test.ts", "mobile=false\npackaging=false\n"],
-    ["packages/db/test/postgres.ts", "mobile=false\npackaging=false\n"],
+    ["packages/sessions/test/engine-capture-joining.test.ts", only()],
+    ["packages/domain/src/id.test.ts", only()],
+    ["packages/db/test/postgres.ts", only()],
+    // The store's own tests are what store-image-git runs.
+    ["packages/store/test/handoff.test.ts", only({ store: true })],
+    ["packages/store/src/git.test.ts", only({ store: true })],
     ["packages/sessions/test/package.json", full],
     ["packages/x/test/a\nb.test.ts", full],
-    ["apps/api/src/route.test.ts", "mobile=false\npackaging=true\n"],
+    ["apps/api/src/route.test.ts", only({ packaging: true })],
   ]) {
     const base = f.git("rev-parse", "HEAD");
     f.write(path);
@@ -84,12 +92,9 @@ test("a package's test-only change skips the extras only when every other path d
     [["packages/sessions/test/engine-capture-joining.test.ts", "packages/domain/src/id.ts"], full],
     [
       ["packages/sessions/test/engine-capture-joining.test.ts", "apps/api/src/route.ts"],
-      "mobile=false\npackaging=true\n",
+      only({ packaging: true }),
     ],
-    [
-      ["packages/domain/src/id.test.ts", "docs/operations/notes.md"],
-      "mobile=false\npackaging=false\n",
-    ],
+    [["packages/domain/src/id.test.ts", "docs/operations/notes.md"], only()],
   ]) {
     const base = f.git("rev-parse", "HEAD");
     for (const path of paths) f.write(path, `${paths.join(",")}\n`);
@@ -112,7 +117,7 @@ test("retains deleted and renamed origins when a source file moves into docs", (
   const beforeDelete = f.commit();
   rmSync(join(f.cwd, "apps/mobile/removed.ts"));
   const deleted = f.commit();
-  assert.equal(f.select(beforeDelete, deleted).stdout, full);
+  assert.equal(f.select(beforeDelete, deleted).stdout, only({ mobile: true, packaging: true }));
 });
 
 test("compares from the merge base when main advances independently", (t) => {
@@ -123,7 +128,7 @@ test("compares from the merge base when main advances independently", (t) => {
   f.git("checkout", "-b", "proposal", original);
   f.write("docs/proposal.md");
   const head = f.commit();
-  assert.equal(f.select(main, head).stdout, "mobile=false\npackaging=false\n");
+  assert.equal(f.select(main, head).stdout, only());
 });
 
 test("missing history, malformed references, empty diffs and non-PR runs cannot skip jobs", (t) => {

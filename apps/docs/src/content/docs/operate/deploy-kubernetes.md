@@ -237,7 +237,7 @@ ingress:
   tls: { secretName: mend-tls }
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt
-    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/proxy-body-size: 72m
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
   controller:
@@ -257,10 +257,11 @@ admits the controller's Pods by namespace and label in one selector. What the ch
   out of the controller's logs.
 - A controller that buffers responses breaks the `/api/events` stream. The timeouts above keep
   terminals and the event stream open.
-- Mend accepts request bodies up to 1 MiB, and 24 MiB on routes that take a file. A folder upload
-  sends about 5.5 MiB per request and a pasted image up to 8 MiB, so an ingress cap below that
-  refuses them with 413 before Mend sees them. ingress-nginx caps bodies at 1 MiB unless
-  `proxy-body-size` is set.
+- Mend accepts request bodies up to 1 MiB, 24 MiB on routes that take a file, and 64 MiB on
+  `POST /api/projects/:id/handoffs`, the git bundle `mend handoff` uploads. A folder upload sends
+  about 5.5 MiB per request and a pasted image up to 8 MiB, so an ingress cap below that refuses
+  them with 413 before Mend sees them. ingress-nginx caps bodies at 1 MiB unless `proxy-body-size`
+  is set; `72m` leaves room above the largest body Mend takes.
 
 Read [Exposure and budgets](/operate/exposure/) for the gate items and what each one means.
 

@@ -13,6 +13,7 @@ import {
   WorktreeId,
 } from "@mend/domain";
 import {
+  currentAgentProcess,
   Project,
   Session,
   SessionProcess,
@@ -28,12 +29,14 @@ import {
 } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions } from "@sealant/sdk";
-import { Effect, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer, Result } from "effect";
 import { describe, expect } from "vitest";
 
+import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { provisionIn } from "./engine/capture-fixture.ts";
 import { makeEngineClock } from "./engine/clock-fixture.ts";
 import {
+  freeLaunchSlot,
   invalidAccount,
   now,
   sealantLaunchLayer,
@@ -66,7 +69,7 @@ describe("SessionEngine", () => {
             label: "bench",
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           const error = yield* engine.launch(session.id, ["bash"]).pipe(Effect.flip);
@@ -91,7 +94,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           // The UI's shell harness always requests ["bash"] — the sentinel for
@@ -129,7 +132,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           // Only the bare `["bash"]` sentinel is the login shell; a bash with arguments is the
@@ -166,7 +169,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           yield* engine.launch(session.id, ["codex"]);
@@ -208,7 +211,7 @@ describe("SessionEngine", () => {
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             const launched = yield* engine.launch(session.id, [harness]).pipe(Effect.result);
             return { created, launched, session: world.sessions.get(session.id) };
@@ -286,7 +289,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           yield* engine.launch(session.id, ["bash", "-i"]);
@@ -539,7 +542,7 @@ describe("SessionEngine", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(session.id, ["bash"]);
               const shell = yield* engine.openShell(session.id);
@@ -598,7 +601,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           yield* engine.openShell(session.id);
@@ -777,7 +780,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           yield* engine.openShell(session.id);
@@ -809,7 +812,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
 
@@ -847,7 +850,7 @@ describe("SessionEngine", () => {
           projectId: project.id,
           harness: "codex",
           label: null,
-          base: null,
+          start: { kind: "base", base: null },
         });
 
         const outcome = yield* engine.openShell(session.id).pipe(Effect.flip);
@@ -871,7 +874,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           const launched = yield* engine.launch(session.id, ["codex"]);
@@ -915,7 +918,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const afterSuccess = world.sessions.get(session.id);
@@ -1228,7 +1231,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
 
@@ -1288,7 +1291,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const startId = "5b3f0c1e-8d2a-4f6b-9c7e-1a2b3c4d5e6f";
@@ -1376,7 +1379,7 @@ describe("SessionEngine", () => {
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(alice.id, ["codex"]);
             const hers = yield* engine.runService(
@@ -1397,7 +1400,7 @@ describe("SessionEngine", () => {
               label: null,
               name: null,
               ownerUserId: `user-${who}`,
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(theirs.id, ["codex"]);
             // The same name too: nothing of Alice's Service decides theirs.
@@ -1439,7 +1442,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const worktree = path.join(tmp, "store", "fixture", "worktrees", session.worktree);
@@ -1470,7 +1473,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const worktree = path.join(tmp, "store", "fixture", "worktrees", session.worktree);
@@ -1593,7 +1596,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const before = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
@@ -1632,7 +1635,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           expect(session.status).toBe("starting");
 
@@ -1641,6 +1644,324 @@ describe("SessionEngine", () => {
           const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
           // The default image's login shell (zsh), not the `bash` request sentinel.
           expect(live.map((process) => process.argv)).toEqual([["zsh"]]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("holds a provisioned session's workspace with no agent: one live shell, which is the session's terminal, and no run of its harness", async () => {
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const held = yield* engine.holdWorkspace(session.id, freeLaunchSlot);
+          expect(held.status).toBe("idle");
+          expect(held.settledAt).toBeNull();
+          const rows = [...world.processes.values()].filter(
+            (process) => process.sessionId === session.id,
+          );
+          expect(rows.map((process) => [process.kind, process.label, process.status])).toEqual([
+            ["shell", "shell 1", "running"],
+          ]);
+          // The session TTY route attaches to the newest agent's PTY, else to the session's own
+          // PTY pointer: with no agent, that pointer is the live shell.
+          expect(currentAgentProcess(rows)).toBeNull();
+          expect(held.sealantSessionId).toBe(rows[0]?.sealantSessionId);
+          expect(held.sealantRunId).toBeNull();
+          expect(
+            [...world.sessionRuns.values()].filter((run) => run.sessionId === session.id),
+          ).toEqual([]);
+          expect(spawned).toHaveLength(1);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned),
+      },
+    );
+  });
+
+  it("reads a hold still opening as starting, with its launch under way, and idle once the shell holds it", async () => {
+    const created: CreateOptions[] = [];
+    const opening = Effect.runSync(Deferred.make<void>());
+    const release = Effect.runSync(Deferred.make<void>());
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const holding = yield* Effect.forkChild(engine.holdWorkspace(session.id, freeLaunchSlot));
+          yield* Deferred.await(opening);
+          expect(world.sessions.get(session.id)?.status).toBe("starting");
+          expect(engine.launchUnderWay(session.id)).toBe(true);
+          yield* Deferred.succeed(release, undefined);
+          const held = yield* Fiber.join(holding);
+          expect(held.status).toBe("idle");
+          expect(engine.launchUnderWay(session.id)).toBe(false);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            aroundOpen: () =>
+              Deferred.succeed(opening, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          },
+        ),
+      },
+    );
+  });
+
+  it("settles a hold failed when its shell cannot open in the workspace it made, and records no process", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const outcome = yield* engine
+            .holdWorkspace(session.id, freeLaunchSlot)
+            .pipe(Effect.result);
+          expect(Result.isFailure(outcome)).toBe(true);
+          expect(created).toHaveLength(1);
+          const row = world.sessions.get(session.id);
+          expect(row?.status).toBe("failed");
+          expect(row?.summary).toMatch(/the platform did not open the session/);
+          expect(
+            [...world.processes.values()].filter((process) => process.sessionId === session.id),
+          ).toEqual([]);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { openFails: () => true },
+        ),
+      },
+    );
+  });
+
+  it("holds a session that joins another session's executor as one shell: no agent, no run, the holder's workspace", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const holder = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(holder.id, ["codex"]);
+          const joiner = yield* engine.provisionSessionIn(holder.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          const held = yield* engine.holdWorkspace(joiner.id, freeLaunchSlot);
+          expect(created).toHaveLength(1);
+          expect(held.status).toBe("idle");
+          expect(held.sealantWorkspaceId).toBe(world.sessions.get(holder.id)?.sealantWorkspaceId);
+          expect(held.sealantRunId).toBeNull();
+          const rows = [...world.processes.values()].filter(
+            (process) => process.sessionId === joiner.id,
+          );
+          expect(rows.map((process) => [process.kind, process.label, process.status])).toEqual([
+            ["shell", "shell 1", "running"],
+          ]);
+          expect(currentAgentProcess(rows)).toBeNull();
+          expect(held.sealantSessionId).toBe(rows[0]?.sealantSessionId);
+          expect(
+            [...world.sessionRuns.values()].filter((run) => run.sessionId === joiner.id),
+          ).toEqual([]);
+        }),
+      { captured: makeMemoryCaptureStore(), sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("answers a late hold with the session as it stands: the agent another launch started keeps running, in its workspace", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const launched = yield* engine.launch(session.id, ["codex", "finish the tests"]);
+          const held = yield* engine.holdWorkspace(session.id, freeLaunchSlot);
+          expect(held.status).toBe("running");
+          expect(held.sealantWorkspaceId).toBe(launched.sealantWorkspaceId);
+          expect(held.sealantRunId).toBe(launched.sealantRunId);
+          expect(created).toHaveLength(1);
+          expect(
+            [...world.processes.values()]
+              .filter((process) => process.sessionId === session.id)
+              .map((process) => [process.kind, process.status]),
+          ).toEqual([["agent-pty", "running"]]);
+        }),
+      { captured: makeMemoryCaptureStore(), sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("answers a hold that meets a launch still starting with the session as it stands, and never settles that launch failed", async () => {
+    const created: CreateOptions[] = [];
+    const opening = Effect.runSync(Deferred.make<void>());
+    const release = Effect.runSync(Deferred.make<void>());
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const launching = yield* Effect.forkChild(
+            engine.launch(session.id, ["codex", "finish the tests"]),
+          );
+          yield* Deferred.await(opening);
+          const held = yield* engine.holdWorkspace(session.id, freeLaunchSlot);
+          expect(held.status).toBe("starting");
+          expect(held.settledAt).toBeNull();
+          yield* Deferred.succeed(release, undefined);
+          const launched = yield* Fiber.join(launching);
+          expect(launched.status).toBe("running");
+          expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+          expect(created).toHaveLength(1);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            aroundOpen: () =>
+              Deferred.succeed(opening, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          },
+        ),
+      },
+    );
+  });
+
+  it("settles a hold refused a launch slot failed in the slot's words, and starts nothing", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const held = yield* engine.holdWorkspace(session.id, {
+            take: () => Effect.succeed(null),
+            refused: "budget reached · 4 launches starting at once for one account",
+          });
+          expect(held.status).toBe("failed");
+          expect(held.summary).toBe(
+            "hold failed: budget reached · 4 launches starting at once for one account",
+          );
+          expect(created).toEqual([]);
+        }),
+      { captured: makeMemoryCaptureStore(), sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("refuses a hold under the co-located store with a typed error, and starts and settles nothing", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const refused = yield* engine.holdWorkspace(session.id, freeLaunchSlot).pipe(Effect.flip);
+          expect(refused._tag).toBe("HoldUnsupportedError");
+          expect(created).toEqual([]);
+          expect(world.sessions.get(session.id)?.status).toBe("starting");
+          expect(world.sessions.get(session.id)?.sealantRunId).toBeNull();
         }),
       { sealantLayer: sealantLaunchLayer(created) },
     );

@@ -6,6 +6,7 @@ import { sessionChangesGroup } from "./changes.ts";
 import { cliAuthGroup, devicesGroup, userDevicesGroup, pairGroup } from "./devices.ts";
 import { foldersGroup } from "./folders.ts";
 import { githubGroup } from "./github.ts";
+import { handoffsGroup } from "./handoffs.ts";
 import { harnessModelsGroup } from "./harness-models.ts";
 import { landingsGroup } from "./landing.ts";
 import { operatorGroup } from "./operator.ts";
@@ -75,6 +76,7 @@ export const MendApi = HttpApi.make("mend")
   .add(worktreesGroup)
   .add(sessionChangesGroup)
   .add(landingsGroup)
+  .add(handoffsGroup)
   .add(githubGroup)
   .add(devicesGroup)
   .add(userDevicesGroup)

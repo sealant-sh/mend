@@ -1258,7 +1258,7 @@ it("refuses to start a session on a SHA-256 project with the reason", async () =
           label: null,
           name: null,
           ownerUserId: "user-fixture",
-          base: null,
+          start: { kind: "base", base: null },
         })
         .pipe(Effect.flip);
       expect(refused._tag).toBe("GitError");
@@ -1302,7 +1302,7 @@ it("refuses to start a session on a shallow project with the reason", async () =
           label: null,
           name: null,
           ownerUserId: "user-fixture",
-          base: null,
+          start: { kind: "base", base: null },
         })
         .pipe(Effect.flip);
       expect(refused._tag).toBe("GitError");

@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { CaptureStoreRepo, type CaptureRow } from "@mend/db";
+import { CaptureStoreRepo, WorktreesRepo, type CaptureRow } from "@mend/db";
 import { WorktreeId } from "@mend/domain";
 import {
   CaptureChannelLive,
@@ -214,7 +214,10 @@ const makeRetentionFixture = () => {
     Layer.provide(blobs),
   );
   const layer = Layer.mergeAll(
-    CaptureRetentionLive.pipe(Layer.provide(runtime)),
+    CaptureRetentionLive.pipe(
+      Layer.provide(runtime),
+      Layer.provide(Layer.mock(WorktreesRepo, { handoffPacks: () => Effect.succeed([]) })),
+    ),
     memory.layer,
     blobs,
   );
@@ -327,6 +330,64 @@ describe("CaptureRetention over dir://", () => {
       objectsRemoved: 0,
       multipartAborted: 0,
     });
+  });
+
+  it("reclaims a handoff's delta pack: an orphan whose row never came goes after the grace, one capture 0 names stays while the chain lives", async ({
+    onTestFinished,
+  }) => {
+    const { memory, run, exists, cleanup } = makeRetentionFixture();
+    onTestFinished(cleanup);
+    const now = 30 * 24 * HOUR;
+    memory.clock.now = () => now;
+    const orphanWorktree = WorktreeId.make("wt-handoff-orphan");
+    const orphanPack = captureKeys(orphanWorktree, 0).pack(sha("orphan-delta"));
+    const livePack = captureKeys(WT, 0).pack(sha("live-delta"));
+    const cap0 = row(0, "checkpoint", now - 2 * HOUR, 1, {
+      git: { packs: ["projects/p/packs/base", livePack] },
+      workspace: { root: "", packs: [] },
+      bulk: "pending",
+    });
+    memory.leases.set(WT, { executorId: null, epoch: 1, expiresAt: null });
+    memory.chains.set(WT, { headCapture: cap0.id, headN: 0, headEpoch: 1 });
+    memory.captures.set(cap0.id, cap0);
+    await run(
+      Effect.gen(function* () {
+        const store = yield* BlobStore;
+        for (const key of [
+          orphanPack,
+          packIdxKeyOf(orphanPack),
+          livePack,
+          packIdxKeyOf(livePack),
+          cap0.manifestKey,
+        ]) {
+          yield* store.put(key, new Uint8Array([1, 2, 3]));
+        }
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.recordPacks([
+          {
+            key: orphanPack,
+            class: "git",
+            bytes: 3,
+            worktreeId: null,
+            epoch: null,
+            platform: null,
+          },
+          { key: livePack, class: "git", bytes: 3, worktreeId: null, epoch: null, platform: null },
+        ]);
+      }),
+    );
+    const first = await run(Effect.flatMap(CaptureRetention, (retention) => retention.run(now)));
+    expect(first.packsRetired).toBe(0);
+    expect(exists(orphanPack)).toBe(true);
+    const later = now + RETENTION_GRACE_MS + 1;
+    const second = await run(Effect.flatMap(CaptureRetention, (retention) => retention.run(later)));
+    expect(second.packsRetired).toBe(1);
+    expect(memory.packs.get(sha("orphan-delta"))?.state).toBe("retired");
+    expect(exists(orphanPack)).toBe(false);
+    expect(exists(packIdxKeyOf(orphanPack))).toBe(false);
+    expect(memory.packs.get(sha("live-delta"))?.state).toBe("uploaded");
+    expect(exists(livePack)).toBe(true);
+    expect(exists(packIdxKeyOf(livePack))).toBe(true);
   });
 
   it("keeps what a live capture needs under a fenced epoch: its dir packs and every dir object below a format-1 root it carries", async ({

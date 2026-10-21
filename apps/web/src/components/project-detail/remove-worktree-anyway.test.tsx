@@ -14,6 +14,7 @@ const worktree: WorktreeDto = {
   directory: "/store/worktrees/fix-login",
   branch: "mend/fix-login",
   baseRef: "main",
+  handoff: null,
   baseSha: Sha.make("0123456789abcdef0123456789abcdef01234567"),
   createdAt: new Date("2026-09-01T00:00:00Z"),
   updatedAt: new Date("2026-09-01T00:00:00Z"),

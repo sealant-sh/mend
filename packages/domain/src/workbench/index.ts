@@ -36,6 +36,7 @@ export * from "./context.ts";
 export * from "./dotenv.ts";
 export * from "./folder.ts";
 export * from "./git-author.ts";
+export * from "./handoff.ts";
 export * from "./follow-up.ts";
 export * from "./harness-launch.ts";
 export * from "./hot-workspace.ts";

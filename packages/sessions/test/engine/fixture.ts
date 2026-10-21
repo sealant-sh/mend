@@ -154,6 +154,7 @@ import {
   SealantClientByWorkspaceCreator,
   SessionRepositoryCapturedLive,
   SessionRepositoryLocalLive,
+  type LaunchSlot,
   type SessionSocketApi,
   SessionSocketHost,
   WorkspaceCaller,
@@ -320,6 +321,12 @@ export const fakeExecRun: Run = {
 };
 
 /** Shared sealantLaunchLayer fixture for engine scenarios. */
+/** A launch slot always free: what the API's per-account slot is with room to spare. */
+export const freeLaunchSlot: LaunchSlot = {
+  take: (effect) => effect,
+  refused: "no launch slot is free",
+};
+
 export const sealantLaunchLayer = (
   created: Array<CreateOptions>,
   /** A create refused for its accounts: `true` with the old words, or Core's own refusal. */
@@ -2693,6 +2700,19 @@ export const worktreesLayer = (world: World) =>
       Effect.succeed(
         [...world.worktrees.values()].find(
           (worktree) => worktree.projectId === projectId && worktree.name === name,
+        ) ?? null,
+      ),
+    handoffPacks: () =>
+      Effect.succeed(
+        [...world.worktrees.values()].flatMap((row) =>
+          row.handoff === null ? [] : [row.handoff.deltaPack],
+        ),
+      ),
+    byHandoffCheckpoint: (projectId, checkpoint) =>
+      Effect.succeed(
+        [...world.worktrees.values()].find(
+          (worktree) =>
+            worktree.projectId === projectId && worktree.handoff?.checkpoint === checkpoint,
         ) ?? null,
       ),
     byDirectory: (projectId, directory) =>

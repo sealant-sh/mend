@@ -18,6 +18,18 @@ import {
   gitHead,
 } from "./git.ts";
 import {
+  type AdmittedHandoff,
+  type AdmitHandoffOptions,
+  admitHandoff as admitHandoffIn,
+  failedFreshen,
+  fetchedFreshen,
+  type FreshenOutcome,
+  type HandoffFileOverBudgetError,
+  type HandoffRefusedError,
+  skippedFreshen,
+  sweepHandoffQuarantines as sweepQuarantinesUnder,
+} from "./handoff.ts";
+import {
   type BundleEmptyError,
   type BundleInput,
   type BundleTooLargeError,
@@ -892,6 +904,14 @@ const selectedBy =
 
 const sha = (value: string) => Sha.make(value);
 
+const commitOf = (storePath: string, ref: string) =>
+  git(["rev-parse", `${ref}^{commit}`], storePath);
+
+const knownBaseSha = (storePath: string, baseRef: string) =>
+  commitOf(storePath, `refs/remotes/origin/${baseRef}`).pipe(
+    Effect.catch(() => commitOf(storePath, baseRef)),
+  );
+
 /**
  * Every session branch Mend makes (`mend/<name>`, `mend/wt/<id>`, `mend/session/<id>`), and the
  * name a landing pushes one under on origin (docs/adr/0007-landing.md).
@@ -1242,6 +1262,21 @@ export class Store extends Context.Service<
       ChangeBundle,
       GitError | InvalidBranchError | BundleTooLargeError | BundleEmptyError
     >;
+    readonly freshenBase: (
+      storePath: string,
+      baseRef: string,
+      remoteEnv: GitRemoteEnvironment | null,
+    ) => Effect.Effect<FreshenOutcome>;
+    readonly admitHandoff: (
+      storePath: string,
+      defaultBranch: string,
+      bundle: Uint8Array,
+      options: AdmitHandoffOptions,
+    ) => Effect.Effect<
+      AdmittedHandoff,
+      HandoffRefusedError | HandoffFileOverBudgetError | GitError
+    >;
+    readonly sweepHandoffQuarantines: () => Effect.Effect<ReadonlyArray<string>>;
   }
 >()("@mend/store/Store") {
   static readonly layer = Layer.effect(
@@ -1350,8 +1385,10 @@ export class Store extends Context.Service<
         baseRef: string,
         remoteEnv: GitRemoteEnvironment | null,
       ) {
-        if (remoteEnv === null) return;
-        yield* refuseRemoteCredentials(storePath).pipe(
+        if (remoteEnv === null) {
+          return skippedFreshen("this server has no credential of yours for origin");
+        }
+        const fetched = yield* refuseRemoteCredentials(storePath).pipe(
           Effect.andThen(
             gitRemoteEnvironment(remoteEnv, {
               direction: "read",
@@ -1361,13 +1398,13 @@ export class Store extends Context.Service<
             }),
           ),
           Effect.flatMap((env) => git(["fetch", "origin", baseRef], storePath, env)),
-          Effect.tapError((error) =>
-            Effect.logDebug("store: base freshen skipped").pipe(
-              Effect.annotateLogs({ storePath, baseRef, stderr: error.stderr }),
-            ),
-          ),
-          Effect.ignore,
+          Effect.result,
         );
+        if (Result.isSuccess(fetched)) return fetchedFreshen;
+        yield* Effect.logDebug("store: base freshen skipped").pipe(
+          Effect.annotateLogs({ storePath, baseRef, stderr: fetched.failure.stderr }),
+        );
+        return failedFreshen(fetched.failure.stderr);
       }, Effect.scoped);
 
       /**
@@ -1385,9 +1422,7 @@ export class Store extends Context.Service<
         baseRef: string,
         remoteEnv: GitRemoteEnvironment | null,
       ) {
-        const tryResolve = (ref: string) => git(["rev-parse", `${ref}^{commit}`], storePath);
-        return yield* tryResolve(`refs/remotes/origin/${baseRef}`).pipe(
-          Effect.catch(() => tryResolve(baseRef)),
+        return yield* knownBaseSha(storePath, baseRef).pipe(
           Effect.catch(() =>
             Effect.gen(function* () {
               const fetched = yield* refuseRemoteCredentials(storePath).pipe(
@@ -1475,6 +1510,32 @@ export class Store extends Context.Service<
         const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
         return { baseRef, baseSha: sha(baseSha) };
       });
+
+      const quarantineRoot = path.join(config.root, "tmp");
+
+      const admitHandoff: Store["Service"]["admitHandoff"] = (
+        storePath,
+        defaultBranch,
+        bundle,
+        options,
+      ) =>
+        admitHandoffIn({
+          storePath,
+          defaultBranch,
+          bundle,
+          quarantineRoot,
+          fileBytes: options.fileBytes,
+          defaultTip: knownBaseSha(storePath, defaultBranch).pipe(
+            Effect.map((tip): string | null => tip),
+            Effect.catch(() => Effect.succeed<string | null>(null)),
+          ),
+          freshenDefault: options.freshen,
+        });
+
+      const sweepHandoffQuarantines: Store["Service"]["sweepHandoffQuarantines"] = () =>
+        Clock.currentTimeMillis.pipe(
+          Effect.flatMap((now) => sweepQuarantinesUnder(quarantineRoot, now)),
+        );
 
       const renameBranch = Effect.fn("Store.renameBranch")(function* (
         worktreePath: string,
@@ -2141,6 +2202,9 @@ export class Store extends Context.Service<
         adopt,
         createWorktree,
         resolveBase,
+        freshenBase,
+        admitHandoff,
+        sweepHandoffQuarantines,
         renameBranch,
         resetWorktree,
         refreshFromOrigin,

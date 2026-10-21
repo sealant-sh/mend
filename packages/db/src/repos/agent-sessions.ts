@@ -325,9 +325,10 @@ export class SessionsRepo extends Context.Service<
       since: Date,
       excludeLabel: string,
     ) => Effect.Effect<ReadonlyArray<string>>;
+    /** The session's run (null: a workspace held with no agent, which has none) and workspace. */
     readonly setSealantIds: (
       id: SessionId,
-      sealantRunId: SealantRunId,
+      sealantRunId: SealantRunId | null,
       workspaceId: SealantWorkspaceId,
     ) => Effect.Effect<void>;
     /** Persist the platform-returned expiry only if this is still the session's workspace. */
@@ -1043,7 +1044,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
 
       const setSealantIds = Effect.fn("SessionsRepo.setSealantIds")(function* (
         id: SessionId,
-        sealantRunId: SealantRunId,
+        sealantRunId: SealantRunId | null,
         workspaceId: SealantWorkspaceId,
       ) {
         // The launch and runtime recorded for the executor stay only while the row still names

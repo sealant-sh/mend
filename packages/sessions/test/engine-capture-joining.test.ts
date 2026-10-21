@@ -156,7 +156,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: "shared",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(first.id, ["codex"]);
               expect(created).toHaveLength(1);
@@ -243,7 +243,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: "shared",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(first.id, ["codex"]);
               // The holder's shell keeps its executor retained between the joined session's runs.
@@ -337,7 +337,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: "shared",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               holder = first.id;
               yield* engine.launch(first.id, ["codex"]);
@@ -477,7 +477,7 @@ describe("SessionEngine capture mode", () => {
               label: null,
               name: "shared",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(holder.id, ["codex"]);
             const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
@@ -558,7 +558,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: "shared",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(holder.id, ["claude"]);
               const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
@@ -680,7 +680,7 @@ describe("SessionEngine capture mode", () => {
               label: null,
               name: "shared",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             const other = yield* engine.provisionSessionIn(earlier.worktreeId, {
               harness: "codex",
@@ -787,7 +787,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: "shared",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               // The worktree's home was Maria's: the holder's launch hands it over.
               homes.set(holder.worktreeId, {
@@ -873,7 +873,7 @@ describe("SessionEngine capture mode", () => {
               label: null,
               name: "shared",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(session.id, ["claude"]);
             const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
@@ -953,7 +953,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: "shared",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(anna.id, ["claude"]);
               const first = created[0];
@@ -1140,7 +1140,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: "shared",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(anna.id, ["claude"]);
               const first = created.at(-1);
@@ -1297,7 +1297,7 @@ describe("SessionEngine capture mode", () => {
               label: null,
               name: "shared",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(holder.id, ["codex"]);
             expect(withholds).toHaveLength(1);
@@ -1387,7 +1387,7 @@ describe("SessionEngine capture mode", () => {
               label: null,
               name: "shared",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(holder.id, ["codex"]);
             expect(withholds).toHaveLength(1);
@@ -1477,7 +1477,7 @@ describe("SessionEngine capture mode", () => {
                 label: null,
                 name: "shared",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(anna.id, ["claude"]);
               yield* engine.stop(anna.id);
@@ -1628,7 +1628,7 @@ describe("SessionEngine capture mode", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
@@ -1734,7 +1734,7 @@ describe("SessionEngine capture mode", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           const head = yield* shipHarnessCapture(
@@ -1860,7 +1860,7 @@ describe("SessionEngine capture mode", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
           // The executor ships a turn capture carrying its rollout — what a pickup resumes.

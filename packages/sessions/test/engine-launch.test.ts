@@ -18,7 +18,7 @@ import { SealantWorkspaceId, SessionId, SessionProcessId, ReferenceId } from "@m
 import { Project, SessionProcess, PiProfile, Reference } from "@mend/domain/workbench";
 import { LAUNCH_BOOTING, LAUNCH_PREPARING } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
-import { ProtocolHost, SessionEngine } from "@mend/sessions";
+import { ProtocolHost, SessionEngine, startFromBase } from "@mend/sessions";
 import { harnessHomePathOf, processStatePathOf } from "@mend/store";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type {
@@ -129,7 +129,7 @@ describe("SessionEngine", () => {
                 label: null,
                 name: null,
                 ownerUserId: control.ownerUserId,
-                base: null,
+                start: { kind: "base", base: null },
               });
               expect(session.baseSha).toBe(project.adoptedSha);
               expect(world.sessions.has(session.id)).toBe(true);
@@ -175,7 +175,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           yield* engine.launch(session.id, ["codex"]);
@@ -215,7 +215,7 @@ describe("SessionEngine", () => {
             label: null,
             name: "legacy",
             ownerUserId: "user-fixture",
-            base: null,
+            start: startFromBase(null),
           };
           const first = yield* engine.provision(input);
           execFileSync("git", [
@@ -256,7 +256,7 @@ describe("SessionEngine", () => {
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
             expect(
@@ -336,7 +336,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
           expect(
@@ -380,7 +380,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           const failure = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
@@ -462,7 +462,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "owner-1",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           yield* engine.launch(session.id, ["codex"]);
@@ -510,7 +510,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "owner-2",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           yield* engine.launch(session.id, ["codex"]);
@@ -568,7 +568,7 @@ describe("SessionEngine", () => {
               label: null,
               name: null,
               ownerUserId: "owner-pi",
-              base: null,
+              start: { kind: "base", base: null },
             });
           const pi = yield* start("pi");
           yield* engine.launch(pi.id, ["pi"]);
@@ -618,7 +618,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "owner-with-profile",
-            base: null,
+            start: { kind: "base", base: null },
           });
           const home = harnessHomePathOf(project.storePath, session.id);
           plantForeignPiProfile(home);
@@ -650,7 +650,7 @@ describe("SessionEngine", () => {
                   label: null,
                   name: null,
                   ownerUserId,
-                  base: null,
+                  start: { kind: "base", base: null },
                 });
               const session = yield* provision("owner-a");
               yield* engine.launch(session.id, ["pi"]);
@@ -713,7 +713,7 @@ describe("SessionEngine", () => {
               label: null,
               name: null,
               ownerUserId: "owner-without-profile",
-              base: null,
+              start: { kind: "base", base: null },
             });
           const moved = yield* start();
           const movedHome = harnessHomePathOf(project.storePath, moved.id);
@@ -772,7 +772,7 @@ describe("SessionEngine", () => {
                 label: null,
                 name: null,
                 ownerUserId: "owner-memory",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(session.id, ["claude"]);
               const home = harnessHomePathOf(project.storePath, session.id);
@@ -842,7 +842,7 @@ describe("SessionEngine", () => {
                   label: null,
                   name: null,
                   ownerUserId: "owner-codex",
-                  base: null,
+                  start: { kind: "base", base: null },
                 });
               // Two earlier Codex sessions of the owner's, each with a harvested conversation that
               // ended eight hours ago.
@@ -923,7 +923,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           yield* engine.launchProtocol(
@@ -1016,7 +1016,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launchProtocol(
             session.id,
@@ -1097,7 +1097,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launchProtocol(
             session.id,
@@ -1139,7 +1139,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           // A first launch that names no mode runs on the default.
           yield* engine.launchProtocol(session.id, { mode: "protocol", prompt: "go" }, "user-1");
@@ -1177,7 +1177,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launchProtocol(
             session.id,
@@ -1224,7 +1224,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launchProtocol(
             session.id,
@@ -1278,7 +1278,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launchProtocol(
             session.id,
@@ -1353,7 +1353,7 @@ describe("SessionEngine", () => {
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launchProtocol(
               session.id,
@@ -1426,7 +1426,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launchProtocol(
             session.id,
@@ -1478,7 +1478,7 @@ describe("SessionEngine", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               const caller = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
               yield* Deferred.await(createAsked);
@@ -1532,7 +1532,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           const launching = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
           yield* Deferred.await(createAsked);
@@ -1582,7 +1582,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           const launching = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
           yield* Deferred.await(createAsked);
@@ -1647,7 +1647,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           const launching = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
           yield* Deferred.await(openAsked);
@@ -1702,7 +1702,7 @@ describe("SessionEngine", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               const launching = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
               yield* Deferred.await(openAsked);
@@ -1761,7 +1761,7 @@ describe("SessionEngine", () => {
               label: null,
               name: null,
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(session.id, [harness]);
 
@@ -1793,7 +1793,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           const db = path.join(
             harnessHomePathOf(project.storePath, session.id),
@@ -1876,7 +1876,7 @@ describe("SessionEngine", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               const launching = yield* engine
                 .launch(session.id, ["codex"])
@@ -1966,7 +1966,7 @@ describe("SessionEngine", () => {
                 label: null,
                 name: null,
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               const launching = yield* engine
                 .launch(session.id, ["codex"])
@@ -2026,7 +2026,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           yield* engine.launchProtocol(
@@ -2088,7 +2088,7 @@ describe("SessionEngine", () => {
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
 
           const error = yield* engine

@@ -119,7 +119,7 @@ const verifyOpencodeHarvest = (kind: "own" | "none" | "unattributed" | "unprompt
             label: null,
             name: null,
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["opencode"]);
           const request = created[0];

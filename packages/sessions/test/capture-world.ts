@@ -240,6 +240,16 @@ export const worktreesFor = (rows: Map<string, Worktree>): Layer.Layer<Worktrees
       Effect.succeed(
         [...rows.values()].find((row) => row.projectId === projectId && row.name === name) ?? null,
       ),
+    handoffPacks: () =>
+      Effect.succeed(
+        [...rows.values()].flatMap((row) => (row.handoff === null ? [] : [row.handoff.deltaPack])),
+      ),
+    byHandoffCheckpoint: (projectId, checkpoint) =>
+      Effect.succeed(
+        [...rows.values()].find(
+          (row) => row.projectId === projectId && row.handoff?.checkpoint === checkpoint,
+        ) ?? null,
+      ),
     byDirectory: (projectId, directory) =>
       Effect.succeed(
         [...rows.values()].find(
@@ -376,6 +386,7 @@ export const worktreeRowFor = (
     branch,
     baseSha: Sha.make(world.baseSha),
     baseRef: "main",
+    handoff: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   });

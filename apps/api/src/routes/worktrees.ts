@@ -29,7 +29,7 @@ import {
   WorktreesRepo,
 } from "@mend/db";
 import { currentAgentProcess, heldRepositoriesRefusal } from "@mend/domain/workbench";
-import { captureHoldWords, SessionEngine, WorktreeReads } from "@mend/sessions";
+import { captureHoldWords, SessionEngine, startFromBase, WorktreeReads } from "@mend/sessions";
 import { type DiffFileFact, isWorktreeRelativePath, Store } from "@mend/store";
 import { Clock, Duration, Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -162,7 +162,11 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         }
         const caller = yield* CurrentUser;
         return yield* engine
-          .ensureWorktree(params.id, { name: payload.name, base: payload.base }, caller.user.id)
+          .ensureWorktree(
+            params.id,
+            { name: payload.name, start: startFromBase(payload.base) },
+            caller.user.id,
+          )
           .pipe(
             Effect.catchTag("ProjectNotFoundError", () =>
               Effect.fail(new NotFound({ id: params.id })),
@@ -170,6 +174,12 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
             Effect.catchTag("GitError", (error) =>
               Effect.fail(new StoreFailure({ message: error.stderr })),
             ),
+            Effect.catchTags({
+              WorktreeNameTakenError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              WorktreeStartUnsupportedError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+            }),
             // Unreachable after the byName check above, but the type is honest.
             Effect.catchTag("WorktreeBaseConflictError", (error) =>
               Effect.fail(new StoreFailure({ message: `worktree "${error.name}" already exists` })),

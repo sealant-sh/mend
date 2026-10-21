@@ -10,6 +10,7 @@ import {
   type CaptureRow,
 } from "@mend/db";
 import { type ProjectId, Sha, type WorktreeId } from "@mend/domain";
+import { HexSha, type Worktree, type WorktreeHandoff } from "@mend/domain/workbench";
 import {
   BlobStore,
   type CaptureManifest,
@@ -31,7 +32,7 @@ import { Clock, Duration, Effect, Layer } from "effect";
 
 import { CaptureChannel } from "./capture-channel.ts";
 import { bulkSectionOfCache, readDependencyCache } from "./dependency-cache.ts";
-import { SessionRepository } from "./session-repository.ts";
+import { SessionRepository, WorktreeNameTakenError } from "./session-repository.ts";
 import { derivedPackPrefix, ensureCaptureCache } from "./worktree-reads.ts";
 
 /**
@@ -62,11 +63,46 @@ import { derivedPackPrefix, ensureCaptureCache } from "./worktree-reads.ts";
  */
 export const CHECKPOINT_WAIT = Duration.seconds(2);
 
+/** How long capture 0 waits for another caller registering it: one Mend claim's lease. */
+const CAPTURE_ZERO_WAIT = Duration.seconds(30);
+const CAPTURE_ZERO_LOOK = Duration.millis(100);
+
 const checkpointRef = (worktreeId: string, index: number) =>
   `refs/mend/checkpoints/${worktreeId}/${index}`;
 
 const gitFailure = (cwd: string, what: string, detail: string) =>
   new GitError({ args: ["capture", what], cwd, exitCode: null, stderr: detail });
+
+export interface CaptureZeroSource {
+  readonly head: Sha;
+  /** Checkpoint ordinal 0, where Review anchors: a handoff's M, never its snapshot W. */
+  readonly baseCheckpoint: Sha;
+  readonly trees: { readonly worktreeTree: Sha; readonly indexTree: Sha } | null;
+  readonly basePackTip: Sha;
+  readonly extraPacks: ReadonlyArray<string>;
+}
+
+export const captureZeroSource = (
+  worktree: Worktree,
+  legacy: { readonly headSha: Sha; readonly checkpointSha: Sha } | null,
+): CaptureZeroSource => {
+  if (worktree.handoff !== null) {
+    const handoff = worktree.handoff;
+    return {
+      head: Sha.make(handoff.head),
+      baseCheckpoint: Sha.make(handoff.mergeBase),
+      trees: {
+        worktreeTree: Sha.make(handoff.worktreeTree),
+        indexTree: Sha.make(handoff.indexTree),
+      },
+      basePackTip: Sha.make(handoff.mergeBase),
+      extraPacks: [handoff.deltaPack],
+    };
+  }
+  const head = legacy?.headSha ?? worktree.baseSha;
+  const baseCheckpoint = legacy?.checkpointSha ?? worktree.baseSha;
+  return { head, baseCheckpoint, trees: null, basePackTip: baseCheckpoint, extraPacks: [] };
+};
 
 /** Seed the virtual harness root so sealantd materializes and watches it before startup. */
 const initialWorkspaceTree = (worktreeId: string, epoch: number) => {
@@ -125,10 +161,31 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
     const blobFailure = (cwd: string, what: string) => (error: { readonly _tag: string }) =>
       gitFailure(cwd, what, `bucket: ${error._tag}`);
 
-    /**
-     * A self-contained pack of `sha`'s closure from the project's bare repo, content-addressed
-     * under the project prefix; already-present packs are not re-uploaded.
-     */
+    const putPack = Effect.fn("SessionRepositoryCaptured.putPack")(function* (
+      storePath: string,
+      key: string,
+      pack: Uint8Array,
+      idx: Uint8Array,
+    ) {
+      yield* blobs
+        .put(key, pack, { ifAbsent: true })
+        .pipe(Effect.catch(blobFailure(storePath, "put")));
+      yield* blobs
+        .put(packIdxKeyOf(key), idx, { ifAbsent: true })
+        .pipe(Effect.catch(blobFailure(storePath, "put")));
+      yield* repo.recordPacks([
+        {
+          key,
+          class: "git",
+          bytes: pack.byteLength,
+          worktreeId: null,
+          epoch: null,
+          platform: null,
+        },
+      ]);
+      return { key, bytes: pack.byteLength };
+    });
+
     const uploadBasePack = Effect.fn("SessionRepositoryCaptured.uploadBasePack")(function* (
       projectId: ProjectId,
       storePath: string,
@@ -149,24 +206,12 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         );
         const pack = new Uint8Array(fs.readFileSync(path.join(staging, `p-${name}.pack`)));
         const idx = new Uint8Array(fs.readFileSync(path.join(staging, `p-${name}.idx`)));
-        const key = `${derivedPackPrefix(projectId)}${sha256Hex(pack)}`;
-        yield* blobs
-          .put(key, pack, { ifAbsent: true })
-          .pipe(Effect.catch(blobFailure(storePath, "put")));
-        yield* blobs
-          .put(packIdxKeyOf(key), idx, { ifAbsent: true })
-          .pipe(Effect.catch(blobFailure(storePath, "put")));
-        yield* repo.recordPacks([
-          {
-            key,
-            class: "git",
-            bytes: pack.byteLength,
-            worktreeId: null,
-            epoch: null,
-            platform: null,
-          },
-        ]);
-        return { key, bytes: pack.byteLength };
+        return yield* putPack(
+          storePath,
+          `${derivedPackPrefix(projectId)}${sha256Hex(pack)}`,
+          pack,
+          idx,
+        );
       });
       return yield* attempt.pipe(
         Effect.ensuring(Effect.sync(() => fs.rmSync(staging, { recursive: true, force: true }))),
@@ -182,32 +227,92 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
     const createWorktree: SessionRepository["Service"]["createWorktree"] = (
       projectId,
       identity,
-      base,
+      start,
       remoteEnv,
     ) =>
       Effect.gen(function* () {
         const project = yield* projects.byId(projectId);
-        const resolved = yield* store.resolveBase(project.storePath, base, remoteEnv);
-        // The branch is the worktree's ref, moved only by Mend (`store_refs`); a name already
-        // taken is refused the way the co-located adapter refuses an existing branch.
-        yield* refs
-          .set(projectId, `refs/heads/${identity.branch}`, resolved.baseSha, null)
-          .pipe(
-            Effect.mapError(() =>
-              gitFailure(
-                project.storePath,
-                "create",
-                `branch "${identity.branch}" already exists in this project — pick another worktree name`,
-              ),
+        // The branch is the worktree's ref, moved only by Mend (`store_refs`), and inserted only:
+        // a name already taken is refused the way the co-located adapter refuses an existing
+        // branch.
+        const claimBranchAt = (sha: Sha) =>
+          refs.set(projectId, `refs/heads/${identity.branch}`, sha, null).pipe(
+            Effect.mapError(
+              () =>
+                new WorktreeNameTakenError({
+                  branch: identity.branch,
+                  message: `branch "${identity.branch}" already exists in this project — pick another worktree name`,
+                }),
             ),
           );
+        if (start.kind === "handoff") {
+          const { admitted, ownerUserId } = start;
+          const delta = yield* putPack(
+            project.storePath,
+            captureKeys(identity.id, 0).pack(sha256Hex(admitted.deltaPack.pack)),
+            admitted.deltaPack.pack,
+            admitted.deltaPack.idx,
+          );
+          yield* claimBranchAt(admitted.head);
+          const handoff: WorktreeHandoff = {
+            machine: admitted.trailers.machine,
+            localBranch: admitted.trailers.localBranch,
+            cutAt: admitted.trailers.cutAt,
+            head: HexSha.make(admitted.head),
+            index: HexSha.make(admitted.index),
+            checkpoint: HexSha.make(admitted.snapshot),
+            mergeBase: HexSha.make(admitted.mergeBase),
+            worktreeTree: HexSha.make(admitted.worktreeTree),
+            indexTree: HexSha.make(admitted.indexTree),
+            ownerUserId,
+            deltaPack: delta.key,
+            commitsAhead: admitted.commitsAhead,
+            previous: start.previous,
+          };
+          return {
+            name: identity.directory,
+            branch: identity.branch,
+            baseSha: admitted.mergeBase,
+            baseRef: admitted.defaultBranch,
+            handoff,
+          };
+        }
+        const resolved = yield* store.resolveBase(project.storePath, start.base, remoteEnv);
+        yield* claimBranchAt(resolved.baseSha);
         return {
           name: identity.directory,
           branch: identity.branch,
           baseSha: resolved.baseSha,
           baseRef: resolved.baseRef,
+          handoff: null,
         };
       });
+
+    /**
+     * The Mend claim capture 0 registers under. Another caller finishing the same creation holds
+     * it meanwhile (a creator and a session joining its worktree both run the creation's tail):
+     * the claim waits for that caller's capture 0, for up to one Mend claim's lease, and answers
+     * `registered` once it is there. A claim taken after it registered is given back at once.
+     */
+    const claimCaptureZero = Effect.fn("SessionRepositoryCaptured.claimCaptureZero")(function* (
+      storePath: string,
+      worktreeId: WorktreeId,
+    ) {
+      const deadline = (yield* Clock.currentTimeMillis) + Duration.toMillis(CAPTURE_ZERO_WAIT);
+      while (true) {
+        const claim = yield* repo
+          .claim(worktreeId, `mend:${worktreeId}`)
+          .pipe(Effect.catchTag("WorktreeLeasedError", () => Effect.succeed(null)));
+        const head = (yield* repo.headOf(worktreeId))?.head ?? null;
+        if (claim !== null && head === null) return claim;
+        if (claim !== null) yield* repo.release(worktreeId, claim.epoch);
+        if (head !== null) return "registered" as const;
+        if ((yield* Clock.currentTimeMillis) >= deadline) {
+          return yield* gitFailure(storePath, "attach", "the worktree is leased before capture 0");
+        }
+        yield* Effect.sleep(CAPTURE_ZERO_LOOK);
+      }
+    });
 
     const attachWorktree: NonNullable<SessionRepository["Service"]["attachWorktree"]> = (
       projectId,
@@ -231,13 +336,14 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         const legacy = fs.existsSync(path.join(legacyDir, ".git"))
           ? yield* backfillFromDirectory(project.storePath, legacyDir, worktreeId)
           : null;
-        const headSha = legacy?.headSha ?? worktree.baseSha;
-        const checkpointSha = legacy?.checkpointSha ?? worktree.baseSha;
-        const basePack = yield* uploadBasePack(projectId, project.storePath, checkpointSha);
-        const baseTree = yield* git(
-          ["rev-parse", "--verify", `${checkpointSha}^{tree}`],
-          project.storePath,
-        );
+        const source = captureZeroSource(worktree, legacy);
+        const basePack = yield* uploadBasePack(projectId, project.storePath, source.basePackTip);
+        const packs = [basePack.key, ...source.extraPacks];
+        const trees =
+          source.trees ??
+          (yield* git(["rev-parse", `${source.baseCheckpoint}^{tree}`], project.storePath).pipe(
+            Effect.map((tree) => ({ worktreeTree: Sha.make(tree), indexTree: Sha.make(tree) })),
+          ));
         // The project's object format (e2e8 F4): capture 0 of a SHA-256 project named 64-digit
         // ids under no `object_format`, and sealantd restored them into a SHA-1 repository. Named
         // when it is not `sha1`, as sealantd names it (the `object_format` manifest feature).
@@ -248,20 +354,22 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         if (legacy !== null) {
           yield* Effect.logInfo(
             "capture mode: legacy worktree backfilled · capture 0 is the directory's current files",
-          ).pipe(Effect.annotateLogs({ worktreeId, headSha, checkpointSha, directory: legacyDir }));
+          ).pipe(
+            Effect.annotateLogs({
+              worktreeId,
+              headSha: source.head,
+              checkpointSha: source.baseCheckpoint,
+              directory: legacyDir,
+            }),
+          );
         }
         yield* refs
           .set(projectId, `refs/mend/base/${worktreeId}`, worktree.baseSha, null)
           .pipe(Effect.ignore);
         // Capture 0 under a Mend-held epoch: the CAS needs a live lease; the release right
         // after lets the executor's first plan claim the next epoch at once.
-        const claimed = yield* repo
-          .claim(worktreeId, `mend:${worktreeId}`)
-          .pipe(
-            Effect.mapError(() =>
-              gitFailure(project.storePath, "attach", "the worktree is leased before capture 0"),
-            ),
-          );
+        const claimed = yield* claimCaptureZero(project.storePath, worktreeId);
+        if (claimed === "registered") return;
         const finish = Effect.gen(function* () {
           const keys = captureKeys(worktreeId, claimed.epoch);
           // The workspace class starts with a real empty `harness/` directory. sealantd restores
@@ -285,11 +393,11 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             created_at: new Date(yield* Clock.currentTimeMillis).toISOString(),
             sections: {
               git: {
-                packs: [basePack.key],
+                packs,
                 refs: {
-                  [`refs/heads/${worktree.branch}`]: headSha,
-                  [WORKTREE_TREE_REF]: baseTree,
-                  [INDEX_TREE_REF]: baseTree,
+                  [`refs/heads/${worktree.branch}`]: source.head,
+                  [WORKTREE_TREE_REF]: trees.worktreeTree,
+                  [INDEX_TREE_REF]: trees.indexTree,
                 },
                 head: `refs/heads/${worktree.branch}`,
                 fsck: "verified",
@@ -300,7 +408,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             },
             checkpoint: {
               ordinal: 0,
-              sha: checkpointSha,
+              sha: source.baseCheckpoint,
               ref: checkpointRef(worktreeId, 0),
             },
           };
@@ -329,11 +437,11 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
               ),
             );
           yield* refs
-            .set(projectId, checkpointRef(worktreeId, 0), checkpointSha, null)
+            .set(projectId, checkpointRef(worktreeId, 0), source.baseCheckpoint, null)
             .pipe(Effect.ignore);
           if (legacy !== null) {
             yield* refs
-              .set(projectId, `refs/heads/${worktree.branch}`, headSha, null)
+              .set(projectId, `refs/heads/${worktree.branch}`, source.head, null)
               .pipe(Effect.ignore);
           }
           const row = yield* repo.captureById(id);
@@ -453,13 +561,22 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
           }
         }
         // 3. Capture 0 alone on the chain: no executor has captured anything, so the worktree
-        //    is byte for byte the base and the checkpoint is the base commit, observed at
-        //    capture 0. Session create lands here (the worktree-start checkpoint is ordinal 0,
-        //    the session-start one ordinal 1, and no executor has booted) — the derive path
-        //    below would otherwise run a runner over an empty workspace class and fail.
+        //    is byte for byte capture 0 and the checkpoint is its commit, observed at capture 0.
+        //    Session create lands here (the worktree-start checkpoint is ordinal 0, the
+        //    session-start one ordinal 1, and no executor has booted) — the derive path below
+        //    would otherwise run a runner over an empty workspace class and fail.
         if (chain.head.n === 0 && fromHead.checkpoint !== undefined) {
           const ref = checkpointRef(worktreeId, input.index);
-          const sha = Sha.make(fromHead.checkpoint.sha);
+          const base = Sha.make(fromHead.checkpoint.sha);
+          const sha =
+            input.index === 0
+              ? base
+              : yield* worktrees.byId(worktreeId as WorktreeId).pipe(
+                  Effect.map((row) =>
+                    row.handoff === null ? base : Sha.make(row.handoff.checkpoint),
+                  ),
+                  Effect.orDie,
+                );
           const existing = yield* refs.get(input.projectId, ref);
           yield* refs
             .set(input.projectId, ref, sha, existing?.version ?? null)
@@ -473,7 +590,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
               ),
             );
           yield* Effect.logInfo(
-            "capture mode: checkpoint observed at capture 0 · the base tree, no executor capture yet",
+            "capture mode: checkpoint observed at capture 0 · no executor capture yet",
           ).pipe(Effect.annotateLogs({ worktreeId, ordinal: input.index, sha }));
           return { ref, sha, captureId: chain.head.id };
         }

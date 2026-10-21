@@ -1,15 +1,41 @@
 import { ProjectNotFoundError, ProjectsRepo } from "@mend/db";
 import type { ProjectId, Sha, WorktreeId } from "@mend/domain";
+import type { WorktreeHandoff } from "@mend/domain/workbench";
 import {
+  type AdmittedHandoff,
+  type GitError,
   Store,
   worktreePathOf,
   type CaptureManifest,
   type CheckpointSnapshot,
-  type GitError,
   type GitRemoteEnvironment,
 } from "@mend/store";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
+
+export type WorktreeStart =
+  | { readonly kind: "base"; readonly base: string | null }
+  | {
+      readonly kind: "handoff";
+      readonly admitted: AdmittedHandoff;
+      readonly ownerUserId: string;
+      /** The receiving account's earlier handoff of the branch, as the answer names it. */
+      readonly previous: string | null;
+    };
+
+export const startFromBase = (base: string | null): WorktreeStart => ({ kind: "base", base });
+
+/** The worktree's branch is another worktree's: the name is taken. */
+export class WorktreeNameTakenError extends Schema.TaggedError<WorktreeNameTakenError>()(
+  "WorktreeNameTakenError",
+  { branch: Schema.String, message: Schema.String },
+) {}
+
+/** This adapter makes no worktree from this kind of start. */
+export class WorktreeStartUnsupportedError extends Schema.TaggedError<WorktreeStartUnsupportedError>()(
+  "WorktreeStartUnsupportedError",
+  { start: Schema.Literal("handoff"), message: Schema.String },
+) {}
 
 /**
  * The session workspace AUTHORITY, keyed by identity — the deployment-strategy port
@@ -39,6 +65,7 @@ export interface SessionWorktreeSummary {
   readonly baseSha: Sha;
   /** The base as resolved — the caller's ref, or the default branch when none was given. */
   readonly baseRef: string;
+  readonly handoff: WorktreeHandoff | null;
 }
 
 export type SessionRepositoryError = GitError | ProjectNotFoundError;
@@ -46,17 +73,15 @@ export type SessionRepositoryError = GitError | ProjectNotFoundError;
 export class SessionRepository extends Context.Service<
   SessionRepository,
   {
-    /**
-     * Create a worktree on its own branch from `base` (default branch when null). The caller
-     * owns identity (directory + branch). `remoteEnv` freshens the base from origin first
-     * (best-effort); null skips the fetch.
-     */
     readonly createWorktree: (
       projectId: ProjectId,
-      identity: { readonly directory: string; readonly branch: string },
-      base: string | null,
+      identity: { readonly id: WorktreeId; readonly directory: string; readonly branch: string },
+      start: WorktreeStart,
       remoteEnv: GitRemoteEnvironment | null,
-    ) => Effect.Effect<SessionWorktreeSummary, SessionRepositoryError>;
+    ) => Effect.Effect<
+      SessionWorktreeSummary,
+      SessionRepositoryError | WorktreeNameTakenError | WorktreeStartUnsupportedError
+    >;
     /**
      * Capture mode only (ADR-0002): once the worktree ROW exists, bind the authority's own
      * bookkeeping to it — capture 0 from the base, the lease and chain rows. Absent on the
@@ -149,13 +174,24 @@ export const SessionRepositoryLocalLive: Layer.Layer<
     const projects = yield* ProjectsRepo;
 
     return {
-      createWorktree: (projectId, identity, base, remoteEnv) =>
-        projects.byId(projectId).pipe(
-          Effect.flatMap((project) =>
-            store.createWorktree(project.storePath, identity, base, remoteEnv),
-          ),
-          Effect.map(({ name, branch, baseSha, baseRef }) => ({ name, branch, baseSha, baseRef })),
-        ),
+      createWorktree: (projectId, identity, start, remoteEnv) =>
+        Effect.gen(function* () {
+          if (start.kind === "handoff") {
+            return yield* new WorktreeStartUnsupportedError({
+              start: start.kind,
+              message:
+                "this server keeps worktrees in the co-located store, which takes no handoffs",
+            });
+          }
+          const project = yield* projects.byId(projectId);
+          const { name, branch, baseSha, baseRef } = yield* store.createWorktree(
+            project.storePath,
+            identity,
+            start.base,
+            remoteEnv,
+          );
+          return { name, branch, baseSha, baseRef, handoff: null };
+        }),
       renameBranch: (projectId, worktreeName, newBranch) =>
         projects
           .byId(projectId)

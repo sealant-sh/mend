@@ -1,8 +1,8 @@
 import { type ChildProcess, type ChildProcessByStdio, execFile, spawn } from "node:child_process";
-import type { Readable } from "node:stream";
+import { finished, type Readable } from "node:stream";
 
 import { redactRepositoryUrl, redactUrlCredentials } from "@mend/domain/workbench";
-import { Context, Effect, Scheduler, Schema } from "effect";
+import { Context, Effect, Result, Scheduler, Schema } from "effect";
 
 /** A git invocation that exited nonzero (or could not run at all). */
 export class GitError extends Schema.TaggedError<GitError>()("GitError", {
@@ -35,8 +35,6 @@ const gitError = (fields: ConstructorParameters<typeof GitError>[0]): GitError =
 interface ExecFailure {
   readonly code?: number | string | null;
   readonly signal?: string | null;
-  readonly stdout?: string;
-  readonly stderr?: string;
   readonly message?: string;
 }
 
@@ -122,41 +120,79 @@ export const git = (
   env?: Record<string, string>,
   okExitCodes?: ReadonlyArray<number>,
   /** Bytes written to git's stdin, then closed (`pack-objects` reads its object list there). */
-  stdin?: string,
+  stdin?: string | Uint8Array,
 ): Effect.Effect<string, GitError> =>
   Effect.callback<string, GitError>((resume) => {
+    // Git may stop reading its stdin and exit (index-pack refusing a pack's header): the write
+    // then fails with EPIPE. The run settles once both git and the write have ended, and git's
+    // own exit decides; a write git left unread fails only a run git says succeeded.
+    let exited: Result.Result<string, GitError> | undefined;
+    let fed: NodeJS.ErrnoException | null | undefined = stdin === undefined ? null : undefined;
+    const settle = () => {
+      if (exited === undefined || fed === undefined) return;
+      if (Result.isFailure(exited)) resume(Effect.fail(exited.failure));
+      else if (fed !== null) resume(Effect.fail(stdinFailure(args, cwd, fed)));
+      else resume(Effect.succeed(exited.success));
+    };
     const child = execFile(
       "git",
       [...args],
       { cwd, maxBuffer: 64 * 1024 * 1024, env: gitProcessEnv(env) },
-      (error, stdout) => {
-        if (error === null) {
-          resume(Effect.succeed(stdout.replace(/\n$/, "")));
-          return;
-        }
-        const failure = error as ExecFailure;
-        const exitCode = typeof failure.code === "number" ? failure.code : null;
-        if (exitCode !== null && okExitCodes !== undefined && okExitCodes.includes(exitCode)) {
-          // The callback's stdout, not error.stdout — execFile only attaches
-          // output to the error in its promisified form.
-          resume(Effect.succeed(stdout.replace(/\n$/, "")));
-          return;
-        }
-        resume(
-          Effect.fail(
-            gitError({
-              args: [...args],
-              cwd,
-              exitCode,
-              stderr: (failure.stderr ?? failure.message ?? "").trim(),
-              ...endedBy(failure),
-            }),
-          ),
-        );
+      (error, stdout, stderr) => {
+        exited = gitExit(args, cwd, okExitCodes, error, stdout, stderr);
+        settle();
       },
     );
-    if (stdin !== undefined) child.stdin?.end(stdin);
+    if (stdin !== undefined && child.stdin !== null) {
+      finished(child.stdin, (error) => {
+        fed = error ?? null;
+        settle();
+      });
+      child.stdin.end(stdin);
+    }
     return Effect.sync(() => child.kill());
+  });
+
+/** How a `git()` run ended, from `execFile`'s callback. */
+const gitExit = (
+  args: ReadonlyArray<string>,
+  cwd: string,
+  okExitCodes: ReadonlyArray<number> | undefined,
+  error: Error | null,
+  stdout: string,
+  stderr: string,
+): Result.Result<string, GitError> => {
+  if (error === null) return Result.succeed(stdout.replace(/\n$/, ""));
+  const failure = error as ExecFailure;
+  const exitCode = typeof failure.code === "number" ? failure.code : null;
+  if (exitCode !== null && okExitCodes !== undefined && okExitCodes.includes(exitCode)) {
+    // The callback's stdout, not error.stdout — execFile only attaches
+    // output to the error in its promisified form.
+    return Result.succeed(stdout.replace(/\n$/, ""));
+  }
+  return Result.fail(
+    gitError({
+      args: [...args],
+      cwd,
+      exitCode,
+      stderr: (stderr === "" ? (failure.message ?? "") : stderr).trim(),
+      ...endedBy(failure),
+    }),
+  );
+};
+
+/** Git exited 0 but its stdin could not be written in full: Node's write failed, git did not. */
+const stdinFailure = (
+  args: ReadonlyArray<string>,
+  cwd: string,
+  error: NodeJS.ErrnoException,
+): GitError =>
+  gitError({
+    args: [...args],
+    cwd,
+    exitCode: null,
+    stderr: `git's stdin was not written in full: ${error.message}`,
+    ...(typeof error.code === "string" ? { code: error.code } : {}),
   });
 
 /**

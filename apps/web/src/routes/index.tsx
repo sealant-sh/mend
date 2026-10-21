@@ -47,6 +47,7 @@ interface SessionEntry {
   readonly project: string;
   /** The container's display name — every row leads with the place. */
   readonly worktreeName: string;
+  readonly handedOffFrom: string | null;
   readonly annotation: SessionAnnotationDto | undefined;
 }
 
@@ -93,6 +94,7 @@ function HomePage() {
           worktree === undefined
             ? (session.label ?? `session ${session.id.slice(0, 8)}`)
             : worktreeDisplayName(worktree, siblings),
+        handedOffFrom: worktree?.handoff?.machine ?? null,
         annotation: detail.data?.annotations.find((row) => row.sessionId === session.id),
       };
     }),
@@ -501,7 +503,7 @@ function SessionCard({
         </div>
         <p className="mt-3 truncate font-mono text-xs text-faint">
           {progressLine ??
-            `${session.harness}${session.label === null ? "" : ` — ${session.label}`} · ${session.branch}${session.baseRef === null ? "" : ` · base ${session.baseRef}`}`}
+            `${session.harness}${session.label === null ? "" : ` — ${session.label}`} · ${session.branch}${session.baseRef === null ? "" : ` · base ${session.baseRef}`}${entry.handedOffFrom === null ? "" : ` · handed off from ${entry.handedOffFrom}`}`}
           <AnnotationSuffix annotation={annotation} />
         </p>
       </Link>

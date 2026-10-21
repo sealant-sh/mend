@@ -171,7 +171,7 @@ describe("pre-release executors and the migration of their shared home (docs/adr
               label: null,
               name: "auth",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launchProtocol(
               session.id,
@@ -861,7 +861,7 @@ describe("the migration of an old shared home's memory (docs/adr/0016, Delivery 
             label: null,
             name: "before",
             ownerUserId: "user-fixture",
-            base: null,
+            start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["claude"]);
           // Who ever had a session in the worktree, as the durable record keeps it.
@@ -1112,7 +1112,7 @@ describe("the migration of an old shared home's memory (docs/adr/0016, Delivery 
                 label: null,
                 name: "fresh",
                 ownerUserId: "user-fixture",
-                base: null,
+                start: { kind: "base", base: null },
               });
               yield* engine.launch(session.id, ["claude"]);
               launched = true;
@@ -1212,7 +1212,7 @@ describe("agents run by hand are observed in the head capture (docs/adr/0016)", 
         label: null,
         name: "workbench",
         ownerUserId: "user-fixture",
-        base: null,
+        start: { kind: "base", base: null },
       });
       yield* engine.launch(session.id, ["bash"]);
       const request = created[0];
@@ -1370,7 +1370,7 @@ describe("agents run by hand are observed in the head capture (docs/adr/0016)", 
               label: null,
               name: "workbench",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             // The open workbench: a shell holds the workspace; no engine agent runs.
             yield* engine.launch(session.id, ["bash"]);
@@ -1458,7 +1458,7 @@ describe("agents run by hand are observed in the head capture (docs/adr/0016)", 
               label: null,
               name: "shared",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(holder.id, ["bash"]);
             const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
@@ -1523,7 +1523,7 @@ describe("agents run by hand are observed in the head capture (docs/adr/0016)", 
               label: null,
               name: "agent",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(agent.id, ["claude"]);
             const workbench = yield* engine.provisionSessionIn(agent.worktreeId, {
@@ -1579,7 +1579,7 @@ describe("agents run by hand are observed in the head capture (docs/adr/0016)", 
               label: null,
               name: "workbench",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(workbench.id, ["bash"]);
             const request = created[0];
@@ -1648,7 +1648,7 @@ describe("agents run by hand are observed in the head capture (docs/adr/0016)", 
               label: null,
               name: "workbench",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             yield* engine.launch(session.id, ["bash"]);
             const request = created[0];

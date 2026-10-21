@@ -269,7 +269,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
               label: null,
               name: "shared",
               ownerUserId: "user-fixture",
-              base: null,
+              start: { kind: "base", base: null },
             });
             options.before?.(holder.worktreeId);
             if (options.launchWith === undefined) {

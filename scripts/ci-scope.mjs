@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
 
-// Conservatively gate only the extra mobile-web and packaging jobs. Turbo, PostgreSQL and S3
-// contracts still run for every change. Unknown paths and unavailable history run both extras.
-// A merge group (--merge-group BASE HEAD) also prints graph=affected|full for its Turbo lanes.
-const full = { mobile: true, packaging: true };
+// Conservatively gate only the extra mobile-web, packaging and store-image-git jobs. Turbo,
+// PostgreSQL and S3 contracts still run for every change. Unknown paths and unavailable history
+// run every extra. A merge group (--merge-group BASE HEAD) also prints graph=affected|full for its
+// Turbo lanes.
+const full = { mobile: true, packaging: true, store: true };
 const sha = /^[a-f0-9]{40,64}$/i;
 
 const changedPaths = (base, head) =>
@@ -34,15 +35,16 @@ export const testOnly = (path) =>
 
 const extras = (paths) => {
   if (paths.length === 0) return full;
-  const scope = { mobile: false, packaging: false };
+  const scope = { mobile: false, packaging: false, store: false };
   for (const path of paths) {
+    if (path.includes("\n")) return full;
+    // store-image-git runs the store's tests, so their own changes select it.
+    if (path.startsWith("packages/store/")) scope.store = true;
     if (testOnly(path)) continue;
-    // All package changes are deliberately included, including future transitive dependencies.
-    // Manifest changes can alter that graph or shared tooling even in otherwise unrelated apps.
+    // Manifest changes can alter the package graph or shared tooling even in unrelated apps.
     if (
       !path.includes("/") ||
       path.endsWith("/package.json") ||
-      path.startsWith("packages/") ||
       path.startsWith("tooling/") ||
       path.startsWith(".github/") ||
       path.startsWith(".claude/") ||
@@ -51,7 +53,13 @@ const extras = (paths) => {
     ) {
       return full;
     }
-    if (path.startsWith("apps/mobile/")) {
+    if (path.startsWith("packages/")) {
+      // Every package change runs both lanes, future transitive dependencies included.
+      scope.mobile = true;
+      scope.packaging = true;
+      // @mend/domain is the one workspace package the store imports at run time.
+      if (path.startsWith("packages/domain/")) scope.store = true;
+    } else if (path.startsWith("apps/mobile/")) {
       scope.mobile = true;
       scope.packaging = true;
     } else if (
@@ -99,13 +107,13 @@ const main = () => {
     } catch {
       scope = full;
       graph = "full";
-      reason = "Git comparison unavailable; running both extras";
+      reason = "Git comparison unavailable; running every extra";
     }
   } else if (!(args.length === 1 && args[0] === "--all")) {
-    reason = "Missing or invalid commit IDs; running both extras";
+    reason = "Missing or invalid commit IDs; running every extra";
   }
   console.error(queue ? `${reason}; Turbo graph: ${graph}` : reason);
-  console.log(`mobile=${scope.mobile}\npackaging=${scope.packaging}`);
+  console.log(`mobile=${scope.mobile}\npackaging=${scope.packaging}\nstore=${scope.store}`);
   if (queue) console.log(`graph=${graph}`);
 };
 
