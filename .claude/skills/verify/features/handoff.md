@@ -103,11 +103,12 @@ Steps:
 - **TUI rows.** Run `tmux new-session -d -s mend-handoff -x 200 -y 50 'mend ui'`, select
   `<project>`, then `tmux send-keys -t mend-handoff 2`. `tmux capture-pane -p -t mend-handoff` shows
   `verify-handoff` with the line under it starting `from main · handed off from <host>`. Press `3`:
-  the session row reads `claude <id8> idle` over a facts line starting `created <n> ago`, and the
-  pane's width decides whether `handed off from <host>` follows it; report what it shows. No row
-  says `agent ended`. Then `mend attach <id8>` under tmux reaches the held workspace's shell: `echo`
-  in it answers, and `ps` lists `bash` and no agent. Run `mend sessions`: the row for `<id8>`
-  contains `handed off from <host>`.
+  the session row reads `claude <id8> idle` over a facts line starting `created just now …` in its
+  first minute (`created <n> ago` after), and the pane's width decides whether
+  `handed off from <host>` follows it; report what it shows. No row says `agent ended`. Then
+  `mend attach <id8>` under tmux reaches the held workspace's shell: `echo` in it answers, and `ps`
+  lists `bash` and no agent. Run `mend sessions`: the row for `<id8>` contains
+  `handed off from <host>`.
 - **Review base and files.** Open the review from the session page (`Review the change`). The line
   under the heading reads `<M12> → <tip12> · 5 files · +8 −0 · 0 open comments · base main · …`, and
   the sidebar's file buttons are exactly `.env.example`, `.gitignore`, `A.md`, `B.md` and
@@ -115,7 +116,8 @@ Steps:
   `git -C <clone> diff --name-only <M>` lists the first four, `notes.txt` is the one travelled
   untracked file, and `.env.local`, `ignored.log` and `big.bin` were left out.
   `GET <web>/api/changes/<change id>/diff` names the same files and its `change` has `baseSha`
-  `<M>`. In the TUI review screen (`v` on the session) the header reads
+  `<M>`; its `change.baseRef` is null, so read the base from `baseSha`, not `baseRef`. In the TUI
+  review screen (`v` on the session) the header reads
   `mend/verify-handoff · worktree vs <M, 12 characters> · 5 files …`.
 - **Staged and unstaged in the session.** Run
   `mend run --project <project> --worktree verify-handoff -- git status --porcelain=v2 --untracked-files=all`
