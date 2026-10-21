@@ -1,6 +1,9 @@
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
+import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "@mend/test-ci/effect-vitest";
 import { Duration, Effect, Layer, Result } from "effect";
@@ -166,6 +169,55 @@ describe("Store.admitHandoff", () => {
     const bundle = buildHandoffBundle(world.checkout);
     const outcome = await expectRefusal(damage(bundle.bytes), "damaged");
     expect(refusalMessage(outcome)).toMatch(/git said: /);
+  });
+
+  it("refuses a large pack git stops reading at once as damaged, and the server process lives", async () => {
+    const bundle = buildHandoffBundle(world.checkout);
+    const header = parseBundleHeader(bundle.bytes);
+    if (header === null) throw new Error("the fixture bundle has no header");
+    const pack = Buffer.alloc(8 * 1024 * 1024, 0x41);
+    pack.write("PACK", 0);
+    pack.writeUInt32BE(99, 4);
+    const upload = path.join(world.tmp, "large.bundle");
+    fs.writeFileSync(upload, Buffer.concat([bundle.bytes.subarray(0, header.packStart), pack]));
+    const script = `
+      import * as fs from "node:fs";
+      import { Effect, Layer, Result } from ${JSON.stringify(pathToFileURL(createRequire(import.meta.url).resolve("effect")).href)};
+      import { skippedFreshen } from ${JSON.stringify(new URL("../src/handoff.ts", import.meta.url).href)};
+      import { Store, StoreConfig } from ${JSON.stringify(new URL("../src/store.ts", import.meta.url).href)};
+      const [storeRoot, storePath, upload] = process.argv.slice(1);
+      const outcome = await Effect.gen(function* () {
+        const store = yield* Store;
+        return yield* store.admitHandoff(storePath, "main", new Uint8Array(fs.readFileSync(upload)), {
+          freshen: Effect.succeed(skippedFreshen("no credential in this test")),
+          fileBytes: 0,
+        });
+      }).pipe(
+        Effect.result,
+        Effect.provide(Store.layer.pipe(Layer.provide(StoreConfig.layerFor(storeRoot)))),
+        Effect.runPromise,
+      );
+      process.stdout.write(JSON.stringify(Result.isFailure(outcome) ? outcome.failure : "admitted"));
+    `;
+    const ran = await new Promise<{ code: number | string | null; stdout: string; stderr: string }>(
+      (resolve) => {
+        execFile(
+          process.execPath,
+          ["--input-type=module", "--eval", script, storeRoot, world.storePath, upload],
+          { cwd: world.tmp, timeout: 60_000 },
+          (error, stdout, stderr) =>
+            resolve({ code: error === null ? 0 : (error.code ?? null), stdout, stderr }),
+        );
+      },
+    );
+    expect(ran.stderr).not.toMatch(/EPIPE/);
+    expect(ran.code).toBe(0);
+    expect(JSON.parse(ran.stdout)).toMatchObject({
+      _tag: "HandoffRefusedError",
+      reason: "damaged",
+      message: expect.stringMatching(/git said: /),
+    });
+    expect(quarantines()).toEqual([]);
   });
 
   it.each([

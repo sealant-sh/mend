@@ -139,6 +139,33 @@ describe("git failures: the content's, or the host's", () => {
     });
   });
 
+  describe("stdin git leaves unread", () => {
+    const unread = Buffer.alloc(8 * 1024 * 1024, 0x61);
+    let repo = "";
+    beforeAll(() => {
+      repo = fs.mkdtempSync(path.join(os.tmpdir(), "mend-git-stdin-"));
+      execFileSync("git", ["init", "-q", "--bare", repo]);
+    });
+    afterAll(() => fs.rmSync(repo, { recursive: true, force: true }));
+
+    it("git refusing before it reads is git's own failure: its exit and its words", async () => {
+      const refused = await Effect.runPromise(
+        Effect.flip(git(["index-pack", "--stdin"], repo, undefined, undefined, unread)),
+      );
+      expect(refused.exitCode).toBe(128);
+      expect(refused.stderr).toMatch(/pack signature mismatch/);
+      expect(gitRejectsContent(refused)).toBe(true);
+    });
+
+    it("git succeeding without reading its stdin is the host's failure, not a success", async () => {
+      const unwritten = await Effect.runPromise(
+        Effect.flip(git(["version"], repo, undefined, undefined, unread)),
+      );
+      expect(unwritten.code).toBe("EPIPE");
+      expect(gitRejectsContent(unwritten)).toBe(false);
+    });
+  });
+
   describe("output past the buffer", () => {
     let repo = "";
     let blob = "";
