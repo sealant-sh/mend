@@ -357,23 +357,23 @@ exists.
 
 ## Session commands
 
-| Command                                                        | Purpose                                                                                             |
-| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `mend` or `mend ui [--no-tunnel]`                              | Open the terminal dashboard of projects, worktrees and sessions                                     |
-| `mend snake`                                                   | Open the dashboard with a game of snake over it; `Esc` or `q` closes the game                       |
-| `mend worktrees [--project <name>] [--json]`                   | List worktrees and the sessions inside them                                                         |
-| `mend worktrees rm <name> [--force] [--project <name>]`        | Remove a worktree, its sessions and its change, with `--force` when its change is not landed        |
-| `mend sessions [--all] [--project <name>] [--json\|--json=v2]` | List live sessions, or include settled sessions with `--all`                                        |
-| `mend status`                                                  | Alias for `mend sessions`                                                                           |
-| `mend attach [session-id-prefix] [--no-tunnel]`                | Reattach to a running session; a session picked up on the phone moves to this terminal              |
-| `mend stop [session-id-prefix]`                                | Stop the agent; the worktree, record and review remain                                              |
-| `mend stop --all [--project <name>]`                           | Stop every live session, or every live session in one project                                       |
-| `mend stop --services [session-id-prefix]`                     | Stop the session's Services instead of its agent                                                    |
-| `mend shell [session-id-prefix]`                               | Open a shell in a live session workspace                                                            |
-| `mend continue [session-id]`                                   | Resume a session with its pending review follow-up                                                  |
-| `mend resume [session-id] [--with <harness>]`                  | Restore provider state and resume a settled session                                                 |
-| `mend rejoin [session-id] [--harness <harness>] [--no-tunnel]` | Attach when live, otherwise resume                                                                  |
-| `mend workspace replace <session> [--yes]`                     | The change's owner replaces a workspace that started before Mend 0.36; prints what would stop first |
+| Command                                                          | Purpose                                                                                             |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `mend` or `mend ui [--no-tunnel]`                                | Open the terminal dashboard of projects, worktrees and sessions                                     |
+| `mend snake`                                                     | Open the dashboard with a game of snake over it; `Esc` or `q` closes the game                       |
+| `mend worktrees [--project <name>] [--json]`                     | List worktrees and the sessions inside them                                                         |
+| `mend worktrees rm <name> [--force] [--project <name>]`          | Remove a worktree, its sessions and its change, with `--force` when its change is not landed        |
+| `mend sessions [--all] [--project <name>] [--json\|--json=v2]`   | List live sessions, or include settled sessions with `--all`                                        |
+| `mend status`                                                    | Alias for `mend sessions`                                                                           |
+| `mend attach [session-id-prefix] [--no-tunnel]`                  | Reattach to a running session; a session picked up on the phone moves to this terminal              |
+| `mend stop [session-id-prefix]`                                  | Stop the agent; the worktree, record and review remain                                              |
+| `mend stop --all [--project <name>]`                             | Stop every live session, or every live session in one project                                       |
+| `mend stop --services [session-id-prefix]`                       | Stop the session's Services instead of its agent                                                    |
+| `mend shell [session-id-prefix]`                                 | Open a shell in a live session workspace                                                            |
+| `mend continue [session-id]`                                     | Resume a session with its pending review follow-up                                                  |
+| `mend resume [session-id] [--with <harness>] [--project <name>]` | Restore provider state and resume a settled session                                                 |
+| `mend rejoin [session-id] [--harness <harness>] [--no-tunnel]`   | Attach when live, otherwise resume                                                                  |
+| `mend workspace replace <session> [--yes]`                       | The change's owner replaces a workspace that started before Mend 0.36; prints what would stop first |
 
 With no session ID, `attach`, `stop` and `shell` take the one live session; with several, a picker
 opens. A prefix of the ID is enough. Other commands narrow candidates by the current project and
@@ -478,8 +478,10 @@ untracked files. The checkout is not written to. Git runs against copies of `HEA
 and every object it writes goes to a scratch repository, so no file, index, ref or object of the
 checkout changes. With a prompt, the session's agent (`--with`, default `claude`) starts on it and
 the command returns without attaching; when the agent does not start, the CLI says the prompt was
-not sent and names `mend <harness> --worktree <name>`. Without one, Mend holds the workspace with a
-shell and no agent, and the CLI prints `✓ held · idle, no agent`.
+not sent and names `mend <harness> --project <project> --worktree <name> '<prompt>'`, which sends
+the same prompt. Without one, Mend holds the workspace with a shell and no agent, and the CLI prints
+`✓ held · idle, no agent`; when the hold fails it names
+`mend resume <session> --project <project> --with shell`.
 
 ```text
 ✓ project newsroom-api · main · from origin
@@ -499,17 +501,22 @@ over the server's per-file limit (`MEND_BUDGET_HANDOFF_FILE_BYTES`, 8 MiB by def
 a git `filter` attribute, such as Git LFS files, stay too, each named. In the session each of them
 is at its `HEAD` version, so review shows no change for it. A `.env*` file that a commit ahead added
 or changed travels in that commit, and the CLI names it with the commit
-(`travels in a commit · .env.local (1a2b3c4)`).
+(`travels in a commit · .env.local (1a2b3c4)`). An edit under `assume-unchanged` or `skip-worktree`
+travels, and the CLI names the file with its bit
+(`travels though hidden from git · config/database.yml (skip-worktree)`).
 
 The merge base is taken against `origin/<default branch>` as the checkout last fetched it. The CLI
-never fetches; when that ref is missing it refuses and names `git fetch origin`. The checkout's
-`origin` must be the project's origin, compared by host and path, and `--project` does not skip the
-check. When no adopted project matches, the CLI asks to adopt `origin` first; `--yes` answers yes,
-and without a terminal the command refuses unless `--yes` is given. A bundle over the server's
-`MEND_BUDGET_BUNDLE_BYTES` limit is refused before it is sent, with its size. A connection that ends
-without an answer, or a proxy's 502, 503 or 504, sends the same bundle again, twice at most. A
-server older than handoffs is named with its version, and nothing is created. Read
-[Hand off local work](/guides/hand-off-local-work/).
+never fetches; when that ref is missing it refuses and names `git fetch origin`. Before it adopts,
+the CLI takes the default branch from `origin/HEAD` when that names a branch the checkout has, and
+otherwise from `origin/main`, then `origin/master`; with none of them it refuses before adopting and
+names `git fetch origin`, or `git remote set-head origin -a` when branches were fetched. The
+checkout's `origin` must be the project's origin, compared by host, port and path, where the path's
+case counts except on github.com, and `--project` does not skip the check. When no adopted project
+matches, the CLI asks to adopt `origin` first; `--yes` answers yes, and without a terminal the
+command refuses unless `--yes` is given. A bundle over the server's `MEND_BUDGET_BUNDLE_BYTES` limit
+is refused before it is sent, with its size. A connection that ends without an answer, or a proxy's
+502, 503 or 504, sends the same bundle again, twice at most. A server older than handoffs is named
+with its version, and nothing is created. Read [Hand off local work](/guides/hand-off-local-work/).
 
 ## Dashboard keys
 

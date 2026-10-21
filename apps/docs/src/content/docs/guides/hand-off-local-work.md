@@ -17,10 +17,12 @@ agent, or you from another device, carries on from there. Nothing is pushed to o
 You need:
 
 - a working Mend login and a server at Mend 0.36 or later;
-- a checkout whose `origin` is the project's origin. A fork is refused. When no project matches, the
-  CLI offers to adopt `origin`;
+- a checkout whose `origin` is the project's origin: the same host, port and path, where the path's
+  case counts except on github.com. A fork is refused. When no project matches, the CLI offers to
+  adopt `origin`;
 - `origin/<default branch>` in the checkout, as `git fetch origin` last left it. The CLI never
-  fetches.
+  fetches. Before it adopts, the CLI takes the default branch from `origin/HEAD` when that names a
+  branch the checkout has, and otherwise from `origin/main`, then `origin/master`.
 
 ## Hand off with a prompt
 
@@ -47,8 +49,9 @@ picks the agent: `claude` (the default), `codex`, `opencode` or `pi`.
 
 When the agent does not start, the handoff is still there and the CLI says what happened to the
 prompt:
-`… · the prompt was not sent · mend claude --worktree fix-login starts claude in the handoff`. The
-command exits with code 1.
+`… · the prompt was not sent · mend claude --project newsroom-api --worktree fix-login 'finish the tests' starts claude in the handoff with it`.
+That command sends the same prompt to an agent in the handoff's worktree. The command exits with
+code 1.
 
 ## Hand off without a prompt
 
@@ -63,7 +66,7 @@ you handed off from, and `mend sessions` names the machine the same way. Attach 
 agent in it later, or open it from another device.
 
 When the hold fails, the block reads `! not held · failed · <why>`, the command exits with code 1,
-and `mend resume <session> --with shell` opens the workspace with a shell.
+and `mend resume <session> --project <project> --with shell` opens the workspace with a shell.
 
 ## What travels and what stays
 
@@ -73,7 +76,7 @@ and `mend resume <session> --with shell` opens the workspace with a shell.
 | Staged files                                         | Staged, in the index                            |
 | Unstaged changes, deletions included                 | Unstaged, in the working tree                   |
 | Untracked files that git does not ignore             | Untracked                                       |
-| Edits under `assume-unchanged` or `skip-worktree`    | Unstaged, like any other edit                   |
+| Edits under `assume-unchanged` or `skip-worktree`    | Unstaged; the CLI names them and the bit        |
 | Files a sparse checkout leaves out                   | At their index version, as in your index        |
 | Gitignored files                                     | Not copied                                      |
 | `.env*` files, staged, untracked or gitignored       | Not copied; the CLI names them                  |
@@ -88,6 +91,13 @@ without rewriting the commit, so it travels and the CLI says so:
 
 ```text
   travels in a commit · .env.local (1a2b3c4)
+```
+
+An edit that `assume-unchanged` or `skip-worktree` hides from `git status` travels like any other,
+and the CLI names the file and the bit:
+
+```text
+  travels though hidden from git · config/database.yml (skip-worktree)
 ```
 
 The CLI checks every commit ahead, merge commits included, so a file that one commit added and a
@@ -132,17 +142,19 @@ A detached `HEAD` hands off too, as `handoff-<sha>`:
 Each refusal ends with `nothing was created`. A refusal after the CLI adopted the repository ends
 with `nothing was handed off · <project> stays adopted` instead.
 
-| The CLI says                                                       | What to do                                        |
-| ------------------------------------------------------------------ | ------------------------------------------------- |
-| `this checkout's origin is … · newsroom-api's is …`                | Hand off from a clone of the project's origin     |
-| `this checkout has no origin/main · run git fetch origin, then …`  | Run `git fetch origin`                            |
-| `non-interactive · pass --yes to adopt … and hand off`             | Pass `--yes`, or run it in a terminal             |
-| `N unmerged paths · finish or abort the merge, then hand off`      | Finish or abort the merge                         |
-| `handoff not sent · the bundle is … · the server's limit is …`     | Ask the operator about `MEND_BUDGET_BUNDLE_BYTES` |
-| `handoff not sent · something in front of the Mend server refused` | Ask the operator to raise the proxy's body limit  |
-| `this Mend server (0.35.1) does not take handoffs · upgrade it, …` | Upgrade the server                                |
-| `TMPDIR is …, inside this checkout`                                | Set `TMPDIR` to a directory outside the checkout  |
-| `this partial clone lacks objects a handoff reads`                 | Run the `git log -p` it names, then hand off      |
+| The CLI says                                                       | What to do                                              |
+| ------------------------------------------------------------------ | ------------------------------------------------------- |
+| `this checkout's origin is … · newsroom-api's is …`                | Hand off from a clone of the project's origin           |
+| `this checkout has no origin/main · run git fetch origin, then …`  | Run `git fetch origin`                                  |
+| `this checkout has fetched no branch from origin · …`              | Run `git fetch origin`                                  |
+| `this checkout does not know origin's default branch · …`          | Run `git fetch origin && git remote set-head origin -a` |
+| `non-interactive · pass --yes to adopt … and hand off`             | Pass `--yes`, or run it in a terminal                   |
+| `N unmerged paths · finish or abort the merge, then hand off`      | Finish or abort the merge                               |
+| `handoff not sent · the bundle is … · the server's limit is …`     | Ask the operator about `MEND_BUDGET_BUNDLE_BYTES`       |
+| `handoff not sent · something in front of the Mend server refused` | Ask the operator to raise the proxy's body limit        |
+| `this Mend server (0.35.1) does not take handoffs · upgrade it, …` | Upgrade the server                                      |
+| `TMPDIR is …, inside this checkout`                                | Set `TMPDIR` to a directory outside the checkout        |
+| `this partial clone lacks objects a handoff reads`                 | Run the `git log -p` it names, then hand off            |
 
 When the connection ends without an answer, or a proxy answers 502, 503 or 504, the CLI sends the
 same bundle again, twice at most. The server recognises a bundle it already took and answers with

@@ -5,9 +5,10 @@ ahead of the merge base with the project's default branch, the staged, unstaged 
 The checkout is not written to. Gitignored files and uncommitted `.env*` files stay behind; the
 `.env*` ones are named. Files over the server's file limit and files with a git `filter` attribute
 are left out, each named; a tracked one is at its `HEAD` version in the session. A `.env*` file
-committed on the branch travels with its commit, and the CLI names it. Without a prompt the
-workspace is held with no agent; with one, the agent starts on it and the command returns without
-attaching. Review is the worktree against the merge base `M`.
+committed on the branch travels with its commit, and the CLI names it, and so does an edit hidden by
+`assume-unchanged` or `skip-worktree`. Without a prompt the workspace is held with no agent; with
+one, the agent starts on it and the command returns without attaching. Review is the worktree
+against the merge base `M`.
 
 ## Sub-features
 
@@ -23,7 +24,9 @@ attaching. Review is the worktree against the merge base `M`.
 - `handoff-split` keeps staged and unstaged apart inside the session, the same file included.
 - `handoff-prompt` starts the agent on a prompt and returns without attaching.
 - `handoff-again` hands off the same branch again as `<name>-2`, and names the earlier handoff.
-- `handoff-foreign-origin` refuses a checkout whose origin is not the project's.
+- `handoff-foreign-origin` refuses a checkout whose origin is not the project's: another path, or
+  the same host and path on another port.
+- `handoff-hidden` carries an edit `skip-worktree` hides from `git status`, and names it.
 
 ## How to get to it (user POV)
 
@@ -137,7 +140,18 @@ Steps:
   exit code `1`. Without `--project` no adopted project matches that origin, so `mend handoff` in
   `<fork>` with no terminal reads
   `mend: non-interactive · pass --yes to adopt github.com/someone/fork and hand off · nothing was created`;
-  exit code `1`. `mend worktrees --project <project> --json` lists no new worktree.
+  exit code `1`. Then set `<fork>`'s origin to `<repo-url>` with `:8443` after its host and run
+  `mend handoff --project <project>` again: stderr reads the same refusal with that origin. Exit
+  code `1`. `mend worktrees --project <project> --json` lists no new worktree.
+- **Hidden from git.** Run `git clone <repo-url> <hidden>`, then in `<hidden>`:
+  `git config user.name verify && git config user.email verify@verify-stack.invalid`,
+  `git switch -c verify/hidden`,
+  `printf 'h\n' > H.md && git add H.md && git commit -qm 'verify: hidden'`,
+  `git update-index --skip-worktree H.md` and `printf 'edited\n' >> H.md`. `git status --short`
+  prints nothing. Run `mend handoff`: stdout has
+  `  travels though hidden from git · H.md (skip-worktree)` after the `stays here` line, and the
+  fact line reads `1 commit ahead of main · 1 uncommitted file`. Exit code `0`. In the session,
+  `mend run --project <project> --worktree verify-hidden -- git diff --stat` names `H.md`.
 - **Proof.** Keep every `mend handoff` transcript (command, stdout, stderr, exit code), both
   fingerprints and their empty `diff`, the `mend worktrees --json` output, the web snapshots and
   screenshots, the tmux captures and the `git status` from the session.
@@ -155,6 +169,16 @@ Steps:
 - `mend ui` started inside a checkout offers to adopt that checkout's repository. Press Escape.
 - The CLI never fetches. A checkout without `origin/main` is refused with
   `this checkout has no origin/main · run git fetch origin, then hand off again · nothing was created`.
+- Before adopting, the CLI reads origin's default branch from `origin/HEAD` when it names a branch
+  the checkout has, else `origin/main`, then `origin/master`. With none it refuses before adopting:
+  `this checkout has fetched no branch from origin · run git fetch origin, then hand off again · nothing was created`,
+  or, when other branches were fetched,
+  `this checkout does not know origin's default branch · run git fetch origin && git remote set-head origin -a, then hand off again · nothing was created`.
+- When the agent does not start on a prompt, stderr ends
+  `the prompt was not sent · mend <harness> --project <project> --worktree <name> '<prompt>' starts <harness> in the handoff with it`,
+  and a failed hold ends
+  `the hold failed · mend resume <id8> --project <project> --with shell opens the workspace with a shell`.
+  A healthy stack cannot reach either; the CLI tests run both printed commands.
 - The merge base is the checkout's, against `origin/main` as it was last fetched. A newer `main` on
   the server does not move the review base.
 - `big.bin`'s size line comes from the server's terms. With `MEND_BUDGET_HANDOFF_FILE_BYTES` set on
