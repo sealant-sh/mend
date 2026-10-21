@@ -426,6 +426,117 @@ describe("SessionEngine handoff", () => {
     );
   });
 
+  it("recovers a handed-off session whose hold failed with a shell resume, as the CLI prints it: a shell in a new workspace", async () => {
+    const created: CreateOptions[] = [];
+    let opens = 0;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const bundle = buildHandoffBundle(checkoutIn(tmp));
+          const session = yield* provisionHandoff(
+            project.id,
+            "fix-login",
+            yield* admitIn(project.storePath, bundle.bytes),
+          );
+          const hold = yield* engine.holdWorkspace(session.id, freeLaunchSlot).pipe(Effect.result);
+          expect(Result.isFailure(hold)).toBe(true);
+          expect(world.sessions.get(session.id)?.status).toBe("failed");
+          // `POST /sessions/:id/resume {harness: "shell"}`.
+          const resumed = yield* engine.resumeSession(session.id, "shell");
+          expect(resumed.status).toBe("running");
+          expect(created).toHaveLength(2);
+          expect(
+            [...world.processes.values()]
+              .filter((process) => process.sessionId === session.id && process.exitedAt === null)
+              .map((process) => [process.kind, process.harness]),
+          ).toEqual([["agent-pty", "shell"]]);
+          expect(checkpointsOf(world, session.worktreeId)[0]).toEqual([0, bundle.mergeBase]);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { openFails: () => opens++ === 0 },
+        ),
+      },
+    );
+  });
+
+  it("recovers a handoff whose prompt launch did not start with the person's harness on the prompt in its worktree, as `mend codex --worktree fix-login --project` sends it", async () => {
+    const created: CreateOptions[] = [];
+    let opens = 0;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const bundle = buildHandoffBundle(checkoutIn(tmp));
+          const handedOff = yield* provisionHandoff(
+            project.id,
+            "fix-login",
+            yield* admitIn(project.storePath, bundle.bytes),
+          );
+          const first = yield* engine
+            .launch(handedOff.id, ["codex", "finish the tests"])
+            .pipe(Effect.result);
+          expect(Result.isFailure(first)).toBe(true);
+          expect(world.sessions.get(handedOff.id)?.status).toBe("failed");
+          // `POST /projects/:id/sessions {harness, name: "fix-login", base: null}`, then
+          // `POST /sessions/:id/launch {prompt}`.
+          const again = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: "fix-login",
+            start: startFromBase(null),
+            ownerUserId: "user-fixture",
+          });
+          expect(again.worktreeId).toBe(handedOff.worktreeId);
+          const launched = yield* engine.launch(again.id, ["codex", "finish the tests"]);
+          expect(launched.status).toBe("running");
+          expect(
+            [...world.processes.values()]
+              .filter((process) => process.sessionId === again.id && process.exitedAt === null)
+              .map((process) => [process.kind, process.harness]),
+          ).toEqual([["agent-pty", "codex"]]);
+          expect(checkpointsOf(world, handedOff.worktreeId)[0]).toEqual([0, bundle.mergeBase]);
+          const change = [...world.changes.values()].filter(
+            (candidate) => candidate.worktreeId === handedOff.worktreeId,
+          );
+          expect(change.map((candidate) => candidate.baseSha)).toEqual([bundle.mergeBase]);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { openFails: () => opens++ === 0 },
+        ),
+      },
+    );
+  });
+
   it("refuses a handoff under a taken worktree name: no join, no second worktree, no session", async () => {
     await withEngine(
       (world, tmp) =>
