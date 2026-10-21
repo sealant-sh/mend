@@ -413,6 +413,17 @@ describe("snapshotCheckout", () => {
     );
   });
 
+  it("carries a directory replaced by a file, its old files gone", () => {
+    const w = world();
+    const dana = w.clone("dir-to-file");
+    fs.rmSync(path.join(dana, "docs"), { recursive: true });
+    w.write(path.join(dana, "docs"), "a file now\n");
+    const snapshot = snapshotOf(w, dana);
+    const store = storeWithBundle(w, snapshot);
+    expect(w.git(store, ["show", `${snapshot.worktree}:docs`])).toBe("a file now");
+    expect(snapshot.facts).toEqual({ commitsAhead: 0, uncommitted: 1, untracked: 1 });
+  });
+
   it("carries edits under assume-unchanged and skip-worktree", () => {
     const w = world();
     const dana = w.clone("hidden-edits");

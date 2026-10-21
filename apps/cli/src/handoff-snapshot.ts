@@ -135,6 +135,22 @@ const nulList = (files: Iterable<GitPath>): Buffer =>
 const onDisk = (top: string, file: GitPath): Buffer =>
   Buffer.concat([Buffer.from(`${top}/`), bytesOf(file)]);
 
+/** What is at the file's path; undefined when nothing is, a file where its directory was included. */
+const statOnDisk = (top: string, file: GitPath): fs.Stats | undefined => {
+  try {
+    return fs.lstatSync(onDisk(top, file));
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      ["ENOENT", "ENOTDIR"].includes(String(error.code))
+    ) {
+      return undefined;
+    }
+    throw error;
+  }
+};
+
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
 const octal = (byte: number): string => `\\${byte.toString(8).padStart(3, "0")}`;
 
@@ -516,7 +532,7 @@ const revealHiddenEdits = (git: Git, checkout: Checkout, reads: Env): void => {
   const hidden = nulFields(listing).flatMap((field) => {
     if (!HIDDEN_TAGS.has(leadOf(field)) || namesDirectory(field)) return [];
     const file = pathOf(field.subarray(2));
-    return fs.lstatSync(onDisk(checkout.top, file), { throwIfNoEntry: false }) === undefined
+    return statOnDisk(checkout.top, file) === undefined
       ? []
       : [file];
   });
@@ -609,7 +625,7 @@ const inspect = (
     stagedBlobs.forEach((entry, at) => indexSizes.set(entry.path, Number(sizes[at])));
   }
   const workingSize = (file: GitPath): number => {
-    const stat = fs.lstatSync(onDisk(checkout.top, file), { throwIfNoEntry: false });
+    const stat = statOnDisk(checkout.top, file);
     return stat?.isFile() === true ? stat.size : 0;
   };
   const excludedOf = (file: GitPath): Excluded | null => {
