@@ -393,8 +393,11 @@ landing, without origin, and for projects nobody can push to.
   server no longer holds the last pull's commit. Pull into a new branch with
   `mend pull <session> --branch <name>`, or delete the branch and pull again.
 - The clone needs the session's base commit, so fetch from origin first when it is missing.
-- One of the clone's remotes must be the project's origin, compared by host and path so SSH and
-  HTTPS spellings match. `--force` skips that check.
+- One of the clone's remotes must be the project's origin: the same host, port and path. SSH, HTTPS
+  and `git@host:path` spellings match, a scheme's default port matches no port, and the path's case
+  counts except on github.com. Otherwise the CLI refuses and lists the clone's remotes, for example
+  `web's origin is git@git.example.com:team/web.git · this clone's remotes are origin https://git.example.com/Team/Web.git · run mend pull in a clone of it, or pass --force`.
+  `--force` skips that check.
 - A bundle over the server's limit (`MEND_BUDGET_BUNDLE_BYTES`, 64 MiB by default) is refused with
   its size, and nothing is fetched.
 

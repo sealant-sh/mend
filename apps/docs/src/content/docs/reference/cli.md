@@ -380,6 +380,9 @@ opens. A prefix of the ID is enough. Other commands narrow candidates by the cur
 then use a picker when needed. An ID you give is the session acted on, by `stop`, `resume`, `rejoin`
 and `mend service logs` alike.
 
+`mend resume --project <name>` looks the session up in that project, so it works from any directory;
+without it, the project is the one the current directory matches.
+
 A `mend run` session has no agent to resume: `mend resume` on its own harness is refused with
 `This run session has no agent to resume. Resume it as a shell, or start another session in its worktree.`
 In a session someone else owns, `mend shell` is refused: a shell is the owner's alone.
@@ -456,10 +459,11 @@ to origin only, and opens no second pull request beside it. Read
 commits the latest checkpoint the way `mend land` does, without pushing, and sends the commits from
 the session's base as a git bundle, so it works before landing and without origin. Only the change's
 owner gets a checkpoint taken first; anyone else gets the latest one, and pulling moves nothing on
-the server. One of the clone's remotes must be the project's origin (ssh and https spellings match;
-`--force` skips the check), and the clone needs the session's base commit. The working tree, the
-index and the current branch are not touched, and an existing local branch only fast-forwards. The
-clone records each pull under `refs/mend/pulled/<branch>`, and the next pull asks the server to
+the server. One of the clone's remotes must be the project's origin: the same host, port and path,
+where ssh, https and `git@host:path` spellings match and the path's case counts except on
+github.com. `--force` skips the check. The clone needs the session's base commit. The working tree,
+the index and the current branch are not touched, and an existing local branch only fast-forwards.
+The clone records each pull under `refs/mend/pulled/<branch>`, and the next pull asks the server to
 build on it, so pulling again after more work fast-forwards. With nothing new, the branch stays and
 the CLI says `unchanged since the last pull · nothing moved`. A branch that cannot fast-forward (you
 committed on it, or the server no longer holds the last pull) is left as it is, and the CLI says
