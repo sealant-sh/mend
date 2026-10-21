@@ -123,6 +123,12 @@ The launch is not awaited. The session's row shows in the view at once and reads
 runs. No window opens and no notification shows. **Open** opens its workspace when you want it. An
 empty prompt starts the harness without one.
 
+The session starts from the server's copy of the project (`from main` above), not from the files in
+the window's folder. The extension does not hand off. To carry on from the folder's branch with its
+uncommitted files, run `mend handoff` in a terminal in that folder; see
+[Hand off local work](/guides/hand-off-local-work/). The extension lists that session like any
+other, without the `handed off from <machine>` the CLI and the web show.
+
 The line reads `<harness> · <model> · <thinking> · <permissions> · from <base>`, with only the parts
 you chose: `default model` until you choose one, `high thinking`, and `asks before acting`.
 
@@ -283,8 +289,8 @@ shell (`shell · <session>`). The session's owner types; anyone else the server 
 
 A conversation started on the phone, the web or Slack has no terminal yet. Its tab reads
 `claude is running as a conversation (from …) · Continue here to type to it`. **Continue here**
-moves the same conversation into a terminal with Mend's mode handoff, and the tab becomes that
-terminal. A harness the handoff does not support reads
+moves the same conversation into a terminal with Mend's mode switch, and the tab becomes that
+terminal. A harness the mode switch does not support reads
 `opencode can't continue in a terminal yet · open the terminal to watch`.
 
 ## The session's terminal
