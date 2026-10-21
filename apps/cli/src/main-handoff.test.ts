@@ -596,6 +596,55 @@ describe("mend handoff", spawning, () => {
     }
   }, 30_000);
 
+  it("takes an origin as the project's only with the same port, and path case only on GitHub", async () => {
+    const w = world();
+    const cases: ReadonlyArray<readonly [string, string, "same" | "foreign"]> = [
+      [
+        "ssh://git@git.example.com:2222/acme/newsroom-api.git",
+        "git@git.example.com:acme/newsroom-api.git",
+        "foreign",
+      ],
+      [
+        "https://git.example.com:8443/acme/newsroom-api.git",
+        "https://git.example.com/acme/newsroom-api.git",
+        "foreign",
+      ],
+      [
+        "ssh://git@github.com:22/acme/newsroom-api.git",
+        "git@github.com:acme/newsroom-api.git",
+        "same",
+      ],
+      [
+        "https://github.com/team/newsroom-api.git",
+        "https://github.com/Team/Newsroom-API.git",
+        "same",
+      ],
+      [
+        "https://git.example.com/team/newsroom-api.git",
+        "https://git.example.com/Team/Newsroom-API.git",
+        "foreign",
+      ],
+    ];
+    for (const [projectOrigin, checkoutOrigin, verdict] of cases) {
+      const checkout = newsroom(
+        w,
+        `origin-${cases.findIndex(([p]) => p === projectOrigin)}`,
+        checkoutOrigin,
+      );
+      const server = await handoffServer({ projects: [{ ...project, originUrl: projectOrigin }] });
+      const result = await run(server, ["--project", "newsroom-api"], checkout);
+      if (verdict === "same") {
+        expect(result.code, `${checkoutOrigin}: ${result.stderr}`).toBe(0);
+        expect(result.stdout).toContain("✓ handed off as fix-login");
+      } else {
+        expect(result.stderr).toBe(
+          `mend: this checkout's origin is ${checkoutOrigin} · newsroom-api's is ${projectOrigin} · nothing was created\n`,
+        );
+        expect(server.routes).toEqual(["GET /api/projects"]);
+      }
+    }
+  }, 60_000);
+
   it("refuses what the checkout or the server would refuse before it offers to adopt", async () => {
     const w = world();
     const unborn = path.join(w.root, "unborn");

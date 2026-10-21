@@ -258,6 +258,8 @@ describe("what mend land prints", () => {
   });
 });
 
+const at = (url: string) => [{ name: "origin", url }];
+
 describe("the clone's origin", () => {
   const remotes = [
     { name: "upstream", url: "https://github.com/acme/api.git" },
@@ -271,6 +273,58 @@ describe("the clone's origin", () => {
     );
     expect(remoteForOrigin(remotes, "https://github.com/other/api.git", "/work")).toBeNull();
     expect(remoteForOrigin(remotes, null, "/work")).toBeNull();
+  });
+
+  it("matches a port only to the same port, a scheme's default written or not", () => {
+    expect(
+      remoteForOrigin(
+        at("ssh://git@git.example.com:22/acme/api.git"),
+        "git@git.example.com:acme/api",
+        "/work",
+      )?.name,
+    ).toBe("origin");
+    expect(
+      remoteForOrigin(
+        at("https://git.example.com:443/acme/api"),
+        "https://git.example.com/acme/api.git",
+        "/work",
+      )?.name,
+    ).toBe("origin");
+    expect(
+      remoteForOrigin(
+        at("ssh://git@git.example.com:2222/acme/api.git"),
+        "git@git.example.com:acme/api.git",
+        "/work",
+      ),
+    ).toBeNull();
+    expect(
+      remoteForOrigin(
+        at("https://git.example.com:8443/acme/api.git"),
+        "https://git.example.com/acme/api.git",
+        "/work",
+      ),
+    ).toBeNull();
+  });
+
+  it("compares a path's case except on GitHub, and a host's never", () => {
+    expect(
+      remoteForOrigin(at("https://GitHub.com/Acme/API.git"), "git@github.com:acme/api.git", "/work")
+        ?.name,
+    ).toBe("origin");
+    expect(
+      remoteForOrigin(
+        at("https://Git.Example.com/team/repo.git"),
+        "https://git.example.com/team/repo.git",
+        "/work",
+      )?.name,
+    ).toBe("origin");
+    expect(
+      remoteForOrigin(
+        at("https://git.example.com/Team/Repo.git"),
+        "https://git.example.com/team/repo.git",
+        "/work",
+      ),
+    ).toBeNull();
   });
 
   it("matches an origin on this machine by its directory", () => {
