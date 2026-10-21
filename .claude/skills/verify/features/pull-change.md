@@ -69,10 +69,13 @@ Preconditions:
 
 ## Gotchas
 
-- The clone must have a remote whose host and path match the project's origin; ssh, https and
-  scp-style spellings compare equal. `--force` bypasses the mismatch refusal; Mend still computes
-  the remote match. The `pulling` line ends `· remotes not checked (--force)` only when no remote
-  matches. With a match it ends `· <remote> is the project's origin`, even under `--force`.
+- The clone must have a remote that names the project's origin (`sameRepository`,
+  `apps/cli/src/shared.ts`): the host in any case, the port unless it is the scheme's default, and
+  the path, whose case counts except on `github.com`; ssh, https and scp-style spellings compare
+  equal. So `ssh://git@<host>:2222/<path>` is not `git@<host>:<path>`, and on a host other than
+  GitHub `Owner/Repo` is not `owner/repo`. `--force` bypasses the mismatch refusal; Mend still
+  computes the remote match. The `pulling` line ends `· remotes not checked (--force)` only when no
+  remote matches. With a match it ends `· <remote> is the project's origin`, even under `--force`.
 - The clone needs the session's base commit. A base it lacks is refused with
   `this clone lacks the change's base <sha7> · fetch it from origin, then run mend pull again`.
 - `mend pull` is not `mend land`. It never pushes, and it never moves the session's branch on the
