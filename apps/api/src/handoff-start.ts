@@ -299,7 +299,7 @@ export const makeHandoffStart = Effect.gen(function* () {
     query: HandoffQueryInput,
     admitted: AdmittedHandoff,
   ) {
-    const { rows, taken } = yield* takenNames(project.id);
+    let { rows, taken } = yield* takenNames(project.id);
     const localBranch = admitted.trailers.localBranch;
     // Every name passed over, taken before the look or lost to another create since.
     const passed = new Set<string>();
@@ -346,6 +346,9 @@ export const makeHandoffStart = Effect.gen(function* () {
       if (outcome.kind === "replayed") return null;
       if (outcome.kind === "made") return { session: outcome.session, previous };
       passed.add(outcome.name);
+      // The create that took the name may be the account's own earlier handoff of this branch:
+      // the next attempt's `previous` reads the rows as they are now.
+      ({ rows, taken } = yield* takenNames(project.id));
     }
     return yield* new StoreFailure({
       message: `the handoff's worktree name was taken ${NAME_TRIES + 1} times in a row · hand off again`,

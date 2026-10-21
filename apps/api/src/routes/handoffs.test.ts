@@ -67,6 +67,8 @@ interface Seen {
   readonly freshens: Array<string>;
   readonly refs: Array<StoreRef>;
   readonly namesRacing: Set<string>;
+  /** Another request's row that lands under the name first, as the name's create is asked. */
+  readonly landsFirst: Map<string, Worktree>;
   readonly provisionGates: Array<Deferred.Deferred<void>>;
   readonly holdGates: Array<Deferred.Deferred<void>>;
   holdFails: boolean;
@@ -108,6 +110,12 @@ const worldWith = async (
         return yield* Effect.die("a base start in a handoff test");
       const { admitted, ownerUserId } = input.start;
       if (input.name !== null && seen.namesRacing.delete(input.name)) {
+        return yield* Effect.die(uniqueViolation(NAME_KEY));
+      }
+      const landing = input.name === null ? undefined : seen.landsFirst.get(input.name);
+      if (input.name !== null && landing !== undefined) {
+        seen.landsFirst.delete(input.name);
+        api?.world.addWorktree(landing);
         return yield* Effect.die(uniqueViolation(NAME_KEY));
       }
       if (checkpoints.has(admitted.snapshot)) {
@@ -234,6 +242,7 @@ const freshSeen = (): Seen => ({
   freshens: [],
   refs: [],
   namesRacing: new Set(),
+  landsFirst: new Map(),
   provisionGates: [],
   holdGates: [],
   holdFails: false,
@@ -463,6 +472,31 @@ describe("POST /projects/:id/handoffs", () => {
       "fix-login-2",
       "fix-login-3",
       "fix-login-4",
+    ]);
+  });
+
+  it("names the account's own handoff of the branch that took the name first as the previous one, and stores it so", async () => {
+    const seen = freshSeen();
+    api = await worldWith({}, seen);
+    const winner = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T11:00:00.000Z" });
+    seen.landsFirst.set(
+      "fix-login",
+      earlierHandoff("worktree-winner", "fix-login", winner, "alice"),
+    );
+    const raced = await post(
+      api,
+      "alice",
+      buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T11:00:01.000Z" }).bytes,
+      "harness=claude&hold=false",
+    );
+    expect(raced.status).toBe(200);
+    expect(await raced.json()).toMatchObject({
+      previous: { name: "fix-login" },
+      worktree: { name: "fix-login-2", handoff: { previous: "fix-login" } },
+    });
+    expect(seen.provisions.map((provision) => provision.name)).toEqual([
+      "fix-login",
+      "fix-login-2",
     ]);
   });
 
