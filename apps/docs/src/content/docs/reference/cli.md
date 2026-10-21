@@ -380,8 +380,8 @@ opens. A prefix of the ID is enough. Other commands narrow candidates by the cur
 then use a picker when needed. An ID you give is the session acted on, by `stop`, `resume`, `rejoin`
 and `mend service logs` alike.
 
-`mend resume --project <name>` looks the session up in that project, so it works from any directory;
-without it, the project is the one the current directory matches.
+`mend resume --project <name>` looks the session up in that project, so it works from any directory.
+Without it, the project is the one the current directory matches.
 
 A `mend run` session has no agent to resume: `mend resume` on its own harness is refused with
 `This run session has no agent to resume. Resume it as a shell, or start another session in its worktree.`

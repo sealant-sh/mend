@@ -70,8 +70,8 @@ with a 0.36 server. The desktop app and the native phone app are not published.
   a new session: the commits ahead of the merge base with the default branch, and the staged,
   unstaged and untracked files. Nothing is pushed to origin, and the checkout is not written to.
   Gitignored files, `.env*` files, files over the server's file limit and files with a git `filter`
-  attribute stay behind, and the CLI names each one. With a prompt the agent starts on it; without
-  one Mend holds the workspace with a shell and no agent. Review shows the change from the merge
+  attribute stay behind, and the CLI names each one. With a prompt the agent starts on it. Without
+  one, Mend holds the workspace with a shell and no agent. Review shows the change from the merge
   base. The dashboard, `mend sessions` and the web say `handed off from <machine>` on the worktree
   and its sessions. It needs the capture store and a 0.36 server. See
   [Hand off local work](/guides/hand-off-local-work/).

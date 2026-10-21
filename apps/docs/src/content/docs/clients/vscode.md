@@ -125,7 +125,7 @@ empty prompt starts the harness without one.
 
 The session starts from the server's copy of the project (`from main` above), not from the files in
 the window's folder. The extension does not hand off. To carry on from the folder's branch with its
-uncommitted files, run `mend handoff` in a terminal in that folder; see
+uncommitted files, run `mend handoff` in a terminal in that folder. See
 [Hand off local work](/guides/hand-off-local-work/). The extension lists that session like any
 other, without the `handed off from <machine>` the CLI and the web show.
 
