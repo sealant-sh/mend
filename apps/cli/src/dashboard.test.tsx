@@ -329,6 +329,18 @@ describe("the game keeps its keys", () => {
   });
 });
 
+describe("a handed-off worktree", () => {
+  it("says on its row where it came from", async () => {
+    const drawn = await draw({ width: 200 });
+    await drawn.press("2");
+    const row = drawn
+      .frame()
+      .split("\n")
+      .findIndex((line) => line.includes("docs-pass"));
+    expect(drawn.frame().split("\n")[row + 1]).toContain("from main · handed off from dana-mbp");
+  });
+});
+
 describe("the verbs that were here before", () => {
   it("still opens the label input on e and closes it on esc", async () => {
     const drawn = await draw();

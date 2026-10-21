@@ -61,6 +61,12 @@ created from a chosen base. It owns the change, the checkpoint chain, and their 
 outlives every conversation inside it. Removing a worktree is its own explicit act. It is refused
 while any session is live, and deleting a session never removes the worktree.
 
+A worktree can also come from a checkout on someone's machine, through `mend handoff`. Its branch
+starts at that checkout's `HEAD` with its uncommitted files, its base is the merge base with the
+default branch, and it records the machine, which sessions in it show as
+`handed off from <machine>`. A handoff always makes a new worktree and never joins one. See
+[Hand off local work](/guides/hand-off-local-work/).
+
 Starting a session with a worktree name that already exists joins that worktree as a new
 conversation; requesting a different base for an existing worktree is refused rather than silently
 re-basing it.

@@ -63,9 +63,10 @@ Preconditions:
 - **Live.** Under `Live`, each live session is a card linking to `/sessions/<id>`, named from
   `<shown name> · <project>` (an unnamed worktree is shown by its session's label, else
   `session <id8>`) followed by its status word (`Running · recording`) and its line
-  (`<harness> · <branch> · base <base>`, or the latest progress line). Each has a checkbox
-  `page.getByRole("checkbox", { name: "select <harness> session" })`; with two sessions of the same
-  harness there are two, so take `.nth(0)` and `.nth(1)`.
+  (`<harness> · <branch> · base <base>`, ending `· handed off from <machine>` for a session in a
+  worktree `mend handoff` made, see [Hand off local work](./handoff.md); or the latest progress
+  line). Each has a checkbox `page.getByRole("checkbox", { name: "select <harness> session" })`;
+  with two sessions of the same harness there are two, so take `.nth(0)` and `.nth(1)`.
 - **Stop selected.** Check both. A button `Stop 2 selected` appears beside `Live`. Run
   `await page.getByRole("button", { name: "Stop 2 selected" }).click()`. It reads `Stopping…`; the
   cards leave `Live` and the summary line reads `0 live`. Unscoped `mend sessions` prints
@@ -90,9 +91,9 @@ Preconditions:
   owner) and `Delete session…`. On a live card it lists `Mark checkpoint` and `Stop session`
   instead, and `Stop services` while Services run.
 - **CLI list.** Run `mend sessions --project <project> --all`. One line per session:
-  `<harness>  <id8>  <status>  <project>  <branch> · base <base>`, then the facts (label,
-  `<n> open`, `follow-up pending`, a hold line). Exit code `0`.
-  `mend status --project <project> --all` prints the same.
+  `<harness>  <id8>  <status>  <project>  <branch> · base <base>`, then the facts in this order: a
+  hold line, `handed off from <machine>` (a handed-off worktree's sessions), the label, `<n> open`,
+  `follow-up pending`. Exit code `0`. `mend status --project <project> --all` prints the same.
 - **CLI JSON.** Run `mend sessions --project <project> --all --json`. The JSON is
   `{ "version": 1, "sessions": [ … ] }`; each entry has `id`, `projectName`, `harness`, `label`,
   `worktree`, `branch`, `baseSha`, `baseRef`, `status`, `summary`, `createdAt`, `reviewUrl`

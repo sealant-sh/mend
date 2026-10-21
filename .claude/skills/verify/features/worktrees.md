@@ -69,7 +69,10 @@ Preconditions:
   the line under it reads `branch mend/verify-wt`. Run
   `await page.getByRole("button", { name: "Create worktree" }).click()`. The button reads
   `Creating…`, the dialog closes, and the tree shows `verify-wt` with `mend/verify-wt · base <base>`
-  and `0 sessions`, and the line `No visible sessions` under it.
+  and `0 sessions`, and the line `No visible sessions` under it. A worktree `mend handoff` made
+  reads `mend/<name> · base <base> · handed off from <machine>`, and each of its session lines ends
+  `· handed off from <machine>` (see [Hand off local work](./handoff.md)); `mend worktrees` prints
+  no such fact.
 - **CLI view.** Run `mend worktrees --project <project>`. A line starts `verify-wt` and reads
   `<project>  mend/verify-wt · base <base>  0 sessions`. Run
   `mend worktrees --project <project> --json`. The JSON has `"version": 2` and a worktree with

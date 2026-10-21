@@ -65,8 +65,9 @@ Preconditions:
 - From `mend models`, `<default-id>` and `<default-label>` are claude's default model, and
   `<model-id>` and `<label>` another claude model. The browser has no saved composer choice for
   `<project>` (a fresh browser profile).
-- `mend resume` reads the project from the current directory: run it inside a clone of `<repo-url>`
-  whose `origin` is `<repo-url>`. Resuming `--with codex` needs `mend connect codex`.
+- `mend resume` reads the project from the current directory unless given `--project <project>`: run
+  it inside a clone of `<repo-url>` whose `origin` is `<repo-url>`, or pass `--project`. Resuming
+  `--with codex` needs `mend connect codex`.
 - `app` is the desktop window's page over CDP, signed in to `<web>`, and `phone` the Expo web page
   at 390x844, paired with `<web>` (see [Pair a device](./pairing-devices.md)). The mobile chips step
   needs a fixture with only `<project>` visible in Projects, catalog entries for Claude and several
@@ -156,9 +157,9 @@ Preconditions:
   leaves the choice to opencode's own configuration.
 - The catalog is a table an operator edits; there is no write surface. Read ids from `mend models`
   rather than hardcoding them.
-- `mend resume` has no `--project` flag. Outside a clone of the project it fails with
-  `no adopted project matches <cwd> — run "mend adopt" here first, or name one with --project`,
-  whose advice does not apply to `resume`. It attaches the terminal: run it in its own PTY.
+- Without `--project`, `mend resume` outside a clone of the project fails with
+  `no adopted project matches <cwd> — run "mend adopt" here first, or name one with --project`. It
+  attaches the terminal: run it in its own PTY.
 - The phone's harness rows and chips have no roles, and each row's `Start` is a role-less `EvButton`
   named only `Start`: with `claude` and `codex` rows (and one set per project) the run cannot tell
   them apart. The `getByText("claude", { exact: true })` step is unambiguous only with one project

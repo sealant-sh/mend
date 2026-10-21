@@ -64,6 +64,7 @@ import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
 import { failureWords, noteRefusal } from "./failure-words.ts";
 import { flagRefusal } from "./flag-gate.ts";
 import { gitAuthorLine, parseGitAuthorArgs, type GitAuthorDto } from "./git-author.ts";
+import { handoffCommand, type Launched, type Upload } from "./handoff.ts";
 import {
   findCommand,
   manFileName,
@@ -230,6 +231,7 @@ import { worktreesRmCommand } from "./worktree-remove.ts";
  *   mend sessions [--all]                 sessions with their review facts
  *   mend land <session>                   push the change to origin, open its pull request
  *   mend pull <session>                   fetch the change into this clone as mend/<name>
+ *   mend handoff ["prompt"]               copy this checkout's branch into a new session
  *
  * The CLI talks to the Mend server API; the server owns the store, the
  * engine, and the database. Every launch — including `mend continue` — runs
@@ -294,6 +296,7 @@ interface WorktreeDto {
   readonly baseSha: string;
   readonly baseRef: string | null;
   readonly createdAt: string;
+  readonly handoff?: { readonly machine: string } | null;
 }
 
 interface SessionDto extends SessionCaptureLike {
@@ -567,6 +570,44 @@ const download =
     return { status: response.status, header: (name) => response.headers.get(name), bytes };
   };
 
+const upload =
+  (config: CliConfig): Upload =>
+  async (route, contentType, body) => {
+    const headers: Record<string, string> = { "content-type": contentType };
+    if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
+    const call = `POST ${route}`;
+    const started = Date.now();
+    const noAnswer = (error: unknown) => ({
+      _tag: "no-answer" as const,
+      message: noAnswerError(error, config.url, call, Date.now() - started).message,
+    });
+    let response: Response;
+    try {
+      response = await fetch(`${config.url}/api${route}`, { method: "POST", headers, body });
+    } catch (error) {
+      return noAnswer(error);
+    }
+    if (response.status === 401) {
+      return fail(
+        config.token === null
+          ? `not signed in to ${config.url} — run: mend login`
+          : `unauthorized at ${config.url} — the saved token was rejected; run: mend login`,
+      );
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(await response.arrayBuffer());
+    } catch (error) {
+      return noAnswer(error);
+    }
+    return {
+      _tag: "answered",
+      status: response.status,
+      header: (name) => response.headers.get(name),
+      bytes,
+    };
+  };
+
 /**
  * One upgrade ticket for a WebSocket this process is about to open (upgrade-url.ts). The saved
  * token travels in this call's Authorization header, never in the socket's URL. A server older
@@ -721,6 +762,32 @@ const startedOrExit = (
       return fail(
         `${outcome.message} · the session may still be starting · follow it: mend attach ${id8}`,
       );
+  }
+};
+
+const launchHandoff = async (
+  config: CliConfig,
+  sessionId: string,
+  prompt: string,
+): Promise<Launched> => {
+  const outcome = await followStarting(
+    config,
+    sessionId,
+    "starting the agent",
+    request<SessionDto>(config, "POST", `/sessions/${sessionId}/launch`, { prompt }),
+  );
+  switch (outcome.kind) {
+    case "live":
+      return { _tag: "running" };
+    case "refused":
+      return { _tag: "not-started", words: outcome.message };
+    case "settled":
+      return {
+        _tag: "not-started",
+        words: `session ${sessionId.slice(0, 8)} · ${startingLineOf(outcome.session)} before its agent ran`,
+      };
+    case "unreachable":
+      return { _tag: "no-answer", words: outcome.message };
   }
 };
 
@@ -4432,6 +4499,7 @@ _mend() {
     'rejoin:attach if live, otherwise resume'
     'land:push a session change to origin and open its pull request'
     'pull:fetch a session change into this clone'
+    'handoff:copy this checkout branch into a new session'
     'refresh:fetch origin branches into the store' 'projects:adopted projects' 'sessions:sessions with review facts' 'status:active sessions'
     'ui:the dashboard' 'help:help'
   )
@@ -4452,6 +4520,9 @@ _mend() {
         esac
       fi
       ;;
+    handoff)
+      compadd -- --with --project --yes
+      ;;
     shell|attach|stop|continue|resume|rejoin|land|pull|logs|wait)
       local -a sessions
       sessions=(\${(f)"$(command mend __complete session 2>/dev/null | tr '\\t' ':')"})
@@ -4465,7 +4536,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode pi run logs wait attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode pi run logs wait attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull handoff refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -4482,6 +4553,9 @@ const BASH_COMPLETIONS = `_mend() {
         esac
       fi
       COMPREPLY=( $(compgen -W "$options" -- "$cur") )
+      ;;
+    handoff)
+      COMPREPLY=( $(compgen -W "--with --project --yes" -- "$cur") )
       ;;
     shell|attach|stop|continue|resume|rejoin|land|pull|logs|wait)
       COMPREPLY=( $(compgen -W "$(command mend __complete session 2>/dev/null | cut -f1)" -- "$cur") )
@@ -5179,9 +5253,9 @@ const resumeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
   const withFlag = args.indexOf("--with");
   const withHarness =
     withFlag !== -1 && args[withFlag + 1] !== undefined ? String(args[withFlag + 1]) : null;
-  const prefix = firstPositional(args, ["--with"]);
+  const prefix = firstPositional(args, ["--with", "--project"]);
 
-  const project = await findProject(config, null);
+  const project = await findProject(config, takeFlagValue(args, "--project"));
   const detail = await api<ProjectDetailDto>(config, "GET", `/projects/${project.id}`);
   const match =
     prefix === undefined
@@ -5449,6 +5523,7 @@ interface SessionRow {
   readonly session: SessionDto;
   readonly projectName: string;
   readonly annotation: SessionAnnotationDto | undefined;
+  readonly handedOffFrom?: string;
 }
 
 interface SessionJson {
@@ -5506,6 +5581,7 @@ const printSessionRow = (row: SessionRow, workspaceLines: ReadonlyArray<string> 
   // A stop leaves Services running: a held workspace leads the facts, or the row reads as done.
   const hold = rowHold(row);
   if (hold !== null) facts.push(amber(hold));
+  if (row.handedOffFrom !== undefined) facts.push(`handed off from ${row.handedOffFrom}`);
   if (session.label !== null) facts.push(session.label);
   if (annotation !== undefined && annotation.openComments > 0) {
     facts.push(amber(`${annotation.openComments} open`));
@@ -5576,11 +5652,15 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
       ),
     );
     const detailed = details.flatMap((detail) =>
-      detail.sessions.map((session) => ({
-        session,
-        projectName: detail.project.name,
-        annotation: detail.annotations.find((a) => a.sessionId === session.id),
-      })),
+      detail.sessions.map((session) => {
+        const handoff = detail.worktrees?.find((w) => w.id === session.worktreeId)?.handoff ?? null;
+        return {
+          session,
+          projectName: detail.project.name,
+          annotation: detail.annotations.find((a) => a.sessionId === session.id),
+          ...(handoff === null ? {} : { handedOffFrom: handoff.machine }),
+        };
+      }),
     );
     rows =
       all || projectName !== null
@@ -6134,6 +6214,23 @@ const main = async () => {
       return withAgentShare(config, () => landCommand(boundApi(config), rest));
     case "pull":
       return pullCommand(boundApi(config), download(config), rest);
+    case "handoff":
+      // Bridge mode signs the admission's origin read and an adoption's clone with this machine's
+      // ssh-agent, so the share runs meanwhile.
+      return withAgentShare(config, () =>
+        handoffCommand(
+          {
+            api: boundApi(config),
+            download: download(config),
+            upload: upload(config),
+            serverVersion: async () => (await fetchServerVersion(config.url)).version,
+            launch: (sessionId, prompt) => launchHandoff(config, sessionId, prompt),
+            spin: (label, work) => withSpinner(label, work),
+            serverUrl: config.url,
+          },
+          rest,
+        ),
+      );
     case "sessions":
     case "status":
       return sessionsCommand(config, rest);

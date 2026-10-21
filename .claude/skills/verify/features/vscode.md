@@ -75,7 +75,8 @@ logs, and a video of the display. The flows below follow the stories in
   already is the workspace focuses that tab and does nothing else.
 - `vscode-continue-here`: a conversation's tab reads
   `<harness> is running as a conversation (from <where>) · Continue here to type to it`; its link
-  moves the conversation into a terminal (`POST /sessions/:id/handoff {to:"pty"}`).
+  moves the conversation into a terminal: a mode switch, `POST /sessions/:id/handoff {to:"pty"}`
+  (the wire path keeps its old name; it is not `mend handoff`).
 - `vscode-terminal` attaches a live session's terminal in the current window over `/api/tty`,
   without SSH.
 - `vscode-watch-terminal` is `Mend: Watch terminal` on a session whose workspace another person
@@ -671,13 +672,14 @@ the row takes the job's name.
     `'/api/sessions/<id>/handoff'` lines `0 → 1`; the session's processes read
     `agent-protocol stopped`, `agent-pty running`; the same tab name now draws claude's TUI with the
     conversation (`❯ say hi`, then the 401 answer) and its prompt, and `go on` typed reads back
-    `❯ go on`. A conversation with no completed turn cannot be continued: the handoff answers 422
-    `StoreFailure` `No saved harness state to reopen as a terminal — resume the session instead.`
-    (the tab says that sentence), after it has already stopped the conversation. In `r2a` a
-    conversation whose first turn had completed got the same 422 once: the server's log shows the
-    handoff answered at `05:43:07.299` and the harness state captured at `07.630`, after it, where
-    the passing runs (`v1084a`, `r2b`) capture inside the handoff's own request first. `r3a` hit it
-    again: the handoff answered 422 at `07:06:52.738`, the harness state observed at `53.122`. A
+    `❯ go on`. A conversation with no completed turn cannot be continued: the mode switch answers
+    422 `StoreFailure`
+    `No saved harness state to reopen as a terminal — resume the session instead.` (the tab says
+    that sentence), after it has already stopped the conversation. In `r2a` a conversation whose
+    first turn had completed got the same 422 once: the server's log shows the mode switch answered
+    at `05:43:07.299` and the harness state captured at `07.630`, after it, where the passing runs
+    (`v1084a`, `r2b`) capture inside the mode switch's own request first. `r3a` hit it again: the
+    mode switch answered 422 at `07:06:52.738`, the harness state observed at `53.122`. A
     server-side race, not the editor's; rerun the lane. The take-over command is gone from the
     manifest.
   - Not her session. Ana is a second account, set up `via: "api"`: an invitation, her sign-up with

@@ -126,8 +126,8 @@ Preconditions:
   a one-time link to `/reset/<token>`. The reset page itself is mapped in
   [sign-in.md](./sign-in.md). Choose `Done`.
 - **Leave a private project behind.** As `<member>`, adopt one:
-  `XDG_CONFIG_HOME=/tmp/verify-member mend adopt <repo-url> --name <project>-left --auth ambient`.
-  Stdout contains the line `  visible to only you`.
+  `XDG_CONFIG_HOME=/tmp/verify-member mend adopt <repo-url> --name <project>-left`. Stdout contains
+  the line `  visible to only you`.
 - **Give the member a live session.** If `<member>` has `mend connect claude`, run
   `XDG_CONFIG_HOME=/tmp/verify-member mend claude "List the files and change nothing." --name verify-removed --project <project>-shared --detach`
   and note `<m8>`. `mend sessions --project <project>-shared` (as `<owner>`) lists it live. Without

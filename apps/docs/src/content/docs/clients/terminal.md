@@ -145,6 +145,10 @@ agent stopped while its Services run reads, for example,
 `agent stopped · 3 services keep the workspace up`. A worktree reads its most pressing session's
 word, so `starting` or `stopping` while one of its sessions does and none is waiting or running.
 
+A worktree made by [`mend handoff`](/guides/hand-off-local-work/) names the machine it came from, on
+its row and on each of its session rows: `idle · handed off from dana-mbp · claude · 1 shell`.
+`mend sessions` adds the same `handed off from <machine>` to each of its sessions.
+
 The session pane lists the session's name and harness, its status with the words above, its branch
 against its base, then its running Services: each one's name, its workspace port, the host port and
 its state, or where its tunnel opens on this machine, and `no services running` when there are none.
@@ -182,7 +186,7 @@ with several, a picker opens.
 | ----------------------------------------------------- | ------------------------------------------------------------------------- |
 | `mend attach [session] [--no-tunnel]`                 | Reattach this terminal to a running session                               |
 | `mend rejoin [session] [--harness <h>] [--no-tunnel]` | Attach when the session is live, otherwise resume it                      |
-| `mend resume [session] [--with <h>]`                  | Start a new agent process from the saved harness state                    |
+| `mend resume [session] [--with <h>] [--project <p>]`  | Start a new agent process from the saved harness state                    |
 | `mend continue [session]`                             | Resume the session with its pending review follow-up as the first message |
 | `mend shell [session]`                                | Open a second terminal into the same workspace, beside the agent          |
 | `mend stop [session]`                                 | End the agent; the worktree, record and review remain                     |

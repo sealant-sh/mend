@@ -18,7 +18,7 @@ attached to a remote server, the session's browser Services are tunneled to this
 - `detach` leaves with `Ctrl+]`; the session keeps running.
 - `stop-cli` stops one session, every live session, or every live session of a project (`mend stop`,
   `--all`, `--project`).
-- `resume-cli` resumes a settled session (`mend resume [id] [--with <harness>]`).
+- `resume-cli` resumes a settled session (`mend resume [id] [--with <harness>] [--project <p>]`).
 - `rejoin-cli` attaches if live, otherwise resumes (`mend rejoin [id] [--harness <h>]`).
 - `resume-web` resumes from the session page's `resume with:` buttons and the Now page's `Resume`.
 - `rename-web` sets or clears the session's label from the session page's `rename`.
@@ -33,7 +33,7 @@ attached to a remote server, the session's browser Services are tunneled to this
 ## How to get to it (user POV)
 
 - CLI: `mend attach [session-id-prefix] [--no-tunnel]`, `mend stop [session-id-prefix]`,
-  `mend stop --all [--project <p>]`, `mend resume [session-id] [--with <harness>]`,
+  `mend stop --all [--project <p>]`, `mend resume [session-id] [--with <harness>] [--project <p>]`,
   `mend rejoin [session-id] [--harness <h>] [--no-tunnel]`. `mend codex|claude …` attach on launch
   unless `--detach`.
 - Web: the session page (`/sessions/<id>`): `Stop` while the agent runs, `resume with:` and one
@@ -59,8 +59,9 @@ Preconditions:
 
 - Mend is healthy at `<web>`, the browser and the CLI signed in as the session's owner.
   `mend connect claude` has been run (the resume, rename and pickup steps use a `claude` session).
-- A clone of `<repo-url>` or a directory named `<project>` to run `mend resume` and `mend rejoin`
-  from (`<project-dir>`): both find the project from the working directory only.
+- A clone of `<repo-url>` or a directory named `<project>` to run `mend rejoin` from
+  (`<project-dir>`): it finds the project from the working directory only. `mend resume` does too
+  unless it is given `--project <project>`.
 - For the pickup step: the mobile web build paired with this instance (its `mend-config` in browser
   storage holds the URL and a device token), at a 390x844 viewport.
 - A live, detached session:
@@ -157,11 +158,13 @@ Preconditions:
   session with no real id reads `<harness> · starting`.
 - Resume, provisioning and pending button labels can finish between reads. Report each transient
   state not observed and retain the resulting session state.
-- `mend resume` and `mend rejoin` take no `--project`: they resolve the project from the working
-  directory (a clone with the same origin, or a directory with the project's name). Elsewhere they
-  fail with
-  `no adopted project matches <cwd> — run "mend adopt" here first, or name one with --project`,
-  which names a flag these two commands do not read. That message is a finding.
+- `mend resume --project <p>` names the project; `mend resume` without it, and `mend rejoin` always,
+  resolve the project from the working directory (a clone with the same origin, or a directory with
+  the project's name). Elsewhere they fail with
+  `no adopted project matches <cwd> — run "mend adopt" here first, or name one with --project`.
+  `mend rejoin` does not read `--project`, so for it that message names a flag it lacks. That is a
+  finding. `mend resume --project <p>` with an unknown name fails with
+  `mend: no adopted project named "<p>"`.
 - `mend resume --with` is documented as `claude or codex`; the web offers `opencode` and `pi` too.
   Drive `--with` with the documented values.
 - `mend attach`, `mend resume` and `mend rejoin` hold the terminal. Run them in their own tmux

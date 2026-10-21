@@ -7,7 +7,13 @@ import { type LandingFact, landingFactLine, landingFactsFromWire } from "@mend/d
 
 import { failureWords, noteRefusal } from "./failure-words.ts";
 import type { ApiCall } from "./pair.ts";
-import { gitCurrentBranch, gitTopLevel, normalizeRemoteUrl, redactCredentials } from "./shared.ts";
+import {
+  gitCurrentBranch,
+  gitTopLevel,
+  normalizeRemoteUrl,
+  redactCredentials,
+  sameRepository,
+} from "./shared.ts";
 
 /**
  * Landing from a terminal (docs/adr/0007-landing.md): `mend land` pushes a session's change to
@@ -442,8 +448,9 @@ export const gitRemotes = (cwd: string): ReadonlyArray<GitRemote> => {
 };
 
 /**
- * The remote that is the project's origin: the same host and path (ssh, https and scp-style
- * spellings compare equal), or the same directory for an origin on this machine.
+ * The remote that is the project's origin: the same repository (sameRepository: host, port and
+ * path, with ssh, https and scp-style spellings equal), or the same directory for an origin on
+ * this machine.
  */
 export const remoteForOrigin = (
   remotes: ReadonlyArray<GitRemote>,
@@ -451,13 +458,13 @@ export const remoteForOrigin = (
   cwd: string,
 ): GitRemote | null => {
   if (originUrl === null) return null;
-  const origin = normalizeRemoteUrl(originUrl);
-  const originPath = origin === null ? path.resolve(originUrl.replace(/^file:\/\//, "")) : null;
+  const isUrl = normalizeRemoteUrl(originUrl) !== null;
+  const originPath = isUrl ? null : path.resolve(originUrl.replace(/^file:\/\//, ""));
   return (
     remotes.find((remote) =>
-      origin === null
-        ? path.resolve(cwd, remote.url.replace(/^file:\/\//, "")) === originPath
-        : normalizeRemoteUrl(remote.url) === origin,
+      isUrl
+        ? sameRepository(remote.url, originUrl)
+        : path.resolve(cwd, remote.url.replace(/^file:\/\//, "")) === originPath,
     ) ?? null
   );
 };

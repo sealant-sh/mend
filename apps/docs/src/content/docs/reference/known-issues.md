@@ -437,6 +437,49 @@ where that is not available, such as one started outside its container on macOS,
 with `no /proc/self/fd or /dev/fd here to keep the write inside …` and writes nothing. The packaged
 server runs on Linux and is not affected.
 
+## Handoff
+
+These apply to [`mend handoff`](/guides/hand-off-local-work/).
+
+### Only the CLI hands off
+
+`mend handoff` is a CLI command. The web app, the terminal dashboard and `mend sessions` say
+`handed off from <machine>` on a handed-off worktree and its sessions. The VS Code extension and the
+phone list the session like any other, without that fact, and neither can hand off.
+
+### The co-located store takes no handoffs
+
+On the deprecated co-located store (`MEND_SESSION_STORE=colocated`), `mend handoff` is refused
+before the bundle is sent:
+`this server keeps worktrees in the co-located store, which takes no handoffs · the operator can unset MEND_SESSION_STORE to run the capture store`.
+
+### The review base is the merge base your checkout had
+
+Review compares the handoff with the merge base of your branch and `origin/<default branch>` as your
+checkout last fetched it. A newer default branch on the server does not move that base. Run
+`git fetch origin` before you hand off to start from origin's current default branch.
+
+### Automatic install reads the lockfiles at the merge base
+
+When the project sets no install command, automatic install picks one from the lockfiles at the root
+of the merge base, not of the handed-off branch. A branch that adds the project's first lockfile, or
+a lockfile of another package manager, gets the merge base's command, or no install when the merge
+base has no lockfile. Set the project's install command to run a different one.
+
+### A server restart can leave a handed-off session starting
+
+If the Mend server stops while a handed-off session is starting, the session can stay `starting`
+with no agent, and nothing settles it later. When the restart cut the upload short, the CLI sends
+the same bundle again and the server finishes that same session. Otherwise the handed-off work is in
+the worktree, and handing the checkout off again makes a new worktree beside it.
+
+### A handoff's body is read into memory before its budget counts it
+
+The server reads a handoff's whole bundle, up to `MEND_BUDGET_BUNDLE_BYTES` (64 MiB by default),
+into memory before `MEND_BUDGET_ACCOUNT_HANDOFFS_IN_FLIGHT` counts the handoff. An upload over that
+budget is refused after its body has arrived, so one account's concurrent uploads can each hold up
+to that many bytes until then. Only a signed-in account can upload.
+
 ## Per-person workspaces
 
 Applies to workspaces where each person runs as their own Linux user: by default, every new worktree

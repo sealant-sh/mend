@@ -9,28 +9,35 @@ Use these terms in the interface, documentation, and support material.
 
 ## Work
 
-| Term                 | Availability | Meaning                                                                                       |
-| -------------------- | ------------ | --------------------------------------------------------------------------------------------- |
-| **Machine**          | Current      | A developer-controlled computer or devbox running Mend and Sealant                            |
-| **Project**          | Current      | A repository adopted into Mend's central store                                                |
-| **Worktree**         | Current      | A durable named checkout in the store; owns its change, chain, and review                     |
-| **Session**          | Current      | One supervised coding-agent conversation inside a worktree                                    |
-| **Process**          | Current      | One agent, shell, or Service execution that belongs to a session                              |
-| **Change**           | Current      | A repository comparison, one per worktree, against its base                                   |
-| **Checkpoint**       | Current      | A hidden Git snapshot in the worktree's chain, with record positions                          |
-| **Service**          | Current      | An explicitly declared development process or forwarded port in a session                     |
-| **Secret file**      | Current      | A file a person keeps in Mend, encrypted, written into every session they own, never captured |
-| **Agent memory**     | Current      | What a person's Claude Code or Codex learned on a project, carried into their next sessions   |
-| **Context item**     | Planned      | A file, document, note, URL, or previous session summary                                      |
-| **Context pack**     | Planned      | An editable selection of context items for recurring work                                     |
-| **Context snapshot** | Planned      | The immutable context supplied to one session                                                 |
-| **Session summary**  | Planned      | An editable end-of-session summary promoted into durable context                              |
-| **Workspace**        | Sealant      | The environment where session processes run                                                   |
-| **Run**              | Sealant      | A process execution with a durable platform record                                            |
-| **Harness**          | Sealant      | Claude Code, Codex, opencode, pi, or another agent command that Mend supervises               |
+| Term                 | Availability | Meaning                                                                                                                |
+| -------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| **Machine**          | Current      | A developer-controlled computer or devbox running Mend and Sealant                                                     |
+| **Project**          | Current      | A repository adopted into Mend's central store                                                                         |
+| **Worktree**         | Current      | A durable named checkout in the store; owns its change, chain, and review                                              |
+| **Session**          | Current      | One supervised coding-agent conversation inside a worktree                                                             |
+| **Process**          | Current      | One agent, shell, or Service execution that belongs to a session                                                       |
+| **Change**           | Current      | A repository comparison, one per worktree, against its base                                                            |
+| **Checkpoint**       | Current      | A hidden Git snapshot in the worktree's chain, with record positions                                                   |
+| **Service**          | Current      | An explicitly declared development process or forwarded port in a session                                              |
+| **Secret file**      | Current      | A file a person keeps in Mend, encrypted, written into every session they own, never captured                          |
+| **Agent memory**     | Current      | What a person's Claude Code or Codex learned on a project, carried into their next sessions                            |
+| **Handoff**          | Current      | A copy of the branch in a person's checkout, uncommitted files included, as a new session; the checkout is not changed |
+| **Mode switch**      | Current      | Moving a session's agent between a terminal and a conversation                                                         |
+| **Context item**     | Planned      | A file, document, note, URL, or previous session summary                                                               |
+| **Context pack**     | Planned      | An editable selection of context items for recurring work                                                              |
+| **Context snapshot** | Planned      | The immutable context supplied to one session                                                                          |
+| **Session summary**  | Planned      | An editable end-of-session summary promoted into durable context                                                       |
+| **Workspace**        | Sealant      | The environment where session processes run                                                                            |
+| **Run**              | Sealant      | A process execution with a durable platform record                                                                     |
+| **Harness**          | Sealant      | Claude Code, Codex, opencode, pi, or another agent command that Mend supervises                                        |
 
 Do not call a process a session. A session can contain several agent processes over time plus
 supporting shells and Services.
+
+Handoff means only what `mend handoff` does. The session row says where the work came from:
+`handed off from dana-mbp`. Moving an agent between a terminal and a conversation is a mode switch,
+and the planned end-of-session summary is a session summary. Neither is a handoff, though the mode
+switch keeps its released route, `POST /sessions/:id/handoff`.
 
 Do not call a session a worktree. A worktree holds many sessions over its life, several can be live
 at once, and it survives every one of them. Deleting a session leaves the worktree, its change, and

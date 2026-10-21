@@ -27,7 +27,7 @@
 // Claude is connected with the skill's published fake setup token (`scripts/fakes.mjs`). The real
 // claude starts on it: as a terminal agent it sits at its `❯` prompt, and as a conversation its
 // first turn completes with the provider's 401 as its answer, which leaves the saved turn a mode
-// handoff needs. Nothing reaches the provider beyond that refusal.
+// switch needs. Nothing reaches the provider beyond that refusal.
 
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -853,7 +853,7 @@ export default async (h) => {
       return null;
     }, text);
 
-  const handoffs = async () =>
+  const modeSwitches = async () =>
     linesMatching(await serverLogs(), `'/api/sessions/${conversation.id}/handoff'`);
 
   const elsewhere = await step(
@@ -890,9 +890,9 @@ export default async (h) => {
   );
 
   await step(
-    "Ctrl+click Continue here: one handoff, the tab becomes claude's TUI with the conversation, she types to it",
+    "Ctrl+click Continue here: one mode switch, the tab becomes claude's TUI with the conversation, she types to it",
     async () => {
-      const before = await handoffs();
+      const before = await modeSwitches();
       const at = await terminalTextAt("Continue here");
       expect(at !== null, "Continue here is not on the screen");
       await page().mouse.move(at.x, at.y);
@@ -929,8 +929,8 @@ export default async (h) => {
       await page().keyboard.type("go on");
       const typed = await terminal().waitForText(/❯\s+go on/, 30_000);
       await shot("continue-here-typed");
-      const after = await handoffs();
-      const observed = `hover ${JSON.stringify(hover)} · handoffs ${before} → ${after} · tabs ${JSON.stringify(tabs.names)} · active "${tabs.active}" · focused ${tabs.focused} · processes ${JSON.stringify(read.processes.map((process) => [process.kind, process.status]))} · the conversation in the TUI ${typed.includes("say hi")} · prompt before "${promptBefore.trim()}" · after "${(typed.split("\n").findLast((row) => /❯\s+go on/.test(row)) ?? "").trim()}"`;
+      const after = await modeSwitches();
+      const observed = `hover ${JSON.stringify(hover)} · mode switches ${before} → ${after} · tabs ${JSON.stringify(tabs.names)} · active "${tabs.active}" · focused ${tabs.focused} · processes ${JSON.stringify(read.processes.map((process) => [process.kind, process.status]))} · the conversation in the TUI ${typed.includes("say hi")} · prompt before "${promptBefore.trim()}" · after "${(typed.split("\n").findLast((row) => /❯\s+go on/.test(row)) ?? "").trim()}"`;
       expect(after - before === 1, observed);
       expect(tabs.active === conversation.tab, observed);
       return observed;

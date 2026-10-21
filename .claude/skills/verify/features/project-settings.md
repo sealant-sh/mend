@@ -90,10 +90,9 @@ Preconditions:
 - **Visibility.** On the project's Setup tab, run
   `await page.getByRole("group", { name: "Visibility" }).getByRole("button", { name: "shared" }).click()`.
   `shared` reports `aria-pressed="true"`. Choose `private` to restore it.
-- **Remove the project.** Use a disposable project
-  (`mend adopt <repo-url> --name <project>-rm --auth ambient`). On its Setup tab run
-  `await page.getByRole("button", { name: "Remove project…" }).click()`. The button now reads
-  `Really remove project and store copy?` and the line
+- **Remove the project.** Use a disposable project (`mend adopt <repo-url> --name <project>-rm`). On
+  its Setup tab run `await page.getByRole("button", { name: "Remove project…" }).click()`. The
+  button now reads `Really remove project and store copy?` and the line
   `Stops live sessions, deletes sessions and reviews, and removes the store copy. The origin repository is untouched.`
   appears. Run
   `await page.getByRole("button", { name: "Really remove project and store copy?" }).click()`. It

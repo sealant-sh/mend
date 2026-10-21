@@ -66,6 +66,15 @@ with a 0.36 server. The desktop app and the native phone app are not published.
 
 ### Sessions
 
+- **Hand off local work.** `mend handoff ["prompt"]`, run inside a checkout, copies its branch into
+  a new session: the commits ahead of the merge base with the default branch, and the staged,
+  unstaged and untracked files. Nothing is pushed to origin, and the checkout is not written to.
+  Gitignored files, `.env*` files, files over the server's file limit and files with a git `filter`
+  attribute stay behind, and the CLI names each one. With a prompt the agent starts on it. Without
+  one, Mend holds the workspace with a shell and no agent. Review shows the change from the merge
+  base. The dashboard, `mend sessions` and the web say `handed off from <machine>` on the worktree
+  and its sessions. It needs the capture store and a 0.36 server. See
+  [Hand off local work](/guides/hand-off-local-work/).
 - **pi and opencode** run as sessions beside Claude Code and Codex (`mend pi`, `mend opencode`), on
   your ChatGPT subscription through the Codex login. `mend connect pi` sends your pi setup. See
   [Your pi setup](/guides/pi/).
@@ -124,7 +133,14 @@ with a 0.36 server. The desktop app and the native phone app are not published.
   with no script is refused before anything is created; `mend run -- bash -c '…'` runs bash itself.
 - `mend pull` fast-forwards a second pull. `mend worktrees rm` removes a worktree, `--force` one
   whose change was never landed.
+- `mend pull` takes a remote as the project's origin only on the same port, and with the same path
+  case except on github.com. A clone whose only matching remote differs in either is refused with
+  its remotes listed; `--force` still skips the check.
 - `mend resume <id>`, `mend stop <id>` and `mend rejoin <id>` act on the session they are given.
+  `mend resume --project <name>` finds the session in that project, from any directory.
+- A session whose agent cannot move between terminal and conversation now reads
+  `This session's agent cannot switch to that mode.` in the terminal, on the phone, in VS Code and
+  on the web. The web used to say the session could not continue in that harness.
   `mend projects --json` and `mend service list --json` print JSON. `mend ssh <session>` prints the
   `ssh` command for that session's workspace.
 - A foreground `mend claude` or `mend codex` stops its session when its terminal closes.

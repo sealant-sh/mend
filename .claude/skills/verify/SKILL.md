@@ -406,13 +406,13 @@ With no `README.md` there, Drive does not run: report every feature
 Pick the feature's file in the map and follow its `Driving it with verify` section. Map its
 placeholders to this stack:
 
-| Map          | Here                                                                                                                      |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `<web>`      | `$web`                                                                                                                    |
-| `<repo-url>` | `http://verify-stack-fixture:9080/repo.git`: the stack's one-commit fixture, served on its network, cloned with `ambient` |
-| `<project>`  | `$wt-1`, `$wt-2` …: no project has the name yet. `verify-fixture` is taken, adopted by Launch                             |
-| `<scratch>`  | a directory under the inner home (`cwd` in a step, below), made by a step: `git clone <repo-url> <scratch>/checkout` too  |
-| `mend …`     | the inner CLI, below                                                                                                      |
+| Map          | Here                                                                                                                                                                                                                                                    |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<web>`      | `$web`                                                                                                                                                                                                                                                  |
+| `<repo-url>` | `http://verify-stack-fixture:9080/repo.git`: the stack's one-commit fixture, served on its network over HTTP: either git access mode clones it with no signer, so adopt with the default (`mend key`) or `--auth mend-key`; `--auth ambient` is refused |
+| `<project>`  | `$wt-1`, `$wt-2` …: no project has the name yet. `verify-fixture` is taken, adopted by Launch                                                                                                                                                           |
+| `<scratch>`  | a directory under the inner home (`cwd` in a step, below), made by a step: `git clone <repo-url> <scratch>/checkout` too                                                                                                                                |
+| `mend …`     | the inner CLI, below                                                                                                                                                                                                                                    |
 
 **One account on both surfaces.** The browser (step 7's handover) and the inner CLI are both the
 stack's first account, so the map's precondition holds: a session the CLI started is the browser's
