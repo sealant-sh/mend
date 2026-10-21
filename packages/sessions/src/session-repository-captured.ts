@@ -63,6 +63,10 @@ import { derivedPackPrefix, ensureCaptureCache } from "./worktree-reads.ts";
  */
 export const CHECKPOINT_WAIT = Duration.seconds(2);
 
+/** How long capture 0 waits for another caller registering it: one Mend claim's lease. */
+const CAPTURE_ZERO_WAIT = Duration.seconds(30);
+const CAPTURE_ZERO_LOOK = Duration.millis(100);
+
 const checkpointRef = (worktreeId: string, index: number) =>
   `refs/mend/checkpoints/${worktreeId}/${index}`;
 
@@ -284,6 +288,32 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         };
       });
 
+    /**
+     * The Mend claim capture 0 registers under. Another caller finishing the same creation holds
+     * it meanwhile (a creator and a session joining its worktree both run the creation's tail):
+     * the claim waits for that caller's capture 0, for up to one Mend claim's lease, and answers
+     * `registered` once it is there. A claim taken after it registered is given back at once.
+     */
+    const claimCaptureZero = Effect.fn("SessionRepositoryCaptured.claimCaptureZero")(function* (
+      storePath: string,
+      worktreeId: WorktreeId,
+    ) {
+      const deadline = (yield* Clock.currentTimeMillis) + Duration.toMillis(CAPTURE_ZERO_WAIT);
+      while (true) {
+        const claim = yield* repo
+          .claim(worktreeId, `mend:${worktreeId}`)
+          .pipe(Effect.catchTag("WorktreeLeasedError", () => Effect.succeed(null)));
+        const head = (yield* repo.headOf(worktreeId))?.head ?? null;
+        if (claim !== null && head === null) return claim;
+        if (claim !== null) yield* repo.release(worktreeId, claim.epoch);
+        if (head !== null) return "registered" as const;
+        if ((yield* Clock.currentTimeMillis) >= deadline) {
+          return yield* gitFailure(storePath, "attach", "the worktree is leased before capture 0");
+        }
+        yield* Effect.sleep(CAPTURE_ZERO_LOOK);
+      }
+    });
+
     const attachWorktree: NonNullable<SessionRepository["Service"]["attachWorktree"]> = (
       projectId,
       worktreeId,
@@ -338,13 +368,8 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
           .pipe(Effect.ignore);
         // Capture 0 under a Mend-held epoch: the CAS needs a live lease; the release right
         // after lets the executor's first plan claim the next epoch at once.
-        const claimed = yield* repo
-          .claim(worktreeId, `mend:${worktreeId}`)
-          .pipe(
-            Effect.mapError(() =>
-              gitFailure(project.storePath, "attach", "the worktree is leased before capture 0"),
-            ),
-          );
+        const claimed = yield* claimCaptureZero(project.storePath, worktreeId);
+        if (claimed === "registered") return;
         const finish = Effect.gen(function* () {
           const keys = captureKeys(worktreeId, claimed.epoch);
           // The workspace class starts with a real empty `harness/` directory. sealantd restores

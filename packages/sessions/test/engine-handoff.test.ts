@@ -1,14 +1,15 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { CaptureStoreRepo } from "@mend/db";
 import { ProjectId } from "@mend/domain";
 import { Session } from "@mend/domain/workbench";
 import { SessionEngine, startFromBase } from "@mend/sessions";
-import { skippedFreshen, Store, type AdmittedHandoff } from "@mend/store";
+import { BlobStore, skippedFreshen, Store, type AdmittedHandoff } from "@mend/store";
 import { buildHandoffBundle, sh } from "@mend/store/testing";
 import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions } from "@sealant/sdk";
-import { Effect, Result } from "effect";
+import { Deferred, Effect, Fiber, Layer, Result } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
@@ -80,6 +81,34 @@ const crashAfterRow = (world: World, memory: MemoryCaptureStore, session: Sessio
     if (capture.worktreeId === worktreeId) memory.captures.delete(id);
   }
 };
+
+/** Blobs whose next manifest put, once `armed`, waits on `go` after saying so on `held`. */
+const holdingManifests =
+  (
+    armed: () => boolean,
+    arm: (held: boolean) => void,
+    held: Deferred.Deferred<void>,
+    go: Deferred.Deferred<void>,
+  ) =>
+  (base: Layer.Layer<BlobStore>): Layer.Layer<BlobStore> =>
+    Layer.effect(
+      BlobStore,
+      Effect.gen(function* () {
+        const inner = yield* BlobStore;
+        return {
+          ...inner,
+          put: (key, bytes, options) =>
+            Effect.suspend(() => {
+              if (!armed() || !key.includes("/manifests/")) return inner.put(key, bytes, options);
+              arm(false);
+              return Deferred.succeed(held, undefined).pipe(
+                Effect.andThen(Deferred.await(go)),
+                Effect.andThen(inner.put(key, bytes, options)),
+              );
+            }),
+        };
+      }),
+    ).pipe(Layer.provide(base));
 
 describe("SessionEngine handoff", () => {
   it("anchors Review at the base: ordinal 0 is M, the session-start and the next checkpoint are W, the change's base is M", async () => {
@@ -186,6 +215,157 @@ describe("SessionEngine handoff", () => {
           ).toEqual([bundle.mergeBase]);
         }),
       { captured: memory },
+    );
+  });
+
+  it("finishes a creation two callers race to finish once: capture 0, checkpoint 0 and the change are made once, and both get a session", async () => {
+    const memory = makeMemoryCaptureStore();
+    const manifestHeld = Effect.runSync(Deferred.make<void>());
+    const manifestGo = Effect.runSync(Deferred.make<void>());
+    let holdManifest = false;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const bundle = buildHandoffBundle(checkoutIn(tmp));
+          const admitted = yield* admitIn(project.storePath, bundle.bytes);
+          const first = yield* provisionHandoff(project.id, "fix-login", admitted);
+          const worktreeId = first.worktreeId;
+          crashAfterRow(world, memory, first);
+          const engine = yield* SessionEngine;
+          const next = engine.provisionSessionIn(worktreeId, {
+            harness: "codex",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          holdManifest = true;
+          const creator = yield* Effect.forkChild(next);
+          yield* Deferred.await(manifestHeld);
+          const joiner = yield* Effect.forkChild(next);
+          yield* Effect.sleep("200 millis");
+          yield* Deferred.succeed(manifestGo, undefined);
+          expect((yield* Fiber.join(creator)).worktreeId).toBe(worktreeId);
+          expect((yield* Fiber.join(joiner)).worktreeId).toBe(worktreeId);
+          expect(memory.chains.get(worktreeId)?.headN).toBe(0);
+          expect(
+            [...memory.captures.values()].filter((capture) => capture.worktreeId === worktreeId),
+          ).toHaveLength(1);
+          expect(checkpointsOf(world, worktreeId)).toEqual([
+            [0, bundle.mergeBase],
+            [1, bundle.checkpoint],
+            [2, bundle.checkpoint],
+          ]);
+          expect(
+            [...world.changes.values()].filter((change) => change.worktreeId === worktreeId),
+          ).toHaveLength(1);
+        }),
+      {
+        captured: memory,
+        transformBlobs: holdingManifests(
+          () => holdManifest,
+          (held) => {
+            holdManifest = held;
+          },
+          manifestHeld,
+          manifestGo,
+        ),
+      },
+    );
+  });
+
+  it("finishes a creation whose capture 0 another caller's claim holds once that claim ends, instead of failing the session", async () => {
+    const memory = makeMemoryCaptureStore();
+    const claimRefused = Effect.runSync(Deferred.make<void>());
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const bundle = buildHandoffBundle(checkoutIn(tmp));
+          const admitted = yield* admitIn(project.storePath, bundle.bytes);
+          const first = yield* provisionHandoff(project.id, "fix-login", admitted);
+          const worktreeId = first.worktreeId;
+          crashAfterRow(world, memory, first);
+          memory.chains.set(worktreeId, { headCapture: null, headN: -1, headEpoch: 1 });
+          memory.leases.set(worktreeId, {
+            executorId: `mend:${worktreeId}`,
+            epoch: 1,
+            expiresAt: memory.clock.now() + 30_000,
+          });
+          const engine = yield* SessionEngine;
+          const joining = yield* Effect.forkChild(
+            engine.provisionSessionIn(worktreeId, {
+              harness: "codex",
+              label: null,
+              ownerUserId: "user-fixture",
+            }),
+          );
+          yield* Deferred.await(claimRefused);
+          // The other caller gives its claim back without capture 0 (a request that died).
+          const held = memory.leases.get(worktreeId);
+          if (held !== undefined) {
+            held.executorId = null;
+            held.expiresAt = memory.clock.now();
+          }
+          expect((yield* Fiber.join(joining)).worktreeId).toBe(worktreeId);
+          expect(memory.chains.get(worktreeId)?.headN).toBe(0);
+          expect(checkpointsOf(world, worktreeId)).toEqual([
+            [0, bundle.mergeBase],
+            [1, bundle.checkpoint],
+          ]);
+        }),
+      {
+        captured: {
+          ...memory,
+          layer: Layer.effect(
+            CaptureStoreRepo,
+            Effect.gen(function* () {
+              const inner = yield* CaptureStoreRepo;
+              return {
+                ...inner,
+                claim: (worktreeId, executorId, ttlSeconds, launchId) =>
+                  inner
+                    .claim(worktreeId, executorId, ttlSeconds, launchId)
+                    .pipe(Effect.tapError(() => Deferred.succeed(claimRefused, undefined))),
+              };
+            }),
+          ).pipe(Layer.provide(memory.layer)),
+        },
+      },
+    );
+  });
+
+  it("leaves a worktree made before captures to its launch: a session joining it uploads no base pack, and its launch attaches capture 0", async () => {
+    const memory = makeMemoryCaptureStore();
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const legacy = yield* engine.ensureWorktree(
+            project.id,
+            { name: "older", start: startFromBase(null) },
+            "user-fixture",
+          );
+          memory.chains.delete(legacy.id);
+          memory.leases.delete(legacy.id);
+          for (const [id, capture] of memory.captures) {
+            if (capture.worktreeId === legacy.id) memory.captures.delete(id);
+          }
+          const joined = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: "older",
+            start: startFromBase(null),
+            ownerUserId: "user-fixture",
+          });
+          expect(joined.worktreeId).toBe(legacy.id);
+          expect(memory.chains.get(legacy.id)?.headCapture ?? null).toBeNull();
+          yield* engine.launch(joined.id, ["codex"]);
+          expect(memory.chains.get(legacy.id)?.headN).toBe(0);
+        }),
+      { captured: memory, sealantLayer: sealantLaunchLayer(created) },
     );
   });
 

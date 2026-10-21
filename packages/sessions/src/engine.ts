@@ -8828,34 +8828,45 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * The rest of a worktree's creation once its row exists: capture 0, the ordinal-0
-       * checkpoint and the change row. Each step does only what is missing, so every path that
+       * The rest of a worktree's creation once its row exists: capture 0 and the ordinal-0
+       * checkpoint, then the change row. Each step does only what is missing, so every path that
        * hands a worktree to a session runs it, and a creation that died after its row is finished
-       * by whichever session comes next.
+       * by whichever session comes next. A worktree with a checkpoint finished its creation: one
+       * made before captures has no chain, and its next launch attaches it (`ensureCaptureZero`),
+       * as it always has. One caller at a time per worktree, as checkpoints are written: a creator
+       * and a session joining its worktree meanwhile both run it, and the second finds it done.
        */
-      const completeWorktreeCreation = Effect.fn("SessionEngine.completeWorktreeCreation")(
-        function* (project: Project, row: Worktree) {
+      const creationWriters = new Map<WorktreeId, Semaphore.Semaphore>();
+      const completeWorktreeCreation = (project: Project, row: Worktree) => {
+        const existing = creationWriters.get(row.id);
+        const writer = existing ?? Semaphore.makeUnsafe(1);
+        if (existing === undefined) creationWriters.set(row.id, writer);
+        return writer.withPermit(finishWorktreeCreation(project, row));
+      };
+      const finishWorktreeCreation = Effect.fn("SessionEngine.completeWorktreeCreation")(function* (
+        project: Project,
+        row: Worktree,
+      ) {
+        if ((yield* checkpoints.countForWorktree(row.id)) === 0) {
           if (sessionRepo.attachWorktree !== undefined) {
             yield* sessionRepo.attachWorktree(project.id, row.id);
           }
-          if ((yield* checkpoints.countForWorktree(row.id)) === 0) {
-            yield* takeWorktreeCheckpoint(row, "session-start", null, {
-              sealantRunId: null,
-              sequence: 0n,
-            }).pipe(
-              Effect.catch((error) =>
-                Effect.logWarning("session engine: worktree-start checkpoint failed").pipe(
-                  Effect.annotateLogs({ worktreeId: row.id, error: String(error) }),
-                  Effect.as(null),
-                ),
+          yield* takeWorktreeCheckpoint(row, "session-start", null, {
+            sealantRunId: null,
+            sequence: 0n,
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: worktree-start checkpoint failed").pipe(
+                Effect.annotateLogs({ worktreeId: row.id, error: String(error) }),
+                Effect.as(null),
               ),
-            );
-          }
-          if ((yield* changes.byWorktree(row.id)) === null) {
-            yield* changes.ensureForWorktree(project.id, row.id, row.branch, row.baseSha);
-          }
-        },
-      );
+            ),
+          );
+        }
+        if ((yield* changes.byWorktree(row.id)) === null) {
+          yield* changes.ensureForWorktree(project.id, row.id, row.branch, row.baseSha);
+        }
+      });
 
       /** A new conversation inside a worktree: session row + its start checkpoint. */
       const provisionSessionIn = Effect.fn("SessionEngine.provisionSessionIn")(function* (
