@@ -34,7 +34,9 @@ What it does on top of that, in order:
   the arguments already stored, once. On a small team's database this takes 15 to 45 seconds.
 - **Migrations.** Mend's migrations run as usual. Among them: 0104 (pull request titles), 0110 (the
   Automatic install switch), 0111 (whose memory a worktree holds), 0126 (credentials removed from
-  stored repository URLs) and 0127 (`bun` and `unzip` in the workspace packages).
+  stored repository URLs), 0127 (`bun` and `unzip` in the workspace packages) and 0135 (where a
+  handed-off worktree came from). 0135 adds an empty column to every existing worktree and needs
+  nothing done by hand.
 - **Two more containers.** The upgrade adds the npm and Docker mirrors to an install from before
   them (below).
 - **Backup pruning.** Once 0.36 answers health, the upgrade keeps the two newest backups and removes
@@ -218,6 +220,19 @@ tunnel. On a public install its port stays on `127.0.0.1`: `--t3-gateway-origin 
 serve it over HTTPS on a host of its own, and Tailscale Serve
 (`tailscale serve --bg --https=3120 http://127.0.0.1:3120`) reaches it from your tailnet, the way it
 can reach Mend's own port. `mend pair` prints its address beside the code.
+
+## Handoffs send up to 64 MiB in one request
+
+[`mend handoff`](/guides/hand-off-local-work/) uploads a git bundle in one request to
+`POST /api/projects/:id/handoffs`. Mend accepts it up to `MEND_BUDGET_BUNDLE_BYTES` (64 MiB by
+default). Every other route keeps its limit: 1 MiB, or 24 MiB on routes that take a file. A proxy in
+front of Mend with a lower body limit refuses a larger handoff with 413, and the CLI says
+`handoff not sent · something in front of the Mend server refused …`. The Caddy edge that
+`mend server setup --edge` installs sets no body limit. On Kubernetes, raise ingress-nginx's
+`proxy-body-size` to `72m`, as [Deploy on Kubernetes](/operate/deploy-kubernetes/) shows.
+
+Handoffs need the capture store. On the co-located store (`MEND_SESSION_STORE=colocated`) the CLI
+refuses one before it sends anything.
 
 ## Shallow repositories are refused
 
