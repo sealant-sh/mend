@@ -215,7 +215,7 @@ describe("Store.admitHandoff", () => {
     expect(JSON.parse(ran.stdout)).toMatchObject({
       _tag: "HandoffRefusedError",
       reason: "damaged",
-      message: expect.stringMatching(/git said: /),
+      message: expect.stringMatching(/git said: fatal: pack version 99 unsupported · /),
     });
     expect(quarantines()).toEqual([]);
   });

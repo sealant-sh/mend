@@ -35,8 +35,6 @@ const gitError = (fields: ConstructorParameters<typeof GitError>[0]): GitError =
 interface ExecFailure {
   readonly code?: number | string | null;
   readonly signal?: string | null;
-  readonly stdout?: string;
-  readonly stderr?: string;
   readonly message?: string;
 }
 
@@ -140,8 +138,8 @@ export const git = (
       "git",
       [...args],
       { cwd, maxBuffer: 64 * 1024 * 1024, env: gitProcessEnv(env) },
-      (error, stdout) => {
-        exited = gitExit(args, cwd, okExitCodes, error, stdout);
+      (error, stdout, stderr) => {
+        exited = gitExit(args, cwd, okExitCodes, error, stdout, stderr);
         settle();
       },
     );
@@ -162,6 +160,7 @@ const gitExit = (
   okExitCodes: ReadonlyArray<number> | undefined,
   error: Error | null,
   stdout: string,
+  stderr: string,
 ): Result.Result<string, GitError> => {
   if (error === null) return Result.succeed(stdout.replace(/\n$/, ""));
   const failure = error as ExecFailure;
@@ -176,7 +175,7 @@ const gitExit = (
       args: [...args],
       cwd,
       exitCode,
-      stderr: (failure.stderr ?? failure.message ?? "").trim(),
+      stderr: (stderr === "" ? (failure.message ?? "") : stderr).trim(),
       ...endedBy(failure),
     }),
   );
