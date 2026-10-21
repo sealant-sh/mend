@@ -106,6 +106,13 @@ sequenceDiagram
   Mend-->>You: live terminal and session state
 ```
 
+A session can also start from a checkout on your machine. `mend handoff` sends the branch, its
+staged, unstaged and untracked files included, to the server as one git bundle and writes nothing to
+the checkout. The server checks the bundle and creates the worktree with the branch at your `HEAD`,
+the staged and unstaged files as you had them, and the change's base at the merge base with the
+default branch. The worktree records the machine it came from. Read
+[Hand off local work](/guides/hand-off-local-work/).
+
 Changes to project setup apply to the next workspace launch. A running workspace keeps the image,
 variables, secrets, folders, and dotfiles it started with. Resuming a settled session creates a new
 workspace when no retained workspace remains, so the latest setup applies then.

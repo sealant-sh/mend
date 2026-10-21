@@ -178,6 +178,9 @@ workspace, then attaches your terminal to the agent. Read
 [Start a session](/getting-started/first-session/) for the complete path, then
 [Review a change](/guides/review-a-change/) and [Land a change](/guides/land-a-change/).
 
+To carry on from a branch you already have, uncommitted files included, run `mend handoff` in its
+checkout. Read [Hand off local work](/guides/hand-off-local-work/).
+
 ## Learn the system
 
 - [How Mend works](/concepts/how-mend-works/) explains the host, store, workspaces, processes, and

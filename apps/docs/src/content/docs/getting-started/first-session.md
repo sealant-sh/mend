@@ -56,6 +56,10 @@ harness launch adopts that origin URL first; the server clones it and never rece
 files. Run `mend adopt` yourself when you want to choose the project name or Git authentication
 mode.
 
+A new worktree starts from the server's copy of the repository, at the `--base` you name or the
+default branch. To start from the branch in your checkout instead, with its commits and uncommitted
+files, run `mend handoff`. Read [Hand off local work](/guides/hand-off-local-work/).
+
 Select a project explicitly from another directory:
 
 ```sh
@@ -233,6 +237,12 @@ Switch harnesses while keeping the worktree and restored provider state:
 
 ```sh
 mend resume 01MEND --with claude
+```
+
+From a directory outside the project, name it:
+
+```sh
+mend resume 01MEND --project my-project
 ```
 
 `mend rejoin` chooses attach when the session is live and resume when it is settled:
