@@ -261,7 +261,12 @@ checkpoint past ordinal 0 (the first session-start, a Review open) is `W` itself
 `M..W`, exactly the local diff. `ensureForWorktree(M)` makes the change's base `M`. Capture 0 exists
 before `provisionInWorktree`, so a hot claim keeps it. `capture-verify.ts` walks the listed packs
 together, so a multi-pack capture 0 verifies. The creation tail (capture 0, ordinal 0, the change
-row) is idempotent and runs again whenever a session is provisioned in or joins a worktree.
+row) is idempotent and runs again whenever a session is provisioned in or joins a worktree, one
+caller at a time per worktree. Capture 0 and ordinal 0 run only while the worktree has no
+checkpoint: a worktree made before captures has one, and its next launch attaches its chain
+(`ensureCaptureZero`), as before. A capture-0 claim held by another caller is that caller finishing
+the creation: the tail waits up to one Mend claim's lease for its capture 0, and claims once the
+other claim ends.
 
 **Engine verb.** `HandoffStart.receiveAs(caller, projectId, query, bytes)`
 (`apps/api/src/handoff-start.ts`, provided once as `HandoffStartLive`) runs:
@@ -275,22 +280,29 @@ row) is idempotent and runs again whenever a session is provisioned in or joins 
    refused as a budget. Inside:
 4. the replay lookup by `W`, before any admission. A replay belongs to the account the seed records;
    it answers from the seed, with no admission, and returns the worktree and the oldest of that
-   account's sessions in it (provisioned if there is none, which finishes the creation tail). It
-   re-applies the hold to a session still `starting` with no launch under way. It runs before the
-   session budget. Bytes naming another account's `W` are admitted once, then refused;
+   account's sessions in it (provisioned if there is none, which finishes the creation tail). With
+   `hold` it asks for the hold again, which the engine applies only to a session nothing was ever
+   launched for (step 9). It runs before the session budget. Bytes naming another account's `W` are
+   admitted once, then refused;
 5. `requireSessionRoom`;
 6. `admitHandoff`, once;
 7. `engine.provision({start: Handoff})` under the branch's name. Taken names are the worktree rows
    and the store's `mend/<name>` branch refs; a name lost between the look and the create (the
    name's unique key, or the branch ref) takes the next suffix, a bounded number of times;
 8. the audit event `worktree.handed_off`;
-9. with `hold`, `engine.holdWorkspace(id)`, forked past the answer and under one of the account's
-   launch slots (`accountLaunchesInFlight`) for its whole course. The launch opens the workspace
-   and, in place of an agent, the owner's login shell, recorded as a shell process. The session's
-   PTY pointer names that shell, so `mend attach` reaches it, and the fold reads `idle`. No run of
-   the harness is recorded. A hold the slot refuses, or that fails at any stage, settles the session
-   `failed` with its words. The answer carries the session as it stands afterwards: `idle`, still
-   `starting` while the hold outlives the answer window, or `failed`.
+9. with `hold`, `engine.holdWorkspace(id, slot)`, forked past the answer. The engine admits it under
+   the session's launch gate, like every launch verb. A hold that finds another launch verb under
+   way, or a session that was launched (a live agent, a run, a workspace or a PTY on its row, a
+   process, or a settle), answers the session as it stands and settles nothing. An admitted hold
+   takes one of the account's launch slots (`accountLaunchesInFlight`) for its whole course, and
+   runs the shared launch with the hold role (`HOLD_LAUNCH`), on a fresh executor or as one more
+   process in the executor of another session in the worktree. In place of an agent it opens the
+   owner's login shell, recorded as a shell process. The session's PTY pointer names that shell, so
+   `mend attach` reaches it, and the fold reads `idle`. No run of the harness is recorded. A hold
+   the slot refuses, or that fails at any stage, settles the session `failed` with its words, still
+   under the gate. The co-located store refuses a hold (`HoldUnsupportedError`). The answer carries
+   the session as it stands afterwards: `idle`, still `starting` while the hold or another launch is
+   under way, `running` when another client launched its agent first, or `failed`.
 
 **Rows.** `handed off from <machine>` is a fact of the worktree and shows on every session line in
 it. The CLI shows it in `sessionRowFacts` (`idle · handed off from dana-mbp · claude · 1 shell`) and
@@ -305,12 +317,13 @@ it. The CLI shows it in `sessionRowFacts` (`idle · handed off from dana-mbp · 
 | branch ref        | `store_refs` branch at H, no row                                   | the ref keeps its name: the retry, like any other handoff of the branch, finds the name taken and takes the next suffix  |
 | row               | worktree with seed, no capture 0                                   | the replay finishes the creation tail (capture 0, ordinal 0, the change row), as does any next session in it, a join too |
 | capture 0         | worktree, no session                                               | replay provisions the session                                                                                            |
-| session           | `starting`                                                         | replay re-applies the hold; otherwise `mend attach` resumes it                                                           |
+| session           | `starting`, never launched                                         | the same `mend handoff` again: the replay holds it, or the CLI launches it on the prompt                                 |
 
 ## Known limits
 
-- A server crash between provisioning and the hold leaves a `starting` session. `mend attach` or the
-  CLI's retry recovers it. There is no reconciler.
+- A server crash between provisioning and the hold leaves a `starting` session that was never
+  launched. The CLI's retry of the same handoff recovers it; so does a launch of the session. There
+  is no reconciler.
 - The merge base is the client's, recomputed and checked against its default tip. Review equals
   `git diff M`. A newer server main never moves it.
 - `asUint8Array` buffers the whole body (up to `bundleBytes`) after auth, in exchange for a typed
