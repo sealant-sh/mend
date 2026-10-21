@@ -55,6 +55,7 @@ jobs:
     outputs:
       mobile: ${{ steps.scope.outputs.mobile }}
       packaging: ${{ steps.scope.outputs.packaging }}
+      store: ${{ steps.scope.outputs.store }}
       graph: ${{ steps.scope.outputs.graph }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -475,10 +476,34 @@ jobs:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
       - run: pnpm --filter @mend/mobile check:web
 
+  # The server image installs git from Debian bookworm (2.39). The runners' newer git refuses a
+  # hostile tree on its own, so only a run under the image's git shows the store's handoff
+  # admission doing it (scripts/store-image-git.sh).
+  store-image-git:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.store != 'false' }}
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
+      'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Store handoff tests under the server image's git
+        run: bash scripts/store-image-git.sh
+
   # Retain the required check name. A missing classifier or skipped required job
   # must fail, even when every job that did run passed.
   checks:
-    needs: [changes, static, test-engines, test-clients-a, test-clients-b, packaging, mobile-web]
+    needs:
+      [
+        changes,
+        static,
+        test-engines,
+        test-clients-a,
+        test-clients-b,
+        packaging,
+        mobile-web,
+        store-image-git,
+      ]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04-arm
     steps:
@@ -494,7 +519,11 @@ jobs:
               throw new Error(`${name} must succeed, observed ${jobs[name]?.result ?? "missing"}`);
             }
           }
-          for (const [name, output] of [["packaging", "packaging"], ["mobile-web", "mobile"]]) {
+          for (const [name, output] of [
+            ["packaging", "packaging"],
+            ["mobile-web", "mobile"],
+            ["store-image-git", "store"],
+          ]) {
             const selected = jobs.changes.outputs?.[output];
             if (selected !== "true" && selected !== "false") {
               throw new Error(`Missing or invalid ${output} selection: ${selected}`);

@@ -37,23 +37,26 @@ const runGate = (results) => {
     timeout: 5_000,
   });
 };
-const completed = (mobile = "true", packaging = "true") => ({
-  changes: { result: "success", outputs: { mobile, packaging } },
+const completed = (mobile = "true", packaging = "true", store = "true") => ({
+  changes: { result: "success", outputs: { mobile, packaging, store } },
   static: { result: "success" },
   "test-engines": { result: "success" },
   "test-clients-a": { result: "success" },
   "test-clients-b": { result: "success" },
   packaging: { result: packaging === "false" ? "skipped" : "success" },
   "mobile-web": { result: mobile === "false" ? "skipped" : "success" },
+  "store-image-git": { result: store === "false" ? "skipped" : "success" },
 });
 
 test("the actual required-check command accepts full evidence and intentional scope skips", () => {
   for (const mobile of ["true", "false"]) {
     for (const packaging of ["true", "false"]) {
-      const result = runGate(completed(mobile, packaging));
-      assert.equal(result.error, undefined);
-      assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /All required CI jobs passed/);
+      for (const store of ["true", "false"]) {
+        const result = runGate(completed(mobile, packaging, store));
+        assert.equal(result.error, undefined);
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /All required CI jobs passed/);
+      }
     }
   }
 });
@@ -67,6 +70,7 @@ test("failed, cancelled, absent or skipped required jobs cannot produce a green 
     "test-clients-b",
     "packaging",
     "mobile-web",
+    "store-image-git",
   ]) {
     for (const result of ["failure", "cancelled", "skipped", undefined]) {
       const results = completed();
@@ -81,7 +85,7 @@ test("failed, cancelled, absent or skipped required jobs cannot produce a green 
 });
 
 test("missing or malformed path classification is not permission to skip evidence", () => {
-  for (const output of ["mobile", "packaging"]) {
+  for (const output of ["mobile", "packaging", "store"]) {
     for (const selected of [undefined, "", "yes", false]) {
       const results = completed();
       if (selected === undefined) delete results.changes.outputs[output];
@@ -91,9 +95,12 @@ test("missing or malformed path classification is not permission to skip evidenc
       assert.match(observed.stderr, /Missing or invalid/);
     }
   }
-  const results = completed("false", "false");
+  const results = completed("false", "false", "false");
   results.packaging.result = "failure";
   assert.equal(runGate(results).status, 1, "an optional job that ran and failed still fails CI");
+  const store = completed("true", "true", "false");
+  store["store-image-git"].result = "failure";
+  assert.equal(runGate(store).status, 1, "store-image-git that ran and failed still fails CI");
 });
 
 test("static checks, all test shards and packaging can start without another execution job", () => {
@@ -104,6 +111,7 @@ test("static checks, all test shards and packaging can start without another exe
     "test-clients-b",
     "packaging",
     "mobile-web",
+    "store-image-git",
   ]) {
     assert.deepEqual(
       jobs[name].needs,
@@ -127,6 +135,28 @@ test("static checks, all test shards and packaging can start without another exe
   );
   assert.match(jobs.packaging.if, /needs\.changes\.outputs\.packaging != 'false'/);
   assert.match(jobs["mobile-web"].if, /needs\.changes\.outputs\.mobile != 'false'/);
+  assert.match(jobs["store-image-git"].if, /needs\.changes\.outputs\.store != 'false'/);
+  assert.equal(jobs.changes.outputs.store, "${{ steps.scope.outputs.store }}");
+});
+
+test("store-image-git runs the store's handoff tests under the runtime stage's own git", () => {
+  assert.deepEqual(commands("store-image-git"), ["bash scripts/store-image-git.sh"]);
+  const script = readFileSync(new URL("store-image-git.sh", import.meta.url), "utf8");
+  const dockerfile = readFileSync(new URL("Dockerfile", root), "utf8");
+  const runtime = dockerfile.match(/^FROM (\S+) AS runtime$/m)?.[1];
+  assert.ok(runtime, "the Dockerfile names its runtime stage");
+  const image = spawnSync(
+    "bash",
+    [new URL("store-image-git.sh", import.meta.url).pathname, "--image"],
+    {
+      encoding: "utf8",
+    },
+  );
+  assert.equal(image.status, 0, image.stderr);
+  assert.equal(image.stdout, `${runtime}\n`);
+  assert.match(dockerfile, /apt-get install [^\n]*\bgit\b/, "the image takes git from its apt");
+  assert.match(script, /apt-get install [^\n]*\bgit\b/);
+  assert.match(script, /vitest run test\/handoff\.test\.ts/);
 });
 
 test("required database and live-adapter evidence keeps its preparation and worker caps", () => {
@@ -482,10 +512,12 @@ test("dispatch measurements preserve the production jobs and cannot run on PRs o
         `\${{ inputs.runner == 'box' && fromJSON('${JSON.stringify(box)}') || inputs.runner }}`,
       );
       measured.jobs[name]["runs-on"] = CI_RUNNER;
+      // store-image-git installs inside the server image's base: it sets up no Node here.
       const setup = measured.jobs[name].steps.find((step) =>
         step.uses?.startsWith("actions/setup-node@"),
       );
-      assert.equal(setup.with.cache, "${{ inputs.runner != 'box' && 'pnpm' || '' }}");
+      if (name === "store-image-git") assert.equal(setup, undefined);
+      else assert.equal(setup.with.cache, "${{ inputs.runner != 'box' && 'pnpm' || '' }}");
     }
     for (const step of measured.jobs[name].steps) {
       if (step.env?.CI_MEASUREMENT_CACHE !== undefined) {
@@ -504,6 +536,7 @@ test("dispatch measurements preserve the production jobs and cannot run on PRs o
     "mobile-web",
     "packaging",
     "static",
+    "store-image-git",
     "test-clients-a",
     "test-clients-b",
     "test-engines",
@@ -952,6 +985,7 @@ test("CI's x86 lanes run on ubuntu-24.04 and return to the box only when dispatc
     "test-clients-b",
     "packaging",
     "mobile-web",
+    "store-image-git",
   ];
   const on = (event, job, inputs = {}) =>
     ci.find(

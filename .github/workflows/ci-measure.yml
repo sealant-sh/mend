@@ -52,6 +52,7 @@ jobs:
     outputs:
       mobile: ${{ steps.scope.outputs.mobile }}
       packaging: ${{ steps.scope.outputs.packaging }}
+      store: ${{ steps.scope.outputs.store }}
       graph: ${{ steps.scope.outputs.graph }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -448,6 +449,18 @@ jobs:
       - run:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
       - run: pnpm --filter @mend/mobile check:web
+  store-image-git:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.store != 'false' }}
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
+      }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.head_sha }}
+      - name: Store handoff tests under the server image's git
+        run: bash scripts/store-image-git.sh
   checks:
     needs:
       - changes
@@ -457,6 +470,7 @@ jobs:
       - test-clients-b
       - packaging
       - mobile-web
+      - store-image-git
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04-arm
     steps:
@@ -475,7 +489,11 @@ jobs:
             }
           }
 
-          for (const [name, output] of [["packaging", "packaging"], ["mobile-web", "mobile"]]) {
+          for (const [name, output] of [
+            ["packaging", "packaging"],
+            ["mobile-web", "mobile"],
+            ["store-image-git", "store"],
+          ]) {
             const selected = jobs.changes.outputs?.[output];
             if (selected !== "true" && selected !== "false") {
               throw new Error(`Missing or invalid ${output} selection: ${selected}`);
