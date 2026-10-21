@@ -59,8 +59,8 @@ describe("shared control", () => {
     expect(steered.status).not.toBe(403);
     expect(api.world.calls.length).toBeGreaterThan(0);
 
-    // Shared control lends steering, not the session: deleting, renaming and handing off stay
-    // the owner's. So does anything that runs on the workspace's login outside a turn: a shell,
+    // Shared control lends steering, not the session: deleting, renaming and switching modes
+    // stay the owner's. So does anything that runs on the workspace's login outside a turn: a shell,
     // a command, a terminal launch (docs/adr/0013).
     api.world.calls.splice(0, api.world.calls.length);
     const session = `/api/sessions/${sharedA.session}`;

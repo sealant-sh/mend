@@ -1387,7 +1387,7 @@ export const agentSessions = pgTable(
     workspaceTtlRenewedAt: timestamp({ mode: "date", withTimezone: true }),
     workspaceTtlRenewalFailedAt: timestamp({ mode: "date", withTimezone: true }),
     workspaceTtlRenewalError: text(),
-    /** Mode-handoff backfill bookkeeping: how far the native transcript is ingested. */
+    /** Mode-switch backfill bookkeeping: how far the native transcript is ingested. */
     nativeIngestCursor: jsonb().$type<NativeIngestCursor | null>(),
     // The image this session actually launched with — stamped at launch, never rewritten by a
     // later project-setting change. NULL for sessions from before the column (or not launched).

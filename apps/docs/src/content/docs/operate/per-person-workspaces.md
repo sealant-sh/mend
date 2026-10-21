@@ -108,15 +108,15 @@ that shares one home. A custom image without `sudo`, `useradd` or ACL support al
 
 ## Who each process runs as
 
-| Process                                                      | Runs as                                                                               |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
-| An agent Mend starts (new, join, resume, follow-up, handoff) | the person whose turn it runs: the session owner, or the steerer under shared control |
-| A shell                                                      | the person who opened it                                                              |
-| A Service                                                    | the person who started it, across restarts; a `mend.toml` Service, the launcher       |
-| Dependency install and setup commands                        | the launcher                                                                          |
-| Writing a pasted image into the workspace                    | the person who pasted it                                                              |
-| VS Code Remote-SSH, `ssh`, SFTP and `scp`                    | the workspace's launcher, as their own user; nobody else can open Remote-SSH into it  |
-| `docker exec` and anything else Mend did not start           | root: no person's login, no Mend token, nothing under `/root` saved                   |
+| Process                                                          | Runs as                                                                               |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| An agent Mend starts (new, join, resume, follow-up, mode switch) | the person whose turn it runs: the session owner, or the steerer under shared control |
+| A shell                                                          | the person who opened it                                                              |
+| A Service                                                        | the person who started it, across restarts; a `mend.toml` Service, the launcher       |
+| Dependency install and setup commands                            | the launcher                                                                          |
+| Writing a pasted image into the workspace                        | the person who pasted it                                                              |
+| VS Code Remote-SSH, `ssh`, SFTP and `scp`                        | the workspace's launcher, as their own user; nobody else can open Remote-SSH into it  |
+| `docker exec` and anything else Mend did not start               | root: no person's login, no Mend token, nothing under `/root` saved                   |
 
 The workspace's launcher is the person whose launch started this workspace; after it stops, whoever
 launches the next one. So a member who starts a worktree's next workspace after the last one stopped

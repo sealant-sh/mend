@@ -80,7 +80,7 @@ export type SessionOrigin = typeof SessionOrigin.Type;
 
 /**
  * How far the session's native transcript has been ingested into the durable
- * conversation (the mode-handoff backfill). Claude entries carry stable uuids
+ * conversation (the mode-switch backfill). Claude entries carry stable uuids
  * and fork-on-resume preserves the copied prefix, so the last ingested uuid
  * addresses the boundary; codex rollouts have no per-entry ids, so the count
  * of ingested lines stands in. Persistence bookkeeping, not part of `Session`.

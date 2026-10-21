@@ -119,7 +119,7 @@ home dir and harvested path.
    session line `secret files · not written · <message>`; the launch continues.
 4. Repositories, workspace note, dependency install (capture mode), harness start.
 
-### Retained launch (resume, follow-up, mode handoff, join)
+### Retained launch (resume, follow-up, mode switch, join)
 
 `launchInRetainedWorkspace` (`engine.ts:12636-12685`): `evictReservedSecretFiles` before relocation
 (failure settles the session failed, `resume failed: …`); then delivery only when
@@ -372,7 +372,7 @@ ls ~/.aws/credentials             # in the shell: gone
 ## Divergences found while writing
 
 1. `packages/sessions/src/engine.ts:12670-12672` with `:12288`, `:13027`, `:13138`, `:13246`: a
-   retained run without `workspaceOverride` (resume, terminal follow-up, shell resume, mode handoff)
+   retained run without `workspaceOverride` (resume, terminal follow-up, shell resume, mode switch)
    counts the retained executor as the owner's home. A session that earlier joined another person's
    executor has that executor on its row (`setSealantIds`, `:12771-12775`), and
    `retainedWorkspaceAvailable` (`:12891-12915`) accepts it while any shell or Service lives there.

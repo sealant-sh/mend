@@ -159,15 +159,15 @@ process uses, by default and by every path Mend controls.
   `runtime.getCapabilities` reports `personCapabilities` and `personCapabilitiesWithheld` with the
   reason, which Mend surfaces on the executor.
 
-| Process                                                                                      | Runs as                                                                                                                                             |
-| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| An agent Mend starts (cold, claimed standby, join, resume, follow-up, retained run, handoff) | the person whose turn it runs: the session owner, or a steerer (decision 6)                                                                         |
-| A shell                                                                                      | the person who opened it                                                                                                                            |
-| A Service                                                                                    | the person who started it, across restarts; a `mend.toml` service started at launch, the launcher                                                   |
-| Dependency install and setup commands                                                        | the launcher                                                                                                                                        |
-| Mend's own execs for a person (deliveries, read-backs)                                       | that person                                                                                                                                         |
-| VS Code Remote-SSH, `ssh`                                                                    | the workspace's launcher, as their user (decision 10): the person whose launch started this executor; after it stops, whoever launches the next one |
-| `docker exec` and anything else Mend did not start                                           | root, which is nobody: no login, no Mend token, nothing saved (Known limits)                                                                        |
+| Process                                                                                          | Runs as                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An agent Mend starts (cold, claimed standby, join, resume, follow-up, retained run, mode switch) | the person whose turn it runs: the session owner, or a steerer (decision 6)                                                                         |
+| A shell                                                                                          | the person who opened it                                                                                                                            |
+| A Service                                                                                        | the person who started it, across restarts; a `mend.toml` service started at launch, the launcher                                                   |
+| Dependency install and setup commands                                                            | the launcher                                                                                                                                        |
+| Mend's own execs for a person (deliveries, read-backs)                                           | that person                                                                                                                                         |
+| VS Code Remote-SSH, `ssh`                                                                        | the workspace's launcher, as their user (decision 10): the person whose launch started this executor; after it stops, whoever launches the next one |
+| `docker exec` and anything else Mend did not start                                               | root, which is nobody: no login, no Mend token, nothing saved (Known limits)                                                                        |
 
 A terminal attach starts no process. The person a process runs as is recorded on the process when it
 starts. A person's live process, Services included, keeps their user's logins held (decision 5).
@@ -603,12 +603,12 @@ the new sender's user, on their login.
     session-state switch. When shared control is turned on, the session's session crons are
     background work the switch to the neutral context waits for.
 - **One live agent process per conversation,** recorded in Postgres by (launch id, process id),
-  taken by every start path (dispatch, handoff, takeover, resume, retained run, follow-up), released
-  only when the platform reports the process exited or the executor ended. An unreachable executor
-  means wait, never a second process. A turn submitted between a stop and the next start queues on
-  the conversation, not on the stopping process.
-- **Handoff and takeover** (protocol to terminal and back, `mend attach`) follow the same waiting
-  rule, and start the new process as the person attaching. They no longer cancel open turns.
+  taken by every start path (dispatch, mode switch, takeover, resume, retained run, follow-up),
+  released only when the platform reports the process exited or the executor ended. An unreachable
+  executor means wait, never a second process. A turn submitted between a stop and the next start
+  queues on the conversation, not on the stopping process.
+- **Mode switch and takeover** (protocol to terminal and back, `mend attach`) follow the same
+  waiting rule, and start the new process as the person attaching. They no longer cancel open turns.
 - **Resume never forks.** Claude resumes by the full path of the conversation's file; Codex with
   `thread/resume { path }`. A resume that fails fails the turn; this path never falls back to
   `thread/start` or a new Claude session. The Codex adapter's fallback to `thread/start` after a
@@ -1360,7 +1360,7 @@ launches.
     1 s settle); the Claude adapter handling the events it drops today; a Codex turn aborted by the
     stop recorded as interrupted by the hand-over; the waiting line and its actions; the queue on
     the conversation; crons off in shared sessions and for everyone but the change owner (the inline
-    `no-cron` settings); handoff and takeover through the same rules; payer from the process;
+    `no-cron` settings); mode switch and takeover through the same rules; payer from the process;
     cancellations; Slack; automatic landing; shared control refused for opencode sessions, at the
     toggle and at submit. Engine tests: B's turn runs as B with A's conversation; A's sub-agent,
     goal, background terminal and monitor each delay B's turn and finish as A; a takeover waits. M,

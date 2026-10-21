@@ -150,7 +150,7 @@ anyone else's login.
   after `codex` unless any arg is `--no-daemon`, `daemon_auto_start`, or starts with
   `features.daemon_auto_start=`. Applied in `withHarnessSetup` for the `codex` harness (`:347-349`:
   terminal, app-server, resume, join, claimed standby) and inline in `promptArgv`
-  (`engine.ts:505-506`: prompts, review follow-ups, handoffs).
+  (`engine.ts:505-506`: prompts, review follow-ups, mode switches).
 
 ### mend#526 (in review, `ac3bdce06`)
 
@@ -221,8 +221,8 @@ Anna and Maria, project `api`, capture mode, sealantd `0.20.0-next.142`.
    that a restore brought, or a link at that path leading anywhere but the executor's own
    `~/.mend/opencode/`.
 7. Every argv Mend shapes for a `codex`-harness launch (terminal, app-server, resume, join, claimed
-   standby, prompt, follow-up, handoff) carries `features.daemon_auto_start=false` unless the launch
-   named the setting or `--no-daemon` itself.
+   standby, prompt, follow-up, mode switch) carries `features.daemon_auto_start=false` unless the
+   launch named the setting or `--no-daemon` itself.
 8. (mend#526, in review) Every such argv carries `features.shell_snapshot=false` unless the launch
    named it; Mend's credential table equals sealantd's, path by path, kind by kind.
 9. (ADR 0016, designed) No person's login file ever sits inside a captured directory; one person's

@@ -238,7 +238,8 @@ their login.
 The limits are in [Known issues](/reference/known-issues/#shared-control).
 
 Only the session's owner turns shared control on. The owner or an organization owner turns it off.
-Deleting, renaming or handing off the session stays with its owner even while control is shared.
+Deleting, renaming or switching the session between terminal and conversation stays with its owner
+even while control is shared.
 
 ### Terminals stay with the owner
 

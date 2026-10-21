@@ -88,7 +88,7 @@ for a harness in `HARNESSES_CHOOSING_THEIR_OWN_MODEL` (opencode), which then has
   phone start sheet, VS Code quick picks, CLI flags and `mend models`, the t3 gateway's provider
   list.
 - Showing the running model on every client.
-- Follow-ups, resumes and handoffs keeping or clearing the recorded model.
+- Follow-ups, resumes and mode switches keeping or clearing the recorded model.
 - Claude's seed default (`fable`) and the move from Mend's own earlier `claude-fable-5`.
 
 **Out of scope.**
@@ -158,8 +158,8 @@ for a harness in `HARNESSES_CHOOSING_THEIR_OWN_MODEL` (opencode), which then has
     its live-agent check and after `composeProtocolArgv` accepts the harness
     (`engine.ts:12258-12261`). A continuation that names neither model nor effort takes the
     session's. Model and effort ride each provider turn, not the process argv (Codex app-server).
-13. Handoff to a conversation (`apps/api/src/routes/workbench.ts:3019`) resolves like a launch:
-    `payload.model ?? session.model`, else the default. A handoff to a terminal resolves nothing and
+13. A switch to a conversation (`apps/api/src/routes/workbench.ts:3019`) resolves like a launch:
+    `payload.model ?? session.model`, else the default. A switch to a terminal resolves nothing and
     resumes natively on the conversation's own model.
 14. Follow-up to a stopped PTY session: `promptArgv` (`engine.ts:488`) opens the harness on
     `session.model` and `session.effort` (an effort the harness does not take is left out).
@@ -307,7 +307,7 @@ for a harness in `HARNESSES_CHOOSING_THEIR_OWN_MODEL` (opencode), which then has
 
 **Permissions**
 
-- Any signed-in account reads the list. Starting a session needs project access. A handoff and a
+- Any signed-in account reads the list. Starting a session needs project access. A mode switch and a
   terminal resume are owner-only (ADR 0013); a steerer's conversation turn runs on the recorded
   model.
 - Operator: edits the table with SQL; no route.

@@ -111,13 +111,13 @@ caller who steers sends turns, answers approvals (allow once, allow for session,
 questions, and interrupts the open turn; anyone else reads it, and a request tells them it is
 waiting for an answer. A turn names who sent it when that was someone else, and who interrupted it
 when the control record (`/api/sessions/:id/control-events`) says. A turn without an author is
-Mend's (a Review follow-up) only on a conversation process; the terminal history a handoff imports
-also has no author, recorded against the terminal agent's process, and reads "from the terminal".
-The stream's `agent-conversation` pointer re-reads the conversation (items from the held cursor on)
-and the detail. Pointers come per streamed delta, faster than a read completes, so a read in flight
-is left to finish and the pointers that land meanwhile coalesce into one read after it (cancelling
-the read in flight, the default invalidation, froze the view until the agent paused). A 4-second
-poll covers a dropped stream while the agent runs.
+Mend's (a Review follow-up) only on a conversation process; the terminal history a mode switch
+imports also has no author, recorded against the terminal agent's process, and reads "from the
+terminal". The stream's `agent-conversation` pointer re-reads the conversation (items from the held
+cursor on) and the detail. Pointers come per streamed delta, faster than a read completes, so a read
+in flight is left to finish and the pointers that land meanwhile coalesce into one read after it
+(cancelling the read in flight, the default invalidation, froze the view until the agent paused). A
+4-second poll covers a dropped stream while the agent runs.
 
 The pane knows a conversation from the agent's own row (`kind: agent-protocol`), from the project
 list's annotation before the detail answers, and from the launcher's intent before any row exists.
@@ -125,7 +125,7 @@ list's annotation before the detail answers, and from the launcher's intent befo
 A settled session offers **resume** (`control.steer`), which rejoins it in the mode its agent last
 ran in. A claude or codex session whose agent ran offers **continue as conversation** or **continue
 in terminal**: the same provider session in the other mode (`POST /api/sessions/:id/handoff`). That
-is the owner's alone even while control is shared (`control.own`, the server's rule); handing off a
+is the owner's alone even while control is shared (`control.own`, the server's rule); switching a
 live agent confirms first, since its process ends.
 
 ### The terminal
@@ -398,10 +398,10 @@ Still to come:
 - 2026-09-24: a conversation is drawn on the app's sheet, not the dark terminal ground; the terminal
   stays the one always-dark surface. Assistant text is plain pre-wrapped prose: the desktop has no
   markdown renderer yet.
-- 2026-09-24: handoff is gated on `control.own`, not `control.steer`: the server's handoff answers
-  only the owner (`steering.owned`), and SessionControlView says hand-off is the owner's. It is
-  offered only once an agent process ran and the session left a conversation behind. Resume is
-  `control.steer`, as the server enforces.
+- 2026-09-24: the mode switch is gated on `control.own`, not `control.steer`: the server's mode
+  switch answers only the owner (`steering.owned`), and SessionControlView says switching modes is
+  the owner's. It is offered only once an agent process ran and the session left a conversation
+  behind. Resume is `control.steer`, as the server enforces.
 
 - 2026-09-24: the terminal socket drops `Origin` and `Cookie` in main
   (`session.webRequest.onBeforeSendHeaders`, sockets to the configured server only) instead of

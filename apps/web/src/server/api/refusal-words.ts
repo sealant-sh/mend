@@ -37,7 +37,7 @@ const wordsWithoutMessage = (refusal: Refusal): string | null => {
     case "ClusterBindingDuplicate":
       return "This project already has that binding.";
     case "HandoffUnsupported":
-      return "This session cannot continue in that harness.";
+      return "This session's agent cannot switch to that mode.";
     case "ProtocolSessionNotLive":
       return "The agent is not running.";
     case "AgentRequestResolved":

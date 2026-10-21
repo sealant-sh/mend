@@ -507,7 +507,7 @@ export const resumeSession = (sessionId: string) =>
  * Continue the same provider session in the other mode — PTY ⇄ conversation (claude and codex).
  * A live agent in the other mode ends gracefully first; one agent process at a time.
  */
-export const handoffSession = (sessionId: string, to: AgentLaunchModeDto) =>
+export const switchSessionMode = (sessionId: string, to: AgentLaunchModeDto) =>
   call("POST", "/api/sessions/:id/handoff", { params: { id: sessionId }, body: { to } });
 
 export const pasteSessionImage = (sessionId: string, contentsBase64: string) =>

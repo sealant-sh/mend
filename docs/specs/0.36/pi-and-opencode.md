@@ -103,8 +103,8 @@ What went wrong on the box after the first cut (preview 11, 2026-10-04, fixed by
 
 - Protocol (conversation) mode for pi or opencode. `composeProtocolArgv` refuses them
   (`ProtocolHarnessUnsupportedError`); the phone, Slack and the t3 gateway cannot start or steer
-  them; `SessionEngine.handoff` refuses them (`HandoffUnsupportedError`). An ACP adapter is a later
-  release.
+  them; `SessionEngine.switchMode` refuses them (`ModeSwitchUnsupportedError`). An ACP adapter is a
+  later release.
 - A transcript or conversation view for opencode or pi in Mend. `extractTranscript` and
   `convertNativeSession` know only claude and codex.
 - Resuming a pi or opencode conversation on another harness.
@@ -465,7 +465,7 @@ Capture mode, the box. Alice has connected Codex (`mend connect codex`).
 
 - Owner: everything.
 - Member steering with shared control: watches the terminal read-only; cannot start the agent in the
-  terminal (`terminal_owner_only`), cannot hand off to a conversation (pi and opencode have none).
+  terminal (`terminal_owner_only`), cannot switch to a conversation (pi and opencode have none).
 - Operator: no access to organization content.
 
 **Clients**

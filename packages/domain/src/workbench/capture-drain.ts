@@ -435,8 +435,8 @@ export const captureSnapDetailOf = (reading: CaptureReading): string | null => {
 };
 
 /**
- * Whether a harvest or a handoff may read the chain head: the small captures are in. Once
- * sealantd reports `pendingBulk`, bulk still uploading no longer holds a handoff up; until then
+ * Whether a harvest or a mode switch may read the chain head: the small captures are in. Once
+ * sealantd reports `pendingBulk`, bulk still uploading no longer holds a mode switch up; until then
  * every pending capture does. A stop still waits for all of them (`captureSaved`).
  */
 export const captureHarvestReady = (reading: CaptureReading): boolean => {

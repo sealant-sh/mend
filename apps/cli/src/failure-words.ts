@@ -38,7 +38,7 @@ const TAG_WORDS: Readonly<Record<string, string>> = {
   WorkspaceSshKeyNotFound: "SSH key not found — it may have been removed.",
   SkillStaleWrite: "The skill changed since it was opened — reload it, then save again.",
   ClusterBindingDuplicate: "That object is already bound to this project.",
-  HandoffUnsupported: "This session's agent cannot hand off to that one.",
+  HandoffUnsupported: "This session's agent cannot switch to that mode.",
   InvitationSpent: "That invitation was accepted, revoked or has expired.",
   PairingCodeNotFound: "That pairing code is not known here — check it against the machine.",
   PairingCodeSpent: "That pairing code has expired or was already used — make a new one.",

@@ -5,6 +5,7 @@ import { HttpApi } from "effect/http-api";
 import { describe, expect, it } from "vitest";
 
 import {
+  HandoffUnsupported,
   MendApi,
   NewWorktree,
   ProcessLogPage,
@@ -15,6 +16,9 @@ import {
   ProjectInstallEnabledRequest,
   StoreFailure,
 } from "./index.ts";
+
+const wire = (schema: Schema.Top) =>
+  Schema.toCodecJson(Schema.make<Schema.Codec<unknown, unknown>>(schema.ast));
 
 const conversationEndpointNames = new Set(["submitTurn", "interruptTurn", "respondAgentRequest"]);
 
@@ -242,5 +246,48 @@ describe("typed HTTP error contracts", () => {
     expect(
       Schema.decodeUnknownSync(codec)({ _tag: "StoreFailure", message: "older server" }),
     ).toMatchObject({ message: "older server" });
+  });
+
+  it("serves the mode switch on the wire every released CLI and the mobile app call", () => {
+    const routes: Array<{
+      method: string;
+      path: string;
+      payloads: ReadonlyArray<Schema.Top>;
+      unprocessable: ReadonlyArray<Schema.Top>;
+    }> = [];
+    HttpApi.reflect(MendApi, {
+      onGroup: () => {},
+      onEndpoint: ({ group, endpoint, errors }) => {
+        if (group.identifier !== "sessions" || !endpoint.path.endsWith("/handoff")) return;
+        routes.push({
+          method: endpoint.method,
+          path: endpoint.path,
+          payloads: [...endpoint.payload.values()].flatMap((entry) => entry.schemas),
+          unprocessable: errors.get(422) ?? [],
+        });
+      },
+    });
+
+    expect(routes).toHaveLength(1);
+    const [route] = routes;
+    expect(route?.method).toBe("POST");
+    expect(route?.path).toBe("/api/sessions/:id/handoff");
+    expect(route?.payloads).toHaveLength(1);
+
+    const decode = (input: unknown) =>
+      route?.payloads.map((schema) => Schema.decodeUnknownSync(wire(schema))(input));
+    expect(decode({ to: "pty" })).toMatchObject([{ to: "pty" }]);
+    expect(decode({ to: "protocol", prompt: "carry on" })).toMatchObject([
+      { to: "protocol", prompt: "carry on" },
+    ]);
+    expect(() => decode({ to: "terminal" })).toThrow();
+
+    const refusal = new HandoffUnsupported({ sessionId: "s-1", harness: "pi", to: "protocol" });
+    const encoded = route?.unprocessable
+      .filter((schema) => Schema.is(schema)(refusal))
+      .map((schema) => Schema.encodeUnknownSync(wire(schema))(refusal));
+    expect(encoded).toEqual([
+      { _tag: "HandoffUnsupported", sessionId: "s-1", harness: "pi", to: "protocol" },
+    ]);
   });
 });

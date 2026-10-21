@@ -111,7 +111,7 @@ export function SessionPane({
   const protocol =
     currentAgent === null ? mode === "protocol" : currentAgent.kind === "agent-protocol";
   const followUp = usePendingFollowUp(sessionId).data ?? null;
-  const { resume, stop, openShell, deliverFollowUp, handoff, replaceWorkspace } =
+  const { resume, stop, openShell, deliverFollowUp, switchMode, replaceWorkspace } =
     useSessionActions();
   // Who else is live in the workspace, and an executor from before per-person homes waiting to be
   // replaced (docs/adr/0016, decisions 13 and 14), in the domain's words.
@@ -224,14 +224,14 @@ export function SessionPane({
           ? {
               pickUp: {
                 start: (prompt: string) =>
-                  handoff.mutate({ sessionId: session.id, to: "protocol", prompt }),
-                pending: handoff.isPending,
+                  switchMode.mutate({ sessionId: session.id, to: "protocol", prompt }),
+                pending: switchMode.isPending,
                 error:
-                  handoff.error === null
+                  switchMode.error === null
                     ? null
-                    : handoff.error instanceof Error
-                      ? handoff.error.message
-                      : String(handoff.error),
+                    : switchMode.error instanceof Error
+                      ? switchMode.error.message
+                      : String(switchMode.error),
               },
             }
           : {})}

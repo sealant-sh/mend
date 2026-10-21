@@ -1126,7 +1126,7 @@ test("flush attempt evidence names this session's refusals, timeouts and partial
     "checkpoint · user-mark",
     "drain · stop",
     "drain · replacement",
-    "handoff harvest",
+    "mode switch harvest",
   ];
   const many = Array.from({ length: 9 }, (_, i) =>
     refused(sessionId, contexts[i], "x".repeat(400)),
@@ -1138,7 +1138,7 @@ test("flush attempt evidence names this session's refusals, timeouts and partial
     "refused · checkpoint · user-mark · error detail withheld",
     "refused · drain · stop · error detail withheld",
     "refused · drain · replacement · error detail withheld",
-    "refused · handoff harvest · error detail withheld",
+    "refused · mode switch harvest · error detail withheld",
   ]);
 });
 

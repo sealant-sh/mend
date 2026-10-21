@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   agentRunsAsConversation,
   createSession,
-  handoffSession,
+  switchSessionMode,
   interruptAgentTurn,
   respondAgentRequest,
   resumeSession,
@@ -161,7 +161,7 @@ describe("steering calls", () => {
     await respondAgentRequest("request-2", { answers: { pick: ["main"] } });
     await interruptAgentTurn("turn-1");
     await resumeSession("session-1");
-    await handoffSession("session-1", "protocol");
+    await switchSessionMode("session-1", "protocol");
     await createSession("project-1", "codex", null, null, null, "protocol");
     await createSession("project-1", "opencode", null);
     expect(requests).toEqual([
@@ -236,7 +236,7 @@ describe("turn facts", () => {
     );
   });
 
-  it("does not credit Mend with the terminal history a handoff imported", () => {
+  it("does not credit Mend with the terminal history a mode switch imported", () => {
     // Backfilled turns carry no author and the terminal agent's process id.
     const kinds = new Map<string, ProcessKind>([
       ["pty-agent", "agent-pty"],

@@ -93,7 +93,7 @@ export const interruptersByTurn = (
 /**
  * Who sent a turn, when that is worth saying: only when someone other than the viewer did, as
  * happens while control is shared. A null author is not one thing: on a conversation process it
- * is Mend itself (a Review follow-up), but a handoff to conversation imports the terminal's
+ * is Mend itself (a Review follow-up), but a switch to conversation imports the terminal's
  * history as turns of the terminal agent's process, also without an author, and those were typed
  * in the terminal. `processKinds` maps the session's process ids to their kind; a null-author turn
  * of a process not (yet) known says nothing rather than guess.

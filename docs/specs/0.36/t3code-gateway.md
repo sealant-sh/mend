@@ -152,8 +152,8 @@ account. It is off unless someone runs the gateway, and nothing in Mend starts i
   - delegated tasks, PR watch, `git.*`, `vcs.*`, preview;
   - provider install and auth, scheduled tasks, settings writes, usage;
   - T3 Connect, and with it push notifications to t3code mobile.
-- **Not in t3code at all:** review comments, slices, tours, passes, follow-up delivery, handoffs,
-  context packs and landing. They stay in Mend's own clients.
+- **Not in t3code at all:** review comments, slices, tours, passes, follow-up delivery, session
+  summaries, context packs and landing. They stay in Mend's own clients.
 
 ## How it works
 

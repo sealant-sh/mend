@@ -253,7 +253,7 @@ Supported item kinds should eventually include:
 - developer note;
 - URL;
 - issue or pull request;
-- previous Mend session or session handoff;
+- previous Mend session or session summary;
 - file or document from another adopted project.
 
 Each item has provenance, an updated timestamp, and a digest or revision identifier.
@@ -270,7 +270,7 @@ Authentication service
 - docs/authentication.md
 - docs/legacy-sso.md
 - Decision: database sessions remain authoritative
-- Handoff: legacy callback investigation
+- Session summary: legacy callback investigation
 ```
 
 Packs are editable, but every session receives an immutable snapshot. The review can later show the
@@ -323,7 +323,7 @@ A session contains or references:
 - artifacts;
 - context snapshot;
 - repository state at start and at later checkpoints;
-- generated handoff;
+- generated session summary;
 - coding-agent status such as running, waiting, idle, completed, failed, or stopped;
 - current workspace and supporting-process states.
 
@@ -448,7 +448,7 @@ The project page brings together:
 - current repository and branch state;
 - active and recent sessions;
 - active local change;
-- context packs and recent handoffs;
+- context packs and recent session summaries;
 - optional issue or PR links;
 - remote reachability.
 
@@ -506,7 +506,7 @@ The context surface lets the user:
 - browse and search context items;
 - create and edit context packs;
 - inspect the exact context snapshot used by a session;
-- turn a completed session into a handoff;
+- turn a completed session into a session summary;
 - promote an individual decision or discovery from a session into durable project context;
 - identify stale or missing items.
 
@@ -518,19 +518,19 @@ The context surface lets the user:
 
 ### Required for the first useful version
 
-- Manually add project files, documents, notes, URLs, and previous handoffs.
+- Manually add project files, documents, notes, URLs, and previous session summaries.
 - Group items into named context packs.
 - Choose a pack when starting a session.
 - Persist an immutable context manifest for each session.
 - Show the manifest from the session and review pages.
-- Generate a session handoff containing:
+- Generate a session summary containing:
   - goal;
   - decisions made;
   - files changed;
   - commands and checks run;
   - unresolved questions;
   - suggested next step.
-- Allow the user to edit a generated handoff before saving it as context.
+- Allow the user to edit a generated session summary before saving it as context.
 
 ### Later
 
@@ -707,7 +707,7 @@ The mobile experience must support:
 - readable unified diffs;
 - inline and change-level comments;
 - send review feedback to the agent;
-- browse context and session handoffs;
+- browse context and session summaries;
 - adopt a repository into the store — pick from the host GitHub CLI's repositories or type a source
   (added 2026-08-02, see §17);
 - open a terminal as an escape hatch.
@@ -850,7 +850,7 @@ Illustrative shape:
   items: [
     { kind: "file", ref: "AGENTS.md", digest: "..." },
     { kind: "document", ref: "docs/authentication.md", digest: "..." },
-    { kind: "session-handoff", ref: "handoff_01J...", digest: "..." }
+    { kind: "session-summary", ref: "summary_01J...", digest: "..." }
   ]
 }
 ```
@@ -948,7 +948,7 @@ continue as a self-hosted web application with an API, background work, and dura
 ### 9.1 Data ownership
 
 - Mend stores product state: machines, projects, context items, context packs, context snapshots,
-  sessions, changes, comments, handoffs, pairings, and publication references.
+  sessions, changes, comments, session summaries, pairings, and publication references.
 - Sealant stores raw execution records and exposes them through the public SDK.
 - Mend stores stable evidence pointers and small denormalized excerpts required to render durable
   review artifacts.
@@ -976,7 +976,7 @@ Sealant record.
 
 Mend may use inference to:
 
-- generate a session handoff;
+- generate a session summary;
 - summarize a change;
 - read a settled change and draft evidence-linked review findings (§7.3);
 - assemble review comments into a follow-up instruction;
@@ -987,8 +987,8 @@ Mend may use inference to:
 All inference must run through the user's connected accounts exposed by Sealant. Mend ships no
 hosted model and no hidden model keys.
 
-Generated text is derivative. Claims in a change overview or handoff must either link to evidence or
-be labeled as inferred.
+Generated text is derivative. Claims in a change overview or session summary must either link to
+evidence or be labeled as inferred.
 
 ### 9.4 Mobile transport
 
@@ -1174,7 +1174,7 @@ Exit test:
 > links to evidence or a runnable check, and accepting one sends it through the normal
 > review-to-agent loop.
 
-## M3 — Context and handoffs
+## M3 — Context and session summaries
 
 Purpose: remove repeated context reconstruction between sessions and agents.
 
@@ -1183,14 +1183,14 @@ Work:
 - Build the context library.
 - Build named context packs.
 - Snapshot the exact context used by each session.
-- Generate editable session handoffs.
+- Generate editable session summaries.
 - Promote session decisions and discoveries into durable context.
-- Search context and previous handoffs.
+- Search context and previous session summaries.
 
 Exit test:
 
-> Finish a Claude Code session, save its handoff, start a Codex session with that handoff in a
-> context pack, and later inspect exactly what the Codex session received.
+> Finish a Claude Code session, save its session summary, start a Codex session with that summary in
+> a context pack, and later inspect exactly what the Codex session received.
 
 ## M4 — Mobile and private remote access
 
@@ -1396,6 +1396,17 @@ understand the work.
   `SessionStart` claims its row, and a report under any other id changes nothing. A finished turn
   reads `waiting · claude finished its turn`. This lifts the 2026-08-21 reservation of `waiting` for
   protocol mode.
+
+- **2026-10-18: "handoff" means bringing local work into a session; the planned summary is a session
+  summary.** `handoff` now names one act: copying a person's local branch, commits and uncommitted
+  files included, into a new session from their checkout. The checkout is never changed, and the
+  session row reads `handed off from <machine>`. The planned editable end-of-session summary
+  promoted into durable context, previously called a handoff (§5, §7.1, M3), is a `session summary`;
+  its manifest kind is `session-summary`. The shipped 2026-08-31 cross-mode pickup is called a mode
+  switch in words and internal names. Its wire keeps the released names
+  (`POST /sessions/:id/handoff`, `HandoffRequest`, `HandoffUnsupported` with status 422), because
+  every `mend` CLI since 0.13 and the mobile app call it. The 2026-08-31 entry below keeps its
+  original wording as history.
 
 - **2026-10-08: the computer-use experiment succeeded; shipping is deferred.** Real Claude and Codex
   terminal sessions operated the same Chromium desktop the human viewed beside the terminal,

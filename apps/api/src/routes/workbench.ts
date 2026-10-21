@@ -592,8 +592,8 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const worktrees = yield* WorktreesRepo;
         const project = yield* access.project(params.id);
         const viewer = yield* access.viewer();
-        // A settled session with no transcript cannot be resumed or handed off: hidden by
-        // default, listed only on request (`mend sessions --all`). Its worktree still lists.
+        // A settled session with no transcript cannot be resumed or switched to another mode: hidden
+        // by default, listed only on request (`mend sessions --all`). Its worktree still lists.
         // With per-person homes possible, each session with the people live in its executor and
         // its retirement (docs/adr/0016, decision 13); otherwise the plain read, at no cost.
         const engine = yield* SessionEngine;
@@ -3251,14 +3251,14 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         });
       }),
     )
-    .handle("handoff", ({ params, payload }) =>
+    .handle("switchMode", ({ params, payload }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
         const session = yield* steering.owned(params.id);
         const engine = yield* SessionEngine;
-        // A handoff to a conversation continues the same session: a model or effort it names
+        // A switch to a conversation continues the same session: a model or effort it names
         // wins, else the ones the session was started with, else the harness's default; the engine
-        // records them once it launches (docs/models-audit.md). A handoff to a terminal resumes
+        // records them once it launches (docs/models-audit.md). A switch to a terminal resumes
         // the harness natively, on the conversation's own model: nothing is resolved or rewritten.
         const resolved =
           payload.to === "protocol"
@@ -3268,7 +3268,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
               })
             : null;
         return yield* engine
-          .handoff(
+          .switchMode(
             params.id,
             payload.to,
             {
@@ -3289,7 +3289,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             Effect.catchTag("ProjectNotFoundError", () =>
               Effect.fail(new NotFound({ id: params.id })),
             ),
-            Effect.catchTag("HandoffUnsupportedError", (error) =>
+            Effect.catchTag("ModeSwitchUnsupportedError", (error) =>
               Effect.fail(
                 new HandoffUnsupported({
                   sessionId: error.sessionId,

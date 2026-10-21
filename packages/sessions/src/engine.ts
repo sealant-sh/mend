@@ -631,11 +631,10 @@ const pushedBranches = (refUpdates: ReadonlyArray<string> | null): boolean =>
   agentPushedBranches(refUpdates ?? []).length > 0;
 
 /**
- * How a harness takes an opening prompt (the cross-harness handoff). The exact user-approved bytes
- * travel as bounded base64 chunks and are decoded in the workspace: a prompt can outgrow one argv
- * word (Core's `SESSION_ARGV_MAX_WORD_BYTES`), and a control plane before 0.39.0-next.712 refused
- * arguments with outer whitespace. The sentinel preserves trailing newlines through POSIX command
- * substitution.
+ * How a harness takes an opening prompt. The exact user-approved bytes travel as bounded base64
+ * chunks and are decoded in the workspace: a prompt can outgrow one argv word (Core's
+ * `SESSION_ARGV_MAX_WORD_BYTES`), and a control plane before 0.39.0-next.712 refused arguments with
+ * outer whitespace. The sentinel preserves trailing newlines through POSIX command substitution.
  */
 /** A word for `sh -c`, in single quotes, whatever it holds. */
 const shellWord = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
@@ -879,8 +878,8 @@ const savedConversationArgv = (
  * flag itself (or a contrary one) is left alone.
  */
 /**
- * A conversation a mode handoff took ahead of its own start (review of mend#572, P2-3): provided
- * only to that handoff's start, so no other start (a waiting turn's hand-over, a resume) can use it
+ * A conversation a mode switch took ahead of its own start (review of mend#572, P2-3): provided
+ * only to that switch's start, so no other start (a waiting turn's hand-over, a resume) can use it
  * (review 2 of mend#572, P3-1). Null everywhere else.
  */
 interface TakenAhead {
@@ -1979,8 +1978,8 @@ export class SessionTurnRefusedError extends Schema.TaggedError<SessionTurnRefus
 ) {}
 
 /** The session's harness cannot continue in the requested mode (claude and codex only). */
-export class HandoffUnsupportedError extends Schema.TaggedError<HandoffUnsupportedError>()(
-  "HandoffUnsupportedError",
+export class ModeSwitchUnsupportedError extends Schema.TaggedError<ModeSwitchUnsupportedError>()(
+  "ModeSwitchUnsupportedError",
   {
     sessionId: Schema.String,
     harness: Schema.String,
@@ -2150,7 +2149,7 @@ export class SessionEngine extends Context.Service<
      */
     readonly detach: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<Fiber.Fiber<A, E>>;
     /**
-     * Whether a launch verb (launch, resume, handoff, follow-up) is under way for the session in
+     * Whether a launch verb (launch, resume, mode switch, follow-up) is under way for the session in
      * this process. A resumed session keeps its settled row until its agent runs; the API reads
      * it as `starting` meanwhile, and a second launch verb is refused (`session_starting`; a
      * public launch, in its own terms: `launch-admission.ts`).
@@ -2206,13 +2205,12 @@ export class SessionEngine extends Context.Service<
       | SessionAgentLiveError
     >;
     /**
-     * Cross-mode pickup (mode handoff): end the live agent in the OTHER mode,
-     * backfill PTY-era history from the native transcript into the durable
-     * conversation, and continue the same provider session in the requested
-     * mode. Idempotent when already live in that mode; a settled session
-     * degrades to a mode-aware resume.
+     * Mode switch: end the live agent in the OTHER mode, backfill PTY-era history from the native
+     * transcript into the durable conversation, and continue the same provider session in the
+     * requested mode. Idempotent when already live in that mode; a settled session degrades to a
+     * mode-aware resume.
      */
-    readonly handoff: (
+    readonly switchMode: (
       sessionId: SessionId,
       to: "protocol" | "pty",
       start: LaunchStart,
@@ -2228,7 +2226,7 @@ export class SessionEngine extends Context.Service<
       | SessionLaunchSetupError
       | DotfilesResolveError
       | ProtocolHarnessUnsupportedError
-      | HandoffUnsupportedError
+      | ModeSwitchUnsupportedError
     >;
     /**
      * Put one pasted image where the session's harness reads it, and answer the path the terminal
@@ -3463,7 +3461,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * `workspace.capture.flush()` (SDK 0.31.0, sealantd ADR-0015) on one executor. `suspend`: a
        * small-class capture, then everything staged is shipped and registered; processes keep
-       * running (checkpoints, handoffs, readings). `final`: the executor is ending — it stops
+       * running (checkpoints, mode switches, readings). `final`: the executor is ending — it stops
        * admitting processes, ends the running ones, snapshots both classes and ships everything;
        * only its `complete: true` is saved (`captureSaved`). Bounded by the daemon and by `timeout`
        * here. The answer is recorded on `session` as observed (pending, bytes and refusals once
@@ -18765,7 +18763,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         launchCorrelationId: string | null = null,
         forceFreshWorkspace = false,
         /**
-         * A mode handoff's: the agent it just ended held the current workspace, and its
+         * A mode switch's: the agent it just ended held the current workspace, and its
          * successor starts there (one live agent process at a time, same executor).
          */
         handedOver = false,
@@ -18808,7 +18806,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             : withModel;
         // Any prior same-harness agent resumes by provider id — a PTY-born
         // session picked up in protocol mode continues the same conversation
-        // (mode handoff), not a fresh one.
+        // (mode switch), not a fresh one.
         const providerSessionId =
           previous !== null && previous.harness === session.harness
             ? (previous.providerSessionId ?? undefined)
@@ -19582,7 +19580,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // it is now. Only into a home that is the owner's (decision 3): whose it is is decided
             // from the executor, never from how the launch reached it. A join names the lease
             // holder's owner; any other retained run (resume, follow-up, shell resume, mode
-            // handoff) reads whose launch made the executor (`launchLoginOfWorkspace`), because a
+            // switch) reads whose launch made the executor (`launchLoginOfWorkspace`), because a
             // session that once joined another person's executor keeps that executor on its row.
             // Delivering there would put the owner's files where the holder's agent reads them,
             // replace the holder's own at the same path, and remove the holder's files as stale.
@@ -19970,7 +19968,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * Whether a launch may join the session's current workspace rather than replace it: a shell,
-       * a Service or a forward still holds it, or (`handedOver`) a mode handoff just ended the
+       * a Service or a forward still holds it, or (`handedOver`) a mode switch just ended the
        * agent that held it and is starting its successor there. Either way the workspace must be
        * live and not final-flushed.
        */
@@ -20142,10 +20140,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         harness: string | null,
         fresh = false,
-        // Mode handoff: a formerly-protocol session picked up from a terminal
+        // Mode switch: a formerly-protocol session picked up from a terminal
         // must come back as a TUI, not re-enter protocol mode.
         forcePty = false,
-        // Mode handoff: the agent it ended held the current workspace; the TUI starts there.
+        // Mode switch: the agent it ended held the current workspace; the TUI starts there.
         handedOver = false,
       ) {
         const session = yield* sessions.byId(sessionId);
@@ -20323,8 +20321,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           // TRUE cross-harness open: convert the saved native session into
           // the TARGET harness's own format and resume it natively — full
-          // history, as if the target had run it. Distilled-prompt handoff
-          // remains only for pairs conversion cannot express.
+          // history, as if the target had run it.
           nativeImport = convertNativeSession(manifest.harness, target, native, {
             cwd: "/workspace/repo",
             now: new Date(clock.currentTimeMillisUnsafe()).toISOString(),
@@ -20690,9 +20687,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * Mode handoff, the history half: land the newest same-harness agent's
+       * Mode switch, the history half: land the newest same-harness agent's
        * native transcript (harvested to `transcript.native`) as durable
-       * conversation turns past the ingest cursor. Never blocks the handoff —
+       * conversation turns past the ingest cursor. Never blocks the switch —
        * live turns still work with missing history, and the transcript view
        * keeps the full record either way.
        */
@@ -20741,7 +20738,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * transcript now), backfills PTY-era history for protocol pickups, and
        * continues the same conversation in the requested mode.
        */
-      const handoff = Effect.fn("SessionEngine.handoff")(function* (
+      const switchMode = Effect.fn("SessionEngine.switchMode")(function* (
         sessionId: SessionId,
         to: "protocol" | "pty",
         start: LaunchStart,
@@ -20752,7 +20749,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
         if (session.harness !== "claude" && session.harness !== "codex") {
-          return yield* new HandoffUnsupportedError({
+          return yield* new ModeSwitchUnsupportedError({
             sessionId,
             harness: session.harness,
             to,
@@ -20765,7 +20762,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return session;
         }
         const ahead: TakenAhead = { sessionId, fence: null };
-        return yield* handoffEnding(session, to, start, author, liveAgents, rows, ahead).pipe(
+        return yield* switchModeEnding(session, to, start, author, liveAgents, rows, ahead).pipe(
           Effect.provideService(TakenAheadRef, ahead),
           // A take made ahead that its start did not use is let go.
           Effect.ensuring(
@@ -20779,7 +20776,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
-      const handoffEnding = Effect.fn("SessionEngine.handoffEnding")(function* (
+      const switchModeEnding = Effect.fn("SessionEngine.switchModeEnding")(function* (
         session: Session,
         to: "protocol" | "pty",
         start: LaunchStart,
@@ -20849,7 +20846,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             how: "stopped",
             exitCode: null,
             outcome: "stopped",
-            summary: `handed off to ${to}`,
+            summary: `switched to ${to}`,
           });
           if (recorded) {
             handedOver = agent;
@@ -20859,13 +20856,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const captureReady = yield* flushBeforeHarvest(
               session,
               agent.sealantWorkspaceId,
-              "handoff harvest",
+              "mode switch harvest",
             );
             if (!captureReady) {
               return yield* new SealantPlatformError({
-                code: "handoff_capture_flush_incomplete",
+                code: "mode_switch_capture_flush_incomplete",
                 status: null,
-                message: "The final agent state was not captured; handoff was stopped.",
+                message: "The final agent state was not captured; the mode switch was stopped.",
                 cause: null,
               });
             }
@@ -20905,7 +20902,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.catchTag("HarnessStateNotFoundError", () =>
             Effect.fail(
               new SealantPlatformError({
-                code: "handoff_state_missing",
+                code: "mode_switch_state_missing",
                 status: null,
                 message:
                   "No saved harness state to reopen as a terminal — resume the session instead.",
@@ -24139,8 +24136,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           detached(
             owned(sessionId)(oneLaunch(sessionId)(resumeSession(sessionId, harness, fresh))),
           ),
-        handoff: (sessionId, to, start, author) =>
-          detached(owned(sessionId)(oneLaunch(sessionId)(handoff(sessionId, to, start, author)))),
+        switchMode: (sessionId, to, start, author) =>
+          detached(
+            owned(sessionId)(oneLaunch(sessionId)(switchMode(sessionId, to, start, author))),
+          ),
         observeExternalAgents,
         reapCaptureLeases: captureReaper,
         migratePreReleaseMemory,

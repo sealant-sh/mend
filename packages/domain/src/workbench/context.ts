@@ -4,12 +4,12 @@ import { ContextSnapshotId } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
 
 /** One explicit source of information supplied to a session (plan §5.3). */
-export const ContextItemKind = Schema.Literals(["file", "document", "note", "url", "handoff"]);
+export const ContextItemKind = Schema.Literals(["file", "document", "note", "url", "summary"]);
 export type ContextItemKind = typeof ContextItemKind.Type;
 
 export class ContextItem extends Schema.Class<ContextItem>("ContextItem")({
   kind: ContextItemKind,
-  /** Path, URL, or handoff id — whatever addresses the item for its kind. */
+  /** Path, URL, or session summary id — whatever addresses the item for its kind. */
   ref: Schema.String,
   /** Content digest at snapshot time, when computable; provenance, not access control. */
   digest: Schema.NullOr(Schema.String),

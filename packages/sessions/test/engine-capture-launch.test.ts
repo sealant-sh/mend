@@ -163,7 +163,7 @@ const replaceHeadWithRootlessWorkspace = (
     chain.headCapture = built.id;
   });
 
-const verifyDeferredFinalHarvest = (pathKind: "stop" | "handoff" | "sweep") =>
+const verifyDeferredFinalHarvest = (pathKind: "stop" | "mode-switch" | "sweep") =>
   Effect.gen(function* () {
     const created: Array<CreateOptions> = [];
     const spawned: ReadonlyArray<string>[] = [];
@@ -211,13 +211,13 @@ const verifyDeferredFinalHarvest = (pathKind: "stop" | "handoff" | "sweep") =>
             (process) => process.kind === "agent-pty" && process.exitedAt === null,
           );
           if (agent === undefined) throw new Error("launch recorded no agent");
-          // The flush that ships the final capture: the handoff's own, or the drain's final, which
-          // is a stop's first and only flush (decision 50).
+          // The flush that ships the final capture: the mode switch's own, or the drain's final,
+          // which is a stop's first and only flush (decision 50).
           const flushThatShips = 1;
 
-          if (pathKind === "handoff") {
-            const handoff = yield* engine
-              .handoff(
+          if (pathKind === "mode-switch") {
+            const switched = yield* engine
+              .switchMode(
                 session.id,
                 "protocol",
                 { mode: "protocol", permissionMode: "bypass" },
@@ -228,7 +228,7 @@ const verifyDeferredFinalHarvest = (pathKind: "stop" | "handoff" | "sweep") =>
             expect(flushes).toBe(flushThatShips);
             expect(world.sessions.get(session.id)?.hasTranscript).not.toBe(true);
             yield* Deferred.succeed(releaseFlush, undefined);
-            yield* Fiber.join(handoff);
+            yield* Fiber.join(switched);
             expect(attached).toHaveLength(1);
             // The successor starts in the workspace the ended agent held: no second create, no
             // save-stop-boot-restore for a process swap (the 2026-10-02 pickup took 2 min 14 s).
@@ -264,7 +264,7 @@ const verifyDeferredFinalHarvest = (pathKind: "stop" | "handoff" | "sweep") =>
           expect(fs.readFileSync(path.join(stateDir, "transcript.native"), "utf8")).toContain(
             `${pathKind} final answer`,
           );
-          if (pathKind !== "handoff") {
+          if (pathKind !== "mode-switch") {
             yield* clock.untilChanged(
               () => readBacks.length > 0,
               `${pathKind} agent memory read back`,
@@ -658,8 +658,8 @@ describe("SessionEngine capture mode", () => {
   );
 
   it.effect(
-    "waits for a deferred final registration before handoff harvest reads the head",
-    () => verifyDeferredFinalHarvest("handoff"),
+    "waits for a deferred final registration before mode switch harvest reads the head",
+    () => verifyDeferredFinalHarvest("mode-switch"),
     { timeout: 20_000 },
   );
 

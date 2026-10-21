@@ -75,7 +75,7 @@ dense ordinal sequence across its sessions. Harness native state (the transcript
 session id a native resume addresses) is harvested **per agent process**; "the session's provider
 id" means the latest agent's.
 
-**Mode handoff** (`POST /sessions/:id/handoff`, claude and codex): the same conversation moves
+**Mode switch** (`POST /sessions/:id/handoff`, claude and codex): the same conversation moves
 between `agent-pty` and `agent-protocol` — one live agent process at a time, the provider session id
 the durable identity. A protocol pickup backfills PTY-era turns from the native transcript into the
 durable conversation (the live adapter's own item mapping — real ids, raw blocks); a terminal pickup

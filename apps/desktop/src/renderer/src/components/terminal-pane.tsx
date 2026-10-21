@@ -23,7 +23,7 @@ import {
   agentIsLive,
   agentRunsAsConversation,
   checkpointSession,
-  handoffSession,
+  switchSessionMode,
   openReview,
   removeSession,
   renameShell as renameShellProcess,
@@ -91,8 +91,8 @@ const probeTab = (tab: Tab, projectId: string | null) => (): Promise<PtyLiveness
     }, livenessOfError);
 };
 
-/** The confirmation a handoff of a live agent asks for: the running process ends first. */
-const handoffConfirm = (harness: string, to: AgentLaunchModeDto): string =>
+/** The confirmation a mode switch of a live agent asks for: the running process ends first. */
+const switchModeConfirm = (harness: string, to: AgentLaunchModeDto): string =>
   to === "protocol"
     ? `The ${harness} process in the terminal ends, and the same ${harness} session continues here as a conversation.`
     : `The ${harness} conversation process ends, and the same ${harness} session continues in a terminal.`;
@@ -214,8 +214,8 @@ export function TerminalPane({
     mutationFn: () => resumeSession(tab.sessionId),
     onSuccess: afterRelaunch,
   });
-  const handoff = useMutation({
-    mutationFn: (to: AgentLaunchModeDto) => handoffSession(tab.sessionId, to),
+  const switchMode = useMutation({
+    mutationFn: (to: AgentLaunchModeDto) => switchSessionMode(tab.sessionId, to),
     onSuccess: (_session, to) => {
       rememberLaunchMode(tab.sessionId, to);
       afterRelaunch();
@@ -259,7 +259,7 @@ export function TerminalPane({
   // Only the owner types in a terminal, even while control is shared (docs/adr/0013). An older
   // server's control omits the flag and takes every steerer's keys.
   const terminalInput = control.terminalInput !== false;
-  // Resume rejoins a settled session in the mode its agent last ran in; a handoff continues the
+  // Resume rejoins a settled session in the mode its agent last ran in; a mode switch continues the
   // same provider session in the other mode, and is the owner's alone even while control is
   // shared (the server's rule, docs/adr/0003). A resume that opens a terminal is the owner's alone
   // too (docs/adr/0013): a steerer resumes a conversation, and is told why nothing else.
@@ -270,7 +270,7 @@ export function TerminalPane({
   const settled = session !== null && !live && detail.data !== undefined;
   const canResume = settled && resumeAllowed;
   const ownerResumes = settled && isSessionTab && control.steer && !resumeAllowed;
-  const handoffTo: AgentLaunchModeDto | null =
+  const switchTo: AgentLaunchModeDto | null =
     session !== null &&
     control.own &&
     detail.data !== undefined &&
@@ -283,7 +283,7 @@ export function TerminalPane({
         ? "pty"
         : "protocol"
       : null;
-  const relaunchError = resume.error ?? handoff.error;
+  const relaunchError = resume.error ?? switchMode.error;
   const review = useMutation({
     mutationFn: (changeId: string) => openReview(changeId, reviewOpenKey(changeId)),
     onSuccess: (opened) => onReview(opened.slice.changeId, opened.slice.id),
@@ -366,29 +366,29 @@ export function TerminalPane({
             )}
             {canResume && (
               <Quiet
-                disabled={resume.isPending || handoff.isPending}
+                disabled={resume.isPending || switchMode.isPending}
                 title="Rejoin the session: same worktree, restored harness state"
                 onClick={() => resume.mutate()}
               >
                 {resume.isPending ? "resuming…" : "resume"}
               </Quiet>
             )}
-            {handoffTo !== null && (
+            {switchTo !== null && (
               <Quiet
-                disabled={resume.isPending || handoff.isPending}
+                disabled={resume.isPending || switchMode.isPending}
                 title={
-                  handoffTo === "protocol"
+                  switchTo === "protocol"
                     ? "Continue the same provider session as a conversation"
                     : "Continue the same provider session in a terminal"
                 }
                 onClick={() => {
-                  if (live && !window.confirm(handoffConfirm(session.harness, handoffTo))) return;
-                  handoff.mutate(handoffTo);
+                  if (live && !window.confirm(switchModeConfirm(session.harness, switchTo))) return;
+                  switchMode.mutate(switchTo);
                 }}
               >
-                {handoff.isPending
-                  ? "handing off…"
-                  : handoffTo === "protocol"
+                {switchMode.isPending
+                  ? "switching…"
+                  : switchTo === "protocol"
                     ? "continue as conversation"
                     : "continue in terminal"}
               </Quiet>

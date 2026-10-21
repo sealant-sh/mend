@@ -269,7 +269,7 @@ const flushContexts = new Set([
   "opencode launch snapshot",
   "settle harvest",
   "process-end harvest",
-  "handoff harvest",
+  "mode switch harvest",
   "agent memory hand-over",
   "automatic landing",
   "landing",

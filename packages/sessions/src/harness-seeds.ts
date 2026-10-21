@@ -595,7 +595,7 @@ export const withCodexMemoryOff = (
  *
  * Today's launches stay off the daemon only by accident: Codex refuses the shared server when a
  * `-c` override names a setting it cannot forward, and `features.memories` is one. The flag makes
- * it explicit, on every path: the app-server, the terminal, a prompt, a resume, a handoff, a join
+ * it explicit, on every path: the app-server, the terminal, a prompt, a resume, a mode switch, a join
  * and a claimed standby all pass through `withHarnessSetup` or `promptArgv`. Observed 2026-10-05
  * with Codex 0.160.0: with only this flag, no daemon starts, nothing is copied, and a turn runs as
  * before; without any `-c`, the TUI copies 427 MB. A launch that names the setting itself, or

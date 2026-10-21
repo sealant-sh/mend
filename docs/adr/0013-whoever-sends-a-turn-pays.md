@@ -117,8 +117,8 @@ without a restart. So in a terminal session only the owner types, even while con
   terminal for anyone else as well.
 - **Steering a terminal session means a conversation.** A steerer sees: "This session runs in a
   terminal. Only \<owner\> types here; they can continue it as a conversation." The owner continues
-  it with the existing handoff (`SessionEngine.handoff`), which starts the conversation in the same
-  workspace, and from then on every turn is paid by its sender.
+  it with the existing mode switch (`SessionEngine.switchMode`), which starts the conversation in
+  the same workspace, and from then on every turn is paid by its sender.
 
 ### Core: one endpoint
 

@@ -35,7 +35,7 @@ waited for its save far longer than the work it saved:
 
 Who hits it: everyone on a self-hosted install (the owner's box, `alpha.mend.run`), on every Stop,
 every resume (a launch waits for the worktree's previous executor to save, ADR 0002 "A launch waits
-for the worktree's previous executor"), and every handoff. The owner's verdict on 2026-10-02: "2
+for the worktree's previous executor"), and every mode switch. The owner's verdict on 2026-10-02: "2
 mins for 200 mb? And 18 mins for bigger files? Not acceptable." ROADMAP 0.36 Must 3 and exit
 criterion: "A stop's save takes under two minutes, measured on the box."
 

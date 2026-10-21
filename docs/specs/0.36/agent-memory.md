@@ -34,7 +34,7 @@ mend#528 is the fix on main.
 
 - A person starts a session on a project. Mend writes their stored memory for that project into the
   session's harness home before the agent starts.
-- When the agent ends (Stop, exit, mode handoff, any harvest), Mend reads the memory back into that
+- When the agent ends (Stop, exit, mode switch, any harvest), Mend reads the memory back into that
   person's store for the project.
 - A later session of theirs on the project, in any worktree, starts with it. Claude reads it through
   its own `MEMORY.md`; Codex through `~/.codex/memories/` with its feature turned on.
@@ -138,9 +138,9 @@ aside, never deleted), `.mend/carried-transcripts`, `.mend/codex-memory-withheld
 8. Argv: `withCodexMemoryOff(argv, { join: false })` when step 6 said memory may not stay on
    (`engine.ts:11960-11962`); then `withHarnessSetup` adds `-c features.memories=true` to a `codex`
    harness argv unless any arg starts with `features.memories` (`harness-seeds.ts:190-196,341-349`).
-   `promptArgv` hardcodes the flag for prompts and handoffs (`engine.ts:505-506`).
+   `promptArgv` hardcodes the flag for prompts and mode switches (`engine.ts:505-506`).
 
-### Retained launch (join, retained resume, follow-up, mode handoff, second session)
+### Retained launch (join, retained resume, follow-up, mode switch, second session)
 
 `launchInRetainedWorkspace`, `engine.ts:12590-12716`. No hand-over and no delivery. For an argv that
 `launchesCodex` (`harness-seeds.ts:229-231`: `codex …` or Mend's `sh -c "… exec codex …"`, any
