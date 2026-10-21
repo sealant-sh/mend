@@ -12,7 +12,13 @@ import { Effect, Result } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
-import { sealantLaunchLayer, setup, withEngine, type World } from "./engine/fixture.ts";
+import {
+  freeLaunchSlot,
+  sealantLaunchLayer,
+  setup,
+  withEngine,
+  type World,
+} from "./engine/fixture.ts";
 
 const checkoutIn = (tmp: string) => {
   const checkout = path.join(tmp, "checkout");
@@ -225,6 +231,7 @@ describe("SessionEngine handoff", () => {
                 }).bytes,
               ),
             )).id,
+            freeLaunchSlot,
           );
           expect(held.status).toBe("idle");
           const agent = yield* engine.launch(held.id, ["codex", "finish the tests"]);

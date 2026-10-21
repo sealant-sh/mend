@@ -36,6 +36,7 @@ import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { provisionIn } from "./engine/capture-fixture.ts";
 import { makeEngineClock } from "./engine/clock-fixture.ts";
 import {
+  freeLaunchSlot,
   invalidAccount,
   now,
   sealantLaunchLayer,
@@ -1664,7 +1665,7 @@ describe("SessionEngine", () => {
             ownerUserId: "user-fixture",
             start: { kind: "base", base: null },
           });
-          const held = yield* engine.holdWorkspace(session.id);
+          const held = yield* engine.holdWorkspace(session.id, freeLaunchSlot);
           expect(held.status).toBe("idle");
           expect(held.settledAt).toBeNull();
           const rows = [...world.processes.values()].filter(
@@ -1707,7 +1708,7 @@ describe("SessionEngine", () => {
             ownerUserId: "user-fixture",
             start: { kind: "base", base: null },
           });
-          const holding = yield* Effect.forkChild(engine.holdWorkspace(session.id));
+          const holding = yield* Effect.forkChild(engine.holdWorkspace(session.id, freeLaunchSlot));
           yield* Deferred.await(opening);
           expect(world.sessions.get(session.id)?.status).toBe("starting");
           expect(engine.launchUnderWay(session.id)).toBe(true);
@@ -1754,7 +1755,9 @@ describe("SessionEngine", () => {
             ownerUserId: "user-fixture",
             start: { kind: "base", base: null },
           });
-          const outcome = yield* engine.holdWorkspace(session.id).pipe(Effect.result);
+          const outcome = yield* engine
+            .holdWorkspace(session.id, freeLaunchSlot)
+            .pipe(Effect.result);
           expect(Result.isFailure(outcome)).toBe(true);
           expect(created).toHaveLength(1);
           const row = world.sessions.get(session.id);
@@ -1781,6 +1784,186 @@ describe("SessionEngine", () => {
           { openFails: () => true },
         ),
       },
+    );
+  });
+
+  it("holds a session that joins another session's executor as one shell: no agent, no run, the holder's workspace", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const holder = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(holder.id, ["codex"]);
+          const joiner = yield* engine.provisionSessionIn(holder.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          const held = yield* engine.holdWorkspace(joiner.id, freeLaunchSlot);
+          expect(created).toHaveLength(1);
+          expect(held.status).toBe("idle");
+          expect(held.sealantWorkspaceId).toBe(world.sessions.get(holder.id)?.sealantWorkspaceId);
+          expect(held.sealantRunId).toBeNull();
+          const rows = [...world.processes.values()].filter(
+            (process) => process.sessionId === joiner.id,
+          );
+          expect(rows.map((process) => [process.kind, process.label, process.status])).toEqual([
+            ["shell", "shell 1", "running"],
+          ]);
+          expect(currentAgentProcess(rows)).toBeNull();
+          expect(held.sealantSessionId).toBe(rows[0]?.sealantSessionId);
+          expect(
+            [...world.sessionRuns.values()].filter((run) => run.sessionId === joiner.id),
+          ).toEqual([]);
+        }),
+      { captured: makeMemoryCaptureStore(), sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("answers a late hold with the session as it stands: the agent another launch started keeps running, in its workspace", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const launched = yield* engine.launch(session.id, ["codex", "finish the tests"]);
+          const held = yield* engine.holdWorkspace(session.id, freeLaunchSlot);
+          expect(held.status).toBe("running");
+          expect(held.sealantWorkspaceId).toBe(launched.sealantWorkspaceId);
+          expect(held.sealantRunId).toBe(launched.sealantRunId);
+          expect(created).toHaveLength(1);
+          expect(
+            [...world.processes.values()]
+              .filter((process) => process.sessionId === session.id)
+              .map((process) => [process.kind, process.status]),
+          ).toEqual([["agent-pty", "running"]]);
+        }),
+      { captured: makeMemoryCaptureStore(), sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("answers a hold that meets a launch still starting with the session as it stands, and never settles that launch failed", async () => {
+    const created: CreateOptions[] = [];
+    const opening = Effect.runSync(Deferred.make<void>());
+    const release = Effect.runSync(Deferred.make<void>());
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const launching = yield* Effect.forkChild(
+            engine.launch(session.id, ["codex", "finish the tests"]),
+          );
+          yield* Deferred.await(opening);
+          const held = yield* engine.holdWorkspace(session.id, freeLaunchSlot);
+          expect(held.status).toBe("starting");
+          expect(held.settledAt).toBeNull();
+          yield* Deferred.succeed(release, undefined);
+          const launched = yield* Fiber.join(launching);
+          expect(launched.status).toBe("running");
+          expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+          expect(created).toHaveLength(1);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            aroundOpen: () =>
+              Deferred.succeed(opening, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          },
+        ),
+      },
+    );
+  });
+
+  it("settles a hold refused a launch slot failed in the slot's words, and starts nothing", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const held = yield* engine.holdWorkspace(session.id, {
+            take: () => Effect.succeed(null),
+            refused: "budget reached · 4 launches starting at once for one account",
+          });
+          expect(held.status).toBe("failed");
+          expect(held.summary).toBe(
+            "hold failed: budget reached · 4 launches starting at once for one account",
+          );
+          expect(created).toEqual([]);
+        }),
+      { captured: makeMemoryCaptureStore(), sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("refuses a hold under the co-located store with a typed error, and starts and settles nothing", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const refused = yield* engine.holdWorkspace(session.id, freeLaunchSlot).pipe(Effect.flip);
+          expect(refused._tag).toBe("HoldUnsupportedError");
+          expect(created).toEqual([]);
+          expect(world.sessions.get(session.id)?.status).toBe("starting");
+          expect(world.sessions.get(session.id)?.sealantRunId).toBeNull();
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
     );
   });
 

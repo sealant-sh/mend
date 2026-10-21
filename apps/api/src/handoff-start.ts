@@ -21,7 +21,7 @@ import {
   type Worktree,
   type WorktreeHandoff,
 } from "@mend/domain/workbench";
-import { SessionEngine } from "@mend/sessions";
+import { SessionEngine, type LaunchSlot } from "@mend/sessions";
 import {
   AgentBridge,
   DeploymentConfig,
@@ -41,7 +41,7 @@ import * as Context from "effect/Context";
 import { ProjectAccess } from "./access.ts";
 import { budgetMessage, Budgets } from "./budgets.ts";
 import { budgetExceeded, requireSessionRoom } from "./session-budgets.ts";
-import { LAUNCH_ANSWER_WINDOW, settleIfUnlaunched } from "./session-start.ts";
+import { LAUNCH_ANSWER_WINDOW } from "./session-start.ts";
 
 export interface HandoffQueryInput {
   readonly harness: string;
@@ -77,13 +77,6 @@ const termOf = (limit: number): number => (limit > 0 ? limit : Number.MAX_SAFE_I
 
 const refused = (reason: HandoffRefused["reason"], message: string) =>
   new HandoffRefused({ reason, message: `${message} · nothing was created` });
-
-const unheld = (session: Session, launchUnderWay: (sessionId: Session["id"]) => boolean) =>
-  !launchUnderWay(session.id) &&
-  session.status === "starting" &&
-  session.settledAt === null &&
-  session.sealantWorkspaceId === null &&
-  session.sealantRunId === null;
 
 const BRANCH_PREFIX = "refs/heads/mend/";
 
@@ -207,34 +200,29 @@ export const makeHandoffStart = Effect.gen(function* () {
   });
 
   /**
-   * The hold, detached past the answer and under one of the account's launch slots for its whole
-   * course. The engine settles a hold that fails once it started; one refused a slot, or failing
-   * before the engine took it, is settled here. The answer is the session as it stands: `idle`,
-   * `starting` while the hold is still under way, or `failed` with its words.
+   * The hold, detached past the answer. The engine admits it under the session's launch gate,
+   * holds only a session nothing launched yet, under one of the account's launch slots for its
+   * whole course, and settles a hold that fails or finds no slot free. The answer is the session as
+   * it stands: `idle`, `starting` while the hold or another launch is under way, `running` when
+   * another client launched its agent first, or `failed` with its words.
    */
   const hold = Effect.fn("HandoffStart.hold")(function* (session: Session, userId: string) {
-    const failed = (message: string) =>
-      settleIfUnlaunched(sessions, session, `hold failed: ${message}`).pipe(
-        Effect.ignore,
-        Effect.andThen(
-          Effect.logWarning("handoff: the hold failed").pipe(
-            Effect.annotateLogs({ sessionId: session.id, error: message }),
+    const slot: LaunchSlot = {
+      take: (effect) => budgets.withLaunchSlot(userId, effect),
+      refused: budgetMessage("accountLaunchesInFlight", budgets.limits.accountLaunchesInFlight),
+    };
+    const fiber = yield* engine.detach(
+      engine
+        .holdWorkspace(session.id, slot)
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("handoff: the hold failed").pipe(
+              Effect.annotateLogs({ sessionId: session.id, error: error.message }),
+              Effect.as(null),
+            ),
           ),
         ),
-        Effect.as(null),
-      );
-    const holding = budgets.withLaunchSlot(userId, engine.holdWorkspace(session.id)).pipe(
-      Effect.matchEffect({
-        onFailure: (error) => failed(error.message),
-        onSuccess: (held) =>
-          held === null
-            ? failed(
-                budgetMessage("accountLaunchesInFlight", budgets.limits.accountLaunchesInFlight),
-              )
-            : Effect.succeed(held),
-      }),
     );
-    const fiber = yield* engine.detach(holding);
     const answered = yield* Fiber.join(fiber).pipe(Effect.timeoutOption(LAUNCH_ANSWER_WINDOW));
     if (Option.isSome(answered) && answered.value !== null) return answered.value;
     return yield* sessions
@@ -279,10 +267,7 @@ export const makeHandoffStart = Effect.gen(function* () {
     query: HandoffQueryInput,
   ) {
     const session = yield* sessionIn(project, earlier, userId, query);
-    const answered =
-      query.hold === "true" && unheld(session, engine.launchUnderWay)
-        ? yield* hold(session, userId)
-        : session;
+    const answered = query.hold === "true" ? yield* hold(session, userId) : session;
     return new HandoffReceived({
       session: answered,
       worktree: earlier,

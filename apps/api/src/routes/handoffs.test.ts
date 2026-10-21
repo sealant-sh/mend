@@ -69,8 +69,6 @@ interface Seen {
   readonly namesRacing: Set<string>;
   readonly provisionGates: Array<Deferred.Deferred<void>>;
   readonly holdGates: Array<Deferred.Deferred<void>>;
-  /** Sessions the engine reads as having a launch under way. */
-  readonly launching: Set<string>;
   holdFails: boolean;
 }
 
@@ -161,7 +159,7 @@ const worldWith = async (
       },
       storeRefs: { list: () => Effect.succeed(seen.refs) },
       engine: {
-        launchUnderWay: (sessionId) => seen.launching.has(sessionId),
+        launchUnderWay: () => false,
         provision,
         provisionSessionIn: (worktreeId, input) =>
           Effect.sync(() => {
@@ -172,35 +170,50 @@ const worldWith = async (
               input.ownerUserId ?? "nobody",
             );
           }),
-        holdWorkspace: (sessionId) =>
-          Effect.gen(function* () {
-            seen.holds.push(sessionId);
-            const gate = seen.holdGates.shift();
-            if (gate !== undefined) yield* Deferred.await(gate);
-          }).pipe(
-            Effect.andThen(
-              Effect.suspend(() => {
-                if (seen.holdFails) {
-                  return Effect.fail(
-                    new SealantPlatformError({
-                      code: "workspace_create_failed",
-                      status: null,
-                      message: "the platform refused the workspace",
-                      cause: null,
-                    }),
-                  );
-                }
-                const current = api?.world.sessions.get(sessionId);
-                return Effect.succeed(
+        // The engine's hold as the API sees it: the work under the slot it is given, and a
+        // session refused a slot settled in the slot's words.
+        holdWorkspace: (sessionId, slot) => {
+          const current = () =>
+            api?.world.sessions.get(sessionId) ?? unlaunched(sessionId, sharedA.worktree, "alice");
+          return slot
+            .take(
+              Effect.gen(function* () {
+                seen.holds.push(sessionId);
+                const gate = seen.holdGates.shift();
+                if (gate !== undefined) yield* Deferred.await(gate);
+              }).pipe(
+                Effect.andThen(
+                  Effect.suspend(() =>
+                    seen.holdFails
+                      ? Effect.fail(
+                          new SealantPlatformError({
+                            code: "workspace_create_failed",
+                            status: null,
+                            message: "the platform refused the workspace",
+                            cause: null,
+                          }),
+                        )
+                      : Effect.succeed(
+                          new Session({ ...current(), id: sessionId, status: "idle" }),
+                        ),
+                  ),
+                ),
+              ),
+            )
+            .pipe(
+              Effect.map(
+                (held) =>
+                  held ??
                   new Session({
-                    ...(current ?? unlaunched(sessionId, sharedA.worktree, "alice")),
+                    ...current(),
                     id: sessionId,
-                    status: "idle",
+                    status: "failed",
+                    settledAt: NOW,
+                    summary: `hold failed: ${slot.refused}`,
                   }),
-                );
-              }),
-            ),
-          ),
+              ),
+            );
+        },
         detach: (effect) => Effect.forkDetach(effect),
       },
       audit: {
@@ -223,7 +236,6 @@ const freshSeen = (): Seen => ({
   namesRacing: new Set(),
   provisionGates: [],
   holdGates: [],
-  launching: new Set(),
   holdFails: false,
 });
 
@@ -565,7 +577,7 @@ describe("POST /projects/:id/handoffs", () => {
     expect(seen.sessionsIn).toEqual([]);
   });
 
-  it("holds under one of the account's launch slots for the hold's whole course: a second hold past the ceiling never reaches the engine", async () => {
+  it("holds under one of the account's launch slots for the hold's whole course: a second hold past the ceiling starts nothing and reads failed", async () => {
     const seen = freshSeen();
     api = await worldWith({ accountLaunchesInFlight: 1 }, seen);
     const gate = Deferred.makeUnsafe<void>();
@@ -582,7 +594,13 @@ describe("POST /projects/:id/handoffs", () => {
       buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T10:00:01.000Z" }).bytes,
     );
     expect(second.status).toBe(200);
-    expect(await second.json()).toMatchObject({ session: { id: "session-handoff-2" } });
+    expect(await second.json()).toMatchObject({
+      session: {
+        id: "session-handoff-2",
+        status: "failed",
+        summary: expect.stringMatching(/^hold failed: budget reached/),
+      },
+    });
     expect(seen.holds).toEqual(["session-handoff-1"]);
     Deferred.doneUnsafe(gate, Exit.void);
     expect(await (await first).json()).toMatchObject({
@@ -597,25 +615,6 @@ describe("POST /projects/:id/handoffs", () => {
       session: { id: "session-handoff-3", status: "idle" },
     });
     expect(seen.holds).toEqual(["session-handoff-1", "session-handoff-3"]);
-  });
-
-  it("re-holds on a replay only a session no launch is under way for", async () => {
-    const seen = freshSeen();
-    const bundle = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T10:10:00.000Z" });
-    const alices = unlaunched(
-      SessionId.make("session-alice"),
-      WorktreeId.make("worktree-earlier"),
-      "alice",
-    );
-    seen.launching.add(alices.id);
-    api = await worldWith({}, seen, [alices]);
-    api.world.addWorktree(earlierHandoff("worktree-earlier", "fix-login", bundle, "alice"));
-    const response = await post(api, "alice", bundle.bytes);
-    expect(await response.json()).toMatchObject({
-      replayed: true,
-      session: { id: "session-alice", status: "starting" },
-    });
-    expect(seen.holds).toEqual([]);
   });
 
   it("answers the session as it stands when the hold fails: starting, never claimed held", async () => {
