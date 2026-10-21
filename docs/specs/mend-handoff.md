@@ -77,6 +77,10 @@ Yiannis decided these. Do not reopen them.
   intermediate ones included, so a file added and later deleted is still named.
 - 2026-10-18. The per-file limit is 8 MiB, set by `MEND_BUDGET_HANDOFF_FILE_BYTES`.
 - 2026-10-18. With a prompt, the CLI launches the session and returns without attaching.
+- 2026-10-21. A file whose edit git hides (assume-unchanged or skip-worktree) still travels, and the
+  CLI names it: `travels though hidden from git · config/database.yml (skip-worktree)`.
+- 2026-10-21. The checkout's origin is the project's only on the same port, and with the same path
+  case except on hosts known to ignore it (`github.com`).
 
 ## How it works
 
@@ -326,17 +330,12 @@ it. The CLI shows it in `sessionRowFacts` (`idle · handed off from dana-mbp · 
   is no reconciler.
 - The merge base is the client's, recomputed and checked against its default tip. Review equals
   `git diff M`. A newer server main never moves it.
-- `asUint8Array` buffers the whole body (up to `bundleBytes`) after auth, in exchange for a typed
-  payload.
+- `asUint8Array` buffers the whole body (up to `bundleBytes`) after auth and before the account's
+  handoff slot is taken, in exchange for a typed payload. Yiannis kept this for 0.36 (2026-10-21).
 - Install detection still reads `session.baseSha`, so a lockfile added on the branch is not seen
   until the first install. This is a follow-up.
 - A replay by another account of the project is refused as `StoreFailure` with the words
   `received before, for another account`; the contract has no closer refusal.
-
-- Files hidden from git with assume-unchanged or skip-worktree travel and are not named. Naming them
-  is open for Yiannis.
-- The foreign-origin check compares origins with the display normalizer, which treats different
-  ports and differently cased paths as one repository. A stricter comparison is open for Yiannis.
 
 These alternatives were weighed and not taken, so a reviewer should not report their absence.
 
