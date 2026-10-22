@@ -194,7 +194,7 @@ describe("a review she saved, when VS Code reloads", () => {
     after.close();
   });
 
-  it("keeps a save of words VS Code restored unsaved, which this window never read", async () => {
+  it("keeps a save of words VS Code restored unsaved, which this window only looked at", async () => {
     const files = memoryFiles();
     const mend = mendWithOpen();
     const before = await windowOn(files, mend);
@@ -203,9 +203,34 @@ describe("a review she saved, when VS Code reloads", () => {
 
     const after = await windowOn(files, mend);
     const words = "Typed before the reload, saved after it.";
+    await after.provider.stat(opened.uri);
     await after.provider.writeFile(opened.uri, encoded(words), SAVE);
     expect(decoded(await after.provider.readFile(opened.uri))).toBe(words);
     after.close();
+  });
+
+  it("refuses a save of restored words over one another window made since this window looked", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    const before = await windowOn(files, mend);
+    const opened = await sendReview();
+    before.close();
+
+    const restored = await windowOn(files, mend);
+    await restored.provider.stat(opened.uri);
+    const other = await windowOn(files, mend);
+    await other.provider.readFile(opened.uri);
+    await other.provider.writeFile(opened.uri, encoded("words saved in the other window"), SAVE);
+    await expect(
+      Promise.resolve().then(() =>
+        restored.provider.writeFile(opened.uri, encoded("words VS Code restored"), SAVE),
+      ),
+    ).rejects.toBeInstanceOf(vscode.FileSystemError);
+    expect(decoded(await other.provider.readFile(opened.uri))).toBe(
+      "words saved in the other window",
+    );
+    restored.close();
+    other.close();
   });
 });
 
