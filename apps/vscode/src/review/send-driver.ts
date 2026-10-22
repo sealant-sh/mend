@@ -129,9 +129,12 @@ const CLOSED = "VS Code closed before Mend answered";
 /** How soon a window looks again at a send its own drive left, when the drive failed. */
 const LOOK_AGAIN_MS = 1_000;
 
-/** How often a launch is watched, and for how many steps before it reads failed. */
+/**
+ * How often a launch is watched, and how many times before it reads failed. Only watching counts:
+ * posting her comments and dismissing drafts end on their own, however many there are.
+ */
 const WATCH_MS = 3_000;
-const MAX_TURNS = 400;
+const MAX_WATCHES = 400;
 
 export const errorWords = (cause: unknown): string =>
   cause instanceof Error ? cause.message : "Mend could not read this change.";
@@ -458,7 +461,8 @@ export class SendDriver {
       files.set(sliceId, read);
       return read;
     };
-    for (let turns = 0; turns < MAX_TURNS; turns += 1) {
+    let watches = 0;
+    while (watches < MAX_WATCHES) {
       if (!(await this.kept.renewDrive(context.place, key))) return;
       await this.#still(bound);
       const record = (await this.kept.read(context.place)).review.sends.find(
@@ -603,6 +607,7 @@ export class SendDriver {
             this.host.fail(`paste:${key}`, action.words, { tone: "warning" });
             break;
           case "watch": {
+            watches += 1;
             await new Promise((resolve) => setTimeout(resolve, WATCH_MS));
             const [followUp, comments] = await Promise.all([
               client.followUp(sessionId),
