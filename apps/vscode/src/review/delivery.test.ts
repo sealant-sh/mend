@@ -281,6 +281,21 @@ describe("an accepted draft in a review she sent", () => {
     expect(acceptedDrafts(review).has("d1")).toBe(true);
   });
 
+  it("stays hers once her words in its place are on Mend, though the review was refused", () => {
+    const review = sent({
+      pending: [{ ...accepted, body: "Run the burst test too." }],
+      sends: [],
+      document: null,
+    });
+    const refused = apply(
+      review,
+      { kind: "posted", pendingId: "a1", commentId: "c9" },
+      { kind: "failed", words: "Mend refused this review", retryable: false },
+    );
+    expect(only(refused).phase.kind).toBe("refused");
+    expect(acceptedDrafts(refused).has("d1")).toBe(true);
+  });
+
   it("leaves the review when it is dismissed on Mend, and is never opened", () => {
     const review = sent({ pending: [accepted, pending({})], sends: [], document: null });
     expect(nextAction(only(review))).toMatchObject({ kind: "open", draftId: "d1" });
