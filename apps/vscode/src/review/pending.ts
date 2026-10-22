@@ -8,6 +8,7 @@ import type {
   PostState,
   SendItem,
   SendPhase,
+  SendNotice,
   SendRecord,
   SendSlice,
   StopReason,
@@ -357,6 +358,31 @@ const parsePaste = (value: unknown): PastePlan | null => {
   return null;
 };
 
+const NOTICE_KINDS: ReadonlyArray<SendNotice["kind"]> = [
+  "paste",
+  "draft-gone",
+  "draft-left",
+  "refused",
+];
+
+const parseNotice = (value: unknown): ReadonlyArray<SendNotice> => {
+  if (!isRecord(value)) return [];
+  const kind = NOTICE_KINDS.find((one) => one === value["kind"]);
+  const at = text(value, "at");
+  const words = text(value, "words");
+  if (kind === undefined || at === null || words === null) return [];
+  return [
+    {
+      kind,
+      at,
+      words,
+      tone: value["tone"] === "warning" ? "warning" : "error",
+      retry: value["retry"] === true,
+      text: value["text"] === true,
+    },
+  ];
+};
+
 const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
   if (!isRecord(value) || !Array.isArray(value["items"])) return [];
   const key = text(value, "key");
@@ -393,6 +419,8 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
       paste,
       items,
       phase,
+      // A send kept before notices were kept says nothing more.
+      notices: Array.isArray(value["notices"]) ? value["notices"].flatMap(parseNotice) : [],
       createdAt,
     },
   ];

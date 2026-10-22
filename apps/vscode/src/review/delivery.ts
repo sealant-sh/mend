@@ -186,6 +186,25 @@ export interface SendSlice {
   readonly diffDigest: string;
 }
 
+/**
+ * Something a send leaves her to know, kept with it as the step that found it wrote it: every
+ * window reads the same notice, and the one she looks at says it once, claimed by the send's key,
+ * the notice's kind and when it was written. A failed delivery says itself from its phase.
+ */
+export interface SendNotice {
+  readonly kind: "paste" | "draft-gone" | "draft-left" | "refused";
+  readonly at: string;
+  readonly words: string;
+  readonly tone: "error" | "warning";
+  /** It offers Retry delivery, while the send still waits on her. */
+  readonly retry: boolean;
+  /** It offers the review's own words, for a review that stopped before Mend sent it. */
+  readonly text: boolean;
+}
+
+/** How many notices a send keeps, the newest. */
+export const KEPT_NOTICES = 8;
+
 export interface SendRecord {
   /** The follow-up's idempotency key: the same on every retry. */
   readonly key: string;
@@ -198,6 +217,7 @@ export interface SendRecord {
   readonly paste: PastePlan;
   readonly items: ReadonlyArray<SendItem>;
   readonly phase: SendPhase;
+  readonly notices: ReadonlyArray<SendNotice>;
   readonly createdAt: string;
 }
 
@@ -258,9 +278,11 @@ export type SendEvent =
   | { readonly kind: "paste-unstarted" }
   /** The paste reached the agent's input. */
   | { readonly kind: "pasted" }
-  /** Nothing was pasted, and she was told why: the input holds what it held. */
-  | { readonly kind: "skipped" }
-  | { readonly kind: "paste-failed"; readonly why: "agent-gone" | "not-attached" | "interrupted" }
+  /** Nothing was pasted, and `words` tell her why: the input holds what it held. */
+  | { readonly kind: "skipped"; readonly words: string }
+  | { readonly kind: "paste-failed"; readonly why: "agent-gone" | "not-attached" }
+  /** The paste threw while it pasted, for `words`: some or all of it may be in the input. */
+  | { readonly kind: "paste-failed"; readonly why: "interrupted"; readonly words: string }
   | { readonly kind: "failed"; readonly words: string; readonly retryable: boolean }
   /**
    * Retry delivery, with everything kept: from a failure, or from a follow-up Mend holds pending
@@ -475,7 +497,94 @@ const NOT_LISTED =
   "Mend no longer lists this follow-up, and it does not read its comments as sent to the session";
 
 /** A record after an event; an event its phase does not take leaves it as it was. */
+/** The send after `event`, with what it leaves her to know, if anything, as a notice. */
 export const step = (record: SendRecord, event: SendEvent, now: string): SendRecord => {
+  const next = transition(record, event, now);
+  const words = noticeOf(record, event, next);
+  if (words === null) return next;
+  const notice: SendNotice = { ...words, at: now };
+  return { ...next, notices: [...next.notices, notice].slice(-KEPT_NOTICES) };
+};
+
+/** A paste that went nowhere, and why. */
+const notPastedWords = (why: "agent-gone" | "not-attached", agent: string): string =>
+  why === "agent-gone"
+    ? `${agent} exited before the review was pasted, so nothing was pasted. Mend holds the follow-up pending: Retry delivery sends it to the stopped session.`
+    : `VS Code could not attach ${agent}'s terminal here, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it again.`;
+
+/** A paste that failed: she checks the terminal and retries. */
+const pasteFailed = (words: string): Omit<SendNotice, "at"> => ({
+  kind: "paste",
+  words,
+  tone: "error",
+  retry: true,
+  text: false,
+});
+
+/** What a step leaves her to know: once, when the send first reads that way. */
+const noticeOf = (
+  before: SendRecord,
+  event: SendEvent,
+  after: SendRecord,
+): Omit<SendNotice, "at"> | null => {
+  const agent = before.phase.kind === "in-terminal" ? before.phase.agent : "the agent";
+  switch (event.kind) {
+    case "paste-failed":
+      if (before.phase.kind !== "in-terminal" || after === before) return null;
+      return pasteFailed(
+        event.why === "interrupted"
+          ? cutShortWords(
+              `VS Code could not finish pasting the review into ${agent}'s terminal: ${event.words}`,
+              agent,
+            )
+          : notPastedWords(event.why, agent),
+      );
+    case "abandoned": {
+      const words = after === before ? null : stoppedPasteWords(after);
+      return words === null ? null : pasteFailed(words);
+    }
+    case "skipped":
+      return after === before
+        ? null
+        : { kind: "paste", words: event.words, tone: "warning", retry: false, text: false };
+    case "draft-gone":
+      return before.phase.kind === "refused"
+        ? null
+        : {
+            kind: "draft-gone",
+            words: `${DRAFT_GONE}. Send review composes it again without that draft, from your comments as they are now.`,
+            tone: "warning",
+            retry: false,
+            text: true,
+          };
+    case "answered": {
+      const left = handedOver(after) ? draftsLeft(after) : [];
+      return before.phase.kind !== "sending" || left.length === 0
+        ? null
+        : {
+            kind: "draft-left",
+            words: `Mend sent the review. The Mend draft your words replace is still on Mend, because VS Code could not dismiss it: ${left.join(" ")}`,
+            tone: "warning",
+            retry: false,
+            text: false,
+          };
+    }
+    case "failed":
+      return after.phase.kind !== "refused" || before.phase.kind === "refused"
+        ? null
+        : {
+            kind: "refused",
+            words: `Mend could not deliver the review: ${event.words}`,
+            tone: "error",
+            retry: false,
+            text: false,
+          };
+    default:
+      return null;
+  }
+};
+
+const transition = (record: SendRecord, event: SendEvent, now: string): SendRecord => {
   switch (event.kind) {
     case "post-started":
       return withPost(record, event.pendingId, { kind: "posting", ...event.attempt });
@@ -953,6 +1062,7 @@ export const startSend = (
     paste: input.paste,
     items,
     phase: { kind: "sending", since: input.now },
+    notices: [],
     createdAt: input.now,
   };
   return {

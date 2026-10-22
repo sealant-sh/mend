@@ -1,3 +1,4 @@
+import { refusedSignIn } from "../error-toast.js";
 import { MendApiError } from "../mend-http.js";
 import type { SessionDetail } from "../types.js";
 import type { PasteReview, Pasted } from "./agent-paste.js";
@@ -6,9 +7,6 @@ import {
   commentIds,
   commentLabel,
   commentTarget,
-  DRAFT_GONE,
-  draftsLeft,
-  handedOver,
   needs,
   mayRetry,
   nextAction,
@@ -16,8 +14,6 @@ import {
   posts,
   step,
   stepReview,
-  cutShortWords,
-  stoppedPasteWords,
   type FollowUpRead,
   type LiveAgent,
   type StopReason,
@@ -62,21 +58,45 @@ export interface DriverHost {
   settled(sessionId: string): void;
 }
 
+/** A toast a kept send says: the same in every window, so the one she looks at shows it once. */
+export interface Told {
+  readonly what: string;
+  readonly words: string;
+  readonly options: FailOptions;
+}
+
 /**
- * A failed delivery's toast, named by its record and when it failed: the same in every window, so
- * whichever window she focuses shows it, once.
+ * What a kept send leaves her to know: its failed delivery, named by when it failed, and every
+ * notice a step kept with it, named by its kind and when it was kept.
  */
-export const failedDelivery = (
-  place: ReviewPlace,
-  record: SendRecord,
-): { readonly what: string; readonly words: string; readonly options: FailOptions } | null =>
-  record.phase.kind !== "failed"
-    ? null
-    : {
-        what: `delivery:${record.key}`,
-        words: `Mend could not deliver the review: ${record.phase.words}`,
-        options: { retry: { place, key: record.key }, at: record.phase.at },
-      };
+export const toldOf = (place: ReviewPlace, record: SendRecord): ReadonlyArray<Told> => {
+  const retry = { place, key: record.key };
+  const failed: ReadonlyArray<Told> =
+    record.phase.kind === "failed"
+      ? [
+          {
+            what: `delivery:${record.key}`,
+            words: `Mend could not deliver the review: ${record.phase.words}`,
+            options: { retry, at: record.phase.at },
+          },
+        ]
+      : [];
+  return [
+    ...failed,
+    ...record.notices.map(
+      (notice): Told => ({
+        what: `${notice.kind}:${record.key}`,
+        words: notice.words,
+        options: {
+          at: notice.at,
+          tone: notice.tone,
+          retry: notice.retry ? retry : null,
+          ...(notice.text ? { text: record.instruction } : {}),
+        },
+      }),
+    ),
+  ];
+};
 
 /** Whether a new record was kept and is now driven, and why not. */
 export type Recorded =
@@ -121,11 +141,6 @@ class Stopped extends Error {
 
 const SWITCHED: StopReason = { kind: "switched" };
 const CLOSED: StopReason = { kind: "closed" };
-
-const pasteWords = (pasted: Exclude<Pasted, "pasted">, agent: string): string =>
-  pasted === "agent-gone"
-    ? `${agent} exited before the review was pasted, so nothing was pasted. Mend holds the follow-up pending: Retry delivery sends it to the stopped session.`
-    : `VS Code could not attach ${agent}'s terminal here, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it again.`;
 
 const LOOK_AGAIN_MS = 1_000;
 /** How long a look that failed waits at most before the next: it doubles until then. */
@@ -370,7 +385,6 @@ export class SendDriver {
       if (!undriven.has(record.key)) continue;
       if (nextAction(record).kind !== "idle") void this.#drive(context, record.key);
       else await this.kept.releaseDrive(place, record.key);
-      this.#sayStopped(place, record);
     }
     for (const [key, ms] of drivenFor) this.#lookAgainIn(context, key, ms);
   }
@@ -454,7 +468,6 @@ export class SendDriver {
   async #run(context: SendContext, key: string): Promise<void> {
     const { changeId } = context;
     const { sessionId } = context.place;
-    const retry: RetryTarget = { place: context.place, key };
     // Every read and write of the drive, the paste's included, is made only while VS Code's
     // connection is the send's server and account; one that is not refuses before it goes out.
     const bind = () => boundConnection(this.sessions, context.place);
@@ -477,7 +490,6 @@ export class SendDriver {
       try {
         switch (action.kind) {
           case "idle":
-            this.#sayFailed(context.place, record);
             this.host.settled(sessionId);
             return;
           case "reconcile": {
@@ -526,11 +538,6 @@ export class SendDriver {
             );
             if (draft === undefined || draft.state === "dismissed") {
               await this.#step(context, key, { kind: "draft-gone", draftId: action.draftId });
-              this.host.fail(
-                `delivery:${key}`,
-                `${DRAFT_GONE}. Send review composes it again without that draft, from your comments as they are now.`,
-                { text: record.instruction, tone: "warning" },
-              );
               this.host.settled(sessionId);
               return;
             }
@@ -561,23 +568,15 @@ export class SendDriver {
           case "deliver": {
             const answered = await writing(client.deliver(sessionId, action.request));
             const detail = await reads.sessionDetail(sessionId);
-            const next = await this.#step(context, key, {
+            await this.#step(context, key, {
               kind: "answered",
               status: answered.status,
               error: answered.error,
               agent: liveAgent(detail, context.viewer) ?? { kind: "other" },
             });
-            const left = next !== null && handedOver(next) ? draftsLeft(next) : [];
-            if (left.length > 0)
-              this.host.fail(
-                `draft-left:${key}`,
-                `Mend sent the review. The Mend draft your words replace is still on Mend, because VS Code could not dismiss it: ${left.join(" ")}`,
-                { tone: "warning" },
-              );
             break;
           }
           case "paste": {
-            const agent = record.phase.kind === "in-terminal" ? record.phase.agent : "the agent";
             // Only a paste kept as started is made: one replaced since it was read pastes nothing.
             const started = await this.#step(context, key, { kind: "paste-started" });
             if (started?.phase.kind !== "in-terminal" || started.phase.paste.kind !== "pasting")
@@ -591,15 +590,11 @@ export class SendDriver {
                 await this.#step(context, key, { kind: "paste-unstarted" });
                 throw cause;
               }
-              await this.#step(context, key, { kind: "paste-failed", why: "interrupted" });
-              this.host.fail(
-                `paste:${key}`,
-                cutShortWords(
-                  `VS Code could not finish pasting the review into ${agent}'s terminal: ${errorWords(cause)}`,
-                  agent,
-                ),
-                { cause, retry },
-              );
+              await this.#step(context, key, {
+                kind: "paste-failed",
+                why: "interrupted",
+                words: errorWords(cause),
+              });
               break;
             }
             if (pasted === "pasted") {
@@ -607,12 +602,10 @@ export class SendDriver {
               break;
             }
             await this.#step(context, key, { kind: "paste-failed", why: pasted });
-            this.host.fail(`paste:${key}`, pasteWords(pasted, agent), { retry });
             break;
           }
           case "skip-paste":
-            await this.#step(context, key, { kind: "skipped" });
-            this.host.fail(`paste:${key}`, action.words, { tone: "warning" });
+            await this.#step(context, key, { kind: "skipped", words: action.words });
             break;
           case "watch": {
             watches += 1;
@@ -638,41 +631,25 @@ export class SendDriver {
         if (record.phase.kind === "in-terminal") throw new Stopped(stopsFor(thrown));
         const retryable = !refuses(thrown);
         const cause = thrown instanceof WriteFailed ? thrown.failure : thrown;
-        let failed: SendRecord | null;
         try {
-          failed = await this.#step(context, key, {
-            kind: "failed",
-            words: errorWords(cause),
-            retryable,
-          });
+          await this.#step(context, key, { kind: "failed", words: errorWords(cause), retryable });
         } catch (keeping) {
           if (keeping instanceof DriveLost) throw keeping;
           throw new Stopped(stopsFor(cause));
         }
-        if (!this.#sayFailed(context.place, failed, cause))
-          this.host.fail(
-            `delivery:${key}`,
-            `Mend could not deliver the review: ${errorWords(cause)}`,
-            {
-              cause,
-              retry: retryable ? retry : null,
-            },
-          );
+        // A refused sign-in reads as it does on every surface, beside the send's own words.
+        if (refusedSignIn(cause)) this.host.fail("error", errorWords(cause), { cause });
         this.host.settled(sessionId);
         return;
       }
     }
     const words = "Mend has not said the review was delivered";
-    this.#sayFailed(
-      context.place,
-      await this.#step(context, key, { kind: "failed", words, retryable: true }),
-    );
+    await this.#step(context, key, { kind: "failed", words, retryable: true });
     this.host.settled(sessionId);
   }
 
   /**
-   * Keeps why the drive stopped in the send, under its lease, and says what the send reads then.
-   * A send still needing a drive (a launch being watched) is looked at again soon, unless VS Code
+   * Keeps why the drive stopped in the send, under its lease, where every window reads it. A send still needing a drive (a launch being watched) is looked at again soon, unless VS Code
    * connected elsewhere: a read of its own server picks it up then.
    */
   async #stop(context: SendContext, key: string, why: StopReason): Promise<void> {
@@ -683,17 +660,8 @@ export class SendDriver {
       if (cause instanceof DriveLost) return;
       throw new Stopped(why, errorWords(cause));
     }
-    if (left === null) return;
-    if (needs(left) !== "driver") this.#sayStopped(context.place, left);
-    else if (why.kind !== "switched") throw new Stopped(why);
-  }
-
-  /** Says what a send a drive stopped reads: its failed delivery, or its paste. */
-  #sayStopped(place: ReviewPlace, record: SendRecord): void {
-    if (this.#sayFailed(place, record)) return;
-    const words = stoppedPasteWords(record);
-    if (words !== null)
-      this.host.fail(`paste:${record.key}`, words, { retry: { place, key: record.key } });
+    if (left !== null && needs(left) === "driver" && why.kind !== "switched")
+      throw new Stopped(why);
   }
 
   /** What Mend reads now about the record's key and its comments. */
@@ -719,13 +687,6 @@ export class SendDriver {
           (id) => comments.find((comment) => comment.id === id)?.sentToSessionId === sessionId,
         ),
     };
-  }
-
-  #sayFailed(place: ReviewPlace, record: SendRecord | null, cause?: unknown): boolean {
-    const failed = record === null ? null : failedDelivery(place, record);
-    if (failed === null) return false;
-    this.host.fail(failed.what, failed.words, { ...failed.options, cause });
-    return true;
   }
 }
 

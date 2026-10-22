@@ -342,6 +342,46 @@ describe("a review whose paste into claude's terminal is due or under way", () =
   });
 });
 
+describe("what a send leaves her to know", () => {
+  const inTerminal = (paste: PasteStep): SessionReview => {
+    const held = posted(sent());
+    return { ...held, sends: held.sends.map((record) => ({ ...record, phase: terminal(paste) })) };
+  };
+
+  it("keeps a skipped paste's words as one warning, offering no Retry, that a reload still reads", () => {
+    const words = "You changed the review claude's input already holds, so nothing was pasted.";
+    const once = apply(inTerminal({ kind: "due" }), { kind: "skipped", words });
+    const twice = apply(once, { kind: "skipped", words });
+    expect(only(twice).notices).toEqual([
+      { kind: "paste", at: NOW, words, tone: "warning", retry: false, text: false },
+    ]);
+    expect(only(parseSessionReview(JSON.parse(JSON.stringify(twice)))).notices).toEqual(
+      only(twice).notices,
+    );
+  });
+
+  it("keeps a paste that failed as an error offering Retry, and a later one beside it", () => {
+    const failed = apply(inTerminal({ kind: "due" }), {
+      kind: "paste-failed",
+      why: "not-attached",
+    });
+    const again = apply(
+      {
+        ...failed,
+        sends: failed.sends.map((record) => ({ ...record, phase: terminal({ kind: "due" }) })),
+      },
+      { kind: "paste-failed", why: "interrupted", words: "the socket closed" },
+    );
+    expect(only(again).notices.map(({ words, retry }) => ({ words, retry }))).toEqual([
+      { words: expect.stringMatching(/could not attach claude's terminal here/), retry: true },
+      {
+        words: expect.stringMatching(/the socket closed, so some or all of it may be in/),
+        retry: true,
+      },
+    ]);
+  });
+});
+
 describe("every phase a review is kept in", () => {
   const PHASES: ReadonlyArray<readonly [string, SendPhase, Needs]> = [
     ["sending", { kind: "sending", since: NOW }, "driver"],

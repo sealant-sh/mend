@@ -64,7 +64,7 @@ import {
 } from "./review-wire.js";
 import {
   errorWords,
-  failedDelivery,
+  toldOf,
   liveAgent,
   SendDriver,
   type FailOptions,
@@ -241,6 +241,8 @@ export class ReviewStore implements vscode.Disposable {
   #place: ReviewPlace | null = null;
   /** The revision of `#review` as kept: a read that began before a later write shows nothing. */
   #rev = -1;
+  /** The toasts of kept sends this window said since she last looked at it (`reloadReview`). */
+  readonly #told = new Set<string>();
   #you = "You";
   /** Her name as Mend writes it on her comments; null when it is not known. */
   #author: string | null = null;
@@ -372,17 +374,16 @@ export class ReviewStore implements vscode.Disposable {
     if (this.followed() !== null) this.#request();
   }
 
-  /** Another window of this VS Code may have written her comments: read what it kept. */
+  /**
+   * Another window of this VS Code may have written her comments: read what it kept. She looks at
+   * this window now, so what its sends leave her to know is said again.
+   */
   async reloadReview(): Promise<void> {
     const place = this.#place;
     if (place === null) return;
+    this.#told.clear();
     await this.#keepHeld(place);
     await this.#readKept(place);
-    if (!samePlace(this.#place, place)) return;
-    for (const record of this.#review.sends) {
-      const failed = failedDelivery(place, record);
-      if (failed !== null) this.#fail(failed.what, failed.words, failed.options);
-    }
   }
 
   /** She chose another part of the change to read (story d, step 5). */
@@ -912,7 +913,20 @@ export class ReviewStore implements vscode.Disposable {
       this.#rev = kept.rev;
       this.#changed.fire();
     }
+    this.#tell(place, kept.review);
     await this.#recover(place);
+  }
+
+  /**
+   * Says what the sends kept at `place` leave her to know, each once while she looks at this
+   * window; the toast's claim decides which window shows it.
+   */
+  #tell(place: ReviewPlace, review: SessionReview): void {
+    for (const record of review.sends)
+      for (const told of toldOf(place, record)) {
+        const key = this.#fail(told.what, told.words, told.options, this.#told);
+        this.#told.add(key);
+      }
   }
 
   async #recover(place: ReviewPlace): Promise<void> {
@@ -925,10 +939,18 @@ export class ReviewStore implements vscode.Disposable {
     if (this.followed()?.session.id === sessionId) this.reread();
   }
 
-  #fail(what: string, words: string, options: FailOptions = {}): void {
+  /** Fires a failure, unless its key is in `once`; returns its key. */
+  #fail(
+    what: string,
+    words: string,
+    options: FailOptions = {},
+    once: ReadonlySet<string> = new Set(),
+  ): string {
     const at = options.at ?? new Date().toISOString();
+    const key = `review-${what}:${at}`;
+    if (once.has(key)) return key;
     this.#failed.fire({
-      key: `review-${what}:${at}`,
+      key,
       at,
       words,
       cause: options.cause ?? null,
@@ -936,6 +958,7 @@ export class ReviewStore implements vscode.Disposable {
       text: options.text ?? null,
       tone: options.tone ?? "error",
     });
+    return key;
   }
 
   /**
@@ -982,6 +1005,7 @@ export class ReviewStore implements vscode.Disposable {
       this.#rev = rev;
       this.#changed.fire();
     }
+    this.#tell(place, review);
     return review;
   }
 
