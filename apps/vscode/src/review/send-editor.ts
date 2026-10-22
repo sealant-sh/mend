@@ -42,8 +42,8 @@ class ReviewFiles implements vscode.FileSystemProvider {
   readonly onDidChangeFile = this.#changed.event;
   /**
    * The revision each editor's text is based on: the first this window looked at, or the one it
-   * read or saved since. VS Code restores unsaved words over what it last looked at, and checks
-   * only by `mtime` before a save, so a save is checked here against this revision.
+   * read or saved since. VS Code restores unsaved words with the `stat` they were based on and
+   * checks it before a save; a save is checked here too, against this revision.
    */
   readonly #based = new Map<string, number>();
 
@@ -56,11 +56,14 @@ class ReviewFiles implements vscode.FileSystemProvider {
   async stat(uri: vscode.Uri): Promise<vscode.FileStat> {
     const document = await this.#document(uri);
     if (!this.#based.has(uri.toString())) this.#based.set(uri.toString(), document.revision);
+    // VS Code's check before a save sees a newer file only when its size differs from the size
+    // the editor's text is based on, so a newer save of the same length would pass: the size is
+    // the revision, never the same twice.
     return {
       type: vscode.FileType.File,
       ctime: 0,
       mtime: document.revision,
-      size: new TextEncoder().encode(document.text).byteLength,
+      size: document.revision,
     };
   }
 
