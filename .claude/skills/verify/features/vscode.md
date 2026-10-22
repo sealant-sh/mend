@@ -45,7 +45,8 @@ logs, and a video of the display. The flows below follow the stories in
   tab is the active terminal). A sign-in Mend refuses (401) empties the view and toasts the server's
   words, `Signed out — sign in again.` [Connect to server] once.
 - `vscode-answer` is `Mend: Answer` on a waiting row or toast: the agent's terminal attaches in this
-  window's panel, and no window opens.
+  window's panel, and no window opens. Her own terminal agent attaches so in a workspace someone
+  else launched.
 - `vscode-adopt`: with no project yet, the view's message `Adopt <repo> from <origin>` over one row,
   **Adopt**, adopts the window's repository in one click; a window with no repository shows the
   welcome `Nothing adopted yet.` [Adopt a repository…], one input for a clone URL. The project takes
@@ -431,6 +432,18 @@ the row takes the job's name.
     `ans5a`; flow 5 now holds Enter on an empty answer. On the extension before flow 5 (`ansr2`,
     `ansr3`) step 2 fails as it should: the row reads
     `add-rate-limit · waiting · Bash · since <hh:mm>`.
+  - Her own terminal agent in a workspace Ana launched: `recipes/vscode-answer-launcher.mjs`, on a
+    server with terminal-agent waits (G4) newer than `0.36.0-next.1033`, an image built from main
+    with `up --build`. Setup: Claude connected; Ana joins, the project is shared, her claude
+    connected; Ana launches `ana-holds-workspace-<stamp>`, a claude terminal agent in a fresh
+    worktree, so `workspaceLauncherUserId` is hers; Dana starts `dana-in-anas-workspace-<stamp>` in
+    that worktree (`POST /worktrees/:id/sessions`) in ask mode, and it joins Ana's workspace. A
+    shell beside Dana's session finds her claude's `--settings` in `/proc` and the hook stand-in
+    (`scripts/fixtures/claude-standin.mjs`) replays `PermissionRequest` (Bash) through those hooks
+    (`SessionStart` first when her row records no `--session-id`); the session reads
+    `waiting · permission · Bash`. Dana's view lists it in `Needs you` with Answer and the badge
+    counts it. Answer (the row's, else the palette's) attaches `claude · <session>` in Dana's
+    window, no window opens, and no `no agent attached` line shows.
   - `GET /sessions/:id/requests` filters only on `?pending=1` (`query.pending === "1"` in
     `apps/api/src/routes/workbench.ts`); `?pending=true` returned all 8 of a session's resolved
     requests in `ansr1`.

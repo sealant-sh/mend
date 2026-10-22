@@ -19,13 +19,6 @@
 // and put where `command -v claude` resolves; the terminal agent is stopped and the session launched
 // again as a conversation. Each turn's text picks what it asks (`mend-ask:permission`, `question`,
 // `text`), so a step raises one request at a time. Claude's login is the skill's fake setup token.
-//
-// MEND_VERIFY_ANSWER_LAUNCHER adds section 10: Dana's terminal agent waits in a workspace Ana
-// launched, and Answer attaches it in Dana's window over `/api/tty`. `off` (the default) leaves it
-// out, `on` runs it after section 9, `only` runs it with only the setup it needs (Claude connected,
-// Ana a member, the project shared). The wait comes from the hook stand-in
-// (`fixtures/claude-standin.mjs`) replaying `PermissionRequest` through Mend's own hooks, as
-// recipes/g4-terminal-agent-waits.mjs does; the claude in the PTY is real, at its sign-in screen.
 
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -37,49 +30,15 @@ import { VERSION } from "../scripts/fixtures/claude-protocol-standin.mjs";
 import { redact } from "../scripts/redact.mjs";
 import { loadSecrets, redactValues } from "../scripts/secrets.mjs";
 
-const world = await import(
+export const world = await import(
   pathToFileURL(join(import.meta.dirname, "../../../../scripts/vscode-remote-world.mjs")).href
 );
 
 const STANDIN = join(import.meta.dirname, "../scripts/fixtures/claude-protocol-standin.mjs");
-const HOOK_STANDIN = join(import.meta.dirname, "../scripts/fixtures/claude-standin.mjs");
 /** Where the stand-in lives in each workspace; its record is `record.jsonl` beside it. */
 const DIR = "/tmp/mend-answer";
 const NAME = "add-rate-limit";
 const ANA_NAME = "ana-migrate";
-const ANA_HOLDS = "ana-holds-workspace";
-const DANA_TERMINAL = "dana-in-anas-workspace";
-
-/**
- * Prints `<marker>:{…}`: every claude in the workspace (its uid, `--session-id`, whether it carries
- * `--settings`), and writes to a file the `--settings` of hers: the claude under the `--session-id`
- * given, else (`none`: her row records no id) the one running as this shell's uid. The hook
- * stand-in runs the hooks those settings wire.
- */
-const SETTINGS_OF = `import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [sessionId, file, marker] = process.argv.slice(2);
-const me = process.getuid();
-const seen = [];
-const settingsOf = (argv) => {
-  const s = argv.findIndex((word) => word === "--settings" || word.startsWith("--settings="));
-  return s === -1 ? null : argv[s] === "--settings" ? argv[s + 1] : argv[s].slice("--settings=".length);
-};
-for (const pid of readdirSync("/proc").filter((name) => /^\\d+$/.test(name))) {
-  let argv, uid;
-  try {
-    argv = readFileSync("/proc/" + pid + "/cmdline", "utf8").split("\\0").filter(Boolean);
-    uid = Number(/^Uid:\\s*(\\d+)/m.exec(readFileSync("/proc/" + pid + "/status", "utf8"))?.[1]);
-  } catch { continue; }
-  if (!argv.some((word) => /(^|\\/)claude$/.test(word))) continue;
-  const at = argv.indexOf("--session-id");
-  seen.push({ pid: Number(pid), uid, mine: uid === me, argv0: argv[0], sessionId: at === -1 ? null : argv[at + 1], settings: settingsOf(argv) });
-}
-const hers = seen.find((one) => sessionId !== "none" && one.sessionId === sessionId)
-  ?? (sessionId === "none" ? seen.find((one) => one.mine && one.settings !== null) : undefined);
-if (hers !== undefined) writeFileSync(file, hers.settings);
-const hooksOf = (settings) => { try { return Object.keys(JSON.parse(settings).hooks ?? {}); } catch { return null; } };
-console.log(marker + ":" + JSON.stringify({ me, claudes: seen.map(({ settings, ...one }) => ({ ...one, settings: settings !== null, hooks: settings === null ? null : hooksOf(settings) })), found: hers?.pid ?? null }));
-`;
 
 const QUESTION = {
   permission: "run pnpm db:migrate?",
@@ -161,7 +120,7 @@ for (const [i, line] of lines.entries()) console.log(marker + ":" + JSON.stringi
 console.log(marker + "-END:" + JSON.stringify({ count: lines.length }));
 `;
 
-const heredoc = (dir, target, text) => [
+export const heredoc = (dir, target, text) => [
   `base64 -d > "${dir}/${target}" <<'MEND_ANSWER_EOF'`,
   ...(Buffer.from(text)
     .toString("base64")
@@ -169,16 +128,16 @@ const heredoc = (dir, target, text) => [
   "MEND_ANSWER_EOF",
 ];
 
-const expect = (holds, message) => {
+export const expect = (holds, message) => {
   if (!holds) throw new Error(message);
 };
 
-const fail = (reason) => {
+export const fail = (reason) => {
   throw new Error(reason);
 };
 
 /** The view as a person reads it: its message, then each group's rows as `name · line`. */
-const grouped = ({ message, rows }) => {
+export const grouped = ({ message, rows }) => {
   const groups = [];
   let current = null;
   for (const row of rows) {
@@ -226,22 +185,10 @@ export default async (h) => {
     shot,
     page,
     serverLogs,
-    terminal,
-    newWindows,
   } = h;
   const via = process.env.MEND_VERIFY_ANSWER_VIA ?? "ui";
   expect(["ui", "api"].includes(via), `MEND_VERIFY_ANSWER_VIA is ui or api, not ${via}`);
   const ui = via === "ui";
-  const launcher = process.env.MEND_VERIFY_ANSWER_LAUNCHER ?? "off";
-  expect(
-    ["off", "on", "only"].includes(launcher),
-    `MEND_VERIFY_ANSWER_LAUNCHER is off, on or only, not ${launcher}`,
-  );
-  expect(
-    launcher === "off" || ui,
-    "section 10 answers through the editor: MEND_VERIFY_ANSWER_VIA=ui",
-  );
-  const only = launcher === "only";
   const out = resolve(parseArgs(process.argv.slice(2)).options.out);
   mkdirSync(out, { recursive: true });
   const project = state.project ?? fail("the run's ledger has no project: did up finish?");
@@ -669,281 +616,273 @@ export default async (h) => {
     { via: "setup" },
   );
 
-  let dana = null;
-  let ana = null;
-  if (!only) {
-    dana = await step(
-      `1: ${NAME}, a claude terminal agent, its claude replaced by the stand-in from a shell beside it, stopped and launched again as a conversation that asks`,
-      async () => {
-        const session = await conversationWithStandin(NAME, api, "Dana");
-        const detail = await sessionRead(session.id, api);
-        return {
-          observed: `claude at ${session.swap.path} (real ${session.swap.real}, symlink ${session.swap.symlink}) replaced ${session.swap.how} by ${session.swap.user} (uid ${session.swap.uid}) · terminal agent stopped, session read ${session.stoppedAs} · Mend launched the stand-in as uid ${session.launch.uid} (${session.launch.user}) with argv ${JSON.stringify(session.launch.argv)} · live ${session.process.kind} ${session.process.id.slice(0, 8)} · session ${detail.session.status}`,
-          session,
-        };
-      },
-      { via: "tty" },
-    ).then((result) => result.session);
+  const dana = await step(
+    `1: ${NAME}, a claude terminal agent, its claude replaced by the stand-in from a shell beside it, stopped and launched again as a conversation that asks`,
+    async () => {
+      const session = await conversationWithStandin(NAME, api, "Dana");
+      const detail = await sessionRead(session.id, api);
+      return {
+        observed: `claude at ${session.swap.path} (real ${session.swap.real}, symlink ${session.swap.symlink}) replaced ${session.swap.how} by ${session.swap.user} (uid ${session.swap.uid}) · terminal agent stopped, session read ${session.stoppedAs} · Mend launched the stand-in as uid ${session.launch.uid} (${session.launch.user}) with argv ${JSON.stringify(session.launch.argv)} · live ${session.process.kind} ${session.process.id.slice(0, 8)} · session ${detail.session.status}`,
+        session,
+      };
+    },
+    { via: "tty" },
+  ).then((result) => result.session);
 
-    if (ui) {
-      await step("the Mend view in the home window", async () => {
-        await useWindow(await homeWindow());
-        await dismissWelcome();
-        await view("Mend");
-        return summary(await observe());
-      });
-    }
+  if (ui) {
+    await step("the Mend view in the home window", async () => {
+      await useWindow(await homeWindow());
+      await dismissWelcome();
+      await view("Mend");
+      return summary(await observe());
+    });
+  }
 
-    // ── 2: Allow ──
-    await step(
-      `2: the launch's request (permission): ${ui ? "the toast reads add-rate-limit asks: run pnpm db:migrate? with Allow, Deny, More…, the row waits in Needs you, badge 1; Allow" : "respond {decision: accept}"} → accept, the stand-in allows`,
-      async () => {
-        const request = await nextRequest(dana);
-        const raised = asked(request, "permission");
-        let shown = "answered through the API";
-        if (ui) {
-          const seen = await until(
-            `${NAME} in Needs you`,
-            (now) =>
-              rowIn(now, "Needs you", NAME)?.startsWith(
-                `${NAME} · waiting · ${QUESTION.permission}`,
-              ) === true && now.badge === "1",
-            30_000,
-          );
-          const { toast, words, buttons } = await toastFor("permission");
-          await shot("2-allow-toast");
-          expect(
-            JSON.stringify(buttons) === JSON.stringify(["Allow", "Deny", "More…"]),
-            `buttons ${JSON.stringify(buttons)}`,
-          );
-          await toast.click("Allow");
-          shown = `toast "${words}" · buttons ${JSON.stringify(buttons)} · ${summary(seen)}`;
-        } else await respond(dana, request, { decision: "accept" });
-        const result = await answered(dana, request, { decision: "accept", behavior: "allow" });
-        let after = "";
-        if (ui) {
-          const seen = await until(
-            `${NAME} to leave Needs you, the badge to clear`,
-            (now) => rowIn(now, "Needs you", NAME) === null && now.badge === "",
-            30_000,
-          );
-          await shot("2-allowed");
-          after = ` · then ${summary(seen)}`;
-        }
-        return {
-          observed: `${raised} · ${shown} · ${result.observed}${after}`,
-          request: request.id,
-        };
-      },
-      { via: ui ? "dom" : "api" },
-    );
+  // ── 2: Allow ──
+  await step(
+    `2: the launch's request (permission): ${ui ? "the toast reads add-rate-limit asks: run pnpm db:migrate? with Allow, Deny, More…, the row waits in Needs you, badge 1; Allow" : "respond {decision: accept}"} → accept, the stand-in allows`,
+    async () => {
+      const request = await nextRequest(dana);
+      const raised = asked(request, "permission");
+      let shown = "answered through the API";
+      if (ui) {
+        const seen = await until(
+          `${NAME} in Needs you`,
+          (now) =>
+            rowIn(now, "Needs you", NAME)?.startsWith(
+              `${NAME} · waiting · ${QUESTION.permission}`,
+            ) === true && now.badge === "1",
+          30_000,
+        );
+        const { toast, words, buttons } = await toastFor("permission");
+        await shot("2-allow-toast");
+        expect(
+          JSON.stringify(buttons) === JSON.stringify(["Allow", "Deny", "More…"]),
+          `buttons ${JSON.stringify(buttons)}`,
+        );
+        await toast.click("Allow");
+        shown = `toast "${words}" · buttons ${JSON.stringify(buttons)} · ${summary(seen)}`;
+      } else await respond(dana, request, { decision: "accept" });
+      const result = await answered(dana, request, { decision: "accept", behavior: "allow" });
+      let after = "";
+      if (ui) {
+        const seen = await until(
+          `${NAME} to leave Needs you, the badge to clear`,
+          (now) => rowIn(now, "Needs you", NAME) === null && now.badge === "",
+          30_000,
+        );
+        await shot("2-allowed");
+        after = ` · then ${summary(seen)}`;
+      }
+      return { observed: `${raised} · ${shown} · ${result.observed}${after}`, request: request.id };
+    },
+    { via: ui ? "dom" : "api" },
+  );
 
-    // ── 3: Deny ──
-    await step(
-      `3: the next permission: ${ui ? "the toast's Deny" : "respond {decision: decline}"} → decline, the stand-in denies`,
-      async () => {
-        const request = await nextRequest(dana, "mend-ask:permission run the migrations again");
-        const raised = asked(request, "permission");
-        let shown = "answered through the API";
-        if (ui) {
-          const { toast, words, buttons } = await toastFor("permission");
-          await shot("3-deny-toast");
-          await toast.click("Deny");
-          shown = `toast "${words}" · buttons ${JSON.stringify(buttons)}`;
-        } else await respond(dana, request, { decision: "decline" });
-        const result = await answered(dana, request, { decision: "decline", behavior: "deny" });
-        return { observed: `${raised} · ${shown} · ${result.observed}`, request: request.id };
-      },
-      { via: ui ? "dom" : "api" },
-    );
+  // ── 3: Deny ──
+  await step(
+    `3: the next permission: ${ui ? "the toast's Deny" : "respond {decision: decline}"} → decline, the stand-in denies`,
+    async () => {
+      const request = await nextRequest(dana, "mend-ask:permission run the migrations again");
+      const raised = asked(request, "permission");
+      let shown = "answered through the API";
+      if (ui) {
+        const { toast, words, buttons } = await toastFor("permission");
+        await shot("3-deny-toast");
+        await toast.click("Deny");
+        shown = `toast "${words}" · buttons ${JSON.stringify(buttons)}`;
+      } else await respond(dana, request, { decision: "decline" });
+      const result = await answered(dana, request, { decision: "decline", behavior: "deny" });
+      return { observed: `${raised} · ${shown} · ${result.observed}`, request: request.id };
+    },
+    { via: ui ? "dom" : "api" },
+  );
 
-    // ── 4: More… with a typed answer ──
-    // Spaces around it: what she typed arrives as she typed it, never trimmed.
-    const typed = "  the reporting replica  ";
-    await step(
-      `4: a question with two options: ${ui ? "the toast offers staging, production, More…; More… → Write an answer… → typed" : "respond {answers: {target: [typed]}}"} → the stand-in receives answers.target = ["${typed}"]`,
-      async () => {
-        const request = await nextRequest(dana, "mend-ask:question which database?");
-        const raised = asked(request, "question");
-        let shown = "answered through the API";
-        if (ui) {
-          const { toast, words, buttons } = await toastFor("question");
-          expect(
-            JSON.stringify(buttons) === JSON.stringify(["staging", "production", "More…"]),
-            `buttons ${JSON.stringify(buttons)}`,
-          );
-          await toast.click("More…");
-          await quickInput.waitFor(15_000);
-          const title = await quickInput.title();
-          const items = (await quickInput.rows()).map((row) => row.label);
-          await shot("4-more-pick");
-          expect(
-            title === `${NAME} asks: ${QUESTION.question}` &&
-              JSON.stringify(items) ===
-                JSON.stringify(["staging", "production", "Write an answer…"]),
-            `quick pick "${title}" · items ${JSON.stringify(items)}`,
-          );
-          await writeAnswer(typed, "4-typed");
-          shown = `toast "${words}" · buttons ${JSON.stringify(buttons)} · quick pick "${title}" ${JSON.stringify(items)} · typed "${typed}"`;
-        } else await respond(dana, request, { answers: { target: [typed] } });
-        const result = await answered(dana, request, { answers: { target: [typed] } });
-        return { observed: `${raised} · ${shown} · ${result.observed}`, request: request.id };
-      },
-      { via: ui ? "dom" : "api" },
-    );
+  // ── 4: More… with a typed answer ──
+  // Spaces around it: what she typed arrives as she typed it, never trimmed.
+  const typed = "  the reporting replica  ";
+  await step(
+    `4: a question with two options: ${ui ? "the toast offers staging, production, More…; More… → Write an answer… → typed" : "respond {answers: {target: [typed]}}"} → the stand-in receives answers.target = ["${typed}"]`,
+    async () => {
+      const request = await nextRequest(dana, "mend-ask:question which database?");
+      const raised = asked(request, "question");
+      let shown = "answered through the API";
+      if (ui) {
+        const { toast, words, buttons } = await toastFor("question");
+        expect(
+          JSON.stringify(buttons) === JSON.stringify(["staging", "production", "More…"]),
+          `buttons ${JSON.stringify(buttons)}`,
+        );
+        await toast.click("More…");
+        await quickInput.waitFor(15_000);
+        const title = await quickInput.title();
+        const items = (await quickInput.rows()).map((row) => row.label);
+        await shot("4-more-pick");
+        expect(
+          title === `${NAME} asks: ${QUESTION.question}` &&
+            JSON.stringify(items) === JSON.stringify(["staging", "production", "Write an answer…"]),
+          `quick pick "${title}" · items ${JSON.stringify(items)}`,
+        );
+        await writeAnswer(typed, "4-typed");
+        shown = `toast "${words}" · buttons ${JSON.stringify(buttons)} · quick pick "${title}" ${JSON.stringify(items)} · typed "${typed}"`;
+      } else await respond(dana, request, { answers: { target: [typed] } });
+      const result = await answered(dana, request, { answers: { target: [typed] } });
+      return { observed: `${raised} · ${shown} · ${result.observed}`, request: request.id };
+    },
+    { via: ui ? "dom" : "api" },
+  );
 
-    // ── 4b: a free-text question ──
-    const named = "add_rate_limits";
-    await step(
-      `4b: a question with no options: ${ui ? "the toast offers Answer…; Answer… → an input box → typed" : "respond {answers: {name: [typed]}}"} → the stand-in receives answers.name = ["${named}"]`,
-      async () => {
-        const request = await nextRequest(dana, "mend-ask:text name the migration");
-        const raised = asked(request, "text");
-        let shown = "answered through the API";
-        if (ui) {
-          const { toast, words, buttons } = await toastFor("text");
-          expect(
-            JSON.stringify(buttons) === JSON.stringify(["Answer…"]),
-            `buttons ${JSON.stringify(buttons)}`,
-          );
-          await toast.click("Answer…");
-          await quickInput.waitFor(15_000);
-          const rows = (await quickInput.rows()).map((row) => row.label);
-          expect(
-            JSON.stringify(rows) === JSON.stringify(["Write an answer…"]),
-            `rows ${JSON.stringify(rows)}`,
-          );
-          await writeAnswer(named, "4b-typed");
-          shown = `toast "${words}" · buttons ${JSON.stringify(buttons)} · first rows ${JSON.stringify(rows)}`;
-        } else await respond(dana, request, { answers: { name: [named] } });
-        const result = await answered(dana, request, { answers: { name: [named] } });
-        return { observed: `${raised} · ${shown} · ${result.observed}`, request: request.id };
-      },
-      { via: ui ? "dom" : "api" },
-    );
+  // ── 4b: a free-text question ──
+  const named = "add_rate_limits";
+  await step(
+    `4b: a question with no options: ${ui ? "the toast offers Answer…; Answer… → an input box → typed" : "respond {answers: {name: [typed]}}"} → the stand-in receives answers.name = ["${named}"]`,
+    async () => {
+      const request = await nextRequest(dana, "mend-ask:text name the migration");
+      const raised = asked(request, "text");
+      let shown = "answered through the API";
+      if (ui) {
+        const { toast, words, buttons } = await toastFor("text");
+        expect(
+          JSON.stringify(buttons) === JSON.stringify(["Answer…"]),
+          `buttons ${JSON.stringify(buttons)}`,
+        );
+        await toast.click("Answer…");
+        await quickInput.waitFor(15_000);
+        const rows = (await quickInput.rows()).map((row) => row.label);
+        expect(
+          JSON.stringify(rows) === JSON.stringify(["Write an answer…"]),
+          `rows ${JSON.stringify(rows)}`,
+        );
+        await writeAnswer(named, "4b-typed");
+        shown = `toast "${words}" · buttons ${JSON.stringify(buttons)} · first rows ${JSON.stringify(rows)}`;
+      } else await respond(dana, request, { answers: { name: [named] } });
+      const result = await answered(dana, request, { answers: { name: [named] } });
+      return { observed: `${raised} · ${shown} · ${result.observed}`, request: request.id };
+    },
+    { via: ui ? "dom" : "api" },
+  );
 
-    // ── 5: the row's Answer ──
-    await step(
-      `5: a question again: ${ui ? "the row's Answer opens the quick pick, production picked" : "respond {answers: {target: [production]}}"} → recorded`,
-      async () => {
-        const request = await nextRequest(dana, "mend-ask:question which database now?");
-        const raised = asked(request, "question");
-        let shown = "answered through the API";
-        if (ui) {
-          await until(
-            `${NAME} waiting in Needs you`,
-            (now) => rowIn(now, "Needs you", NAME)?.includes(QUESTION.question) === true,
-            30_000,
-          );
-          const found = await treeItem(NAME).inline(/Answer/);
-          await quickInput.waitFor(15_000);
-          const title = await quickInput.title();
-          const items = (await quickInput.rows()).map((row) => row.label);
-          await shot("5-row-answer");
-          await quickInput.pick("production", { exact: true });
-          shown = `row action "${found.title}" · quick pick "${title}" ${JSON.stringify(items)}`;
-        } else await respond(dana, request, { answers: { target: ["production"] } });
-        const result = await answered(dana, request, { answers: { target: ["production"] } });
-        return { observed: `${raised} · ${shown} · ${result.observed}`, request: request.id };
-      },
-      { via: ui ? "dom" : "api" },
-    );
+  // ── 5: the row's Answer ──
+  await step(
+    `5: a question again: ${ui ? "the row's Answer opens the quick pick, production picked" : "respond {answers: {target: [production]}}"} → recorded`,
+    async () => {
+      const request = await nextRequest(dana, "mend-ask:question which database now?");
+      const raised = asked(request, "question");
+      let shown = "answered through the API";
+      if (ui) {
+        await until(
+          `${NAME} waiting in Needs you`,
+          (now) => rowIn(now, "Needs you", NAME)?.includes(QUESTION.question) === true,
+          30_000,
+        );
+        const found = await treeItem(NAME).inline(/Answer/);
+        await quickInput.waitFor(15_000);
+        const title = await quickInput.title();
+        const items = (await quickInput.rows()).map((row) => row.label);
+        await shot("5-row-answer");
+        await quickInput.pick("production", { exact: true });
+        shown = `row action "${found.title}" · quick pick "${title}" ${JSON.stringify(items)}`;
+      } else await respond(dana, request, { answers: { target: ["production"] } });
+      const result = await answered(dana, request, { answers: { target: ["production"] } });
+      return { observed: `${raised} · ${shown} · ${result.observed}`, request: request.id };
+    },
+    { via: ui ? "dom" : "api" },
+  );
 
-    // ── 6: answered elsewhere ──
-    await step(
-      `6: answered elsewhere: a permission toasts, Mend answers it through the API first, ${ui ? "then the toast's Allow" : "then the API again"} → one respond reaches the stand-in`,
-      async () => {
-        const request = await nextRequest(dana, "mend-ask:permission once more");
-        const raised = asked(request, "permission");
-        const toasted = ui ? await toastFor("permission") : null;
-        await respond(dana, request, { decision: "accept" });
-        await answered(dana, request, { decision: "accept", behavior: "allow" });
-        let second;
-        if (ui) {
-          await toasted.toast.click("Allow");
-          await sleep(3_000);
-          second = "the toast's Allow clicked";
-        } else {
-          const again = await raw(`/requests/${request.id}/respond`, {
-            method: "POST",
-            body: JSON.stringify({ decision: "accept" }),
-          });
-          second = `a second respond answered ${again.status} ${JSON.stringify(again.body)}`;
-          expect(again.status === 409, second);
-        }
-        const posts = await respondCount(request.id);
-        const result = await answered(dana, request, { decision: "accept", behavior: "allow" });
-        let bar = "";
-        if (ui) {
-          const items = await mendStatus();
-          await shot("6-answered-elsewhere");
-          bar = ` · status bar ${JSON.stringify(items)}`;
-          expect(
-            items.some((text) => text.startsWith(`${NAME} · `)),
-            `the status bar names no ${NAME} line: ${JSON.stringify(items)}`,
-          );
-        }
-        const observed = `${raised}${toasted === null ? "" : ` · toast "${toasted.words}"`} · ${second} · POST /api/requests/${request.id.slice(0, 8)}…/respond in the server log: ${posts} · ${result.observed}${bar}`;
-        expect(posts === (ui ? 1 : 2), `respond POSTs: ${observed}`);
-        return { observed, request: request.id };
-      },
-      { via: ui ? "dom" : "api" },
-    );
+  // ── 6: answered elsewhere ──
+  await step(
+    `6: answered elsewhere: a permission toasts, Mend answers it through the API first, ${ui ? "then the toast's Allow" : "then the API again"} → one respond reaches the stand-in`,
+    async () => {
+      const request = await nextRequest(dana, "mend-ask:permission once more");
+      const raised = asked(request, "permission");
+      const toasted = ui ? await toastFor("permission") : null;
+      await respond(dana, request, { decision: "accept" });
+      await answered(dana, request, { decision: "accept", behavior: "allow" });
+      let second;
+      if (ui) {
+        await toasted.toast.click("Allow");
+        await sleep(3_000);
+        second = "the toast's Allow clicked";
+      } else {
+        const again = await raw(`/requests/${request.id}/respond`, {
+          method: "POST",
+          body: JSON.stringify({ decision: "accept" }),
+        });
+        second = `a second respond answered ${again.status} ${JSON.stringify(again.body)}`;
+        expect(again.status === 409, second);
+      }
+      const posts = await respondCount(request.id);
+      const result = await answered(dana, request, { decision: "accept", behavior: "allow" });
+      let bar = "";
+      if (ui) {
+        const items = await mendStatus();
+        await shot("6-answered-elsewhere");
+        bar = ` · status bar ${JSON.stringify(items)}`;
+        expect(
+          items.some((text) => text.startsWith(`${NAME} · `)),
+          `the status bar names no ${NAME} line: ${JSON.stringify(items)}`,
+        );
+      }
+      const observed = `${raised}${toasted === null ? "" : ` · toast "${toasted.words}"`} · ${second} · POST /api/requests/${request.id.slice(0, 8)}…/respond in the server log: ${posts} · ${result.observed}${bar}`;
+      expect(posts === (ui ? 1 : 2), `respond POSTs: ${observed}`);
+      return { observed, request: request.id };
+    },
+    { via: ui ? "dom" : "api" },
+  );
 
-    // ── 7: two windows ──
-    await step(
-      `7: two windows: ${ui ? "both show the badge, one toast across them" : "the request is listed once for Dana"}`,
-      async () => {
-        if (!ui) {
-          const request = await nextRequest(dana, "mend-ask:permission with two windows open");
-          const raised = asked(request, "permission");
-          const listed = (await pending(dana)).filter((one) => one.id === request.id).length;
-          await respond(dana, request, { decision: "accept" });
-          const result = await answered(dana, request, { decision: "accept", behavior: "allow" });
-          expect(listed === 1, `listed ${listed} times`);
-          return `${raised} · pending lists it ${listed} time(s) · ${result.observed}`;
-        }
-        const home = await homeWindow();
-        await useWindow(home);
-        const known = await windows();
-        await palette("New Window");
-        const second = await waitForWindow(known);
-        await useWindow(second);
-        await sleep(5_000);
-        await dismissWelcome();
-        await view("Mend");
-        await useWindow(home);
-        const homeWatch = await watch();
-        await useWindow(second);
-        const secondWatch = await watch();
-        const claimsBefore = claimFiles();
+  // ── 7: two windows ──
+  await step(
+    `7: two windows: ${ui ? "both show the badge, one toast across them" : "the request is listed once for Dana"}`,
+    async () => {
+      if (!ui) {
         const request = await nextRequest(dana, "mend-ask:permission with two windows open");
         const raised = asked(request, "permission");
-        await sleep(8_000);
-        const claimed = claimFiles().filter((name) => !claimsBefore.includes(name));
-        const secondSeen = await secondWatch.stop();
-        const secondBadge = await badge("Mend");
-        await shot("7-second-window");
-        await useWindow(home);
-        const homeSeen = await homeWatch.stop();
-        const homeBadge = await badge("Mend");
-        await shot("7-home-window");
-        const toasts = (seen) =>
-          seen === null ? 0 : seen.toasts.filter((text) => text.includes(`${NAME} asks:`)).length;
-        const toasted = [homeSeen, secondSeen].filter((seen) => toasts(seen) > 0).length;
+        const listed = (await pending(dana)).filter((one) => one.id === request.id).length;
         await respond(dana, request, { decision: "accept" });
         const result = await answered(dana, request, { decision: "accept", behavior: "allow" });
-        await useWindow(second);
-        await closeWindow(second);
-        await useWindow(await homeWindow());
-        const observed = `${raised} · home ${shown(homeSeen)} badge "${homeBadge}" · second ${shown(secondSeen)} badge "${secondBadge}" · windows that toasted: ${toasted} · claims made ${JSON.stringify(claimed)} · ${result.observed}`;
-        expect(homeBadge === "1" && secondBadge === "1", `badges: ${observed}`);
-        expect(toasted === 1 && toasts(homeSeen) + toasts(secondSeen) === 1, `toasts: ${observed}`);
-        return observed;
-      },
-      { via: ui ? "dom" : "api" },
-    );
-  }
+        expect(listed === 1, `listed ${listed} times`);
+        return `${raised} · pending lists it ${listed} time(s) · ${result.observed}`;
+      }
+      const home = await homeWindow();
+      await useWindow(home);
+      const known = await windows();
+      await palette("New Window");
+      const second = await waitForWindow(known);
+      await useWindow(second);
+      await sleep(5_000);
+      await dismissWelcome();
+      await view("Mend");
+      await useWindow(home);
+      const homeWatch = await watch();
+      await useWindow(second);
+      const secondWatch = await watch();
+      const claimsBefore = claimFiles();
+      const request = await nextRequest(dana, "mend-ask:permission with two windows open");
+      const raised = asked(request, "permission");
+      await sleep(8_000);
+      const claimed = claimFiles().filter((name) => !claimsBefore.includes(name));
+      const secondSeen = await secondWatch.stop();
+      const secondBadge = await badge("Mend");
+      await shot("7-second-window");
+      await useWindow(home);
+      const homeSeen = await homeWatch.stop();
+      const homeBadge = await badge("Mend");
+      await shot("7-home-window");
+      const toasts = (seen) =>
+        seen === null ? 0 : seen.toasts.filter((text) => text.includes(`${NAME} asks:`)).length;
+      const toasted = [homeSeen, secondSeen].filter((seen) => toasts(seen) > 0).length;
+      await respond(dana, request, { decision: "accept" });
+      const result = await answered(dana, request, { decision: "accept", behavior: "allow" });
+      await useWindow(second);
+      await closeWindow(second);
+      await useWindow(await homeWindow());
+      const observed = `${raised} · home ${shown(homeSeen)} badge "${homeBadge}" · second ${shown(secondSeen)} badge "${secondBadge}" · windows that toasted: ${toasted} · claims made ${JSON.stringify(claimed)} · ${result.observed}`;
+      expect(homeBadge === "1" && secondBadge === "1", `badges: ${observed}`);
+      expect(toasted === 1 && toasts(homeSeen) + toasts(secondSeen) === 1, `toasts: ${observed}`);
+      return observed;
+    },
+    { via: ui ? "dom" : "api" },
+  );
 
   // ── 8: Ana's session ──
   let asAna = null;
@@ -995,439 +934,160 @@ export default async (h) => {
     { via: "api" },
   );
 
-  if (!only) {
-    ana = await step(
-      `8: Ana's own conversation ${ANA_NAME} with the stand-in, set up as she runs it, shared control off`,
-      async () => {
-        const session = await conversationWithStandin(ANA_NAME, asAna, "Ana");
-        const { session: read } = await sessionRead(session.id, asAna);
-        expect(read.sharedControlEnabledAt === null, "shared control is on");
-        return {
-          observed: `claude replaced ${session.swap.how} · Mend launched the stand-in as uid ${session.launch.uid} · live ${session.process.kind}, runs as ${session.process.runsAs === undefined ? "(not in the read)" : session.process.runsAs === read.ownerUserId ? "Ana" : session.process.runsAs} · shared control off`,
-          session,
-        };
-      },
-      { via: "tty" },
-    ).then((result) => result.session);
+  const ana = await step(
+    `8: Ana's own conversation ${ANA_NAME} with the stand-in, set up as she runs it, shared control off`,
+    async () => {
+      const session = await conversationWithStandin(ANA_NAME, asAna, "Ana");
+      const { session: read } = await sessionRead(session.id, asAna);
+      expect(read.sharedControlEnabledAt === null, "shared control is on");
+      return {
+        observed: `claude replaced ${session.swap.how} · Mend launched the stand-in as uid ${session.launch.uid} · live ${session.process.kind}, runs as ${session.process.runsAs === undefined ? "(not in the read)" : session.process.runsAs === read.ownerUserId ? "Ana" : session.process.runsAs} · shared control off`,
+        session,
+      };
+    },
+    { via: "tty" },
+  ).then((result) => result.session);
 
-    const anaRequest = await step(
-      `8: Ana's request, shared control off: ${ui ? `Dana's row reads waiting · Ana's session with no Answer, the badge does not count it; ` : ""}Dana's respond is refused`,
-      async () => {
-        const request = await nextRequest(ana);
-        const raised = asked(request, "permission");
-        let row = "";
-        if (ui) {
-          await useWindow(await homeWindow());
-          await view("Mend");
-          const seen = await until(
-            `${ANA_NAME} waiting in Dana's view`,
-            (now) => rowAnywhere(now, ANA_NAME)?.row.startsWith(`${ANA_NAME} · waiting`) === true,
-            60_000,
-          );
-          const where = rowAnywhere(seen, ANA_NAME);
-          const actions = await rowActions(ANA_NAME);
-          await shot("8-ana-off");
-          row = ` · ${where.group} "${where.row}" · actions ${JSON.stringify(actions)} · ${summary(seen)}`;
-          expect(where.row.startsWith(`${ANA_NAME} · waiting · Ana's session`), `row${row}`);
-          expect(where.group !== "Needs you" && seen.badge === "", `counted${row}`);
-          expect(!actions.some((action) => /Answer/.test(action.title)), `Answer offered${row}`);
-        }
-        const refused = await raw(`/requests/${request.id}/respond`, {
-          method: "POST",
-          body: JSON.stringify({ decision: "accept" }),
-        });
-        const still = await requestById(ana, request.id);
-        const observed = `${raised}${row} · Dana's respond answered ${refused.status} ${JSON.stringify(refused.body)} · the request reads ${still.status}`;
-        expect(refused.status === 403 && still.status === "pending", observed);
-        return { observed, request };
-      },
-      { via: ui ? "dom" : "api" },
-    ).then((result) => result.request);
-
-    await step(
-      `8: Ana turns on shared control: Dana's respond is still refused (her agent runs as Ana)${ui ? ", and the row says so" : ""}; Ana answers`,
-      async () => {
-        await asAna(`/sessions/${ana.id}/shared-control`, {
-          method: "PUT",
-          body: JSON.stringify({ enabled: true }),
-        });
-        let row = "";
-        if (ui) {
-          await sleep(5_000);
-          const seen = await observe();
-          const where = rowAnywhere(seen, ANA_NAME);
-          const actions = await rowActions(ANA_NAME);
-          await shot("8-ana-shared");
-          row = ` · ${where?.group ?? "no group"} "${where?.row ?? ""}" · actions ${JSON.stringify(actions)} · ${summary(seen)}`;
-        }
-        const refused = await raw(`/requests/${anaRequest.id}/respond`, {
-          method: "POST",
-          body: JSON.stringify({ decision: "accept" }),
-        });
-        const words = typeof refused.body === "object" ? refused.body?.message : refused.body;
-        expect(
-          refused.status === 403 && /Only Ana can answer this/.test(String(words)),
-          `Dana's respond with shared control on answered ${refused.status} ${JSON.stringify(refused.body)}`,
-        );
-        await asAna(`/requests/${anaRequest.id}/respond`, {
-          method: "POST",
-          body: JSON.stringify({ decision: "accept" }),
-        });
-        const result = await answered(ana, anaRequest, { decision: "accept", behavior: "allow" });
-        return `shared control on · Dana's respond answered ${refused.status} "${words}"${row} · then Ana answered: ${result.observed}`;
-      },
-      { via: ui ? "dom" : "api" },
-    );
-
-    // ── 9: offline ──
-    await step(
-      `9: offline: a request pending, the server stopped${ui ? ": the row's Answer reads Mend is offline and is disabled" : ""}; started again, what Mend says of the request`,
-      async () => {
-        const request = await nextRequest(dana, "mend-ask:permission while Mend is away");
-        const raised = asked(request, "permission");
-        let offline = "";
-        if (ui) {
-          await useWindow(await homeWindow());
-          await view("Mend");
-          await until(
-            `${NAME} waiting in Needs you`,
-            (now) => rowIn(now, "Needs you", NAME) !== null,
-            30_000,
-          );
-        }
-        const docker = (args) =>
-          world.run("docker", ["--context", state.context, ...args], {
-            timeout: 120_000,
-            env: { ...process.env, HOME: state.home, XDG_CONFIG_HOME: state.configHome },
-          });
-        await docker(["stop", "-t", "5", state.server.container]);
-        try {
-          if (ui) {
-            const seen = await until(
-              "the view to say Mend is unreachable",
-              (now) => now.message.startsWith("last heard from Mend at"),
-              90_000,
-            );
-            const actions = await rowActions(NAME);
-            await shot("9-offline");
-            offline = ` · offline: ${summary(seen)} · ${NAME}'s actions ${JSON.stringify(actions)}`;
-            const answer = actions.find((action) => action.title === "Mend is offline");
-            expect(answer?.disabled === true, `the Answer action${offline}`);
-          }
-        } finally {
-          await docker(["start", state.server.container]);
-        }
-        const back = await waitUntil(
-          "the server to answer again",
-          async () => (await raw("/sessions")).status === 200 || null,
-          240_000,
-        );
-        const after = await waitUntil(
-          "Mend to read the request after the restart",
-          async () => (await requestById(dana, request.id)) ?? null,
-          60_000,
-        );
-        const detail = await sessionRead(dana.id, api);
-        const protocol = liveProtocol(detail);
-        let answer = "not answered (it is not pending)";
-        if (after.status === "pending") {
-          const sent = await raw(`/requests/${request.id}/respond`, {
-            method: "POST",
-            body: JSON.stringify({ decision: "accept" }),
-          });
-          answer = `a respond after the restart answered ${sent.status}${sent.status === 200 ? "" : ` ${JSON.stringify(sent.body)}`}`;
-        }
-        let recovered = "";
-        if (ui) {
-          const seen = await until("the view to recover", (now) => now.message === "", 240_000);
-          await shot("9-online-again");
-          recovered = ` · online again: ${summary(seen)}`;
-        }
-        const record = (await dana.shell.record()).filter(
-          (line) =>
-            line.responded?.requestId === request.providerRequestId || line.end !== undefined,
-        );
-        return `${raised}${offline} · back ${back} · after the restart Mend reads ${said(after)} · protocol process ${protocol === null ? "none live" : `${protocol.id.slice(0, 8)} live`} · ${answer} · the stand-in's record for it ${JSON.stringify(record)}${recovered}`;
-      },
-      { via: ui ? "dom" : "setup" },
-    );
-  }
-
-  // ── 10: Dana's terminal agent in a workspace Ana launched ──
-  async function launcherSection() {
-    // Fresh labels, so a second drive in one world reads its own rows.
-    const stamp = Date.now().toString(36).slice(-4);
-    const anaLabel = `${ANA_HOLDS}-${stamp}`;
-    const danaLabel = `${DANA_TERMINAL}-${stamp}`;
-    const failures = [];
-    /** A step whose failure is kept while the section goes on, so one run shows every defect. */
-    const checked = (name, fn, options) =>
-      step(name, fn, options).catch((error) => {
-        failures.push(error.message);
-        return null;
-      });
-    const livePty = (detail) =>
-      detail.processes.find((row) => row.kind === "agent-pty" && row.exitedAt === null) ?? null;
-    const runningPty = (label, id, call) =>
-      waitUntil(
-        `${label} running with a live agent-pty`,
-        async () => {
-          const now = await sessionRead(id, call);
-          return now.session.status === "running" &&
-            livePty(now) !== null &&
-            now.session.sealantWorkspaceId !== null
-            ? now
-            : null;
-        },
-        600_000,
-      );
-    const tail = async (pattern) =>
-      (await serverLogs())
-        .split("\n")
-        .filter((line) => pattern.test(line))
-        .slice(-5)
-        .join(" / ");
-
-    const holds = await step(
-      `10 setup: Ana's claude terminal agent ${anaLabel} in a fresh worktree, launched by her, so the workspace is hers`,
-      async () => {
-        const created = await asAna(`/projects/${project.id}/sessions`, {
-          method: "POST",
-          body: JSON.stringify({ harness: "claude", label: anaLabel, base: null, name: null }),
-        });
-        await asAna(`/sessions/${created.id}/launch`, {
-          method: "POST",
-          body: JSON.stringify({ permissionMode: "ask" }),
-        });
-        const { session } = await runningPty(anaLabel, created.id, asAna);
-        expect(
-          session.workspaceLauncherUserId === session.ownerUserId,
-          `the workspace's launcher reads ${session.workspaceLauncherUserId}, not Ana (${session.ownerUserId})`,
-        );
-        return {
-          observed: `${anaLabel} running · worktree ${session.worktreeId} · workspace ${session.sealantWorkspaceId} · workspaceLauncherUserId is Ana`,
-          id: created.id,
-          worktreeId: session.worktreeId,
-          workspaceId: session.sealantWorkspaceId,
-          anaId: session.ownerUserId,
-        };
-      },
-      { via: "api" },
-    );
-
-    const mine = await step(
-      `10 setup: Dana's own claude terminal agent ${danaLabel} in that worktree (POST /worktrees/:id/sessions), launched in ask mode: it joins Ana's workspace`,
-      async () => {
-        let created;
-        try {
-          created = await api(`/worktrees/${holds.worktreeId}/sessions`, {
-            method: "POST",
-            body: JSON.stringify({ harness: "claude", label: danaLabel }),
-          });
-          await api(`/sessions/${created.id}/launch`, {
-            method: "POST",
-            body: JSON.stringify({ permissionMode: "ask" }),
-          });
-        } catch (error) {
-          throw new Error(
-            `${error.message} · server log: ${await tail(/worktrees|launch|refus|denied|forbidden/i)}`,
-          );
-        }
-        await runningPty(danaLabel, created.id, api);
-        // A fresh claude's row records its --session-id pin at launch; a row without one is
-        // claimed by the agent's first SessionStart (agentHookTarget).
-        const detail = await waitUntil(
-          `${danaLabel}'s agent row to record its --session-id`,
-          async () => {
-            const now = await sessionRead(created.id, api);
-            return livePty(now)?.providerSessionId ? now : null;
-          },
-          15_000,
-        ).catch(() => sessionRead(created.id, api));
-        const { session } = detail;
-        const agent = livePty(detail);
-        const observed = `${danaLabel} running · owner ${session.ownerUserId === holds.anaId ? "Ana" : "Dana"} · workspace ${session.sealantWorkspaceId === holds.workspaceId ? "Ana's" : session.sealantWorkspaceId} · workspaceLauncherUserId ${session.workspaceLauncherUserId === holds.anaId ? "Ana" : session.workspaceLauncherUserId} · agent-pty ${agent.id.slice(0, 8)} --session-id ${agent.providerSessionId}`;
-        expect(session.ownerUserId !== holds.anaId, `Dana's session is not hers: ${observed}`);
-        expect(
-          session.sealantWorkspaceId === holds.workspaceId &&
-            session.workspaceLauncherUserId === holds.anaId,
-          `not in the workspace Ana launched: ${observed}`,
-        );
-        return {
-          observed,
-          id: created.id,
-          agentId: agent.id,
-          agentSession: agent.providerSessionId ?? null,
-        };
-      },
-      { via: "api" },
-    );
-
-    await useWindow(await homeWindow());
-    await dismissWelcome();
-    await view("Mend");
-    const baseline = await step(
-      `10: Dana's view before her agent waits: ${danaLabel} is listed, not waiting`,
-      async () => {
-        const seen = await until(
-          `${danaLabel} in Dana's view`,
-          (now) => rowAnywhere(now, danaLabel) !== null,
-          60_000,
-        );
-        const where = rowAnywhere(seen, danaLabel);
-        await shot("10-before-wait");
-        return {
-          observed: `${where.group} "${where.row}" · ${summary(seen)}`,
-          badge: seen.badge === "" ? 0 : Number(seen.badge),
-        };
-      },
-    );
-
-    const shell = await tty(mine.id, api);
-    await step(
-      `10 setup: from a shell beside ${danaLabel}, the hook stand-in replays PermissionRequest (Bash) through the hooks on her claude's command line (SessionStart first when her row records no --session-id, as claude's own first hook claims it): the session reads waiting · permission · Bash`,
-      async () => {
-        const reportAs = mine.agentSession ?? crypto.randomUUID();
-        const events =
-          mine.agentSession === null ? "SessionStart,PermissionRequest" : "PermissionRequest";
-        await shell.lines([
-          "D=$(mktemp -d /tmp/mend-answer-launcher.XXXXXX)",
-          ...heredoc("$D", "claude-standin.mjs", readFileSync(HOOK_STANDIN, "utf8")),
-          ...heredoc("$D", "settings-of.mjs", SETTINGS_OF),
-          `node "$D/settings-of.mjs" ${mine.agentSession ?? "none"} "$D/settings.json" MEND-ANSWER-SETTINGS`,
-        ]);
-        const found = await shell.marker("MEND-ANSWER-SETTINGS", 30_000);
-        const claudes = JSON.stringify(found.claudes);
-        expect(
-          found.found !== null,
-          `no claude of hers with --settings (--session-id ${mine.agentSession}, shell uid ${found.me}): ${claudes}`,
-        );
-        await shell.lines([
-          `node "$D/claude-standin.mjs" --settings "$D/settings.json" --session-id ${reportAs} --events ${events} --pause-ms 1000 --marker MEND-ANSWER-HOOK`,
-        ]);
-        const event = await waitUntil(
-          "the stand-in to fire PermissionRequest",
-          () =>
-            [...shell.attached.text.matchAll(/MEND-ANSWER-HOOK:(\{[^\r\n]*\})/g)]
-              .map((m) => {
-                try {
-                  return JSON.parse(m[1]);
-                } catch {
-                  return null;
-                }
-              })
-              .find((line) => line?.event === "PermissionRequest") ?? null,
-          60_000,
-        );
-        const bad = event.hooks.filter((hook) => hook.exitCode !== 0 || hook.timedOut);
-        expect(
-          event.hooks.length > 0 && bad.length === 0,
-          `the hooks ran ${JSON.stringify(event.hooks.map(({ exitCode, timedOut }) => ({ exitCode, timedOut })))} · claudes ${claudes} (hers pid ${found.found})`,
-        );
-        const detail = await waitUntil(
-          `${danaLabel} to read waiting`,
-          async () => {
-            const now = await sessionRead(mine.id, api);
-            return now.session.status === "waiting" &&
-              now.currentAgent?.waiting?.kind === "permission"
-              ? now
-              : null;
-          },
-          30_000,
-        );
-        const { waiting } = detail.currentAgent;
-        const pinned = (await sessionRead(mine.id, api)).processes.find(
-          (row) => row.id === mine.agentId,
-        )?.providerSessionId;
-        return `claudes in the workspace ${claudes} (hers pid ${found.found}) · events ${events} under ${mine.agentSession === null ? `a fresh id, her row now records ${pinned === reportAs ? "it" : pinned}` : "her row's --session-id"} · hooks exited ${event.hooks.map((hook) => hook.exitCode).join(",")} · session ${detail.session.status} · ${waiting.kind} · ${waiting.tool} · since ${waiting.since}`;
-      },
-      { via: "tty" },
-    );
-
-    await checked(
-      `10: Dana's view: ${danaLabel} in Needs you with Answer, the badge counts it`,
-      async () => {
-        let seen = null;
-        try {
-          seen = await until(
-            `${danaLabel} in Needs you and the badge at ${baseline.badge + 1}`,
-            (now) =>
-              rowIn(now, "Needs you", danaLabel) !== null &&
-              now.badge === String(baseline.badge + 1),
-            30_000,
-          );
-        } catch {
-          seen = await observe();
-        }
-        const where = rowAnywhere(seen, danaLabel);
-        const actions = await rowActions(danaLabel);
-        await shot("10-waits");
-        const observed = `${where.group} "${where.row}" · actions ${JSON.stringify(actions.map((one) => one.title))} · badge "${seen.badge}" (was ${baseline.badge}) · ${summary(seen)}`;
-        expect(where.group === "Needs you", `not in Needs you: ${observed}`);
-        expect(
-          seen.badge === String(baseline.badge + 1),
-          `the badge does not count it: ${observed}`,
-        );
-        expect(
-          actions.some((one) => /Answer/.test(one.title)),
-          `the row offers no Answer: ${observed}`,
-        );
-        return observed;
-      },
-    );
-
-    await checked(
-      `10: Answer attaches ${danaLabel}'s claude as a terminal tab in Dana's window: no window opens, no "no agent attached" line`,
-      async () => {
+  const anaRequest = await step(
+    `8: Ana's request, shared control off: ${ui ? `Dana's row reads waiting · Ana's session with no Answer, the badge does not count it; ` : ""}Dana's respond is refused`,
+    async () => {
+      const request = await nextRequest(ana);
+      const raised = asked(request, "permission");
+      let row = "";
+      if (ui) {
         await useWindow(await homeWindow());
         await view("Mend");
-        const known = await windows();
-        const tabsBefore = await terminal().tabs();
-        const seen = await watch();
-        const actions = await rowActions(danaLabel);
-        let gesture;
-        if (actions.some((one) => /Answer/.test(one.title))) {
-          const found = await treeItem(danaLabel).inline(/Answer/);
-          gesture = `the row's ${typeof found === "string" ? found : (found?.title ?? "Answer")}`;
-        } else {
-          // The row offers no Answer: she asks for it from the palette, as she still can.
-          await palette("Mend: Answer");
-          await quickInput.waitFor(15_000);
-          await quickInput.pick(danaLabel);
-          gesture = "the palette's Mend: Answer, the session picked (the row offered no Answer)";
-        }
-        const want = `claude · ${danaLabel}`;
-        const tabs = await waitUntil(
-          `a ${want} tab`,
-          async () => {
-            const now = await terminal().tabs();
-            return now.names.some((name) => name.includes(want)) ? now : null;
-          },
-          30_000,
-        ).catch(async () => terminal().tabs());
-        await sleep(3_000);
-        const shown = await seen.stop();
-        const opened = await newWindows(known);
-        const bar = await statusBarItems();
-        const refusal = [...(shown?.statusBar ?? []), ...bar].filter((text) =>
-          text.includes("no agent attached"),
+        const seen = await until(
+          `${ANA_NAME} waiting in Dana's view`,
+          (now) => rowAnywhere(now, ANA_NAME)?.row.startsWith(`${ANA_NAME} · waiting`) === true,
+          60_000,
         );
-        await shot("10-answered");
-        const attached = tabs.names.some((name) => name.includes(want));
-        const observed = `${gesture} · tabs before ${JSON.stringify(tabsBefore.names)} · after ${JSON.stringify(tabs.names)} (active ${JSON.stringify(tabs.active)}) · new windows ${opened.length} · status line ${refusal.length === 0 ? "none refusing" : JSON.stringify([...new Set(refusal)])}`;
-        expect(refusal.length === 0, `refused: ${observed}`);
-        expect(attached, `no ${want} tab: ${observed}`);
-        expect(opened.length === 0, `a window opened: ${observed}`);
-        return observed;
-      },
-    );
+        const where = rowAnywhere(seen, ANA_NAME);
+        const actions = await rowActions(ANA_NAME);
+        await shot("8-ana-off");
+        row = ` · ${where.group} "${where.row}" · actions ${JSON.stringify(actions)} · ${summary(seen)}`;
+        expect(where.row.startsWith(`${ANA_NAME} · waiting · Ana's session`), `row${row}`);
+        expect(where.group !== "Needs you" && seen.badge === "", `counted${row}`);
+        expect(!actions.some((action) => /Answer/.test(action.title)), `Answer offered${row}`);
+      }
+      const refused = await raw(`/requests/${request.id}/respond`, {
+        method: "POST",
+        body: JSON.stringify({ decision: "accept" }),
+      });
+      const still = await requestById(ana, request.id);
+      const observed = `${raised}${row} · Dana's respond answered ${refused.status} ${JSON.stringify(refused.body)} · the request reads ${still.status}`;
+      expect(refused.status === 403 && still.status === "pending", observed);
+      return { observed, request };
+    },
+    { via: ui ? "dom" : "api" },
+  ).then((result) => result.request);
 
-    keep(`${danaLabel}-shell.txt`, shell.attached.text);
-    shell.close();
-    expect(failures.length === 0, `section 10: ${failures.join(" | ")}`);
-  }
+  await step(
+    `8: Ana turns on shared control: Dana's respond is still refused (her agent runs as Ana)${ui ? ", and the row says so" : ""}; Ana answers`,
+    async () => {
+      await asAna(`/sessions/${ana.id}/shared-control`, {
+        method: "PUT",
+        body: JSON.stringify({ enabled: true }),
+      });
+      let row = "";
+      if (ui) {
+        await sleep(5_000);
+        const seen = await observe();
+        const where = rowAnywhere(seen, ANA_NAME);
+        const actions = await rowActions(ANA_NAME);
+        await shot("8-ana-shared");
+        row = ` · ${where?.group ?? "no group"} "${where?.row ?? ""}" · actions ${JSON.stringify(actions)} · ${summary(seen)}`;
+      }
+      const refused = await raw(`/requests/${anaRequest.id}/respond`, {
+        method: "POST",
+        body: JSON.stringify({ decision: "accept" }),
+      });
+      const words = typeof refused.body === "object" ? refused.body?.message : refused.body;
+      expect(
+        refused.status === 403 && /Only Ana can answer this/.test(String(words)),
+        `Dana's respond with shared control on answered ${refused.status} ${JSON.stringify(refused.body)}`,
+      );
+      await asAna(`/requests/${anaRequest.id}/respond`, {
+        method: "POST",
+        body: JSON.stringify({ decision: "accept" }),
+      });
+      const result = await answered(ana, anaRequest, { decision: "accept", behavior: "allow" });
+      return `shared control on · Dana's respond answered ${refused.status} "${words}"${row} · then Ana answered: ${result.observed}`;
+    },
+    { via: ui ? "dom" : "api" },
+  );
 
-  if (launcher !== "off") await launcherSection();
+  // ── 9: offline ──
+  await step(
+    `9: offline: a request pending, the server stopped${ui ? ": the row's Answer reads Mend is offline and is disabled" : ""}; started again, what Mend says of the request`,
+    async () => {
+      const request = await nextRequest(dana, "mend-ask:permission while Mend is away");
+      const raised = asked(request, "permission");
+      let offline = "";
+      if (ui) {
+        await useWindow(await homeWindow());
+        await view("Mend");
+        await until(
+          `${NAME} waiting in Needs you`,
+          (now) => rowIn(now, "Needs you", NAME) !== null,
+          30_000,
+        );
+      }
+      const docker = (args) =>
+        world.run("docker", ["--context", state.context, ...args], {
+          timeout: 120_000,
+          env: { ...process.env, HOME: state.home, XDG_CONFIG_HOME: state.configHome },
+        });
+      await docker(["stop", "-t", "5", state.server.container]);
+      try {
+        if (ui) {
+          const seen = await until(
+            "the view to say Mend is unreachable",
+            (now) => now.message.startsWith("last heard from Mend at"),
+            90_000,
+          );
+          const actions = await rowActions(NAME);
+          await shot("9-offline");
+          offline = ` · offline: ${summary(seen)} · ${NAME}'s actions ${JSON.stringify(actions)}`;
+          const answer = actions.find((action) => action.title === "Mend is offline");
+          expect(answer?.disabled === true, `the Answer action${offline}`);
+        }
+      } finally {
+        await docker(["start", state.server.container]);
+      }
+      const back = await waitUntil(
+        "the server to answer again",
+        async () => (await raw("/sessions")).status === 200 || null,
+        240_000,
+      );
+      const after = await waitUntil(
+        "Mend to read the request after the restart",
+        async () => (await requestById(dana, request.id)) ?? null,
+        60_000,
+      );
+      const detail = await sessionRead(dana.id, api);
+      const protocol = liveProtocol(detail);
+      let answer = "not answered (it is not pending)";
+      if (after.status === "pending") {
+        const sent = await raw(`/requests/${request.id}/respond`, {
+          method: "POST",
+          body: JSON.stringify({ decision: "accept" }),
+        });
+        answer = `a respond after the restart answered ${sent.status}${sent.status === 200 ? "" : ` ${JSON.stringify(sent.body)}`}`;
+      }
+      let recovered = "";
+      if (ui) {
+        const seen = await until("the view to recover", (now) => now.message === "", 240_000);
+        await shot("9-online-again");
+        recovered = ` · online again: ${summary(seen)}`;
+      }
+      const record = (await dana.shell.record()).filter(
+        (line) => line.responded?.requestId === request.providerRequestId || line.end !== undefined,
+      );
+      return `${raised}${offline} · back ${back} · after the restart Mend reads ${said(after)} · protocol process ${protocol === null ? "none live" : `${protocol.id.slice(0, 8)} live`} · ${answer} · the stand-in's record for it ${JSON.stringify(record)}${recovered}`;
+    },
+    { via: ui ? "dom" : "setup" },
+  );
 
   // ── evidence ──
   for (const session of [dana, ana]) {
@@ -1447,9 +1107,6 @@ export default async (h) => {
     note(`${session.name}: claude restored ${JSON.stringify(restored)}`);
   }
   note(
-    `evidence: steps.jsonl, ${[dana, ana]
-      .filter((one) => one !== null)
-      .map((one) => `${one.name}-{swap.json,record.jsonl,requests.json,shell.txt}`)
-      .join(", ")} in ${out}`,
+    `evidence: steps.jsonl, ${[dana, ana].map((one) => `${one.name}-{swap.json,record.jsonl,requests.json,shell.txt}`).join(", ")} in ${out}`,
   );
 };
