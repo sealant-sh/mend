@@ -1003,3 +1003,43 @@ describe("a call Mend refuses while a review is on its way", () => {
     expect(await phaseOf(kept, key)).toBe("refused");
   });
 });
+
+describe("Retry delivery of a review another window delivered meanwhile", () => {
+  it("says it sent nothing, and what the review reads now", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    mend.deliver = async () => {
+      throw new MendApiError("Mend is restarting.", 503);
+    };
+    let meanwhile: (() => Promise<void>) | null = null;
+    const delayed = {
+      ...sessionReads("change-1"),
+      sessionDetail: async (sessionId: string): Promise<SessionDetail> => {
+        await meanwhile?.();
+        return sessionReads("change-1").sessionDetail(sessionId);
+      },
+    };
+    const store = new ReviewStore(delayed, mend, new ReviewMemory(memento()), kept, noPaste);
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("failed"), SETTLE);
+    // While Retry reads the session, another window's Retry gets it delivered.
+    meanwhile = async () => {
+      meanwhile = null;
+      await kept.update(DANA_S1, (review) => ({
+        ...review,
+        sends: review.sends.map((record) => ({
+          ...record,
+          phase: { kind: "delivered", at: "2026-10-20T10:05:00.000Z" },
+        })),
+      }));
+    };
+    const writes = mend.writes.length;
+    expect(await store.retry({ place: DANA_S1, key })).toEqual({
+      retried: false,
+      words: "Retry delivery sent nothing: this review already reads sent",
+    });
+    expect(mend.writes).toHaveLength(writes);
+  });
+});
