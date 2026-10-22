@@ -318,6 +318,42 @@ describe("OpenRunner", () => {
     expect(effects.report).not.toHaveBeenCalled();
   });
 
+  it("installs nothing when she says no to the one question", async () => {
+    const { effects, runner } = world({
+      remoteSshInstalled: () => false,
+      workspaceSsh: async () => "needsSetup",
+      sshConsent: async () => "never",
+      askSshConsent: vi.fn(async () => false),
+    });
+    expect(await runner.open(target(), "follow-setting")).toBe("cancelled");
+    expect(effects.askSshConsent).toHaveBeenCalledTimes(1);
+    expect(effects.installRemoteSsh).not.toHaveBeenCalled();
+    expect(effects.setUpWorkspaceSsh).not.toHaveBeenCalled();
+  });
+
+  it("asks the one question before it installs Remote-SSH, then installs after a yes", async () => {
+    const order: Array<string> = [];
+    let installed = false;
+    const { runner } = world({
+      remoteSshInstalled: () => installed,
+      installRemoteSsh: vi.fn(async () => {
+        order.push("install");
+        installed = true;
+      }),
+      workspaceSsh: async () => "needsSetup",
+      sshConsent: async () => "never",
+      askSshConsent: vi.fn(async () => {
+        order.push("ask");
+        return true;
+      }),
+      setUpWorkspaceSsh: vi.fn(async () => {
+        order.push("setUp");
+      }),
+    });
+    expect(await runner.open(target(), "follow-setting")).toBe("opened");
+    expect(order).toEqual(["ask", "install", "setUp"]);
+  });
+
   it("sets SSH up after a yes, then opens", async () => {
     const { effects, runner } = world({
       workspaceSsh: async () => "needsSetup",

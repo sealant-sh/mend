@@ -1,4 +1,10 @@
-import { maySteer, ownsSession, rowCapability } from "./session-capability.js";
+import {
+  answerAdmits,
+  answerRefusedLine,
+  maySteer,
+  ownsSession,
+  rowCapability,
+} from "./session-capability.js";
 import type { Session, SessionDetail } from "./types.js";
 import {
   agentTab,
@@ -50,8 +56,9 @@ export interface AgentTabEffects {
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
   readonly onError: (cause: unknown) => void;
-  /** Says why the window attaches no agent for the session. */
   readonly refused: (line: string) => void;
+  /** A focus showed a tab: the line `refused` set goes. */
+  readonly cleared: () => void;
 }
 
 type Attached =
@@ -79,7 +86,10 @@ const reasonOf = (cause: unknown): string =>
  */
 export class AgentTabs {
   readonly #attached = new Map<string, Attached>();
-  readonly #focusing = new Map<string, Promise<void>>();
+  readonly #focusing = new Map<
+    string,
+    { readonly workspaceId: string | null; readonly run: Promise<void> }
+  >();
   readonly #continuing = new Map<string, Promise<void>>();
   readonly #switchWaitMs: number;
   readonly #pollMs: number;
@@ -99,11 +109,16 @@ export class AgentTabs {
    */
   focus(sessionId: string, workspaceId: string | null): Promise<void> {
     const running = this.#focusing.get(sessionId);
-    if (running !== undefined) return running;
-    const run = this.#reconcile(sessionId, workspaceId).finally(() =>
-      this.#focusing.delete(sessionId),
-    );
-    this.#focusing.set(sessionId, run);
+    // Answer and a workspace window admit by different rules, so one waits for the other.
+    if (running?.workspaceId === workspaceId) return running.run;
+    const run = (
+      running === undefined
+        ? this.#reconcile(sessionId, workspaceId)
+        : running.run.then(() => this.#reconcile(sessionId, workspaceId))
+    ).finally(() => {
+      if (this.#focusing.get(sessionId)?.run === run) this.#focusing.delete(sessionId);
+    });
+    this.#focusing.set(sessionId, { workspaceId, run });
     return run;
   }
 
@@ -157,14 +172,26 @@ export class AgentTabs {
         return;
       }
       const want = agentTab(detail.session, detail.processes);
-      // Only the workspace's launcher types into its agent; anyone else, and anyone Mend cannot
-      // name, gets nothing here (Watch terminal is the read-only way in).
       const capability = rowCapability({ session: detail.session, viewer, members: [] });
-      if (capability.kind !== "open") {
+      if (
+        capability.kind === "unknown" ||
+        (workspaceId !== null && capability.kind === "notYours")
+      ) {
         effects.refused(`${capability.why} · no agent attached`);
         return;
       }
-      if (viewer !== null && !maySteer(detail.session, viewer)) return;
+      if (viewer === null) return;
+      if (workspaceId !== null) {
+        if (!maySteer(detail.session, viewer)) return;
+      } else if (want.kind !== "none") {
+        const via = want.kind === "pty" ? "terminal" : "conversation";
+        if (!answerAdmits(detail.session, viewer, via)) {
+          const { ownerUserId } = detail.session;
+          const owner = ownerUserId === null ? null : await effects.ownerName(ownerUserId);
+          effects.refused(answerRefusedLine(via, owner));
+          return;
+        }
+      }
       const have = this.#attached.get(sessionId);
       if (
         have !== undefined &&
@@ -173,6 +200,7 @@ export class AgentTabs {
         want.processId === have.processId
       ) {
         have.tab.show();
+        effects.cleared();
         return;
       }
       if (have !== undefined) {
@@ -190,6 +218,7 @@ export class AgentTabs {
   #showContinuing(sessionId: string): boolean {
     if (!this.#continuing.has(sessionId)) return false;
     this.#attached.get(sessionId)?.tab.show();
+    this.effects.cleared();
     return true;
   }
 
@@ -208,6 +237,7 @@ export class AgentTabs {
         viewer,
       });
       this.#attached.set(sessionId, { kind: "pty", processId: want.processId, tab });
+      effects.cleared();
     } else if (want.kind === "conversation") {
       const lines = ownsSession(detail.session, viewer)
         ? [want.line]
@@ -222,6 +252,7 @@ export class AgentTabs {
           detail.session.harness,
         viewer,
       });
+      effects.cleared();
     }
   }
 

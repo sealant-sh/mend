@@ -30,7 +30,7 @@ import { VERSION } from "../scripts/fixtures/claude-protocol-standin.mjs";
 import { redact } from "../scripts/redact.mjs";
 import { loadSecrets, redactValues } from "../scripts/secrets.mjs";
 
-const world = await import(
+export const world = await import(
   pathToFileURL(join(import.meta.dirname, "../../../../scripts/vscode-remote-world.mjs")).href
 );
 
@@ -120,7 +120,7 @@ for (const [i, line] of lines.entries()) console.log(marker + ":" + JSON.stringi
 console.log(marker + "-END:" + JSON.stringify({ count: lines.length }));
 `;
 
-const heredoc = (dir, target, text) => [
+export const heredoc = (dir, target, text) => [
   `base64 -d > "${dir}/${target}" <<'MEND_ANSWER_EOF'`,
   ...(Buffer.from(text)
     .toString("base64")
@@ -128,16 +128,16 @@ const heredoc = (dir, target, text) => [
   "MEND_ANSWER_EOF",
 ];
 
-const expect = (holds, message) => {
+export const expect = (holds, message) => {
   if (!holds) throw new Error(message);
 };
 
-const fail = (reason) => {
+export const fail = (reason) => {
   throw new Error(reason);
 };
 
 /** The view as a person reads it: its message, then each group's rows as `name · line`. */
-const grouped = ({ message, rows }) => {
+export const grouped = ({ message, rows }) => {
   const groups = [];
   let current = null;
   for (const row of rows) {

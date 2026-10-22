@@ -366,12 +366,12 @@ describe("the badge (rule 15)", () => {
     expect(model.sessions.get("anas")?.line).toBe("waiting · Ana's session");
   });
 
-  it("does not count her own terminal agent in a workspace Ana launched: Answer attaches nothing there", () => {
+  it("counts her own terminal agent in a workspace Ana launched: Answer attaches it over Mend, not Remote-SSH", () => {
     const inAnas = session({ id: "mine", status: "waiting", workspaceLauncherUserId: "ana" });
     const model = sessionModel(input([inAnas], { waits: new Map([["mine", waitFor(YESTERDAY)]]) }));
-    expect(model.badge).toBe(0);
+    expect(model.badge).toBe(1);
     expect(model.sessions.get("mine")?.line).toBe(
-      "waiting · claude needs your permission to use Bash",
+      `waiting · claude needs your permission to use Bash · since ${clockTime(YESTERDAY)}`,
     );
   });
 

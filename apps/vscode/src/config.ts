@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,20 +7,17 @@ import * as vscode from "vscode";
 
 import {
   canonicalServerUrl,
-  credentialFor,
-  parseCredentialStore,
-  refusedIn,
+  isRefused,
+  keptCredential,
   replacedDeviceWarning,
   revokeOutcomeOf,
-  serializeCredentialStore,
+  secretWriteOf,
   signOutMessage,
-  signOutOf,
   tokenFor,
-  withCredential,
-  withoutCredential,
   type CliCredential,
-  type CredentialStore,
+  type CredentialChange,
   type RevokeOutcome,
+  type StoredCredential,
 } from "./credentials.js";
 import {
   connectionOf,
@@ -36,8 +34,6 @@ export interface MendConnection {
   readonly url: string;
   readonly token: string | null;
 }
-
-const TOKEN_KEY = "mend.serverToken";
 
 const mendHome = (): string => {
   const xdg = process.env["XDG_CONFIG_HOME"];
@@ -98,8 +94,7 @@ export class ConnectionStore {
   #connecting: Promise<boolean> | null = null;
   /** The device a sign-in just replaced, revoked once the editor reads with the new token. */
   #replaced: Device | null = null;
-  /** The last of this window's writes to the credential store (`#update`). */
-  #writes: Promise<unknown> = Promise.resolve();
+  readonly #refusing = new Map<string, Promise<void>>();
 
   constructor(
     private readonly context: { readonly secrets: Pick<vscode.SecretStorage, "get" | "store"> },
@@ -110,43 +105,40 @@ export class ConnectionStore {
     // Every spelling of a server is one server: the setting, the CLI's URL and the stored entries
     // all compare in the canonical form Connect writes.
     const url = configuredUrl() ?? discovered?.url ?? "http://localhost:3105";
-    return { url, token: tokenFor(url, credentialFor(await this.#stored(), url), discovered) };
+    return { url, token: tokenFor(url, await this.#own(url, discovered), discovered) };
   }
 
   /** Whether the editor is connected, and from where; what Connect and Use it start from if not. */
   async state(): Promise<Connection> {
     const configured = configuredUrl();
+    const cli = cliConfig();
     return connectionOf({
       configured,
-      own: configured === null ? null : credentialFor(await this.#stored(), configured),
-      cli: cliConfig(),
+      own: configured === null ? null : await this.#own(configured, cli),
+      cli,
     });
   }
 
   /** The account this editor's own sign-in to `url` approved, when it kept one. */
   async signedInEmail(url: string): Promise<string | null> {
-    const own = credentialFor(await this.#stored(), url);
+    const own = await this.#own(url, cliConfig());
     return own?.kind === "token" ? (own.email ?? null) : null;
   }
 
-  async #stored(): Promise<CredentialStore> {
-    return parseCredentialStore(await this.context.secrets.get(TOKEN_KEY));
+  #read = async (key: string): Promise<string | undefined> => this.context.secrets.get(key);
+
+  #own(url: string, cli: CliCredential | null): Promise<StoredCredential | null> {
+    return keptCredential(this.#read, url, cli);
   }
 
-  /**
-   * One read-modify-write of the credential store at a time in this window, each from a read made
-   * inside its turn: a refusal that read the store before a sign-in wrote it would otherwise write
-   * the sign-in away.
-   */
-  #update<T>(write: (stored: CredentialStore) => Promise<T>): Promise<T> {
-    const run = this.#writes.then(async () => write(await this.#stored()));
-    this.#writes = run.catch(() => undefined);
-    return run;
+  async #write(change: CredentialChange): Promise<void> {
+    const { key, value } = secretWriteOf(change, randomUUID());
+    await this.context.secrets.store(key, value);
   }
 
   /** The token first: changing the setting restarts the event stream, which reads it. */
-  async #point(url: string, store: CredentialStore): Promise<void> {
-    await this.context.secrets.store(TOKEN_KEY, serializeCredentialStore(store));
+  async #point(url: string, change: CredentialChange): Promise<void> {
+    await this.#write(change);
     await vscode.workspace
       .getConfiguration("mend")
       .update("serverUrl", url, vscode.ConfigurationTarget.Global);
@@ -183,8 +175,7 @@ export class ConnectionStore {
         (await vscode.window.showErrorMessage(reason, TRY_AGAIN)) === TRY_AGAIN
           ? TRY_AGAIN
           : undefined,
-      useCliSignIn: (url) =>
-        this.#update((stored) => this.#point(url, withoutCredential(stored, url))),
+      useCliSignIn: (url) => this.#point(url, { kind: "useCli", url }),
     };
   }
 
@@ -219,11 +210,17 @@ export class ConnectionStore {
    * secret's change) drop it. A token the editor no longer sends is left alone.
    */
   refused(connection: { readonly url: string; readonly token: string }): Promise<void> {
-    return this.#update(async (stored) => {
-      const next = refusedIn(stored, connection, cliConfig());
-      if (next !== null)
-        await this.context.secrets.store(TOKEN_KEY, serializeCredentialStore(next));
-    });
+    const key = JSON.stringify([canonicalServerUrl(connection.url), connection.token]);
+    const running = this.#refusing.get(key);
+    if (running !== undefined) return running;
+    const run = this.#refuse(connection).finally(() => this.#refusing.delete(key));
+    this.#refusing.set(key, run);
+    return run;
+  }
+
+  async #refuse(connection: { readonly url: string; readonly token: string }): Promise<void> {
+    if (await isRefused(this.#read, connection.url, connection.token)) return;
+    await this.#write({ kind: "refused", ...connection });
   }
 
   /**
@@ -273,18 +270,13 @@ export class ConnectionStore {
       );
       const signedIn = await finishBrowserSignIn(result, completion);
       if (signedIn === null) return { kind: "cancelled" };
-      const replaced = await this.#update(async (stored) => {
-        await this.#point(
-          url,
-          withCredential(stored, {
-            kind: "token",
-            url,
-            token: signedIn.token,
-            deviceId: signedIn.deviceId,
-            email: signedIn.email,
-          }),
-        );
-        return credentialFor(stored, url);
+      const replaced = await this.#own(url, cliConfig());
+      await this.#point(url, {
+        kind: "signedIn",
+        url,
+        token: signedIn.token,
+        deviceId: signedIn.deviceId,
+        email: signedIn.email,
       });
       if (
         replaced?.kind === "token" &&
@@ -304,34 +296,21 @@ export class ConnectionStore {
     }
   }
 
-  /**
-   * Sign this editor out of `url` (by default the server it is connected to now), and only that
-   * one: its own entry there is revoked (a browser sign-in's device) and replaced by "no token", so
-   * the editor does not fall back to the CLI's sign-in there. Other servers' entries stay as they
-   * were.
-   */
   async signOut(url?: string): Promise<string> {
     const server = url === undefined ? (await this.get()).url : canonicalServerUrl(url);
-    const stored = await this.#stored();
-    const { own } = signOutOf(server, stored);
-    if (own === null && tokenFor(server, credentialFor(stored, server), cliConfig()) === null) {
-      return `This editor holds no Mend sign-in for ${server}.`;
-    }
-    const outcome =
-      own === null || own.deviceId === null
-        ? null
-        : await revokeDevice({ url: server, token: own.token, deviceId: own.deviceId });
-    // The revoke can take seconds: the write starts from the store as it is once it answered.
-    await this.#update(async (now) => {
-      await this.context.secrets.store(
-        TOKEN_KEY,
-        serializeCredentialStore(signOutOf(server, now).next),
-      );
-    });
+    const cli = cliConfig();
+    const kept = await this.#own(server, cli);
+    const own = kept?.kind === "token" ? kept : null;
+    const holdsNone = tokenFor(server, kept, cli) === null;
+    if (kept === null && holdsNone) return `This editor holds no Mend sign-in for ${server}.`;
+    // Written before the revoke, so a sign-in another window makes while Mend answers lands after
+    // it; and over a sign-out this window already holds, since another window's sign-in may not
+    // have reached this one yet.
+    await this.#write({ kind: "signedOut", url: server });
+    if (holdsNone) return `This editor holds no Mend sign-in for ${server}.`;
     if (own === null) return signOutMessage(server, { kind: "cliFallback" });
-    return signOutMessage(
-      server,
-      outcome === null ? { kind: "pastedToken" } : { kind: "device", outcome },
-    );
+    if (own.deviceId === null) return signOutMessage(server, { kind: "pastedToken" });
+    const outcome = await revokeDevice({ url: server, token: own.token, deviceId: own.deviceId });
+    return signOutMessage(server, { kind: "device", outcome });
   }
 }

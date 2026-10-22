@@ -162,19 +162,20 @@ export class OpenRunner {
       if (first.kind === "denied") return deny(first);
       // Setting up can take a while; the session is read again after it.
       let prepared = false;
+      const needsSetup = (await effects.workspaceSsh()) === "needsSetup";
+      if (needsSetup && (await effects.sshConsent()) === "never") {
+        fire({ kind: "consent" });
+        if (!(await effects.askSshConsent())) {
+          fire({ kind: "cancelled" });
+          return { outcome: "cancelled", failure: null };
+        }
+      }
       if (!effects.remoteSshInstalled()) {
         prepared = true;
         fire({ kind: "step", step: { kind: "installingRemoteSsh" }, at: effects.now() });
         await effects.installRemoteSsh();
       }
-      if ((await effects.workspaceSsh()) === "needsSetup") {
-        if ((await effects.sshConsent()) === "never") {
-          fire({ kind: "consent" });
-          if (!(await effects.askSshConsent())) {
-            fire({ kind: "cancelled" });
-            return { outcome: "cancelled", failure: null };
-          }
-        }
+      if (needsSetup) {
         fire({ kind: "step", step: { kind: "settingUpWorkspaceSsh" }, at: effects.now() });
         prepared = true;
         action = "Set up";

@@ -275,10 +275,17 @@ export const finishBrowserSignIn = async (
  */
 export const browserSignIn = async (base: string, deps: SignInDeps): Promise<SignedIn | null> => {
   const now = deps.now ?? Date.now;
-  const started = await post(deps, `${base}/api/cli/auth`, {
-    name: deps.deviceName,
-    client: "vscode",
-  });
+  let started: Awaited<ReturnType<typeof post>>;
+  try {
+    started = await post(deps, `${base}/api/cli/auth`, {
+      name: deps.deviceName,
+      client: "vscode",
+    });
+  } catch (cause) {
+    if (deps.cancelled()) return null;
+    throw cause;
+  }
+  if (deps.cancelled()) return null;
   if (started.status === 429) {
     throw new SignInError(
       `Mend asked for a pause: try again in ${retryAfterMs(started.json) / 1000}s.`,
@@ -309,6 +316,7 @@ export const browserSignIn = async (base: string, deps: SignInDeps): Promise<Sig
     try {
       poll = await post(deps, `${base}/api/cli/auth/token`, { deviceCode: request.deviceCode });
     } catch (cause) {
+      if (deps.cancelled()) return null;
       if (!(cause instanceof Unanswered) || unanswered) throw cause;
       unanswered = true;
       continue;

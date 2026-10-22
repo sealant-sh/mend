@@ -77,23 +77,30 @@ export const rowCapability = (facts: {
 };
 
 /**
- * Whether Answer lets `viewer` answer the session's wait (rule 8), by how its agent asks. A
- * terminal agent asks in its terminal, which only its owner types in, even while control is shared
- * (`canTypeInTerminal`), and Answer attaches it only where the workspace's launcher gate admits
- * her. A conversation's request is answered as the server allows: by anyone who may steer the
- * session, and only by the person its asking process runs as when it runs as someone. Mend not
- * knowing who she is answers nothing.
+ * Answer attaches the agent over Mend's own sockets, not Remote-SSH, so who launched the workspace
+ * does not matter: a terminal agent is its owner's to type in, a conversation anyone's who may
+ * steer the session.
  */
+export const answerAdmits = (
+  session: SteeringFacts,
+  viewer: string,
+  via: WaitFact["via"],
+): boolean => (via === "terminal" ? canTypeInTerminal(session, viewer) : maySteer(session, viewer));
+
+export const answerRefusedLine = (via: WaitFact["via"], ownerName: string | null): string => {
+  if (ownerName === null) return "this session has no owner · no one steers it · no agent attached";
+  return via === "terminal"
+    ? `${ownerName}'s session runs in a terminal · only ${ownerName} types in it; they can continue it as a conversation · no agent attached`
+    : `${ownerName}'s session · only ${ownerName} steers it while shared control is off · no agent attached`;
+};
+
 export const mayAnswer = (
-  session: SteeringFacts & Pick<Session, "workspaceLauncherUserId">,
+  session: SteeringFacts,
   viewer: string | null,
   wait: WaitFact,
 ): boolean => {
-  if (viewer === null) return false;
-  if (wait.via === "conversation")
-    return maySteer(session, viewer) && (wait.answerer === null || wait.answerer === viewer);
-  const launcher = session.workspaceLauncherUserId;
-  return canTypeInTerminal(session, viewer) && (launcher === null || launcher === viewer);
+  if (viewer === null || !answerAdmits(session, viewer, wait.via)) return false;
+  return wait.via === "terminal" || wait.answerer === null || wait.answerer === viewer;
 };
 
 /**

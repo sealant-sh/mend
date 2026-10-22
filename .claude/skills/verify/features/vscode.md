@@ -35,17 +35,18 @@ logs, and a video of the display. The flows below follow the stories in
   project exists; a workspace window shows its own session as a row like any other (its name, its
   line beside it), on top even while it waits, and one line, `<n> other sessions · <n> needs you`.
   Rows read `<word> · <fact>`. The Mend icon's badge counts `Needs you`: a wait Mend observed that
-  Answer lets her answer (a terminal agent's only for its owner, where its workspace's launcher is
-  her; a conversation's for anyone who may steer it). Someone else's waiting terminal agent reads
-  `waiting · <name>'s session` outside it. The status bar reads `Mend · 1 needs you · 2 finished`,
-  or `● <session> · <word>` in a workspace window. One window of this VS Code toasts a wait
-  (`<session> is waiting · <fact>` [Answer]), and only a focused one toasts a finished session
-  (`<session> finished · <fact>` [Review] [Open]); neither toasts a session the window shows (its
-  own, one selected in the view, or one whose agent tab is the active terminal). A sign-in Mend
-  refuses (401) empties the view and toasts the server's words, `Signed out — sign in again.`
-  [Connect to server] once.
+  Answer lets her answer (a terminal agent's only for its owner, whoever launched its workspace,
+  since Answer attaches it over Mend and not Remote-SSH; a conversation's for anyone who may steer
+  it). Someone else's waiting terminal agent reads `waiting · <name>'s session` outside it. The
+  status bar reads `Mend · 1 needs you · 2 finished`, or `● <session> · <word>` in a workspace
+  window. One window of this VS Code toasts a wait (`<session> is waiting · <fact>` [Answer]), and
+  only a focused one toasts a finished session (`<session> finished · <fact>` [Review] [Open]);
+  neither toasts a session the window shows (its own, one selected in the view, or one whose agent
+  tab is the active terminal). A sign-in Mend refuses (401) empties the view and toasts the server's
+  words, `Signed out — sign in again.` [Connect to server] once.
 - `vscode-answer` is `Mend: Answer` on a waiting row or toast: the agent's terminal attaches in this
-  window's panel, and no window opens.
+  window's panel, and no window opens. Her own terminal agent attaches so in a workspace someone
+  else launched.
 - `vscode-adopt`: with no project yet, the view's message `Adopt <repo> from <origin>` over one row,
   **Adopt**, adopts the window's repository in one click; a window with no repository shows the
   welcome `Nothing adopted yet.` [Adopt a repository…], one input for a clone URL. The project takes
@@ -161,7 +162,8 @@ module whose default export is `async (helpers) => {}`. The recipes:
   `up --no-remote-ssh`.
 - `recipes/vscode-first-run.mjs` drives story h. Which half runs is the world's: from
   `up --signed-out --no-ssh-setup --no-remote-ssh`, Connect through Sign Out; from
-  `up --cli-only --no-ssh-setup`, Use it, a skipped Set up and Open's one question.
+  `up --cli-only --no-ssh-setup --no-remote-ssh`, Use it, a skipped Set up, Connect cancelled while
+  its request is out, and Open's one question cancelled, then answered.
 - `recipes/vscode-open-as-built.mjs` drives #1080's extension as built: a session started from the
   palette, its row double-clicked with what that shows and opens counted, one open through to the
   workspace window's files and terminal. It needs the `Mend: Open in VS Code` manifest. Run `trunk2`
@@ -430,6 +432,21 @@ the row takes the job's name.
     `ans5a`; flow 5 now holds Enter on an empty answer. On the extension before flow 5 (`ansr2`,
     `ansr3`) step 2 fails as it should: the row reads
     `add-rate-limit · waiting · Bash · since <hh:mm>`.
+  - Her own terminal agent in a workspace Ana launched: `recipes/vscode-answer-launcher.mjs`, on a
+    server with terminal-agent waits (G4) newer than `0.36.0-next.1033`, an image built from main
+    with `up --build`. Setup: Claude connected; Ana joins, the project is shared, her claude
+    connected; Ana launches `ana-holds-workspace-<stamp>`, a claude terminal agent in a fresh
+    worktree, so `workspaceLauncherUserId` is hers; Dana starts `dana-in-anas-workspace-<stamp>` in
+    that worktree (`POST /worktrees/:id/sessions`) in ask mode, and it joins Ana's workspace. A
+    shell beside Dana's session finds her claude's `--settings` in `/proc` and the hook stand-in
+    (`scripts/fixtures/claude-standin.mjs`) replays `PermissionRequest` (Bash) through those hooks
+    (`SessionStart` first when her row records no `--session-id`); the session reads
+    `waiting · permission · Bash`. Dana's view lists it in `Needs you` with Answer and the badge
+    counts it. Answer (the row's, else the palette's) attaches `claude · <session>` in Dana's window
+    as the active tab, which shows claude's own text (`shift+tab`) and none of the attach errors
+    `TtyAttachment` writes (`Mend refused this terminal`, `reattaching`, `connection lost`, …); no
+    window opens, and no `no agent attached` line shows. The tab's text is kept as
+    `<session>-answered-terminal.txt`.
   - `GET /sessions/:id/requests` filters only on `?pending=1` (`query.pending === "1"` in
     `apps/api/src/routes/workbench.ts`); `?pending=true` returned all 8 of a session's resolved
     requests in `ansr1`.
@@ -806,13 +823,23 @@ the row takes the job's name.
       one toast is the sign-out's own,
       `Signed out of Mend at <url>, and revoked this editor's device.`: no
       `Signed out — sign in again.` after it.
-  - From `up --cli-only --no-ssh-setup`:
+  - From `up --cli-only --no-ssh-setup --no-remote-ssh`:
     - h1 variant: the view's message reads
       `Mend at <host:port> · signed in as <email> (from the Mend CLI)` over one row, `Use it`.
       `treeItem("Use it").click()`: no input, no dialog, no toast, `browserOpened()` unchanged,
       `mend.serverUrl` written; the next step is Set up, and the account is in the Accounts menu.
     - Edge, skipped: `welcomeAction("Skip for now").click()` shows the sessions tree; no Host block.
       `Running` reads `nothing` and is drawn expanded.
+    - Edge, Connect cancelled while its request is out: a loopback proxy in the recipe holds
+      `POST /api/cli/auth` until the recipe releases it. `palette("Mend: Connect to server")` with
+      the proxy's URL, then `Cancel` on `Asking <proxy host> for a sign-in code` while the request
+      is held; then the proxy answers. No toast but that `Asking` one and no dialog from the Connect
+      on, no `Mend sign-in` status item, no browser page, no `Approve in the browser` progress, and
+      `mend.serverUrl` still the server's.
+    - Edge, Open's consent cancelled: Open in New Window on `fresh worktree`, then `Cancel` on the
+      modal `Set up workspace SSH to open sessions (one Host block in ~/.ssh/config)`. Remote-SSH is
+      not in the extensions directory before the open, while it asks, or after Cancel; no window
+      opens and `~/.ssh/config` holds no Mend `Host` block.
     - Then Open in New Window on `fresh worktree`: the modal
       `Set up workspace SSH to open sessions (one Host block in ~/.ssh/config)` [Set up] shows once;
       `Set up` opens one window, and `~/.ssh/config` holds one Mend `Host` block.
