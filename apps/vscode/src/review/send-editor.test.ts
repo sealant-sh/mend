@@ -28,6 +28,8 @@ const ui = vi.hoisted(() => ({
   commands: new Map<string, (...args: ReadonlyArray<unknown>) => unknown>(),
   providers: new Array<vscode.FileSystemProvider>(),
   documents: new Array<OpenDocument>(),
+  /** The text of every untitled editor opened. */
+  untitled: new Array<string>(),
   providerOfThisWindow(): vscode.FileSystemProvider | undefined {
     return this.providers.at(-1);
   },
@@ -85,7 +87,15 @@ vi.mock("vscode", async () => {
         ui.providers.push(provider);
         return { dispose: () => undefined };
       },
-      openTextDocument: async (uri: vscode.Uri) => {
+      openTextDocument: async (target: vscode.Uri | { readonly content: string }) => {
+        if ("content" in target) {
+          ui.untitled.push(target.content);
+          return { getText: () => target.content };
+        }
+        const uri = target;
+        // VS Code hands back the document it has for a URI, loaded or not.
+        const loaded = ui.documents.find((open) => open.uri.toString() === uri.toString());
+        if (loaded !== undefined) return loaded;
         const provider = ui.providerOfThisWindow();
         if (provider === undefined) throw new Error("no provider for the review scheme");
         const opened: OpenDocument = {
@@ -152,10 +162,12 @@ const windowOn = async (files: KeptFiles, mend: FakeMend) => {
   };
 };
 
+/** Send review, and the review document it shows. */
 const sendReview = async (): Promise<OpenDocument> => {
   await ui.commands.get("mend.change.sendReview")?.();
-  const opened = ui.documents.at(-1);
-  if (opened === undefined) throw new Error("Send review opened no document");
+  const shown: unknown = vi.mocked(vscode.window.showTextDocument).mock.lastCall?.[0];
+  const opened = ui.documents.find((document) => document === shown);
+  if (opened === undefined) throw new Error("Send review showed no review document");
   return opened;
 };
 
@@ -170,6 +182,51 @@ beforeEach(() => {
   ui.commands.clear();
   ui.providers.length = 0;
   ui.documents.length = 0;
+  ui.untitled.length = 0;
+});
+
+describe("Send review, chosen again", () => {
+  it("reopens the session's one review, though no editor of it is loaded", async () => {
+    const window = await windowOn(memoryFiles(), mendWithOpen());
+    const first = await sendReview();
+    // A tab VS Code restored and has not loaded yet, or one she closed: no document is open.
+    ui.documents.length = 0;
+    const again = await sendReview();
+    expect(again.uri.toString()).toBe(first.uri.toString());
+    window.close();
+  });
+
+  it("never drops a review she saved, however often another window chooses Send review", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    const first = await windowOn(files, mend);
+    const opened = await sendReview();
+    await first.provider.writeFile(opened.uri, encoded("words saved in the first window"), SAVE);
+    const second = await windowOn(files, mend);
+    for (let times = 0; times < 6; times += 1) {
+      ui.documents.length = 0;
+      await sendReview();
+    }
+    expect(decoded(await first.provider.readFile(opened.uri))).toBe(
+      "words saved in the first window",
+    );
+    first.close();
+    second.close();
+  });
+
+  it("composes anew once her comments changed, and first opens the text she saved", async () => {
+    const mend = mendWithOpen();
+    const window = await windowOn(memoryFiles(), mend);
+    const opened = await sendReview();
+    await window.provider.writeFile(opened.uri, encoded("her saved words"), SAVE);
+    mend.serverComments = [...mend.serverComments, comment({ id: "c2", line: 13 })];
+    window.store.reread();
+    await vi.waitFor(() => expect(window.store.compose()?.open).toEqual(["c1", "c2"]), SETTLE);
+    const fresh = await sendReview();
+    expect(fresh.uri.toString()).not.toBe(opened.uri.toString());
+    expect(ui.untitled).toEqual(["her saved words"]);
+    window.close();
+  });
 });
 
 describe("a review she saved, when VS Code reloads", () => {
