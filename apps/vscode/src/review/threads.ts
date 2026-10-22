@@ -171,14 +171,17 @@ export const threadsOf = (
   read: ChangeRead,
   review: SessionReview,
   you: string,
+  /** Her words VS Code could not keep yet: pending comments marked not kept. */
+  held: ReadonlyArray<PendingComment> = [],
 ): ReadonlyArray<ThreadView> => {
   const accepted = acceptedDrafts(review);
   // A comment in a review she sent reads where that follow-up is; a refused one, as Mend holds it.
   const sentIn = new Map<string, SendRecord>();
   const acceptedIn = new Set<string>();
-  const threads: Array<ThreadView> = review.pending.map((comment) =>
-    pendingThread(read, comment, you),
-  );
+  const threads: Array<ThreadView> = [
+    ...review.pending.map((comment) => pendingThread(read, comment, you)),
+    ...held.map((comment) => ({ ...pendingThread(read, comment, you), label: "not kept" })),
+  ];
   for (const record of review.sends) {
     if (record.phase.kind === "refused") continue;
     for (const item of record.items) {

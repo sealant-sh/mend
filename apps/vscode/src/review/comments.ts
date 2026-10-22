@@ -162,7 +162,10 @@ export class ReviewComments implements vscode.Disposable {
   /** Draws every thread the store's read holds; a thread whose document moved is drawn anew. */
   #draw(): void {
     const read = this.store.ready();
-    const views = read === null ? [] : threadsOf(read, this.store.review(), this.store.you());
+    const views =
+      read === null
+        ? []
+        : threadsOf(read, this.store.review(), this.store.you(), this.store.held());
     const wanted = new Map(views.map((view) => [view.key, view]));
     for (const [key, drawn] of this.#threads) {
       const next = wanted.get(key);
@@ -234,18 +237,17 @@ export class ReviewComments implements vscode.Disposable {
     reply: vscode.CommentReply,
     act: (draftId: string, text: string) => Promise<Keeping>,
   ): Promise<void> {
-    const { thread } = reply;
-    const held = thread.comments.find((comment) => comment instanceof UnkeptComment);
-    const text = reply.text.trim() === "" && held !== undefined ? held.body : reply.text;
+    const { thread, text } = reply;
     const drawn = [...this.#threads.values()].find((candidate) => candidate.thread === thread);
     const draftId = drawn?.view.commentId ?? null;
     if (draftId === null) {
       this.#hold(thread, text, DRAFT_NOT_SHOWN);
       return;
     }
+    // Words the store could not keep, it holds and draws itself: the draft's thread may go.
     await this.#once(thread, async () => {
       const kept = await act(draftId, text);
-      if (!kept.kept) this.#hold(thread, text, kept.words);
+      if (!kept.kept) void vscode.window.showWarningMessage(kept.words);
     });
   }
 
@@ -272,11 +274,10 @@ export class ReviewComments implements vscode.Disposable {
     const body = typeof comment.body === "string" ? comment.body : comment.body.value;
     const kept = await this.store.edit(comment.thread.pendingId, body);
     const drawn = this.#threads.get(comment.thread.key);
-    if (kept.kept) {
-      if (drawn !== undefined) drawn.thread.comments = [shown(drawn.view)];
-      return;
-    }
-    if (drawn !== undefined) drawn.thread.comments = [comment];
-    void vscode.window.showWarningMessage(kept.words);
+    if (!kept.kept) void vscode.window.showWarningMessage(kept.words);
+    if (drawn === undefined) return;
+    // Still her pending comment: the edit was not written, so it stays in front of her.
+    const unwritten = !kept.kept && drawn.view.kind === comment.thread.kind;
+    drawn.thread.comments = [unwritten ? comment : shown(drawn.view)];
   }
 }
