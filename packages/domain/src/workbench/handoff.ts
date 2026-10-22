@@ -274,7 +274,12 @@ export const readTermsAnswer = (answer: WireAnswer): TermsAnswer => {
   if (answer.status === 200) {
     const bundleBytes = fieldOf(answer.body, "bundleBytes");
     const fileBytes = fieldOf(answer.body, "fileBytes");
-    return typeof bundleBytes === "number" && typeof fileBytes === "number"
+    return typeof bundleBytes === "number" &&
+      Number.isSafeInteger(bundleBytes) &&
+      bundleBytes > 0 &&
+      typeof fileBytes === "number" &&
+      Number.isSafeInteger(fileBytes) &&
+      fileBytes > 0
       ? { _tag: "terms", bundleBytes, fileBytes }
       : { _tag: "unreadable" };
   }
@@ -296,6 +301,10 @@ export const readReceiveAnswer = (answer: WireAnswer): ReceiveAnswer => {
 };
 
 export const takesHandoffs = (probe: WireAnswer): boolean | null => {
-  if (probe.status === 404) return !isUntagged(probe.body);
-  return probe.status === 200 ? true : null;
+  if (probe.status === 404) {
+    if (isUntagged(probe.body)) return false;
+    return fieldOf(probe.body, "_tag") === "NotFound" ? true : null;
+  }
+  if (probe.status === 422 && fieldOf(probe.body, "_tag") === "HandoffRefused") return true;
+  return readTermsAnswer(probe)._tag === "terms" ? true : null;
 };
