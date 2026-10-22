@@ -100,7 +100,6 @@ export interface NewComment {
   readonly at: ChangeAddress;
   readonly line: number;
   readonly endLine: number;
-  readonly lineText: string;
   readonly body: string;
 }
 
@@ -456,7 +455,6 @@ export class ReviewStore implements vscode.Disposable {
       path: comment.at.path,
       line: comment.line,
       endLine: comment.endLine,
-      lineText: comment.lineText,
       body,
       createdAt: new Date().toISOString(),
       origin: { kind: "own" },
@@ -1385,7 +1383,6 @@ const onDraft = (
     path: draft.file,
     line,
     endLine: line === null ? null : Math.max(line, draft.endLine ?? line),
-    lineText: "",
     body,
     createdAt: new Date().toISOString(),
     origin,

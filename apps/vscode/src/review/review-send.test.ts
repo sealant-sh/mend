@@ -110,7 +110,6 @@ const onLine = (line: number, body: string): NewComment => ({
   },
   line,
   endLine: line,
-  lineText: "",
   body,
 });
 

@@ -97,7 +97,6 @@ describe("opening a pending comment's row", () => {
       },
       line: 3,
       endLine: 3,
-      lineText: "",
       body: "Use the shared limiter",
     });
     const comments = view

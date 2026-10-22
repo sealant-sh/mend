@@ -50,8 +50,6 @@ export interface PendingComment {
   /** Lines from 1; null for a comment about its whole file, or the change as a whole. */
   readonly line: number | null;
   readonly endLine: number | null;
-  /** The first commented line as it read: what carries the comment to a newer slice. */
-  readonly lineText: string;
   readonly body: string;
   readonly createdAt: string;
   readonly origin: PendingOrigin;
@@ -162,7 +160,6 @@ const parsePending = (value: unknown): ReadonlyArray<PendingComment> => {
   const path = value["path"] === null ? null : text(value, "path");
   const line = nullableWhole(value, "line");
   const endLine = nullableWhole(value, "endLine");
-  const lineText = text(value, "lineText");
   const body = text(value, "body");
   const createdAt = text(value, "createdAt");
   const origin = body === null ? null : parseOrigin(value["origin"], body);
@@ -175,13 +172,12 @@ const parsePending = (value: unknown): ReadonlyArray<PendingComment> => {
     line === undefined ||
     endLine === undefined ||
     (line === null) !== (endLine === null) ||
-    lineText === null ||
     body === null ||
     createdAt === null ||
     origin === null
   )
     return [];
-  return [{ id, sliceId, headId, path, line, endLine, lineText, body, createdAt, origin, anchor }];
+  return [{ id, sliceId, headId, path, line, endLine, body, createdAt, origin, anchor }];
 };
 
 const nullableText = (value: Record<string, unknown>, field: string): string | null | undefined => {

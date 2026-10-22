@@ -213,18 +213,10 @@ export class ReviewComments implements vscode.Disposable {
       this.#hold(thread, body, "This document takes no comments, so your comment is not kept.");
       return;
     }
-    const document = vscode.workspace.textDocuments.find(
-      (candidate) => candidate.uri.toString() === thread.uri.toString(),
-    );
-    const lineText =
-      document !== undefined && range.start.line < document.lineCount
-        ? document.lineAt(range.start.line).text
-        : "";
     const kept = await this.store.comment({
       at: address,
       line: range.start.line + 1,
       endLine: range.end.line + 1,
-      lineText,
       body,
     });
     if (kept.kept) thread.dispose();

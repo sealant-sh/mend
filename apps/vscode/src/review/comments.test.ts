@@ -272,7 +272,6 @@ describe("saving an edit to a pending comment", () => {
       },
       line: 3,
       endLine: 3,
-      lineText: "",
       body: "Use the shared limiter",
     });
     await editor.reloadReview();
@@ -336,7 +335,6 @@ describe("saving an edit to a pending comment", () => {
       },
       line: 3,
       endLine: 3,
-      lineText: "",
       body: "Use the shared limiter",
     });
     await editor.reloadReview();
@@ -396,7 +394,6 @@ describe("an edit VS Code could not write", () => {
       },
       line: 3,
       endLine: 3,
-      lineText: "",
       body: "Use the shared limiter",
     });
     await editor.reloadReview();
