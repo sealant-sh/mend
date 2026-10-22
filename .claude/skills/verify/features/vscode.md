@@ -716,6 +716,28 @@ the row takes the job's name.
       `The editor could not be opened because the file was not found.`, **Send review** composes the
       review again without her line, and that is what Mend holds. Fixed: the restored tab reads her
       line, and the follow-up's instruction ends with it.
+  - Delivery that goes out wrong: `recipes/vscode-review-delivery.mjs`, three claude sessions
+    (`<prefix>-empty`, `-repin`, `-exited`; `MEND_REVIEW_SESSION` names the prefix). Steps under
+    test are kept failed and the last step fails the run, as above. It reads what Mend holds through
+    `followUps` and `reviewSlices` (psql: each follow-up's slice, checkpoint ordinals, comment ids
+    and instruction; each slice's checkpoints). Observed in run `i10a`, 2026-10-22, on `0236c3ef1`
+    (`unfixed-d1`) and `62b52c47d` (`fixed-d1`):
+    - The whole review cleared (Ctrl+A, Delete), then **Send to session**. Unfixed: the toast
+      `Mend could not deliver the review: Follow-up instructions must contain between 1 and 100000 characters.`
+      (deliver answered 422), the editor closed, her comment posted (`1 open`), no follow-up. Fixed:
+      `This review is empty, so nothing was sent. Write what the agent should do first. Your text stays in this editor.`,
+      the editor open, `1 pending`, no follow-up and no comment on Mend.
+    - **Send review** on the pinned slice (`Slice: master → checkpoint 4`), the editor left open,
+      the agent's next round (the shell, a mark), **Review the newer change** (slices `0→4`, `0→6`),
+      then **Send to session** from the old editor. Unfixed: the follow-up records the `0→6` slice
+      while its instruction names checkpoint 4. Fixed: it records the `0→4` slice she composed on.
+    - A review pasted into claude (`follow-up pending · pasted into claude's terminal`), the session
+      stopped (`pasted into an earlier claude`), one more comment. Unfixed: the section offers
+      **Retry delivery** and no **Send review**. Fixed: **Send review**, whose review lists both
+      comments; the earlier follow-up reads `superseded`, the new one holds both comment ids,
+      `delivering`, and the section `2 sent`. The fake login reads as needing reconnecting soon
+      after a stop, so the recipe runs `mend connect claude` right before that Send; without it,
+      Mend refused the launch (`delivery_failed`, run `fixed-d1-try1`).
   - Each run starts three sessions under new names (`MEND_REVIEW_SESSION` names the first). A world
     holds 24 unsettled sessions per account (`429 BudgetExceeded accountLiveSessions`): stop the
     earlier runs' sessions first, then wait out `120 launches per minute` if the stops tripped it.
