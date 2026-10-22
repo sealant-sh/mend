@@ -241,6 +241,24 @@ describe("Send to session", () => {
     );
     window.close();
   });
+
+  it("never discards words she types while VS Code closes the editor", async () => {
+    const window = await windowOn(memoryFiles(), mendWithOpen());
+    const opened = await sendReview();
+    vi.mocked(vscode.window.showTextDocument).mockImplementationOnce(async () => {
+      opened.text = `${opened.text}\nTyped as it closed.`;
+      opened.version += 1;
+      opened.isDirty = true;
+      return undefined;
+    });
+    await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
+    vi.mocked(vscode.window.showTextDocument).mockImplementation(async () => undefined);
+    expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+      "workbench.action.revertAndCloseActiveEditor",
+    );
+    expect(opened.text).toContain("Typed as it closed.");
+    window.close();
+  });
 });
 
 describe("Send review, chosen again", () => {
