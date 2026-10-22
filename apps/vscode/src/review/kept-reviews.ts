@@ -7,7 +7,7 @@ import { EMPTY_REVIEW, parseSessionReview, type SessionReview } from "./pending.
 /** Whose review it is: one person, signed in to one server, on one session. */
 export interface ReviewPlace {
   readonly url: string;
-  /** Her account on that server; `unknown` when Mend never said who she is. */
+  /** Her account on that server, as Mend names it: a sign-in Mend cannot name has no place. */
   readonly viewer: string;
   readonly sessionId: string;
 }

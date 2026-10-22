@@ -212,6 +212,9 @@ const draftGone = (reply: string): Keeping => ({
   words: `${DRAFT_NOT_SHOWN}${wordsStay(reply)}`,
 });
 
+const UNNAMED =
+  "Mend could not say which account VS Code is signed in as, so VS Code keeps nothing for this session until it can";
+
 const HELD =
   " Your words stay in this window, marked not kept, and VS Code keeps them when this window next reads this session's review.";
 
@@ -237,7 +240,10 @@ export class ReviewStore implements vscode.Disposable {
   #review: SessionReview = EMPTY_REVIEW;
   #held: ReadonlyArray<{ readonly place: ReviewPlace; readonly words: HeldWords }> = [];
   readonly #drafts = new Map<string, SeenDraft>();
-  /** Where `#review` is kept: her account on the server, and the session. */
+  /**
+   * Where `#review` is kept: her account on the server, and the session. Null until the session is
+   * read, and while Mend cannot name the account VS Code is signed in as: nothing is kept then.
+   */
   #place: ReviewPlace | null = null;
   /** The revision of `#review` as kept: a read that began before a later write shows nothing. */
   #rev = -1;
@@ -511,7 +517,8 @@ export class ReviewStore implements vscode.Disposable {
     place: ReviewPlace | null = this.#place,
   ): Promise<Keeping> {
     const seen = this.#drafts.get(draftId);
-    if (seen === undefined || place === null) return draftGone(reply);
+    if (seen === undefined) return draftGone(reply);
+    if (place === null) return this.#unkeptDraft(reply);
     const { draft } = seen;
     const own = onDraft(seen, reply.trim(), { kind: "own" });
     if (draft.state !== "draft") return this.#keepReply(place, own);
@@ -541,7 +548,8 @@ export class ReviewStore implements vscode.Disposable {
     place: ReviewPlace | null = this.#place,
   ): Promise<Keeping> {
     const seen = this.#drafts.get(draftId);
-    if (seen === undefined || place === null) return draftGone(reply);
+    if (seen === undefined) return draftGone(reply);
+    if (place === null) return this.#unkeptDraft(reply);
     const { draft } = seen;
     const own = onDraft(seen, reply.trim(), { kind: "own" });
     if (draft.state !== "draft") return this.#keepReply(place, own);
@@ -563,6 +571,14 @@ export class ReviewStore implements vscode.Disposable {
     }
     this.#rereadIfFollowed(place.sessionId);
     return { kept: true };
+  }
+
+  /** A draft acted on where nothing is kept: nothing is done to it, and her words stay. */
+  #unkeptDraft(reply: string): Keeping {
+    return {
+      kept: false,
+      words: `${this.#unkept()} Nothing was done to this draft.${wordsStay(reply)}`,
+    };
   }
 
   /** Her reply under a draft that is no longer one on Mend: a pending comment at its place. */
@@ -818,7 +834,7 @@ export class ReviewStore implements vscode.Disposable {
     readonly carried: boolean;
   }> {
     const place = this.#place;
-    if (place === null) throw new Error("Mend has not finished reading this session.");
+    if (place === null) throw new Error(this.#unkept());
     const { text, ...composed } = composition;
     let carried = false;
     const { document } = await this.#keepAt(place, (review) => {
@@ -985,7 +1001,7 @@ export class ReviewStore implements vscode.Disposable {
     place: ReviewPlace | null,
     update: (review: SessionReview) => SessionReview | Promise<SessionReview>,
   ): Promise<SessionReview> {
-    if (place === null) throw new Error("Mend has not finished reading this session.");
+    if (place === null) throw new Error(this.#unkept());
     let taken: ReadonlyArray<HeldWords> = [];
     let review: SessionReview;
     let rev: number;
@@ -1007,6 +1023,11 @@ export class ReviewStore implements vscode.Disposable {
     }
     this.#tell(place, review);
     return review;
+  }
+
+  /** Why nothing is kept for the followed session: it is not read yet, or its account is unnamed. */
+  #unkept(): string {
+    return this.ready() === null ? "Mend has not finished reading this session." : `${UNNAMED}.`;
   }
 
   /** Keeps the words held for `place`, if any: whether the review was written. */
@@ -1154,16 +1175,25 @@ export class ReviewStore implements vscode.Disposable {
     const { session } = followed;
     const connection = await this.sessions.connection();
     const { url } = connection;
-    // Her place is the account of the token VS Code reads with: one Mend cannot name is no one's.
+    // Her place is the account of the token VS Code reads with: one Mend cannot name is no one's,
+    // so nothing is read or kept until Mend names it.
     const [detail, viewer] = await Promise.all([
       this.sessions.sessionDetail(session.id),
       this.sessions.accountOf(connection),
     ]);
     const worktreeId = detail.session.worktreeId;
-    const place: ReviewPlace = { url, viewer: viewer ?? "unknown", sessionId: session.id };
+    const place: ReviewPlace | null =
+      viewer === null ? null : { url, viewer, sessionId: session.id };
     // Only the followed session's own read loads its comments: a read of the one followed before,
     // landing late, must not put that session's comments under this one.
-    if (this.followed()?.session.id === session.id) {
+    if (this.followed()?.session.id === session.id && place === null) {
+      if (this.#place !== null) {
+        this.#place = null;
+        this.#rev = -1;
+        this.#review = EMPTY_REVIEW;
+        this.#changed.fire();
+      }
+    } else if (this.followed()?.session.id === session.id && place !== null) {
       const kept = await this.kept.read(place);
       if (this.followed()?.session.id === session.id) {
         if (!samePlace(this.#place, place)) {

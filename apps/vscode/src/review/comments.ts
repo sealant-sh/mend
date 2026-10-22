@@ -84,7 +84,7 @@ export class ReviewComments implements vscode.Disposable {
   readonly #threads = new Map<string, { view: ThreadView; thread: vscode.CommentThread }>();
   readonly #drafts = new WeakMap<
     vscode.CommentThread,
-    { readonly draftId: string; readonly place: ReviewPlace }
+    { readonly draftId: string; readonly place: ReviewPlace | null }
   >();
   /** Threads whose Add, Accept or Dismiss is still being kept: a second click waits it out. */
   readonly #busy = new Set<vscode.CommentThread>();
@@ -196,7 +196,7 @@ export class ReviewComments implements vscode.Disposable {
       thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
       thread.comments = [shown(view)];
       const place = this.store.place();
-      if (view.kind === "draft" && view.commentId !== null && place !== null)
+      if (view.kind === "draft" && view.commentId !== null)
         this.#drafts.set(thread, { draftId: view.commentId, place });
       this.#threads.set(view.key, { view, thread });
     }
@@ -244,7 +244,7 @@ export class ReviewComments implements vscode.Disposable {
   async #onDraft(
     reply: vscode.CommentReply,
     act: (
-      draft: { readonly draftId: string; readonly place: ReviewPlace },
+      draft: { readonly draftId: string; readonly place: ReviewPlace | null },
       text: string,
     ) => Promise<Keeping>,
   ): Promise<void> {
@@ -255,10 +255,13 @@ export class ReviewComments implements vscode.Disposable {
       this.#hold(thread, text, DRAFT_NOT_SHOWN);
       return;
     }
-    // Words the store could not keep, it holds and draws itself: the draft's thread may go.
+    // Words the store could not keep, it holds and draws itself: the draft's thread may go. Where
+    // nothing is kept (Mend could not name her account), her words stay in this thread.
     await this.#once(thread, async () => {
       const kept = await act(draft, text);
-      if (!kept.kept) void vscode.window.showWarningMessage(kept.words);
+      if (kept.kept) return;
+      if (draft.place === null) this.#hold(thread, text, kept.words);
+      else void vscode.window.showWarningMessage(kept.words);
     });
   }
 
