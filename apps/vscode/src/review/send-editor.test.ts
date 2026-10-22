@@ -394,6 +394,30 @@ describe("Send review, chosen again", () => {
     window.close();
   });
 
+  it("says where her typing is when another window composed the review anew since she typed it", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    const first = await windowOn(files, mend);
+    const opened = await sendReview();
+    const sendReviewInFirst = ui.commands.get("mend.change.sendReview");
+    opened.text = "her unsaved typing";
+    opened.version += 1;
+    opened.isDirty = true;
+    mend.serverComments = [...mend.serverComments, comment({ id: "c2", line: 13 })];
+    const second = await windowOn(files, mend);
+    const composition = second.store.compose();
+    if (composition === null) throw new Error("the second window composed nothing");
+    await second.store.keepDocument(composition);
+    await sendReviewInFirst?.();
+    expect(opened.text).toBe("her unsaved typing");
+    expect(opened.isDirty).toBe(true);
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringMatching(/does not hold that text\. Your text stays in its editor/),
+    );
+    first.close();
+    second.close();
+  });
+
   it("carries what she saved in a review composed anew, in place of the text it carried", async () => {
     const mend = mendWithOpen();
     const window = await windowOn(memoryFiles(), mend);
