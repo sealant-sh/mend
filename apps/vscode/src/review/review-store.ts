@@ -62,7 +62,6 @@ import {
 } from "./review-wire.js";
 import {
   errorWords,
-  toldOf,
   liveAgent,
   SendDriver,
   type FailOptions,
@@ -70,6 +69,7 @@ import {
   type RetryTarget,
   type SendContext,
 } from "./send-driver.js";
+import { toldOf } from "./send-words.js";
 import {
   checkpointName,
   lastReviewHead,

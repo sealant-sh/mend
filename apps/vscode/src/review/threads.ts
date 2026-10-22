@@ -1,6 +1,6 @@
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
-import { commentLabel, mayRetry, posts, type LiveAgent, type SendRecord } from "./delivery.js";
+import { mayRetry, posts, type LiveAgent, type SendRecord } from "./delivery.js";
 import {
   acceptedDrafts,
   type HeldWords,
@@ -8,6 +8,7 @@ import {
   type SessionReview,
 } from "./pending.js";
 import type { CommentAnchor, RecordLink, ServerComment } from "./review-wire.js";
+import { commentLabel } from "./send-words.js";
 
 /**
  * Every comment of a change as a thread in the editor (story d, steps 3, 4 and 7), decided without

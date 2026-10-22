@@ -7,7 +7,6 @@ import { commentTarget, postedComment } from "./comment-target.js";
 import {
   admits,
   commentIds,
-  commentLabel,
   needs,
   mayRetry,
   nextAction,
@@ -15,7 +14,6 @@ import {
   posts,
   step,
   stepReview,
-  stopWords,
   type DriveFailure,
   type FollowUpRead,
   type LiveAgent,
@@ -28,6 +26,7 @@ import type { KeptReviews, ReviewPlace } from "./kept-reviews.js";
 import type { SessionReview } from "./pending.js";
 import type { ReviewClient } from "./review-client.js";
 import type { ChangeFile } from "./review-wire.js";
+import { commentLabel, stopWords } from "./send-words.js";
 
 export interface RetryTarget {
   readonly place: ReviewPlace;
@@ -63,46 +62,6 @@ export interface DriverHost {
   fail(what: string, words: string, options?: FailOptions): void;
   settled(sessionId: string): void;
 }
-
-/** A toast a kept send says: the same in every window, so the one she looks at shows it once. */
-export interface Told {
-  readonly what: string;
-  readonly words: string;
-  readonly options: FailOptions;
-}
-
-/**
- * What a kept send leaves her to know: its failed delivery, named by when it failed, and every
- * notice a step kept with it, named by its kind and when it was kept.
- */
-export const toldOf = (place: ReviewPlace, record: SendRecord): ReadonlyArray<Told> => {
-  const retry = { place, key: record.key };
-  const failed: ReadonlyArray<Told> =
-    record.phase.kind === "failed"
-      ? [
-          {
-            what: `delivery:${record.key}`,
-            words: `Mend could not deliver the review: ${record.phase.words}`,
-            options: { retry, at: record.phase.at },
-          },
-        ]
-      : [];
-  return [
-    ...failed,
-    ...record.notices.map(
-      (notice): Told => ({
-        what: `${notice.kind}:${record.key}`,
-        words: notice.words,
-        options: {
-          at: notice.at,
-          tone: notice.tone,
-          retry: notice.retry ? retry : null,
-          ...(notice.text ? { text: record.instruction } : {}),
-        },
-      }),
-    ),
-  ];
-};
 
 /** Whether a new record was kept and is now driven, and why not. */
 export type Recorded =

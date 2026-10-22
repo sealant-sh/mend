@@ -9,13 +9,13 @@ import { fake, window as vscodeWindow } from "../test-vscode.js";
 import { ToastClaims } from "../toast-claims.js";
 import type { SessionDetail, SessionProcess } from "../types.js";
 import { pasteIntoAgent, type Pasted } from "./agent-paste.js";
-import { DRAFT_GONE } from "./delivery.js";
 import { textToSend } from "./instruction.js";
 import { DRIVE_STALE_MS, KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore, type NewComment, type ReviewFailure } from "./review-store.js";
 import { reviewToast } from "./review-toast.js";
 import type { ReadPass } from "./review-wire.js";
+import { DRAFT_GONE } from "./send-words.js";
 import {
   comment,
   FakeMend,

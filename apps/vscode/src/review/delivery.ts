@@ -8,6 +8,17 @@ import {
   type PendingComment,
   type SessionReview,
 } from "./pending.js";
+import {
+  DRAFT_GONE,
+  DRAFT_GONE_NOTICE,
+  draftLeftNotice,
+  NOT_LISTED,
+  pasteFailedNotice,
+  refusedNotice,
+  skippedNotice,
+  stopClause,
+  stoppedPasteNotice,
+} from "./send-words.js";
 
 /**
  * Sending a review back (story d, step 6), as a pure state machine. Her pending comments move into
@@ -103,28 +114,6 @@ export type StopReason =
   | { readonly kind: "switched" }
   | { readonly kind: "signed-out" }
   | { readonly kind: "error"; readonly words: string };
-
-/** What VS Code did when a drive stopped. */
-export const stopWords = (why: StopReason): string => {
-  switch (why.kind) {
-    case "closed":
-      return "VS Code closed";
-    case "switched":
-      return "VS Code connected to another Mend server or account";
-    case "signed-out":
-      return "VS Code was signed out of Mend";
-    case "error":
-      return why.words;
-  }
-};
-
-/** What VS Code did when a drive stopped, before `when`; a failure says itself in its own words. */
-const stopClause = (why: StopReason, when: string): string =>
-  why.kind === "error" ? why.words : `${stopWords(why)} ${when}`;
-
-/** A paste that may have reached the agent's input, in part or whole, and why it stopped. */
-export const cutShortWords = (why: string, agent: string): string =>
-  `${why}, so some or all of it may be in ${agent}'s input. Mend holds the follow-up pending: check ${agent}'s input before Retry delivery pastes it again.`;
 
 export interface SendSlice {
   readonly id: string;
@@ -384,11 +373,8 @@ const answeredPhase = (
   }
 };
 
-const NOT_LISTED =
-  "Mend no longer lists this follow-up, and it does not read its comments as sent to the session";
-
 /** What a step leaves her to know, before it is stamped with when. */
-type Notice = Omit<SendNotice, "at">;
+export type Notice = Omit<SendNotice, "at">;
 
 /** A send after an event, and what the change it made leaves her to know, if anything. */
 interface Stepped {
@@ -403,29 +389,6 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
   const { record: next, notice } = transition(record, event, now);
   if (notice === null) return next;
   return { ...next, notices: [...next.notices, { ...notice, at: now }].slice(-KEPT_NOTICES) };
-};
-
-/** A paste that went nowhere, and why. */
-const notPastedWords = (why: "agent-gone" | "not-attached", agent: string): string =>
-  why === "agent-gone"
-    ? `${agent} exited before the review was pasted, so nothing was pasted. Mend holds the follow-up pending: Retry delivery sends it to the stopped session.`
-    : `VS Code could not attach ${agent}'s terminal here, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it again.`;
-
-/** A paste that failed: she checks the terminal and retries. */
-const pasteFailed = (words: string): Notice => ({
-  kind: "paste",
-  words,
-  tone: "error",
-  retry: true,
-  text: false,
-});
-
-/** What a review whose drive stopped before or during its paste into `agent` reads. */
-const stoppedPasteWords = (agent: string, why: StopReason, mayHaveLanded: boolean): string => {
-  const terminal = `the review into ${agent}'s terminal`;
-  return mayHaveLanded
-    ? cutShortWords(stopClause(why, `while it pasted ${terminal}`), agent)
-    : `${stopClause(why, `before it pasted ${terminal}`)}, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it.`;
 };
 
 const transition = (record: SendRecord, event: SendEvent, now: string): Stepped => {
@@ -471,16 +434,7 @@ const transition = (record: SendRecord, event: SendEvent, now: string): Stepped 
       const left = handedOver(next) ? draftsLeft(next) : [];
       return {
         record: next,
-        notice:
-          left.length === 0
-            ? null
-            : {
-                kind: "draft-left",
-                words: `Mend sent the review. The Mend draft your words replace is still on Mend, because VS Code could not dismiss it: ${left.join(" ")}`,
-                tone: "warning",
-                retry: false,
-                text: false,
-              },
+        notice: left.length === 0 ? null : draftLeftNotice(left),
       };
     }
     case "paste-started":
@@ -504,7 +458,7 @@ const transition = (record: SendRecord, event: SendEvent, now: string): Stepped 
           kind: "done",
           input: inputAfter(record, commentIds(record) ?? [], record.phase.processId, false),
         }),
-        notice: { kind: "paste", words: event.words, tone: "warning", retry: false, text: false },
+        notice: skippedNotice(event.words),
       };
     case "paste-failed": {
       const { phase } = record;
@@ -513,14 +467,7 @@ const transition = (record: SendRecord, event: SendEvent, now: string): Stepped 
         (phase.paste.kind !== "due" && phase.paste.kind !== "pasting")
       )
         return quiet(record);
-      const notice = pasteFailed(
-        event.why === "interrupted"
-          ? cutShortWords(
-              `VS Code could not finish pasting the review into ${phase.agent}'s terminal: ${event.words}`,
-              phase.agent,
-            )
-          : notPastedWords(event.why, phase.agent),
-      );
+      const notice = pasteFailedNotice(event, phase.agent);
       return event.why === "agent-gone"
         ? { record: { ...record, phase: { kind: "pending" } }, notice }
         : {
@@ -546,13 +493,7 @@ const transition = (record: SendRecord, event: SendEvent, now: string): Stepped 
         ? quiet({ ...record, phase: { kind: "failed", words: event.words, at: now } })
         : {
             record: { ...record, phase: { kind: "refused", words: event.words } },
-            notice: {
-              kind: "refused",
-              words: `Mend could not deliver the review: ${event.words}`,
-              tone: "error",
-              retry: false,
-              text: false,
-            },
+            notice: refusedNotice(event.words),
           };
     case "draft-gone": {
       // Its words are in the instruction: the review stops, and Send review composes it anew.
@@ -562,13 +503,7 @@ const transition = (record: SendRecord, event: SendEvent, now: string): Stepped 
       if (record.phase.kind === "refused") return quiet({ ...record, items });
       return {
         record: { ...record, items, phase: { kind: "refused", words: DRAFT_GONE } },
-        notice: {
-          kind: "draft-gone",
-          words: `${DRAFT_GONE}. Send review composes it again without that draft, from your comments as they are now.`,
-          tone: "warning",
-          retry: false,
-          text: true,
-        },
+        notice: DRAFT_GONE_NOTICE,
       };
     }
     case "superseded":
@@ -618,7 +553,7 @@ const transition = (record: SendRecord, event: SendEvent, now: string): Stepped 
           ...record,
           phase: { ...phase, paste: { kind: "failed", mayHaveLanded, stopped: event.why } },
         },
-        notice: pasteFailed(stoppedPasteWords(phase.agent, event.why, mayHaveLanded)),
+        notice: stoppedPasteNotice(phase.agent, event.why, mayHaveLanded),
       };
     }
     case "follow-up":
@@ -666,9 +601,6 @@ const withPaste = (record: SendRecord, from: PasteStep["kind"], to: PasteStep): 
   record.phase.kind === "in-terminal" && record.phase.paste.kind === from
     ? { ...record, phase: { ...record.phase, paste: to } }
     : record;
-
-export const DRAFT_GONE =
-  "A Mend draft in this review was dismissed before it was sent, and the review's text still asks for it, so nothing was sent";
 
 export const mayRetry = (record: SendRecord, agent: LiveAgent | null): boolean =>
   needs(record) === "her" &&
@@ -852,56 +784,6 @@ export const pasteUnderway = (record: SendRecord): boolean =>
  */
 export const admits = (records: ReadonlyArray<SendRecord>): boolean =>
   !records.some((record) => record.phase.kind === "sending" || pasteUnderway(record));
-
-/** What a thread of a comment in this record reads, as Mend observed it. */
-export const recordLabel = (phase: SendPhase): string => {
-  switch (phase.kind) {
-    case "sending":
-      return "sending";
-    case "delivering":
-      return "delivery in progress";
-    case "in-terminal":
-      switch (phase.paste.kind) {
-        case "done":
-          return `follow-up pending · pasted into ${phase.agent}'s terminal`;
-        case "failed":
-          return phase.paste.mayHaveLanded
-            ? `follow-up pending · paste into ${phase.agent}'s terminal cut short`
-            : `follow-up pending · not pasted into ${phase.agent}'s terminal`;
-        case "pasting":
-          return `follow-up pending · pasting into ${phase.agent}'s terminal`;
-        case "due":
-          return "follow-up pending";
-      }
-    case "pending":
-      return "follow-up pending";
-    case "delivered":
-      return "sent";
-    case "failed":
-      return "delivery failed · retryable";
-    case "refused":
-      return "not sent";
-  }
-};
-
-/**
- * What the thread of a comment in this record reads (`commentId` null for one not on Mend yet): in
- * her terminal, whether VS Code pasted its words, and into which agent process. Only what VS Code
- * did: Enter, a reload or her own edits since are not observed.
- */
-export const commentLabel = (
-  record: SendRecord,
-  commentId: string | null,
-  agent: LiveAgent | null,
-): string => {
-  const { phase } = record;
-  if (phase.kind !== "in-terminal" || phase.paste.kind !== "done") return recordLabel(phase);
-  if (commentId !== null && !phase.paste.input.ids.includes(commentId))
-    return `follow-up pending · not pasted into ${phase.agent}'s terminal`;
-  return agent?.kind === "terminal" && agent.processId === phase.processId
-    ? recordLabel(phase)
-    : `follow-up pending · pasted into an earlier ${phase.agent}`;
-};
 
 /** Why each Mend draft her posted words replace was left on Mend. */
 export const draftsLeft = (record: SendRecord): ReadonlyArray<string> =>
