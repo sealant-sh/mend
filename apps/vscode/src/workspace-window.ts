@@ -83,7 +83,7 @@ class ContinueLink extends vscode.TerminalLink {
  * as the window opens. The session is the one the Open meant (`open-intent.ts`), and when the
  * workspace no longer holds it the window attaches nothing and says why in the status bar; a window
  * opened any other way shows the workspace's live session. A conversation started elsewhere gets a tab
- * with its line, where Continue here hands it to a terminal through Mend's mode handoff.
+ * with its line, where Continue here hands it to a terminal through Mend's mode switch.
  */
 export class WorkspaceWindow implements vscode.Disposable {
   #located: { readonly project: Project; readonly session: Session } | null = null;
@@ -122,8 +122,8 @@ export class WorkspaceWindow implements vscode.Disposable {
         terminal.show();
         return this.#track(new ConversationTab(terminal, pty));
       },
-      handoff: async (sessionId) => {
-        await client.handoff(sessionId, "pty");
+      switchMode: async (sessionId) => {
+        await client.switchMode(sessionId, "pty");
       },
       gone: (cause) => cause instanceof MendApiError && cause.status === 404,
       refusal: (cause) =>

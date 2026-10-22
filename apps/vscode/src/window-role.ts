@@ -148,11 +148,11 @@ export const agentTab = (
 };
 
 /**
- * What a conversation's tab says when Mend's mode handoff says no. Only `HandoffUnsupported` means
+ * What a conversation's tab says when Mend's mode switch says no. Only `HandoffUnsupported` means
  * the harness cannot continue in a terminal; any other refusal (a conversation with no saved turn
  * yet answers 422 too) is the server's own sentence.
  */
-export const handoffRefusedLine = (
+export const switchRefusedLine = (
   harness: string,
   refusal: { readonly tag: string | null; readonly words: string },
 ): string =>

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Project, Session, SessionProcess } from "./types.js";
 import {
   agentTab,
-  handoffRefusedLine,
+  switchRefusedLine,
   requestOfWindow,
   sessionOfWorkspace,
   windowRole,
@@ -178,10 +178,10 @@ describe("agentTab", () => {
   });
 });
 
-describe("handoffRefusedLine", () => {
+describe("switchRefusedLine", () => {
   it("says the harness cannot continue in a terminal when the server says HandoffUnsupported", () => {
     expect(
-      handoffRefusedLine("opencode", {
+      switchRefusedLine("opencode", {
         tag: "HandoffUnsupported",
         words: "This session's agent cannot hand off to that one.",
       }),
@@ -190,8 +190,8 @@ describe("handoffRefusedLine", () => {
 
   it("says the server's own sentence for any other refusal, never that claude cannot continue", () => {
     const words = "No saved harness state to reopen as a terminal — resume the session instead.";
-    expect(handoffRefusedLine("claude", { tag: "StoreFailure", words })).toBe(words);
-    expect(handoffRefusedLine("claude", { tag: null, words })).toBe(words);
+    expect(switchRefusedLine("claude", { tag: "StoreFailure", words })).toBe(words);
+    expect(switchRefusedLine("claude", { tag: null, words })).toBe(words);
   });
 });
 

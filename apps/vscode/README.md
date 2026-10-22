@@ -118,7 +118,7 @@ In the workspace window the agent's terminal is attached in the panel and focuse
 `<harness> · <session>`, so driving by hand is typing into it. A conversation started on the phone,
 the web or Slack has no terminal yet: its tab reads
 `claude is running as a conversation (from …) · Continue here to type to it`, and **Continue here**
-moves the same conversation into a terminal through Mend's mode handoff (claude and codex). Someone
+moves the same conversation into a terminal through Mend's mode switch (claude and codex). Someone
 else's session reads `read-only · <owner>'s session`.
 
 ## Other commands
