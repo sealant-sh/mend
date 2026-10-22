@@ -182,13 +182,20 @@ export class SendEditor implements vscode.Disposable {
         );
         return;
       }
+      const { version } = document;
       const sent = await this.store.send(ref, document.getText(), revision);
       // Not recorded: the editor stays, and her words in it.
       if (!sent.sent) {
         void vscode.window.showWarningMessage(sent.words);
         return;
       }
-      await closeWithoutSaving(document);
+      if (document.version === version) {
+        await closeWithoutSaving(document);
+        return;
+      }
+      void vscode.window.showInformationMessage(
+        "Mend sent the review as it read when you chose Send to session. What you typed since stays in this editor, and was not sent.",
+      );
     } catch (cause) {
       this.onError(cause);
     }
