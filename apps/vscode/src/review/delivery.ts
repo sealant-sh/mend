@@ -178,6 +178,19 @@ export type FollowUpStatus =
   | "delivery_failed"
   | "superseded";
 
+/**
+ * What Mend reads about one key: `GET …/follow-up` lists only the newest follow-up not yet
+ * delivered, so `status` is ours when it is listed, and `sent` is whether Mend reads every comment
+ * of the review back as sent to the session, the only proof it was delivered.
+ */
+export interface FollowUpRead {
+  readonly status: FollowUpStatus | null;
+  readonly error: string | null;
+  /** Another follow-up of the session is listed: a newer one of hers, or ours still on its way. */
+  readonly others: boolean;
+  readonly sent: boolean;
+}
+
 export type SendEvent =
   | { readonly kind: "post-started"; readonly pendingId: string; readonly attempt: PostAttempt }
   | { readonly kind: "posted"; readonly pendingId: string; readonly commentId: string }
@@ -207,24 +220,18 @@ export type SendEvent =
   | { readonly kind: "failed"; readonly words: string; readonly retryable: boolean }
   /**
    * Retry delivery, with everything kept: from a failure, or from a follow-up Mend holds pending
-   * once the session has no live agent. `agent` is the session's live agent as read just now.
-   */
-  | { readonly kind: "retry"; readonly at: string; readonly agent: LiveAgent | null }
-  | { readonly kind: "abandoned"; readonly words: string }
-  /**
-   * A watch of a launch: `GET …/follow-up` lists only the newest follow-up not yet delivered, so
-   * `status` is ours when it is listed, and `sent` is whether Mend reads every comment of the
-   * review back as sent to the session, the only proof it was delivered.
+   * once the session has no live agent. `agent` is the session's live agent as read just now, and
+   * `mend` what Mend read about the key just now, for a retry that pastes into her agent.
    */
   | {
-      readonly kind: "follow-up";
-      readonly status: FollowUpStatus | null;
-      readonly error: string | null;
-      /** Another follow-up of the session is listed: ours may still be on its way. */
-      readonly others: boolean;
-      readonly sent: boolean;
+      readonly kind: "retry";
+      readonly at: string;
       readonly agent: LiveAgent | null;
-    };
+      readonly mend: FollowUpRead | null;
+    }
+  | { readonly kind: "abandoned"; readonly words: string }
+  /** A watch of a launch. */
+  | ({ readonly kind: "follow-up"; readonly agent: LiveAgent | null } & FollowUpRead);
 
 /** What the extension does next for a record. */
 export type SendAction =
@@ -419,6 +426,9 @@ const answeredPhase = (
   }
 };
 
+const NOT_LISTED =
+  "Mend no longer lists this follow-up, and it does not read its comments as sent to the session";
+
 /** A record after an event; an event its phase does not take leaves it as it was. */
 export const step = (record: SendRecord, event: SendEvent, now: string): SendRecord => {
   switch (event.kind) {
@@ -520,19 +530,16 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
         : record;
     case "retry":
       if (!mayRetry(record, event.agent)) return record;
-      // Mend holds it pending for her live agent: only the paste is done again.
-      return (record.phase.kind === "in-terminal" || record.phase.kind === "pending") &&
+      // Mend held it pending for her live agent: only the paste is done again, and only while
+      // Mend still holds this key and has not sent its comments.
+      if (
+        (record.phase.kind === "in-terminal" || record.phase.kind === "pending") &&
         event.agent?.kind === "terminal"
-        ? {
-            ...record,
-            phase: {
-              kind: "in-terminal",
-              agent: event.agent.name,
-              processId: event.agent.processId,
-              paste: { kind: "due" },
-            },
-          }
-        : { ...record, phase: { kind: "sending", since: event.at } };
+      )
+        return event.mend === null
+          ? record
+          : { ...record, phase: heldPhase(event.mend, event.agent, now) };
+      return { ...record, phase: { kind: "sending", since: event.at } };
     case "abandoned":
       if (record.phase.kind === "sending")
         return { ...record, phase: { kind: "failed", words: event.words, at: now } };
@@ -563,16 +570,18 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
           phase: answeredPhase("pending", null, event.agent ?? { kind: "other" }, now),
         };
       if (event.status !== null || event.others) return record;
-      return {
-        ...record,
-        phase: {
-          kind: "failed",
-          words:
-            "Mend no longer lists this follow-up, and it does not read its comments as sent to the session",
-          at: now,
-        },
-      };
+      return { ...record, phase: { kind: "failed", words: NOT_LISTED, at: now } };
   }
+};
+
+/** Where a review Mend held pending is, as Mend reads its key now. */
+const heldPhase = (read: FollowUpRead, agent: LiveAgent, now: string): SendPhase => {
+  if (read.sent) return { kind: "delivered", at: now };
+  if (read.status !== null) return answeredPhase(read.status, read.error, agent, now);
+  // Mend lists only the newest follow-up it holds: another one listed replaced ours.
+  return read.others
+    ? answeredPhase("superseded", null, agent, now)
+    : { kind: "failed", words: NOT_LISTED, at: now };
 };
 
 const withPaste = (record: SendRecord, from: PasteStep["kind"], to: PasteStep): SendRecord =>

@@ -17,6 +17,7 @@ import {
   posts,
   step,
   stepReview,
+  type FollowUpRead,
   type LiveAgent,
   type SendEvent,
   type SendRecord,
@@ -202,7 +203,8 @@ export class SendDriver {
   }
 
   async retry(target: RetryTarget, author: string | null): Promise<Retried> {
-    if ((await this.#bind(target.place)) === null)
+    const bound = await this.#bind(target.place);
+    if (bound === null)
       return {
         retried: false,
         words:
@@ -230,9 +232,21 @@ export class SendDriver {
       viewer,
       author,
     };
+    // A retry that pastes asks Mend first: another client may have delivered the key, or sent a
+    // newer review, since this window kept it held.
+    let mend: FollowUpRead | null = null;
+    if (record.phase.kind !== "failed" && agent?.kind === "terminal")
+      try {
+        mend = await this.#readFollowUp(this.client.pinned(bound), context, record);
+      } catch (cause) {
+        return {
+          retried: false,
+          words: `Retry delivery sent nothing: Mend could not say whether it still holds this review: ${errorWords(cause)}`,
+        };
+      }
     const at = new Date().toISOString();
     const claimed = await this.#claimAndKeep(target.place, target.key, (review) =>
-      stepReview(review, target.key, { kind: "retry", at, agent }, at),
+      stepReview(review, target.key, { kind: "retry", at, agent, mend }, at),
     );
     switch (claimed.kind) {
       case "elsewhere":
@@ -556,31 +570,13 @@ export class SendDriver {
           case "watch": {
             watches += 1;
             await new Promise((resolve) => setTimeout(resolve, WATCH_MS));
-            const [followUp, comments] = await Promise.all([
-              client.followUp(sessionId),
-              client.comments(changeId),
-            ]);
-            const ours = followUp !== null && followUp.key === key ? followUp : null;
-            if (ours?.status === "pending") await this.#still(bound);
+            const read = await this.#readFollowUp(client, context, record);
+            if (read.status === "pending") await this.#still(bound);
             const agent =
-              ours?.status === "pending"
+              read.status === "pending"
                 ? liveAgent(await this.sessions.sessionDetail(sessionId), context.viewer)
                 : null;
-            const ids = commentIds(record) ?? [];
-            const sent =
-              ids.length > 0 &&
-              ids.every(
-                (id) =>
-                  comments.find((comment) => comment.id === id)?.sentToSessionId === sessionId,
-              );
-            await this.#step(context, key, {
-              kind: "follow-up",
-              status: ours?.status ?? null,
-              error: ours?.error ?? null,
-              others: followUp !== null && ours === null,
-              sent,
-              agent,
-            });
+            await this.#step(context, key, { kind: "follow-up", ...read, agent });
             break;
           }
         }
@@ -615,6 +611,31 @@ export class SendDriver {
       await this.#step(context, key, { kind: "failed", words, retryable: true }),
     );
     this.host.settled(sessionId);
+  }
+
+  /** What Mend reads now about the record's key and its comments. */
+  async #readFollowUp(
+    client: ReviewClient,
+    context: SendContext,
+    record: SendRecord,
+  ): Promise<FollowUpRead> {
+    const { sessionId } = context.place;
+    const [followUp, comments] = await Promise.all([
+      client.followUp(sessionId),
+      client.comments(context.changeId),
+    ]);
+    const ours = followUp !== null && followUp.key === record.key ? followUp : null;
+    const ids = commentIds(record) ?? [];
+    return {
+      status: ours?.status ?? null,
+      error: ours?.error ?? null,
+      others: followUp !== null && ours === null,
+      sent:
+        ids.length > 0 &&
+        ids.every(
+          (id) => comments.find((comment) => comment.id === id)?.sentToSessionId === sessionId,
+        ),
+    };
   }
 
   #sayFailed(place: ReviewPlace, record: SendRecord | null, cause?: unknown): boolean {

@@ -163,7 +163,7 @@ describe("sending a review (story d, step 6)", () => {
     const failed = apply(ready, { kind: "failed", words: "Cannot reach Mend", retryable: true });
     expect(only(failed).phase).toEqual({ kind: "failed", words: "Cannot reach Mend", at: NOW });
     expect(nextAction(only(failed))).toEqual({ kind: "idle" });
-    const retried = apply(failed, { kind: "retry", at: NOW, agent: null });
+    const retried = apply(failed, { kind: "retry", at: NOW, agent: null, mend: null });
     expect(nextAction(only(retried))).toEqual(first);
   });
 
@@ -174,7 +174,9 @@ describe("sending a review (story d, step 6)", () => {
       words: "VS Code closed before Mend answered",
     });
     expect(only(reloaded).phase.kind).toBe("failed");
-    expect(nextAction(only(apply(reloaded, { kind: "retry", at: NOW, agent: null })))).toEqual({
+    expect(
+      nextAction(only(apply(reloaded, { kind: "retry", at: NOW, agent: null, mend: null }))),
+    ).toEqual({
       kind: "reconcile",
       pendingIds: ["p1"],
     });
@@ -200,7 +202,7 @@ describe("sending a review (story d, step 6)", () => {
     for (const later of [
       pasted,
       apply(pasted, { kind: "abandoned", words: "VS Code closed before Mend answered" }),
-      apply(pasted, { kind: "retry", at: NOW, agent: HERS }),
+      apply(pasted, { kind: "retry", at: NOW, agent: HERS, mend: null }),
       watched(pasted, { status: "pending" }),
     ])
       expect(nextAction(only(later))).toEqual({ kind: "idle" });
@@ -217,7 +219,7 @@ describe("sending a review (story d, step 6)", () => {
     expect(retryRecord(pasted.sends, null)).toBeNull();
     const unpasted = apply(inTerminal, { kind: "paste-failed", why: "not-attached" });
     expect(retryRecord(unpasted.sends, null)?.key).toBe("key-1");
-    const relaunch = apply(unpasted, { kind: "retry", at: NOW, agent: null });
+    const relaunch = apply(unpasted, { kind: "retry", at: NOW, agent: null, mend: null });
     expect(nextAction(only(relaunch))).toMatchObject({
       kind: "deliver",
       request: { idempotencyKey: "key-1", instruction: "the review", commentIds: ["c1", "c2"] },
