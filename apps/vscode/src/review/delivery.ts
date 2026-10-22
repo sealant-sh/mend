@@ -647,13 +647,11 @@ export const commentTarget = (
     const lines = old ? candidate.oldLines : candidate.newLines;
     return lines > 0 && comment.line >= start && comment.endLine <= start + lines - 1;
   });
-  const paths = old
-    ? { oldPath: comment.path, newPath: null }
-    : { oldPath: null, newPath: comment.path };
   if (file !== undefined && hunk !== undefined)
     return {
       target: {
-        ...paths,
+        oldPath: file.oldPath,
+        newPath: file.newPath,
         side: old ? "old" : "new",
         startLine: comment.line,
         endLine: comment.endLine,
@@ -665,7 +663,8 @@ export const commentTarget = (
   if (file !== undefined)
     return {
       target: {
-        ...paths,
+        oldPath: file.oldPath,
+        newPath: file.newPath,
         side: null,
         startLine: null,
         endLine: null,
