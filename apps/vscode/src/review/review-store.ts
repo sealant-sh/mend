@@ -34,7 +34,7 @@ import {
   type InstructionComment,
   type SendOffer,
 } from "./instruction.js";
-import { samePlace, type KeptReviews, type ReviewPlace } from "./kept-reviews.js";
+import { samePlace, type KeptReview, type KeptReviews, type ReviewPlace } from "./kept-reviews.js";
 import {
   acceptedDrafts,
   keepComposed,
@@ -238,6 +238,8 @@ export class ReviewStore implements vscode.Disposable {
   readonly #drafts = new Map<string, SeenDraft>();
   /** Where `#review` is kept: her account on the server, and the session. */
   #place: ReviewPlace | null = null;
+  /** The revision of `#review` as kept: a read that began before a later write shows nothing. */
+  #rev = -1;
   /** Who she is on each server, as Mend last said: a read that cannot say keeps her place. */
   readonly #viewers = new Map<string, string>();
   #you = "You";
@@ -379,13 +381,9 @@ export class ReviewStore implements vscode.Disposable {
   async reloadReview(): Promise<void> {
     const place = this.#place;
     if (place === null) return;
-    if (!(await this.#keepHeld(place))) {
-      const { review } = await this.kept.read(place);
-      if (!samePlace(this.#place, place)) return;
-      this.#review = review;
-      this.#changed.fire();
-    }
-    await this.#recover(place);
+    await this.#keepHeld(place);
+    await this.#readKept(place);
+    if (!samePlace(this.#place, place)) return;
     for (const record of this.#review.sends) {
       const failed = failedDelivery(place, record);
       if (failed !== null) this.#fail(failed.what, failed.words, failed.options);
@@ -760,7 +758,7 @@ export class ReviewStore implements vscode.Disposable {
       };
     const ofRef = (review: SessionReview): ReviewDocument | undefined =>
       review.document?.composed.documentId === ref.id ? review.document : undefined;
-    const document = ofRef((await this.kept.read(place)).review);
+    const document = ofRef(await this.#readKept(place));
     if (document === undefined) return { sent: false, words: NOT_KEPT };
     if (document.revision !== revision) return { sent: false, words: SAVED_SINCE };
     const parsed = Instruction.parse(document.text, read.sessionName);
@@ -835,7 +833,7 @@ export class ReviewStore implements vscode.Disposable {
   }
 
   async document(ref: DocumentRef): Promise<ReviewDocument | null> {
-    const { document } = (await this.kept.read(ref.place)).review;
+    const { document } = await this.#readKept(ref.place);
     return document?.composed.documentId === ref.id ? document : null;
   }
 
@@ -900,6 +898,27 @@ export class ReviewStore implements vscode.Disposable {
     };
   }
 
+  /** Reads the review kept at `place`, and publishes it. */
+  async #readKept(place: ReviewPlace): Promise<SessionReview> {
+    const kept = await this.kept.read(place);
+    await this.#publish(place, kept);
+    return kept.review;
+  }
+
+  /**
+   * Every read of a kept review goes through here: the section shows it while it shows that
+   * place, unless a write this window kept since is newer, and recovery looks at it for a send no
+   * window drives any more.
+   */
+  async #publish(place: ReviewPlace, kept: KeptReview): Promise<void> {
+    if (samePlace(this.#place, place) && kept.rev >= this.#rev) {
+      this.#review = kept.review;
+      this.#rev = kept.rev;
+      this.#changed.fire();
+    }
+    await this.#recover(place);
+  }
+
   async #recover(place: ReviewPlace): Promise<void> {
     const read = this.ready();
     if (read === null || !samePlace(this.#place, place)) return;
@@ -933,7 +952,7 @@ export class ReviewStore implements vscode.Disposable {
     const { retry } = failure;
     if (retry === null) return true;
     void this.reloadReview();
-    return (await this.kept.read(retry.place)).review.sends.some(
+    return (await this.#readKept(retry.place)).sends.some(
       (record) => record.key === retry.key && needs(record) === "her",
     );
   }
@@ -950,8 +969,9 @@ export class ReviewStore implements vscode.Disposable {
     if (place === null) throw new Error("Mend has not finished reading this session.");
     let taken: ReadonlyArray<HeldWords> = [];
     let review: SessionReview;
+    let rev: number;
     try {
-      ({ review } = await this.kept.update(place, async (current) => {
+      ({ review, rev } = await this.kept.update(place, async (current) => {
         const next = keepHeld(await update(current), this.#heldAt(place));
         taken = next.kept;
         this.#held = this.#held.filter((entry) => !taken.includes(entry.words));
@@ -963,6 +983,7 @@ export class ReviewStore implements vscode.Disposable {
     }
     if (samePlace(this.#place, place)) {
       this.#review = review;
+      this.#rev = rev;
       this.#changed.fire();
     }
     return review;
@@ -1125,11 +1146,14 @@ export class ReviewStore implements vscode.Disposable {
     };
     // Only the followed session's own read loads its comments: a read of the one followed before,
     // landing late, must not put that session's comments under this one.
-    if (this.followed()?.session.id === session.id && !samePlace(this.#place, place)) {
-      const { review } = await this.kept.read(place);
-      if (this.followed()?.session.id === session.id && !samePlace(this.#place, place)) {
-        this.#place = place;
-        this.#review = review;
+    if (this.followed()?.session.id === session.id) {
+      const kept = await this.kept.read(place);
+      if (this.followed()?.session.id === session.id) {
+        if (!samePlace(this.#place, place)) {
+          this.#place = place;
+          this.#rev = -1;
+        }
+        await this.#publish(place, kept);
       }
     }
     if (detail.changeId === null || worktreeId === undefined)
