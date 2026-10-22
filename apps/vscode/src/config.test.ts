@@ -342,6 +342,74 @@ describe("a refusal and a sign-in at once (SLNT-170)", () => {
   }, 10_000);
 });
 
+/**
+ * A window whose first read of the shared secret waits until `release`: a 401 it handles reads the
+ * credentials, then another window writes, then this one goes on.
+ */
+const pausedWindow = () => {
+  const held = Promise.withResolvers<void>();
+  const read = Promise.withResolvers<void>();
+  let hold = true;
+  const connections = new ConnectionStore({
+    secrets: {
+      get: async (key: string) => {
+        const value = secrets.get(key);
+        if (hold) {
+          hold = false;
+          read.resolve();
+          await held.promise;
+        }
+        return value;
+      },
+      store: async (key: string, value: string) => {
+        secrets.set(key, value);
+      },
+    },
+  });
+  return { connections, read: read.promise, release: () => held.resolve() };
+};
+
+describe("two windows writing the credentials at once", () => {
+  it("keeps another window's sign-out of one server while this one drops a refused token for another", async () => {
+    signedIn(
+      { url: MINI, token: "mdt_mini", id: "device-mini" },
+      { url: EDGE, token: "mdt_edge", id: "device-edge" },
+    );
+    vi.stubGlobal(
+      "fetch",
+      devicesServer(() => new Response(null, { status: 204 })),
+    );
+    const here = pausedWindow();
+    const refusal = here.connections.refused({ url: MINI, token: "mdt_mini" });
+    await here.read;
+    await store().signOut(EDGE);
+    here.release();
+    await refusal;
+    const kept = parseCredentialStore(secrets.get(TOKEN_KEY));
+    expect(kept.get(EDGE)).toMatchObject({ kind: "none" });
+    expect(kept.get(MINI)).toMatchObject({ kind: "none" });
+  });
+
+  it("keeps another window's sign-in while this one drops the token it replaced", async () => {
+    signedIn({ url: MINI, token: "mdt_old", id: "device-old" });
+    vi.stubGlobal(
+      "fetch",
+      devicesServer(() => new Response(null, { status: 204 })),
+    );
+    ui.showInputBox.mockResolvedValueOnce(MINI);
+    const here = pausedWindow();
+    const refusal = here.connections.refused({ url: MINI, token: "mdt_old" });
+    await here.read;
+    expect(await store().connect()).toBe(true);
+    here.release();
+    await refusal;
+    expect(parseCredentialStore(secrets.get(TOKEN_KEY)).get(MINI)).toMatchObject({
+      kind: "token",
+      token: "mdt_editor",
+    });
+  });
+});
+
 describe("signing out says what Mend answered", () => {
   const mini = { url: MINI, token: "mdt_mini", id: "device-mini" };
   const cases: ReadonlyArray<readonly [string, () => Response, string]> = [
