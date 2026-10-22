@@ -880,7 +880,7 @@ describe("sending a review from the store", () => {
   });
 });
 
-describe("a read Mend refuses while a review is on its way", () => {
+describe("a call Mend refuses while a review is on its way", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -919,5 +919,29 @@ describe("a read Mend refuses while a review is on its way", () => {
     await store.retry({ place: DANA_S1, key });
     expect(await phaseOf(kept, key)).toBe("failed");
     expect(store.review().pending).toEqual([]);
+  });
+
+  it("reads delivery failed, with Retry, when Mend asks VS Code to deliver later", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    mend.deliver = async () => {
+      throw new MendApiError("Too many follow-ups at once. Try again in a minute.", 429);
+    };
+    const store = await readyStore(kept, mend);
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).not.toBe("sending"), SETTLE);
+    expect(await phaseOf(kept, key)).toBe("failed");
+  });
+
+  it("reads not sent when Mend refuses to deliver the review", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    mend.deliver = async () => {
+      throw new MendApiError("The instruction is empty.", 422);
+    };
+    const store = await readyStore(kept, mend);
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).not.toBe("sending"), SETTLE);
+    expect(await phaseOf(kept, key)).toBe("refused");
   });
 });
