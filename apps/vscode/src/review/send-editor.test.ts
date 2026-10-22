@@ -166,6 +166,7 @@ const mendWithOpen = (): FakeMend => {
 };
 
 beforeEach(() => {
+  vi.mocked(vscode.window.showWarningMessage).mockClear();
   ui.commands.clear();
   ui.providers.length = 0;
   ui.documents.length = 0;
@@ -248,6 +249,29 @@ describe("a review open in two windows", () => {
         first.provider.writeFile(opened.uri, encoded("words typed in the first window"), SAVE),
       ),
     ).rejects.toBeInstanceOf(vscode.FileSystemError);
+    expect(decoded(await second.provider.readFile(opened.uri))).toBe(
+      "words saved in the second window",
+    );
+    first.close();
+    second.close();
+  });
+
+  it("refuses to send this window's text over a review the other window saved since, and keeps both", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    const first = await windowOn(files, mend);
+    const opened = await sendReview();
+    const sendFromFirst = ui.commands.get("mend.change.sendToSession");
+    const second = await windowOn(files, mend);
+    await second.provider.readFile(opened.uri);
+    await second.provider.writeFile(opened.uri, encoded("words saved in the second window"), SAVE);
+    await sendFromFirst?.(opened.uri);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mend.delivered).toEqual([]);
+    expect(first.store.review().sends).toEqual([]);
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringMatching(/Your text stays in this editor/),
+    );
     expect(decoded(await second.provider.readFile(opened.uri))).toBe(
       "words saved in the second window",
     );
