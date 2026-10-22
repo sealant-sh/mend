@@ -875,6 +875,11 @@ the row takes the job's name.
   - Lane 8: offline while typing keeps the prompt and Enter sends nothing until it reconnects; an
     old server hides the command; a refused terms read words its reason; a changed origin refuses
     before any upload; two roots ask which repository; a 401 removes the command.
+  - Added after `p8live` and not driven live yet: **prompt kept** (a session read forced to
+    `starting`, the warning dismissed, the next question opening with the prompt and launching it)
+    and **agent share** (a Mend-key project handing off with no SSH agent while the account default
+    reads `bridge`). `told()` now waits for an accepted question to close before it opens the
+    notification list, since the palette's Escape could cancel it.
   - Not run: a custom per-file limit (needs a server started with `MEND_BUDGET_HANDOFF_FILE_BYTES`;
     the over-limit file is proven at the default limit), and lane 9, a bridge-mode server with a
     private origin reachable only through the local SSH agent.

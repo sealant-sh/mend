@@ -227,6 +227,7 @@ export default async (h) => {
   const clearToasts = () => palette("Notifications: Clear All Notifications");
   // An information toast leaves the screen after a few seconds and stays in the notification
   // center; a toast no longer on screen is read and answered from the bell's list, as she would.
+  const questionClosed = async () => !(await quickInput.isOpen());
   const ITEM = ".notification-list-item";
   const BUTTON = ".notification-list-item-buttons-container .monaco-button";
   const told = async (pattern, limit = 120_000) =>
@@ -240,6 +241,7 @@ export default async (h) => {
         const centered = page()
           .locator(`.notifications-center ${ITEM}`, { hasText: pattern })
           .first();
+        if (!(await questionClosed())) return null;
         if (!(await centered.isVisible())) await palette("Notifications: Show Notifications");
         return (await centered.isVisible()) ? centered : null;
       },
@@ -625,6 +627,70 @@ export default async (h) => {
         await quickInput.cancel();
         return shown;
       });
+    await step(
+      "prompt kept: a dismissed slow start keeps her prompt, and the next question launches it",
+      async () => {
+        nextCut("kept");
+        await connectClaude();
+        const prompt = "carry the login fix through a slow start";
+        const before = await projectRead();
+        const n = launches().length;
+        proxy.controls.forcedSessionStatus = "starting";
+        let unsent;
+        try {
+          await open();
+          await quickInput.type(prompt);
+          await quickInput.accept();
+          unsent = await waitReceived(before);
+          assertText(await toldText(/your prompt has not been sent/, 120_000), "Check again");
+          await shot("handoff-prompt-unsent");
+          await clearToasts();
+        } finally {
+          proxy.controls.forcedSessionStatus = null;
+        }
+        assert.equal(launches().length, n, "nothing launched while the workspace read starting");
+        const reopened = await open();
+        assert.equal(reopened.value, prompt, "the next question opens with her prompt");
+        await shot("handoff-prompt-kept");
+        const result = await accept(prompt);
+        await waitUntil("one launch", async () => launches().length === n + 1, 120_000);
+        assert.ok(launches().at(-1).route.includes(result.session.id));
+        const detail = await api(`/sessions/${result.session.id}`);
+        assert.ok(
+          detail.processes.some(
+            (process) =>
+              process.kind === "agent-pty" && JSON.stringify(process.argv).includes(prompt),
+          ),
+        );
+        const first = await api(`/sessions/${unsent.session.id}`);
+        assert.ok(!first.processes.some((process) => process.kind.startsWith("agent-")));
+        return {
+          observed: `prompt kept after the dismissed warning on ${unsent.worktree.name}; launched once on ${result.worktree.name}`,
+        };
+      },
+    );
+    await step(
+      "agent share: a Mend-key project hands off with no SSH agent, whatever the account default",
+      async () => {
+        nextCut("mend-key");
+        assert.equal((await projectRead()).project.gitAuthMode, "mend-key");
+        proxy.controls.forcedAccountMode = "bridge";
+        try {
+          const asked = proxy.requests.length;
+          await open();
+          const result = await accept("");
+          assert.ok(
+            !proxy.requests.slice(asked).some((row) => row.route === "/api/me/git-access"),
+            "a handoff to an adopted project never reads the account default",
+          );
+          return {
+            observed: `handed off as ${result.worktree.name} with the account default forced to bridge`,
+          };
+        } finally {
+          proxy.controls.forcedAccountMode = null;
+        }
+      },
+    );
     await step(
       "lane 6: edits while uploading stay local, and Check again replays the same bytes",
       async () => {

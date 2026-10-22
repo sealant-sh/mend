@@ -17,6 +17,8 @@ export const handoffProxy = async (origin, token) => {
     drop: 0,
     refuseLaunch: false,
     adoptedDefault: null,
+    forcedSessionStatus: null,
+    forcedAccountMode: null,
   };
   let release = settled;
   let delayed = Promise.resolve();
@@ -25,6 +27,8 @@ export const handoffProxy = async (origin, token) => {
     const receive = incoming.method === "POST" && /\/handoffs\?/.test(route);
     const terms = incoming.method === "GET" && route.endsWith("/handoffs");
     const adoption = incoming.method === "POST" && route === "/api/projects";
+    const sessionRead = incoming.method === "GET" && /^\/api\/sessions\/[^/?]+$/u.test(route);
+    const accountRead = incoming.method === "GET" && route === "/api/me/git-access";
     const row = { method: incoming.method, route, status: null, digest: null, bytes: 0 };
     requests.push(row);
     if (controls.mode === "offline") {
@@ -95,19 +99,24 @@ export const handoffProxy = async (origin, token) => {
             answer.on("end", () => response.destroy());
             return;
           }
-          if (adoption && controls.adoptedDefault !== null) {
+          const rewrite =
+            adoption && controls.adoptedDefault !== null
+              ? (body) => ({ ...body, defaultBranch: controls.adoptedDefault })
+              : sessionRead && controls.forcedSessionStatus !== null
+                ? (body) => ({
+                    ...body,
+                    session: { ...body.session, status: controls.forcedSessionStatus },
+                  })
+                : accountRead && controls.forcedAccountMode !== null
+                  ? (body) => ({ ...body, mode: controls.forcedAccountMode })
+                  : null;
+          if (rewrite !== null && answer.statusCode < 300) {
             let text = "";
             answer.setEncoding("utf8");
             answer.on("data", (chunk) => {
               text += chunk;
             });
-            answer.on("end", () => {
-              const body = JSON.parse(text);
-              json(response, answer.statusCode, {
-                ...body,
-                defaultBranch: controls.adoptedDefault,
-              });
-            });
+            answer.on("end", () => json(response, answer.statusCode, rewrite(JSON.parse(text))));
             return;
           }
           response.writeHead(answer.statusCode, answer.headers);
