@@ -87,6 +87,11 @@ export interface ReviewDocument {
   readonly composed: Composed;
   readonly text: string;
   readonly revision: number;
+  /**
+   * Her saved text from the review this one replaced, which `text` carries after the composition;
+   * carried again as it is while she saves nothing over this one.
+   */
+  readonly earlier: string | null;
 }
 
 export interface SessionReview {
@@ -442,6 +447,7 @@ const parseDocument = (value: unknown): ReviewDocument | null => {
     },
     text: saved,
     revision,
+    earlier: text(value, "earlier"),
   };
 };
 
@@ -472,11 +478,16 @@ export const keepComposed = (
     kept.composed.generation === composed.generation
   )
     return { review, carried: false };
-  // Revision 1 is the composition as written; any later one holds words she saved.
-  const carried = kept !== null && kept.revision > 1;
-  const document: ReviewDocument = carried
-    ? { composed, text: withEarlierText(words, kept.text, composed.sessionName), revision: 2 }
-    : { composed, text: words, revision: 1 };
+  // Revision 1 is the review as written; any later one holds words she saved.
+  const earlier = kept === null ? null : kept.revision > 1 ? kept.text : kept.earlier;
+  const written = earlier === null ? words : withEarlierText(words, earlier, composed.sessionName);
+  const carried = written !== words;
+  const document: ReviewDocument = {
+    composed,
+    text: written,
+    revision: 1,
+    earlier: carried ? earlier : null,
+  };
   return { review: { ...review, document }, carried };
 };
 
