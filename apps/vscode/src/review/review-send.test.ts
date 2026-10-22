@@ -1945,6 +1945,45 @@ describe("VS Code connects to another Mend server while a send waits on a read",
   });
 });
 
+describe("a send whose drive fails the moment it begins", () => {
+  it("reads failed, with Retry delivery, and no lease outlives the drive", async () => {
+    const mend = new FakeMend();
+    let kept = false;
+    let failed = false;
+    const files: KeptFiles = {
+      ...NODE_FILES,
+      rename: async (from, to) => {
+        await NODE_FILES.rename(from, to);
+        if (to.endsWith(".json") && (await NODE_FILES.readFile(to)).includes('"kind":"sending"'))
+          kept = true;
+      },
+      mkdir: async (path) => {
+        // The send is kept: the next look at its directory fails, once.
+        if (kept && !failed) {
+          failed = true;
+          throw new Error("EIO: the disk did not take the write");
+        }
+        return NODE_FILES.mkdir(path);
+      },
+    };
+    const reviews = keptIn(await storage(), files);
+    const { store } = await window(reviews, mend);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
+    await vi.waitFor(
+      () => expect(store.review().sends.map(({ phase }) => phase.kind)).toEqual(["failed"]),
+      SETTLE,
+    );
+    expect(failed).toBe(true);
+    expect(store.retryTarget()).not.toBeNull();
+    const place = { url: "http://mend", viewer: "dana", sessionId: "s1" };
+    const key = store.review().sends.at(-1)?.key ?? "";
+    expect(reviews.drives(place, key)).toBe(false);
+  }, 15_000);
+});
+
 describe("a paste VS Code could not keep as pasted", () => {
   it("says VS Code could not keep it, never that Mend could not deliver, and offers Retry delivery", async () => {
     const mend = new FakeMend();
