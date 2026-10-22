@@ -71,34 +71,3 @@ export const parseReviewDiff = (
     return { ...fact, patch: filePatch, hunks: parseHunks(filePatch) };
   });
 };
-
-export interface LineAnchorTarget {
-  readonly oldPath: string | null;
-  readonly newPath: string | null;
-  readonly side: "old" | "new";
-  readonly startLine: number;
-  readonly endLine: number;
-  readonly hunkContextHash: string;
-}
-
-/** Validate that a line range and context hash exist in the immutable patch. */
-export const lineAnchorExists = (
-  files: ReadonlyArray<ParsedReviewFile>,
-  target: LineAnchorTarget,
-): boolean => {
-  const file = files.find(
-    (candidate) => candidate.oldPath === target.oldPath && candidate.newPath === target.newPath,
-  );
-  if (file === undefined || target.startLine < 1 || target.endLine < target.startLine) return false;
-  return file.hunks.some((hunk) => {
-    const rangeStart = target.side === "old" ? hunk.oldStart : hunk.newStart;
-    const count = target.side === "old" ? hunk.oldLines : hunk.newLines;
-    if (count === 0) return false;
-    const rangeEnd = rangeStart + count - 1;
-    return (
-      hunk.contextHash === target.hunkContextHash &&
-      target.startLine >= rangeStart &&
-      target.endLine <= rangeEnd
-    );
-  });
-};

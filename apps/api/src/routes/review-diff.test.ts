@@ -1,6 +1,7 @@
+import { lineAnchorExists } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
-import { digestReviewPatch, lineAnchorExists, parseReviewDiff } from "./review-diff.ts";
+import { digestReviewPatch, parseReviewDiff } from "./review-diff.ts";
 
 const patch = `diff --git a/old.ts b/new.ts
 similarity index 60%

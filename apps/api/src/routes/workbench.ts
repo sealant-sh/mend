@@ -117,6 +117,7 @@ import {
 import {
   DiffDigest,
   ReviewCommentAnchor,
+  reviewTargetExists,
   currentAgentProcess,
   isAgentProcessKind,
   type ReviewSlice,
@@ -198,7 +199,7 @@ import { LAUNCH_ANSWER_WINDOW, makeSessionStart } from "../session-start.ts";
 import { requireOwnerRuns, SessionSteering, sessionControlView } from "../session-steering.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
-import { digestReviewPatch, lineAnchorExists, parseReviewDiff } from "./review-diff.ts";
+import { digestReviewPatch, parseReviewDiff } from "./review-diff.ts";
 
 /**
  * The workbench handlers (plan §6): projects, sessions, and the session
@@ -3795,33 +3796,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
           .pipe(Effect.mapError(readFailure))).value;
         const files = parseReviewDiff(patch, facts);
         const target = payload.target;
-        const hasPath = target.oldPath !== null || target.newPath !== null;
-        const hasNoLocation =
-          target.side === null &&
-          target.startLine === null &&
-          target.endLine === null &&
-          target.hunkContextHash === null;
-        const fileExists = files.some(
-          (file) => file.oldPath === target.oldPath && file.newPath === target.newPath,
-        );
-        const lineTargetComplete =
-          target.side !== null &&
-          target.startLine !== null &&
-          target.endLine !== null &&
-          target.hunkContextHash !== null;
-        const targetValid =
-          (!hasPath && hasNoLocation) ||
-          (hasPath && hasNoLocation && fileExists) ||
-          (hasPath &&
-            lineTargetComplete &&
-            lineAnchorExists(files, {
-              oldPath: target.oldPath,
-              newPath: target.newPath,
-              side: target.side,
-              startLine: target.startLine,
-              endLine: target.endLine,
-              hunkContextHash: target.hunkContextHash,
-            }));
+        const targetValid = reviewTargetExists(files, target);
         const body = payload.body.trim();
         if (!targetValid || body === "") {
           return yield* new StoreFailure({
