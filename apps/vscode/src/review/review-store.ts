@@ -485,9 +485,28 @@ export class ReviewStore implements vscode.Disposable {
   }
 
   /** G1: a pending comment is hers to edit until Send review. */
-  async edit(pendingId: string, body: string): Promise<void> {
-    if (body.trim() === "") return;
-    await this.#keepAt(this.#place, (review) => editPending(review, pendingId, body.trim()));
+  async edit(pendingId: string, body: string): Promise<Keeping> {
+    if (body.trim() === "")
+      return { kept: false, words: "Your comment is empty: there is nothing to keep." };
+    let review: SessionReview;
+    try {
+      review = await this.#keepAt(this.#place, (kept) => editPending(kept, pendingId, body.trim()));
+    } catch (cause) {
+      return {
+        kept: false,
+        words: `VS Code could not keep your edit: ${errorWords(cause)} Your words are still in the comment.`,
+      };
+    }
+    if (review.pending.some((comment) => comment.id === pendingId)) return { kept: true };
+    const sent = review.sends.some((record) =>
+      record.items.some((item) => item.kind !== "open" && item.pending.id === pendingId),
+    );
+    return {
+      kept: false,
+      words: sent
+        ? "This comment was already sent in a review, so your edit is not kept. Your words are still in the comment: copy them into a new comment."
+        : "This comment was deleted in another window, so your edit is not kept.",
+    };
   }
 
   async remove(pendingId: string): Promise<void> {

@@ -257,8 +257,14 @@ export class ReviewComments implements vscode.Disposable {
   async #save(comment: unknown): Promise<void> {
     if (!(comment instanceof ShownComment) || comment.thread.pendingId === null) return;
     const body = typeof comment.body === "string" ? comment.body : comment.body.value;
-    await this.store.edit(comment.thread.pendingId, body);
+    const kept = await this.store.edit(comment.thread.pendingId, body);
     const drawn = this.#threads.get(comment.thread.key);
-    if (drawn !== undefined) drawn.thread.comments = [shown(drawn.view)];
+    if (kept.kept) {
+      if (drawn !== undefined) drawn.thread.comments = [shown(drawn.view)];
+      return;
+    }
+    // The store's redraw replaced the comment she was editing: put her words back in front of her.
+    if (drawn !== undefined) drawn.thread.comments = [comment];
+    void vscode.window.showWarningMessage(kept.words);
   }
 }
