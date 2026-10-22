@@ -1077,6 +1077,108 @@ describe("a call Mend refuses while a review is on its way", () => {
   });
 });
 
+/**
+ * Session reads whose sign-in moves: Dana's token, a later sign-in of hers, or Erin's, on one
+ * server. Mend says who a token belongs to only while `says` holds; otherwise the read fails.
+ */
+const signIns = () => {
+  const at = { token: "dana-1", says: true };
+  const owners: Readonly<Record<string, string>> = {
+    "dana-1": "dana",
+    "dana-2": "dana",
+    erin: "erin",
+  };
+  const ownerOf = (token: string | null): string | null =>
+    at.says && token !== null ? (owners[token] ?? null) : null;
+  return {
+    at,
+    reads: {
+      ...sessionReads("change-1"),
+      connection: async () => ({ url: "http://mend", token: at.token }),
+      viewerId: async (): Promise<string | null> => ownerOf(at.token),
+      accountOf: async (connection: { readonly token: string | null }): Promise<string | null> =>
+        ownerOf(connection.token),
+    },
+  };
+};
+
+describe("a review on its way while VS Code's sign-in changes on the same server", () => {
+  it("sends nothing on Retry while Mend cannot say whose a new sign-in is", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    let asked = 0;
+    mend.deliver = async () => {
+      asked += 1;
+      throw new MendApiError("Mend is restarting.", 503);
+    };
+    const { at, reads } = signIns();
+    const store = new ReviewStore(reads, mend, new ReviewMemory(memento()), kept, noPaste);
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("failed"), SETTLE);
+    expect(asked).toBe(1);
+
+    at.token = "erin";
+    at.says = false;
+    expect(await store.retry({ place: DANA_S1, key })).toEqual({
+      retried: false,
+      words: expect.any(String),
+    });
+    await settle();
+    expect(asked).toBe(1);
+    expect(await phaseOf(kept, key)).toBe("failed");
+  });
+
+  it("is delivered when she signs in again as herself while Mend takes it", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    mend.answer = "pending";
+    let land: (() => void) | null = null;
+    const deliver = mend.deliver.bind(mend);
+    mend.deliver = async (sessionId, request) => {
+      await new Promise<void>((resolve) => {
+        land = resolve;
+      });
+      return deliver(sessionId, request);
+    };
+    const { at, reads } = signIns();
+    const store = new ReviewStore(reads, mend, new ReviewMemory(memento()), kept, noPaste);
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    const key = await sendAll(store);
+    await vi.waitFor(() => expect(land).not.toBeNull(), SETTLE);
+
+    at.token = "dana-2";
+    land?.();
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).not.toBe("sending"), SETTLE);
+    expect(await phaseOf(kept, key)).toBe("pending");
+    expect(mend.delivered).toHaveLength(1);
+  });
+
+  it("never shows Dana's pending comments once another sign-in Mend cannot name reads the session", async () => {
+    const { at, reads } = signIns();
+    const store = new ReviewStore(
+      reads,
+      new FakeMend(),
+      new ReviewMemory(memento()),
+      inMemory(),
+      noPaste,
+    );
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    await store.comment(onLine(3, "Dana's own words"));
+    expect(store.review().pending).toHaveLength(1);
+
+    at.token = "erin";
+    at.says = false;
+    const before = store.ready()?.readAt;
+    store.reread();
+    await vi.waitFor(() => expect(store.ready()?.readAt).not.toBe(before), SETTLE);
+    expect(store.review().pending).toEqual([]);
+  });
+});
+
 describe("Retry delivery of a review another window delivered meanwhile", () => {
   it("says it sent nothing, and what the review reads now", async () => {
     const kept = inMemory();
