@@ -24,6 +24,11 @@ import { expect, fail, grouped, heredoc, world } from "./vscode-answer.mjs";
 const HOOK_STANDIN = join(import.meta.dirname, "../scripts/fixtures/claude-standin.mjs");
 const ANA_HOLDS = "ana-holds-workspace";
 const DANA_TERMINAL = "dana-in-anas-workspace";
+/** What claude draws under its prompt: `shift+tab to cycle`, `Shift+Tab to change mode`. */
+const CLAUDE_DRAWS = /shift\+tab/i;
+/** What `TtyAttachment` writes into the tab when its ticket, its socket or the process fails. */
+const ATTACH_ERROR =
+  /Mend refused this terminal|could not reach Mend|reattaching|Mend did not open the terminal|connection lost|the process ended|no longer lets this editor|shared control off|tried \d+ times/;
 
 /**
  * Prints `<marker>:{…}`: every claude in the workspace (its uid, `--session-id`, whether it carries
@@ -485,7 +490,7 @@ export default async (h) => {
   );
 
   await checked(
-    `Answer attaches ${danaLabel}'s claude as a terminal tab in Dana's window: no window opens, no "no agent attached" line`,
+    `Answer attaches ${danaLabel}'s claude in Dana's window: its tab is the active one and shows claude's output, no attach error, no window opens, no "no agent attached" line`,
     async () => {
       await useWindow(await homeWindow());
       await view("Mend");
@@ -505,15 +510,20 @@ export default async (h) => {
         gesture = "the palette's Mend: Answer, the session picked (the row offered no Answer)";
       }
       const want = `claude · ${danaLabel}`;
-      const tabs = await waitUntil(
+      await waitUntil(
         `a ${want} tab`,
-        async () => {
-          const now = await terminal().tabs();
-          return now.names.some((name) => name.includes(want)) ? now : null;
-        },
+        async () =>
+          (await terminal().tabs()).names.some((name) => name.includes(want)) ? true : null,
         30_000,
-      ).catch(async () => terminal().tabs());
+      ).catch(() => null);
+      const drawn = await terminal()
+        .waitForText(CLAUDE_DRAWS, 30_000)
+        .catch(() => null);
       await sleep(3_000);
+      const tabs = await terminal().tabs();
+      const rows = (await terminal().read()).join("\n");
+      keep(`${danaLabel}-answered-terminal.txt`, rows);
+      const attachError = ATTACH_ERROR.exec(rows)?.[0] ?? null;
       const shown = await seen.stop();
       const opened = await newWindows(known);
       const bar = await statusBarItems();
@@ -522,9 +532,13 @@ export default async (h) => {
       );
       await shot("answered");
       const attached = tabs.names.some((name) => name.includes(want));
-      const observed = `${gesture} · tabs before ${JSON.stringify(tabsBefore.names)} · after ${JSON.stringify(tabs.names)} (active ${JSON.stringify(tabs.active)}) · new windows ${opened.length} · status line ${refusal.length === 0 ? "none refusing" : JSON.stringify([...new Set(refusal)])}`;
+      const active = tabs.active?.includes(want) === true;
+      const observed = `${gesture} · tabs before ${JSON.stringify(tabsBefore.names)} · after ${JSON.stringify(tabs.names)} (active ${JSON.stringify(tabs.active)}) · claude's output ${drawn === null ? "not drawn" : `drawn (${CLAUDE_DRAWS})`} · attach error ${attachError === null ? "none" : JSON.stringify(attachError)} · new windows ${opened.length} · status line ${refusal.length === 0 ? "none refusing" : JSON.stringify([...new Set(refusal)])}`;
       expect(refusal.length === 0, `refused: ${observed}`);
       expect(attached, `no ${want} tab: ${observed}`);
+      expect(active, `the ${want} tab is not the active one: ${observed}`);
+      expect(attachError === null, `the tab says it did not attach: ${observed}`);
+      expect(drawn !== null, `claude's output never reached the tab: ${observed}`);
       expect(opened.length === 0, `a window opened: ${observed}`);
       return observed;
     },

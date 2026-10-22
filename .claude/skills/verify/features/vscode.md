@@ -442,8 +442,11 @@ the row takes the job's name.
     (`scripts/fixtures/claude-standin.mjs`) replays `PermissionRequest` (Bash) through those hooks
     (`SessionStart` first when her row records no `--session-id`); the session reads
     `waiting · permission · Bash`. Dana's view lists it in `Needs you` with Answer and the badge
-    counts it. Answer (the row's, else the palette's) attaches `claude · <session>` in Dana's
-    window, no window opens, and no `no agent attached` line shows.
+    counts it. Answer (the row's, else the palette's) attaches `claude · <session>` in Dana's window
+    as the active tab, which shows claude's own text (`shift+tab`) and none of the attach errors
+    `TtyAttachment` writes (`Mend refused this terminal`, `reattaching`, `connection lost`, …); no
+    window opens, and no `no agent attached` line shows. The tab's text is kept as
+    `<session>-answered-terminal.txt`.
   - `GET /sessions/:id/requests` filters only on `?pending=1` (`query.pending === "1"` in
     `apps/api/src/routes/workbench.ts`); `?pending=true` returned all 8 of a session's resolved
     requests in `ansr1`.
