@@ -109,6 +109,14 @@ export type PasteStep =
   /** VS Code could not attach the live agent's terminal here: Retry delivery pastes it again. */
   | { readonly kind: "failed" };
 
+/** The slice a review is sent on: its id, both checkpoints, and the digest of its diff. */
+export interface SendSlice {
+  readonly id: string;
+  readonly baseId: string;
+  readonly headId: string;
+  readonly diffDigest: string;
+}
+
 export interface SendRecord {
   /** The follow-up's idempotency key: the same on every retry. */
   readonly key: string;
@@ -748,12 +756,7 @@ export const startSend = (
   review: SessionReview,
   input: {
     readonly key: string;
-    readonly slice: {
-      readonly id: string;
-      readonly baseId: string;
-      readonly headId: string;
-      readonly diffDigest: string;
-    };
+    readonly slice: SendSlice;
     readonly instruction: string;
     readonly paste: PastePlan;
     /** The pending comments the instruction lists: each must still be pending. */
@@ -791,6 +794,7 @@ export const startSend = (
     createdAt: input.now,
   };
   return {
+    ...review,
     pending: review.pending.filter((pending) => !chosen.has(pending.id)),
     sends: [...review.sends, record].slice(-KEPT_SENDS),
   };
@@ -818,6 +822,7 @@ export const withSend = (
       : [],
   );
   return {
+    ...review,
     pending: [...review.pending, ...back],
     sends: review.sends.map((candidate) => (candidate.key === key ? next : candidate)),
   };

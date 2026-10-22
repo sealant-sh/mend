@@ -48,7 +48,7 @@ describe("a change's comments as threads", () => {
   it("shows her pending comment as hers, pending, on the pinned new side", () => {
     const threads = threadsOf(
       readOf({ kind: "pinned" }),
-      { pending: [pending({})], sends: [] },
+      { pending: [pending({})], sends: [], documents: [] },
       "Dana",
     );
     expect(threads).toMatchObject([
@@ -81,6 +81,7 @@ describe("a change's comments as threads", () => {
           }),
         ],
         sends: [],
+        documents: [],
       },
       "Dana",
     );
@@ -189,7 +190,7 @@ describe("the threads of a review she sent", () => {
 
   it("show a draft she accepted once while its review is on its way, as hers", () => {
     const review = startSend(
-      { pending: [accepted], sends: [] },
+      { pending: [accepted], sends: [], documents: [] },
       {
         key: "k1",
         slice: SLICE,

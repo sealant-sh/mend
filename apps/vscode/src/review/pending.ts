@@ -1,11 +1,13 @@
 import type {
   CommentTarget,
+  HeldInput,
   PastePlan,
   PasteStep,
   PostState,
   SendItem,
   SendPhase,
   SendRecord,
+  SendSlice,
   TerminalInput,
 } from "./delivery.js";
 import type { CommentAnchor, RecordLink } from "./review-wire.js";
@@ -52,19 +54,56 @@ export interface PendingComment {
   readonly anchor: CommentAnchor | null;
 }
 
+/** What Send review composed a review with: exactly the comments it lists, and on which slice. */
+export interface Composed {
+  /** Its review document's: each composition is a document of its own. */
+  readonly id: string;
+  readonly sessionId: string;
+  readonly sessionName: string;
+  /** The slice it was composed on: the pinned slice when she chose Send review. */
+  readonly slice: SendSlice;
+  /** Her pending comments, by id. */
+  readonly pending: ReadonlyArray<string>;
+  /** The comments open on Mend, by id. */
+  readonly open: ReadonlyArray<string>;
+  /** Every comment it lists with its words as they were: an edit since reads as a change. */
+  readonly digest: string;
+  /** The reviews it was composed after (`sendGeneration`): one sent since makes it stale. */
+  readonly generation: string;
+  /**
+   * What the agent's input holds, as VS Code pasted it, that this review is composed on top of:
+   * Send to session pastes only what follows it. Null for a review on its own.
+   */
+  readonly base: HeldInput | null;
+}
+
 /**
- * One session's review on this machine: her pending comments, and the reviews she sent. A comment
- * is pending or in exactly one send record, never both.
+ * Send review's editor as she last saved it, with what it was composed with, until Send to session
+ * sends it. `revision` counts her saves: a save over one this editor did not read is refused.
+ */
+export interface ReviewDocument {
+  readonly composed: Composed;
+  readonly text: string;
+  readonly revision: number;
+}
+
+/**
+ * One session's review on this machine: her pending comments, the reviews she sent, and the
+ * reviews she is writing. A comment is pending or in exactly one send record, never both.
  */
 export interface SessionReview {
   readonly pending: ReadonlyArray<PendingComment>;
   readonly sends: ReadonlyArray<SendRecord>;
+  readonly documents: ReadonlyArray<ReviewDocument>;
 }
 
-export const EMPTY_REVIEW: SessionReview = { pending: [], sends: [] };
+export const EMPTY_REVIEW: SessionReview = { pending: [], sends: [], documents: [] };
 
 /** The reviews kept: the newest few, enough for since my last review and a retry. */
 export const KEPT_SENDS = 5;
+
+/** The review documents kept: each Send review composes one, and Send to session ends it. */
+export const KEPT_DOCUMENTS = 5;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -313,14 +352,131 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
   ];
 };
 
+const parseIds = (value: unknown): ReadonlyArray<string> | null => {
+  if (!Array.isArray(value)) return null;
+  const ids = value.flatMap((id) => (typeof id === "string" ? [id] : []));
+  return ids.length === value.length ? ids : null;
+};
+
+const parseHeld = (value: unknown): HeldInput | null => {
+  if (!isRecord(value)) return null;
+  const input = parseInput(value["input"]);
+  const agent = text(value, "agent");
+  const processId = text(value, "processId");
+  return input === null || agent === null || processId === null
+    ? null
+    : { input, agent, processId };
+};
+
+const parseDocument = (value: unknown): ReadonlyArray<ReviewDocument> => {
+  if (!isRecord(value)) return [];
+  const composed = value["composed"];
+  const saved = text(value, "text");
+  const revision = whole(value, "revision");
+  if (!isRecord(composed) || !isRecord(composed["slice"]) || saved === null || revision === null)
+    return [];
+  const slice = composed["slice"];
+  const id = text(composed, "id");
+  const sessionId = text(composed, "sessionId");
+  const sessionName = text(composed, "sessionName");
+  const sliceId = text(slice, "id");
+  const baseId = text(slice, "baseId");
+  const headId = text(slice, "headId");
+  const diffDigest = text(slice, "diffDigest");
+  const pending = parseIds(composed["pending"]);
+  const open = parseIds(composed["open"]);
+  const digest = text(composed, "digest");
+  const generation = text(composed, "generation");
+  const base = composed["base"] === null ? null : parseHeld(composed["base"]);
+  if (
+    id === null ||
+    sessionId === null ||
+    sessionName === null ||
+    sliceId === null ||
+    baseId === null ||
+    headId === null ||
+    diffDigest === null ||
+    pending === null ||
+    open === null ||
+    digest === null ||
+    generation === null ||
+    (base === null && composed["base"] !== null)
+  )
+    return [];
+  return [
+    {
+      composed: {
+        id,
+        sessionId,
+        sessionName,
+        slice: { id: sliceId, baseId, headId, diffDigest },
+        pending,
+        open,
+        digest,
+        generation,
+        base,
+      },
+      text: saved,
+      revision,
+    },
+  ];
+};
+
 /** A session's review as stored; a comment or a review that does not read back is dropped alone. */
 export const parseSessionReview = (value: unknown): SessionReview =>
   isRecord(value)
     ? {
         pending: Array.isArray(value["pending"]) ? value["pending"].flatMap(parsePending) : [],
         sends: Array.isArray(value["sends"]) ? value["sends"].flatMap(parseSend) : [],
+        documents: Array.isArray(value["documents"])
+          ? value["documents"].flatMap(parseDocument)
+          : [],
       }
     : EMPTY_REVIEW;
+
+/** A review Send review composed, kept as her document until Send to session sends it. */
+export const addDocument = (review: SessionReview, document: ReviewDocument): SessionReview => ({
+  ...review,
+  documents: [...review.documents, document].slice(-KEPT_DOCUMENTS),
+});
+
+/** Her save of a review document: kept only over the revision her editor read. */
+export type DocumentSave =
+  | { readonly kind: "saved"; readonly review: SessionReview; readonly revision: number }
+  /** Sent, or composed so long ago that newer reviews took its place. */
+  | { readonly kind: "gone" }
+  /** Saved since her editor read it, in another window. */
+  | { readonly kind: "newer" };
+
+/**
+ * `read` is the revision her editor read; null when it read none in this window, as an editor VS
+ * Code restored from its own backup, which VS Code checks against the revision it last saw.
+ */
+export const saveDocument = (
+  review: SessionReview,
+  id: string,
+  read: number | null,
+  words: string,
+): DocumentSave => {
+  const found = review.documents.find((document) => document.composed.id === id);
+  if (found === undefined) return { kind: "gone" };
+  if (read !== null && found.revision !== read) return { kind: "newer" };
+  if (found.text === words) return { kind: "saved", review, revision: found.revision };
+  const saved: ReviewDocument = { ...found, text: words, revision: found.revision + 1 };
+  return {
+    kind: "saved",
+    review: {
+      ...review,
+      documents: review.documents.map((document) => (document === found ? saved : document)),
+    },
+    revision: saved.revision,
+  };
+};
+
+export const removeDocument = (review: SessionReview, id: string): SessionReview => ({
+  ...review,
+  documents: review.documents.filter((document) => document.composed.id !== id),
+});
 
 export const addPending = (review: SessionReview, comment: PendingComment): SessionReview => ({
   ...review,

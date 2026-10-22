@@ -193,6 +193,20 @@ describe("a review she saved, when VS Code reloads", () => {
     await expect(Promise.resolve().then(() => after.provider.stat(opened.uri))).rejects.toThrow();
     after.close();
   });
+
+  it("keeps a save of words VS Code restored unsaved, which this window never read", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    const before = await windowOn(files, mend);
+    const opened = await sendReview();
+    before.close();
+
+    const after = await windowOn(files, mend);
+    const words = "Typed before the reload, saved after it.";
+    await after.provider.writeFile(opened.uri, encoded(words), SAVE);
+    expect(decoded(await after.provider.readFile(opened.uri))).toBe(words);
+    after.close();
+  });
 });
 
 describe("a review open in two windows", () => {

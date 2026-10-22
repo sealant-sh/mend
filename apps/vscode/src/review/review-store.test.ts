@@ -502,6 +502,7 @@ describe("a comment VS Code could not keep", () => {
     await keptIn(directory).update(DANA_S1, () => ({
       pending: Array.from({ length: MAX_PENDING }, (_, index) => pending({ id: `p${index}` })),
       sends: [],
+      documents: [],
     }));
     const store = await readyStore(keptIn(directory));
     expect(await store.comment(onLine(3, "one more"))).toEqual({

@@ -146,7 +146,7 @@ describe("the Change section's rows (story d, step 1)", () => {
           ],
         },
       ),
-      { pending: [pending({})], sends: [] },
+      { pending: [pending({})], sends: [], documents: [] },
       "Dana",
       NOW,
     );

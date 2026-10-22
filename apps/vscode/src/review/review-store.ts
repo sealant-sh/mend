@@ -34,7 +34,7 @@ import {
   type PastePlan,
   type SendEvent,
   type SendRecord,
-  type HeldInput,
+  type SendSlice,
   terminalInput,
 } from "./delivery.js";
 import {
@@ -50,12 +50,18 @@ import {
 import { samePlace, type KeptReviews, type ReviewPlace } from "./kept-reviews.js";
 import {
   acceptedDrafts,
+  addDocument,
   addPending,
   editPending,
   EMPTY_REVIEW,
   MAX_PENDING,
+  removeDocument,
   removePending,
+  saveDocument,
+  type Composed,
+  type DocumentSave,
   type PendingComment,
+  type ReviewDocument,
   type SessionReview,
 } from "./pending.js";
 import type { ReviewClient } from "./review-client.js";
@@ -126,24 +132,13 @@ export interface RetryTarget {
   readonly key: string;
 }
 
-/** What Send review composed: the text, and exactly the comments it lists. */
-export interface Composed {
-  readonly sessionId: string;
-  readonly sessionName: string;
-  readonly text: string;
-  /** Her pending comments, by id. */
-  readonly pending: ReadonlyArray<string>;
-  /** The comments open on Mend, by id. */
-  readonly open: ReadonlyArray<string>;
-  /** Every comment it lists with its words as they were: an edit since reads as a change. */
-  readonly digest: string;
-  /** The reviews it was composed after (`sendGeneration`): one sent since makes it stale. */
-  readonly generation: string;
-  /**
-   * What the agent's input holds, as VS Code pasted it, that this review is composed on top of:
-   * Send to session pastes only what follows it. Null for a review on its own.
-   */
-  readonly base: HeldInput | null;
+/** What Send review composed: exactly the comments it lists, and its text as composed. */
+export type Composition = Composed & { readonly text: string };
+
+/** A review document, by the person, server and session it is kept for, and its id. */
+export interface DocumentRef {
+  readonly place: ReviewPlace;
+  readonly id: string;
 }
 
 /** Whether Retry delivery sent the review again; when not, what it found instead. */
@@ -704,13 +699,15 @@ export class ReviewStore implements vscode.Disposable {
    * pasted into the agent's terminal and not entered, it keeps that review's text as she sent it
    * and adds only the comments that are new.
    */
-  compose(): Composed | null {
+  compose(): Composition | null {
     const read = this.ready();
     if (read === null) return null;
     const open = this.#openOnMend(read);
     const listed = {
+      id: randomUUID(),
       sessionId: read.sessionId,
       sessionName: read.sessionName,
+      slice: sliceOf(read),
       pending: this.#review.pending.map((pending) => pending.id),
       open: open.map((comment) => comment.id),
       digest: digestOf(this.#review.pending, open),
@@ -752,7 +749,7 @@ export class ReviewStore implements vscode.Disposable {
    * new idempotency key kept in the record; the record is then driven until Mend answers. Says
    * whether the send was recorded, and why not in Mend's words.
    */
-  async send(composed: Omit<Composed, "sessionName" | "text">, text: string): Promise<Sent> {
+  async send(composed: Omit<Composed, "sessionName">, text: string): Promise<Sent> {
     const read = this.ready();
     const place = this.#place;
     if (read === null || place === null || read.sessionId !== composed.sessionId)
@@ -779,22 +776,18 @@ export class ReviewStore implements vscode.Disposable {
       // Checked again as kept, under the lock: another window may have sent these comments.
       next = await this.#keepAt(place, (review) => {
         stale = sendGeneration(review.sends) !== composed.generation;
-        return stale || digestOf(review.pending, open) !== composed.digest
-          ? review
-          : (startSend(review, {
-              key,
-              slice: {
-                id: read.pinned.id,
-                baseId: read.pinned.base.id,
-                headId: read.pinned.head.id,
-                diffDigest: read.pinned.diffDigest,
-              },
-              instruction,
-              paste,
-              pending: composed.pending,
-              open: composed.open,
-              now: new Date().toISOString(),
-            }) ?? review);
+        if (stale || digestOf(review.pending, open) !== composed.digest) return review;
+        const started = startSend(review, {
+          key,
+          slice: sliceOf(read),
+          instruction,
+          paste,
+          pending: composed.pending,
+          open: composed.open,
+          now: new Date().toISOString(),
+        });
+        // Sent, her review document ends with it: the record keeps its text.
+        return started === null ? review : removeDocument(started, composed.id);
       });
     } catch (cause) {
       await this.kept.releaseDrive(place, key).catch(() => undefined);
@@ -809,6 +802,31 @@ export class ReviewStore implements vscode.Disposable {
     }
     void this.#drive(this.#context(read, place), key);
     return { sent: true };
+  }
+
+  /** Keeps what Send review composed as her review document, before its editor opens. */
+  async keepDocument(composition: Composition): Promise<DocumentRef> {
+    const place = this.#place;
+    if (place === null) throw new Error("Mend has not finished reading this session.");
+    const { text, ...composed } = composition;
+    await this.#keepAt(place, (review) => addDocument(review, { composed, text, revision: 1 }));
+    return { place, id: composed.id };
+  }
+
+  /** A review document as kept now, in any window; null once it was sent or no longer kept. */
+  async document(ref: DocumentRef): Promise<ReviewDocument | null> {
+    const { review } = await this.kept.read(ref.place);
+    return review.documents.find((document) => document.composed.id === ref.id) ?? null;
+  }
+
+  /** Her save of a review document, over the revision her editor read, under the lock. */
+  async saveDocument(ref: DocumentRef, read: number | null, text: string): Promise<DocumentSave> {
+    let saved: DocumentSave | null = null;
+    await this.#keepAt(ref.place, (review) => {
+      saved = saveDocument(review, ref.id, read, text);
+      return saved.kind === "saved" ? saved.review : review;
+    });
+    return saved ?? { kind: "gone" };
   }
 
   /** The review of the followed session that offers Retry delivery from the title, if any. */
@@ -1455,6 +1473,13 @@ const liveAgent = (detail: SessionDetail, viewer: string | null): LiveAgent | nu
     processId: agent.id,
   };
 };
+
+const sliceOf = (read: ChangeRead): SendSlice => ({
+  id: read.pinned.id,
+  baseId: read.pinned.base.id,
+  headId: read.pinned.head.id,
+  diffDigest: read.pinned.diffDigest,
+});
 
 /** A pending comment on a Mend draft's place: its lines where the draft hangs, or the whole change. */
 const onDraft = (

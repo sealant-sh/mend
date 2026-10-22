@@ -46,6 +46,7 @@ const sent = (
   review: SessionReview = {
     pending: [pending({}), pending({ id: "p2", line: 13, endLine: 13 })],
     sends: [],
+    documents: [],
   },
   key = "key-1",
 ): SessionReview =>
@@ -134,6 +135,7 @@ describe("sending a review (story d, step 6)", () => {
     const review: SessionReview = {
       pending: [pending({}), pending({ id: "p2", line: 13, endLine: 13 })],
       sends: [],
+      documents: [],
     };
     const input = {
       key: "key-1",
@@ -270,16 +272,16 @@ describe("an accepted draft in a review she sent", () => {
   });
 
   it("stays hers while the review is on its way, not a draft beside it", () => {
-    const review = sent({ pending: [accepted], sends: [] });
+    const review = sent({ pending: [accepted], sends: [], documents: [] });
     expect(acceptedDrafts(review).has("d1")).toBe(true);
   });
 
   it("leaves the review when it is dismissed on Mend, and is never opened", () => {
-    const review = sent({ pending: [accepted, pending({})], sends: [] });
+    const review = sent({ pending: [accepted, pending({})], sends: [], documents: [] });
     expect(nextAction(only(review))).toMatchObject({ kind: "open", draftId: "d1" });
     const gone = apply(review, { kind: "draft-gone", draftId: "d1" });
     expect(only(gone).items.map((item) => item.kind)).toEqual(["own"]);
-    const alone = apply(sent({ pending: [accepted], sends: [] }), {
+    const alone = apply(sent({ pending: [accepted], sends: [], documents: [] }), {
       kind: "draft-gone",
       draftId: "d1",
     });
