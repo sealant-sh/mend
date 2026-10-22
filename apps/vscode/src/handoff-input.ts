@@ -16,6 +16,7 @@ import {
   excludedFiles,
   HANDOFF_UNSUPPORTED,
   issueWords,
+  KeptPrompts,
   localIssueWords,
   openQuestion,
   renderQuestion,
@@ -73,7 +74,7 @@ const contains = (parent: string, child: string): boolean => {
 
 export class HandoffInput implements vscode.Disposable {
   readonly #subscriptions: vscode.Disposable[] = [];
-  readonly #kept = new Map<string, string>();
+  readonly #kept = new KeptPrompts();
   #generation = 0;
   #destinationGeneration = 0;
   #active: { readonly focus: () => void; readonly cancel: () => void } | null = null;
@@ -192,7 +193,7 @@ export class HandoffInput implements vscode.Disposable {
       choice?.(null);
       choice = null;
       if (!transferred) {
-        if (bound !== null) this.#kept.set(bound.account, state.prompt);
+        if (bound !== null) this.#kept.typed(bound.account, state.prompt);
         cancelled.abort();
         void (draft === null ? worker?.dispose() : draft.discard());
         releaseActive();
@@ -284,7 +285,11 @@ export class HandoffInput implements vscode.Disposable {
         }
         transferred = true;
         close();
-        void this.#submit(accepted, releaseActive)
+        const launchConfirmed = this.#kept.accepted(
+          accepted.client.account,
+          accepted.continuation.kind === "prompt" ? accepted.continuation.prompt : "",
+        );
+        void this.#submit(accepted, launchConfirmed, releaseActive)
           .catch((cause: unknown) =>
             showErrorToast(
               cause,
@@ -357,7 +362,7 @@ export class HandoffInput implements vscode.Disposable {
       bound = client;
       dispatch({
         kind: "typed",
-        value: state.prompt === "" ? (this.#kept.get(client.account) ?? "") : state.prompt,
+        value: state.prompt === "" ? this.#kept.reopensWith(client.account) : state.prompt,
       });
       dispatch({ kind: "connection", offline: this.store.model()?.offline ?? false });
       if (roots.length === 0) {
@@ -488,12 +493,17 @@ export class HandoffInput implements vscode.Disposable {
     }
   }
 
-  async #submit(accepted: AcceptedHandoff, releaseActive: () => void): Promise<void> {
+  async #submit(
+    accepted: AcceptedHandoff,
+    launchConfirmed: () => void,
+    releaseActive: () => void,
+  ): Promise<void> {
     let progress: ((message: string) => void) | null = null;
     const operation = new HandoffSubmission(accepted, {
       launches: this.launches,
       record: (project, receipt) => this.store.recordHandoff(project, receipt),
       progress: (message) => progress?.(message),
+      launchConfirmed,
       observe: (id, changed) => {
         const subscription = this.store.onDidHearEvent((event) => {
           if (event.sessionId === id || event.type === "resync") changed();
@@ -513,16 +523,12 @@ export class HandoffInput implements vscode.Disposable {
           return retry ? operation.checkAgain() : operation.run();
         },
       );
-    const prompt = accepted.continuation.kind === "prompt" ? accepted.continuation.prompt : "";
     let outcome: SubmissionOutcome;
     try {
       outcome = await run(false);
       while (awaitsCheck(outcome, accepted)) {
         const answer = await vscode.window.showWarningMessage(outcome.message ?? "", "Check again");
-        if (answer !== "Check again") {
-          if (outcome.kind === "unconfirmed") this.#kept.set(accepted.client.account, prompt);
-          return;
-        }
+        if (answer !== "Check again") return;
         outcome = await run(true);
       }
     } finally {
@@ -531,14 +537,12 @@ export class HandoffInput implements vscode.Disposable {
     }
     if (outcome.kind === "unconfirmed") return;
     if (outcome.kind === "refused") {
-      this.#kept.set(accepted.client.account, prompt);
       await showErrorToast(
         outcome.issue?.kind === "signed-out" ? new MendApiError(outcome.message, 401) : null,
         outcome.message,
       );
       return;
     }
-    this.#kept.delete(accepted.client.account);
     if (!(await accepted.client.isCurrent())) {
       const action = await vscode.window.showInformationMessage(
         `Handed off as ${outcome.receipt.worktree.name} on ${accepted.client.label}. Your checkout is unchanged. Snapshot as of ${cutTime(accepted.summary.cutAt)}. Reconnect there to open or review it.`,

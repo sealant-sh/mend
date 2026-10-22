@@ -1,7 +1,9 @@
 import { MendApiError } from "./mend-http.js";
 import { promptIssue, type LaunchRequest } from "./new-session.js";
 import type { LaunchAttempt } from "./session-model.js";
-import type { LaunchExpected, Session } from "./types.js";
+import type { LaunchExpected, Session, SessionDetail } from "./types.js";
+
+type LaunchRead = Pick<SessionDetail, "session" | "processes" | "currentAgent">;
 
 /** What a launch needs of the client. */
 export interface LaunchClient {
@@ -10,8 +12,14 @@ export interface LaunchClient {
     sessionId: string,
     start: LaunchRequest & { readonly expected?: LaunchExpected },
   ): Promise<unknown>;
-  sessionDetail(sessionId: string): Promise<{ readonly session: Session }>;
+  sessionDetail(sessionId: string): Promise<LaunchRead>;
 }
+
+export const agentStarted = (detail: LaunchRead): boolean =>
+  detail.currentAgent !== null ||
+  detail.processes.some(
+    (process) => process.kind === "agent-pty" || process.kind === "agent-protocol",
+  );
 
 /** Where each attempt is said: the store, whose model reads it. */
 export interface AttemptSink {
@@ -73,6 +81,7 @@ const UNDER_WAY = /already under way/;
 export class Launches {
   readonly #sent = new Map<string, LaunchRequest>();
   readonly #clients = new Map<string, LaunchClient>();
+  readonly #confirmed = new Map<string, () => void>();
   readonly #attempts = new Map<string, LaunchAttempt>();
   /** Sessions with a launch or a Retry on its way, until it is answered: a second click sends nothing. */
   readonly #busy = new Map<string, Promise<void>>();
@@ -87,14 +96,18 @@ export class Launches {
     return this.#sent.has(sessionId);
   }
 
-  /** The first launch of a session this window created. */
+  /**
+   * The first launch of a session this window created, on `client`, which its Retry uses too.
+   * `confirmed` hears when Mend answers this launch or a Retry of it with success.
+   */
   async launch(
     sessionId: string,
     start: LaunchRequest,
-    client: LaunchClient = this.client,
+    options: { readonly client?: LaunchClient; readonly confirmed?: () => void } = {},
   ): Promise<void> {
     if (this.#busy.has(sessionId)) return;
-    this.#clients.set(sessionId, client);
+    this.#clients.set(sessionId, options.client ?? this.client);
+    if (options.confirmed !== undefined) this.#confirmed.set(sessionId, options.confirmed);
     const sent = await this.#hold(sessionId, () => this.#send(sessionId, start, null, null));
     // Said once nothing is on its way, so the toast it raises may offer Retry.
     if (sent.kind === "answered") await this.#say(sessionId, sent.attempt);
@@ -146,10 +159,11 @@ export class Launches {
   }
 
   async #read(sessionId: string): Promise<Session | null> {
-    return (this.#clients.get(sessionId) ?? this.client).sessionDetail(sessionId).then(
-      ({ session }) => session,
-      () => null,
-    );
+    return (await this.#detail(sessionId))?.session ?? null;
+  }
+
+  async #detail(sessionId: string): Promise<LaunchRead | null> {
+    return (this.#clients.get(sessionId) ?? this.client).sessionDetail(sessionId).catch(() => null);
   }
 
   async #check(sessionId: string): Promise<RetryOffer> {
@@ -188,13 +202,27 @@ export class Launches {
         sessionId,
         expected === null ? start : { ...start, expected },
       );
+      this.#confirmed.get(sessionId)?.();
       return { kind: "answered", attempt };
     } catch (cause) {
       // No answer, or a 5xx (an edge in front of the server answers 502/504 while the server
       // still runs the launch): it may be running. Saying it again reads the session, and the
       // reads say.
-      if (!(cause instanceof MendApiError) || cause.status === null || cause.status >= 500)
-        return { kind: "answered", attempt };
+      if (!(cause instanceof MendApiError) || cause.status === null || cause.status >= 500) {
+        if (!(await this.#untaken(sessionId))) return { kind: "answered", attempt };
+        const said = cause instanceof Error ? cause.message : "Mend did not answer";
+        return {
+          kind: "answered",
+          attempt: {
+            ...attempt,
+            refusal: {
+              line: `launch not answered · ${said}`,
+              at: new Date().toISOString(),
+              confirmed: true,
+            },
+          },
+        };
+      }
       const precondition = cause.status === 409 ? PRECONDITIONS[cause.tag ?? ""] : undefined;
       if (precondition !== undefined) {
         if (before === undefined) this.#attempts.delete(sessionId);
@@ -218,6 +246,16 @@ export class Launches {
         },
       };
     }
+  }
+
+  /**
+   * The session still reads idle with no agent ever started, so it has not taken the launch: Retry
+   * may send it again, and the server's launch gate refuses that if the launch is under way after
+   * all.
+   */
+  async #untaken(sessionId: string): Promise<boolean> {
+    const read = await this.#detail(sessionId);
+    return read !== null && read.session.status === "idle" && !agentStarted(read);
   }
 
   /** Whether the server settled the session failed since `after`; unknown when the read fails. */

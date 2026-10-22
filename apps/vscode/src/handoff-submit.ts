@@ -8,7 +8,7 @@ import type { HandoffIssue, HandoffReceipt, HandoffTerms } from "./handoff-clien
 import type { AcceptedHandoff } from "./handoff-draft.js";
 import type { HandoffBundle } from "./handoff-worker.js";
 import { issueWords, localIssueWords, sizeWords } from "./handoff.js";
-import type { Launches } from "./launches.js";
+import { agentStarted, type Launches } from "./launches.js";
 import { MendApiError } from "./mend-http.js";
 import type { Project, SessionDetail } from "./types.js";
 
@@ -29,17 +29,13 @@ export interface SubmissionDependencies {
   readonly launches: Pick<Launches, "launch">;
   readonly record: (project: Project, receipt: HandoffReceipt) => void;
   readonly progress: (message: string) => void;
+  readonly launchConfirmed: () => void;
   readonly observe?: (sessionId: string, changed: () => void) => () => void;
   readonly holdTimeoutMs?: number;
   readonly pollMs?: number;
 }
 const termsEqual = (left: HandoffTerms, right: HandoffTerms): boolean =>
   left.fileBytes === right.fileBytes && left.bundleBytes === right.bundleBytes;
-const agentStarted = (detail: SessionDetail): boolean =>
-  detail.currentAgent !== null ||
-  detail.processes.some(
-    (process) => process.kind === "agent-pty" || process.kind === "agent-protocol",
-  );
 
 export const awaitsCheck = (outcome: SubmissionOutcome, accepted: AcceptedHandoff): boolean =>
   outcome.kind === "unconfirmed" ||
@@ -337,7 +333,7 @@ export class HandoffSubmission {
       await this.dependencies.launches.launch(
         receipt.session.id,
         { mode: "pty", prompt: continuation.prompt },
-        client,
+        { client, confirmed: this.dependencies.launchConfirmed },
       );
     this.dependencies.progress("ready");
     return {

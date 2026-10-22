@@ -122,6 +122,7 @@ describe("raw handoff HTTP", () => {
         launches: { launch: async () => undefined },
         record: () => undefined,
         progress: () => undefined,
+        launchConfirmed: () => undefined,
       },
     );
     expect((await operation.run()).kind).toBe("done");

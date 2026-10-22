@@ -23,6 +23,28 @@ export const continuation = (
   const message = promptIssue(value, "claude");
   return message === null ? { kind: "prompt", prompt: value.trim() } : { kind: "invalid", message };
 };
+/**
+ * Her prompt per account, kept for the next question until Mend confirms a launch of it or she
+ * clears the box. No other outcome lets it go.
+ */
+export class KeptPrompts {
+  readonly #byAccount = new Map<string, { readonly text: string; launched: boolean }>();
+  reopensWith(account: string): string {
+    const kept = this.#byAccount.get(account);
+    return kept === undefined || kept.launched ? "" : kept.text;
+  }
+  typed(account: string, text: string): void {
+    if (this.reopensWith(account) !== text) this.#byAccount.set(account, { text, launched: false });
+  }
+  /** Gives back what to call once Mend confirms a launch of it. */
+  accepted(account: string, text: string): () => void {
+    const kept = { text, launched: false };
+    this.#byAccount.set(account, kept);
+    return () => {
+      kept.launched = true;
+    };
+  }
+}
 interface QuestionData {
   readonly prompt: string;
   readonly generation: number;

@@ -73,7 +73,7 @@ const fakeServer = (
     sessionDetail: async () => {
       const at = reads[Math.min(read++, reads.length - 1)];
       if (at === undefined) throw new Error("no read");
-      return { session: at };
+      return { session: at, processes: [], currentAgent: null };
     },
   };
 };
@@ -111,7 +111,7 @@ const admittingServer = (initial: Session) => {
       now = { ...now, status: "running", settledAt: null, summary: "reading src/auth" };
       return {};
     },
-    sessionDetail: async () => ({ session: now }),
+    sessionDetail: async () => ({ session: now, processes: [], currentAgent: null }),
   };
 };
 
@@ -305,6 +305,49 @@ describe("Launches", () => {
 });
 
 describe("a held handoff's launch", () => {
+  it("reads a launch Mend never answered as refused while no agent ever ran, so Retry sends it", async () => {
+    const server = fakeServer(["unanswered", "ok"], [session("idle")]);
+    const store = sink();
+    const confirmed: Array<string> = [];
+    const launches = new Launches(server, store);
+    await launches.launch("s1", START, { confirmed: () => confirmed.push("s1") });
+    expect(store.said.at(-1)?.attempt.refusal).toMatchObject({
+      line: "launch not answered · Cannot reach Mend at http://localhost:3100.",
+      confirmed: true,
+    });
+    expect(confirmed).toEqual([]);
+    expect((await launches.offer("s1")).kind).toBe("retry");
+    expect(await launches.relaunch("s1", null)).toEqual({ kind: "sent" });
+    expect(server.launched.map((one) => one.body)).toEqual([START, START]);
+    expect(confirmed).toEqual(["s1"]);
+  });
+
+  it("offers no Retry for an unanswered launch once the idle session shows an agent ran", async () => {
+    const server = {
+      ...fakeServer(["unanswered"], []),
+      sessionDetail: async () => ({
+        session: session("idle"),
+        processes: [],
+        currentAgent: {
+          id: "agent-1",
+          kind: "agent-pty",
+          harness: "claude",
+          status: "exited",
+          exitedAt: S1,
+          providerSessionId: null,
+          label: "claude",
+          runsAs: null,
+          waiting: null,
+        },
+      }),
+    };
+    const store = sink();
+    const launches = new Launches(server, store);
+    await launches.launch("s1", START);
+    expect(store.said.at(-1)?.attempt.refusal).toBeNull();
+    expect((await launches.offer("s1")).kind).toBe("moved");
+  });
+
   it("keeps the bound client for the first launch and its Retry after a connection switch", async () => {
     const original = fakeServer(["refused", "ok"], [session("idle")]);
     const switched = fakeServer(["ok"], [session("idle")]);
@@ -315,7 +358,7 @@ describe("a held handoff's launch", () => {
       },
       forget: () => undefined,
     });
-    await launches.launch("s1", START, original);
+    await launches.launch("s1", START, { client: original });
     expect((await launches.offer("s1")).kind).toBe("retry");
     expect(await launches.relaunch("s1", null)).toEqual({ kind: "sent" });
     expect(original.launched).toHaveLength(2);

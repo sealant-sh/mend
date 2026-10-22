@@ -25,6 +25,9 @@ const setup = () => {
     record: () => {
       fake.calls.push("record");
     },
+    launchConfirmed: () => {
+      fake.calls.push("launch confirmed");
+    },
     holdTimeoutMs: 2,
     pollMs: 1,
   };

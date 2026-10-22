@@ -68,8 +68,9 @@ export interface LaunchAttempt {
   /** The session's `settledAt` when this attempt was sent: a failure settled since is this one's. */
   readonly after: string | null;
   /**
-   * The server refused this attempt over HTTP. Until a read shows the server settled it, the
-   * session reads `failed · <line>`.
+   * The server refused this attempt over HTTP, or never answered it while the session still reads
+   * as not having taken it. Until a read shows the server settled it, the session reads
+   * `failed · <line>`.
    */
   readonly refusal: Refusal | null;
 }
