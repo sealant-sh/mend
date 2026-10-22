@@ -624,7 +624,7 @@ const exitable = () => {
 };
 
 describe("claude exits after VS Code pasted the review into its input", () => {
-  it("offers no Retry delivery of it, and her next Send carries its comments", async () => {
+  it("offers no Retry delivery of it, and Send review composes its comments under a new key, with no new comment", async () => {
     const mend = new FakeMend();
     mend.answer = "pending";
     const world = exitable();
@@ -648,7 +648,6 @@ describe("claude exits after VS Code pasted the review into its input", () => {
     );
     expect(limiter?.kind).toBe("waiting");
 
-    await store.comment(onLine(5, "Name the constant"));
     expect(store.offer()).toEqual({ kind: "ready", count: 1 });
     const next = store.compose();
     if (next === null) throw new Error("nothing composed");
