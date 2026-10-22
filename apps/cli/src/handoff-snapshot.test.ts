@@ -416,6 +416,7 @@ describe("snapshotCheckout", () => {
   it.each([
     ["now", new Date("2026-10-18T07:00:00.000Z")],
     ["before 1970", new Date(-500)],
+    ["before 1834", new Date(-4_294_967_294_500)],
   ])("carries a same-size edit made in the tick its commit wrote the index (%s)", (_, tick) => {
     const w = world();
     const dana = w.clone("same-tick");
