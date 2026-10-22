@@ -299,6 +299,65 @@ describe("saving an edit to a pending comment", () => {
     sender.dispose();
     editor.dispose();
   });
+
+  it("keeps her edited words in the review store when VS Code could not write them, though another window sent the comment and its thread is redrawn", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    let full = false;
+    const fillable: KeptFiles = {
+      ...NODE_FILES,
+      writeFile: async (path, text) => {
+        if (full) throw new Error("the disk is full.");
+        await NODE_FILES.writeFile(path, text);
+      },
+    };
+    const window = async (files: KeptFiles) => {
+      const store = new ReviewStore(
+        sessionReads("change-1"),
+        mend,
+        new ReviewMemory(memento()),
+        keptIn(directory, files),
+        noPaste,
+      );
+      store.follow(PROJECT, session("s1"));
+      await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+      return store;
+    };
+    const sender = await window(NODE_FILES);
+    const editor = await window(fillable);
+    const comments = new ReviewComments(editor);
+    await sender.comment({
+      at: {
+        worktreeId: "w1",
+        path: "src/auth/limit.ts",
+        at: PINNED.head.id,
+        absent: false,
+        slice: PINNED.id,
+      },
+      line: 3,
+      endLine: 3,
+      lineText: "",
+      body: "Use the shared limiter",
+    });
+    await editor.reloadReview();
+    const thread = liveThreads().at(0);
+    if (thread === undefined) throw new Error("no thread drawn");
+    await ui.commands.get("mend.review.edit")?.(thread.comments[0]);
+    const [editing] = thread.comments;
+    if (editing === undefined) throw new Error("not editing");
+    Object.assign(editing, { body: "Use guard.ts instead" });
+    const composed = sender.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(sender, composed, composed.text)).toEqual({ sent: true });
+    full = true;
+    await ui.commands.get("mend.review.save")?.(editing);
+    await editor.reloadReview();
+    expect(editor.held().map(({ body }) => body)).toEqual(["Use guard.ts instead"]);
+    expect(shownWords()).toContain("Use guard.ts instead");
+    comments.dispose();
+    sender.dispose();
+    editor.dispose();
+  });
 });
 
 describe("her words under a Mend draft", () => {
@@ -390,6 +449,23 @@ describe("her words under a Mend draft", () => {
     expect(shownWords()).toContain(WORDS);
     done();
   });
+
+  it.each(["accept", "dismiss"])(
+    "are kept at the draft's place when %s arrives after the draft's thread was redrawn away",
+    async (gesture) => {
+      const mend = new FakeMend();
+      const { store, thread, done } = await underDraft(mend);
+      mend.serverComments = [{ ...DRAFT, state: "dismissed" }];
+      store.reread();
+      await vi.waitFor(() => expect(thread.disposed).toBe(true), SETTLE);
+      await ui.commands.get(`mend.review.${gesture}`)?.({ thread, text: WORDS });
+      expect(store.review().pending.map(({ path, line, body }) => ({ path, line, body }))).toEqual([
+        { path: DRAFT.file, line: DRAFT.line, body: WORDS },
+      ]);
+      expect(shownWords()).toContain(WORDS);
+      done();
+    },
+  );
 
   it("are not dropped by a newer reply, held or kept", async () => {
     let full = true;
