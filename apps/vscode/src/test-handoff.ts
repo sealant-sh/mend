@@ -45,6 +45,12 @@ export const summary: CaptureSummary = {
   cutAt: "2026-10-22T10:42:05.000Z",
   envFiles: "exclude",
 };
+export const checkout = {
+  top: "/checkout",
+  gitDir: "/checkout/.git",
+  commonDir: "/checkout/.git",
+  originUrl: project.originUrl,
+};
 export const terms: HandoffTerms = { bundleBytes: 100_000, fileBytes: 8192 };
 export const receipt = (status: SessionStatus = "idle"): HandoffReceipt => ({
   replayed: false,
@@ -133,12 +139,6 @@ export const fakeHandoff = () => {
       calls.push("launch");
       return read.session;
     },
-  };
-  const checkout = {
-    top: "/checkout",
-    gitDir: "/checkout/.git",
-    commonDir: "/checkout/.git",
-    originUrl: project.originUrl,
   };
   const worker: CheckoutWorker = {
     discover: async () => {
