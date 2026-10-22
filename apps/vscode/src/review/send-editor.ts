@@ -146,17 +146,24 @@ export class SendEditor implements vscode.Disposable {
     for (const disposable of this.#disposables) disposable.dispose();
   }
 
+  /** The session's one review, at one URI, so a tab VS Code restored is that same review. */
   async #open(): Promise<void> {
     const composition = this.store.compose();
     if (composition === null) return;
-    const open = vscode.workspace.textDocuments.find(
-      (candidate) => refOf(candidate.uri)?.place.sessionId === composition.sessionId,
+    const kept = await this.store.keepDocument(composition);
+    if (kept.replaced !== null) {
+      const saved = await vscode.workspace.openTextDocument({
+        content: kept.replaced,
+        language: "markdown",
+      });
+      await vscode.window.showTextDocument(saved, { preview: false });
+      void vscode.window.showInformationMessage(
+        "Your comments changed since you saved this review, so Send review composed it again. The text you saved is open in an untitled editor.",
+      );
+    }
+    const document = await vscode.workspace.openTextDocument(
+      documentUri(kept.ref, kept.document.composed.sessionName),
     );
-    const document =
-      open ??
-      (await vscode.workspace.openTextDocument(
-        documentUri(await this.store.keepDocument(composition), composition.sessionName),
-      ));
     await vscode.window.showTextDocument(document, { preview: false });
   }
 

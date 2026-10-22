@@ -50,7 +50,7 @@ import {
 import { samePlace, type KeptReviews, type ReviewPlace } from "./kept-reviews.js";
 import {
   acceptedDrafts,
-  addDocument,
+  keepComposed,
   addPending,
   editPending,
   EMPTY_REVIEW,
@@ -804,7 +804,7 @@ export class ReviewStore implements vscode.Disposable {
         words: `The Change section no longer shows this review's session, so nothing was sent. ${TEXT_STAYS}`,
       };
     const ofRef = (review: SessionReview): ReviewDocument | undefined =>
-      review.documents.find((document) => document.composed.documentId === ref.id);
+      review.document?.composed.documentId === ref.id ? review.document : undefined;
     const document = ofRef((await this.kept.read(place)).review);
     if (document === undefined) return { sent: false, words: NOT_KEPT };
     if (document.revision !== revision) return { sent: false, words: SAVED_SINCE };
@@ -861,17 +861,36 @@ export class ReviewStore implements vscode.Disposable {
     return { sent: true };
   }
 
-  async keepDocument(composition: Composition): Promise<DocumentRef> {
+  /**
+   * The session's one review for Send review: the one kept while it is still current, else this
+   * composition. `replaced` is the text she saved in the one it replaced, so nothing she wrote goes.
+   */
+  async keepDocument(composition: Composition): Promise<{
+    readonly ref: DocumentRef;
+    readonly document: ReviewDocument;
+    readonly replaced: string | null;
+  }> {
     const place = this.#place;
     if (place === null) throw new Error("Mend has not finished reading this session.");
     const { text, ...composed } = composition;
-    await this.#keepAt(place, (review) => addDocument(review, { composed, text, revision: 1 }));
-    return { place, id: composed.documentId };
+    const kept: { replaced: ReviewDocument | null } = { replaced: null };
+    const { document } = await this.#keepAt(place, (review) => {
+      const next = keepComposed(review, composed, text);
+      kept.replaced = next.replaced;
+      return next.review;
+    });
+    if (document === null) throw new Error("VS Code did not keep the review.");
+    const { replaced } = kept;
+    return {
+      ref: { place, id: document.composed.documentId },
+      document,
+      replaced: replaced !== null && replaced.revision > 1 ? replaced.text : null,
+    };
   }
 
   async document(ref: DocumentRef): Promise<ReviewDocument | null> {
-    const { review } = await this.kept.read(ref.place);
-    return review.documents.find((document) => document.composed.documentId === ref.id) ?? null;
+    const { document } = (await this.kept.read(ref.place)).review;
+    return document?.composed.documentId === ref.id ? document : null;
   }
 
   async saveDocument(ref: DocumentRef, revision: number, text: string): Promise<DocumentSave> {

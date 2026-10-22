@@ -349,10 +349,8 @@ export const sendComposed = async (
   composition: Composition,
   text: string,
 ): Promise<Sent> => {
-  const ref = await store.keepDocument(composition);
-  const kept = await store.document(ref);
-  if (kept === null) throw new Error("the review was not kept");
-  return store.send(ref, text, kept.revision);
+  const { ref, document } = await store.keepDocument(composition);
+  return store.send(ref, text, document.revision);
 };
 
 /** Long enough for a store's read of the fakes to land. */

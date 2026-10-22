@@ -504,7 +504,7 @@ describe("a comment VS Code could not keep", () => {
     await keptIn(directory).update(DANA_S1, () => ({
       pending: Array.from({ length: MAX_PENDING }, (_, index) => pending({ id: `p${index}` })),
       sends: [],
-      documents: [],
+      document: null,
     }));
     const store = await readyStore(keptIn(directory));
     expect(await store.comment(onLine(3, "one more"))).toEqual({
@@ -575,7 +575,7 @@ describe("sending a review from the store", () => {
     await store.comment(onLine(4, "written after the editor opened"));
     const refused = await sendComposed(store, composed, composed.text);
     expect(refused).toEqual({ sent: false, words: expect.stringMatching(/changed/) });
-    const ref = await store.keepDocument(composed);
+    const { ref } = await store.keepDocument(composed);
     const elsewhere = { ...ref, place: { ...ref.place, sessionId: "s2" } };
     expect(await store.send(elsewhere, composed.text, 1)).toMatchObject({ sent: false });
     expect(store.review().sends).toEqual([]);

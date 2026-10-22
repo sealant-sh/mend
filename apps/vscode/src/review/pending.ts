@@ -76,15 +76,14 @@ export interface ReviewDocument {
 export interface SessionReview {
   readonly pending: ReadonlyArray<PendingComment>;
   readonly sends: ReadonlyArray<SendRecord>;
-  readonly documents: ReadonlyArray<ReviewDocument>;
+  /** The review Send review opened for the session, until it is sent: one per session. */
+  readonly document: ReviewDocument | null;
 }
 
-export const EMPTY_REVIEW: SessionReview = { pending: [], sends: [], documents: [] };
+export const EMPTY_REVIEW: SessionReview = { pending: [], sends: [], document: null };
 
 /** The reviews kept: the newest few, enough for since my last review and a retry. */
 export const KEPT_SENDS = 5;
-
-export const KEPT_DOCUMENTS = 5;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -349,13 +348,13 @@ const parseHeld = (value: unknown): HeldInput | null => {
     : { input, agent, processId };
 };
 
-const parseDocument = (value: unknown): ReadonlyArray<ReviewDocument> => {
-  if (!isRecord(value)) return [];
+const parseDocument = (value: unknown): ReviewDocument | null => {
+  if (!isRecord(value)) return null;
   const composed = value["composed"];
   const saved = text(value, "text");
   const revision = whole(value, "revision");
   if (!isRecord(composed) || !isRecord(composed["slice"]) || saved === null || revision === null)
-    return [];
+    return null;
   const slice = composed["slice"];
   const documentId = text(composed, "documentId");
   const sessionId = text(composed, "sessionId");
@@ -383,24 +382,22 @@ const parseDocument = (value: unknown): ReadonlyArray<ReviewDocument> => {
     generation === null ||
     (base === null && composed["base"] !== null)
   )
-    return [];
-  return [
-    {
-      composed: {
-        documentId,
-        sessionId,
-        sessionName,
-        slice: { id: sliceId, baseId, headId, diffDigest },
-        pending,
-        open,
-        digest,
-        generation,
-        base,
-      },
-      text: saved,
-      revision,
+    return null;
+  return {
+    composed: {
+      documentId,
+      sessionId,
+      sessionName,
+      slice: { id: sliceId, baseId, headId, diffDigest },
+      pending,
+      open,
+      digest,
+      generation,
+      base,
     },
-  ];
+    text: saved,
+    revision,
+  };
 };
 
 /** A session's review as stored; a comment or a review that does not read back is dropped alone. */
@@ -409,16 +406,31 @@ export const parseSessionReview = (value: unknown): SessionReview =>
     ? {
         pending: Array.isArray(value["pending"]) ? value["pending"].flatMap(parsePending) : [],
         sends: Array.isArray(value["sends"]) ? value["sends"].flatMap(parseSend) : [],
-        documents: Array.isArray(value["documents"])
-          ? value["documents"].flatMap(parseDocument)
-          : [],
+        document: parseDocument(value["document"]),
       }
     : EMPTY_REVIEW;
 
-export const addDocument = (review: SessionReview, document: ReviewDocument): SessionReview => ({
-  ...review,
-  documents: [...review.documents, document].slice(-KEPT_DOCUMENTS),
-});
+/**
+ * The session's review for a fresh composition: the one kept while it still lists the same
+ * comments, with the same words, after the same reviews; else the composition, replacing it.
+ */
+export const keepComposed = (
+  review: SessionReview,
+  composed: Composed,
+  words: string,
+): { readonly review: SessionReview; readonly replaced: ReviewDocument | null } => {
+  const kept = review.document;
+  if (
+    kept !== null &&
+    kept.composed.digest === composed.digest &&
+    kept.composed.generation === composed.generation
+  )
+    return { review, replaced: null };
+  return {
+    review: { ...review, document: { composed, text: words, revision: 1 } },
+    replaced: kept,
+  };
+};
 
 export type DocumentSave =
   | { readonly kind: "saved"; readonly review: SessionReview; readonly revision: number }
@@ -432,25 +444,16 @@ export const saveDocument = (
   revision: number,
   words: string,
 ): DocumentSave => {
-  const found = review.documents.find((document) => document.composed.documentId === documentId);
-  if (found === undefined) return { kind: "gone" };
+  const found = review.document;
+  if (found?.composed.documentId !== documentId) return { kind: "gone" };
   if (found.revision !== revision) return { kind: "newer" };
   if (found.text === words) return { kind: "saved", review, revision: found.revision };
   const saved: ReviewDocument = { ...found, text: words, revision: found.revision + 1 };
-  return {
-    kind: "saved",
-    review: {
-      ...review,
-      documents: review.documents.map((document) => (document === found ? saved : document)),
-    },
-    revision: saved.revision,
-  };
+  return { kind: "saved", review: { ...review, document: saved }, revision: saved.revision };
 };
 
-export const removeDocument = (review: SessionReview, documentId: string): SessionReview => ({
-  ...review,
-  documents: review.documents.filter((document) => document.composed.documentId !== documentId),
-});
+export const removeDocument = (review: SessionReview, documentId: string): SessionReview =>
+  review.document?.composed.documentId === documentId ? { ...review, document: null } : review;
 
 export const addPending = (review: SessionReview, comment: PendingComment): SessionReview => ({
   ...review,
