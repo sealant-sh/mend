@@ -56,8 +56,8 @@ export interface AgentTabEffects {
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
   readonly onError: (cause: unknown) => void;
-  /** Says why the window attaches no agent for the session. */
-  readonly refused: (line: string) => void;
+  /** Says why the window attaches no agent for the session; null once a focus shows a tab. */
+  readonly refused: (line: string | null) => void;
 }
 
 type Attached =
@@ -203,6 +203,7 @@ export class AgentTabs {
         want.processId === have.processId
       ) {
         have.tab.show();
+        effects.refused(null);
         return;
       }
       if (have !== undefined) {
@@ -220,6 +221,7 @@ export class AgentTabs {
   #showContinuing(sessionId: string): boolean {
     if (!this.#continuing.has(sessionId)) return false;
     this.#attached.get(sessionId)?.tab.show();
+    this.effects.refused(null);
     return true;
   }
 
@@ -238,6 +240,7 @@ export class AgentTabs {
         viewer,
       });
       this.#attached.set(sessionId, { kind: "pty", processId: want.processId, tab });
+      effects.refused(null);
     } else if (want.kind === "conversation") {
       const lines = ownsSession(detail.session, viewer)
         ? [want.line]
@@ -252,6 +255,7 @@ export class AgentTabs {
           detail.session.harness,
         viewer,
       });
+      effects.refused(null);
     }
   }
 

@@ -135,12 +135,14 @@ const world = (
       clock += ms;
     },
     onError: vi.fn(),
-    refused: vi.fn(),
+    refused: vi.fn((_line: string | null) => undefined),
     ...overrides,
   } satisfies AgentTabEffects;
   return {
     effects,
     tabs,
+    /** The refusal the window shows now, as the status bar keeps the last one said. */
+    line: () => effects.refused.mock.calls.at(-1)?.[0] ?? null,
     agents: new AgentTabs(effects, { switchWaitMs: 5000, pollMs: 1000 }),
   };
 };
@@ -243,10 +245,10 @@ describe("focusing a session's agent", () => {
         workspaceLauncherUserId: launcher,
         sharedControlEnabledAt: "2026-10-19T09:00:00.000Z",
       });
-      const { effects, agents, tabs } = world([detail([conversation], anas)]);
+      const { agents, tabs, line } = world([detail([conversation], anas)]);
       await agents.focus("older", null);
       expect(tabs.map((tab) => tab.lines)).toEqual([["read-only · Ana's session"]]);
-      expect(effects.refused).not.toHaveBeenCalled();
+      expect(line()).toBeNull();
     }
   });
 
@@ -280,24 +282,43 @@ describe("focusing a session's agent", () => {
     );
   });
 
+  it("clears the refusal an earlier Answer showed once Answer attaches the agent", async () => {
+    const anas = session({ ownerUserId: "ana" });
+    const shared = session({ ownerUserId: "ana", sharedControlEnabledAt: "2026-10-19T09:00:00Z" });
+    const { agents, tabs, line } = world([
+      detail([conversation], anas),
+      detail([conversation], shared),
+    ]);
+    await agents.focus("older", null);
+    expect(line()).toBe(
+      "Ana's session · only Ana steers it while shared control is off · no agent attached",
+    );
+    await agents.focus("older", null);
+    expect(tabs.map((tab) => tab.lines)).toEqual([["read-only · Ana's session"]]);
+    expect(line()).toBeNull();
+  });
+
   it("answers her own terminal agent in a workspace Ana launched: the terminal attaches over Mend", async () => {
     const mineInAnas = session({ ownerUserId: "dana", workspaceLauncherUserId: "ana" });
-    const { effects, agents } = world([detail([terminalAgent], mineInAnas)]);
+    const { effects, agents, line } = world([detail([terminalAgent], mineInAnas)]);
     await agents.focus("older", null);
     expect(effects.attachPty).toHaveBeenCalledTimes(1);
-    expect(effects.refused).not.toHaveBeenCalled();
+    expect(line()).toBeNull();
   });
 
   it("answers her own terminal agent while the workspace window's focus of it is still reading", async () => {
     const mineInAnas = session({ ownerUserId: "dana", workspaceLauncherUserId: "ana" });
     const read = Promise.withResolvers<SessionDetail>();
-    const { effects, agents } = world([], { detail: vi.fn(() => read.promise) });
+    const { effects, agents, line } = world([], { detail: vi.fn(() => read.promise) });
     const windowFocus = agents.focus("older", WORKSPACE);
     const answer = agents.focus("older", null);
     read.resolve(detail([terminalAgent], mineInAnas));
     await Promise.all([windowFocus, answer]);
-    expect(effects.refused).toHaveBeenCalledTimes(1);
+    expect(effects.refused).toHaveBeenCalledWith(
+      "another person launched this workspace · Remote-SSH opens it only for them · no agent attached",
+    );
     expect(effects.attachPty).toHaveBeenCalledTimes(1);
+    expect(line()).toBeNull();
   });
 
   it("names the session a tab shows, and none for a tab it did not attach", async () => {
