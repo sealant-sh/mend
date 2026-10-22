@@ -21,6 +21,9 @@ interface OpenDocument {
   readonly uri: vscode.Uri;
   text: string;
   version: number;
+  isDirty: boolean;
+  /** The `mtime` the text is based on: VS Code refuses a save once the file's is another. */
+  mtime: number;
   getText(): string;
   save(): Promise<boolean>;
 }
@@ -33,6 +36,40 @@ const ui = vi.hoisted(() => ({
   untitled: new Array<string>(),
   providerOfThisWindow(): vscode.FileSystemProvider | undefined {
     return this.providers.at(-1);
+  },
+  /** A review's editor as VS Code holds it: a save checks the file's `mtime`, then writes. */
+  editor(
+    provider: vscode.FileSystemProvider,
+    uri: vscode.Uri,
+    text: string,
+    mtime: number,
+    isDirty = false,
+  ): OpenDocument {
+    return {
+      uri,
+      text,
+      version: 1,
+      isDirty,
+      mtime,
+      getText() {
+        return this.text;
+      },
+      async save() {
+        if (!this.isDirty) return true;
+        if ((await provider.stat(uri)).mtime !== this.mtime) return false;
+        try {
+          await provider.writeFile(uri, new TextEncoder().encode(this.text), {
+            create: false,
+            overwrite: true,
+          });
+        } catch {
+          return false;
+        }
+        this.mtime = (await provider.stat(uri)).mtime;
+        this.isDirty = false;
+        return true;
+      },
+    };
   },
 }));
 
@@ -99,15 +136,8 @@ vi.mock("vscode", async () => {
         if (loaded !== undefined) return loaded;
         const provider = ui.providerOfThisWindow();
         if (provider === undefined) throw new Error("no provider for the review scheme");
-        const opened: OpenDocument = {
-          uri,
-          text: new TextDecoder().decode(await provider.readFile(uri)),
-          version: 1,
-          getText() {
-            return this.text;
-          },
-          save: async () => true,
-        };
+        const text = new TextDecoder().decode(await provider.readFile(uri));
+        const opened = ui.editor(provider, uri, text, (await provider.stat(uri)).mtime);
         ui.documents.push(opened);
         return opened;
       },
@@ -196,6 +226,7 @@ describe("Send to session", () => {
     const sending = ui.commands.get("mend.change.sendToSession")?.(opened.uri);
     opened.text = `${opened.text}\nAnd keep the burst test.`;
     opened.version += 1;
+    opened.isDirty = true;
     await sending;
     await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
     expect(mend.delivered[0]?.instruction).not.toContain("And keep the burst test.");
@@ -324,6 +355,52 @@ describe("a review she saved, when VS Code reloads", () => {
     );
     restored.close();
     other.close();
+  });
+});
+
+describe("words VS Code restored unsaved", () => {
+  it("are never sent over a review another window saved since they were typed", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    const before = await windowOn(files, mend);
+    const opened = await sendReview();
+    before.close();
+    ui.documents.length = 0;
+
+    const other = await windowOn(files, mend);
+    await other.provider.readFile(opened.uri);
+    await other.provider.writeFile(opened.uri, encoded("words saved in the other window"), SAVE);
+    other.close();
+
+    const restored = await windowOn(files, mend);
+    await restored.provider.stat(opened.uri);
+    const backup = ui.editor(restored.provider, opened.uri, "words VS Code restored", 1, true);
+    ui.documents.push(backup);
+    await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mend.delivered).toEqual([]);
+    expect(decoded(await restored.provider.readFile(opened.uri))).toBe(
+      "words saved in the other window",
+    );
+    expect(backup.text).toBe("words VS Code restored");
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringMatching(/Your text stays in this editor/),
+    );
+    restored.close();
+  });
+
+  it("are saved, then sent as saved", async () => {
+    const mend = mendWithOpen();
+    const window = await windowOn(memoryFiles(), mend);
+    const opened = await sendReview();
+    opened.text = "Typed, and sent without a save.";
+    opened.version += 1;
+    opened.isDirty = true;
+    await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    expect(mend.delivered[0]?.instruction).toBe("Typed, and sent without a save.");
+    expect(opened.isDirty).toBe(false);
+    window.close();
   });
 });
 
