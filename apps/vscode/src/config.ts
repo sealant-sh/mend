@@ -309,14 +309,13 @@ export class ConnectionStore {
     const server = url === undefined ? (await this.get()).url : canonicalServerUrl(url);
     const cli = cliConfig();
     const kept = await this.#own(server, cli);
-    // Written before the revoke, so a sign-in another window makes while Mend answers lands after
-    // it and stays; and whatever this window read, since another window's sign-in may not have
-    // reached it yet.
-    await this.#write({ kind: "signedOut", url: server });
     const own = kept?.kind === "token" ? kept : null;
     if (own === null && tokenFor(server, kept, cli) === null) {
       return `This editor holds no Mend sign-in for ${server}.`;
     }
+    // Written before the revoke, so a sign-in another window makes while Mend answers lands after
+    // it and stays.
+    await this.#write({ kind: "signedOut", url: server });
     if (own === null) return signOutMessage(server, { kind: "cliFallback" });
     if (own.deviceId === null) return signOutMessage(server, { kind: "pastedToken" });
     const outcome = await revokeDevice({ url: server, token: own.token, deviceId: own.deviceId });

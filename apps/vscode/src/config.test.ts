@@ -537,22 +537,6 @@ describe("two windows writing the credentials before either sees the other's wri
       expect(await window.state()).toMatchObject({ token: "mdt_cli", source: { kind: "cli" } });
     }
   }, 10_000);
-
-  it("signs out in every window when this one has not yet seen another window's sign-in", async () => {
-    vi.stubGlobal(
-      "fetch",
-      devicesServer(() => new Response(null, { status: 204 })),
-    );
-    ui.showInputBox.mockResolvedValueOnce(MINI);
-    const storage = laggySecrets();
-    const [here, there] = [storage.window(), storage.window()];
-    expect(await here.connect()).toBe(true);
-    expect(await there.signOut(MINI)).toBe(`This editor holds no Mend sign-in for ${MINI}.`);
-    storage.deliver();
-    for (const window of [here, there]) {
-      expect(await window.state()).toMatchObject({ kind: "notConnected" });
-    }
-  }, 10_000);
 });
 
 describe("a sign-in kept before 0.37, in the one blob", () => {
@@ -625,6 +609,20 @@ describe("signing out says what Mend answered", () => {
       expect(await store().state()).toMatchObject({ kind: "notConnected" });
     });
   }
+
+  it("writes nothing when it finds nothing, so a later mend login still connects the editor", async () => {
+    settings.set("mend.serverUrl", MINI);
+    const connections = store();
+    expect(await connections.signOut(MINI)).toBe(`This editor holds no Mend sign-in for ${MINI}.`);
+    expect([...secrets.keys()]).toEqual([]);
+    const cliDir = path.join(home, ".config", "mend");
+    fs.mkdirSync(cliDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(cliDir, "cli.json"),
+      JSON.stringify({ url: MINI, token: "mdt_cli" }),
+    );
+    expect(await connections.state()).toMatchObject({ token: "mdt_cli", source: { kind: "cli" } });
+  });
 });
 
 describe("Connect while connected (h2)", () => {
