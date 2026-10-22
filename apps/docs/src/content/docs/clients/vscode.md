@@ -123,11 +123,9 @@ The launch is not awaited. The session's row shows in the view at once and reads
 runs. No window opens and no notification shows. **Open** opens its workspace when you want it. An
 empty prompt starts the harness without one.
 
-The session starts from the server's copy of the project (`from main` above), not from the files in
-the window's folder. The extension does not hand off. To carry on from the folder's branch with its
-uncommitted files, run `mend handoff` in a terminal in that folder. See
-[Hand off local work](/guides/hand-off-local-work/). The extension lists that session like any
-other, without the `handed off from <machine>` the CLI and the web show.
+The session starts from the server's copy of the project (`from main` above). To carry the branch,
+commits and uncommitted files from your local folder instead, use
+[Hand off to Mend](#hand-off-to-mend).
 
 The line reads `<harness> · <model> · <thinking> · <permissions> · from <base>`, with only the parts
 you chose: `default model` until you choose one, `high thinking`, and `asks before acting`.
@@ -210,6 +208,52 @@ the same worktree: the same files and branch, with a new conversation. Its title
 reads the same, and when another person's session runs there the line says so. Each session keeps
 its own harness state, so the new session does not see the first session's conversation. To continue
 that conversation, open that session.
+
+## Hand off to Mend
+
+In a local Git folder, choose **Hand off to Mend…** from Source Control's **⋯** menu, the Mend
+view's upload button, or **Mend: Hand off to Mend…** in the Command Palette. This needs a Mend
+server with handoffs (0.36). It is unavailable in a remote workspace or on Windows.
+
+The question names your branch and project and shows the snapshot it will send:
+
+```text
+Hand off fix/login to Mend · newsroom-api
+Continue with: optional · claude
+2 commits ahead of main · 3 uncommitted files · 1 untracked · .env left out
+Your checkout stays as it is. Snapshot as of 09:42:05.
+```
+
+Type an optional prompt while Mend reads the checkout. **Files left out…** lists excluded paths and
+why: gitignored, `.env`, or above this server's file limit. Back preserves your prompt. **Include
+.env files** takes another snapshot with eligible `.env` changes included; gitignored files still
+stay out. A `.env` file already committed in the branch's history travels with those commits, and
+the question says so. **Refresh snapshot** updates the cut and its time. Later local edits do not
+change an accepted snapshot.
+
+If the origin is not adopted, the question first offers **Adopt … and hand off**. Escape from any
+question step leaves your checkout and Mend unchanged. Enter accepts the snapshot; the question
+closes and a progress notification reports bundling, uploading, creating the worktree and ready.
+Closing that notification does not cancel the accepted handoff. If adoption succeeds but the handoff
+is refused, the project stays adopted and the notification says what remains.
+
+An empty prompt creates a held session with a shell. A prompt starts Claude in that same session
+after its workspace is ready. If the workspace is still starting, the notification says the prompt
+has not been sent, and **Check again** sends it once the workspace is idle. A refused launch offers
+**Retry** for that session; it does not create another handoff. The row reads
+`idle · handed off from <machine>` until another observed fact takes precedence, with its provenance
+kept in the tooltip.
+
+The completion notification always includes **Snapshot as of …** and offers **Open** and **Review**.
+Open follows your window preference; Review opens the native Change section. Neither happens
+automatically. Your local files, index and branch remain as they were.
+
+If Mend does not confirm receipt, **Check again** resends the same snapshot so Mend can identify an
+earlier receipt. Dismissing it releases that snapshot; invoking the command again takes a new one.
+Switching servers after acceptance keeps the operation bound to the original server and offers
+reconnection there. Offline before acceptance keeps your prompt and waits for connection.
+
+The terminal equivalent is [`mend handoff`](/guides/hand-off-local-work/).
 
 ## Open a session
 
