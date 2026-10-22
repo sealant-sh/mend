@@ -1544,6 +1544,48 @@ describe("a send on its way when VS Code connects to another Mend server", () =>
     );
     expect(store.retryTarget()?.key).toBe(record.key);
   });
+
+  it("says VS Code connected elsewhere before it pasted the review, never that VS Code closed", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    mend.serverComments = [comment({ id: "c1" })];
+    let url = "http://mend";
+    let switched = false;
+    const reads = {
+      ...withAgent(CLAUDE),
+      connection: async () => ({ url, token: null }),
+      sessionDetail: async (sessionId: string): Promise<SessionDetail> => {
+        // Read right after Mend held the review: VS Code connects elsewhere before the paste.
+        if (mend.delivered.length > 0 && !switched) {
+          switched = true;
+          url = "http://other";
+        }
+        return {
+          session: { ...session(sessionId), ownerUserId: "dana" },
+          processes: [CLAUDE],
+          currentAgent: CLAUDE,
+          changeId: "change-1",
+        };
+      },
+    };
+    const { store, pastes } = await window(keptIn(await storage()), mend, reads);
+    const told = failures(store);
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(switched).toBe(true), SETTLE);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    url = "http://mend";
+    store.forget();
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.retryTarget()).not.toBeNull(), SETTLE);
+    await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
+    expect(pastes).toEqual([]);
+    expect(told[0]?.words).toBe(
+      "VS Code connected to another Mend server or account before it pasted the review into claude's terminal, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it.",
+    );
+  });
 });
 
 describe("a window whose send another window took over while a POST was on its way", () => {
