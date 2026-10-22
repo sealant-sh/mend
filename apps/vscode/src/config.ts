@@ -94,6 +94,8 @@ export class ConnectionStore {
   #connecting: Promise<boolean> | null = null;
   /** The device a sign-in just replaced, revoked once the editor reads with the new token. */
   #replaced: Device | null = null;
+  /** Refusals this window is writing now, by server and token: another 401 on one joins it. */
+  readonly #refusing = new Map<string, Promise<void>>();
 
   constructor(
     private readonly context: { readonly secrets: Pick<vscode.SecretStorage, "get" | "store"> },
@@ -209,8 +211,17 @@ export class ConnectionStore {
    * on, so the Accounts menu, the extensions it was shared with, and every window (through the
    * secret's change) drop it. A token the editor no longer sends is left alone.
    */
-  async refused(connection: { readonly url: string; readonly token: string }): Promise<void> {
+  refused(connection: { readonly url: string; readonly token: string }): Promise<void> {
     // Requests out on one token come back refused together; one write is enough for every window.
+    const key = JSON.stringify([canonicalServerUrl(connection.url), connection.token]);
+    const running = this.#refusing.get(key);
+    if (running !== undefined) return running;
+    const run = this.#refuse(connection).finally(() => this.#refusing.delete(key));
+    this.#refusing.set(key, run);
+    return run;
+  }
+
+  async #refuse(connection: { readonly url: string; readonly token: string }): Promise<void> {
     if (await isRefused(this.#read, connection.url, connection.token)) return;
     await this.#write({ kind: "refused", ...connection });
   }

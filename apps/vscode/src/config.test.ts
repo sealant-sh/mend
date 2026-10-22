@@ -296,6 +296,30 @@ describe("the Accounts menu (h2c)", () => {
   });
 });
 
+describe("requests refused together on one token", () => {
+  it("write the refusal once, so every window hears of it once", async () => {
+    signedIn({ url: MINI, token: "mdt_old", id: "device-old" });
+    const writes: Array<string> = [];
+    const connections = new ConnectionStore({
+      secrets: {
+        get: async (key: string) => secrets.get(key),
+        store: async (key: string, value: string) => {
+          writes.push(key);
+          secrets.set(key, value);
+        },
+      },
+    });
+    const refused = { url: MINI, token: "mdt_old" };
+    await Promise.all([
+      connections.refused(refused),
+      connections.refused(refused),
+      connections.refused(refused),
+    ]);
+    expect(writes).toHaveLength(1);
+    expect(await kept(MINI)).toEqual({ kind: "none", url: MINI });
+  });
+});
+
 describe("a refusal and a sign-in at once (SLNT-170)", () => {
   it("keeps the sign-in written while the refusal of the token before it was being read", async () => {
     signedIn({ url: MINI, token: "mdt_old", id: "device-old" });
