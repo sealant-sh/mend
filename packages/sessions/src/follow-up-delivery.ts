@@ -396,7 +396,7 @@ export const FollowUpDeliveryLive: Layer.Layer<
       }
       if (instruction.trim() === "" || instruction.length > FOLLOW_UP_INSTRUCTION_MAX) {
         return yield* new FollowUpDeliveryInputError({
-          message: "Follow-up instructions must contain between 1 and 100000 characters.",
+          message: `Follow-up instructions must contain between 1 and ${FOLLOW_UP_INSTRUCTION_MAX} characters.`,
         });
       }
       if (

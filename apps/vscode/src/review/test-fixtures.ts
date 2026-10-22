@@ -363,7 +363,7 @@ export class FakeMend extends ReviewClient {
   override async deliver(sessionId: string, request: DeliverRequest): Promise<FollowUp> {
     if (request.instruction.trim() === "" || request.instruction.length > FOLLOW_UP_INSTRUCTION_MAX)
       throw new MendApiError(
-        "Follow-up instructions must contain between 1 and 100000 characters.",
+        `Follow-up instructions must contain between 1 and ${FOLLOW_UP_INSTRUCTION_MAX} characters.`,
         422,
         "StoreFailure",
       );

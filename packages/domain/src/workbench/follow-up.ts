@@ -13,6 +13,9 @@ import {
 import { Timestamp } from "../timestamp.ts";
 import { DiffDigest } from "./review-slice.ts";
 
+/** The longest instruction Mend takes for one follow-up, in UTF-16 code units. */
+export const FOLLOW_UP_INSTRUCTION_MAX = 100_000;
+
 /**
  * `pending` — persisted and waiting for a settled session.
  * `delivering` — the server owns a launch attempt; retries reconcile by correlation.
@@ -20,9 +23,6 @@ import { DiffDigest } from "./review-slice.ts";
  * `delivery_failed` — no accepted process was found; the same key may retry.
  * `superseded` — a newer bundle replaced it before delivery began.
  */
-/** The longest instruction Mend takes for one follow-up, in UTF-16 code units. */
-export const FOLLOW_UP_INSTRUCTION_MAX = 100_000;
-
 export const FollowUpStatus = Schema.Literals([
   "pending",
   "delivering",

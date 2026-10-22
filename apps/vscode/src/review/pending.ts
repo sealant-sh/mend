@@ -456,14 +456,14 @@ export const parseSessionReview = (value: unknown): SessionReview =>
       }
     : EMPTY_REVIEW;
 
+/** A review document's revision before she saves it: the text as Send review composed it. */
+const AS_COMPOSED = 1;
+
 /**
  * The session's review for a fresh composition: the one kept while it still lists the same
  * comments, with the same words, after the same reviews; else the composition, replacing it. The
  * text she saved in the one it replaces follows the composition (`carried`), in the same write.
  */
-/** A review document's revision before she saves it: the text as Send review composed it. */
-const AS_COMPOSED = 1;
-
 export const keepComposed = (
   review: SessionReview,
   composed: Composed,
