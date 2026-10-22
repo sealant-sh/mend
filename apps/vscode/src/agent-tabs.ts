@@ -2,7 +2,7 @@ import { maySteer, ownsSession, rowCapability } from "./session-capability.js";
 import type { Session, SessionDetail } from "./types.js";
 import {
   agentTab,
-  handoffRefusedLine,
+  switchRefusedLine,
   missingSessionLine,
   notInWorkspaceLine,
   type AgentTab,
@@ -39,8 +39,8 @@ export interface AgentTabEffects {
     readonly name: string;
     readonly lines: ReadonlyArray<string>;
   }) => ConversationTabHandle;
-  /** Mend's mode handoff: POST /sessions/:id/handoff {to:"pty"}. */
-  readonly handoff: (sessionId: string) => Promise<void>;
+  /** Mend's mode switch: POST /sessions/:id/handoff {to:"pty"}. */
+  readonly switchMode: (sessionId: string) => Promise<void>;
   /** Whether a read failed because Mend no longer has the session (a 404). */
   readonly gone: (cause: unknown) => boolean;
   /** The server's refusal (a 422) by its tag and words; null for any other failure. */
@@ -75,20 +75,20 @@ const reasonOf = (cause: unknown): string =>
 /**
  * A workspace window's agent tabs, one per session. Every focus reads the session first: a tab
  * whose process ended, or whose session's agent is now another process (the phone moved it into
- * a conversation, a handoff moved it into a terminal), is replaced, never shown as if live.
+ * a conversation, a mode switch moved it into a terminal), is replaced, never shown as if live.
  */
 export class AgentTabs {
   readonly #attached = new Map<string, Attached>();
   readonly #focusing = new Map<string, Promise<void>>();
   readonly #continuing = new Map<string, Promise<void>>();
-  readonly #handoffWaitMs: number;
+  readonly #switchWaitMs: number;
   readonly #pollMs: number;
 
   constructor(
     private readonly effects: AgentTabEffects,
-    options: { readonly handoffWaitMs?: number; readonly pollMs?: number } = {},
+    options: { readonly switchWaitMs?: number; readonly pollMs?: number } = {},
   ) {
-    this.#handoffWaitMs = options.handoffWaitMs ?? 30_000;
+    this.#switchWaitMs = options.switchWaitMs ?? 30_000;
     this.#pollMs = options.pollMs ?? 1_000;
   }
 
@@ -226,9 +226,9 @@ export class AgentTabs {
   }
 
   /**
-   * Mend's mode handoff moves the same conversation into a terminal, then that terminal replaces
+   * Mend's mode switch moves the same conversation into a terminal, then that terminal replaces
    * this tab. Any failure leaves the conversation's tab in place with Continue here to try again:
-   * a handoff the server already made is a no-op the second time.
+   * a mode switch the server already made is a no-op the second time.
    */
   async #continue(
     sessionId: string,
@@ -238,15 +238,15 @@ export class AgentTabs {
     const { tab, harness, viewer } = conversation;
     try {
       try {
-        await effects.handoff(sessionId);
+        await effects.switchMode(sessionId);
       } catch (cause) {
         const refusal = effects.refusal(cause);
         if (refusal === null) throw cause;
-        tab.say(handoffRefusedLine(harness, refusal));
+        tab.say(switchRefusedLine(harness, refusal));
         return;
       }
       tab.say("continuing in a terminal");
-      const deadline = effects.now() + this.#handoffWaitMs;
+      const deadline = effects.now() + this.#switchWaitMs;
       for (;;) {
         const detail = await effects.detail(sessionId);
         const next = agentTab(detail.session, detail.processes);
@@ -268,7 +268,7 @@ export class AgentTabs {
         }
         if (effects.now() >= deadline) {
           throw new Error(
-            `${harness} did not reach a terminal in ${Math.round(this.#handoffWaitMs / 1000)} s`,
+            `${harness} did not reach a terminal in ${Math.round(this.#switchWaitMs / 1000)} s`,
           );
         }
         await effects.sleep(this.#pollMs);

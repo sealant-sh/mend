@@ -127,7 +127,7 @@ const world = (
       tabs.push(tab);
       return tab;
     }),
-    handoff: vi.fn(async (_id: string) => undefined),
+    switchMode: vi.fn(async (_id: string) => undefined),
     gone: (cause: unknown) => cause instanceof Gone,
     refusal: () => null,
     now: () => clock,
@@ -141,7 +141,7 @@ const world = (
   return {
     effects,
     tabs,
-    agents: new AgentTabs(effects, { handoffWaitMs: 5000, pollMs: 1000 }),
+    agents: new AgentTabs(effects, { switchWaitMs: 5000, pollMs: 1000 }),
   };
 };
 
@@ -307,10 +307,10 @@ describe("focusing a session's agent", () => {
 });
 
 describe("Continue here", () => {
-  it("runs one handoff for a double click, and offers no link while it runs", async () => {
-    const handoff = Promise.withResolvers<void>();
+  it("runs one mode switch for a double click, and offers no link while it runs", async () => {
+    const switched = Promise.withResolvers<void>();
     const { effects, agents, tabs } = world([detail([conversation]), detail([terminalAgent])], {
-      handoff: vi.fn(() => handoff.promise),
+      switchMode: vi.fn(() => switched.promise),
     });
     await agents.focus("older", WORKSPACE);
     const tab = tabs[0];
@@ -319,14 +319,14 @@ describe("Continue here", () => {
     const first = agents.continueHere("older");
     const second = agents.continueHere("older");
     expect(agents.continueOffered(tab)).toBeNull();
-    handoff.resolve();
+    switched.resolve();
     await Promise.all([first, second]);
-    expect(effects.handoff).toHaveBeenCalledTimes(1);
+    expect(effects.switchMode).toHaveBeenCalledTimes(1);
     expect(effects.attachPty).toHaveBeenCalledTimes(1);
     expect(tab.disposed).toBe(true);
   });
 
-  it("keeps the conversation's tab and its link when attaching fails after the handoff", async () => {
+  it("keeps the conversation's tab and its link when attaching fails after the mode switch", async () => {
     const { effects, agents, tabs } = world([
       detail([conversation]),
       new Error("Mend did not answer in 30 s"),
@@ -336,13 +336,13 @@ describe("Continue here", () => {
     const tab = tabs[0];
     if (tab === undefined) throw new Error("no conversation tab");
     await agents.continueHere("older");
-    expect(effects.handoff).toHaveBeenCalledTimes(1);
+    expect(effects.switchMode).toHaveBeenCalledTimes(1);
     expect(tab.disposed).toBe(false);
     expect(tab.lines.at(-1)).toBe("Mend did not answer in 30 s · Continue here to try again");
     expect(agents.continueOffered(tab)).toBe("older");
 
     await agents.continueHere("older");
-    expect(effects.handoff).toHaveBeenCalledTimes(2);
+    expect(effects.switchMode).toHaveBeenCalledTimes(2);
     expect(effects.attachPty).toHaveBeenCalledTimes(1);
     expect(tab.disposed).toBe(true);
     expect(effects.onError).not.toHaveBeenCalled();
@@ -369,7 +369,7 @@ describe("Continue here", () => {
 
   it("says why when the server refuses, and attaches nothing", async () => {
     const { effects, agents, tabs } = world([detail([conversation])], {
-      handoff: vi.fn(async () => {
+      switchMode: vi.fn(async () => {
         throw new Error("refused");
       }),
       refusal: () => ({ tag: "HandoffUnsupported", words: "refused" }),

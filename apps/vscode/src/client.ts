@@ -478,10 +478,10 @@ export class MendClient {
   }
 
   /**
-   * Mend's mode handoff: the same conversation continues in a terminal (`pty`) or as a
+   * Mend's mode switch: the same conversation continues in a terminal (`pty`) or as a
    * conversation (`protocol`). A harness that cannot is refused with HTTP 422.
    */
-  async handoff(sessionId: string, to: "pty" | "protocol"): Promise<Session> {
+  async switchMode(sessionId: string, to: "pty" | "protocol"): Promise<Session> {
     return parseSession(
       await this.post(`/sessions/${encodeURIComponent(sessionId)}/handoff`, { to }),
     );
