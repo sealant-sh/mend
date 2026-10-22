@@ -697,7 +697,8 @@ unpushed base, a folder no project matched, a launch that fails and Retry, offli
 `recipes/vscode-first-run.mjs` (story h with flow 4: from
 `up --signed-out --no-ssh-setup --no-remote-ssh`, Connect, the approve page denied then authorized
 in `browser()`, Set up, Adopt and Sign Out from the Accounts menu; from
-`up --cli-only --no-ssh-setup`, Use it, Set up skipped and Open's one deferred question); the map's
+`up --cli-only --no-ssh-setup --no-remote-ssh`, Use it, Set up skipped, Connect cancelled while its
+request is out, Open's one deferred question cancelled and then answered); the map's
 [vscode.md](features/vscode.md) has the flows by story. `recipes/g4-terminal-agent-waits.mjs` drives
 no editor: it replays claude's hooks through `scripts/fixtures/claude-standin.mjs` in a shell beside
 a real (signed-out) claude agent and reads the session's `waiting` from the API and `/api/events`

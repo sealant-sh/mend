@@ -161,7 +161,8 @@ module whose default export is `async (helpers) => {}`. The recipes:
   `up --no-remote-ssh`.
 - `recipes/vscode-first-run.mjs` drives story h. Which half runs is the world's: from
   `up --signed-out --no-ssh-setup --no-remote-ssh`, Connect through Sign Out; from
-  `up --cli-only --no-ssh-setup`, Use it, a skipped Set up and Open's one question.
+  `up --cli-only --no-ssh-setup --no-remote-ssh`, Use it, a skipped Set up, Connect cancelled while
+  its request is out, and Open's one question cancelled, then answered.
 - `recipes/vscode-open-as-built.mjs` drives #1080's extension as built: a session started from the
   palette, its row double-clicked with what that shows and opens counted, one open through to the
   workspace window's files and terminal. It needs the `Mend: Open in VS Code` manifest. Run `trunk2`
@@ -806,13 +807,23 @@ the row takes the job's name.
       one toast is the sign-out's own,
       `Signed out of Mend at <url>, and revoked this editor's device.`: no
       `Signed out — sign in again.` after it.
-  - From `up --cli-only --no-ssh-setup`:
+  - From `up --cli-only --no-ssh-setup --no-remote-ssh`:
     - h1 variant: the view's message reads
       `Mend at <host:port> · signed in as <email> (from the Mend CLI)` over one row, `Use it`.
       `treeItem("Use it").click()`: no input, no dialog, no toast, `browserOpened()` unchanged,
       `mend.serverUrl` written; the next step is Set up, and the account is in the Accounts menu.
     - Edge, skipped: `welcomeAction("Skip for now").click()` shows the sessions tree; no Host block.
       `Running` reads `nothing` and is drawn expanded.
+    - Edge, Connect cancelled while its request is out: a loopback proxy in the recipe holds
+      `POST /api/cli/auth` until the recipe releases it. `palette("Mend: Connect to server")` with
+      the proxy's URL, then `Cancel` on `Asking <proxy host> for a sign-in code` while the request
+      is held; then the proxy answers. No `external website` dialog, no `Mend sign-in` status item,
+      no browser page, no `Approve in the browser` progress, and `mend.serverUrl` still the
+      server's.
+    - Edge, Open's consent cancelled: Open in New Window on `fresh worktree`, then `Cancel` on the
+      modal `Set up workspace SSH to open sessions (one Host block in ~/.ssh/config)`. Remote-SSH is
+      not in the extensions directory before the open, while it asks, or after Cancel; no window
+      opens and `~/.ssh/config` holds no Mend `Host` block.
     - Then Open in New Window on `fresh worktree`: the modal
       `Set up workspace SSH to open sessions (one Host block in ~/.ssh/config)` [Set up] shows once;
       `Set up` opens one window, and `~/.ssh/config` holds one Mend `Host` block.
