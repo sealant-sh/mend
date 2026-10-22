@@ -314,6 +314,33 @@ describe("browserSignIn", () => {
     expect(codes).toEqual([]);
     expect(send).toHaveBeenCalledTimes(1);
   });
+
+  it("ends quietly when the request she cancelled during then fails", async () => {
+    let cancelled = false;
+    const failsOnceCancelled: typeof fetch = async () => {
+      cancelled = true;
+      throw new TypeError("fetch failed");
+    };
+    const first = vi.fn<typeof fetch>(failsOnceCancelled);
+    const signingIn = browserSignIn(
+      "https://mend.example",
+      deps(first, { cancelled: () => cancelled }).value,
+    );
+    await expect(signingIn).resolves.toBeNull();
+
+    cancelled = false;
+    const poll = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json(200, opened))
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockImplementationOnce(failsOnceCancelled);
+    const polling = browserSignIn(
+      "https://mend.example",
+      deps(poll, { cancelled: () => cancelled }).value,
+    );
+    await expect(polling).resolves.toBeNull();
+    expect(poll).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe("server URL", () => {
