@@ -1138,7 +1138,6 @@ export class ReviewStore implements vscode.Disposable {
       );
       if (record === undefined) return;
       const action = nextAction(record);
-      let failing = "Mend could not deliver the review";
       try {
         switch (action.kind) {
           case "idle":
@@ -1291,7 +1290,7 @@ export class ReviewStore implements vscode.Disposable {
         const retryable =
           !(cause instanceof MendApiError) || cause.status === null || cause.status >= 500;
         await this.#step(context, key, { kind: "failed", words: errorWords(cause), retryable });
-        this.#fail(`delivery:${key}`, `${failing}: ${errorWords(cause)}`, {
+        this.#fail(`delivery:${key}`, `Mend could not deliver the review: ${errorWords(cause)}`, {
           cause,
           retry: retryable ? retry : null,
         });

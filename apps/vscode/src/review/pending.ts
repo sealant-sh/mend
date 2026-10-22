@@ -62,7 +62,6 @@ export interface PendingComment {
   readonly anchor: CommentAnchor | null;
 }
 
-/** A pending comment from a Mend draft she accepted. */
 export type AcceptedComment = PendingComment & { readonly origin: AcceptedOrigin };
 
 /**
