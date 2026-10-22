@@ -37,8 +37,14 @@ export type PostState =
   | ({ readonly kind: "posting" } & PostAttempt)
   | { readonly kind: "posted"; readonly commentId: string };
 
-/** Where the Mend draft her posted words replace is. */
-export type DraftDismissal = { readonly kind: "due" } | { readonly kind: "dismissed" };
+/**
+ * Where the Mend draft her posted words replace is: to dismiss, dismissed (or gone), or left on
+ * Mend because the dismissal failed, with why. A draft left never holds the review back.
+ */
+export type DraftDismissal =
+  | { readonly kind: "due" }
+  | { readonly kind: "dismissed" }
+  | { readonly kind: "left"; readonly words: string };
 
 /** One comment of the review she sends. */
 export type SendItem =
@@ -179,6 +185,8 @@ export type SendEvent =
   | { readonly kind: "opened"; readonly draftId: string }
   /** The draft her posted words replace reads dismissed on Mend, or is gone. */
   | { readonly kind: "draft-dismissed"; readonly draftId: string }
+  /** VS Code could not dismiss the draft her posted words replace: it stays on Mend. */
+  | { readonly kind: "draft-left"; readonly draftId: string; readonly words: string }
   /** The draft she accepted is dismissed on Mend, or gone: it leaves the review, never reopened. */
   | { readonly kind: "draft-gone"; readonly draftId: string }
   /** A newer review of hers reached Mend, which supersedes every follow-up it held before. */
@@ -440,6 +448,15 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
             : item,
         ),
       };
+    case "draft-left":
+      return {
+        ...record,
+        items: record.items.map((item) =>
+          item.kind === "rewrite" && item.pending.origin.draftId === event.draftId
+            ? { ...item, dismissal: { kind: "left", words: event.words } }
+            : item,
+        ),
+      };
     case "answered":
       return record.phase.kind === "sending"
         ? { ...record, phase: answeredPhase(event.status, event.error, event.agent) }
@@ -654,6 +671,12 @@ export const commentLabel = (
     ? recordLabel(phase)
     : `follow-up pending · pasted into an earlier ${phase.agent}`;
 };
+
+/** Why each Mend draft her posted words replace was left on Mend. */
+export const draftsLeft = (record: SendRecord): ReadonlyArray<string> =>
+  record.items.flatMap((item) =>
+    item.kind === "rewrite" && item.dismissal.kind === "left" ? [item.dismissal.words] : [],
+  );
 
 /** A record whose comments were handed to the session: its head is where her last review was. */
 export const handedOver = (record: SendRecord): boolean =>

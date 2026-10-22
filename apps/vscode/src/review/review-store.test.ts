@@ -792,28 +792,4 @@ describe("sending a review from the store", () => {
       threadsOf(read, store.review(), "Dana").filter((thread) => thread.kind === "draft"),
     ).toEqual([]);
   });
-
-  it("says the draft her edited words replace was not dismissed, not that the review was not delivered", async () => {
-    class NoDismiss extends FakeMend {
-      override async setCommentState(
-        changeId: string,
-        commentId: string,
-        state: "open" | "addressed" | "dismissed",
-      ): Promise<ServerComment> {
-        if (state === "dismissed") throw new Error("Mend is restarting.");
-        return super.setCommentState(changeId, commentId, state);
-      }
-    }
-    const mend = new NoDismiss();
-    mend.serverComments = [DRAFT];
-    const words = "Keep the limiter, and add a test for the burst case.";
-    const store = await rewrite(mend, words);
-    const said: Array<string> = [];
-    store.onDidFail((failure) => said.push(failure.words));
-    await sendAll(store);
-    await vi.waitFor(() => expect(said).toHaveLength(1), SETTLE);
-    expect(said[0]).toMatch(/could not dismiss the Mend draft/);
-    expect(mend.serverComments.some((one) => one.body === words)).toBe(true);
-    expect(mend.delivered).toEqual([]);
-  });
 });

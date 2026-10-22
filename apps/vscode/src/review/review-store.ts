@@ -16,6 +16,7 @@ import {
   commentIds,
   commentTarget,
   DRAFT_GONE,
+  draftsLeft,
   handedOver,
   heldIds,
   holdsComments,
@@ -1208,24 +1209,40 @@ export class ReviewStore implements vscode.Disposable {
             break;
           }
           case "dismiss-draft": {
-            failing = "Mend posted your words, and could not dismiss the Mend draft they replace";
-            const draft = (await this.client.comments(changeId)).find(
-              (comment) => comment.id === action.draftId,
-            );
-            if (draft?.state === "draft")
-              await this.client.setCommentState(changeId, action.draftId, "dismissed");
+            // Her words are on Mend: a draft left beside them never holds the review back.
+            try {
+              const draft = (await this.client.comments(changeId)).find(
+                (comment) => comment.id === action.draftId,
+              );
+              if (draft?.state === "draft")
+                await this.client.setCommentState(changeId, action.draftId, "dismissed");
+            } catch (cause) {
+              await this.#step(context, key, {
+                kind: "draft-left",
+                draftId: action.draftId,
+                words: errorWords(cause),
+              });
+              break;
+            }
             await this.#step(context, key, { kind: "draft-dismissed", draftId: action.draftId });
             break;
           }
           case "deliver": {
             const detail = await this.sessions.sessionDetail(sessionId);
             const answered = await this.client.deliver(sessionId, action.request);
-            await this.#step(context, key, {
+            const next = await this.#step(context, key, {
               kind: "answered",
               status: answered.status,
               error: answered.error,
               agent: liveAgent(detail, context.viewer) ?? { kind: "other" },
             });
+            const left = next !== null && handedOver(next) ? draftsLeft(next) : [];
+            if (left.length > 0)
+              this.#fail(
+                `draft-left:${key}`,
+                `Mend sent the review. The Mend draft your words replace is still on Mend, because VS Code could not dismiss it: ${left.join(" ")}`,
+                { tone: "warning" },
+              );
             break;
           }
           case "paste": {

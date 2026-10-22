@@ -266,7 +266,8 @@ const parseDismissal = (value: unknown): DraftDismissal | null => {
   if (!isRecord(value)) return null;
   if (value["kind"] === "due") return { kind: "due" };
   if (value["kind"] === "dismissed") return { kind: "dismissed" };
-  return null;
+  const words = text(value, "words");
+  return value["kind"] === "left" && words !== null ? { kind: "left", words } : null;
 };
 
 const parsePhase = (value: unknown): SendPhase | null => {
