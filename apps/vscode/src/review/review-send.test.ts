@@ -6,7 +6,7 @@ import { MendApiError } from "../mend-http.js";
 import { fake, window as vscodeWindow } from "../test-vscode.js";
 import { ToastClaims } from "../toast-claims.js";
 import type { SessionDetail, SessionProcess } from "../types.js";
-import type { Pasted } from "./agent-paste.js";
+import { pasteIntoAgent, type Pasted } from "./agent-paste.js";
 import { DRAFT_GONE } from "./delivery.js";
 import { textToSend } from "./instruction.js";
 import { DRIVE_STALE_MS, KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
@@ -1943,6 +1943,59 @@ describe("VS Code connects to another Mend server while a send waits on a read",
     }, SETTLE);
     expect(pastes).toEqual([]);
   });
+});
+
+describe("VS Code connects to another Mend server while claude's terminal opens for the paste", () => {
+  it("pastes nothing into the old server's claude, and says VS Code connected elsewhere before it pasted", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    mend.serverComments = [comment({ id: "c1" })];
+    let url = "http://mend";
+    const written: Array<string> = [];
+    const directory = await storage();
+    const store = new ReviewStore(
+      { ...withAgent(CLAUDE), connection: async () => ({ url, token: null }) },
+      mend,
+      new ReviewMemory(memento()),
+      keptIn(directory),
+      (sessionId, processId, text, bound) =>
+        pasteIntoAgent<string>(
+          {
+            detail: (id) => bound.sessionDetail(id),
+            answer: async () => undefined,
+            activeTab: () => "claude's tab",
+            processOf: () => "agent-1",
+            paste: async (_tab, pasted, ready?: () => Promise<boolean>) => {
+              // The tab's socket opens only once VS Code connected to another server.
+              url = "http://other";
+              if (ready !== undefined && !(await ready())) return false;
+              written.push(pasted);
+              return true;
+            },
+            sleep: async () => undefined,
+          },
+          sessionId,
+          processId,
+          text,
+        ),
+    );
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
+    const place = { url: "http://mend", viewer: "dana", sessionId: "s1" };
+    await vi.waitFor(async () => {
+      const kept = await keptIn(directory).read(place);
+      expect(kept.review.sends.map(({ phase }) => phase)).toEqual([
+        expect.objectContaining({
+          kind: "in-terminal",
+          paste: { kind: "failed", mayHaveLanded: false, stopped: { kind: "switched" } },
+        }),
+      ]);
+    }, SETTLE);
+    expect(written).toEqual([]);
+  }, 15_000);
 });
 
 describe("a send whose drive fails the moment it begins", () => {
