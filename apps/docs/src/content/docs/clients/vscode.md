@@ -239,8 +239,10 @@ is refused, the project stays adopted and the notification says what remains.
 
 An empty prompt creates a held session with a shell. A prompt starts Claude in that same session
 after its workspace is ready. If the workspace is still starting, the notification says the prompt
-has not been sent, and **Check again** sends it once the workspace is idle. A refused launch offers
-**Retry** for that session; it does not create another handoff. The row reads
+has not been sent, and **Check again** sends it once the workspace is idle. A refused launch, or one
+Mend never answered while the session still has no agent, offers **Retry** for that session; it does
+not create another handoff. Until Mend confirms a launch of your prompt, the next **Hand off to
+Mend…** opens with it, whatever happened to this one; clear the box to let it go. The row reads
 `idle · handed off from <machine>` until another observed fact takes precedence, with its provenance
 kept in the tooltip.
 
