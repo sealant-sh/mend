@@ -51,6 +51,8 @@ export interface FailOptions {
 }
 
 export interface DriverHost {
+  /** The review kept at `place` now, as every read of it is: shown, and looked at for a left send. */
+  read(place: ReviewPlace): Promise<SessionReview>;
   keepAt(
     place: ReviewPlace,
     update: (review: SessionReview) => SessionReview | Promise<SessionReview>,
@@ -276,7 +278,7 @@ export class SendDriver {
   }
 
   async #admitRetry(target: RetryTarget, author: string | null): Promise<Admitted> {
-    const record = sendOf((await this.kept.read(target.place)).review, target.key);
+    let record = sendOf(await this.host.read(target.place), target.key);
     if (record === undefined) return answer("VS Code no longer keeps this review");
     const bind = () => boundConnection(this.sessions, target.place);
     let detail: SessionDetail;
@@ -288,7 +290,7 @@ export class SendDriver {
     }
     const viewer = target.place.viewer;
     const agent = liveAgent(detail, viewer);
-    if (detail.changeId === null || !mayRetry(record, agent))
+    if (detail.changeId === null)
       return answer(`this review already reads ${commentLabel(record, null, agent)}`);
     const context: SendContext = {
       place: target.place,
@@ -296,6 +298,24 @@ export class SendDriver {
       viewer,
       author,
     };
+    const id = driveId(target.place, target.key);
+    const drivenHere = (): boolean =>
+      this.#driving.has(id) || this.kept.drives(target.place, target.key);
+    // A send still needing its drive that no window drives was left by one that closed: it is
+    // picked up first. One another window drives is that window's.
+    if (needs(record) === "driver" && !drivenHere()) {
+      try {
+        await this.#load(context);
+      } catch (cause) {
+        return answer(errorWords(cause));
+      }
+      record = sendOf(await this.host.read(target.place), target.key);
+      if (record === undefined) return answer("VS Code no longer keeps this review");
+      if (needs(record) === "driver" && !drivenHere())
+        return answer("another window of VS Code is delivering this review");
+    }
+    if (!mayRetry(record, agent))
+      return answer(`this review already reads ${commentLabel(record, null, agent)}`);
     // A retry that pastes asks Mend first: another client may have delivered the key, or sent a
     // newer review, since this window kept it held.
     let mend: FollowUpRead | null = null;

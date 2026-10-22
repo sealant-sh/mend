@@ -272,6 +272,7 @@ export class ReviewStore implements vscode.Disposable {
     paste: PasteReview,
   ) {
     this.#driver = new SendDriver(kept, client, sessions, paste, {
+      read: (place) => this.#readKept(place),
       keepAt: (place, update) => this.#keepAt(place, update),
       fail: (what, words, options) => this.#fail(what, words, options),
       settled: (sessionId) => this.#rereadIfFollowed(sessionId),
