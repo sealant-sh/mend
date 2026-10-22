@@ -27,10 +27,12 @@ describe("the Change section's rows (story d, step 1)", () => {
     const [slice] = rows;
     if (slice?.kind !== "slice") throw new Error("no slice row");
     expect(`${slice.label} ${slice.description}`).toBe(
-      "main → now ▾ 2 files · +15 −1 · observed · 40 s ago",
+      "main → now ▾ 4 files · +18 −3 · observed · 40 s ago",
     );
     expect(slice.files.map((row) => `${row.name} ${row.folder} ${row.letter}`)).toEqual([
       "limit.ts src/auth A",
+      "app.ts src M",
+      "new-name.ts src R",
       "README  D",
     ]);
   });
@@ -49,7 +51,12 @@ describe("the Change section's rows (story d, step 1)", () => {
 
   it("opens a file between the slice's two checkpoints, empty only on the side its status says, the pinned new side named", () => {
     const shown = readOf({ kind: "pinned" });
-    const [added, deleted] = FILES.map((file) => fileRow(file, shown));
+    const rowOf = (status: string) => {
+      const file = FILES.find((candidate) => candidate.status === status);
+      if (file === undefined) throw new Error(`no ${status} file`);
+      return fileRow(file, shown);
+    };
+    const [added, deleted] = [rowOf("added"), rowOf("deleted")];
     const where = { worktreeId: "w1", path: "src/auth/limit.ts" };
     expect(added?.left).toEqual({ ...where, at: "cp0", absent: true, slice: null });
     expect(added?.right).toEqual({ ...where, at: "cp2", absent: false, slice: "slice-1" });
@@ -68,7 +75,7 @@ describe("the Change section's rows (story d, step 1)", () => {
       "action Review the newer change",
     ]);
     expect(counted.above[1]).toMatchObject({ command: "mend.change.repin" });
-    expect(counted.files).toHaveLength(2);
+    expect(counted.files).toHaveLength(FILES.length);
     const uncounted = sliceRow(rowsOf(readOf({ kind: "pinned" }, { drift: { files: null } })));
     expect(uncounted.above[0]).toMatchObject({ label: "worktree changed since this review" });
     expect(sliceRow(rowsOf(readOf({ kind: "pinned" }))).above).toEqual([]);
@@ -110,12 +117,12 @@ describe("the Change section's rows (story d, step 1)", () => {
       listingCut: true,
     } as const;
     const slice = sliceRow(rowsOf(readOf({ kind: "pinned" }, { diff: cut })));
-    expect(slice.description).toBe("listing cut at 2 files · +15 −1 in those · read 40 s ago");
+    expect(slice.description).toBe("listing cut at 4 files · +18 −3 in those · read 40 s ago");
   });
 
   it("names no slice on a view-only slice's documents, so they take no comment", () => {
     const shown = readOf({ kind: "between", from: checkpoint(1), to: PINNED.head });
-    expect(FILES.map((file) => fileRow(file, shown).right.slice)).toEqual([null, null]);
+    expect(FILES.map((file) => fileRow(file, shown).right.slice)).toEqual(FILES.map(() => null));
   });
 
   it("reads `Mend is reading · 10:42` above the slice while Mend reads the change", () => {

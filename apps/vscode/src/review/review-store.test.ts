@@ -8,7 +8,7 @@ import { addPending, MAX_PENDING } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore, type NewComment, type ReviewFailure } from "./review-store.js";
-import type { ReadPass, ServerComment, TranscriptEntry } from "./review-wire.js";
+import type { CommentAnchor, ReadPass, ServerComment, TranscriptEntry } from "./review-wire.js";
 import {
   comment,
   FakeMend,
@@ -716,6 +716,65 @@ describe("sending a review from the store", () => {
     expect(mend.delivered[0]?.commentIds).toEqual([hers?.id]);
     expect(mend.serverComments.find((one) => one.id === "d1")?.state).toBe("dismissed");
     expect(mend.writes).toEqual([`post ${words}`, "state d1 dismissed", `deliver s1 ${key}`]);
+  });
+
+  it("posts her comments on modified, renamed and deleted files where Mend's own check takes them", async () => {
+    const oldSide: CommentAnchor = {
+      sliceId: PINNED.id,
+      baseId: PINNED.base.id,
+      headId: PINNED.head.id,
+      side: "old",
+    };
+    const mend = new FakeMend();
+    mend.serverComments = [
+      comment({
+        id: "d1",
+        state: "draft",
+        author: { kind: "mend", name: "Mend" },
+        file: "src/old-name.ts",
+        line: 4,
+        endLine: 4,
+        anchor: oldSide,
+        body: "The old name is still imported.",
+      }),
+      comment({
+        id: "d2",
+        state: "draft",
+        author: { kind: "mend", name: "Mend" },
+        file: "README",
+        line: null,
+        endLine: null,
+        body: "The install notes went with it.",
+      }),
+    ];
+    const store = await readyStore(inMemory(), mend);
+    const on = (path: string, line: number, body: string): NewComment => ({
+      ...onLine(line, body),
+      at: { ...onLine(line, body).at, path },
+    });
+    expect(await store.comment(on("src/app.ts", 11, "On the modified file."))).toEqual({
+      kept: true,
+    });
+    expect(await store.comment(on("src/new-name.ts", 4, "On the renamed file."))).toEqual({
+      kept: true,
+    });
+    expect(await store.dismiss("d1", "On the renamed file's old side.")).toEqual({ kept: true });
+    expect(await store.accept("d2", "")).toEqual({ kept: true });
+    const readme = store.review().pending.find((one) => one.origin.kind === "accepted");
+    if (readme === undefined) throw new Error("the draft was not accepted");
+    expect(await store.edit(readme.id, "Keep the install notes.")).toEqual({ kept: true });
+    await sendAll(store);
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    expect(
+      mend.serverComments
+        .filter((one) => one.author.kind === "reviewer")
+        .map(({ file, line, anchor, body }) => ({ file, line, side: anchor?.side ?? null, body })),
+    ).toEqual([
+      { file: "src/app.ts", line: 11, side: "new", body: "On the modified file." },
+      { file: "src/new-name.ts", line: 4, side: "new", body: "On the renamed file." },
+      { file: "src/old-name.ts", line: 4, side: "old", body: "On the renamed file's old side." },
+      { file: "README", line: null, side: null, body: "Keep the install notes." },
+    ]);
   });
 
   it("opens the draft she accepted, not her words, when her edits leave its words as they were", async () => {
