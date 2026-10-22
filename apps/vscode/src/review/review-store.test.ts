@@ -938,6 +938,45 @@ describe("sending a review from the store", () => {
   });
 });
 
+describe("a full review of Mend drafts she rewrote", () => {
+  it("posts every one, dismisses every draft, and still delivers the review", async () => {
+    const kept = inMemory();
+    const mend = new FakeMend();
+    const drafts = Array.from({ length: MAX_PENDING }, (_, at) =>
+      comment({
+        id: `d${at}`,
+        state: "draft",
+        line: 3,
+        endLine: 3,
+        author: { kind: "mend", name: "Mend" },
+        body: `Mend's draft ${at}`,
+      }),
+    );
+    mend.serverComments = drafts;
+    await kept.update(DANA_S1, () => ({
+      pending: drafts.map((draft, at) =>
+        pending({
+          id: `p${at}`,
+          line: 3,
+          endLine: 3,
+          body: `Her words in place of draft ${at}`,
+          origin: { kind: "accepted", draftId: draft.id, evidence: [], draftBody: draft.body },
+        }),
+      ),
+      sends: [],
+      document: null,
+    }));
+    const store = await readyStore(kept, mend);
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).not.toBe("sending"), {
+      timeout: 20_000,
+    });
+    expect(mend.writes.filter((write) => write.startsWith("post "))).toHaveLength(MAX_PENDING);
+    expect(mend.writes.filter((write) => write.endsWith(" dismissed"))).toHaveLength(MAX_PENDING);
+    expect(mend.delivered).toHaveLength(1);
+  }, 30_000);
+});
+
 describe("a call Mend refuses while a review is on its way", () => {
   afterEach(() => {
     vi.useRealTimers();
