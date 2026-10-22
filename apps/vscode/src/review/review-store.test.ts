@@ -879,3 +879,45 @@ describe("sending a review from the store", () => {
     ).toEqual([]);
   });
 });
+
+describe("a read Mend refuses while a review is on its way", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reads delivery failed, with Retry, when the launch's follow-up read is refused", async () => {
+    vi.useFakeTimers();
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    mend.followUp = async () => {
+      throw new MendApiError("You cannot read this session's follow-ups.", 403);
+    };
+    const ready = readyStore(kept, mend);
+    await vi.advanceTimersByTimeAsync(20);
+    const store = await ready;
+    const key = await sendAll(store);
+    await vi.advanceTimersByTimeAsync(3_100);
+    expect(await phaseOf(kept, key)).toBe("failed");
+    expect(store.offer()).toEqual({ kind: "retry" });
+  });
+
+  it("keeps a comment whose POST may have landed on its way, when the read that checks is refused", async () => {
+    const kept = inMemory();
+    const mend = new FakeMend();
+    const store = await readyStore(kept, mend);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const post = mend.postComment.bind(mend);
+    mend.postComment = async (changeId, sliceId, target, body) => {
+      await post(changeId, sliceId, target, body);
+      throw new MendApiError("Bad gateway", 502);
+    };
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("failed"), SETTLE);
+    mend.comments = async () => {
+      throw new MendApiError("Not found", 404);
+    };
+    await store.retry({ place: DANA_S1, key });
+    expect(await phaseOf(kept, key)).toBe("failed");
+    expect(store.review().pending).toEqual([]);
+  });
+});
