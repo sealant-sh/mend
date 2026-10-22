@@ -236,3 +236,66 @@ export const formatFactLine = ({
       : plural(uncommitted, "uncommitted file", "uncommitted files"),
     ...(untracked > 0 ? [`${untracked} untracked`] : []),
   ].join(" · ");
+
+export interface WireAnswer {
+  readonly status: number | null;
+  readonly body: unknown;
+}
+
+export type TermsAnswer =
+  | { readonly _tag: "terms"; readonly bundleBytes: number; readonly fileBytes: number }
+  | { readonly _tag: "unreadable" }
+  | { readonly _tag: "oldServer" }
+  | { readonly _tag: "refused"; readonly answer: WireAnswer };
+
+export type ReceiveAnswer =
+  | { readonly _tag: "received"; readonly body: unknown }
+  | { readonly _tag: "oldServer" }
+  | { readonly _tag: "tooLarge"; readonly limit: number }
+  | { readonly _tag: "proxyRefused" }
+  | { readonly _tag: "noAnswer"; readonly answer: WireAnswer }
+  | { readonly _tag: "refused"; readonly answer: WireAnswer };
+
+export const HANDOFF_SEND_ATTEMPTS = 3;
+
+export const HANDOFF_PROBE_PROJECT = "handoff-probe";
+
+const GATEWAY_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+
+const fieldOf = (body: unknown, key: string): unknown =>
+  typeof body === "object" && body !== null ? Reflect.get(body, key) : undefined;
+
+const isUntagged = (body: unknown): boolean => typeof fieldOf(body, "_tag") !== "string";
+
+const predatesHandoffs = (answer: WireAnswer): boolean =>
+  answer.status === 404 && isUntagged(answer.body);
+
+export const readTermsAnswer = (answer: WireAnswer): TermsAnswer => {
+  if (answer.status === 200) {
+    const bundleBytes = fieldOf(answer.body, "bundleBytes");
+    const fileBytes = fieldOf(answer.body, "fileBytes");
+    return typeof bundleBytes === "number" && typeof fileBytes === "number"
+      ? { _tag: "terms", bundleBytes, fileBytes }
+      : { _tag: "unreadable" };
+  }
+  return predatesHandoffs(answer) ? { _tag: "oldServer" } : { _tag: "refused", answer };
+};
+
+export const readReceiveAnswer = (answer: WireAnswer): ReceiveAnswer => {
+  const { status, body } = answer;
+  if (status === null || GATEWAY_STATUSES.has(status)) return { _tag: "noAnswer", answer };
+  if (status >= 200 && status < 300) return { _tag: "received", body };
+  if (status === 413) {
+    const budget = fieldOf(body, "budget");
+    const limit = fieldOf(body, "limit");
+    if (budget === "bodyBytes") return { _tag: "oldServer" };
+    if (budget === "bundleBytes" && typeof limit === "number") return { _tag: "tooLarge", limit };
+    if (isUntagged(body)) return { _tag: "proxyRefused" };
+  }
+  return predatesHandoffs(answer) ? { _tag: "oldServer" } : { _tag: "refused", answer };
+};
+
+export const takesHandoffs = (probe: WireAnswer): boolean | null => {
+  if (probe.status === 404) return !isUntagged(probe.body);
+  return probe.status === 200 ? true : null;
+};
