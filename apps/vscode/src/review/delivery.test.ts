@@ -303,6 +303,28 @@ describe("the comment a cut-short post left on Mend", () => {
     expect(postedComment(ATTEMPT, PINNED.id, [landed], new Set(["c9"]))).toBe(null);
   });
 
+  it("is found for a reply on a renamed file's deleted line, under the old name Mend files it by", () => {
+    const renamed: ChangeFile = {
+      oldPath: "src/old-name.ts",
+      newPath: "src/new-name.ts",
+      status: "renamed",
+      additions: 1,
+      deletions: 1,
+      binary: false,
+      hunks: [{ oldStart: 3, oldLines: 3, newStart: 3, newLines: 3, contextHash: "r1" }],
+    };
+    const anchor: CommentAnchor = {
+      sliceId: PINNED.id,
+      baseId: PINNED.base.id,
+      headId: PINNED.head.id,
+      side: "old",
+    };
+    const reply = pending({ path: "src/old-name.ts", line: 5, endLine: 5, anchor });
+    const attempt = { ...ATTEMPT, target: commentTarget([renamed], reply).target };
+    const onMend = comment({ ...landed, file: "src/old-name.ts", line: 5, endLine: 5, anchor });
+    expect(postedComment(attempt, PINNED.id, [onMend], new Set())).toBe("c9");
+  });
+
   it("is never one that was there before the post, nor another person's, nor other words", () => {
     expect(postedComment({ ...ATTEMPT, before: ["c9"] }, PINNED.id, [landed], new Set())).toBe(
       null,
