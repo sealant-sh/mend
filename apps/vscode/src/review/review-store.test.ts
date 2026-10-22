@@ -613,6 +613,29 @@ describe("sending a review from the store", () => {
     ]);
   });
 
+  it.each([
+    ["empty", "   \n", /empty/],
+    ["longer than Mend takes", "x".repeat(100_001), /100,000/],
+  ])(
+    "sends nothing, and keeps her text and comments, when the review is %s",
+    async (_, text, why) => {
+      const mend = new FakeMend();
+      const store = await readyStore(inMemory(), mend);
+      await store.comment(onLine(3, "Use the shared limiter"));
+      const composed = store.compose();
+      if (composed === null) throw new Error("nothing composed");
+      expect(await sendComposed(store, composed, text)).toEqual({
+        sent: false,
+        words: expect.stringMatching(why),
+      });
+      await settle();
+      expect(mend.writes).toEqual([]);
+      expect(store.review().sends).toEqual([]);
+      expect(store.review().pending.map(({ body }) => body)).toEqual(["Use the shared limiter"]);
+      expect(store.review().document?.text).toBe(text);
+    },
+  );
+
   it("reads delivered only when Mend reads the comments back as sent", async () => {
     vi.useFakeTimers();
     const kept = inMemory();

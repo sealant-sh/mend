@@ -355,6 +355,13 @@ export class FakeMend extends ReviewClient {
   }
 
   override async deliver(sessionId: string, request: DeliverRequest): Promise<FollowUp> {
+    // Mend's own check (packages/sessions follow-up-delivery.ts), answered 422 as its route does.
+    if (request.instruction.trim() === "" || request.instruction.length > 100_000)
+      throw new MendApiError(
+        "Follow-up instructions must contain between 1 and 100000 characters.",
+        422,
+        "StoreFailure",
+      );
     this.writes.push(`deliver ${sessionId} ${request.idempotencyKey}`);
     this.delivered.push(request);
     return { key: request.idempotencyKey, status: this.answer, error: null };
