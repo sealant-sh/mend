@@ -530,19 +530,23 @@ export const removePending = (review: SessionReview, id: string): SessionReview 
   pending: review.pending.filter((comment) => comment.id !== id),
 });
 
-/** The drafts she accepted, by their id on Mend: their threads show as hers, not as drafts. */
+/**
+ * The drafts she accepted, by their id on Mend: their threads show as hers, not as drafts. One
+ * her posted words replace stays hers though its review was refused: her words are on Mend.
+ */
 export const acceptedDrafts = (review: SessionReview): ReadonlySet<string> =>
   new Set([
     ...review.pending.flatMap((comment) =>
       comment.origin.kind === "accepted" ? [comment.origin.draftId] : [],
     ),
     ...review.sends.flatMap((record) =>
-      record.phase.kind === "refused"
-        ? []
-        : record.items.flatMap((item) =>
-            item.kind !== "open" && item.pending.origin.kind === "accepted"
-              ? [item.pending.origin.draftId]
-              : [],
-          ),
+      record.items.flatMap((item) =>
+        item.kind === "open" ||
+        item.pending.origin.kind !== "accepted" ||
+        (record.phase.kind === "refused" &&
+          (item.kind !== "rewrite" || item.post.kind !== "posted"))
+          ? []
+          : [item.pending.origin.draftId],
+      ),
     ),
   ]);
