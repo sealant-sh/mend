@@ -1067,7 +1067,7 @@ describe("Retry delivery of a review Mend held pending, once claude runs in its 
     if (target === null) throw new Error("no Retry delivery offered");
     expect(await store.retry(target)).toEqual({
       retried: false,
-      words: "Retry delivery sent nothing: this review already reads sent",
+      words: "Retry delivery sent nothing: Mend reads this review sent",
     });
     expect(pastes).toEqual([]);
     expect(store.review().sends.at(-1)?.phase.kind).toBe("delivered");
@@ -1083,7 +1083,7 @@ describe("Retry delivery of a review Mend held pending, once claude runs in its 
     if (target === null) throw new Error("no Retry delivery offered");
     expect(await store.retry(target)).toEqual({
       retried: false,
-      words: "Retry delivery sent nothing: this review already reads not sent",
+      words: "Retry delivery sent nothing: Mend reads this review not sent",
     });
     expect(pastes).toEqual([]);
     expect(store.review().sends.at(-1)?.phase.kind).toBe("refused");
