@@ -1753,7 +1753,7 @@ class FailsThenHolds extends FakeMend {
 
 describe("a send another window left behind, which this window cannot pick up at once", () => {
   /** A window that left its send on its way to Mend, and one that finds its lease stale. */
-  const left = async (files: KeptFiles, connection: () => Promise<MendConnection>) => {
+  const left = async (files: KeptFiles, connection: ReturnType<typeof withAgent>["connection"]) => {
     const directory = await storage();
     const mend = new Unanswered();
     mend.serverComments = [comment({ id: "c1" })];

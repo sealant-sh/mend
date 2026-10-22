@@ -16,6 +16,7 @@ import {
   posts,
   step,
   stepReview,
+  stopWords,
   type DriveFailure,
   type FollowUpRead,
   type LiveAgent,
@@ -165,9 +166,7 @@ class DriveLost extends Error {}
 class Stopped extends Error {
   constructor(
     readonly why: StopReason,
-    words = why.kind === "error"
-      ? why.words
-      : "VS Code connected to another Mend server or account",
+    words = stopWords(why),
   ) {
     super(words);
   }
@@ -277,6 +276,8 @@ export class SendDriver {
   readonly #leasing = new Map<string, Promise<unknown>>();
   /** Retries of each send, one at a time: the second reads what the first kept. */
   readonly #retrying = new Map<string, Promise<unknown>>();
+  /** Why this window's drive of each send stopped, while it could not keep why in the send. */
+  readonly #unkept = new Map<string, StopReason>();
   #disposed = false;
 
   constructor(
@@ -459,21 +460,18 @@ export class SendDriver {
         : [];
     });
     if (left.length === 0) return;
-    await this.#load(context).catch(() => {
-      for (const key of left) this.#lookAgainIn(context, key, backoff(1), 2);
+    await this.#load(context).catch((cause: unknown) => {
+      for (const key of left) this.#lookAgainAfter(context, key, 1, cause);
     });
   }
 
   /**
    * Picks up every send at `context.place` the driver needs and no window drives, as stopped for
-   * `stopped`: why this window's drive of that send stopped, when it could not keep why. Any
-   * other was left by a window that closed. Throws when it could not look, so the look that asked
-   * looks again.
+   * why this window's drive of it stopped, when it could not keep why (`#unkept`). Any other was
+   * left by a window that closed. Throws when it could not look, so the look that asked looks
+   * again.
    */
-  async #load(
-    context: SendContext,
-    stopped: { readonly key: string; readonly why: StopReason } | null = null,
-  ): Promise<void> {
+  async #load(context: SendContext): Promise<void> {
     await boundConnection(this.sessions, context.place);
     const { place } = context;
     const now = new Date().toISOString();
@@ -498,7 +496,7 @@ export class SendDriver {
           ...review,
           sends: review.sends.map((record) => {
             if (!undriven.has(record.key)) return record;
-            const why = stopped?.key === record.key ? stopped.why : CLOSED;
+            const why = this.#unkept.get(driveId(place, record.key)) ?? CLOSED;
             return step(record, { kind: "abandoned", why }, now);
           }),
         };
@@ -509,6 +507,7 @@ export class SendDriver {
     }
     for (const record of loaded.sends) {
       if (!undriven.has(record.key)) continue;
+      this.#unkept.delete(driveId(place, record.key));
       if (nextAction(record).kind !== "idle") void this.#drive(context, record.key);
       else await this.#release(place, record.key);
     }
@@ -516,29 +515,33 @@ export class SendDriver {
   }
 
   /**
-   * Looks at the send again in `ms`. A look that fails looks again later, each wait twice the
-   * last up to `LOOK_AGAIN_MAX_MS`: only a look that ran drops it, having left the send done,
-   * waiting on her, or driven by a live window, which looks again itself.
+   * Looks at the send again in `ms`. A look that fails looks again later (`#lookAgainAfter`): only
+   * a look that ran drops it, having left the send done, waiting on her, or driven by a live
+   * window, which looks again itself.
    */
-  #lookAgainIn(
-    context: SendContext,
-    key: string,
-    ms: number,
-    failures = 0,
-    why: StopReason | null = null,
-  ): void {
+  #lookAgainIn(context: SendContext, key: string, ms: number, failures = 0): void {
     if (this.#disposed) return;
     const id = driveId(context.place, key);
     const armed = this.#lookAgain.get(id);
     if (armed !== undefined) clearTimeout(armed);
     const timer = setTimeout(() => {
       this.#lookAgain.delete(id);
-      void this.#load(context, why === null ? null : { key, why }).catch(() =>
-        this.#lookAgainIn(context, key, backoff(failures + 1), failures + 1, why),
+      void this.#load(context).catch((cause: unknown) =>
+        this.#lookAgainAfter(context, key, failures + 1, cause),
       );
     }, ms);
     timer.unref();
     this.#lookAgain.set(id, timer);
+  }
+
+  /**
+   * Looks again after the `failures`th look in a row that failed, for `cause`: each wait twice the
+   * last, up to `LOOK_AGAIN_MAX_MS`. A look that VS Code's connection refused waits for a read of
+   * its own server, signed in, which looks itself.
+   */
+  #lookAgainAfter(context: SendContext, key: string, failures: number, cause: unknown): void {
+    if (cause instanceof Unbound && cause.why !== "unknown") return;
+    this.#lookAgainIn(context, key, backoff(failures), failures);
   }
 
   async #step(context: SendContext, key: string, event: SendEvent): Promise<SendRecord | null> {
@@ -564,11 +567,14 @@ export class SendDriver {
     const before = this.#driving.get(id) ?? Promise.resolve();
     const run: Promise<void> = before
       .then(() => this.#driveOnce(context, key))
-      // The drive stopped and could not keep why: it is looked at again soon, as stopped then.
+      // The drive stopped and could not keep why: the look that picks it up keeps it, soon, or
+      // once a read of its own server does when VS Code's connection is not the send's.
       .catch((cause: unknown) => {
         const why = cause instanceof Stopped ? cause.why : stopsFor(cause);
-        if (!offConnection(why)) this.host.fail("error", errorWords(cause), { cause });
-        this.#lookAgainIn(context, key, LOOK_AGAIN_MS, 0, why);
+        this.#unkept.set(id, why);
+        if (offConnection(why)) return;
+        this.host.fail("error", errorWords(cause), { cause });
+        this.#lookAgainIn(context, key, LOOK_AGAIN_MS);
       })
       .finally(() => {
         if (this.#driving.get(id) === run) this.#driving.delete(id);

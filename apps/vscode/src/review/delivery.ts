@@ -153,19 +153,23 @@ export type StopReason =
   | { readonly kind: "signed-out" }
   | { readonly kind: "error"; readonly words: string };
 
-/** What VS Code did when a drive stopped, before `when`. */
-const stopClause = (why: StopReason, when: string): string => {
+/** What VS Code did when a drive stopped. */
+export const stopWords = (why: StopReason): string => {
   switch (why.kind) {
     case "closed":
-      return `VS Code closed ${when}`;
+      return "VS Code closed";
     case "switched":
-      return `VS Code connected to another Mend server or account ${when}`;
+      return "VS Code connected to another Mend server or account";
     case "signed-out":
-      return `VS Code was signed out of Mend ${when}`;
+      return "VS Code was signed out of Mend";
     case "error":
       return why.words;
   }
 };
+
+/** What VS Code did when a drive stopped, before `when`; a failure says itself in its own words. */
+const stopClause = (why: StopReason, when: string): string =>
+  why.kind === "error" ? why.words : `${stopWords(why)} ${when}`;
 
 /** A paste that may have reached the agent's input, in part or whole, and why it stopped. */
 export const cutShortWords = (why: string, agent: string): string =>
