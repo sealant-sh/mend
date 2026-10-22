@@ -191,6 +191,8 @@ const inProcess = (projects: ReadonlyArray<unknown>) => {
     launch: async () => ({ _tag: "running" }),
     spin: (_label, work) => work,
     serverUrl: "http://localhost:3105",
+    accountGitAuthMode: async () => "mend-key",
+    shareAgent: () => null,
   };
   return { calls, deps };
 };
@@ -269,4 +271,40 @@ describe("mend handoff's adoption offer at a terminal", () => {
       }
     });
   }
+
+  it("shares this machine's ssh-agent from before it adopts until the command ends", async () => {
+    const w = world();
+    const dana = newsroom(w);
+    capture();
+    const { calls, deps } = inProcess([]);
+    await handoffCommand(
+      {
+        ...deps,
+        accountGitAuthMode: async () => "bridge",
+        shareAgent: () => {
+          calls.push("share");
+          return {
+            ready: async () => {
+              calls.push("share ready");
+              return "connected";
+            },
+            close: async () => {
+              calls.push("share closed");
+            },
+          };
+        },
+      },
+      [],
+      dana,
+      { interactive: true, ask: async () => true },
+    );
+    const posts = calls.filter((call) => call.startsWith("POST") || call.startsWith("share"));
+    expect(posts).toEqual([
+      "share",
+      "share ready",
+      "POST /projects",
+      `POST /projects/${project.id}/handoffs?harness=claude&hold=true`,
+      "share closed",
+    ]);
+  });
 });

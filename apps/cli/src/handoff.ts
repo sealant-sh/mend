@@ -4,8 +4,10 @@ import * as path from "node:path";
 
 import {
   formatFactLine,
+  type GitAuthMode,
   HANDOFF_PROBE_PROJECT,
   HANDOFF_SEND_ATTEMPTS,
+  handoffNeedsAgentShare,
   handoffWorktreeName,
   HexSha,
   readReceiveAnswer,
@@ -15,6 +17,7 @@ import {
   takesHandoffs,
   type WireAnswer,
 } from "@mend/domain/workbench";
+import type { AgentShareHandle } from "@mend/local-git/agent-share";
 import {
   type Cancelled,
   captureCheckout,
@@ -70,6 +73,7 @@ interface ProjectDto {
   readonly originUrl: string | null;
   readonly storePath: string;
   readonly defaultBranch: string;
+  readonly gitAuthMode: GitAuthMode;
 }
 
 interface HandoffTerms {
@@ -111,6 +115,10 @@ export interface HandoffDeps {
   readonly launch: (sessionId: string, prompt: string) => Promise<Launched>;
   readonly spin: <T>(label: string, work: Promise<T>) => Promise<T>;
   readonly serverUrl: string;
+  /** The account's default git mode, which an adoption takes; null when the server could not say. */
+  readonly accountGitAuthMode: () => Promise<GitAuthMode | null>;
+  /** Shares this machine's ssh-agent with the server until closed; null when it has none. */
+  readonly shareAgent: () => Pick<AgentShareHandle, "ready" | "close"> | null;
 }
 
 export interface HandoffIo {
@@ -345,21 +353,22 @@ const send = async (
   }
 };
 
+const SHARE_READY_MS = 15_000;
+
 const CO_LOCATED =
   "this server keeps worktrees in the co-located store, which takes no handoffs · the operator can unset MEND_SESSION_STORE to run the capture store · nothing was created";
 
-interface Resolved {
-  readonly project: ProjectDto;
-  readonly adopted: boolean;
-}
+type Target =
+  | { readonly kind: "project"; readonly project: ProjectDto }
+  | { readonly kind: "adopt"; readonly name: string; readonly source: string };
 
-const projectFor = async (
+const targetFor = async (
   deps: HandoffDeps,
   args: ReadonlyArray<string>,
   explicit: string | null,
   checkout: { readonly top: string; readonly originUrl: string | null },
   io: HandoffIo,
-): Promise<Resolved | null> => {
+): Promise<Target | null> => {
   const projects = await deps.api<ReadonlyArray<ProjectDto>>("GET", "/projects");
   const found =
     explicit === null
@@ -379,7 +388,7 @@ const projectFor = async (
         `this checkout's origin is ${origin ?? "not set"} · ${found.name}'s is ${found.originUrl ?? "not set"} · nothing was created`,
       );
     }
-    return { project: found, adopted: false };
+    return { kind: "project", project: found };
   }
   if (origin === null) {
     return refuse(
@@ -409,9 +418,7 @@ const projectFor = async (
     say(dim("nothing was adopted or handed off"));
     return null;
   }
-  const adopted = await deps.api<ProjectDto>("POST", "/projects", { name, source: origin });
-  say(`${green("✓")} adopted · ${adopted.name} · ${dim(adopted.storePath)}`);
-  return { project: adopted, adopted: true };
+  return { kind: "adopt", name, source: origin };
 };
 
 const SIGNALS: ReadonlyArray<readonly [NodeJS.Signals, number]> = [
@@ -583,19 +590,37 @@ const handOff = async (
   const { checkout } = found;
   const scratchIssue = scratchParentIssue(os.tmpdir(), checkout);
   if (scratchIssue !== null) return refuse(scratchIssue);
-  const resolved = await projectFor(deps, args, parsed.args.project, checkout, io);
-  if (resolved === null) return;
+  const target = await targetFor(deps, args, parsed.args.project, checkout, io);
+  if (target === null) return;
+  const needsAgent = handoffNeedsAgentShare(
+    target.kind === "project"
+      ? { kind: "project", gitAuthMode: target.project.gitAuthMode }
+      : { kind: "adopt", accountMode: await deps.accountGitAuthMode() },
+  );
+  const share = needsAgent ? deps.shareAgent() : null;
   try {
-    await sendFrom(deps, resolved.project, checkout, parsed.args);
-  } catch (error) {
-    if (!resolved.adopted || !(error instanceof Refusal)) throw error;
-    throw new Refusal(
-      error.words.replace(
-        / · nothing was created$/u,
-        ` · nothing was handed off · ${resolved.project.name} stays adopted`,
-      ),
-      error.code,
-    );
+    await share?.ready(SHARE_READY_MS);
+    if (target.kind === "project")
+      return await sendFrom(deps, target.project, checkout, parsed.args);
+    const adopted = await deps.api<ProjectDto>("POST", "/projects", {
+      name: target.name,
+      source: target.source,
+    });
+    say(`${green("✓")} adopted · ${adopted.name} · ${dim(adopted.storePath)}`);
+    try {
+      await sendFrom(deps, adopted, checkout, parsed.args);
+    } catch (error) {
+      if (!(error instanceof Refusal)) throw error;
+      throw new Refusal(
+        error.words.replace(
+          / · nothing was created$/u,
+          ` · nothing was handed off · ${adopted.name} stays adopted`,
+        ),
+        error.code,
+      );
+    }
+  } finally {
+    await share?.close();
   }
 };
 

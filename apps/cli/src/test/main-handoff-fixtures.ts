@@ -14,6 +14,7 @@ export const project = {
   originUrl: ORIGIN,
   storePath: "/srv/mend/newsroom-api/repo.git",
   defaultBranch: "main",
+  gitAuthMode: "mend-key",
 };
 
 export const OLD_SERVER =
