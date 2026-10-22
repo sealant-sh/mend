@@ -351,6 +351,12 @@ describe("a review untouched past the expiry", () => {
     );
   });
 
+  it("stays while it keeps a Mend draft her posted words replace from Accept", async () => {
+    expect((await keptPastExpiry({ ...delivered(), replaced: ["d1"] })).read.replaced).toEqual([
+      "d1",
+    ]);
+  });
+
   it("goes when the review she is writing reads as Send review composed it", async () => {
     expect((await keptPastExpiry(withDocument(delivered(), null))).kept).toBe(false);
   });

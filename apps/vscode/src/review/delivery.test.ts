@@ -55,6 +55,7 @@ const sent = (
     pending: [pending({}), pending({ id: "p2", line: 13, endLine: 13 })],
     sends: [],
     document: null,
+    replaced: [],
   },
   key = "key-1",
 ): SessionReview =>
@@ -145,6 +146,7 @@ describe("sending a review (story d, step 6)", () => {
       pending: [pending({}), pending({ id: "p2", line: 13, endLine: 13 })],
       sends: [],
       document: null,
+      replaced: [],
     };
     const input = {
       key: "key-1",
@@ -635,7 +637,7 @@ describe("an accepted draft in a review she sent", () => {
   });
 
   it("stays hers while the review is on its way, not a draft beside it", () => {
-    const review = sent({ pending: [accepted], sends: [], document: null });
+    const review = sent({ pending: [accepted], sends: [], document: null, replaced: [] });
     expect(acceptedDrafts(review).has("d1")).toBe(true);
   });
 
@@ -644,6 +646,7 @@ describe("an accepted draft in a review she sent", () => {
       pending: [{ ...accepted, body: "Run the burst test too." }],
       sends: [],
       document: null,
+      replaced: [],
     });
     const refused = apply(
       review,
@@ -659,6 +662,7 @@ describe("an accepted draft in a review she sent", () => {
       pending: [{ ...accepted, body: "Run the burst test too." }],
       sends: [],
       document: null,
+      replaced: [],
     });
     const left = apply(
       review,
@@ -679,11 +683,16 @@ describe("an accepted draft in a review she sent", () => {
   });
 
   it("leaves the review when it is dismissed on Mend, and is never opened", () => {
-    const review = sent({ pending: [accepted, pending({})], sends: [], document: null });
+    const review = sent({
+      pending: [accepted, pending({})],
+      sends: [],
+      document: null,
+      replaced: [],
+    });
     expect(nextAction(only(review))).toMatchObject({ kind: "open", draftId: "d1" });
     const gone = apply(review, { kind: "draft-gone", draftId: "d1" });
     expect(only(gone).items.map((item) => item.kind)).toEqual(["own"]);
-    const alone = apply(sent({ pending: [accepted], sends: [], document: null }), {
+    const alone = apply(sent({ pending: [accepted], sends: [], document: null, replaced: [] }), {
       kind: "draft-gone",
       draftId: "d1",
     });

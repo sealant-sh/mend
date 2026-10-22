@@ -2,6 +2,7 @@ import type { PostAttempt } from "./comment-target.js";
 import type { Instruction } from "./instruction.js";
 import { inputAfter, planFor, type PastePlan, type TerminalInput } from "./paste-plan.js";
 import {
+  KEPT_REPLACED,
   KEPT_SENDS,
   rewritten,
   type AcceptedComment,
@@ -866,12 +867,25 @@ export const startSend = (
     notices: [],
     createdAt: input.now,
   };
+  const sends = [...review.sends, record];
+  const trimmed = sends.slice(0, -KEPT_SENDS);
   return {
     ...review,
     pending: review.pending.filter((pending) => !chosen.has(pending.id)),
-    sends: [...review.sends, record].slice(-KEPT_SENDS),
+    sends: sends.slice(-KEPT_SENDS),
+    replaced: [...new Set([...review.replaced, ...trimmed.flatMap(replacedDrafts)])].slice(
+      -KEPT_REPLACED,
+    ),
   };
 };
+
+/** The Mend drafts a record's posted words replace that it did not see dismissed. */
+const replacedDrafts = (record: SendRecord): ReadonlyArray<string> =>
+  record.items.flatMap((item) =>
+    item.kind === "rewrite" && item.post.kind === "posted" && item.dismissal.kind !== "dismissed"
+      ? [item.pending.origin.draftId]
+      : [],
+  );
 
 /**
  * The record with this key, after `change`; a record that is refused gives back what Mend lacks.

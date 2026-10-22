@@ -160,6 +160,7 @@ const holdsNothing = ({ kept: { review }, unread, unwritable }: Opened): boolean
   unread.sends.length === 0 &&
   unread.document === null &&
   review.pending.length === 0 &&
+  review.replaced.length === 0 &&
   (review.document === null || asComposed(review.document)) &&
   review.sends.every((record) => needs(record) === "nothing");
 

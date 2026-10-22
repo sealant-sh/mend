@@ -94,9 +94,17 @@ export interface SessionReview {
   readonly sends: ReadonlyArray<SendRecord>;
   /** The review Send review opened for the session, until it is sent: one per session. */
   readonly document: ReviewDocument | null;
+  /**
+   * Mend drafts her posted words replace that Mend may still hold as drafts, by id, kept once the
+   * review that posted them is no longer kept: Accept is not offered on them again.
+   */
+  readonly replaced: ReadonlyArray<string>;
 }
 
-export const EMPTY_REVIEW: SessionReview = { pending: [], sends: [], document: null };
+export const EMPTY_REVIEW: SessionReview = { pending: [], sends: [], document: null, replaced: [] };
+
+/** As many replaced drafts as one session's review keeps: the newest. */
+export const KEPT_REPLACED = MAX_PENDING;
 
 /** The reviews kept: the newest few, enough for since my last review and a retry. */
 export const KEPT_SENDS = 5;
@@ -547,7 +555,12 @@ export const parseSessionReview = (
   const stored = value["document"] ?? null;
   const document = parseDocument(stored);
   return {
-    review: { pending: pending.read, sends: sends.read, document },
+    review: {
+      pending: pending.read,
+      sends: sends.read,
+      document,
+      replaced: parseIds(value["replaced"]) ?? [],
+    },
     unread: {
       pending: pending.unread,
       sends: sends.unread,
@@ -681,6 +694,7 @@ export const removePending = (review: SessionReview, id: string): SessionReview 
  */
 export const acceptedDrafts = (review: SessionReview): ReadonlySet<string> =>
   new Set([
+    ...review.replaced,
     ...review.pending.flatMap((comment) =>
       comment.origin.kind === "accepted" ? [comment.origin.draftId] : [],
     ),

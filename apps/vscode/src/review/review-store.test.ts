@@ -560,6 +560,7 @@ describe("a comment VS Code could not keep", () => {
       pending: Array.from({ length: MAX_PENDING }, (_, index) => pending({ id: `p${index}` })),
       sends: [],
       document: null,
+      replaced: [],
     }));
     const store = await readyStore(keptIn(directory));
     expect(await store.comment(onLine(3, "one more"))).toEqual({
@@ -590,6 +591,7 @@ describe("a comment VS Code could not keep", () => {
       pending: Array.from({ length: MAX_PENDING }, (_, index) => pending({ id: `p${index}` })),
       sends: [],
       document: null,
+      replaced: [],
     }));
     await store.edit("p0", "edited while the review is full");
     expect(store.review().pending).toHaveLength(MAX_PENDING);
@@ -1051,6 +1053,7 @@ describe("a full review of Mend drafts she rewrote", () => {
       ),
       sends: [],
       document: null,
+      replaced: [],
     }));
     const store = await readyStore(kept, mend);
     const key = await sendAll(store);
