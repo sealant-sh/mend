@@ -226,16 +226,38 @@ export class SendDriver {
         retried: false,
         words: "Retry delivery sent nothing: another window of VS Code is delivering this review",
       };
-    const retried = await this.#step(context, target.key, {
-      kind: "retry",
-      at: new Date().toISOString(),
-      agent,
-    }).catch(async (cause: unknown) => {
-      await this.kept.releaseDrive(target.place, target.key).catch(() => undefined);
-      throw cause;
-    });
-    if (retried !== null && nextAction(retried).kind !== "idle")
-      await this.#drive(context, target.key);
+    const at = new Date().toISOString();
+    const ofKey = (review: SessionReview): SendRecord | undefined =>
+      review.sends.find((candidate) => candidate.key === target.key);
+    // Checked again as kept, under the lock: another window may have moved it since it was read.
+    let moved = false;
+    const retried = await this.host
+      .keepAt(target.place, (review) => {
+        const next = stepReview(review, target.key, { kind: "retry", at, agent }, at);
+        const before = ofKey(review);
+        const after = ofKey(next);
+        moved =
+          before !== undefined &&
+          after !== undefined &&
+          JSON.stringify(before.phase) !== JSON.stringify(after.phase);
+        return next;
+      })
+      .catch(async (cause: unknown) => {
+        await this.kept.releaseDrive(target.place, target.key).catch(() => undefined);
+        throw cause;
+      });
+    const after = ofKey(retried);
+    if (!moved || after === undefined) {
+      await this.kept.releaseDrive(target.place, target.key);
+      return {
+        retried: false,
+        words:
+          after === undefined
+            ? "Retry delivery sent nothing: VS Code no longer keeps this review"
+            : `Retry delivery sent nothing: this review already reads ${commentLabel(after, null, agent)}`,
+      };
+    }
+    if (nextAction(after).kind !== "idle") await this.#drive(context, target.key);
     else await this.kept.releaseDrive(target.place, target.key);
     return { retried: true };
   }
