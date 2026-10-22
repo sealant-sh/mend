@@ -17,16 +17,31 @@ import {
   SETTLE,
 } from "./test-fixtures.js";
 
+/** What VS Code keeps of the file an editor's text is based on, with the text and its backups. */
+interface BaseStat {
+  readonly mtime: number;
+  readonly size: number;
+}
+
 interface OpenDocument {
   readonly uri: vscode.Uri;
   text: string;
   version: number;
   isDirty: boolean;
-  /** The `mtime` the text is based on: VS Code refuses a save once the file's is another. */
-  mtime: number;
+  base: BaseStat;
   getText(): string;
   save(): Promise<boolean>;
 }
+
+const etag = ({ mtime, size }: BaseStat): string => `${mtime.toString(29)}${size.toString(31)}`;
+
+/**
+ * VS Code's own check before it saves an editor (`validateWriteFile` in its `fileService.ts`): the
+ * file changed since the editor's base only when its `mtime` is newer and the etag of the base's
+ * `mtime` with the file's size is not the base's etag, so a newer file of the same size passes.
+ */
+const modifiedSince = (base: BaseStat, stat: BaseStat): boolean =>
+  base.mtime < stat.mtime && etag(base) !== etag({ mtime: base.mtime, size: stat.size });
 
 const ui = vi.hoisted(() => ({
   commands: new Map<string, (...args: ReadonlyArray<unknown>) => unknown>(),
@@ -35,12 +50,12 @@ const ui = vi.hoisted(() => ({
   providerOfThisWindow(): vscode.FileSystemProvider | undefined {
     return this.providers.at(-1);
   },
-  /** A review's editor as VS Code holds it: a save checks the file's `mtime`, then writes. */
+  /** A review's editor as VS Code holds it: a save makes VS Code's check, then writes. */
   editor(
     provider: vscode.FileSystemProvider,
     uri: vscode.Uri,
     text: string,
-    mtime: number,
+    base: BaseStat,
     isDirty = false,
   ): OpenDocument {
     return {
@@ -48,13 +63,13 @@ const ui = vi.hoisted(() => ({
       text,
       version: 1,
       isDirty,
-      mtime,
+      base,
       getText() {
         return this.text;
       },
       async save() {
         if (!this.isDirty) return true;
-        if ((await provider.stat(uri)).mtime !== this.mtime) return false;
+        if (modifiedSince(this.base, await provider.stat(uri))) return false;
         try {
           await provider.writeFile(uri, new TextEncoder().encode(this.text), {
             create: false,
@@ -63,7 +78,7 @@ const ui = vi.hoisted(() => ({
         } catch {
           return false;
         }
-        this.mtime = (await provider.stat(uri)).mtime;
+        this.base = await provider.stat(uri);
         this.isDirty = false;
         return true;
       },
@@ -143,7 +158,7 @@ vi.mock("vscode", async () => {
         const provider = ui.providerOfThisWindow();
         if (provider === undefined) throw new Error("no provider for the review scheme");
         const text = new TextDecoder().decode(await provider.readFile(uri));
-        const opened = ui.editor(provider, uri, text, (await provider.stat(uri)).mtime);
+        const opened = ui.editor(provider, uri, text, await provider.stat(uri));
         ui.documents.push(opened);
         return opened;
       },
@@ -461,6 +476,7 @@ describe("words VS Code restored unsaved", () => {
     const mend = mendWithOpen();
     const before = await windowOn(files, mend);
     const opened = await sendReview();
+    const base = await before.provider.stat(opened.uri);
     before.close();
     ui.documents.length = 0;
 
@@ -471,7 +487,7 @@ describe("words VS Code restored unsaved", () => {
 
     const restored = await windowOn(files, mend);
     await restored.provider.stat(opened.uri);
-    const backup = ui.editor(restored.provider, opened.uri, "words VS Code restored", 1, true);
+    const backup = ui.editor(restored.provider, opened.uri, "words VS Code restored", base, true);
     ui.documents.push(backup);
     await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -483,6 +499,33 @@ describe("words VS Code restored unsaved", () => {
     expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
       expect.stringMatching(/Your text stays in this editor/),
     );
+    restored.close();
+  });
+
+  it("are never sent over a review another window saved since, of the same length", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    const before = await windowOn(files, mend);
+    const opened = await sendReview();
+    await before.provider.writeFile(opened.uri, encoded("her saved text A"), SAVE);
+    const base = await before.provider.stat(opened.uri);
+    before.close();
+    ui.documents.length = 0;
+
+    const other = await windowOn(files, mend);
+    await other.provider.readFile(opened.uri);
+    await other.provider.writeFile(opened.uri, encoded("her saved text B"), SAVE);
+    other.close();
+
+    const restored = await windowOn(files, mend);
+    await restored.provider.stat(opened.uri);
+    const backup = ui.editor(restored.provider, opened.uri, "words VS Code restored", base, true);
+    ui.documents.push(backup);
+    await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mend.delivered).toEqual([]);
+    expect(decoded(await restored.provider.readFile(opened.uri))).toBe("her saved text B");
+    expect(backup.text).toBe("words VS Code restored");
     restored.close();
   });
 
