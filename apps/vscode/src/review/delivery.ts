@@ -111,7 +111,6 @@ export type PasteStep =
   /** VS Code could not attach the live agent's terminal here: Retry delivery pastes it again. */
   | { readonly kind: "failed" };
 
-/** The slice a review is sent on: its id, both checkpoints, and the digest of its diff. */
 export interface SendSlice {
   readonly id: string;
   readonly baseId: string;
@@ -159,11 +158,7 @@ export type SendEvent =
   /** The reconcile read found nothing posted for this comment: it is posted again. */
   | { readonly kind: "not-posted"; readonly pendingId: string }
   | { readonly kind: "opened"; readonly draftId: string }
-  /**
-   * She edited the draft she accepted, and Mend keeps a draft's words as written: her words go as
-   * her own comment on its lines, posted as any of hers is, and the draft is dismissed after.
-   */
-  | { readonly kind: "replaced"; readonly draftId: string }
+  | { readonly kind: "rewritten"; readonly draftId: string }
   /** The draft she accepted is dismissed on Mend, or gone: it leaves the review, never reopened. */
   | { readonly kind: "draft-gone"; readonly draftId: string }
   /** A newer review of hers reached Mend, which supersedes every follow-up it held before. */
@@ -407,7 +402,7 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
             : item,
         ),
       };
-    case "replaced":
+    case "rewritten":
       return {
         ...record,
         items: record.items.map(
@@ -510,8 +505,7 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
   }
 };
 
-/** The Mend drafts her own words replace in this review, by their id on Mend. */
-export const replacedDrafts = (record: SendRecord): ReadonlyArray<string> =>
+export const rewrittenDrafts = (record: SendRecord): ReadonlyArray<string> =>
   record.items.flatMap((item) =>
     item.kind === "own" && item.pending.origin.kind === "accepted"
       ? [item.pending.origin.draftId]

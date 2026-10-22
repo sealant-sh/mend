@@ -24,7 +24,7 @@ import {
   openRecord,
   postedComment,
   commentLabel,
-  replacedDrafts,
+  rewrittenDrafts,
   retryRecord,
   sendGeneration,
   startSend,
@@ -59,6 +59,7 @@ import {
   removePending,
   saveDocument,
   type Composed,
+  type DocumentRead,
   type DocumentSave,
   type PendingComment,
   type ReviewDocument,
@@ -132,10 +133,8 @@ export interface RetryTarget {
   readonly key: string;
 }
 
-/** What Send review composed: exactly the comments it lists, and its text as composed. */
 export type Composition = Composed & { readonly text: string };
 
-/** A review document, by the person, server and session it is kept for, and its id. */
 export interface DocumentRef {
   readonly place: ReviewPlace;
   readonly id: string;
@@ -520,12 +519,6 @@ export class ReviewStore implements vscode.Disposable {
     await this.#keepAt(this.#place, (review) => removePending(review, pendingId));
   }
 
-  /**
-   * Accept makes a Mend draft hers: pending like her own comments, with its evidence, until Send
-   * review opens it on Mend. Words she typed under it are a comment of her own on the same lines.
-   * A draft she already accepted, in this window or another, is accepted once; her words are kept
-   * all the same. Says whether they were kept, and why not, so they are never dropped unseen.
-   */
   async accept(draftId: string, reply: string): Promise<Keeping> {
     const read = this.ready();
     const place = this.#place;
@@ -551,10 +544,6 @@ export class ReviewStore implements vscode.Disposable {
     return { kept: true };
   }
 
-  /**
-   * Dismiss removes a Mend draft, on Mend for everyone; words she typed stay as her own comment.
-   * They are kept before Mend is asked, so a refused or cut-short Dismiss never takes them along.
-   */
   async dismiss(draftId: string, reply: string): Promise<Keeping> {
     const read = this.ready();
     // Where her words go is decided now: she may follow another session before Mend answers.
@@ -704,7 +693,7 @@ export class ReviewStore implements vscode.Disposable {
     if (read === null) return null;
     const open = this.#openOnMend(read);
     const listed = {
-      id: randomUUID(),
+      documentId: randomUUID(),
       sessionId: read.sessionId,
       sessionName: read.sessionName,
       slice: sliceOf(read),
@@ -786,8 +775,7 @@ export class ReviewStore implements vscode.Disposable {
           open: composed.open,
           now: new Date().toISOString(),
         });
-        // Sent, her review document ends with it: the record keeps its text.
-        return started === null ? review : removeDocument(started, composed.id);
+        return started === null ? review : removeDocument(started, composed.documentId);
       });
     } catch (cause) {
       await this.kept.releaseDrive(place, key).catch(() => undefined);
@@ -804,23 +792,20 @@ export class ReviewStore implements vscode.Disposable {
     return { sent: true };
   }
 
-  /** Keeps what Send review composed as her review document, before its editor opens. */
   async keepDocument(composition: Composition): Promise<DocumentRef> {
     const place = this.#place;
     if (place === null) throw new Error("Mend has not finished reading this session.");
     const { text, ...composed } = composition;
     await this.#keepAt(place, (review) => addDocument(review, { composed, text, revision: 1 }));
-    return { place, id: composed.id };
+    return { place, id: composed.documentId };
   }
 
-  /** A review document as kept now, in any window; null once it was sent or no longer kept. */
   async document(ref: DocumentRef): Promise<ReviewDocument | null> {
     const { review } = await this.kept.read(ref.place);
-    return review.documents.find((document) => document.composed.id === ref.id) ?? null;
+    return review.documents.find((document) => document.composed.documentId === ref.id) ?? null;
   }
 
-  /** Her save of a review document, over the revision her editor read, under the lock. */
-  async saveDocument(ref: DocumentRef, read: number | null, text: string): Promise<DocumentSave> {
+  async saveDocument(ref: DocumentRef, read: DocumentRead, text: string): Promise<DocumentSave> {
     let saved: DocumentSave | null = null;
     await this.#keepAt(ref.place, (review) => {
       saved = saveDocument(review, ref.id, read, text);
@@ -986,6 +971,14 @@ export class ReviewStore implements vscode.Disposable {
     return next.sends.find((record) => record.key === key) ?? null;
   }
 
+  async #dismissRewrittenDrafts(changeId: string, record: SendRecord): Promise<void> {
+    const rewritten = rewrittenDrafts(record);
+    if (rewritten.length === 0) return;
+    for (const draft of await this.client.comments(changeId))
+      if (draft.state === "draft" && rewritten.includes(draft.id))
+        await this.client.setCommentState(changeId, draft.id, "dismissed");
+  }
+
   /**
    * One drive per record, by server, session and key: a second Send or Retry while one runs goes
    * after it, so a record put back to sending is always driven.
@@ -1103,7 +1096,7 @@ export class ReviewStore implements vscode.Disposable {
               return;
             }
             if (draft.body.trim() !== action.pending.body.trim()) {
-              await this.#step(context, key, { kind: "replaced", draftId: action.draftId });
+              await this.#step(context, key, { kind: "rewritten", draftId: action.draftId });
               break;
             }
             if (draft.state === "draft")
@@ -1112,12 +1105,7 @@ export class ReviewStore implements vscode.Disposable {
             break;
           }
           case "deliver": {
-            // Her words are on Mend now: a draft they replace, still a draft there, is dismissed.
-            const replaced = replacedDrafts(record);
-            if (replaced.length > 0)
-              for (const draft of await this.client.comments(changeId))
-                if (draft.state === "draft" && replaced.includes(draft.id))
-                  await this.client.setCommentState(changeId, draft.id, "dismissed");
+            await this.#dismissRewrittenDrafts(changeId, record);
             const detail = await this.sessions.sessionDetail(sessionId);
             const answered = await this.client.deliver(sessionId, action.request);
             await this.#step(context, key, {

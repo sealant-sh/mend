@@ -1,6 +1,5 @@
 import type { ReviewAnchorSide } from "./review-comment.ts";
 
-/** A hunk of a Review slice's patch, as far as a comment target needs it. */
 export interface ReviewTargetHunk {
   readonly oldStart: number;
   readonly oldLines: number;
@@ -9,17 +8,12 @@ export interface ReviewTargetHunk {
   readonly contextHash: string;
 }
 
-/** A file of a Review slice's patch, as far as a comment target needs it. */
 export interface ReviewTargetFile {
   readonly oldPath: string | null;
   readonly newPath: string | null;
   readonly hunks: ReadonlyArray<ReviewTargetHunk>;
 }
 
-/**
- * Where a comment is posted in a Review slice. No paths and no lines is the change as a whole;
- * paths with no lines is a file; paths with a side, lines and a hunk context hash is a line range.
- */
 export interface ReviewCommentTarget {
   readonly oldPath: string | null;
   readonly newPath: string | null;
@@ -46,7 +40,6 @@ const fileOf = (
     (candidate) => candidate.oldPath === target.oldPath && candidate.newPath === target.newPath,
   );
 
-/** Validate that a line range and context hash exist in the immutable patch. */
 export const lineAnchorExists = (
   files: ReadonlyArray<ReviewTargetFile>,
   target: LineAnchorTarget,
@@ -66,7 +59,6 @@ export const lineAnchorExists = (
   });
 };
 
-/** Whether Mend accepts a comment on this target in the slice whose patch holds `files`. */
 export const reviewTargetExists = (
   files: ReadonlyArray<ReviewTargetFile>,
   target: ReviewCommentTarget,

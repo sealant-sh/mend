@@ -4,15 +4,8 @@ import type { ReviewDocument } from "./pending.js";
 import type { DocumentRef, ReviewStore } from "./review-store.js";
 import { retryDelivery } from "./review-toast.js";
 
-/**
- * Send review (story d, step 6): an editor with the instruction Mend will send, which she edits
- * like any file, and **Send to session** in its title. Each review is a document kept with her
- * review on this machine, under `mend-review://<session>/review · <name>.md`: what she saves stays
- * through a reload, and Send to session sends it until it is sent.
- */
 export const REVIEW_SCHEME = "mend-review";
 
-/** The kept document a review editor shows: its URI names her account on the server, and its id. */
 const documentUri = (ref: DocumentRef, sessionName: string): vscode.Uri =>
   vscode.Uri.from({
     scheme: REVIEW_SCHEME,
@@ -44,7 +37,6 @@ const GONE =
 class ReviewFiles implements vscode.FileSystemProvider {
   readonly #changed = new vscode.EventEmitter<Array<vscode.FileChangeEvent>>();
   readonly onDidChangeFile = this.#changed.event;
-  /** The revision of each review this window's editor read: her save is kept only over that one. */
   readonly #read = new Map<string, number>();
 
   constructor(private readonly store: ReviewStore) {}
@@ -78,9 +70,10 @@ class ReviewFiles implements vscode.FileSystemProvider {
   async writeFile(uri: vscode.Uri, content: Uint8Array): Promise<void> {
     const ref = refOf(uri);
     if (ref === null) throw vscode.FileSystemError.FileNotFound(uri);
+    const revision = this.#read.get(uri.toString());
     const saved = await this.store.saveDocument(
       ref,
-      this.#read.get(uri.toString()) ?? null,
+      revision === undefined ? { kind: "restored" } : { kind: "read", revision },
       new TextDecoder().decode(content),
     );
     if (saved.kind === "gone") throw vscode.FileSystemError.FileNotFound(GONE);
@@ -103,6 +96,11 @@ class ReviewFiles implements vscode.FileSystemProvider {
     return document;
   }
 }
+
+const closeWithoutSaving = async (document: vscode.TextDocument): Promise<void> => {
+  await vscode.window.showTextDocument(document);
+  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
+};
 
 export class SendEditor implements vscode.Disposable {
   readonly #disposables: ReadonlyArray<vscode.Disposable>;
@@ -138,7 +136,6 @@ export class SendEditor implements vscode.Disposable {
   async #open(): Promise<void> {
     const composition = this.store.compose();
     if (composition === null) return;
-    // A review she is already editing is shown as she left it, never composed over.
     const open = vscode.workspace.textDocuments.find(
       (candidate) => refOf(candidate.uri)?.place.sessionId === composition.sessionId,
     );
@@ -171,9 +168,7 @@ export class SendEditor implements vscode.Disposable {
         void vscode.window.showWarningMessage(sent.words);
         return;
       }
-      // The record keeps her text and the document is gone, so the editor closes unsaved.
-      await vscode.window.showTextDocument(document);
-      await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
+      await closeWithoutSaving(document);
     } catch (cause) {
       this.onError(cause);
     }

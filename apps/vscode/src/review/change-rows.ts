@@ -141,10 +141,6 @@ const clock = (iso: string): string => {
   return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
 };
 
-/**
- * The two documents of a file's diff from one checkpoint to another: the side a file is not on is
- * absent. `slice` names the new side's slice when it takes comments.
- */
 export const diffSides = (
   file: ChangeFile,
   worktreeId: string,

@@ -1,21 +1,3 @@
-// Story d, step 6, on files the session changed rather than added: Dana comments on a line of a
-// file that exists at the session's base and that the agent modified, and on a line of a file the
-// agent renamed, presses Send review, then Send to session, and Mend holds each comment with her
-// words, anchored to the file by both of its paths. A comment on an added file rides the same
-// review beside them. `vscode-review-send.mjs` drives the rest of steps 6 and 7 on added files.
-// Two more defects ride it: her comment's row under Comments opens an added file's diff, and a
-// review document she saved before `Developer: Reload Window` is still hers to send after it. A
-// step under test that fails is kept failed in `steps.jsonl` and the run goes on, so one run shows
-// every such failure; the last step then fails the run.
-//
-//   node .claude/skills/verify/scripts/drive-vscode.mjs run \
-//     .claude/skills/verify/recipes/vscode-review-send-modified.mjs --out <dir>
-//
-// Needs a world from `up` whose project is Hello-World (its base holds one file, `README`, which
-// reads `Hello World!`). Claude runs on the skill's fake setup token and sits at its prompt; the
-// recipe never presses Enter in it. A world that already ran this recipe names its next sessions
-// apart: `MEND_REVIEW_SESSION`.
-
 import {
   changeActions,
   changeRows,
@@ -41,10 +23,9 @@ const RENAMED_WORDS = "Keep the old README name for links";
 const SAVED_WORDS = "Name the reader in the greeting";
 const SAVED_LINE = "Also keep the greeting to one line.";
 const PASTED = "follow-up pending · pasted into claude's terminal";
-/** What the Change section's Comments row reads. */
+const LATE_REFUSAL_GRACE_MS = 2_000;
 const commentsOf = (seen) => seen.rows.find((row) => row.label === "Comments")?.description ?? "";
 
-/** README modified in place, and a file added beside it. */
 const MODIFIED_ROUND = {
   files: {
     README: "Hello World!\nIt greets whoever reads it.\nIt answers in English.\n",
@@ -57,7 +38,6 @@ const RENAMED_ROUND = {
   files: { "GREETING.md": "Hello World!\nHi.\n" },
   remove: ["README"],
 };
-/** One file added: her review of it is the one she saves before a reload. */
 const SAVED_ROUND = {
   files: { "docs/saved.md": "# Saved\n\nShe saves her review before a reload.\n" },
   remove: [],
@@ -68,8 +48,7 @@ export default async (h) => {
   const lane = reviewWorld(h);
   const { connectClaude, startClaude, shellBeside, reload } = lane;
   const failed = [];
-  /** A step under test: its failure is kept in `steps.jsonl` and the run goes on to the next. */
-  const checked = (name, fn, options) =>
+  const stepContinuingOnFailure = (name, fn, options) =>
     step(name, fn, options).catch(() => {
       failed.push(name);
       return null;
@@ -112,7 +91,6 @@ export default async (h) => {
   await step("the window reloads onto the extension built from this checkout", reload, {
     via: "setup",
   });
-  // A world from `up --no-remote-ssh` opens on Set up; review needs no Remote-SSH, so she skips it.
   await step(
     "the Sessions view shows her sessions (Skip for now when it offers Set up)",
     async () => {
@@ -184,10 +162,6 @@ export default async (h) => {
       state: one.state,
     }));
 
-  /**
-   * Send review, then Send to session, on the session in view, and what the threads and the
-   * section read once Send to session is done with each of her comments.
-   */
   const sendReview = async (session, headings, label) => {
     const actions = await changeActions(h);
     expect(
@@ -214,8 +188,6 @@ export default async (h) => {
     const before = commentsOf(await section());
     const watch = await h.watch();
     await clickEditorTitle(h, "Send to session");
-    // Done once the Comments row moved off what it read before and off sending, and held still
-    // for 5 s. A send that never settles is kept as what it read: Mend holding it is the proof.
     let last = { reads: "", since: 0 };
     const seen = await sectionUntil(
       "Send to session done with every comment",
@@ -267,7 +239,7 @@ export default async (h) => {
     },
   );
 
-  await checked(
+  await stepContinuingOnFailure(
     "d4 · her comment's row under Comments opens docs/greet.md's diff (added: no base side), with no error",
     async () => {
       await h.palette("Notifications: Clear All Notifications");
@@ -290,8 +262,7 @@ export default async (h) => {
         async () => (await opened()) ?? (await failure()),
         20_000,
       ).catch((cause) => note(String(cause.message).split("\n")[0]));
-      // A refused side may answer after the tab is drawn.
-      await sleep(2_000);
+      await sleep(LATE_REFUSAL_GRACE_MS);
       const shown = await watch.stop();
       const tabs = await editorTabs(h);
       const sides = await diffSides(h);
@@ -324,7 +295,6 @@ export default async (h) => {
     },
   );
 
-  /** Her thread on `file`, as it reads once the section settled. */
   const threadOn = async (file, words, label) => {
     await openFile(file);
     const read = await waitUntil(
@@ -376,7 +346,7 @@ export default async (h) => {
     async () => JSON.stringify(await threadOn("GREETING.md", RENAMED_WORDS, "renamed-greeting")),
   );
 
-  await checked(
+  await stepContinuingOnFailure(
     "d6 · Mend holds every comment she sent, with her words, both paths of its file and its line, and her threads read pasted",
     async () => {
       const wanted = [
@@ -447,7 +417,6 @@ export default async (h) => {
       .click();
     await sleep(1_000);
   };
-  /** Send review on the session the Change section shows: its review's editor, active. */
   const openReview = async () => {
     await clickChangeAction(h, "Send review");
     await waitUntil(
@@ -484,7 +453,7 @@ export default async (h) => {
     },
   );
 
-  await checked(
+  await stepContinuingOnFailure(
     "d6 · after Developer: Reload Window her saved review reads her line (the restored editor, else Send review again)",
     async () => {
       await reload();
@@ -515,7 +484,7 @@ export default async (h) => {
     },
   );
 
-  await checked(
+  await stepContinuingOnFailure(
     "d6 · Send to session from her saved review, with nothing saying it was not sent",
     async () => {
       if (!(await section()).title.endsWith(SAVED)) await select(SAVED, { closeEditors: false });
@@ -539,7 +508,7 @@ export default async (h) => {
     },
   );
 
-  await checked(
+  await stepContinuingOnFailure(
     "d6 · Mend's follow-up for the session holds the line she saved before the reload",
     async () => {
       const read = () =>

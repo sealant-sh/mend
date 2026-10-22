@@ -28,6 +28,9 @@ const ui = vi.hoisted(() => ({
   commands: new Map<string, (...args: ReadonlyArray<unknown>) => unknown>(),
   providers: new Array<vscode.FileSystemProvider>(),
   documents: new Array<OpenDocument>(),
+  providerOfThisWindow(): vscode.FileSystemProvider | undefined {
+    return this.providers.at(-1);
+  },
 }));
 
 vi.mock("vscode", async () => {
@@ -82,9 +85,8 @@ vi.mock("vscode", async () => {
         ui.providers.push(provider);
         return { dispose: () => undefined };
       },
-      // VS Code reads a document through the provider of the window it opens in.
       openTextDocument: async (uri: vscode.Uri) => {
-        const provider = ui.providers.at(-1);
+        const provider = ui.providerOfThisWindow();
         if (provider === undefined) throw new Error("no provider for the review scheme");
         const opened: OpenDocument = {
           uri,
@@ -125,7 +127,6 @@ const SAVE: { readonly create: boolean; readonly overwrite: boolean } = {
   overwrite: true,
 };
 
-/** A window of VS Code following `s1`: its review store, and Send review's editor and files. */
 const windowOn = async (files: KeptFiles, mend: FakeMend) => {
   const store = new ReviewStore(
     sessionReads("change-1"),
@@ -137,7 +138,7 @@ const windowOn = async (files: KeptFiles, mend: FakeMend) => {
   const editor = new SendEditor(store, (cause) => {
     throw cause;
   });
-  const provider = ui.providers.at(-1);
+  const provider = ui.providerOfThisWindow();
   if (provider === undefined) throw new Error("Send review registered no files");
   store.follow(PROJECT, session("s1"));
   await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
@@ -151,7 +152,6 @@ const windowOn = async (files: KeptFiles, mend: FakeMend) => {
   };
 };
 
-/** Send review, as she chooses it: the document it opens. */
 const sendReview = async (): Promise<OpenDocument> => {
   await ui.commands.get("mend.change.sendReview")?.();
   const opened = ui.documents.at(-1);
@@ -190,7 +190,6 @@ describe("a review she saved, when VS Code reloads", () => {
     await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
     expect(mend.delivered[0]?.instruction).toBe(words);
     expect(after.store.review().sends.at(-1)?.instruction).toBe(words);
-    // Sent, the review is no longer kept as one she is editing.
     await expect(Promise.resolve().then(() => after.provider.stat(opened.uri))).rejects.toThrow();
     after.close();
   });

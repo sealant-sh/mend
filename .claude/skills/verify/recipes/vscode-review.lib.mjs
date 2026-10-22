@@ -441,7 +441,6 @@ export const said = (section) =>
     )
     .join(" | ");
 
-/** The editor tabs of the active group: their labels, which is active, which has unsaved edits. */
 export const editorTabs = (h) =>
   h.page().evaluate(() =>
     [...document.querySelectorAll(".part.editor .tabs-container .tab")].map((tab) => ({
@@ -452,7 +451,6 @@ export const editorTabs = (h) =>
     })),
   );
 
-/** What the active editor says in place of its text when it cannot open it; "" when it shows text. */
 export const editorPlaceholder = (h) =>
   h
     .page()

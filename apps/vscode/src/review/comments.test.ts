@@ -283,7 +283,6 @@ describe("her words under a Mend draft", () => {
     },
   };
 
-  /** One window's review with the draft drawn in its thread, and her words typed under it. */
   const underDraft = async (mend: FakeMend, files: KeptFiles = NODE_FILES) => {
     mend.serverComments = [DRAFT];
     const store = new ReviewStore(

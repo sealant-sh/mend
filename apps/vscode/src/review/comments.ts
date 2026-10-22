@@ -220,10 +220,6 @@ export class ReviewComments implements vscode.Disposable {
     else this.#hold(thread, body, kept.words);
   }
 
-  /**
-   * Words the store did not keep stay in their thread, with why, until she tries again: under a
-   * Mend draft, below the draft.
-   */
   #hold(thread: vscode.CommentThread, body: string, words: string): void {
     if (body.trim() !== "")
       thread.comments = [
@@ -280,7 +276,6 @@ export class ReviewComments implements vscode.Disposable {
       if (drawn !== undefined) drawn.thread.comments = [shown(drawn.view)];
       return;
     }
-    // The store's redraw replaced the comment she was editing: put her words back in front of her.
     if (drawn !== undefined) drawn.thread.comments = [comment];
     void vscode.window.showWarningMessage(kept.words);
   }

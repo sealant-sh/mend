@@ -55,43 +55,24 @@ export interface PendingComment {
   readonly anchor: CommentAnchor | null;
 }
 
-/** What Send review composed a review with: exactly the comments it lists, and on which slice. */
 export interface Composed {
-  /** Its review document's: each composition is a document of its own. */
-  readonly id: string;
+  readonly documentId: string;
   readonly sessionId: string;
   readonly sessionName: string;
-  /** The slice it was composed on: the pinned slice when she chose Send review. */
   readonly slice: SendSlice;
-  /** Her pending comments, by id. */
   readonly pending: ReadonlyArray<string>;
-  /** The comments open on Mend, by id. */
   readonly open: ReadonlyArray<string>;
-  /** Every comment it lists with its words as they were: an edit since reads as a change. */
   readonly digest: string;
-  /** The reviews it was composed after (`sendGeneration`): one sent since makes it stale. */
   readonly generation: string;
-  /**
-   * What the agent's input holds, as VS Code pasted it, that this review is composed on top of:
-   * Send to session pastes only what follows it. Null for a review on its own.
-   */
   readonly base: HeldInput | null;
 }
 
-/**
- * Send review's editor as she last saved it, with what it was composed with, until Send to session
- * sends it. `revision` counts her saves: a save over one this editor did not read is refused.
- */
 export interface ReviewDocument {
   readonly composed: Composed;
   readonly text: string;
   readonly revision: number;
 }
 
-/**
- * One session's review on this machine: her pending comments, the reviews she sent, and the
- * reviews she is writing. A comment is pending or in exactly one send record, never both.
- */
 export interface SessionReview {
   readonly pending: ReadonlyArray<PendingComment>;
   readonly sends: ReadonlyArray<SendRecord>;
@@ -103,7 +84,6 @@ export const EMPTY_REVIEW: SessionReview = { pending: [], sends: [], documents: 
 /** The reviews kept: the newest few, enough for since my last review and a retry. */
 export const KEPT_SENDS = 5;
 
-/** The review documents kept: each Send review composes one, and Send to session ends it. */
 export const KEPT_DOCUMENTS = 5;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -377,7 +357,7 @@ const parseDocument = (value: unknown): ReadonlyArray<ReviewDocument> => {
   if (!isRecord(composed) || !isRecord(composed["slice"]) || saved === null || revision === null)
     return [];
   const slice = composed["slice"];
-  const id = text(composed, "id");
+  const documentId = text(composed, "documentId");
   const sessionId = text(composed, "sessionId");
   const sessionName = text(composed, "sessionName");
   const sliceId = text(slice, "id");
@@ -390,7 +370,7 @@ const parseDocument = (value: unknown): ReadonlyArray<ReviewDocument> => {
   const generation = text(composed, "generation");
   const base = composed["base"] === null ? null : parseHeld(composed["base"]);
   if (
-    id === null ||
+    documentId === null ||
     sessionId === null ||
     sessionName === null ||
     sliceId === null ||
@@ -407,7 +387,7 @@ const parseDocument = (value: unknown): ReadonlyArray<ReviewDocument> => {
   return [
     {
       composed: {
-        id,
+        documentId,
         sessionId,
         sessionName,
         slice: { id: sliceId, baseId, headId, diffDigest },
@@ -435,33 +415,29 @@ export const parseSessionReview = (value: unknown): SessionReview =>
       }
     : EMPTY_REVIEW;
 
-/** A review Send review composed, kept as her document until Send to session sends it. */
 export const addDocument = (review: SessionReview, document: ReviewDocument): SessionReview => ({
   ...review,
   documents: [...review.documents, document].slice(-KEPT_DOCUMENTS),
 });
 
-/** Her save of a review document: kept only over the revision her editor read. */
 export type DocumentSave =
   | { readonly kind: "saved"; readonly review: SessionReview; readonly revision: number }
-  /** Sent, or composed so long ago that newer reviews took its place. */
   | { readonly kind: "gone" }
-  /** Saved since her editor read it, in another window. */
   | { readonly kind: "newer" };
 
-/**
- * `read` is the revision her editor read; null when it read none in this window, as an editor VS
- * Code restored from its own backup, which VS Code checks against the revision it last saw.
- */
+export type DocumentRead =
+  | { readonly kind: "read"; readonly revision: number }
+  | { readonly kind: "restored" };
+
 export const saveDocument = (
   review: SessionReview,
-  id: string,
-  read: number | null,
+  documentId: string,
+  read: DocumentRead,
   words: string,
 ): DocumentSave => {
-  const found = review.documents.find((document) => document.composed.id === id);
+  const found = review.documents.find((document) => document.composed.documentId === documentId);
   if (found === undefined) return { kind: "gone" };
-  if (read !== null && found.revision !== read) return { kind: "newer" };
+  if (read.kind === "read" && found.revision !== read.revision) return { kind: "newer" };
   if (found.text === words) return { kind: "saved", review, revision: found.revision };
   const saved: ReviewDocument = { ...found, text: words, revision: found.revision + 1 };
   return {
@@ -474,9 +450,9 @@ export const saveDocument = (
   };
 };
 
-export const removeDocument = (review: SessionReview, id: string): SessionReview => ({
+export const removeDocument = (review: SessionReview, documentId: string): SessionReview => ({
   ...review,
-  documents: review.documents.filter((document) => document.composed.id !== id),
+  documents: review.documents.filter((document) => document.composed.documentId !== documentId),
 });
 
 export const addPending = (review: SessionReview, comment: PendingComment): SessionReview => ({
@@ -501,7 +477,6 @@ export const acceptedDrafts = (review: SessionReview): ReadonlySet<string> =>
     ...review.pending.flatMap((comment) =>
       comment.origin.kind === "accepted" ? [comment.origin.draftId] : [],
     ),
-    // One on its way in a review she sent is hers too, as is one her own words replace there.
     ...review.sends.flatMap((record) =>
       record.phase.kind === "refused"
         ? []
