@@ -25,7 +25,8 @@ const ATTACH_POLL_MS = 100;
  * Pastes the review into the one agent process Mend held it for (G12 fallback). Answer attaches
  * whatever the session runs now, and once the agent exits that is a supporting shell, where a
  * pasted line would run: so the paste goes only into a tab attached to that process, and only
- * while Mend lists the process live, read again right before the paste.
+ * while Mend lists the process live, read again right before the paste. A failure before the paste
+ * pasted nothing, so it reads not attached; only the paste itself throws.
  */
 export const pasteIntoAgent = async <Tab>(
   effects: PasteEffects<Tab>,
@@ -33,6 +34,17 @@ export const pasteIntoAgent = async <Tab>(
   processId: string,
   text: string,
 ): Promise<Pasted> => {
+  const found = await attach(effects, sessionId, processId).catch((): Pasted => "not-attached");
+  if (typeof found === "string") return found;
+  return (await effects.paste(found.tab, text)) ? "pasted" : "not-attached";
+};
+
+/** The tab attached to the agent process, while Mend lists it live; else why there is none. */
+const attach = async <Tab>(
+  effects: PasteEffects<Tab>,
+  sessionId: string,
+  processId: string,
+): Promise<{ readonly tab: Tab } | Exclude<Pasted, "pasted">> => {
   const live = async (): Promise<boolean> =>
     attachableProcesses((await effects.detail(sessionId)).processes).some(
       (process) => process.id === processId && process.kind === "agent-pty",
@@ -44,8 +56,7 @@ export const pasteIntoAgent = async <Tab>(
     if (tab !== null) {
       if (effects.processOf(tab) !== processId)
         return (await live()) ? "not-attached" : "agent-gone";
-      if (!(await live())) return "agent-gone";
-      return (await effects.paste(tab, text)) ? "pasted" : "not-attached";
+      return (await live()) ? { tab } : "agent-gone";
     }
     await effects.sleep(ATTACH_POLL_MS);
   }
