@@ -373,6 +373,60 @@ describe("what a send leaves her to know", () => {
     );
   });
 
+  const inPhase = (phase: SendPhase): SendRecord => ({ ...only(posted(sent())), phase });
+  const DONE = terminal({ kind: "done", input: { text: "the review", ids: ["c1", "c2"] } });
+  const CUT_SHORT = terminal({ kind: "failed", mayHaveLanded: true, stopped: null });
+  const REFUSED: SendPhase = { kind: "refused", words: "Mend refused it." };
+  const NO_CHANGE: ReadonlyArray<readonly [string, SendRecord, SendEvent]> = [
+    [
+      "a paste that fails once more",
+      inPhase(CUT_SHORT),
+      { kind: "paste-failed", why: "interrupted", words: "the socket closed" },
+    ],
+    [
+      "a paste that went nowhere, after it was done",
+      inPhase(DONE),
+      { kind: "paste-failed", why: "not-attached" },
+    ],
+    [
+      "a drive found left after its paste",
+      inPhase(DONE),
+      { kind: "abandoned", why: { kind: "closed" } },
+    ],
+    [
+      "a drive found left after its paste was cut short",
+      inPhase(CUT_SHORT),
+      { kind: "abandoned", why: { kind: "switched" } },
+    ],
+    [
+      "a skipped paste, after it was done",
+      inPhase(DONE),
+      { kind: "skipped", words: "nothing to add" },
+    ],
+    [
+      "a dismissed draft of a refused review",
+      inPhase(REFUSED),
+      { kind: "draft-gone", draftId: "d1" },
+    ],
+    [
+      "a refusal of a refused review",
+      inPhase(REFUSED),
+      { kind: "failed", words: "Mend refused it again.", retryable: false },
+    ],
+    [
+      "an answer to a review no longer sending",
+      inPhase({ kind: "delivered", at: NOW }),
+      { kind: "answered", status: "delivered", error: null, agent: { kind: "other" } },
+    ],
+  ];
+
+  it.each(NO_CHANGE)(
+    "writes no notice for %s, which leaves the review as it was",
+    (_what, before, event) => {
+      expect(step(before, event, NOW)).toEqual(before);
+    },
+  );
+
   it("keeps a paste that failed as an error offering Retry, and a later one beside it", () => {
     const failed = apply(inTerminal({ kind: "due" }), {
       kind: "paste-failed",
