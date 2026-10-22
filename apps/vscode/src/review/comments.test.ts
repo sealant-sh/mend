@@ -18,6 +18,7 @@ import {
   storage,
   noPaste,
   SETTLE,
+  sendComposed,
 } from "./test-fixtures.js";
 
 interface Thread {
@@ -283,7 +284,7 @@ describe("saving an edit to a pending comment", () => {
     Object.assign(editing, { body: "Use guard.ts instead" });
     const composed = sender.compose();
     if (composed === null) throw new Error("nothing composed");
-    expect(await sender.send(composed, composed.text)).toEqual({ sent: true });
+    expect(await sendComposed(sender, composed, composed.text)).toEqual({ sent: true });
     await ui.commands.get("mend.review.save")?.(editing);
     expect(
       editor

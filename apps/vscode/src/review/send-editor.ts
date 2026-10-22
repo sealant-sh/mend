@@ -95,6 +95,11 @@ class ReviewFiles implements vscode.FileSystemProvider {
     this.#changed.dispose();
   }
 
+  /** The revision the text of this review's editor is based on; undefined before it was read. */
+  basedOn(uri: vscode.Uri): number | undefined {
+    return this.#based.get(uri.toString());
+  }
+
   async #document(uri: vscode.Uri): Promise<ReviewDocument> {
     const ref = refOf(uri);
     const document = ref === null ? null : await this.store.document(ref);
@@ -110,12 +115,14 @@ const closeWithoutSaving = async (document: vscode.TextDocument): Promise<void> 
 
 export class SendEditor implements vscode.Disposable {
   readonly #disposables: ReadonlyArray<vscode.Disposable>;
+  readonly #files: ReviewFiles;
 
   constructor(
     private readonly store: ReviewStore,
     private readonly onError: (cause: unknown) => void,
   ) {
     const files = new ReviewFiles(store);
+    this.#files = files;
     this.#disposables = [
       vscode.workspace.registerFileSystemProvider(REVIEW_SCHEME, files, {
         isCaseSensitive: true,
@@ -161,14 +168,14 @@ export class SendEditor implements vscode.Disposable {
     if (document === undefined) return;
     try {
       const ref = refOf(uri);
-      const kept = ref === null ? null : await this.store.document(ref);
-      if (kept === null) {
+      const revision = this.#files.basedOn(uri);
+      if (ref === null || revision === undefined) {
         void vscode.window.showWarningMessage(
           "Mend does not know which comments this review lists, so nothing was sent. Your text stays in this editor: close it and choose Send review again.",
         );
         return;
       }
-      const sent = await this.store.send(kept.composed, document.getText());
+      const sent = await this.store.send(ref, document.getText(), revision);
       // Not recorded: the editor stays, and her words in it.
       if (!sent.sent) {
         void vscode.window.showWarningMessage(sent.words);

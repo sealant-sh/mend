@@ -24,6 +24,7 @@ import {
   storage,
   noPaste,
   SETTLE,
+  sendComposed,
 } from "./test-fixtures.js";
 import { threadsOf } from "./threads.js";
 
@@ -525,7 +526,7 @@ const mendWithOpen = (): FakeMend => {
 const sendAll = async (store: ReviewStore): Promise<string> => {
   const composed = store.compose();
   if (composed === null) throw new Error("nothing composed");
-  expect(await store.send(composed, composed.text)).toEqual({ sent: true });
+  expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
   const record = store.review().sends.at(-1);
   if (record === undefined) throw new Error("no review kept");
   return record.key;
@@ -572,11 +573,11 @@ describe("sending a review from the store", () => {
     const composed = store.compose();
     if (composed === null) throw new Error("nothing composed");
     await store.comment(onLine(4, "written after the editor opened"));
-    const refused = await store.send(composed, composed.text);
+    const refused = await sendComposed(store, composed, composed.text);
     expect(refused).toEqual({ sent: false, words: expect.stringMatching(/changed/) });
-    expect(await store.send({ ...composed, sessionId: "s2" }, composed.text)).toMatchObject({
-      sent: false,
-    });
+    const ref = await store.keepDocument(composed);
+    const elsewhere = { ...ref, place: { ...ref.place, sessionId: "s2" } };
+    expect(await store.send(elsewhere, composed.text, 1)).toMatchObject({ sent: false });
     expect(store.review().sends).toEqual([]);
     expect(store.review().pending.map(({ body }) => body)).toEqual([
       "first",

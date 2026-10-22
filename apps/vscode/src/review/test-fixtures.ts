@@ -11,6 +11,7 @@ import type { DeliverRequest } from "./delivery.js";
 import { KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
 import type { PendingComment } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
+import type { Composition, ReviewStore, Sent } from "./review-store.js";
 import type {
   ChangeFile,
   Checkpoint,
@@ -341,6 +342,18 @@ export class FakeMend extends ReviewClient {
     );
   }
 }
+
+/** Send review as its editor does: the composition kept as the session's review, sent with `text`. */
+export const sendComposed = async (
+  store: ReviewStore,
+  composition: Composition,
+  text: string,
+): Promise<Sent> => {
+  const ref = await store.keepDocument(composition);
+  const kept = await store.document(ref);
+  if (kept === null) throw new Error("the review was not kept");
+  return store.send(ref, text, kept.revision);
+};
 
 /** Long enough for a store's read of the fakes to land. */
 export const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));

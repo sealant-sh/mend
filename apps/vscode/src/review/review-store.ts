@@ -200,6 +200,10 @@ const TEXT_STAYS = "Your text stays in this editor.";
 
 const COMMENTS_CHANGED = `Your comments changed since this review was composed, so nothing was sent. ${TEXT_STAYS} Close it and choose Send review again to compose the review with your comments as they are now.`;
 
+const SAVED_SINCE = `Another window saved this review since this editor read it, so nothing was sent. ${TEXT_STAYS}`;
+
+const NOT_KEPT = `This review was sent, or VS Code no longer keeps it, so nothing was sent. ${TEXT_STAYS}`;
+
 const ANOTHER_WENT_OUT = `Another review of this session went out since this one was composed, so nothing was sent. ${TEXT_STAYS} Close it and choose Send review again to compose the review on top of the one sent.`;
 
 const offerWords = (offer: SendOffer): string => {
@@ -787,17 +791,24 @@ export class ReviewStore implements vscode.Disposable {
 
   /**
    * Send to session: the text she sent, with exactly the comments it was composed with, under one
-   * new idempotency key kept in the record; the record is then driven until Mend answers. Says
-   * whether the send was recorded, and why not in Mend's words.
+   * new idempotency key kept in the record; the record is then driven until Mend answers. `text`
+   * is her editor's, based on the document's `revision`: one another window saved since is not sent
+   * over. Says whether the send was recorded, and why not in Mend's words.
    */
-  async send(composed: Omit<Composed, "sessionName">, text: string): Promise<Sent> {
+  async send(ref: DocumentRef, text: string, revision: number): Promise<Sent> {
     const read = this.ready();
     const place = this.#place;
-    if (read === null || place === null || read.sessionId !== composed.sessionId)
+    if (read === null || place === null || !samePlace(place, ref.place))
       return {
         sent: false,
         words: `The Change section no longer shows this review's session, so nothing was sent. ${TEXT_STAYS}`,
       };
+    const ofRef = (review: SessionReview): ReviewDocument | undefined =>
+      review.documents.find((document) => document.composed.documentId === ref.id);
+    const document = ofRef((await this.kept.read(place)).review);
+    if (document === undefined) return { sent: false, words: NOT_KEPT };
+    if (document.revision !== revision) return { sent: false, words: SAVED_SINCE };
+    const { composed } = document;
     const offer = this.offer();
     if (offer.kind !== "ready")
       return { sent: false, words: `${offerWords(offer)}. ${TEXT_STAYS}` };
@@ -810,14 +821,18 @@ export class ReviewStore implements vscode.Disposable {
     const key = `vscode-follow-up:${read.changeId}:${randomUUID()}`;
     let next: SessionReview;
     let stale = false;
+    let saved: "gone" | "newer" | null = null;
     try {
       // Its drive is claimed before the record is kept: a window loading it then reads it driven
       // here, never left behind by a window that closed.
       await this.kept.claimDrive(place, key);
       // Checked again as kept, under the lock: another window may have sent these comments.
       next = await this.#keepAt(place, (review) => {
+        const kept = ofRef(review);
+        saved = kept === undefined ? "gone" : kept.revision === revision ? null : "newer";
         stale = sendGeneration(review.sends) !== composed.generation;
-        if (stale || digestOf(review.pending, open) !== composed.digest) return review;
+        if (saved !== null || stale || digestOf(review.pending, open) !== composed.digest)
+          return review;
         const started = startSend(review, {
           key,
           slice: sliceOf(read),
@@ -838,6 +853,8 @@ export class ReviewStore implements vscode.Disposable {
     }
     if (!next.sends.some((record) => record.key === key)) {
       await this.kept.releaseDrive(place, key);
+      if (saved === "gone") return { sent: false, words: NOT_KEPT };
+      if (saved === "newer") return { sent: false, words: SAVED_SINCE };
       return { sent: false, words: stale ? ANOTHER_WENT_OUT : COMMENTS_CHANGED };
     }
     void this.#drive(this.#context(read, place), key);
