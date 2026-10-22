@@ -8,12 +8,7 @@ import type { AuthenticationProviderAuthenticationSessionsChangeEvent } from "vs
 import { MendAuthenticationProvider } from "./auth-provider.js";
 import { MendClient } from "./client.js";
 import { ConnectionStore } from "./config.js";
-import {
-  parseCredentialStore,
-  serializeCredentialStore,
-  withCredential,
-  type CredentialStore,
-} from "./credentials.js";
+import { keptCredential, secretWriteOf } from "./credentials.js";
 import type { MendAccount } from "./first-run-view.js";
 
 const settings = vi.hoisted(() => new Map<string, unknown>());
@@ -107,27 +102,28 @@ const store = () =>
     },
   });
 
-const TOKEN_KEY = "mend.serverToken";
+const LEGACY_KEY = "mend.serverToken";
 const EDGE = "https://mend.example.com";
 
 /** The editor signed in through the browser: one device per server, pointed at the first. */
 const signedIn = (
   ...devices: ReadonlyArray<{ readonly url: string; readonly token: string; readonly id: string }>
 ): void => {
-  const kept = devices.reduce<CredentialStore>(
-    (entries, device) =>
-      withCredential(entries, {
-        kind: "token",
-        url: device.url,
-        token: device.token,
-        deviceId: device.id,
-        email: "dana@example.com",
-      }),
-    new Map(),
-  );
-  secrets.set(TOKEN_KEY, serializeCredentialStore(kept));
+  for (const device of devices) {
+    const { key, value } = secretWriteOf({
+      kind: "signedIn",
+      url: device.url,
+      token: device.token,
+      deviceId: device.id,
+      email: "dana@example.com",
+    });
+    secrets.set(key, value);
+  }
   settings.set("mend.serverUrl", devices[0]?.url);
 };
+
+/** What every window now reads for `url`, refusals applied; the CLI holds nothing. */
+const kept = (url: string) => keptCredential(async (key) => secrets.get(key), url, null);
 
 /**
  * One VS Code window as extension.ts wires it: its connection store and client, and its Accounts
@@ -275,10 +271,7 @@ describe("the Accounts menu (h2c)", () => {
     for (const window of [here, there]) {
       expect(window.changes.at(-1)).toMatchObject({ added: [], removed: [{ id: MINI }] });
     }
-    expect(parseCredentialStore(secrets.get(TOKEN_KEY)).get(MINI)).toEqual({
-      kind: "none",
-      url: MINI,
-    });
+    expect(await kept(MINI)).toEqual({ kind: "none", url: MINI });
     expect(await there.connections.state()).toMatchObject({ kind: "notConnected" });
   });
 
@@ -291,11 +284,11 @@ describe("the Accounts menu (h2c)", () => {
     await here.accounts.removeSession(EDGE);
     expect(deletes(fetcher)).toEqual([[`${EDGE}/api/me/devices/device-edge`, "Bearer mdt_edge"]]);
     expect(await here.connections.state()).toMatchObject({ kind: "connected", url: MINI });
-    expect(parseCredentialStore(secrets.get(TOKEN_KEY)).get(EDGE)?.kind).toBe("none");
+    expect((await kept(EDGE))?.kind).toBe("none");
 
     await here.accounts.removeSession(MINI);
     expect(deletes(fetcher)).toHaveLength(2);
-    expect(await here.accounts.getSessions()).toEqual([]);
+    await vi.waitFor(async () => expect(await here.accounts.getSessions()).toEqual([]));
   });
 });
 
@@ -335,10 +328,7 @@ describe("a refusal and a sign-in at once (SLNT-170)", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     held.resolve();
     await Promise.all([refusal, signIn]);
-    expect(parseCredentialStore(secrets.get(TOKEN_KEY)).get(MINI)).toMatchObject({
-      kind: "token",
-      token: "mdt_editor",
-    });
+    expect(await kept(MINI)).toMatchObject({ kind: "token", token: "mdt_editor" });
   }, 10_000);
 });
 
@@ -385,9 +375,8 @@ describe("two windows writing the credentials at once", () => {
     await store().signOut(EDGE);
     here.release();
     await refusal;
-    const kept = parseCredentialStore(secrets.get(TOKEN_KEY));
-    expect(kept.get(EDGE)).toMatchObject({ kind: "none" });
-    expect(kept.get(MINI)).toMatchObject({ kind: "none" });
+    expect(await kept(EDGE)).toMatchObject({ kind: "none" });
+    expect(await kept(MINI)).toMatchObject({ kind: "none" });
   });
 
   it("keeps another window's sign-in while this one drops the token it replaced", async () => {
@@ -403,10 +392,153 @@ describe("two windows writing the credentials at once", () => {
     expect(await store().connect()).toBe(true);
     here.release();
     await refusal;
-    expect(parseCredentialStore(secrets.get(TOKEN_KEY)).get(MINI)).toMatchObject({
-      kind: "token",
-      token: "mdt_editor",
+    expect(await kept(MINI)).toMatchObject({ kind: "token", token: "mdt_editor" });
+  });
+});
+
+/**
+ * VS Code's secret storage as its windows see it: each window reads its own copy, and a write
+ * reaches the other windows only when `deliver` runs (the main process's broadcast, ~100 ms after
+ * the write resolved), in the order the writes were made.
+ */
+const laggySecrets = () => {
+  const copies: Array<Map<string, string>> = [];
+  const sent: Array<{ readonly key: string; readonly value: string }> = [];
+  const window = () => {
+    const copy = new Map(secrets);
+    copies.push(copy);
+    return new ConnectionStore({
+      secrets: {
+        get: async (key: string) => copy.get(key),
+        store: async (key: string, value: string) => {
+          copy.set(key, value);
+          sent.push({ key, value });
+        },
+      },
     });
+  };
+  const deliver = (): void => {
+    for (const { key, value } of sent.splice(0)) {
+      secrets.set(key, value);
+      for (const copy of copies) copy.set(key, value);
+    }
+  };
+  return { window, deliver };
+};
+
+describe("two windows writing the credentials before either sees the other's write", () => {
+  it("keeps a sign-out of one server while another window drops a refused token for another", async () => {
+    signedIn(
+      { url: MINI, token: "mdt_mini", id: "device-mini" },
+      { url: EDGE, token: "mdt_edge", id: "device-edge" },
+    );
+    vi.stubGlobal(
+      "fetch",
+      devicesServer(() => new Response(null, { status: 204 })),
+    );
+    const storage = laggySecrets();
+    const [here, there] = [storage.window(), storage.window()];
+    await there.signOut(EDGE);
+    await here.refused({ url: MINI, token: "mdt_mini" });
+    storage.deliver();
+    expect(await kept(EDGE)).toMatchObject({ kind: "none" });
+    expect(await kept(MINI)).toMatchObject({ kind: "none" });
+  });
+
+  it("keeps a sign-in while another window drops the token it replaced", async () => {
+    signedIn({ url: MINI, token: "mdt_old", id: "device-old" });
+    vi.stubGlobal(
+      "fetch",
+      devicesServer(() => new Response(null, { status: 204 })),
+    );
+    ui.showInputBox.mockResolvedValueOnce(MINI);
+    const storage = laggySecrets();
+    const [here, there] = [storage.window(), storage.window()];
+    expect(await there.connect()).toBe(true);
+    await here.refused({ url: MINI, token: "mdt_old" });
+    storage.deliver();
+    expect(await kept(MINI)).toMatchObject({ kind: "token", token: "mdt_editor" });
+  }, 10_000);
+
+  it("keeps a sign-in made in another window while Mend answers this one's sign-out", async () => {
+    signedIn({ url: MINI, token: "mdt_old", id: "device-old" });
+    const asked = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<Response>();
+    vi.stubGlobal(
+      "fetch",
+      devicesServer(() => {
+        asked.resolve();
+        return answer.promise;
+      }),
+    );
+    ui.showInputBox.mockResolvedValueOnce(MINI);
+    const storage = laggySecrets();
+    const [here, there] = [storage.window(), storage.window()];
+    const signOut = there.signOut(MINI);
+    await asked.promise;
+    expect(await here.connect()).toBe(true);
+    answer.resolve(new Response(null, { status: 204 }));
+    expect(await signOut).toBe(`Signed out of Mend at ${MINI}, and revoked this editor's device.`);
+    storage.deliver();
+    for (const window of [here, there]) {
+      expect(await window.state()).toMatchObject({ kind: "connected", token: "mdt_editor" });
+    }
+  }, 10_000);
+
+  it("signs out in every window when this one has not yet seen another window's sign-in", async () => {
+    vi.stubGlobal(
+      "fetch",
+      devicesServer(() => new Response(null, { status: 204 })),
+    );
+    ui.showInputBox.mockResolvedValueOnce(MINI);
+    const storage = laggySecrets();
+    const [here, there] = [storage.window(), storage.window()];
+    expect(await here.connect()).toBe(true);
+    expect(await there.signOut(MINI)).toBe(`This editor holds no Mend sign-in for ${MINI}.`);
+    storage.deliver();
+    for (const window of [here, there]) {
+      expect(await window.state()).toMatchObject({ kind: "notConnected" });
+    }
+  }, 10_000);
+});
+
+describe("a sign-in kept before 0.37, in the one blob", () => {
+  const blob = JSON.stringify({
+    entries: [
+      { url: MINI, token: "mdt_mini", deviceId: "device-mini", email: "dana@example.com" },
+      { url: EDGE, token: "mdt_edge", deviceId: "device-edge" },
+    ],
+  });
+
+  beforeEach(() => {
+    secrets.set(LEGACY_KEY, blob);
+    settings.set("mend.serverUrl", MINI);
+  });
+
+  it("still connects, and is never written again", async () => {
+    vi.stubGlobal(
+      "fetch",
+      devicesServer(() => new Response(null, { status: 204 })),
+    );
+    const connections = store();
+    expect(await connections.state()).toMatchObject({ kind: "connected", token: "mdt_mini" });
+    await connections.signOut(EDGE);
+    await connections.refused({ url: MINI, token: "mdt_mini" });
+    expect(await kept(EDGE)).toMatchObject({ kind: "none" });
+    expect(await connections.state()).toMatchObject({ kind: "notConnected" });
+    expect(secrets.get(LEGACY_KEY)).toBe(blob);
+  });
+
+  it("gives way to Use it, so the CLI's sign-in applies", async () => {
+    const cliDir = path.join(home, ".config", "mend");
+    fs.mkdirSync(cliDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(cliDir, "cli.json"),
+      JSON.stringify({ url: MINI, token: "mdt_cli" }),
+    );
+    const connections = store();
+    await connections.effects().useCliSignIn(MINI);
+    expect(await connections.state()).toMatchObject({ token: "mdt_cli", source: { kind: "cli" } });
   });
 });
 

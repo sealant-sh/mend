@@ -5,7 +5,7 @@
  * the CLI's sign-in, which may be another account.
  */
 
-/** What the editor keeps for one server URL. */
+/** What the editor keeps for one server URL, as the rest of the extension reads it. */
 export type StoredCredential =
   | {
       readonly kind: "token";
@@ -49,7 +49,7 @@ export const canonicalServerUrl = (url: string): string => normalizeServerUrl(ur
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** One stored entry; entries written before "none" existed are tokens. */
+/** One entry of the blob before 0.37; entries written before "none" existed are tokens. */
 const credentialOf = (value: unknown): StoredCredential | null => {
   if (!isRecord(value) || typeof value["url"] !== "string") return null;
   const url = canonicalServerUrl(value["url"]);
@@ -72,16 +72,19 @@ const credentialOf = (value: unknown): StoredCredential | null => {
     : { kind: "none", url };
 };
 
-/** What the editor keeps, one entry per server URL. */
-export type CredentialStore = ReadonlyMap<string, StoredCredential>;
+/**
+ * Every server's entry in one JSON blob: where an editor before 0.37 kept them, and where a window
+ * still running one keeps them until it reloads. Read for a server with no key of its own; never
+ * written.
+ */
+const LEGACY_KEY = "mend.serverToken";
 
 /**
- * Read the stored entries, each under its canonical URL. An editor that signed in before there was
- * one entry per server kept a single entry; it reads as a store of one. Entries saved under
- * spellings of one server (case, a default port, a trailing slash) collapse into one: a signed-out
- * entry wins over any token, so a stale token cannot undo a sign-out; among tokens, the last saved.
+ * The blob's entries, each under its canonical URL. An editor that signed in before there was one
+ * entry per server kept a single entry; it reads as a blob of one. Entries saved under spellings of
+ * one server collapse into one: a signed-out entry wins over any token; among tokens, the last.
  */
-export const parseCredentialStore = (value: string | undefined): CredentialStore => {
+const legacyEntries = (value: string | undefined): ReadonlyMap<string, StoredCredential> => {
   const store = new Map<string, StoredCredential>();
   if (value === undefined) return store;
   let parsed: unknown;
@@ -101,44 +104,129 @@ export const parseCredentialStore = (value: string | undefined): CredentialStore
   return store;
 };
 
-export const serializeCredentialStore = (store: CredentialStore): string =>
-  JSON.stringify({
-    entries: [...store.values()].map((credential) => {
-      switch (credential.kind) {
-        case "token":
-          return {
-            url: credential.url,
-            token: credential.token,
-            deviceId: credential.deviceId,
-            ...(credential.email === undefined ? {} : { email: credential.email }),
-          };
-        case "none":
-          return { url: credential.url, token: null };
-        case "cliRefused":
-          return { url: credential.url, token: null, refusedCliToken: credential.tokenHash };
-      }
-    }),
-  });
+/**
+ * What the editor keeps for one server under that server's own key: a sign-in's token, a sign-out
+ * ("no token", and no falling back to the CLI's), or Use it (the CLI's sign-in applies).
+ */
+type ServerEntry =
+  | {
+      readonly kind: "token";
+      readonly token: string;
+      readonly deviceId: string | null;
+      readonly email?: string;
+    }
+  | { readonly kind: "none" }
+  | { readonly kind: "cli" };
 
-/** The store with no entry of its own for `url`: the CLI's sign-in for it applies again. */
-export const withoutCredential = (store: CredentialStore, url: string): CredentialStore => {
-  const next = new Map(store);
-  next.delete(canonicalServerUrl(url));
-  return next;
+const serverKey = (url: string): string => `mend.server:${canonicalServerUrl(url)}`;
+
+const refusalKey = (url: string, token: string): string =>
+  `mend.refused:${canonicalServerUrl(url)}#${fingerprint(token)}`;
+
+/** A value under a server's key. One this editor cannot read sends no token: it fails closed. */
+const serverEntryOf = (value: string): ServerEntry => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return { kind: "none" };
+  }
+  if (!isRecord(parsed)) return { kind: "none" };
+  if (parsed["kind"] === "cli") return { kind: "cli" };
+  const { token, deviceId, email } = parsed;
+  if (parsed["kind"] !== "token" || typeof token !== "string") return { kind: "none" };
+  return {
+    kind: "token",
+    token,
+    deviceId: typeof deviceId === "string" ? deviceId : null,
+    ...(typeof email === "string" ? { email } : {}),
+  };
 };
 
-/** The store with `credential` as its server's entry, every other server's left as it was. */
-export const withCredential = (
-  store: CredentialStore,
-  credential: StoredCredential,
-): CredentialStore => {
-  const url = canonicalServerUrl(credential.url);
-  return new Map([...store, [url, { ...credential, url }]]);
+/** What happened to the editor's sign-in at one server. */
+export type CredentialChange =
+  | {
+      readonly kind: "signedIn";
+      readonly url: string;
+      readonly token: string;
+      readonly deviceId: string | null;
+      readonly email?: string;
+    }
+  | { readonly kind: "signedOut"; readonly url: string }
+  /** Use it: the editor keeps nothing of its own there, and the CLI's sign-in applies. */
+  | { readonly kind: "useCli"; readonly url: string }
+  /** Mend at `url` answered 401 to `token`. */
+  | { readonly kind: "refused"; readonly url: string; readonly token: string };
+
+/**
+ * The one secret a change writes. Every VS Code window writes the same secret storage, and a window
+ * can read another's write late, so no write carries anything a window read: the value comes from
+ * the change alone. A sign-in, a sign-out and Use it write their server's own key, so a change at
+ * one server never rewrites another's. A refusal writes a key of its own token, so it never ends a
+ * newer sign-in at the same server.
+ */
+export const secretWriteOf = (
+  change: CredentialChange,
+): { readonly key: string; readonly value: string } => {
+  switch (change.kind) {
+    case "signedIn":
+      return {
+        key: serverKey(change.url),
+        value: JSON.stringify({
+          kind: "token",
+          token: change.token,
+          deviceId: change.deviceId,
+          ...(change.email === undefined ? {} : { email: change.email }),
+        }),
+      };
+    case "signedOut":
+      return { key: serverKey(change.url), value: JSON.stringify({ kind: "none" }) };
+    case "useCli":
+      return { key: serverKey(change.url), value: JSON.stringify({ kind: "cli" }) };
+    case "refused":
+      return { key: refusalKey(change.url, change.token), value: "refused" };
+  }
 };
 
-/** The editor's own entry for `url`, under any spelling of it. */
-export const credentialFor = (store: CredentialStore, url: string): StoredCredential | null =>
-  store.get(canonicalServerUrl(url)) ?? null;
+type ReadSecret = (key: string) => Promise<string | undefined>;
+
+/** Whether Mend at `url` refused `token`, as this window reads it. */
+export const isRefused = async (read: ReadSecret, url: string, token: string): Promise<boolean> =>
+  (await read(refusalKey(url, token))) !== undefined;
+
+const ownEntry = async (read: ReadSecret, server: string): Promise<StoredCredential | null> => {
+  const value = await read(serverKey(server));
+  if (value === undefined) return legacyEntries(await read(LEGACY_KEY)).get(server) ?? null;
+  const entry = serverEntryOf(value);
+  switch (entry.kind) {
+    case "cli":
+      return null;
+    case "none":
+      return { kind: "none", url: server };
+    case "token":
+      return { ...entry, url: server };
+  }
+};
+
+/**
+ * The editor's own entry for `url`, under any spelling of it: its server's key, else what the blob
+ * before 0.37 kept for it. When Mend refused the token that entry would send, the entry reads as
+ * the refusal: its own token as "no token" (the CLI's sign-in does not quietly take over), the
+ * CLI's as `cliRefused` (the CLI's next token is sent).
+ */
+export const keptCredential = async (
+  read: ReadSecret,
+  url: string,
+  cli: CliCredential | null,
+): Promise<StoredCredential | null> => {
+  const server = canonicalServerUrl(url);
+  const own = await ownEntry(read, server);
+  const sent = tokenFor(server, own, cli);
+  if (sent === null || !(await isRefused(read, server, sent))) return own;
+  return own?.kind === "token"
+    ? { kind: "none", url: server }
+    : { kind: "cliRefused", url: server, tokenHash: fingerprint(sent) };
+};
 
 /** The token for `url`: the editor's own entry for it first, then the CLI's for the same URL. */
 export const tokenFor = (
@@ -152,46 +240,6 @@ export const tokenFor = (
   if (own?.kind === "none") return null;
   const token = cli !== null && canonicalServerUrl(cli.url) === server ? cli.token : null;
   return token === null || cliTokenRefused(own, token) ? null : token;
-};
-
-/**
- * Signing out of `url`: the editor's own token entry for it (to revoke), and the store with "no
- * token" for it. Other servers' entries, and the CLI's sign-in, are untouched.
- */
-export const signOutOf = (
-  url: string,
-  store: CredentialStore,
-): {
-  readonly own: Extract<StoredCredential, { kind: "token" }> | null;
-  readonly next: CredentialStore;
-} => {
-  const server = canonicalServerUrl(url);
-  const entry = store.get(server);
-  return {
-    own: entry !== undefined && entry.kind === "token" ? entry : null,
-    next: withCredential(store, { kind: "none", url: server }),
-  };
-};
-
-/**
- * Mend refused `token` at `url` (401), so every window and the Accounts menu drop the account
- * together: the editor's own sign-in there ends ("no token"), or, when the token was the CLI's,
- * that token is not sent again. Null when the editor no longer sends that token there (a sign-in
- * or a sign-out since), so a late refusal never undoes a newer sign-in.
- */
-export const refusedIn = (
-  store: CredentialStore,
-  refused: { readonly url: string; readonly token: string },
-  cli: CliCredential | null,
-): CredentialStore | null => {
-  const own = credentialFor(store, refused.url);
-  if (tokenFor(refused.url, own, cli) !== refused.token) return null;
-  return withCredential(
-    store,
-    own?.kind === "token"
-      ? { kind: "none", url: refused.url }
-      : { kind: "cliRefused", url: refused.url, tokenHash: fingerprint(refused.token) },
-  );
 };
 
 /** What Mend answered when asked to revoke a device (`DELETE /me/devices/:id`). */

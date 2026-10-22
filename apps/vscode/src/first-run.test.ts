@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { refusedIn } from "./credentials.js";
+import { keptCredential, secretWriteOf } from "./credentials.js";
 import {
   accountEmail,
   connectionOf,
@@ -147,8 +147,13 @@ describe("a machine whose Mend CLI is signed in (h1 variant)", () => {
     );
   });
 
-  it("after Mend refused the CLI's token, offers nothing on it, and connects on the CLI's next one", () => {
-    const refused = refusedIn(new Map(), { url: MINI, token: cli.token }, cli)?.get(MINI) ?? null;
+  it("after Mend refused the CLI's token, offers nothing on it, and connects on the CLI's next one", async () => {
+    const { key, value } = secretWriteOf({ kind: "refused", url: MINI, token: cli.token });
+    const refused = await keptCredential(
+      async (read) => (read === key ? value : undefined),
+      MINI,
+      cli,
+    );
     expect(connectionOf({ configured: MINI, own: refused, cli })).toEqual({
       kind: "notConnected",
       prefill: MINI,

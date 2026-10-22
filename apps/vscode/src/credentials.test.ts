@@ -2,115 +2,137 @@ import { describe, expect, it } from "vitest";
 
 import {
   canonicalServerUrl,
-  credentialFor,
-  parseCredentialStore,
-  refusedIn,
-  serializeCredentialStore,
-  signOutOf,
+  keptCredential,
+  secretWriteOf,
   tokenFor,
-  withCredential,
+  type CredentialChange,
 } from "./credentials.js";
 
 const MINI = "http://mend-mini.local:3105";
 const EDGE = "https://mend.example.com";
 const cli = { url: MINI, token: "mdt_cli" };
 
-const roundTrip = (store: Parameters<typeof serializeCredentialStore>[0]) =>
-  parseCredentialStore(serializeCredentialStore(store));
+/** Secret storage after `changes`, written in order, over what an editor before 0.37 kept. */
+const secretsAfter = (
+  changes: ReadonlyArray<CredentialChange>,
+  legacy?: unknown,
+): {
+  readonly read: (key: string) => Promise<string | undefined>;
+  readonly values: ReadonlyMap<string, string>;
+} => {
+  const values = new Map<string, string>();
+  if (legacy !== undefined) values.set("mend.serverToken", JSON.stringify(legacy));
+  for (const change of changes) {
+    const { key, value } = secretWriteOf(change);
+    values.set(key, value);
+  }
+  return { read: async (key) => values.get(key), values };
+};
+
+const signedIn = (url: string, token: string): CredentialChange => ({
+  kind: "signedIn",
+  url,
+  token,
+  deviceId: `device-${token}`,
+});
 
 describe("which token the editor sends", () => {
-  it("uses its own sign-in for its URL, and the CLI's only where it has none", () => {
-    const store = roundTrip(
-      withCredential(new Map(), { kind: "token", url: MINI, token: "mdt_editor", deviceId: "d" }),
-    );
-    expect(tokenFor(MINI, store.get(MINI) ?? null, cli)).toBe("mdt_editor");
+  it("uses its own sign-in for its URL, and the CLI's only where it has none", async () => {
+    const { read } = secretsAfter([signedIn(MINI, "mdt_editor")]);
+    expect(tokenFor(MINI, await keptCredential(read, MINI, cli), cli)).toBe("mdt_editor");
     expect(tokenFor(MINI, null, cli)).toBe("mdt_cli");
     // Another server's entry says nothing about this one.
-    expect(tokenFor(EDGE, store.get(EDGE) ?? null, cli)).toBeNull();
+    expect(tokenFor(EDGE, await keptCredential(read, EDGE, cli), cli)).toBeNull();
   });
 
-  it("after a sign-out, or a connect with no token, does not fall back to the CLI's sign-in", () => {
-    const store = roundTrip(withCredential(new Map(), { kind: "none", url: MINI }));
-    expect(store.get(MINI)).toEqual({ kind: "none", url: MINI });
-    expect(tokenFor(MINI, store.get(MINI) ?? null, cli)).toBeNull();
+  it("after a sign-out does not fall back to the CLI's sign-in; after Use it, does", async () => {
+    const out = secretsAfter([signedIn(MINI, "mdt_editor"), { kind: "signedOut", url: MINI }]);
+    expect(await keptCredential(out.read, MINI, cli)).toEqual({ kind: "none", url: MINI });
+    expect(tokenFor(MINI, await keptCredential(out.read, MINI, cli), cli)).toBeNull();
+    const used = secretsAfter([
+      { kind: "signedOut", url: MINI },
+      { kind: "useCli", url: MINI },
+    ]);
+    expect(tokenFor(MINI, await keptCredential(used.read, MINI, cli), cli)).toBe("mdt_cli");
   });
 
-  it("keeps one entry per server, and reads the single entry an older editor kept", () => {
-    const both = roundTrip(
-      withCredential(
-        withCredential(new Map(), { kind: "token", url: EDGE, token: "mdt_edge", deviceId: "e" }),
-        { kind: "token", url: MINI, token: "mdt_mini", deviceId: null },
-      ),
-    );
-    expect([...both.keys()].toSorted()).toEqual([EDGE, MINI].toSorted());
-    expect(parseCredentialStore(JSON.stringify({ url: MINI, token: "mdt_old" })).get(MINI)).toEqual(
-      {
-        kind: "token",
-        url: MINI,
-        token: "mdt_old",
-        deviceId: null,
-      },
-    );
-    expect(parseCredentialStore("not json").size).toBe(0);
+  it("writes each server under its own key, so a change at one never rewrites another", () => {
+    const keys = (
+      [
+        signedIn(MINI, "mdt_mini"),
+        { kind: "signedOut", url: EDGE },
+        { kind: "useCli", url: "http://other.example" },
+      ] satisfies ReadonlyArray<CredentialChange>
+    ).map((change) => secretWriteOf(change).key);
+    expect(new Set(keys).size).toBe(3);
   });
 });
 
-describe("signing out", () => {
-  it("acts on the server the editor is connected to, and leaves another server's sign-in alone", () => {
-    // Signed in to the edge through the browser, then pointed at the mini, where the CLI signed in.
-    const store = withCredential(new Map(), {
+describe("a sign-in kept before 0.37, in the one blob", () => {
+  it("reads every server's entry, and the single entry an older editor still kept", async () => {
+    const both = secretsAfter([], {
+      entries: [
+        { url: EDGE, token: "mdt_edge", deviceId: "e" },
+        { url: MINI, token: null },
+      ],
+    });
+    expect(await keptCredential(both.read, EDGE, cli)).toEqual({
       kind: "token",
       url: EDGE,
       token: "mdt_edge",
-      deviceId: "device-edge",
+      deviceId: "e",
     });
-    const { own, next } = signOutOf(MINI, store);
-    // Nothing of the editor's own to revoke at the mini; the edge's device is not touched.
-    expect(own).toBeNull();
-    expect(next.get(EDGE)).toEqual(store.get(EDGE));
-    // The mini is signed out in this editor: the CLI's token is no longer sent there.
-    expect(tokenFor(MINI, next.get(MINI) ?? null, cli)).toBeNull();
-  });
-
-  it("revokes the editor's own device for the current server", () => {
-    const store = withCredential(new Map(), {
+    expect(await keptCredential(both.read, MINI, cli)).toEqual({ kind: "none", url: MINI });
+    const single = secretsAfter([], { url: MINI, token: "mdt_old" });
+    expect(await keptCredential(single.read, MINI, null)).toEqual({
       kind: "token",
       url: MINI,
-      token: "mdt_mini",
-      deviceId: "device-mini",
+      token: "mdt_old",
+      deviceId: null,
     });
-    const { own, next } = signOutOf(MINI, store);
-    expect(own?.deviceId).toBe("device-mini");
-    expect(next.get(MINI)).toEqual({ kind: "none", url: MINI });
+  });
+
+  it("gives way to the server's own key once anything is written there", async () => {
+    const { read } = secretsAfter([{ kind: "signedOut", url: MINI }], {
+      entries: [{ url: MINI, token: "mdt_old", deviceId: "d" }],
+    });
+    expect(await keptCredential(read, MINI, cli)).toEqual({ kind: "none", url: MINI });
+  });
+
+  it("collapses entries saved under different spellings, a sign-out winning", async () => {
+    const CANONICAL = "http://review.example";
+    const { read } = secretsAfter([], {
+      entries: [
+        { url: "http://review.example", token: "mdt_stale", deviceId: "device-stale" },
+        { url: "HTTP://REVIEW.EXAMPLE:80/", token: null },
+        { url: "http://review.example/", token: "mdt_later", deviceId: null },
+      ],
+    });
+    expect(await keptCredential(read, CANONICAL, null)).toEqual({ kind: "none", url: CANONICAL });
   });
 });
 
 describe("one server, however its URL is spelled", () => {
   const CANONICAL = "http://review.example";
-  const token: { readonly kind: "token"; readonly token: string; readonly deviceId: string } = {
-    kind: "token",
-    token: "mdt_editor",
-    deviceId: "device-review",
-  };
 
-  it("finds, replaces and signs out the same entry by case, a default port or a trailing slash", () => {
-    const store = withCredential(new Map(), { ...token, url: CANONICAL });
+  it("finds, replaces and signs out the same entry by case, a default port or a trailing slash", async () => {
     for (const alias of [
       "HTTP://REVIEW.EXAMPLE",
       "http://review.example:80",
       "http://review.example/",
     ]) {
       expect(canonicalServerUrl(alias)).toBe(CANONICAL);
-      expect(credentialFor(store, alias)).toEqual({ ...token, url: CANONICAL });
-      expect(tokenFor(alias, credentialFor(store, alias), null)).toBe("mdt_editor");
-      // Signing out under the alias revokes the one device and leaves one signed-out entry.
-      const { own, next } = signOutOf(alias, store);
-      expect(own?.deviceId).toBe("device-review");
-      expect([...next.entries()]).toEqual([[CANONICAL, { kind: "none", url: CANONICAL }]]);
+      const kept = secretsAfter([signedIn(CANONICAL, "mdt_editor")]);
+      expect(await keptCredential(kept.read, alias, null)).toMatchObject({
+        url: CANONICAL,
+        token: "mdt_editor",
+      });
+      const out = secretsAfter([
+        signedIn(CANONICAL, "mdt_editor"),
+        { kind: "signedOut", url: alias },
+      ]);
+      expect([...out.values.values()]).toEqual([JSON.stringify({ kind: "none" })]);
     }
-    const https = withCredential(new Map(), { ...token, url: "https://Review.Example:443/" });
-    expect([...https.keys()]).toEqual(["https://review.example"]);
-    expect(signOutOf("https://review.example", https).own?.deviceId).toBe("device-review");
     // The path is not a spelling: instances under different paths stay apart, case kept.
     expect(canonicalServerUrl("https://review.example/Team-A/")).toBe(
       "https://review.example/Team-A",
@@ -125,65 +147,36 @@ describe("one server, however its URL is spelled", () => {
       }),
     ).toBe("mdt_cli");
   });
-
-  it("collapses entries an older editor saved under different spellings, a sign-out winning", () => {
-    const saved = JSON.stringify({
-      entries: [
-        { url: "http://review.example", token: "mdt_stale", deviceId: "device-stale" },
-        { url: "HTTP://REVIEW.EXAMPLE:80/", token: null },
-        { url: "http://review.example/", token: "mdt_later", deviceId: null },
-      ],
-    });
-    const store = parseCredentialStore(saved);
-    expect([...store.entries()]).toEqual([[CANONICAL, { kind: "none", url: CANONICAL }]]);
-    // Among tokens alone, the last saved.
-    const tokens = parseCredentialStore(
-      JSON.stringify({
-        entries: [
-          { url: "http://review.example", token: "mdt_first", deviceId: null },
-          { url: "http://REVIEW.example:80", token: "mdt_last", deviceId: "d" },
-        ],
-      }),
-    );
-    expect(credentialFor(tokens, CANONICAL)).toEqual({
-      kind: "token",
-      url: CANONICAL,
-      token: "mdt_last",
-      deviceId: "d",
-    });
-    // Saved again, the store holds canonical keys only.
-    expect(serializeCredentialStore(tokens)).toBe(
-      JSON.stringify({ entries: [{ url: CANONICAL, token: "mdt_last", deviceId: "d" }] }),
-    );
-  });
 });
 
 describe("a token Mend refused", () => {
-  const signedIn = withCredential(new Map(), {
-    kind: "token",
-    url: MINI,
-    token: "mdt_editor",
-    deviceId: "d",
+  it("reads as no token, so the CLI's sign-in does not quietly take over", async () => {
+    const { read } = secretsAfter([
+      signedIn(MINI, "mdt_editor"),
+      { kind: "refused", url: MINI, token: "mdt_editor" },
+    ]);
+    expect(await keptCredential(read, MINI, cli)).toEqual({ kind: "none", url: MINI });
   });
 
-  it("is replaced by no token, so the CLI's sign-in does not quietly take over", () => {
-    const next = refusedIn(signedIn, { url: MINI, token: "mdt_editor" }, cli);
-    expect(next?.get(MINI)).toEqual({ kind: "none", url: MINI });
-    expect(tokenFor(MINI, next?.get(MINI) ?? null, cli)).toBeNull();
-  });
-
-  it("stops sending the CLI's refused token, and sends the next one the CLI holds", () => {
-    const next = roundTrip(refusedIn(new Map(), { url: MINI, token: "mdt_cli" }, cli) ?? new Map());
-    const entry = next.get(MINI) ?? null;
+  it("stops sending the CLI's refused token, and sends the next one the CLI holds", async () => {
+    const { read, values } = secretsAfter([{ kind: "refused", url: MINI, token: "mdt_cli" }]);
+    const entry = await keptCredential(read, MINI, cli);
     expect(entry?.kind).toBe("cliRefused");
-    expect(JSON.stringify(entry)).not.toContain("mdt_cli");
+    expect(JSON.stringify([...values])).not.toContain("mdt_cli");
     expect(tokenFor(MINI, entry, cli)).toBeNull();
-    expect(tokenFor(MINI, entry, { url: MINI, token: "mdt_cli_again" })).toBe("mdt_cli_again");
-    expect(refusedIn(next, { url: MINI, token: "mdt_cli" }, cli)).toBeNull();
+    const next = { url: MINI, token: "mdt_cli_again" };
+    expect(tokenFor(MINI, await keptCredential(read, MINI, next), next)).toBe("mdt_cli_again");
   });
 
-  it("leaves a newer sign-in, and another server, alone", () => {
-    expect(refusedIn(signedIn, { url: MINI, token: "mdt_before" }, cli)).toBeNull();
-    expect(refusedIn(signedIn, { url: EDGE, token: "mdt_editor" }, cli)).toBeNull();
+  it("leaves a newer sign-in, and another server, alone, in whatever order the writes land", async () => {
+    const refusal: CredentialChange = { kind: "refused", url: MINI, token: "mdt_before" };
+    for (const changes of [
+      [signedIn(MINI, "mdt_before"), signedIn(MINI, "mdt_editor"), refusal],
+      [signedIn(MINI, "mdt_before"), refusal, signedIn(MINI, "mdt_editor")],
+    ]) {
+      const { read } = secretsAfter([...changes, signedIn(EDGE, "mdt_before")]);
+      expect(await keptCredential(read, MINI, cli)).toMatchObject({ token: "mdt_editor" });
+      expect(await keptCredential(read, EDGE, cli)).toMatchObject({ token: "mdt_before" });
+    }
   });
 });
