@@ -3,9 +3,9 @@ import * as fs from "node:fs";
 import type { ServerResponse } from "node:http";
 import * as path from "node:path";
 
+import { fingerprint, type HandoffWorld } from "@mend/local-git/testing";
 import { describe, expect, it } from "vitest";
 
-import { fingerprint, type HandoffWorld } from "./handoff-test-fixtures.ts";
 import { formatBytes } from "./landing.ts";
 import {
   FILE_BYTES,
@@ -14,7 +14,7 @@ import {
   OLD_SERVER,
   ORIGIN,
   project,
-} from "./main-handoff-test-fixtures.ts";
+} from "./test/main-handoff-fixtures.ts";
 
 const { handoffServer, json, run, spawning, startCli, waitFor, world } = mainHandoffFixtures();
 

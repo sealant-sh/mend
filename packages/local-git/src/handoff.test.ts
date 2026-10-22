@@ -5,12 +5,13 @@ import { formatFactLine, HANDOFF_SNAPSHOT_REF, parseHandoffMessage } from "@mend
 import { Result } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { fingerprint, type HandoffWorld, handoffWorlds } from "../test/testing.ts";
 import {
   type HandoffSnapshot,
+  machineName,
   snapshotCheckout,
   type SnapshotOutcome,
-} from "./handoff-snapshot.ts";
-import { fingerprint, type HandoffWorld, handoffWorlds } from "./handoff-test-fixtures.ts";
+} from "./handoff.ts";
 
 const world = handoffWorlds();
 const CUT = new Date("2026-10-18T07:42:05.000Z");
@@ -651,5 +652,25 @@ describe("snapshotCheckout", () => {
     );
     expect(w.git(store, ["show", `${snapshot.worktree}:fix.txt`])).toBe("fix, after the merge");
     expect(snapshot.facts).toEqual({ commitsAhead: 3, uncommitted: 0, untracked: 0 });
+  });
+});
+
+describe("machineName", () => {
+  it("is the hostname without .local, control characters or surrounding space", () => {
+    expect(machineName("dana-mbp.local")).toBe("dana-mbp");
+    expect(machineName("Dana-MBP.LOCAL")).toBe("Dana-MBP");
+    expect(machineName(" build\u0007box\n")).toBe("buildbox");
+    expect(machineName("box.example.com")).toBe("box.example.com");
+  });
+
+  it("keeps the first 64 characters, never splitting one", () => {
+    expect(machineName("é".repeat(70))).toBe("é".repeat(64));
+    expect(machineName(`${"a".repeat(63)} b`)).toBe("a".repeat(63));
+  });
+
+  it("says this machine when nothing is left", () => {
+    expect(machineName("")).toBe("this machine");
+    expect(machineName(".local")).toBe("this machine");
+    expect(machineName("\u0000")).toBe("this machine");
   });
 });

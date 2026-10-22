@@ -4,23 +4,32 @@ import * as path from "node:path";
 
 import {
   formatFactLine,
+  HANDOFF_PROBE_PROJECT,
+  HANDOFF_SEND_ATTEMPTS,
   handoffWorktreeName,
   HexSha,
+  readReceiveAnswer,
+  readTermsAnswer,
+  type ReceiveAnswer,
   repositoryCloneUrlIssue,
+  takesHandoffs,
+  type WireAnswer,
 } from "@mend/domain/workbench";
-import { Schema } from "effect";
-
-import { failureWords, noteRefusal } from "./failure-words.ts";
 import {
   checkoutOf,
   type HandoffSnapshot,
   type LeftOut,
+  machineName,
   preflightIssue,
   scratchParentIssue,
   snapshotCheckout,
   type SnapshotRequest,
-} from "./handoff-snapshot.ts";
-import { type Download, type Downloaded, formatBytes, remoteForOrigin } from "./landing.ts";
+} from "@mend/local-git/handoff";
+import { originMatches } from "@mend/local-git/origin";
+import { Schema } from "effect";
+
+import { failureWords, noteRefusal } from "./failure-words.ts";
+import { type Download, type Downloaded, formatBytes } from "./landing.ts";
 import type { ApiCall } from "./pair.ts";
 import { askYesNo, confirmPlan } from "./shared-workspace.ts";
 import {
@@ -150,19 +159,6 @@ const sizeOf = (bytes: number): string => formatBytes(bytes).replace(/\.0 /u, " 
 const count = (n: number, one: string, many: string): string =>
   n === 0 ? `no ${many}` : `${n} ${n === 1 ? one : many}`;
 
-export const machineName = (hostname: string = os.hostname()): string => {
-  const name = [
-    ...hostname
-      .replace(/\.local$/iu, "")
-      .replace(/\p{Cc}/gu, "")
-      .trim(),
-  ]
-    .slice(0, 64)
-    .join("")
-    .trim();
-  return name === "" ? "this machine" : name;
-};
-
 type NamedLeftOut = Exclude<LeftOut, { readonly reason: "env" }>;
 
 const leftOutLine = (out: NamedLeftOut, fileBytes: number): string =>
@@ -243,14 +239,6 @@ const parseJson = (bytes: Uint8Array): unknown => {
 const field = (value: unknown, key: string): unknown =>
   typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
 
-const termsOf = (body: unknown): HandoffTerms | null => {
-  const bundleBytes = field(body, "bundleBytes");
-  const fileBytes = field(body, "fileBytes");
-  return typeof bundleBytes === "number" && typeof fileBytes === "number"
-    ? { bundleBytes, fileBytes }
-    : null;
-};
-
 const receivedOf = (body: unknown): HandoffReceived | null => {
   const session = field(body, "session");
   const id = field(session, "id");
@@ -288,11 +276,14 @@ export const heldLine = (session: HandoffReceived["session"]): string => {
   }
 };
 
-const predatesHandoffs = (answer: Downloaded): boolean =>
-  answer.status === 404 && typeof field(parseJson(answer.bytes), "_tag") !== "string";
+const answerOf = (reply: Downloaded | Uploaded): WireAnswer =>
+  "status" in reply
+    ? { status: reply.status, body: parseJson(reply.bytes) }
+    : { status: null, body: null };
 
 const serverTakesHandoffs = async (deps: HandoffDeps): Promise<boolean> =>
-  !predatesHandoffs(await deps.download("/projects/handoff-probe/handoffs"));
+  takesHandoffs(answerOf(await deps.download(`/projects/${HANDOFF_PROBE_PROJECT}/handoffs`))) !==
+  false;
 
 const oldServer = async (deps: HandoffDeps): Promise<never> => {
   const version = await deps.serverVersion();
@@ -304,42 +295,42 @@ const oldServer = async (deps: HandoffDeps): Promise<never> => {
 const tooLarge = (bytes: number, limit: number): string =>
   `handoff not sent · the bundle is ${sizeOf(bytes)} (${bytes} bytes) · the server's limit is ${sizeOf(limit)} (MEND_BUDGET_BUNDLE_BYTES) · nothing was created`;
 
-const refusal = async (deps: HandoffDeps, call: string, answer: Downloaded): Promise<never> => {
-  if (predatesHandoffs(answer)) return oldServer(deps);
-  const body = parseJson(answer.bytes);
-  return refuse(noteRefusal(call, answer.status, failureWords(answer.status, body)).words);
+const refusal = (call: string, answer: WireAnswer): never => {
+  const status = answer.status ?? 0;
+  return refuse(noteRefusal(call, status, failureWords(status, answer.body)).words);
 };
 
 const termsFor = async (deps: HandoffDeps, projectId: string): Promise<HandoffTerms> => {
   const route = `/projects/${projectId}/handoffs`;
-  const answer = await deps.download(route);
-  if (answer.status !== 200) return refusal(deps, `GET ${route}`, answer);
-  const terms = termsOf(parseJson(answer.bytes));
-  if (terms === null) {
-    return refuse("the server's handoff terms are in a shape this CLI cannot read · update mend");
+  const terms = readTermsAnswer(answerOf(await deps.download(route)));
+  switch (terms._tag) {
+    case "terms":
+      return terms;
+    case "unreadable":
+      return refuse("the server's handoff terms are in a shape this CLI cannot read · update mend");
+    case "oldServer":
+      return oldServer(deps);
+    case "refused":
+      return refusal(`GET ${route}`, terms.answer);
   }
-  return terms;
 };
-
-const UPLOAD_ATTEMPTS = 3;
-
-const GATEWAY_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 
 const send = async (
   deps: HandoffDeps,
   route: string,
   bytes: Uint8Array<ArrayBuffer>,
-): Promise<Downloaded> => {
+): Promise<Exclude<ReceiveAnswer, { readonly _tag: "noAnswer" }>> => {
   for (let attempt = 1; ; attempt += 1) {
     const uploaded = await deps.spin(
       `uploading ${sizeOf(bytes.byteLength)}`,
       deps.upload(route, "application/x-git-bundle", bytes),
     );
-    if (uploaded._tag === "answered" && !GATEWAY_STATUSES.has(uploaded.status)) return uploaded;
+    const answer = readReceiveAnswer(answerOf(uploaded));
+    if (answer._tag !== "noAnswer") return answer;
     const words = uploaded._tag === "answered" ? `HTTP ${uploaded.status}` : uploaded.message;
-    if (attempt === UPLOAD_ATTEMPTS) {
+    if (attempt === HANDOFF_SEND_ATTEMPTS) {
       return refuse(
-        `${words} · sent ${UPLOAD_ATTEMPTS} times with no answer from Mend · mend sessions shows whether it arrived`,
+        `${words} · sent ${HANDOFF_SEND_ATTEMPTS} times with no answer from Mend · mend sessions shows whether it arrived`,
       );
     }
     say(
@@ -379,10 +370,7 @@ const projectFor = async (
   }
   const origin = checkout.originUrl;
   if (found !== undefined) {
-    const originMatches =
-      origin !== null &&
-      remoteForOrigin([{ name: "origin", url: origin }], found.originUrl, checkout.top) !== null;
-    if (!originMatches) {
+    if (origin === null || !originMatches(origin, found.originUrl, checkout.top)) {
       return refuse(
         `this checkout's origin is ${origin ?? "not set"} · ${found.name}'s is ${found.originUrl ?? "not set"} · nothing was created`,
       );
@@ -510,24 +498,19 @@ const sendFrom = async (
 
   const route = `/projects/${project.id}/handoffs?harness=${encodeURIComponent(harness)}&hold=${prompt === null}`;
   const answer = await send(deps, route, bundle);
-  if (answer.status === 413) {
-    const body = parseJson(answer.bytes);
-    const budget = field(body, "budget");
-    const limit = field(body, "limit");
-    if (budget === "bodyBytes") return oldServer(deps);
-    if (budget === "bundleBytes" && typeof limit === "number") {
-      return refuse(tooLarge(snapshot.bundleBytes, limit));
-    }
-    if (typeof field(body, "_tag") !== "string") {
+  switch (answer._tag) {
+    case "oldServer":
+      return oldServer(deps);
+    case "tooLarge":
+      return refuse(tooLarge(snapshot.bundleBytes, answer.limit));
+    case "proxyRefused":
       return refuse(
         `handoff not sent · something in front of the Mend server refused the ${sizeOf(snapshot.bundleBytes)} bundle (${snapshot.bundleBytes} bytes) with HTTP 413 · its body limit is below the bundle · nothing was created`,
       );
-    }
+    case "refused":
+      return refusal(`POST /projects/${project.id}/handoffs`, answer.answer);
   }
-  if (answer.status < 200 || answer.status >= 300) {
-    return refusal(deps, `POST /projects/${project.id}/handoffs`, answer);
-  }
-  const received = receivedOf(parseJson(answer.bytes));
+  const received = receivedOf(answer.body);
   if (received === null) {
     return refuse(
       "the server's answer to the handoff is in a shape this CLI cannot read · update mend",

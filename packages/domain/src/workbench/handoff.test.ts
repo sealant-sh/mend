@@ -14,6 +14,10 @@ import {
   HexSha,
   isEnvPath,
   parseHandoffMessage,
+  readReceiveAnswer,
+  readTermsAnswer,
+  takesHandoffs,
+  type WireAnswer,
   WorktreeHandoff,
 } from "./handoff.ts";
 import { Worktree, WorktreeName } from "./worktree.ts";
@@ -368,4 +372,114 @@ describe("formatFactLine", () => {
       }),
     ).toBe("even with main · no uncommitted files · 4 untracked");
   });
+});
+
+const answer = (status: number | null, body: unknown = null): WireAnswer => ({ status, body });
+const routerNotFound = answer(404, "Not Found");
+const projectNotFound = answer(404, { _tag: "NotFound", message: "no project handoff-probe" });
+
+describe("readTermsAnswer", () => {
+  it("reads the two limits from a 200", () => {
+    expect(readTermsAnswer(answer(200, { bundleBytes: 64, fileBytes: 8, extra: true }))).toEqual({
+      _tag: "terms",
+      bundleBytes: 64,
+      fileBytes: 8,
+    });
+  });
+
+  it.each([[null], [{ bundleBytes: 64 }], [{ bundleBytes: "64", fileBytes: 8 }], [[64, 8]]])(
+    "calls a 200 it cannot read unreadable (%j)",
+    (body) => {
+      expect(readTermsAnswer(answer(200, body))).toEqual({ _tag: "unreadable" });
+    },
+  );
+
+  it("calls the router's untagged 404 an old server", () => {
+    expect(readTermsAnswer(routerNotFound)).toEqual({ _tag: "oldServer" });
+    expect(readTermsAnswer(answer(404, null))).toEqual({ _tag: "oldServer" });
+    expect(readTermsAnswer(answer(404, { _tag: 7 }))).toEqual({ _tag: "oldServer" });
+  });
+
+  it.each([
+    projectNotFound,
+    answer(422, { _tag: "HandoffRefused", message: "co-located store" }),
+    answer(401, null),
+    answer(201, { bundleBytes: 64, fileBytes: 8 }),
+    answer(503, null),
+    answer(null),
+  ])("passes any other answer back as refused (%j)", (refused) => {
+    expect(readTermsAnswer(refused)).toEqual({ _tag: "refused", answer: refused });
+  });
+});
+
+describe("readReceiveAnswer", () => {
+  it("passes a 2xx body through as received", () => {
+    const body = { session: { id: "s" } };
+    expect(readReceiveAnswer(answer(201, body))).toEqual({ _tag: "received", body });
+    expect(readReceiveAnswer(answer(200, null))).toEqual({ _tag: "received", body: null });
+  });
+
+  it.each([answer(null), answer(502, "Bad Gateway"), answer(503, null), answer(504, null)])(
+    "calls nothing answered and a gateway's status no answer (%j)",
+    (gateway) => {
+      expect(readReceiveAnswer(gateway)).toEqual({ _tag: "noAnswer", answer: gateway });
+    },
+  );
+
+  it("calls an untagged 404 and a 413 on bodyBytes an old server", () => {
+    expect(readReceiveAnswer(routerNotFound)).toEqual({ _tag: "oldServer" });
+    expect(
+      readReceiveAnswer(answer(413, { _tag: "BudgetExceeded", budget: "bodyBytes", limit: 9 })),
+    ).toEqual({ _tag: "oldServer" });
+    expect(readReceiveAnswer(answer(413, { budget: "bodyBytes" }))).toEqual({ _tag: "oldServer" });
+  });
+
+  it("reads the limit of a 413 on bundleBytes, tagged or not", () => {
+    expect(
+      readReceiveAnswer(answer(413, { _tag: "BudgetExceeded", budget: "bundleBytes", limit: 64 })),
+    ).toEqual({ _tag: "tooLarge", limit: 64 });
+    expect(readReceiveAnswer(answer(413, { budget: "bundleBytes", limit: 64 }))).toEqual({
+      _tag: "tooLarge",
+      limit: 64,
+    });
+  });
+
+  it.each([
+    [answer(413, "<html>Request Entity Too Large</html>")],
+    [answer(413, null)],
+    [answer(413, { budget: "bundleBytes", limit: "64" })],
+  ])("calls an untagged 413 a refusal in front of Mend (%j)", (proxy) => {
+    expect(readReceiveAnswer(proxy)).toEqual({ _tag: "proxyRefused" });
+  });
+
+  it.each([
+    answer(413, { _tag: "BudgetExceeded", budget: "requests", limit: 5 }),
+    answer(413, { _tag: "BudgetExceeded", budget: "bundleBytes" }),
+    projectNotFound,
+    answer(422, { _tag: "HandoffRefused", message: "no such base" }),
+    answer(429, { _tag: "BudgetExceeded", budget: "requests" }),
+    answer(401, null),
+    answer(500, null),
+    answer(304, null),
+  ])("passes Mend's own refusals back as refused (%j)", (refused) => {
+    expect(readReceiveAnswer(refused)).toEqual({ _tag: "refused", answer: refused });
+  });
+});
+
+describe("takesHandoffs", () => {
+  it("is false for the router's untagged 404", () => {
+    expect(takesHandoffs(routerNotFound)).toBe(false);
+  });
+
+  it("is true for a tagged 404 or a 200", () => {
+    expect(takesHandoffs(projectNotFound)).toBe(true);
+    expect(takesHandoffs(answer(200, { bundleBytes: 64, fileBytes: 8 }))).toBe(true);
+  });
+
+  it.each([answer(null), answer(401, null), answer(503, null)])(
+    "is null when the answer says neither (%j)",
+    (neither) => {
+      expect(takesHandoffs(neither)).toBeNull();
+    },
+  );
 });

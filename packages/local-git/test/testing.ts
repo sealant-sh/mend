@@ -58,9 +58,11 @@ export const handoffWorlds = () => {
     roots.push(root);
     const home = path.join(root, "home");
     fs.mkdirSync(home);
+    // A commit or clone otherwise starts a detached `git maintenance run --auto`, whose
+    // objects/maintenance.lock comes and goes while a test fingerprints the checkout.
     fs.writeFileSync(
       path.join(home, ".gitconfig"),
-      "[user]\n\tname = Dana\n\temail = dana@example.com\n[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = false\n[init]\n\tdefaultBranch = main\n",
+      "[user]\n\tname = Dana\n\temail = dana@example.com\n[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = false\n[init]\n\tdefaultBranch = main\n[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n",
     );
     const gitEnv = {
       PATH: process.env["PATH"] ?? "",
