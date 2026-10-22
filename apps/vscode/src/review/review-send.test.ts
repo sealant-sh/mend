@@ -848,6 +848,87 @@ describe("Retry from the toast when nothing was pasted", () => {
   });
 });
 
+describe("Retry delivery of a review Mend held pending, once claude runs in its terminal again", () => {
+  /** Dana's session with no agent until `start`, then claude live in its terminal. */
+  const relaunched = () => {
+    let agent: SessionProcess | null = null;
+    return {
+      start: () => {
+        agent = CLAUDE;
+      },
+      reads: {
+        ...withAgent(CLAUDE),
+        sessionDetail: async (sessionId: string): Promise<SessionDetail> => ({
+          session: { ...session(sessionId), ownerUserId: "dana" },
+          processes: agent === null ? [] : [agent],
+          currentAgent: agent,
+          changeId: "change-1",
+        }),
+      },
+    };
+  };
+
+  const held = async (mend: FakeMend) => {
+    mend.answer = "pending";
+    mend.serverComments = [comment({ id: "c1" })];
+    const later = relaunched();
+    const opened = await window(keptIn(await storage()), mend, later.reads);
+    const composed = opened.store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(opened.store, composed, composed.text)).toEqual({ sent: true });
+    await vi.waitFor(
+      () => expect(opened.store.review().sends.at(-1)?.phase).toEqual({ kind: "pending" }),
+      SETTLE,
+    );
+    return { ...opened, start: later.start };
+  };
+
+  it("pastes nothing, and reads sent, once Mend delivered it from elsewhere", async () => {
+    const mend = new FakeMend();
+    const { store, pastes, start } = await held(mend);
+    // Another client delivered it: Mend launched claude on it and reads its comments sent.
+    start();
+    mend.markSent("s1");
+    await sees(store, "agent-1");
+    const target = store.retryTarget();
+    if (target === null) throw new Error("no Retry delivery offered");
+    expect(await store.retry(target)).toEqual({
+      retried: false,
+      words: "Retry delivery sent nothing: this review already reads sent",
+    });
+    expect(pastes).toEqual([]);
+    expect(store.review().sends.at(-1)?.phase.kind).toBe("delivered");
+  });
+
+  it("pastes nothing, and reads not sent, once a newer review replaced it on Mend", async () => {
+    const mend = new FakeMend();
+    const { store, pastes, start } = await held(mend);
+    start();
+    mend.listed = { key: "vscode-follow-up:change-1:newer", status: "pending", error: null };
+    await sees(store, "agent-1");
+    const target = store.retryTarget();
+    if (target === null) throw new Error("no Retry delivery offered");
+    expect(await store.retry(target)).toEqual({
+      retried: false,
+      words: "Retry delivery sent nothing: this review already reads not sent",
+    });
+    expect(pastes).toEqual([]);
+    expect(store.review().sends.at(-1)?.phase.kind).toBe("refused");
+  });
+
+  it("pastes it into claude's terminal while Mend still holds it pending", async () => {
+    const mend = new FakeMend();
+    const { store, pastes, start } = await held(mend);
+    start();
+    await sees(store, "agent-1");
+    const target = store.retryTarget();
+    if (target === null) throw new Error("no Retry delivery offered");
+    expect(await store.retry(target)).toEqual({ retried: true });
+    await vi.waitFor(() => expect(pastes).toHaveLength(1), SETTLE);
+    expect(mend.delivered).toHaveLength(1);
+  });
+});
+
 describe("a delivery that fails while she looks at another window", () => {
   const twoWindows = async () => {
     const directory = await storage();

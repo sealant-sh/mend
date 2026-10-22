@@ -319,6 +319,8 @@ export class FakeMend extends ReviewClient {
   /** How `follow-up/deliver` answers, and what `GET …/follow-up` lists. */
   answer: FollowUp["status"] = "delivering";
   listed: FollowUp | null = null;
+  /** The follow-up Mend holds pending, as `GET …/follow-up` lists it until it is delivered. */
+  #held: FollowUp | null = null;
 
   override async setCommentState(
     _changeId: string,
@@ -369,15 +371,18 @@ export class FakeMend extends ReviewClient {
       );
     this.writes.push(`deliver ${sessionId} ${request.idempotencyKey}`);
     this.delivered.push(request);
-    return { key: request.idempotencyKey, status: this.answer, error: null };
+    const answered: FollowUp = { key: request.idempotencyKey, status: this.answer, error: null };
+    this.#held = this.answer === "pending" ? answered : null;
+    return answered;
   }
 
   override async followUp(): Promise<FollowUp | null> {
-    return this.listed;
+    return this.listed ?? this.#held;
   }
 
   /** Mend marks these comments sent to the session, as a delivered follow-up does. */
   markSent(sessionId: string): void {
+    this.#held = null;
     this.serverComments = this.serverComments.map((candidate) =>
       candidate.state === "open" ? { ...candidate, sentToSessionId: sessionId } : candidate,
     );
