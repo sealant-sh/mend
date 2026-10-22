@@ -279,6 +279,7 @@ export const browserSignIn = async (base: string, deps: SignInDeps): Promise<Sig
     name: deps.deviceName,
     client: "vscode",
   });
+  if (deps.cancelled()) return null;
   if (started.status === 429) {
     throw new SignInError(
       `Mend asked for a pause: try again in ${retryAfterMs(started.json) / 1000}s.`,
