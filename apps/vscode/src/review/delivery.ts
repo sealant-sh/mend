@@ -1,5 +1,6 @@
 import { reviewTargetFile, targetFileFor, type ReviewCommentTarget } from "@mend/domain/workbench";
 
+import type { Instruction } from "./instruction.js";
 import {
   KEPT_SENDS,
   rewritten,
@@ -802,7 +803,7 @@ export const startSend = (
   input: {
     readonly key: string;
     readonly slice: SendSlice;
-    readonly instruction: string;
+    readonly instruction: Instruction;
     readonly paste: PastePlan;
     /** The pending comments the instruction lists: each must still be pending. */
     readonly pending: ReadonlyArray<string>;
@@ -839,7 +840,7 @@ export const startSend = (
     baseId: input.slice.baseId,
     headId: input.slice.headId,
     diffDigest: input.slice.diffDigest,
-    instruction: input.instruction,
+    instruction: input.instruction.text,
     paste: input.paste,
     items,
     phase: { kind: "sending", since: input.now },

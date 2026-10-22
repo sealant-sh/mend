@@ -25,7 +25,7 @@ import {
   type SessionReview,
 } from "./pending.js";
 import type { ChangeFile, CommentAnchor } from "./review-wire.js";
-import { comment, FILES, pending, PINNED, readOf } from "./test-fixtures.js";
+import { comment, FILES, instructionOf, pending, PINNED, readOf } from "./test-fixtures.js";
 
 const ALL: PastePlan = { kind: "all" };
 
@@ -54,7 +54,7 @@ const sent = (
     startSend(review, {
       key,
       slice: SLICE,
-      instruction: "the review",
+      instruction: instructionOf("the review"),
       paste: ALL,
       pending: review.pending.map(({ id }) => id),
       open: [],
@@ -140,7 +140,7 @@ describe("sending a review (story d, step 6)", () => {
     const input = {
       key: "key-1",
       slice: SLICE,
-      instruction: "the review",
+      instruction: instructionOf("the review"),
       paste: ALL,
       open: [],
       now: NOW,
@@ -218,7 +218,7 @@ describe("sending a review (story d, step 6)", () => {
       startSend(held, {
         key: "key-2",
         slice: SLICE,
-        instruction: "the newer review",
+        instruction: instructionOf("the newer review"),
         paste: ALL,
         pending: [],
         open: ["c1", "c2"],

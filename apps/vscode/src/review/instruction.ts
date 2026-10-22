@@ -148,6 +148,35 @@ export const textToSend = (editorText: string, sessionName: string): string => {
   return [...lines.slice(0, at), ...lines.slice(at + after)].join("\n").trim();
 };
 
+/** The most characters Mend's `follow-up/deliver` takes in an instruction. */
+const MAX_INSTRUCTION = 100_000;
+
+/** A review's text Mend takes as a follow-up's instruction: only `Instruction.parse` makes one. */
+export class Instruction {
+  private constructor(readonly text: string) {}
+
+  /** The editor's text as Mend sends it, when Mend takes it; else why not. */
+  static parse(
+    editorText: string,
+    sessionName: string,
+  ):
+    | { readonly ok: true; readonly instruction: Instruction }
+    | { readonly ok: false; readonly words: string } {
+    const text = textToSend(editorText, sessionName);
+    if (text === "")
+      return {
+        ok: false,
+        words: "This review is empty, so nothing was sent. Write what the agent should do first.",
+      };
+    if (text.length > MAX_INSTRUCTION)
+      return {
+        ok: false,
+        words: `This review is ${text.length.toLocaleString("en-US")} characters long, and Mend takes at most ${MAX_INSTRUCTION.toLocaleString("en-US")}, so nothing was sent. Shorten it first.`,
+      };
+    return { ok: true, instruction: new Instruction(text) };
+  }
+}
+
 export const EARLIER_TEXT = "## Your earlier text, kept for you to edit or delete";
 
 /** A review composed anew over one she saved: her saved text follows it, as she would send it. */

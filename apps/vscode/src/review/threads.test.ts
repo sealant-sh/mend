@@ -3,7 +3,15 @@ import { describe, expect, it } from "vitest";
 import { startSend, stepReview } from "./delivery.js";
 import type { LiveAgent, PastePlan } from "./delivery.js";
 import { EMPTY_REVIEW } from "./pending.js";
-import { checkpoint, CHECKPOINTS, comment, pending, PINNED, readOf } from "./test-fixtures.js";
+import {
+  checkpoint,
+  CHECKPOINTS,
+  comment,
+  instructionOf,
+  pending,
+  PINNED,
+  readOf,
+} from "./test-fixtures.js";
 import { commentableLines, commentsLine, threadPlace, threadsOf } from "./threads.js";
 
 const ALL: PastePlan = { kind: "all" };
@@ -204,7 +212,7 @@ describe("the threads of a review she sent", () => {
       {
         key: "k1",
         slice: SLICE,
-        instruction: "the review",
+        instruction: instructionOf("the review"),
         paste: ALL,
         pending: ["a1"],
         open: [],
@@ -223,7 +231,7 @@ describe("the threads of a review she sent", () => {
     const started = startSend(EMPTY_REVIEW, {
       key: "k1",
       slice: SLICE,
-      instruction: "the review",
+      instruction: instructionOf("the review"),
       paste: ALL,
       pending: [],
       open: ["c1"],
@@ -260,7 +268,7 @@ describe("the Comments row's count", () => {
     const started = startSend(EMPTY_REVIEW, {
       key: "k1",
       slice: SLICE,
-      instruction: "the review",
+      instruction: instructionOf("the review"),
       paste: ALL,
       pending: [],
       open: ["c1"],

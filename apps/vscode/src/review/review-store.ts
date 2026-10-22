@@ -29,7 +29,7 @@ import {
   composeInstruction,
   OFFLINE_WORDS,
   sendOffer,
-  textToSend,
+  Instruction,
   type InstructionComment,
   type SendOffer,
 } from "./instruction.js";
@@ -790,6 +790,9 @@ export class ReviewStore implements vscode.Disposable {
     const document = ofRef((await this.kept.read(place)).review);
     if (document === undefined) return { sent: false, words: NOT_KEPT };
     if (document.revision !== revision) return { sent: false, words: SAVED_SINCE };
+    const parsed = Instruction.parse(document.text, read.sessionName);
+    if (!parsed.ok) return { sent: false, words: `${parsed.words} ${TEXT_STAYS}` };
+    const { instruction } = parsed;
     const { composed } = document;
     const offer = this.offer();
     if (offer.kind !== "ready")
@@ -797,9 +800,8 @@ export class ReviewStore implements vscode.Disposable {
     const open = this.#openOnMend(read);
     if (digestOf(this.#review.pending, open) !== composed.digest)
       return { sent: false, words: COMMENTS_CHANGED };
-    const instruction = textToSend(document.text, read.sessionName);
     const paste: PastePlan =
-      composed.base === null ? { kind: "all" } : addedText(instruction, composed.base);
+      composed.base === null ? { kind: "all" } : addedText(instruction.text, composed.base);
     const key = `vscode-follow-up:${read.changeId}:${randomUUID()}`;
     let stale = false;
     let saved: "gone" | "newer" | null = null;

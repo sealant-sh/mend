@@ -13,6 +13,7 @@ import type { Project, ProjectDetail, Session, SessionDetail } from "../types.js
 import type { Pasted } from "./agent-paste.js";
 import type { ChangeRead } from "./change-rows.js";
 import type { DeliverRequest } from "./delivery.js";
+import { Instruction } from "./instruction.js";
 import { KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
 import type { PendingComment } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
@@ -393,6 +394,13 @@ export const sendComposed = async (
   return saved.kind === "saved"
     ? store.send(ref, saved.revision)
     : { sent: false, words: `VS Code did not save the review: ${saved.kind}` };
+};
+
+/** An instruction Mend takes, as Send to session parses it. */
+export const instructionOf = (text: string): Instruction => {
+  const parsed = Instruction.parse(text, "add-rate-limit");
+  if (!parsed.ok) throw new Error(parsed.words);
+  return parsed.instruction;
 };
 
 /** Long enough for a store's read of the fakes to land. */
