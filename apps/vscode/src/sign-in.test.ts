@@ -295,6 +295,25 @@ describe("browserSignIn", () => {
     expect(requests).toHaveLength(2);
     expect(warnings).toEqual([]);
   });
+
+  it("opens no approve page and shows no code when she cancels while the sign-in request is out", async () => {
+    const answer = Promise.withResolvers<Response>();
+    const asked = Promise.withResolvers<void>();
+    let cancelled = false;
+    const send = vi.fn<typeof fetch>(async () => {
+      asked.resolve();
+      return answer.promise;
+    });
+    const { value, opens, codes } = deps(send, { cancelled: () => cancelled });
+    const signingIn = browserSignIn("https://mend.example", value);
+    await asked.promise;
+    cancelled = true;
+    answer.resolve(json(200, opened));
+    expect(await signingIn).toBeNull();
+    expect(opens).toEqual([]);
+    expect(codes).toEqual([]);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("server URL", () => {
