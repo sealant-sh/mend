@@ -16,6 +16,7 @@ import {
   commentsOnTheirWay,
   needs,
   openRecord,
+  pasteUnderway,
   retryRecord,
   sendGeneration,
   startSend,
@@ -686,9 +687,9 @@ export class ReviewStore implements vscode.Disposable {
           ? retry === null
             ? null
             : "held"
-          : open.phase.kind === "sending"
-            ? "sending"
-            : "failed",
+          : open.phase.kind === "failed"
+            ? "failed"
+            : "sending",
     });
   }
 
@@ -776,12 +777,14 @@ export class ReviewStore implements vscode.Disposable {
       composed.base === null ? { kind: "all" } : addedText(instruction.text, composed.base);
     const key = `vscode-follow-up:${read.changeId}:${randomUUID()}`;
     let stale = false;
+    let busy = false;
     let saved: "gone" | "newer" | null = null;
     const recorded = await this.#driver.record(this.#context(read, place), key, (review) => {
       const kept = ofRef(review);
       saved = kept === undefined ? "gone" : kept.revision === revision ? null : "newer";
       stale = sendGeneration(review.sends) !== composed.generation;
-      if (saved !== null || stale || digestOf(review.pending, open) !== composed.digest)
+      busy = review.sends.some(pasteUnderway);
+      if (saved !== null || stale || busy || digestOf(review.pending, open) !== composed.digest)
         return review;
       const started = startSend(review, {
         key,
@@ -802,6 +805,7 @@ export class ReviewStore implements vscode.Disposable {
     if (recorded.kind === "not-recorded") {
       if (saved === "gone") return { sent: false, words: NOT_KEPT };
       if (saved === "newer") return { sent: false, words: SAVED_SINCE };
+      if (busy) return { sent: false, words: `${offerWords({ kind: "busy" })}. ${TEXT_STAYS}` };
       return { sent: false, words: stale ? ANOTHER_WENT_OUT : COMMENTS_CHANGED };
     }
     return { sent: true };

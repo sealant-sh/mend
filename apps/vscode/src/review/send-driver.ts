@@ -481,7 +481,10 @@ export class SendDriver {
           }
           case "paste": {
             const agent = record.phase.kind === "in-terminal" ? record.phase.agent : "the agent";
-            await this.#step(context, key, { kind: "paste-started" });
+            // Only a paste kept as started is made: one replaced since it was read pastes nothing.
+            const started = await this.#step(context, key, { kind: "paste-started" });
+            if (started?.phase.kind !== "in-terminal" || started.phase.paste.kind !== "pasting")
+              break;
             let pasted: Pasted;
             try {
               pasted = await this.paste(sessionId, action.processId, action.text);

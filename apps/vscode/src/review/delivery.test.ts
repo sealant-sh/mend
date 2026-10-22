@@ -225,7 +225,11 @@ describe("sending a review (story d, step 6)", () => {
   });
 
   it("reads a held review as replaced once a newer review of hers reaches Mend", () => {
-    const held = answered(posted(sent()), "pending");
+    const held = apply(
+      answered(posted(sent()), "pending"),
+      { kind: "paste-started" },
+      { kind: "pasted" },
+    );
     const newer = started(
       startSend(held, {
         key: "key-2",

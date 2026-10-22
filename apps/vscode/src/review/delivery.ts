@@ -660,9 +660,13 @@ export const stepReview = (
     );
 };
 
-/** A record that still holds its comments: this window is sending or delivering it. */
-const holdsComments = (record: SendRecord): boolean =>
-  record.phase.kind === "sending" || record.phase.kind === "delivering";
+/** A record that still holds its comments: a drive sends, delivers or pastes it. */
+const holdsComments = (record: SendRecord): boolean => needs(record) === "driver";
+
+/** A paste into her agent's terminal not yet made, or being made. */
+export const pasteUnderway = (record: SendRecord): boolean =>
+  record.phase.kind === "in-terminal" &&
+  (record.phase.paste.kind === "due" || record.phase.paste.kind === "pasting");
 
 /** What a thread of a comment in this record reads, as Mend observed it. */
 export const recordLabel = (phase: SendPhase): string => {
@@ -727,10 +731,15 @@ export const handedOver = (record: SendRecord): boolean =>
   record.phase.kind === "pending" ||
   record.phase.kind === "delivering";
 
-/** The record a new Send waits on, or retries: the newest one not handed over or refused. */
+/**
+ * The record a new Send waits on, or retries: the newest one not handed over or refused, or one
+ * whose paste into her agent's terminal is due or under way.
+ */
 export const openRecord = (records: ReadonlyArray<SendRecord>): SendRecord | null =>
-  records.findLast((record) => record.phase.kind === "sending" || record.phase.kind === "failed") ??
-  null;
+  records.findLast(
+    (record) =>
+      record.phase.kind === "sending" || record.phase.kind === "failed" || pasteUnderway(record),
+  ) ?? null;
 
 /**
  * The target for a pending comment in the slice it was written on: its lines when one hunk holds
@@ -846,6 +855,8 @@ export const startSend = (
   const chosen = new Set(input.pending);
   const moving = review.pending.filter((pending) => chosen.has(pending.id));
   if (moving.length !== chosen.size) return null;
+  // One review at a time goes into her agent's input: a newer one would paste over it.
+  if (review.sends.some(pasteUnderway)) return null;
   // Another window sent these comments a moment ago: one review takes them, under one key.
   const onTheirWay = commentsOnTheirWay(review.sends);
   if (input.open.some((id) => onTheirWay.get(id) === "sending")) return null;
