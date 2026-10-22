@@ -1297,6 +1297,36 @@ describe("a review on its way while VS Code's sign-in changes on the same server
     await vi.waitFor(() => expect(store.ready()?.readAt).not.toBe(before), SETTLE);
     expect(store.review().pending).toEqual([]);
   });
+
+  it("keeps no comment while Mend cannot say whose the sign-in is, so no other sign-in finds it, and says its words stay in the thread", async () => {
+    const kept = inMemory();
+    const { at, sessions } = signIns();
+    at.token = "erin";
+    at.says = false;
+    const mend = new FakeMend();
+    mend.serverComments = [DRAFT];
+    const unnamed = async (): Promise<ReviewStore> => {
+      const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+      store.follow(PROJECT, session("s1"));
+      await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+      return store;
+    };
+    const store = await unnamed();
+    expect(await store.comment(onLine(3, "Erin's own words"))).toEqual({
+      kept: false,
+      words: expect.stringMatching(
+        /Mend could not say which account VS Code is signed in as.*Its words are still in the thread\.$/,
+      ),
+    });
+    expect(await store.accept("d1", "Erin's reply")).toEqual({
+      kept: false,
+      words: expect.stringMatching(
+        /Mend could not say which account VS Code is signed in as.*Your words are still in the thread\.$/,
+      ),
+    });
+    expect(store.review().pending).toEqual([]);
+    expect((await unnamed()).review().pending).toEqual([]);
+  });
 });
 
 describe("Retry delivery of a review another window delivered meanwhile", () => {
