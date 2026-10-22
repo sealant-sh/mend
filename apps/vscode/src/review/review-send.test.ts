@@ -965,7 +965,7 @@ describe("two Retry deliveries of one review at once in one window", () => {
     if (target === null) throw new Error("no Retry delivery offered");
 
     const retried = await Promise.all([store.retry(target), store.retry(target)]);
-    expect(retried.filter(({ retried }) => retried)).toHaveLength(1);
+    expect(retried.filter((answer) => answer.retried)).toHaveLength(1);
     await vi.waitFor(
       () =>
         expect(store.review().sends.at(-1)?.phase).toMatchObject({

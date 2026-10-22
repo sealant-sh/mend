@@ -461,10 +461,10 @@ export class SendDriver {
   }
 
   async #driveOnce(context: SendContext, key: string): Promise<void> {
-    if (!(await this.kept.claimDrive(context.place, key))) return;
     const id = driveId(context, key);
-    this.#leased.add(id);
     try {
+      if (!(await this.kept.claimDrive(context.place, key))) return;
+      this.#leased.add(id);
       await this.#run(context, key);
     } catch (cause) {
       if (cause instanceof DriveLost) return;
