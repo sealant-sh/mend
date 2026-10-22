@@ -2,9 +2,9 @@ import { reviewTargetExists } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import { changeRows } from "./change-rows.js";
+import { commentTarget, postedComment, type PostAttempt } from "./comment-target.js";
 import {
   admits,
-  commentTarget,
   commentsOnTheirWay,
   mayRetry,
   needs,
@@ -12,14 +12,12 @@ import {
   nextAction,
   onFailure,
   openRecord,
-  postedComment,
   retryRecord,
   startSend,
   step,
   stepReview,
   type DriveFailure,
   type LiveAgent,
-  type PostAttempt,
   type Needs,
   type PasteStep,
   type SendEvent,

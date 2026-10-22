@@ -3,16 +3,15 @@ import { MendApiError } from "../mend-http.js";
 import type { SessionDetail } from "../types.js";
 import type { PasteReview, Pasted } from "./agent-paste.js";
 import { boundConnection, Unbound, type DriverReads, type SessionReads } from "./binding.js";
+import { commentTarget, postedComment } from "./comment-target.js";
 import {
   admits,
   commentIds,
   commentLabel,
-  commentTarget,
   needs,
   mayRetry,
   nextAction,
   onFailure,
-  postedComment,
   posts,
   step,
   stepReview,
