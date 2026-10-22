@@ -980,6 +980,46 @@ describe("two Retry deliveries of one review at once in one window", () => {
   }, 15_000);
 });
 
+describe("Retry delivery of a review another window retried, then left sending as it closed", () => {
+  it("picks the left send up and delivers it, never reading it as one still sending", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    const deliver = mend.deliver.bind(mend);
+    let refusals = 1;
+    mend.deliver = async (...args) => {
+      if (refusals > 0) {
+        refusals -= 1;
+        throw new MendApiError("Mend is restarting", 503, "Unavailable");
+      }
+      return deliver(...args);
+    };
+    const { store } = await window(keptIn(directory), mend, sessionReads("change-1"));
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    await sendComposed(store, composed, composed.text);
+    await vi.waitFor(
+      () => expect(store.review().sends.map(({ phase }) => phase.kind)).toEqual(["failed"]),
+      SETTLE,
+    );
+    const target = store.retryTarget();
+    if (target === null) throw new Error("no Retry delivery offered");
+    // Another window's Retry kept it sending, and that window closed before Mend answered.
+    await keptIn(directory).update(target.place, (review) => ({
+      ...review,
+      sends: review.sends.map((record) => ({
+        ...record,
+        phase: { kind: "sending", since: "2026-10-20T10:00:00.000Z" },
+      })),
+    }));
+
+    expect(await store.retry(target)).toEqual({ retried: true });
+    expect(mend.delivered).toHaveLength(1);
+    expect(store.review().sends.map(({ phase }) => phase.kind)).toEqual(["pending"]);
+  });
+});
+
 describe("Retry delivery of a review Mend held pending, once claude runs in its terminal again", () => {
   /** Dana's session with no agent until `start`, then claude live in its terminal. */
   const relaunched = () => {
