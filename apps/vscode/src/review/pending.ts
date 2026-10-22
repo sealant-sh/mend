@@ -87,10 +87,6 @@ export interface ReviewDocument {
   readonly composed: Composed;
   readonly text: string;
   readonly revision: number;
-  /**
-   * Her saved text from the review this one replaced, which `text` carries after the composition;
-   * carried again as it is while she saves nothing over this one.
-   */
   readonly earlier: string | null;
 }
 
@@ -274,8 +270,7 @@ const parseDismissal = (value: unknown): DraftDismissal | null => {
   return value["kind"] === "left" && words !== null ? { kind: "left", words } : null;
 };
 
-/** `createdAt`: when a failure kept without its time is taken to have happened. */
-const parsePhase = (value: unknown, createdAt: string): SendPhase | null => {
+const parsePhase = (value: unknown, failedAtFallback: string): SendPhase | null => {
   if (!isRecord(value)) return null;
   const words = text(value, "words");
   switch (value["kind"]) {
@@ -303,7 +298,7 @@ const parsePhase = (value: unknown, createdAt: string): SendPhase | null => {
       return {
         kind: "failed",
         words: words ?? "Mend could not deliver the review.",
-        at: text(value, "at") ?? createdAt,
+        at: text(value, "at") ?? failedAtFallback,
       };
     case "refused":
       return { kind: "refused", words: words ?? "Mend refused the review." };
@@ -466,6 +461,9 @@ export const parseSessionReview = (value: unknown): SessionReview =>
  * comments, with the same words, after the same reviews; else the composition, replacing it. The
  * text she saved in the one it replaces follows the composition (`carried`), in the same write.
  */
+/** A review document's revision before she saves it: the text as Send review composed it. */
+const AS_COMPOSED = 1;
+
 export const keepComposed = (
   review: SessionReview,
   composed: Composed,
@@ -478,14 +476,13 @@ export const keepComposed = (
     kept.composed.generation === composed.generation
   )
     return { review, carried: false };
-  // Revision 1 is the review as written; any later one holds words she saved.
-  const earlier = kept === null ? null : kept.revision > 1 ? kept.text : kept.earlier;
+  const earlier = kept === null ? null : kept.revision > AS_COMPOSED ? kept.text : kept.earlier;
   const written = earlier === null ? words : withEarlierText(words, earlier, composed.sessionName);
   const carried = written !== words;
   const document: ReviewDocument = {
     composed,
     text: written,
-    revision: 1,
+    revision: AS_COMPOSED,
     earlier: carried ? earlier : null,
   };
   return { review: { ...review, document }, carried };
@@ -525,23 +522,11 @@ export const editPending = (review: SessionReview, id: string, body: string): Se
   pending: review.pending.map((comment) => (comment.id === id ? { ...comment, body } : comment)),
 });
 
-/**
- * Her words VS Code could not write yet. `comment` is what they are kept as when there is nothing
- * to edit, under an id minted when they were held, so recovering them twice keeps them once.
- * `edits` is the pending comment she edited and the words it held when she edited it; null for
- * her words under a Mend draft.
- */
 export interface HeldWords {
   readonly comment: PendingComment;
   readonly edits: { readonly id: string; readonly body: string } | null;
 }
 
-/**
- * Her held words, kept as far as the review takes them: words already kept are edited, an edit of
- * a pending comment whose words are still those she edited edits it, and anything else is added
- * as `comment` while the review holds fewer than `MAX_PENDING`, so an edit of a comment another
- * window sent, deleted or changed since keeps both. `kept` lists those it took; the rest stay held.
- */
 export const keepHeld = (
   review: SessionReview,
   held: ReadonlyArray<HeldWords>,

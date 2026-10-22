@@ -203,7 +203,6 @@ describe("sending a review (story d, step 6)", () => {
       watched(pasted, { status: "pending" }),
     ])
       expect(nextAction(only(later))).toEqual({ kind: "idle" });
-    // She may have entered it: Retry never hands the agent that review again, live or exited.
     expect(mayRetry(only(pasted), HERS)).toBe(false);
     expect(mayRetry(only(pasted), null)).toBe(false);
     // While claude holds the paste, its comments are not new to Send review, and Retry waits.
@@ -328,7 +327,6 @@ describe("every phase a review is kept in", () => {
     expect(needs(record)).toBe(who);
     switch (who) {
       case "driver": {
-        // A window driving it moves it on; one that finds it undriven ends what it cannot vouch for.
         const abandoned = step(record, { kind: "abandoned", words: "VS Code closed" }, NOW);
         expect(nextAction(record).kind !== "idle" || abandoned.phase !== record.phase).toBe(true);
         expect(needs(abandoned) !== "driver" || nextAction(abandoned).kind !== "idle").toBe(true);
@@ -339,7 +337,6 @@ describe("every phase a review is kept in", () => {
         expect(retryRecord([record], agent)?.key).toBe(record.key);
         break;
       case "nothing":
-        // Never retried, and never in the way of her next Send.
         expect(mayRetry(record, agent)).toBe(false);
         expect(retryRecord([record], agent)).toBeNull();
         expect(openRecord([record])).toBeNull();

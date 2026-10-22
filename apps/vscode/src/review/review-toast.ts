@@ -31,7 +31,6 @@ export const reviewToast =
     onError: (cause: unknown) => void,
   ) =>
   async (failure: ReviewFailure): Promise<void> => {
-    // Rule 12: only the focused window toasts. Another window, once focused, says what still fails.
     if (!vscode.window.state.focused) return;
     // A refused sign-in reads as it does on every surface: Mend's words with Connect.
     if (refusedSignIn(failure.cause)) {
@@ -39,7 +38,6 @@ export const reviewToast =
       return;
     }
     if (!(await claims.claim(failure.key, failure.at))) return;
-    // Claiming took a while: she may have looked away, or the delivery may have been retried.
     if (!(await store.stillFails(failure)) || !vscode.window.state.focused) {
       await claims.release(failure.key, failure.at);
       return;

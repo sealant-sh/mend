@@ -1,21 +1,3 @@
-// Story d, step 6: three ways a review she composed in VS Code could go out wrong, driven as Dana
-// meets them, each on a claude terminal agent of its own.
-// - She clears the whole review and presses Send to session: nothing is sent, the editor stays, her
-//   comment stays pending, and Mend holds no follow-up and no comment for it.
-// - She composes a review, leaves its editor open, the agent's next round moves the worktree on, she
-//   presses Review the newer change, then Send to session from the old editor: the follow-up goes out
-//   on the slice she composed on, the one its instruction names.
-// - A review VS Code pasted into claude's terminal, then the session stops before she enters it, then
-//   one more comment: Send review is offered, not Retry delivery, and the new review carries the
-//   comment she sent before.
-//
-//   node .claude/skills/verify/scripts/drive-vscode.mjs run \
-//     .claude/skills/verify/recipes/vscode-review-delivery.mjs --out <dir>
-//
-// Needs a world from `up` (signed in, workspace SSH set up). Each run starts three sessions under
-// new names (`MEND_REVIEW_SESSION` names the run's prefix). The recipe never presses Enter in claude:
-// the skill's fake login would only answer 401.
-
 import { FAKES } from "../scripts/fakes.mjs";
 import {
   ADDRESSED,
@@ -112,7 +94,6 @@ export default async (h) => {
       },
       limit,
     );
-  /** Her session's change, by Mend: Review change, which picks the session by its whole name. */
   const select = async (label, { closeEditors = true } = {}) => {
     if (closeEditors) await h.palette("View: Close All Editors");
     await view("Mend");
@@ -160,7 +141,6 @@ export default async (h) => {
       .click();
     await sleep(1_000);
   };
-  /** The section's Comments row once it holds still, and not sending or delivering, for 5 s. */
   const commentsSettled = async (limit = 90_000) => {
     let last = { reads: null, since: 0 };
     return sectionUntil(
@@ -182,7 +162,6 @@ export default async (h) => {
       (one) => `${one.body} · ${one.state}`,
     );
 
-  // ── 5 · an empty review ──
   await step(`d4 · ${EMPTY}: a pending comment on limit.ts line 4`, async () => {
     await select(EMPTY);
     await openLimit();
@@ -241,7 +220,6 @@ export default async (h) => {
   );
   await h.palette("Notifications: Clear All Notifications");
 
-  // ── 6 · a review composed before she repinned ──
   await step(`d4 · ${REPIN}: a pending comment on limit.ts line 12`, async () => {
     await select(REPIN);
     await openLimit();
@@ -343,7 +321,6 @@ export default async (h) => {
   );
   await h.palette("Notifications: Clear All Notifications");
 
-  // ── 3 · a pasted review, then claude exits ──
   await step(
     `d6 · ${EXITED}: one comment, Send review, Send to session pastes it into claude's terminal`,
     async () => {
@@ -447,7 +424,6 @@ export default async (h) => {
       const lines = await composeReview(EXITED);
       await shot("exited-composed");
       const composed = lines.join("\n");
-      // The fake login reads as needing reconnecting soon after a stop: Mend would refuse the launch.
       const connected = await world.cli(["connect", "claude", "--from-stdin"], cliEnv(h.state), {
         input: FAKES.claude,
         allowFailure: true,

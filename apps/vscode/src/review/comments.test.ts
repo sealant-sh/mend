@@ -361,7 +361,6 @@ describe("saving an edit to a pending comment", () => {
 });
 
 describe("an edit VS Code could not write", () => {
-  /** Two windows on one session; the editor's disk fills while `full` is true. */
   const twoWindows = async () => {
     const directory = await storage();
     const mend = new FakeMend();

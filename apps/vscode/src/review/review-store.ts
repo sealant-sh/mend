@@ -233,16 +233,7 @@ export class ReviewStore implements vscode.Disposable {
   /** A re-pin after a sent review: since my last review opens from this head once Mend pins. */
   readonly #sinceAfterRepin = new Map<string, Checkpoint>();
   #review: SessionReview = EMPTY_REVIEW;
-  /**
-   * Her words VS Code could not write, by the place they belong to: shown as not kept, never
-   * replaced by a newer reply, and taken by the next write to that place, under its lock.
-   */
   #held: ReadonlyArray<{ readonly place: ReviewPlace; readonly words: HeldWords }> = [];
-  /**
-   * Every Mend draft a read showed, as last read: Accept or Dismiss from a thread redrawn away, or
-   * from a session she left, still finds it. Sessions on one change share its drafts, so the
-   * session her words go to comes with the thread, never from here.
-   */
   readonly #drafts = new Map<string, SeenDraft>();
   /** Where `#review` is kept: her account on the server, and the session. */
   #place: ReviewPlace | null = null;
@@ -325,7 +316,6 @@ export class ReviewStore implements vscode.Disposable {
     return this.#review;
   }
 
-  /** Where the followed session's review is kept; null until it is read. */
   place(): ReviewPlace | null {
     return this.#place;
   }
@@ -395,7 +385,6 @@ export class ReviewStore implements vscode.Disposable {
       this.#changed.fire();
     }
     await this.#recover(place);
-    // A delivery another window drove may have failed while she looked elsewhere.
     for (const record of this.#review.sends) {
       const failed = failedDelivery(place, record);
       if (failed !== null) this.#fail(failed.what, failed.words, failed.options);
@@ -485,12 +474,6 @@ export class ReviewStore implements vscode.Disposable {
     return full ? { kept: false, words: TOO_MANY } : { kept: true };
   }
 
-  /**
-   * G1: a pending comment is hers to edit until Send review. Her edit is held, then kept by the
-   * write that takes it (`keepHeld`): one of a comment another window sent, deleted or changed
-   * since this window showed it is kept as a new pending comment where that one was, and one VS
-   * Code could not write stays held until it can.
-   */
   async edit(pendingId: string, body: string): Promise<Keeping> {
     const words = body.trim();
     if (words === "")
@@ -500,7 +483,6 @@ export class ReviewStore implements vscode.Disposable {
     let review: SessionReview;
     try {
       review = await this.#keepAt(place, (kept) => {
-        // Edited from the words this window shows as the write runs, so a second Save edits the first.
         held = this.#holdEdit(place, pendingId, words, [this.#review, kept]);
         return kept;
       });
@@ -527,11 +509,6 @@ export class ReviewStore implements vscode.Disposable {
     await this.#keepAt(this.#place, (review) => removePending(review, pendingId));
   }
 
-  /**
-   * Accept: the draft becomes hers, pending, and her reply under it a pending comment at its place.
-   * A draft that is no longer one on Mend is not accepted, and her reply is kept all the same.
-   * `place` is the session whose thread showed the draft.
-   */
   async accept(
     draftId: string,
     reply: string,
@@ -562,7 +539,6 @@ export class ReviewStore implements vscode.Disposable {
     return { kept: true };
   }
 
-  /** Dismiss, and her reply kept as `accept` keeps it. */
   async dismiss(
     draftId: string,
     reply: string,
@@ -801,7 +777,6 @@ export class ReviewStore implements vscode.Disposable {
     const key = `vscode-follow-up:${read.changeId}:${randomUUID()}`;
     let stale = false;
     let saved: "gone" | "newer" | null = null;
-    // Checked again as kept, under the lock: another window may have sent these comments.
     const recorded = await this.#driver.record(this.#context(read, place), key, (review) => {
       const kept = ofRef(review);
       saved = kept === undefined ? "gone" : kept.revision === revision ? null : "newer";
@@ -883,7 +858,6 @@ export class ReviewStore implements vscode.Disposable {
     return place === null ? null : { place, key };
   }
 
-  /** Retry delivery of the record `target` names: see `SendDriver.retry`. */
   async retry(target: RetryTarget): Promise<Retried> {
     if (this.#offline)
       return { retried: false, words: `Retry delivery sent nothing: ${OFFLINE_WORDS}` };
@@ -922,11 +896,9 @@ export class ReviewStore implements vscode.Disposable {
     };
   }
 
-  /** Picks up any send of the followed session no window drives: see `SendDriver.recover`. */
   async #recover(place: ReviewPlace): Promise<void> {
     const read = this.ready();
     if (read === null || !samePlace(this.#place, place)) return;
-    // A recovery that cannot take the lock now runs again with the next read of the review.
     await this.#driver.recover(this.#context(read, place), this.#review).catch(() => undefined);
   }
 
@@ -978,7 +950,6 @@ export class ReviewStore implements vscode.Disposable {
       ({ review } = await this.kept.update(place, async (current) => {
         const next = keepHeld(await update(current), this.#heldAt(place));
         taken = next.kept;
-        // Taken under the lock, so a write queued behind this one finds them kept, not held.
         this.#held = this.#held.filter((entry) => !taken.includes(entry.words));
         return next.review;
       }));
@@ -1010,7 +981,6 @@ export class ReviewStore implements vscode.Disposable {
       : this.#held.flatMap((entry) => (samePlace(entry.place, place) ? [entry.words] : []));
   }
 
-  /** Her words under a Mend draft that were not written: held until a write takes them. */
   #hold(place: ReviewPlace | null, comment: PendingComment): string {
     if (place === null || comment.body === "") return "";
     this.#held = [
@@ -1023,10 +993,6 @@ export class ReviewStore implements vscode.Disposable {
     return HELD;
   }
 
-  /**
-   * Her edit of `pendingId`, held: the held words she edited again, or new ones edited from the
-   * comment as the first of `reviews` that has it holds it. Null when none has it.
-   */
   #holdEdit(
     place: ReviewPlace | null,
     pendingId: string,
@@ -1279,14 +1245,12 @@ export class ReviewStore implements vscode.Disposable {
   }
 }
 
-/** A Mend draft as a read showed it. */
 interface SeenDraft {
   readonly changeId: string;
   readonly pinned: ChangeRead["pinned"];
   readonly draft: ServerComment;
 }
 
-/** Whether her held edit was kept, as `review` keeps it, and if not as she wrote it, why. */
 const editKept = (review: SessionReview, held: HeldWords | null, stillHeld: boolean): Keeping => {
   if (held === null)
     return {

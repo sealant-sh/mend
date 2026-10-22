@@ -17,7 +17,6 @@ import {
   SETTLE,
 } from "./test-fixtures.js";
 
-/** What VS Code keeps of the file an editor's text is based on, with the text and its backups. */
 interface BaseStat {
   readonly mtime: number;
   readonly size: number;
@@ -50,7 +49,6 @@ const ui = vi.hoisted(() => ({
   providerOfThisWindow(): vscode.FileSystemProvider | undefined {
     return this.providers.at(-1);
   },
-  /** A review's editor as VS Code holds it: a save makes VS Code's check, then writes. */
   editor(
     provider: vscode.FileSystemProvider,
     uri: vscode.Uri,

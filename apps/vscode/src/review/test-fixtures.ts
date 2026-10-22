@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  FOLLOW_UP_INSTRUCTION_MAX,
   reviewTargetExists,
   reviewTargetFile,
   type ReviewCommentTarget,
@@ -282,7 +283,6 @@ export class FakeMend extends ReviewClient {
     );
   }
 
-  /** One fake answers whichever connection a send is pinned to. */
   override pinned(): ReviewClient {
     return this;
   }
@@ -361,8 +361,7 @@ export class FakeMend extends ReviewClient {
   }
 
   override async deliver(sessionId: string, request: DeliverRequest): Promise<FollowUp> {
-    // Mend's own check (packages/sessions follow-up-delivery.ts), answered 422 as its route does.
-    if (request.instruction.trim() === "" || request.instruction.length > 100_000)
+    if (request.instruction.trim() === "" || request.instruction.length > FOLLOW_UP_INSTRUCTION_MAX)
       throw new MendApiError(
         "Follow-up instructions must contain between 1 and 100000 characters.",
         422,
@@ -401,7 +400,6 @@ export const sendComposed = async (
     : { sent: false, words: `VS Code did not save the review: ${saved.kind}` };
 };
 
-/** An instruction Mend takes, as Send to session parses it. */
 export const instructionOf = (text: string): Instruction => {
   const parsed = Instruction.parse(text, "add-rate-limit");
   if (!parsed.ok) throw new Error(parsed.words);

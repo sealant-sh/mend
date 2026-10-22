@@ -82,11 +82,6 @@ export class ReviewComments implements vscode.Disposable {
    */
   readonly #note: vscode.CommentController;
   readonly #threads = new Map<string, { view: ThreadView; thread: vscode.CommentThread }>();
-  /**
-   * The Mend draft each thread showed, and the session it showed it for, kept past its redraw: an
-   * Accept or Dismiss already on its way from a thread drawn away still names both, and the store
-   * keeps her words under that session.
-   */
   readonly #drafts = new WeakMap<
     vscode.CommentThread,
     { readonly draftId: string; readonly place: ReviewPlace }

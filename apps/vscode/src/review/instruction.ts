@@ -1,3 +1,5 @@
+import { FOLLOW_UP_INSTRUCTION_MAX } from "@mend/domain/workbench";
+
 import { lfOnly } from "../line-endings.js";
 import { maySteer, ownsSession } from "../session-capability.js";
 import type { Session } from "../types.js";
@@ -148,14 +150,9 @@ export const textToSend = (editorText: string, sessionName: string): string => {
   return [...lines.slice(0, at), ...lines.slice(at + after)].join("\n").trim();
 };
 
-/** The most characters Mend's `follow-up/deliver` takes in an instruction. */
-const MAX_INSTRUCTION = 100_000;
-
-/** A review's text Mend takes as a follow-up's instruction: only `Instruction.parse` makes one. */
 export class Instruction {
   private constructor(readonly text: string) {}
 
-  /** The editor's text as Mend sends it, when Mend takes it; else why not. */
   static parse(
     editorText: string,
     sessionName: string,
@@ -168,10 +165,10 @@ export class Instruction {
         ok: false,
         words: "This review is empty, so nothing was sent. Write what the agent should do first.",
       };
-    if (text.length > MAX_INSTRUCTION)
+    if (text.length > FOLLOW_UP_INSTRUCTION_MAX)
       return {
         ok: false,
-        words: `This review is ${text.length.toLocaleString("en-US")} characters long, and Mend takes at most ${MAX_INSTRUCTION.toLocaleString("en-US")}, so nothing was sent. Shorten it first.`,
+        words: `This review is ${text.length.toLocaleString("en-US")} characters long, and Mend takes at most ${FOLLOW_UP_INSTRUCTION_MAX.toLocaleString("en-US")}, so nothing was sent. Shorten it first.`,
       };
     return { ok: true, instruction: new Instruction(text) };
   }
@@ -214,10 +211,6 @@ export const sendOffer = (input: {
   readonly startsTerminal: boolean;
   readonly offline: boolean;
   readonly count: number;
-  /**
-   * The review before this one: on its way, failed (Retry delivery first), or held by Mend with
-   * Retry delivery offered, which a review with new comments goes ahead of.
-   */
   readonly open: "sending" | "failed" | "held" | null;
 }): SendOffer => {
   const { session, viewer, ownerName, agent, startsTerminal, offline, count, open } = input;

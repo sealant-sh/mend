@@ -34,7 +34,6 @@ export class ReviewClient {
     private readonly refused: (connection: MendConnection) => void,
   ) {}
 
-  /** The same reads and writes, always through `connection`, whatever VS Code connects to later. */
   pinned(connection: MendConnection): ReviewClient {
     return new ReviewClient(async () => connection, this.refused);
   }

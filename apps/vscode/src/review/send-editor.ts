@@ -41,11 +41,6 @@ const UNREAD =
 class ReviewFiles implements vscode.FileSystemProvider {
   readonly #changed = new vscode.EventEmitter<Array<vscode.FileChangeEvent>>();
   readonly onDidChangeFile = this.#changed.event;
-  /**
-   * The revision each editor's text is based on: the first this window looked at, or the one it
-   * read or saved since. VS Code restores unsaved words with the `stat` they were based on and
-   * checks it before a save; a save is checked here too, against this revision.
-   */
   readonly #based = new Map<string, number>();
 
   constructor(private readonly store: ReviewStore) {}
@@ -160,7 +155,6 @@ export class SendEditor implements vscode.Disposable {
   async #open(): Promise<void> {
     // Words this window holds are kept first, so the review lists them and is current when sent.
     await this.store.reloadReview();
-    // What she typed in the session's review is saved first, so a review composed anew carries it.
     if (!(await this.#saveOpen())) {
       void vscode.window.showWarningMessage(
         "VS Code did not save the review you are writing, so Send review did not compose it again. Your text stays in its editor.",
@@ -180,7 +174,6 @@ export class SendEditor implements vscode.Disposable {
     await vscode.window.showTextDocument(document, { preview: false });
   }
 
-  /** Saves the editors of the session's kept review that hold unsaved words: whether all saved. */
   async #saveOpen(): Promise<boolean> {
     const place = this.store.place();
     const kept = this.store.review().document;

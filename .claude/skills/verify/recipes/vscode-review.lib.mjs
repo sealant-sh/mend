@@ -376,10 +376,6 @@ export const reviewWorld = (h) => {
   const jsonRows = async (sql) =>
     (await psql(`select row_to_json(t) from (${sql}) t`)).map((line) => JSON.parse(line));
 
-  /**
-   * Every follow-up Mend recorded for a session, oldest first: its key, status, review slice, the
-   * ordinals of its two checkpoints, its comment ids and its instruction.
-   */
   const followUps = (sessionId) =>
     jsonRows(
       `select f.idempotency_key as key, f.status, f.review_slice_id as slice, a.ordinal as "from", ` +
@@ -388,7 +384,6 @@ export const reviewWorld = (h) => {
         `where f.session_id = '${idOnly(sessionId)}' order by f.created_at`,
     );
 
-  /** The review slices Mend pinned on a change, oldest first, with their checkpoints' ordinals. */
   const reviewSlices = (changeId) =>
     jsonRows(
       `select s.id, a.ordinal as "from", b.ordinal as "to" from review_slices s ` +

@@ -12,6 +12,7 @@ import type { CheckpointId, ReviewCommentId, ReviewSliceId, SessionId } from "@m
 import {
   type DiffDigest,
   type FollowUp,
+  FOLLOW_UP_INSTRUCTION_MAX,
   isLiveAgentProcess,
   noReviewFollowUpLine,
   takesReviewFollowUp,
@@ -393,7 +394,7 @@ export const FollowUpDeliveryLive: Layer.Layer<
           message: "Follow-up idempotency keys must contain between 1 and 200 characters.",
         });
       }
-      if (instruction.trim() === "" || instruction.length > 100_000) {
+      if (instruction.trim() === "" || instruction.length > FOLLOW_UP_INSTRUCTION_MAX) {
         return yield* new FollowUpDeliveryInputError({
           message: "Follow-up instructions must contain between 1 and 100000 characters.",
         });

@@ -355,7 +355,6 @@ describe("a paste into claude's terminal that never finished", () => {
     await sendComposed(closing, composed, composed.text);
     await pasting;
 
-    // The window closed mid-paste: one opened once its lease went stale finds the review.
     late += DRIVE_STALE_MS + 1_000;
     const opened = await window(new KeptReviews(directory, NODE_FILES, clock), mend);
     await vi.waitFor(() => expect(opened.store.retryTarget()).not.toBeNull(), SETTLE);
@@ -418,7 +417,6 @@ describe("a paste into claude's terminal that never finished", () => {
   });
 });
 
-/** Dana's session `s1`, claude live in its terminal until the test says it exited. */
 const exitable = () => {
   let agent: SessionProcess = CLAUDE;
   return {
@@ -454,7 +452,6 @@ describe("claude exits after VS Code pasted the review into its input", () => {
     world.exit();
     store.reread();
     await vi.waitFor(() => expect(store.ready()?.facts.agent).toBeNull(), SETTLE);
-    // She may have pressed Enter: the same key would hand the agent the review a second time.
     expect(store.retryTarget()).toBeNull();
     const read = store.ready();
     if (read === null) throw new Error("not read");
@@ -746,7 +743,6 @@ describe("Retry from the toast when nothing was pasted", () => {
 });
 
 describe("a delivery that fails while she looks at another window", () => {
-  /** Two windows on one machine: one kept-review store and one set of toast claims between them. */
   const twoWindows = async () => {
     const directory = await storage();
     const mend = new FakeMend();
@@ -773,7 +769,6 @@ describe("a delivery that fails while she looks at another window", () => {
     if (failure === undefined) throw new Error("no failure");
     await reviewToast(driving.store, claims, () => undefined)(failure);
     expect(vscodeWindow.showErrorMessage).not.toHaveBeenCalled();
-    // She focuses the other window: it reads what the first kept, and says it there.
     fake.focus(true);
     await looking.store.reloadReview();
     await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0), SETTLE);
@@ -923,7 +918,6 @@ describe("a window that loads its kept reviews while another window sends one", 
     await sendComposed(a.store, fromA, fromA.text);
     await mend.asked;
 
-    // The second window reads the send sending, then waits on the lock to pick it up.
     const { promise: locking, resolve: lock } = Promise.withResolvers<void>();
     const { promise: allowed, resolve: allow } = Promise.withResolvers<void>();
     const { promise: loaded, resolve: load } = Promise.withResolvers<void>();
@@ -947,8 +941,6 @@ describe("a window that loads its kept reviews while another window sends one", 
       mend,
     );
     await locking;
-    // Meanwhile the first delivery fails, and Retry delivery claims the send here, keeps it
-    // sending, and asks Mend again.
     mend.fails();
     await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
     const target = a.store.retryTarget();
@@ -1053,7 +1045,6 @@ describe("a window already following the session when another window's send is l
 
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      // She focuses the window that follows the session: it reads the send, driven elsewhere.
       await following.store.reloadReview();
       expect(following.store.review().sends.map(({ phase }) => phase.kind)).toEqual(["sending"]);
       late += DRIVE_STALE_MS;
@@ -1139,17 +1130,12 @@ describe("a window already following the session when another window's send is l
   });
 });
 
-/**
- * Mend whose first follow-up waits until the test fails it on Mend's side, and whose next waits
- * until the test answers it.
- */
 class FailsThenHolds extends FakeMend {
   #failing = true;
   readonly #asked = Promise.withResolvers<void>();
   readonly #failed = Promise.withResolvers<void>();
   readonly #reached = Promise.withResolvers<void>();
   readonly #answered = Promise.withResolvers<void>();
-  /** Settles once the first follow-up reaches Mend. */
   readonly asked = this.#asked.promise;
   /** Settles once a follow-up after the failed one reaches Mend. */
   readonly reached = this.#reached.promise;
@@ -1255,7 +1241,6 @@ describe("a send on its way when VS Code connects to another Mend server", () =>
     if (record === undefined) throw new Error("no review kept");
     const place = { url: "http://mend", viewer: "dana", sessionId: "s1" };
 
-    // She signs in to another server while the first comment's POST is on its way.
     url = "http://other";
     store.forget();
     server.land();

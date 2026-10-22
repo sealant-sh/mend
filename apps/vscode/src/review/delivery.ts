@@ -88,7 +88,6 @@ export type SendPhase =
   /** Mend holds it pending, and this window had no terminal of hers to paste it into. */
   | { readonly kind: "pending" }
   | { readonly kind: "delivered"; readonly at: string }
-  /** `at`: when it failed, so every window names this failure alike. */
   | { readonly kind: "failed"; readonly words: string; readonly at: string }
   /** Mend refused this key or this person: a new review, with a new key, is the way on. */
   | { readonly kind: "refused"; readonly words: string };
@@ -133,14 +132,9 @@ export type PastePlan =
 /** The paste step of a review Mend holds pending in her agent's terminal. */
 export type PasteStep =
   | { readonly kind: "due" }
-  /** Kept before the paste is made: a window that closes now leaves a paste it cannot vouch for. */
   | { readonly kind: "pasting" }
   /** Pasted, or nothing to paste and she was told why: what VS Code pasted into the agent's input. */
   | { readonly kind: "done"; readonly input: TerminalInput }
-  /**
-   * Not pasted, as far as VS Code knows: Retry delivery pastes it again. `mayHaveLanded` when the
-   * paste was cut short, so some or all of it may be in the agent's input.
-   */
   | { readonly kind: "failed"; readonly mayHaveLanded: boolean };
 
 export interface SendSlice {
@@ -204,16 +198,11 @@ export type SendEvent =
       readonly error: string | null;
       readonly agent: LiveAgent;
     }
-  /** The paste is about to be made. */
   | { readonly kind: "paste-started" }
   /** The paste reached the agent's input. */
   | { readonly kind: "pasted" }
   /** Nothing was pasted, and she was told why: the input holds what it held. */
   | { readonly kind: "skipped" }
-  /**
-   * Mend still holds the follow-up pending, and the paste did not reach the agent's input: its
-   * process is gone, its terminal could not be attached here, or the paste was cut short.
-   */
   | { readonly kind: "paste-failed"; readonly why: "agent-gone" | "not-attached" | "interrupted" }
   | { readonly kind: "failed"; readonly words: string; readonly retryable: boolean }
   /**
@@ -221,10 +210,6 @@ export type SendEvent =
    * once the session has no live agent. `agent` is the session's live agent as read just now.
    */
   | { readonly kind: "retry"; readonly at: string; readonly agent: LiveAgent | null }
-  /**
-   * No window drives this record any more: a send it did not see end is not known to be sent, and
-   * a paste it did not see end is not known to be in the agent's input.
-   */
   | { readonly kind: "abandoned"; readonly words: string }
   /**
    * A watch of a launch: `GET …/follow-up` lists only the newest follow-up not yet delivered, so
@@ -238,7 +223,6 @@ export type SendEvent =
       /** Another follow-up of the session is listed: ours may still be on its way. */
       readonly others: boolean;
       readonly sent: boolean;
-      /** The session's live agent, read when Mend lists ours pending; null otherwise. */
       readonly agent: LiveAgent | null;
     };
 
@@ -313,7 +297,6 @@ export const deliverRequest = (record: SendRecord, ids: ReadonlyArray<string>): 
  */
 export const nextAction = (record: SendRecord): SendAction => {
   if (record.phase.kind === "in-terminal") {
-    // A paste in flight is its own window's: once no window drives it, it is abandoned.
     if (record.phase.paste.kind !== "due") return { kind: "idle" };
     const { processId } = record.phase;
     const plan = planFor(record.paste, processId);
@@ -376,7 +359,6 @@ const recordedInput = (records: ReadonlyArray<SendRecord>): HeldInput | null => 
   if (latest?.phase.kind !== "in-terminal") return null;
   const { agent, processId, paste } = latest.phase;
   if (paste.kind === "done") return { input: paste.input, agent, processId };
-  // Nothing was pasted, as far as VS Code knows: the input holds what it was composed onto.
   return paste.kind === "failed" && latest.paste.kind !== "all"
     ? { input: latest.paste.onto, agent, processId: latest.paste.processId }
     : null;
@@ -575,8 +557,6 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
             at: now,
           },
         };
-      // Mend holds it pending (the session went live, or a reload never heard the answer): into her
-      // own live terminal agent it is pasted, as when Mend answers so; otherwise it waits for her.
       if (event.status === "pending")
         return {
           ...record,
@@ -595,7 +575,6 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
   }
 };
 
-/** A record in its paste step `from`, moved to `to`; any other record as it was. */
 const withPaste = (record: SendRecord, from: PasteStep["kind"], to: PasteStep): SendRecord =>
   record.phase.kind === "in-terminal" && record.phase.paste.kind === from
     ? { ...record, phase: { ...record.phase, paste: to } }
@@ -604,21 +583,10 @@ const withPaste = (record: SendRecord, from: PasteStep["kind"], to: PasteStep): 
 export const DRAFT_GONE =
   "A Mend draft in this review was dismissed before it was sent, and the review's text still asks for it, so nothing was sent";
 
-/**
- * Retry delivery is offered on a failed record, and on a follow-up Mend holds pending that VS Code
- * did not paste: pasted into her own live terminal agent, or, once the session has no live agent,
- * delivered with the same key, which launches the stopped session on the review. Never on one VS
- * Code pasted: she may have entered it, and the same key would hand the agent that review again.
- */
 export const mayRetry = (record: SendRecord, agent: LiveAgent | null): boolean =>
   needs(record) === "her" &&
   (record.phase.kind === "failed" || agent === null || (agent.kind === "terminal" && agent.hers));
 
-/**
- * Who moves a record on from where it is: a window's driver, which posts, delivers, pastes and
- * watches; her, with Retry delivery or a new Send; or nobody, as it ended, or its words are in her
- * agent's input. A record a driver needs and no window drives is abandoned.
- */
 export type Needs = "driver" | "her" | "nothing";
 
 export const needs = (record: SendRecord): Needs => {
@@ -648,10 +616,6 @@ export const needs = (record: SendRecord): Needs => {
 const isHeld = (record: SendRecord): boolean =>
   record.phase.kind === "pending" || record.phase.kind === "in-terminal";
 
-/**
- * The review Retry delivery acts on: the newest one failed, else the newest Mend holds pending that
- * Retry delivery can move on.
- */
 export const retryRecord = (
   records: ReadonlyArray<SendRecord>,
   agent: LiveAgent | null,
@@ -662,12 +626,6 @@ export const retryRecord = (
   return held !== undefined && mayRetry(held, agent) ? held : null;
 };
 
-/**
- * Where each comment of her reviews stands, by the id Mend knows it by (an accepted draft not yet
- * opened counts by its draft id). `sending`: a review being sent or delivered holds it, so no new
- * Send lists it. `held`: Mend holds it pending, in her terminal or for Retry. It is not counted as
- * new for Send review, and a newer key still carries it, as Mend supersedes the held one.
- */
 export const commentsOnTheirWay = (
   records: ReadonlyArray<SendRecord>,
 ): ReadonlyMap<string, "sending" | "held"> => {

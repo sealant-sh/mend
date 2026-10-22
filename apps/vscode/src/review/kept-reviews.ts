@@ -195,7 +195,6 @@ export class KeptReviews {
     await this.#release(lease, this.#window);
   }
 
-  /** Whether this window holds the lease to drive this send. */
   drives(place: ReviewPlace, key: string): boolean {
     return this.#drives.has(this.#lease(place, key));
   }

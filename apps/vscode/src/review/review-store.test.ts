@@ -645,7 +645,6 @@ describe("sending a review from the store", () => {
     const composed = store.compose();
     if (composed === null) throw new Error("nothing composed");
     const { ref, document } = await store.keepDocument(composed);
-    // Review the newer change while the composed review's editor is open.
     const newer = {
       ...PINNED,
       id: "slice-2",
@@ -1063,7 +1062,6 @@ describe("Retry delivery of a review another window delivered meanwhile", () => 
     await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     const key = await sendAll(store);
     await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("failed"), SETTLE);
-    // While Retry reads the session, another window's Retry gets it delivered.
     meanwhile = async () => {
       meanwhile = null;
       await kept.update(DANA_S1, (review) => ({

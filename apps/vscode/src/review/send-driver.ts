@@ -26,18 +26,15 @@ import type { SessionReview } from "./pending.js";
 import type { ReviewClient } from "./review-client.js";
 import type { ChangeFile } from "./review-wire.js";
 
-/** A send record, by the person, server and session it is kept for, and its key. */
 export interface RetryTarget {
   readonly place: ReviewPlace;
   readonly key: string;
 }
 
-/** Whether Retry delivery sent the review again; when not, what it found instead. */
 export type Retried =
   | { readonly retried: true }
   | { readonly retried: false; readonly words: string };
 
-/** What a send record's drive reads Mend with, whichever session the section follows. */
 export interface SendContext {
   readonly place: ReviewPlace;
   readonly changeId: string;
@@ -46,7 +43,6 @@ export interface SendContext {
 }
 
 export interface FailOptions {
-  /** When it happened; now, unless every window must name it alike. */
   readonly at?: string;
   readonly cause?: unknown;
   readonly retry?: RetryTarget | null;
@@ -54,23 +50,15 @@ export interface FailOptions {
   readonly tone?: "error" | "warning";
 }
 
-/** What the driver asks of the store that shows the review. */
 export interface DriverHost {
-  /** Applies `update` to the review kept at `place`, as kept now, under the lock. */
   keepAt(
     place: ReviewPlace,
     update: (review: SessionReview) => SessionReview | Promise<SessionReview>,
   ): Promise<SessionReview>;
-  /** A failure worth one toast. */
   fail(what: string, words: string, options?: FailOptions): void;
-  /** A drive of this session ended: the section reads it again when it follows that session. */
   settled(sessionId: string): void;
 }
 
-/**
- * A failed delivery's toast, named by its record and when it failed: the same in every window, so
- * whichever window she focuses shows it, once.
- */
 export const failedDelivery = (
   place: ReviewPlace,
   record: SendRecord,
@@ -83,7 +71,6 @@ export const failedDelivery = (
         options: { retry: { place, key: record.key }, at: record.phase.at },
       };
 
-/** Whether a new record was kept and is now driven, and why not. */
 export type Recorded =
   | { readonly kind: "recorded" }
   | { readonly kind: "not-recorded" }
@@ -95,13 +82,8 @@ const sendOf = (review: SessionReview, key: string): SendRecord | undefined =>
 const driveId = (context: SendContext, key: string): string =>
   JSON.stringify([context.place.url, context.place.viewer, context.place.sessionId, key]);
 
-/** Another window took over a send this window was driving: this one does nothing more for it. */
 class DriveLost extends Error {}
 
-/**
- * VS Code is connected to another server or account than the send's: this window sends nothing
- * more of it, and leaves it as kept for a window connected to its own to pick up.
- */
 class Suspended extends Error {}
 
 const SWITCHED = "VS Code connected to another Mend server or account before Mend answered";
@@ -111,11 +93,9 @@ const pasteWords = (pasted: Exclude<Pasted, "pasted">, agent: string): string =>
     ? `${agent} exited before the review was pasted, so nothing was pasted. Mend holds the follow-up pending: Retry delivery sends it to the stopped session.`
     : `VS Code could not attach ${agent}'s terminal here, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it again.`;
 
-/** Mend holds the follow-up pending, and the paste may be in the agent's input, in part or whole. */
 const cutShortWords = (why: string, agent: string): string =>
   `${why}, so some or all of it may be in ${agent}'s input. Mend holds the follow-up pending: check ${agent}'s input before Retry delivery pastes it again.`;
 
-/** What a record a window left mid-paste reads, said once by the window that finds it. */
 const abandonedPasteWords = (record: SendRecord): string | null => {
   const { phase } = record;
   if (phase.kind !== "in-terminal" || phase.paste.kind !== "failed") return null;
@@ -129,20 +109,14 @@ const abandonedPasteWords = (record: SendRecord): string | null => {
 
 const CLOSED = "VS Code closed before Mend answered";
 
-/** How soon a window looks again at a send its own drive left, when the drive failed. */
 const LOOK_AGAIN_MS = 1_000;
 
-/**
- * How often a launch is watched, and how many times before it reads failed. Only watching counts:
- * posting her comments and dismissing drafts end on their own, however many there are.
- */
 const WATCH_MS = 3_000;
 const MAX_WATCHES = 400;
 
 export const errorWords = (cause: unknown): string =>
   cause instanceof Error ? cause.message : "Mend could not read this change.";
 
-/** A write of the review to Mend failed: a post, a comment's state, or the delivery. */
 class WriteFailed extends Error {
   constructor(readonly failure: unknown) {
     super(errorWords(failure));
@@ -157,13 +131,8 @@ const writing = async <T>(call: Promise<T>): Promise<T> => {
   }
 };
 
-/** 4xx answers that ask for a sign-in or for later: they say nothing against the review. */
 const NOT_A_REFUSAL: ReadonlySet<number> = new Set([401, 408, 429]);
 
-/**
- * The one classifier: only Mend refusing a write of the review refuses it. A read that fails says
- * nothing about the review, and any other failure is worth a retry with the same key.
- */
 const refuses = (thrown: unknown): boolean =>
   thrown instanceof WriteFailed &&
   thrown.failure instanceof MendApiError &&
@@ -172,29 +141,16 @@ const refuses = (thrown: unknown): boolean =>
   thrown.failure.status < 500 &&
   !NOT_A_REFUSAL.has(thrown.failure.status);
 
-/**
- * Drives each send record until Mend answers: posts its comments, opens accepted drafts, delivers
- * the follow-up, pastes it into her agent's terminal, and watches a launch. One window drives a
- * record, under its lease; every step is kept through the host, under the lock.
- */
 export class SendDriver {
-  /** Each record's drive, by server, session and key: one at a time per record. */
   readonly #driving = new Map<string, Promise<void>>();
-  /** The records this window holds the lease to drive, by drive. */
   readonly #leased = new Set<string>();
-  /**
-   * When this window looks again at a send no drive here moves on: when another window's lease on
-   * it goes stale, or soon after this window's own drive of it failed. By drive.
-   */
   readonly #lookAgain = new Map<string, NodeJS.Timeout>();
-  /** What a send this window stopped driving reads once a window finds it left, by drive. */
   readonly #stopped = new Map<string, string>();
 
   constructor(
     private readonly kept: KeptReviews,
     private readonly client: ReviewClient,
     private readonly sessions: Pick<MendClient, "sessionDetail" | "viewerId" | "connection">,
-    /** G12 fallback: the agent's terminal attached here, the text pasted into that process, no Enter. */
     private readonly paste: (sessionId: string, processId: string, text: string) => Promise<Pasted>,
     private readonly host: DriverHost,
   ) {}
@@ -204,10 +160,6 @@ export class SendDriver {
     this.#lookAgain.clear();
   }
 
-  /**
-   * Keeps a new record with `keep` and drives it. Its drive is claimed before the record is kept:
-   * a window loading it then reads it driven here, never left behind by a window that closed.
-   */
   async record(
     context: SendContext,
     key: string,
@@ -230,11 +182,6 @@ export class SendDriver {
     return { kind: "recorded" };
   }
 
-  /**
-   * Retry delivery: the same key, the same text, the comments already on Mend kept. Only a record
-   * of that session with that key that `mayRetry` offers it on, and only while VS Code is connected
-   * to the server and account the review is kept for.
-   */
   async retry(target: RetryTarget, author: string | null): Promise<Retried> {
     if ((await this.#bind(target.place)) === null)
       return {
@@ -264,14 +211,12 @@ export class SendDriver {
       viewer,
       author,
     };
-    // Claimed before the record is sending again, as a new send is: a window loading it leaves it.
     if (!(await this.kept.claimDrive(target.place, target.key)))
       return {
         retried: false,
         words: "Retry delivery sent nothing: another window of VS Code is delivering this review",
       };
     const at = new Date().toISOString();
-    // Checked again as kept, under the lock: another window may have moved it since it was read.
     let moved = false;
     const retried = await this.host
       .keepAt(target.place, (review) => {
@@ -299,11 +244,6 @@ export class SendDriver {
     return { retried: true };
   }
 
-  /**
-   * Run on every read of the kept review at `context.place`: a send the driver needs that no window
-   * drives is picked up here, whichever window left it and whenever this window started following
-   * the session. Only a send no drive here moves on and no look again is due for costs the lock.
-   */
   async recover(context: SendContext, review: SessionReview): Promise<void> {
     const left = review.sends.some((record) => {
       const id = driveId(context, record.key);
@@ -312,18 +252,10 @@ export class SendDriver {
     if (left) await this.#load(context);
   }
 
-  /**
-   * A window that finds a send it did not see end does not know it was sent: it says so, in what
-   * it keeps. One Mend was launching goes on being watched, by reads only.
-   */
   async #load(context: SendContext): Promise<void> {
     if ((await this.#bind(context.place)) === null) return;
     const now = new Date().toISOString();
-    // A send another window drives now is that window's: this one neither ends it nor drives it.
-    // Its leases are read under the lock: a window claims a send's drive before it keeps the send,
-    // so a send kept sending since, by a new Send or a Retry, reads driven here.
     const undriven = new Set<string>();
-    /** How long another window drives each send for, unless it renews its lease. */
     const drivenFor = new Map<string, number>();
     const loaded = await this.host.keepAt(context.place, async (review) => {
       for (const record of review.sends) {
@@ -352,8 +284,6 @@ export class SendDriver {
           retry: { place: context.place, key: record.key },
         });
     }
-    // A window reloaded during a send left its lease behind: once that lease goes stale, nobody
-    // drives the send, so this window looks again then.
     for (const [key, ms] of drivenFor) this.#lookAgainIn(context, key, ms);
   }
 
@@ -363,14 +293,12 @@ export class SendDriver {
     if (armed !== undefined) clearTimeout(armed);
     const timer = setTimeout(() => {
       this.#lookAgain.delete(id);
-      // A look that fails waits for the next read of the kept review, which looks again.
       void this.#load(context).catch(() => undefined);
     }, ms);
     timer.unref();
     this.#lookAgain.set(id, timer);
   }
 
-  /** A record's next step, kept for its own session whichever session the section follows. */
   async #step(context: SendContext, key: string, event: SendEvent): Promise<SendRecord | null> {
     if (
       this.#leased.has(driveId(context, key)) &&
@@ -384,10 +312,6 @@ export class SendDriver {
     return sendOf(next, key) ?? null;
   }
 
-  /**
-   * One drive per record, by server, session and key: a second Send or Retry while one runs goes
-   * after it, so a record put back to sending is always driven.
-   */
   async #drive(context: SendContext, key: string): Promise<void> {
     const id = driveId(context, key);
     const before = this.#driving.get(id) ?? Promise.resolve();
@@ -395,7 +319,6 @@ export class SendDriver {
       .then(() => this.#driveOnce(context, key))
       .catch((cause: unknown) => {
         this.host.fail("error", errorWords(cause), { cause });
-        // The drive could not keep where the send is: it is left, and looked at again soon.
         this.#lookAgainIn(context, key, LOOK_AGAIN_MS);
       })
       .finally(() => {
@@ -405,10 +328,6 @@ export class SendDriver {
     return run;
   }
 
-  /**
-   * The connection a drive of a send kept at `place` talks to Mend through, whatever VS Code connects
-   * to later; null when VS Code is connected to another server or account now.
-   */
   async #bind(place: ReviewPlace): Promise<MendConnection | null> {
     const connection = await this.sessions.connection();
     if (connection.url !== place.url) return null;
@@ -416,13 +335,11 @@ export class SendDriver {
     return viewer === null || viewer === place.viewer ? connection : null;
   }
 
-  /** Throws `Suspended` once VS Code no longer connects through `bound`. */
   async #still(bound: MendConnection): Promise<void> {
     const now = await this.sessions.connection();
     if (now.url !== bound.url || now.token !== bound.token) throw new Suspended();
   }
 
-  /** One window drives a send, so one key is posted and delivered once. */
   async #driveOnce(context: SendContext, key: string): Promise<void> {
     if (!(await this.kept.claimDrive(context.place, key))) return;
     const id = driveId(context, key);
@@ -463,7 +380,6 @@ export class SendDriver {
       try {
         switch (action.kind) {
           case "idle":
-            // A delivery Mend answered as failed (a launch it could not make) says so once.
             this.#sayFailed(context.place, record);
             this.host.settled(sessionId);
             return;
@@ -508,7 +424,6 @@ export class SendDriver {
             break;
           }
           case "open": {
-            // A draft dismissed since she accepted it, here or anywhere, is never opened again.
             const draft = (await client.comments(changeId)).find(
               (comment) => comment.id === action.draftId,
             );
@@ -528,7 +443,6 @@ export class SendDriver {
             break;
           }
           case "dismiss-draft": {
-            // Her words are on Mend: a draft left beside them never holds the review back.
             try {
               const draft = (await client.comments(changeId)).find(
                 (comment) => comment.id === action.draftId,
@@ -548,7 +462,6 @@ export class SendDriver {
           }
           case "deliver": {
             const answered = await writing(client.deliver(sessionId, action.request));
-            // Read once Mend answered: an agent that started meanwhile is where Mend holds it.
             await this.#still(bound);
             const detail = await this.sessions.sessionDetail(sessionId);
             const next = await this.#step(context, key, {
@@ -632,7 +545,6 @@ export class SendDriver {
         const retryable = !refuses(thrown);
         const cause = thrown instanceof WriteFailed ? thrown.failure : thrown;
         const id = driveId(context, key);
-        // Should this step not be kept either, the window that finds the send left says why.
         this.#stopped.set(id, errorWords(cause));
         const failed = await this.#step(context, key, {
           kind: "failed",
@@ -653,7 +565,6 @@ export class SendDriver {
         return;
       }
     }
-    // Mend has not answered in all this time: the review reads failed, so Retry is offered.
     const words = "Mend has not said the review was delivered";
     this.#sayFailed(
       context.place,
@@ -662,7 +573,6 @@ export class SendDriver {
     this.host.settled(sessionId);
   }
 
-  /** Says a failed record failed, by the name every window gives it: whether it was failed. */
   #sayFailed(place: ReviewPlace, record: SendRecord | null, cause?: unknown): boolean {
     const failed = record === null ? null : failedDelivery(place, record);
     if (failed === null) return false;
@@ -671,7 +581,6 @@ export class SendDriver {
   }
 }
 
-/** The session's live agent, when it is a terminal one: Mend holds its follow-ups pending. */
 export const liveAgent = (detail: SessionDetail, viewer: string | null): LiveAgent | null => {
   const agent = detail.currentAgent;
   if (agent === null || agent.exitedAt !== null) return null;
