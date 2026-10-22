@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { hostname } from "node:os";
 
 import {
+  GitAuthMode,
   HANDOFF_PROBE_PROJECT,
   readReceiveAnswer,
   readTermsAnswer,
@@ -9,6 +10,7 @@ import {
   type WireAnswer,
 } from "@mend/domain/workbench";
 import { startAgentShare, type AgentShareHandle } from "@mend/local-git/agent-share";
+import { Schema } from "effect";
 
 import {
   isRecord,
@@ -25,6 +27,7 @@ import { MendApiError, requestMend, uploadMendBundle } from "./mend-http.js";
 import type { LaunchRequest } from "./new-session.js";
 import type { LaunchExpected, Project, ReceivedHandoff, Session, SessionDetail } from "./types.js";
 
+export type HandoffProject = Project & { readonly gitAuthMode: GitAuthMode };
 export type HandoffSupport = "checking" | "supported" | "unsupported" | "unavailable";
 export interface HandoffTerms {
   readonly bundleBytes: number;
@@ -64,6 +67,13 @@ export type TermsOutcome =
 
 const textField = (body: unknown, key: string): string | null =>
   isRecord(body) && typeof body[key] === "string" ? body[key] : null;
+const isGitAuthMode = Schema.is(GitAuthMode);
+const parseHandoffProject = (value: unknown): HandoffProject => {
+  const gitAuthMode = isRecord(value) ? value["gitAuthMode"] : null;
+  if (!isGitAuthMode(gitAuthMode))
+    throw new Error("Mend returned a project without its Git access mode.");
+  return { ...parseProject(value), gitAuthMode };
+};
 const refusal = (answer: WireAnswer, retryAfterSeconds: number | null = null): HandoffIssue => {
   if (answer.status === 401) return { kind: "signed-out" };
   if (answer.status === null)
@@ -84,15 +94,16 @@ export interface HandoffClient {
   readonly account: string;
   isCurrent(): Promise<boolean>;
   support(): Promise<HandoffSupport>;
-  listProjects(): Promise<ReadonlyArray<Project>>;
-  adoptProject(name: string, source: string): Promise<Project>;
+  listProjects(): Promise<ReadonlyArray<HandoffProject>>;
+  adoptProject(name: string, source: string): Promise<HandoffProject>;
   handoffTerms(projectId: string | null): Promise<TermsOutcome>;
   receiveBranchHandoff(
     projectId: string,
     bundle: HandoffBundle,
     finished: () => void,
   ): Promise<ReceiveOutcome>;
-  gitAccess(): Promise<string>;
+  /** Her account's default git mode, the one an adoption gives; null when Mend could not say. */
+  accountGitAuthMode(): Promise<GitAuthMode | null>;
   shareAgent(): Promise<AgentShareHandle | null>;
   sessionDetail(id: string): Promise<SessionDetail>;
   launchSession(
@@ -164,11 +175,11 @@ export class BoundClient implements HandoffClient {
     const result = takesHandoffs(await this.#answer(`/projects/${HANDOFF_PROBE_PROJECT}/handoffs`));
     return result === true ? "supported" : result === false ? "unsupported" : "unavailable";
   }
-  async listProjects(): Promise<ReadonlyArray<Project>> {
-    return parseArray(await this.#request("/projects"), parseProject, "projects");
+  async listProjects(): Promise<ReadonlyArray<HandoffProject>> {
+    return parseArray(await this.#request("/projects"), parseHandoffProject, "projects");
   }
-  async adoptProject(name: string, source: string): Promise<Project> {
-    return parseProject(await this.#request("/projects", { name, source }));
+  async adoptProject(name: string, source: string): Promise<HandoffProject> {
+    return parseHandoffProject(await this.#request("/projects", { name, source }));
   }
   async handoffTerms(projectId: string | null): Promise<TermsOutcome> {
     const answer = readTermsAnswer(
@@ -256,10 +267,9 @@ export class BoundClient implements HandoffClient {
         return { kind: "refused", issue: refusal(answer.answer, raw.retryAfterSeconds) };
     }
   }
-  async gitAccess(): Promise<string> {
+  async accountGitAuthMode(): Promise<GitAuthMode | null> {
     const mode = textField(await this.#request("/me/git-access"), "mode");
-    if (mode === null) throw new Error("Mend did not return its Git access mode. Try again.");
-    return mode;
+    return isGitAuthMode(mode) ? mode : null;
   }
   async shareAgent(): Promise<AgentShareHandle | null> {
     const agentSock = process.env["SSH_AUTH_SOCK"];

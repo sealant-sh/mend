@@ -1,6 +1,7 @@
 import { Result, Schema } from "effect";
 
 import { Sha } from "../ids.ts";
+import type { GitAuthMode } from "./project.ts";
 import type { WorktreeName } from "./worktree.ts";
 
 /** The bundle's one ref: W, the working tree, whose parent is I, the index, whose parent is HEAD. */
@@ -308,3 +309,16 @@ export const takesHandoffs = (probe: WireAnswer): boolean | null => {
   if (probe.status === 422 && fieldOf(probe.body, "_tag") === "HandoffRefused") return true;
   return readTermsAnswer(probe)._tag === "terms" ? true : null;
 };
+
+/**
+ * Whose git mode the server reaches origin with for one handoff: the chosen project's, or, for a
+ * handoff that adopts, the account default the adoption gives the new project (null when the
+ * server could not say).
+ */
+export type HandoffGitTarget =
+  | { readonly kind: "project"; readonly gitAuthMode: GitAuthMode }
+  | { readonly kind: "adopt"; readonly accountMode: GitAuthMode | null };
+
+/** Whether the handoff needs this machine's ssh-agent shared: its git signs through the bridge. */
+export const handoffNeedsAgentShare = (target: HandoffGitTarget): boolean =>
+  (target.kind === "project" ? target.gitAuthMode : target.accountMode) === "bridge";

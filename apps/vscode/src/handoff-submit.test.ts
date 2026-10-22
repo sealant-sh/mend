@@ -202,7 +202,7 @@ describe("an accepted handoff", () => {
   it("refuses a missing agent bridge before adoption or receive", async () => {
     const f = setup();
     expect(
-      await new HandoffSubmission({ ...f.accepted, gitAccess: "bridge" }, f.dependencies).run(),
+      await new HandoffSubmission({ ...f.accepted, needsAgentShare: true }, f.dependencies).run(),
     ).toMatchObject({ kind: "refused", issue: { kind: "bridge-unavailable" } });
     expect(f.calls).not.toContain("receive");
     expect(f.calls).not.toContain("adopt");
@@ -296,7 +296,7 @@ describe("an accepted handoff", () => {
       {
         ...f.accepted,
         client,
-        gitAccess: "bridge",
+        needsAgentShare: true,
         continuation: { kind: "prompt", prompt: "continue" },
       },
       f.dependencies,

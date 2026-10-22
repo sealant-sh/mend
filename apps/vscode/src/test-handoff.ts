@@ -5,25 +5,22 @@ import { Schema } from "effect";
 
 import type {
   HandoffClient,
+  HandoffProject,
   HandoffReceipt,
   HandoffTerms,
   ReceiveOutcome,
 } from "./handoff-client.js";
 import type { AcceptedHandoff } from "./handoff-draft.js";
 import type { CheckoutWorker, HandoffBundle } from "./handoff-worker.js";
-import {
-  HandoffProvenance,
-  type Project,
-  type SessionDetail,
-  type SessionStatus,
-} from "./types.js";
+import { HandoffProvenance, type SessionDetail, type SessionStatus } from "./types.js";
 
-export const project: Project = {
+export const project: HandoffProject = {
   id: "p1",
   name: "newsroom-api",
   originUrl: "https://github.com/acme/newsroom-api.git",
   defaultBranch: "main",
   storePath: "/store/p1/repo.git",
+  gitAuthMode: "mend-key",
 };
 export const summary: CaptureSummary = {
   head: "1".repeat(40),
@@ -129,7 +126,7 @@ export const fakeHandoff = () => {
       finished();
       return answers.shift() ?? { kind: "received", receipt: receipt() };
     },
-    gitAccess: async () => "server",
+    accountGitAuthMode: async () => "mend-key",
     shareAgent: async () => null,
     sessionDetail: async () => {
       calls.push("detail");
@@ -166,7 +163,7 @@ export const fakeHandoff = () => {
     summary,
     continuation: { kind: "hold" },
     projectsBefore: [project],
-    gitAccess: "server",
+    needsAgentShare: false,
   };
   return {
     calls,

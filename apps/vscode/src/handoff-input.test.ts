@@ -220,7 +220,7 @@ describe("this machine's SSH agent, shared for the handoff's git", () => {
   it("is not needed for a Mend-key project, whatever her account default", async () => {
     const w = world(() => ({
       listProjects: async () => [mendKeyProject],
-      gitAccess: async () => "bridge",
+      accountGitAuthMode: async () => "bridge",
     }));
     await handOffAnswered(w);
     expect(toasts.showErrorMessage).not.toHaveBeenCalled();
@@ -231,7 +231,7 @@ describe("this machine's SSH agent, shared for the handoff's git", () => {
   it("is shared before the receive for a bridge project, whatever her account default", async () => {
     const w = world((_, calls) => ({
       listProjects: async () => [bridgeProject],
-      gitAccess: async () => "mend-key",
+      accountGitAuthMode: async () => "mend-key",
       shareAgent: sharing(calls),
     }));
     await handOffAnswered(w);
@@ -244,7 +244,7 @@ describe("this machine's SSH agent, shared for the handoff's git", () => {
   it("is shared before adopting when her account default is bridge", async () => {
     const w = world((_, calls) => ({
       listProjects: async () => [],
-      gitAccess: async () => "bridge",
+      accountGitAuthMode: async () => "bridge",
       shareAgent: sharing(calls),
     }));
     await handOffAnswered(w);

@@ -1,5 +1,6 @@
 import * as path from "node:path";
 
+import { handoffNeedsAgentShare } from "@mend/domain/workbench";
 import { originMatches } from "@mend/local-git/origin";
 import * as vscode from "vscode";
 
@@ -428,7 +429,7 @@ export class HandoffInput implements vscode.Disposable {
         fail("This checkout has no origin. Add its origin, then hand off.");
         return;
       }
-      const [projects, gitAccess] = await Promise.all([client.listProjects(), client.gitAccess()]);
+      const projects = await client.listProjects();
       if (closed) return;
       const matches = projects.filter((project) =>
         originMatches(origin, project.originUrl, checkout.value.top),
@@ -460,6 +461,12 @@ export class HandoffInput implements vscode.Disposable {
         project === undefined
           ? { kind: "adopt", origin, name: originProjectName(origin) }
           : { kind: "project", project };
+      const needsAgentShare = handoffNeedsAgentShare(
+        project === undefined
+          ? { kind: "adopt", accountMode: await client.accountGitAuthMode() }
+          : { kind: "project", gitAuthMode: project.gitAuthMode },
+      );
+      if (closed) return;
       dispatch({ kind: "reading-terms" });
       const terms = await client.handoffTerms(project?.id ?? null);
       if (closed) return;
@@ -480,7 +487,7 @@ export class HandoffInput implements vscode.Disposable {
         client,
         worker,
         projectsBefore: projects,
-        gitAccess,
+        needsAgentShare,
       });
       dispatch({ kind: "capture", target });
     } catch (cause) {

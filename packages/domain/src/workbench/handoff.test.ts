@@ -10,6 +10,7 @@ import {
   HandoffCutAt,
   HandoffMachine,
   type HandoffTrailers,
+  handoffNeedsAgentShare,
   handoffWorktreeName,
   HexSha,
   isEnvPath,
@@ -499,4 +500,16 @@ describe("takesHandoffs", () => {
       expect(takesHandoffs(neither)).toBeNull();
     },
   );
+});
+
+describe("handoffNeedsAgentShare", () => {
+  it("follows an existing project's mode, not the account default", () => {
+    expect(handoffNeedsAgentShare({ kind: "project", gitAuthMode: "bridge" })).toBe(true);
+    expect(handoffNeedsAgentShare({ kind: "project", gitAuthMode: "mend-key" })).toBe(false);
+  });
+  it("follows the account default for an adoption, and shares nothing when it is unknown", () => {
+    expect(handoffNeedsAgentShare({ kind: "adopt", accountMode: "bridge" })).toBe(true);
+    expect(handoffNeedsAgentShare({ kind: "adopt", accountMode: "mend-key" })).toBe(false);
+    expect(handoffNeedsAgentShare({ kind: "adopt", accountMode: null })).toBe(false);
+  });
 });

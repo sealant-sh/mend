@@ -55,6 +55,19 @@ describe("a bound client's account", () => {
     expect(as("dana-token").account).not.toContain("dana-token");
   });
 });
+describe("the git modes a bound client reads", () => {
+  it("keeps each project's mode, and reads an account mode it does not know as unknown", async () => {
+    const url = await serve((req, res) => {
+      if (req.url === "/api/projects") answer(res, 200, [{ ...project, gitAuthMode: "bridge" }]);
+      else if (req.url === "/api/me/git-access") answer(res, 200, { mode: "ambient" });
+      else answer(res, 404, {});
+    });
+    expect((await bound(url).listProjects()).map((listed) => listed.gitAuthMode)).toEqual([
+      "bridge",
+    ]);
+    expect(await bound(url).accountGitAuthMode()).toBeNull();
+  });
+});
 describe("raw handoff HTTP", () => {
   it("streams the exact bytes with auth, length and hold; finish precedes receipt", async () => {
     const body = Buffer.from([0, 1, 127, 255, 10]);

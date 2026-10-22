@@ -166,7 +166,7 @@ export class HandoffSubmission {
         const changed = await this.#checkSource();
         if (changed !== null) return changed;
       }
-      if (this.accepted.gitAccess === "bridge") {
+      if (this.accepted.needsAgentShare) {
         share = await client.shareAgent();
         if (share === null || (await share.ready(15_000)) !== "connected")
           return this.#refused(issueWords({ kind: "bridge-unavailable" }), {

@@ -14,7 +14,7 @@ export interface AcceptedHandoff {
   readonly client: HandoffClient;
   readonly worker: CheckoutWorker;
   readonly projectsBefore: ReadonlyArray<Project>;
-  readonly gitAccess: string;
+  readonly needsAgentShare: boolean;
 }
 
 export class HandoffDraft {
