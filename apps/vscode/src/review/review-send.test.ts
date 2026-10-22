@@ -9,7 +9,7 @@ import type { SessionDetail, SessionProcess } from "../types.js";
 import type { Pasted } from "./agent-paste.js";
 import { DRAFT_GONE } from "./delivery.js";
 import { textToSend } from "./instruction.js";
-import { DRIVE_STALE_MS, KeptReviews, NODE_FILES } from "./kept-reviews.js";
+import { DRIVE_STALE_MS, KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore, type NewComment, type ReviewFailure } from "./review-store.js";
 import { reviewToast } from "./review-toast.js";
@@ -1040,6 +1040,110 @@ describe("a window reloaded while its send was on its way to Mend", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("a window already following the session when another window's send is left behind", () => {
+  it("reads the send failed, with Retry delivery, once the closed window's lease goes stale", async () => {
+    const directory = await storage();
+    const mend = new Unanswered();
+    mend.serverComments = [comment({ id: "c1" })];
+    let late = 0;
+    const following = await window(
+      new KeptReviews(directory, NODE_FILES, () => Date.now() + late),
+      mend,
+    );
+    const closing = await window(keptIn(directory), mend);
+    const fromClosing = closing.store.compose();
+    if (fromClosing === null) throw new Error("nothing composed");
+    await sendComposed(closing.store, fromClosing, fromClosing.text);
+    await mend.asked;
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      // She focuses the window that follows the session: it reads the send, driven elsewhere.
+      await following.store.reloadReview();
+      expect(following.store.review().sends.map(({ phase }) => phase.kind)).toEqual(["sending"]);
+      late += DRIVE_STALE_MS;
+      await vi.advanceTimersByTimeAsync(DRIVE_STALE_MS);
+      vi.useRealTimers();
+      await vi.waitFor(
+        () =>
+          expect(following.store.review().sends.map(({ phase }) => phase.kind)).toEqual(["failed"]),
+        SETTLE,
+      );
+      expect(following.store.offer()).toEqual({ kind: "retry" });
+      expect(following.store.retryTarget()).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("goes on watching a launch the closed window watched, until Mend reads it sent", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.serverComments = [comment({ id: "c1" })];
+    const { promise: watching, resolve: watched } = Promise.withResolvers<void>();
+    let closed = true;
+    mend.followUp = async () => {
+      if (!closed) return null;
+      watched();
+      return new Promise(() => undefined);
+    };
+    let late = 0;
+    const following = await window(
+      new KeptReviews(directory, NODE_FILES, () => Date.now() + late),
+      mend,
+    );
+    const closing = await window(keptIn(directory), mend);
+    const fromClosing = closing.store.compose();
+    if (fromClosing === null) throw new Error("nothing composed");
+    await sendComposed(closing.store, fromClosing, fromClosing.text);
+    await watching;
+
+    closed = false;
+    late += DRIVE_STALE_MS;
+    mend.markSent("s1");
+    await following.store.reloadReview();
+    await vi.waitFor(
+      () =>
+        expect(following.store.review().sends.map(({ phase }) => phase.kind)).toEqual([
+          "delivered",
+        ]),
+      { timeout: 8_000 },
+    );
+    expect(mend.delivered).toHaveLength(1);
+  }, 15_000);
+
+  it("reads its own send failed, with Retry delivery, when it could not keep the failure", async () => {
+    const mend = new FakeMend();
+    mend.serverComments = [comment({ id: "c1" })];
+    let failWrite = false;
+    const files: KeptFiles = {
+      ...NODE_FILES,
+      rename: async (from, to) => {
+        if (failWrite) {
+          failWrite = false;
+          throw new Error("EIO: the disk did not take the write");
+        }
+        await NODE_FILES.rename(from, to);
+      },
+    };
+    mend.deliver = async () => {
+      failWrite = true;
+      throw new MendApiError("Mend is restarting.", 503);
+    };
+    const { store } = await window(keptIn(await storage(), files), mend);
+    const told = failures(store);
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    await sendComposed(store, composed, composed.text);
+    await vi.waitFor(() => expect(told.length).toBeGreaterThan(0), SETTLE);
+    await vi.waitFor(
+      () => expect(store.review().sends.map(({ phase }) => phase.kind)).toEqual(["failed"]),
+      SETTLE,
+    );
+    expect(store.offer()).toEqual({ kind: "retry" });
   });
 });
 
