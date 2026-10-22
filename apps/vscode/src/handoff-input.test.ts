@@ -7,7 +7,7 @@ import { HandoffInput } from "./handoff-input.js";
 import { Launches } from "./launches.js";
 import { MendApiError } from "./mend-http.js";
 import type { StoreChange } from "./session-store.js";
-import { detail, fakeHandoff } from "./test-handoff.js";
+import { detail, fakeHandoff, project } from "./test-handoff.js";
 import { fake, window as toasts, workspace } from "./test-vscode.js";
 
 vi.mock("vscode", () => import("./test-vscode.js"));
@@ -34,9 +34,11 @@ vi.mock("./handoff-worker.js", async () => {
 const READY = "Hand off fix/login to Mend · newsroom-api";
 const NO_ANSWER = new MendApiError("Cannot reach Mend at http://mend.local.", null);
 
-const world = (client: (base: HandoffClient) => Partial<HandoffClient> = () => ({})) => {
+const world = (
+  client: (base: HandoffClient, calls: Array<string>) => Partial<HandoffClient> = () => ({}),
+) => {
   const f = fakeHandoff();
-  const bound: HandoffClient = { ...f.client, ...client(f.client) };
+  const bound: HandoffClient = { ...f.client, ...client(f.client, f.calls) };
   const launches = new Launches(bound, { attempted: () => undefined, forget: () => undefined });
   const input = new HandoffInput(
     {
@@ -185,5 +187,69 @@ describe("a launch Mend never answered", () => {
     expect(await w.launches.relaunch("s1", null)).toEqual({ kind: "sent" });
     expect(w.launched()).toBe(2);
     expect((await w.question()).value).toBe("");
+  });
+});
+
+const sharing = (calls: Array<string>) => async () => {
+  calls.push("share");
+  return {
+    snapshot: () => "connected" as const,
+    subscribe: () => () => undefined,
+    ready: async () => "connected" as const,
+    close: async () => {
+      calls.push("share-closed");
+    },
+  };
+};
+
+const handOffAnswered = async (w: ReturnType<typeof world>) => {
+  const box = await w.question();
+  box.type("carry on");
+  box.accept();
+  await vi.waitFor(() =>
+    expect(
+      toasts.showInformationMessage.mock.calls.length + toasts.showErrorMessage.mock.calls.length,
+    ).toBeGreaterThan(0),
+  );
+};
+
+describe("this machine's SSH agent, shared for the handoff's git", () => {
+  const mendKeyProject = { ...project, gitAuthMode: "mend-key" as const };
+  const bridgeProject = { ...project, gitAuthMode: "bridge" as const };
+
+  it("is not needed for a Mend-key project, whatever her account default", async () => {
+    const w = world(() => ({
+      listProjects: async () => [mendKeyProject],
+      gitAccess: async () => "bridge",
+    }));
+    await handOffAnswered(w);
+    expect(toasts.showErrorMessage).not.toHaveBeenCalled();
+    expect(w.calls).toContain("receive");
+    expect(toasts.showInformationMessage).toHaveBeenCalled();
+  });
+
+  it("is shared before the receive for a bridge project, whatever her account default", async () => {
+    const w = world((_, calls) => ({
+      listProjects: async () => [bridgeProject],
+      gitAccess: async () => "mend-key",
+      shareAgent: sharing(calls),
+    }));
+    await handOffAnswered(w);
+    expect(w.calls).toContain("share");
+    expect(w.calls.indexOf("share")).toBeLessThan(w.calls.indexOf("receive"));
+    expect(w.calls).toContain("share-closed");
+    expect(toasts.showInformationMessage).toHaveBeenCalled();
+  });
+
+  it("is shared before adopting when her account default is bridge", async () => {
+    const w = world((_, calls) => ({
+      listProjects: async () => [],
+      gitAccess: async () => "bridge",
+      shareAgent: sharing(calls),
+    }));
+    await handOffAnswered(w);
+    expect(w.calls).toContain("share");
+    expect(w.calls.indexOf("share")).toBeLessThan(w.calls.indexOf("adopt"));
+    expect(w.calls).toContain("receive");
   });
 });
