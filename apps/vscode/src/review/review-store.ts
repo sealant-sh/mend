@@ -62,6 +62,7 @@ import {
 } from "./review-wire.js";
 import {
   errorWords,
+  failedDelivery,
   liveAgent,
   SendDriver,
   type FailOptions,
@@ -385,11 +386,17 @@ export class ReviewStore implements vscode.Disposable {
   async reloadReview(): Promise<void> {
     const place = this.#place;
     if (place === null) return;
-    if (await this.#keepHeld(place)) return;
-    const { review } = await this.kept.read(place);
-    if (!samePlace(this.#place, place)) return;
-    this.#review = review;
-    this.#changed.fire();
+    if (!(await this.#keepHeld(place))) {
+      const { review } = await this.kept.read(place);
+      if (!samePlace(this.#place, place)) return;
+      this.#review = review;
+      this.#changed.fire();
+    }
+    // A delivery another window drove may have failed while she looked elsewhere.
+    for (const record of this.#review.sends) {
+      const failed = failedDelivery(place, record);
+      if (failed !== null) this.#fail(failed.what, failed.words, failed.options);
+    }
   }
 
   /** She chose another part of the change to read (story d, step 5). */
@@ -931,7 +938,7 @@ export class ReviewStore implements vscode.Disposable {
   }
 
   #fail(what: string, words: string, options: FailOptions = {}): void {
-    const at = new Date().toISOString();
+    const at = options.at ?? new Date().toISOString();
     this.#failed.fire({
       key: `review-${what}:${at}`,
       at,

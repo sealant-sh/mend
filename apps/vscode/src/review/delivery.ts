@@ -88,7 +88,8 @@ export type SendPhase =
   /** Mend holds it pending, and this window had no terminal of hers to paste it into. */
   | { readonly kind: "pending" }
   | { readonly kind: "delivered"; readonly at: string }
-  | { readonly kind: "failed"; readonly words: string }
+  /** `at`: when it failed, so every window names this failure alike. */
+  | { readonly kind: "failed"; readonly words: string; readonly at: string }
   /** Mend refused this key or this person: a new review, with a new key, is the way on. */
   | { readonly kind: "refused"; readonly words: string };
 
@@ -400,6 +401,7 @@ const answeredPhase = (
   status: FollowUpStatus,
   error: string | null,
   agent: LiveAgent,
+  now: string,
 ): SendPhase => {
   switch (status) {
     case "pending":
@@ -416,7 +418,7 @@ const answeredPhase = (
     case "delivered":
       return { kind: "delivering" };
     case "delivery_failed":
-      return { kind: "failed", words: error ?? "Mend could not deliver the review." };
+      return { kind: "failed", words: error ?? "Mend could not deliver the review.", at: now };
     case "superseded":
       return { kind: "refused", words: "Mend replaced this follow-up with a newer one." };
   }
@@ -460,7 +462,7 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
       };
     case "answered":
       return record.phase.kind === "sending"
-        ? { ...record, phase: answeredPhase(event.status, event.error, event.agent) }
+        ? { ...record, phase: answeredPhase(event.status, event.error, event.agent, now) }
         : record;
     case "pasted":
     case "skipped":
@@ -486,7 +488,7 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
         ? {
             ...record,
             phase: event.retryable
-              ? { kind: "failed", words: event.words }
+              ? { kind: "failed", words: event.words, at: now }
               : { kind: "refused", words: event.words },
           }
         : record;
@@ -525,7 +527,7 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
       return record.phase.kind === "sending"
         ? {
             ...record,
-            phase: { kind: "failed", words: "VS Code closed before Mend answered" },
+            phase: { kind: "failed", words: "VS Code closed before Mend answered", at: now },
           }
         : record;
     case "follow-up":
@@ -534,7 +536,11 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
       if (event.status === "delivery_failed")
         return {
           ...record,
-          phase: { kind: "failed", words: event.error ?? "Mend could not deliver the review." },
+          phase: {
+            kind: "failed",
+            words: event.error ?? "Mend could not deliver the review.",
+            at: now,
+          },
         };
       // Mend holds it pending (the session went live, or a reload never heard the answer): it waits
       // there until she retries it.
@@ -546,6 +552,7 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
           kind: "failed",
           words:
             "Mend no longer lists this follow-up, and it does not read its comments as sent to the session",
+          at: now,
         },
       };
   }

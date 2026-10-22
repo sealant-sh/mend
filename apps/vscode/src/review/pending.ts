@@ -269,7 +269,8 @@ const parseDismissal = (value: unknown): DraftDismissal | null => {
   return value["kind"] === "left" && words !== null ? { kind: "left", words } : null;
 };
 
-const parsePhase = (value: unknown): SendPhase | null => {
+/** `createdAt`: when a failure kept without its time is taken to have happened. */
+const parsePhase = (value: unknown, createdAt: string): SendPhase | null => {
   if (!isRecord(value)) return null;
   const words = text(value, "words");
   switch (value["kind"]) {
@@ -294,7 +295,11 @@ const parsePhase = (value: unknown): SendPhase | null => {
     case "delivered":
       return { kind: "delivered", at: text(value, "at") ?? "" };
     case "failed":
-      return { kind: "failed", words: words ?? "Mend could not deliver the review." };
+      return {
+        kind: "failed",
+        words: words ?? "Mend could not deliver the review.",
+        at: text(value, "at") ?? createdAt,
+      };
     case "refused":
       return { kind: "refused", words: words ?? "Mend refused the review." };
     default:
@@ -338,7 +343,7 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
   const diffDigest = text(value, "diffDigest");
   const instruction = text(value, "instruction");
   const createdAt = text(value, "createdAt");
-  const phase = parsePhase(value["phase"]);
+  const phase = createdAt === null ? null : parsePhase(value["phase"], createdAt);
   const paste = parsePaste(value["paste"]);
   const items = value["items"].flatMap(parseItem);
   if (

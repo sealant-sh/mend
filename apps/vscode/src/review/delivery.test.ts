@@ -154,7 +154,7 @@ describe("sending a review (story d, step 6)", () => {
     const ready = posted(sent());
     const first = nextAction(only(ready));
     const failed = apply(ready, { kind: "failed", words: "Cannot reach Mend", retryable: true });
-    expect(only(failed).phase).toEqual({ kind: "failed", words: "Cannot reach Mend" });
+    expect(only(failed).phase).toEqual({ kind: "failed", words: "Cannot reach Mend", at: NOW });
     expect(nextAction(only(failed))).toEqual({ kind: "idle" });
     const retried = apply(failed, { kind: "retry", at: NOW, agent: null });
     expect(nextAction(only(retried))).toEqual(first);
@@ -245,7 +245,7 @@ describe("sending a review (story d, step 6)", () => {
     expect(only(watched(launching, { others: true })).phase).toEqual({ kind: "delivering" });
     expect(
       only(watched(launching, { status: "delivery_failed", error: "no login" })).phase,
-    ).toEqual({ kind: "failed", words: "no login" });
+    ).toEqual({ kind: "failed", words: "no login", at: NOW });
   });
 
   it("gives back to pending what never reached Mend when Mend refuses the review", () => {

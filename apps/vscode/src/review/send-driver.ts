@@ -45,6 +45,8 @@ export interface SendContext {
 }
 
 export interface FailOptions {
+  /** When it happened; now, unless every window must name it alike. */
+  readonly at?: string;
   readonly cause?: unknown;
   readonly retry?: RetryTarget | null;
   readonly text?: string;
@@ -65,6 +67,22 @@ export interface DriverHost {
   /** A lease another window held may have gone stale: load this place's kept reviews again. */
   loadAgain(place: ReviewPlace): void;
 }
+
+/**
+ * A failed delivery's toast, named by its record and when it failed: the same in every window, so
+ * whichever window she focuses shows it, once.
+ */
+export const failedDelivery = (
+  place: ReviewPlace,
+  record: SendRecord,
+): { readonly what: string; readonly words: string; readonly options: FailOptions } | null =>
+  record.phase.kind !== "failed"
+    ? null
+    : {
+        what: `delivery:${record.key}`,
+        words: `Mend could not deliver the review: ${record.phase.words}`,
+        options: { retry: { place, key: record.key }, at: record.phase.at },
+      };
 
 /** Whether a new record was kept and is now driven, and why not. */
 export type Recorded =
@@ -336,12 +354,7 @@ export class SendDriver {
         switch (action.kind) {
           case "idle":
             // A delivery Mend answered as failed (a launch it could not make) says so once.
-            if (record.phase.kind === "failed")
-              this.host.fail(
-                `delivery:${key}`,
-                `Mend could not deliver the review: ${record.phase.words}`,
-                { retry },
-              );
+            this.#sayFailed(context.place, record);
             this.host.settled(sessionId);
             return;
           case "reconcile": {
@@ -484,26 +497,39 @@ export class SendDriver {
         if (thrown instanceof DriveLost) throw thrown;
         const retryable = !refuses(thrown);
         const cause = thrown instanceof WriteFailed ? thrown.failure : thrown;
-        await this.#step(context, key, { kind: "failed", words: errorWords(cause), retryable });
-        this.host.fail(
-          `delivery:${key}`,
-          `Mend could not deliver the review: ${errorWords(cause)}`,
-          {
-            cause,
-            retry: retryable ? retry : null,
-          },
-        );
+        const failed = await this.#step(context, key, {
+          kind: "failed",
+          words: errorWords(cause),
+          retryable,
+        });
+        if (!this.#sayFailed(context.place, failed, cause))
+          this.host.fail(
+            `delivery:${key}`,
+            `Mend could not deliver the review: ${errorWords(cause)}`,
+            {
+              cause,
+              retry: retryable ? retry : null,
+            },
+          );
         this.host.settled(sessionId);
         return;
       }
     }
     // Mend has not answered in all this time: the review reads failed, so Retry is offered.
     const words = "Mend has not said the review was delivered";
-    await this.#step(context, key, { kind: "failed", words, retryable: true });
-    this.host.fail(`delivery:${key}`, `${words}. Retry delivery asks again with the same key.`, {
-      retry,
-    });
+    this.#sayFailed(
+      context.place,
+      await this.#step(context, key, { kind: "failed", words, retryable: true }),
+    );
     this.host.settled(sessionId);
+  }
+
+  /** Says a failed record failed, by the name every window gives it: whether it was failed. */
+  #sayFailed(place: ReviewPlace, record: SendRecord | null, cause?: unknown): boolean {
+    const failed = record === null ? null : failedDelivery(place, record);
+    if (failed === null) return false;
+    this.host.fail(failed.what, failed.words, { ...failed.options, cause });
+    return true;
   }
 }
 

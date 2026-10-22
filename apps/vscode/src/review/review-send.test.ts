@@ -847,7 +847,11 @@ describe("a window reloaded while its send was on its way to Mend", () => {
       await vi.waitFor(
         () =>
           expect(reloaded.store.review().sends.map(({ phase }) => phase)).toEqual([
-            { kind: "failed", words: "VS Code closed before Mend answered" },
+            {
+              kind: "failed",
+              words: "VS Code closed before Mend answered",
+              at: expect.any(String),
+            },
           ]),
         SETTLE,
       );
