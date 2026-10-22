@@ -641,6 +641,12 @@ each is a gesture on the real workbench DOM:
 - `view(name)` (the Activity Bar entry), `viewActions()` (the view's title bar buttons, each
   `{ title, disabled }`), `viewAction(title | pattern)` with `.disabled()`, `.title()`, `.tooltip()`
   (the pointer rests on it until the hover shows; a disabled button too) and `.click()`,
+  `viewOverflowItems()` (the view's `⋯` menu opened, each item `{ label, disabled }`, then Escape:
+  the first view's header's `More Actions...` when the container shows headers, as Source Control
+  does with Changes and Graph, else the title bar's; an extension's `scm/title` item outside the
+  `navigation` group is listed in Changes' menu), `viewOverflowItem(label | pattern)` (an enabled
+  item of that menu clicked, by its whole label or a RegExp it matches, the pointer resting on it
+  first; returns the label clicked, and fails with every label the menu showed when none matches),
   `treeItem(label)` with `.click()`, `.dblclick()`, `.hover()`,
   `.inline(title | pattern, { clicks })` (the row's hover action, by its title or a RegExp its title
   matches; `clicks: 2` clicks it again at once; returns the title found), `.contextMenu(item)` (the
