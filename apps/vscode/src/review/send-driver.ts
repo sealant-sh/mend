@@ -229,8 +229,8 @@ export class SendDriver {
 
   /**
    * Retry delivery: the same key, the same text, the comments already on Mend kept. Only a record
-   * of that session with that key, failed, or held pending by Mend once the session has no live
-   * agent (the route then launches the stopped session on the review).
+   * of that session with that key that `mayRetry` offers it on, and only while VS Code is connected
+   * to the server and account the review is kept for.
    */
   async retry(target: RetryTarget, author: string | null): Promise<Retried> {
     if ((await this.#bind(target.place)) === null)

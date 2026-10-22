@@ -668,8 +668,8 @@ const isHeld = (record: SendRecord): boolean =>
   record.phase.kind === "pending" || record.phase.kind === "in-terminal";
 
 /**
- * The review Retry delivery acts on: the newest one failed, else the newest Mend holds pending once
- * the session has no live agent to paste into.
+ * The review Retry delivery acts on: the newest one failed, else the newest Mend holds pending that
+ * Retry delivery can move on.
  */
 export const retryRecord = (
   records: ReadonlyArray<SendRecord>,
