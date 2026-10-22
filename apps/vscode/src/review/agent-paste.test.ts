@@ -96,3 +96,39 @@ describe("a paste while claude still runs", () => {
     expect(effects.pasted).toEqual([]);
   });
 });
+
+describe("a paste that fails", () => {
+  it("reads not attached when Mend cannot say whether claude is live, before anything is pasted", async () => {
+    const effects = {
+      ...world([[CLAUDE, SHELL]], "agent-1"),
+      detail: async (): Promise<SessionDetail> => {
+        throw new Error("Mend is restarting");
+      },
+    };
+    expect(await pasteIntoAgent(effects, "s1", "agent-1", "the review")).toBe("not-attached");
+    expect(effects.pasted).toEqual([]);
+  });
+
+  it("reads not attached when Answer cannot attach claude's terminal", async () => {
+    const effects = {
+      ...world([[CLAUDE, SHELL]], "agent-1"),
+      answer: async (): Promise<void> => {
+        throw new Error("the panel did not open");
+      },
+    };
+    expect(await pasteIntoAgent(effects, "s1", "agent-1", "the review")).toBe("not-attached");
+    expect(effects.pasted).toEqual([]);
+  });
+
+  it("throws when the paste itself fails, since part of it may be in claude's input", async () => {
+    const effects = {
+      ...world([[CLAUDE, SHELL]], "agent-1"),
+      paste: async (): Promise<boolean> => {
+        throw new Error("the terminal's socket closed");
+      },
+    };
+    await expect(pasteIntoAgent(effects, "s1", "agent-1", "the review")).rejects.toThrow(
+      "the terminal's socket closed",
+    );
+  });
+});
