@@ -814,7 +814,7 @@ export class ReviewStore implements vscode.Disposable {
         return review;
       const started = startSend(review, {
         key,
-        slice: sliceOf(read),
+        slice: composed.slice,
         instruction,
         paste,
         pending: composed.pending,
