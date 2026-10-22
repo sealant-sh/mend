@@ -90,6 +90,36 @@ const MAX_TURNS = 400;
 export const errorWords = (cause: unknown): string =>
   cause instanceof Error ? cause.message : "Mend could not read this change.";
 
+/** A write of the review to Mend failed: a post, a comment's state, or the delivery. */
+class WriteFailed extends Error {
+  constructor(readonly failure: unknown) {
+    super(errorWords(failure));
+  }
+}
+
+const writing = async <T>(call: Promise<T>): Promise<T> => {
+  try {
+    return await call;
+  } catch (cause) {
+    throw new WriteFailed(cause);
+  }
+};
+
+/** 4xx answers that ask for a sign-in or for later: they say nothing against the review. */
+const NOT_A_REFUSAL: ReadonlySet<number> = new Set([401, 408, 429]);
+
+/**
+ * The one classifier: only Mend refusing a write of the review refuses it. A read that fails says
+ * nothing about the review, and any other failure is worth a retry with the same key.
+ */
+const refuses = (thrown: unknown): boolean =>
+  thrown instanceof WriteFailed &&
+  thrown.failure instanceof MendApiError &&
+  thrown.failure.status !== null &&
+  thrown.failure.status >= 400 &&
+  thrown.failure.status < 500 &&
+  !NOT_A_REFUSAL.has(thrown.failure.status);
+
 /**
  * Drives each send record until Mend answers: posts its comments, opens accepted drafts, delivers
  * the follow-up, pastes it into her agent's terminal, and watches a launch. One window drives a
@@ -344,7 +374,9 @@ export class SendDriver {
               pendingId: pending.id,
               attempt: { body, target, author: context.author, before },
             });
-            const posted = await this.client.postComment(changeId, pending.sliceId, target, body);
+            const posted = await writing(
+              this.client.postComment(changeId, pending.sliceId, target, body),
+            );
             await this.#step(context, key, {
               kind: "posted",
               pendingId: pending.id,
@@ -368,7 +400,7 @@ export class SendDriver {
               return;
             }
             if (draft.state === "draft")
-              await this.client.setCommentState(changeId, action.draftId, "open");
+              await writing(this.client.setCommentState(changeId, action.draftId, "open"));
             await this.#step(context, key, { kind: "opened", draftId: action.draftId });
             break;
           }
@@ -393,7 +425,7 @@ export class SendDriver {
           }
           case "deliver": {
             const detail = await this.sessions.sessionDetail(sessionId);
-            const answered = await this.client.deliver(sessionId, action.request);
+            const answered = await writing(this.client.deliver(sessionId, action.request));
             const next = await this.#step(context, key, {
               kind: "answered",
               status: answered.status,
@@ -448,11 +480,10 @@ export class SendDriver {
             break;
           }
         }
-      } catch (cause) {
-        if (cause instanceof DriveLost) throw cause;
-        // Unreachable or failing on Mend's side is worth a retry with the same key; a refusal is not.
-        const retryable =
-          !(cause instanceof MendApiError) || cause.status === null || cause.status >= 500;
+      } catch (thrown) {
+        if (thrown instanceof DriveLost) throw thrown;
+        const retryable = !refuses(thrown);
+        const cause = thrown instanceof WriteFailed ? thrown.failure : thrown;
         await this.#step(context, key, { kind: "failed", words: errorWords(cause), retryable });
         this.host.fail(
           `delivery:${key}`,
