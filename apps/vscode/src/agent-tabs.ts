@@ -1,3 +1,5 @@
+import { canTypeInTerminal } from "@mend/domain/workbench";
+
 import { maySteer, ownsSession, rowCapability } from "./session-capability.js";
 import type { Session, SessionDetail } from "./types.js";
 import {
@@ -157,14 +159,24 @@ export class AgentTabs {
         return;
       }
       const want = agentTab(detail.session, detail.processes);
-      // Only the workspace's launcher types into its agent; anyone else, and anyone Mend cannot
-      // name, gets nothing here (Watch terminal is the read-only way in).
+      // In a workspace window only the workspace's launcher types into its agent, since
+      // Remote-SSH admits only them. Answer attaches over Mend's terminal socket, which admits the
+      // session's owner wherever the workspace runs. Anyone Mend cannot name gets nothing (Watch
+      // terminal is the read-only way in).
       const capability = rowCapability({ session: detail.session, viewer, members: [] });
-      if (capability.kind !== "open") {
+      if (
+        capability.kind === "unknown" ||
+        (workspaceId !== null && capability.kind === "notYours")
+      ) {
         effects.refused(`${capability.why} · no agent attached`);
         return;
       }
-      if (viewer !== null && !maySteer(detail.session, viewer)) return;
+      const admitted =
+        viewer !== null &&
+        (workspaceId === null
+          ? canTypeInTerminal(detail.session, viewer)
+          : maySteer(detail.session, viewer));
+      if (!admitted) return;
       const have = this.#attached.get(sessionId);
       if (
         have !== undefined &&

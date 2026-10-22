@@ -35,15 +35,15 @@ logs, and a video of the display. The flows below follow the stories in
   project exists; a workspace window shows its own session as a row like any other (its name, its
   line beside it), on top even while it waits, and one line, `<n> other sessions · <n> needs you`.
   Rows read `<word> · <fact>`. The Mend icon's badge counts `Needs you`: a wait Mend observed that
-  Answer lets her answer (a terminal agent's only for its owner, where its workspace's launcher is
-  her; a conversation's for anyone who may steer it). Someone else's waiting terminal agent reads
-  `waiting · <name>'s session` outside it. The status bar reads `Mend · 1 needs you · 2 finished`,
-  or `● <session> · <word>` in a workspace window. One window of this VS Code toasts a wait
-  (`<session> is waiting · <fact>` [Answer]), and only a focused one toasts a finished session
-  (`<session> finished · <fact>` [Review] [Open]); neither toasts a session the window shows (its
-  own, one selected in the view, or one whose agent tab is the active terminal). A sign-in Mend
-  refuses (401) empties the view and toasts the server's words, `Signed out — sign in again.`
-  [Connect to server] once.
+  Answer lets her answer (a terminal agent's only for its owner, whoever launched its workspace,
+  since Answer attaches it over Mend and not Remote-SSH; a conversation's for anyone who may steer
+  it). Someone else's waiting terminal agent reads `waiting · <name>'s session` outside it. The
+  status bar reads `Mend · 1 needs you · 2 finished`, or `● <session> · <word>` in a workspace
+  window. One window of this VS Code toasts a wait (`<session> is waiting · <fact>` [Answer]), and
+  only a focused one toasts a finished session (`<session> finished · <fact>` [Review] [Open]);
+  neither toasts a session the window shows (its own, one selected in the view, or one whose agent
+  tab is the active terminal). A sign-in Mend refuses (401) empties the view and toasts the server's
+  words, `Signed out — sign in again.` [Connect to server] once.
 - `vscode-answer` is `Mend: Answer` on a waiting row or toast: the agent's terminal attaches in this
   window's panel, and no window opens.
 - `vscode-adopt`: with no project yet, the view's message `Adopt <repo> from <origin>` over one row,

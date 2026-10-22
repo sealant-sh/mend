@@ -371,7 +371,7 @@ describe("the badge (rule 15)", () => {
     const model = sessionModel(input([inAnas], { waits: new Map([["mine", waitFor(YESTERDAY)]]) }));
     expect(model.badge).toBe(1);
     expect(model.sessions.get("mine")?.line).toBe(
-      "waiting · claude needs your permission to use Bash",
+      `waiting · claude needs your permission to use Bash · since ${clockTime(YESTERDAY)}`,
     );
   });
 
