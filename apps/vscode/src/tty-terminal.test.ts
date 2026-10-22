@@ -40,7 +40,7 @@ describe("a review pasted into a terminal", () => {
       "\u007f\u0080\u0085\u009b\u009f",
       "é → ✓",
     ].join("");
-    expect(await terminal().paste(text)).toBe(true);
+    expect(await terminal().paste(text, async () => true)).toBe(true);
     expect(typed.bytes).toEqual([
       "\u001b[200~line one\nline two\nthree\n  tabbed[201~escaped]0;titleé → ✓\u001b[201~",
     ]);
@@ -48,9 +48,21 @@ describe("a review pasted into a terminal", () => {
 
   it("never carries a carriage return a shell would run as Enter", async () => {
     typed.bytes.length = 0;
-    await terminal().paste("rm -rf build\r");
+    await terminal().paste("rm -rf build\r", async () => true);
     const [bytes] = typed.bytes;
     expect(bytes).toBe("\u001b[200~rm -rf build\n\u001b[201~");
     expect(bytes?.includes("\r")).toBe(false);
+  });
+
+  it("writes nothing when the check made right before the write refuses it", async () => {
+    typed.bytes.length = 0;
+    const refused = new Error("VS Code is connected to another Mend server");
+    await expect(
+      terminal().paste("the review", async () => {
+        throw refused;
+      }),
+    ).rejects.toBe(refused);
+    expect(await terminal().paste("the review", async () => false)).toBe(false);
+    expect(typed.bytes).toEqual([]);
   });
 });

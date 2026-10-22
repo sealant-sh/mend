@@ -40,7 +40,8 @@ const world = (
     answer: async () => undefined,
     activeTab: () => `tab of ${attached}`,
     processOf: (tab) => tab.replace("tab of ", ""),
-    paste: async (tab, text) => {
+    paste: async (tab, text, ready) => {
+      if (!(await ready())) return false;
       pasted.push([tab, text]);
       return true;
     },
@@ -102,6 +103,30 @@ describe("the review pasted into claude's terminal (G12 fallback)", () => {
   it("goes nowhere, and attaches nothing, when claude is already gone", async () => {
     const effects = world([[process("agent-1", "agent-pty", true), SHELL]], "shell-1");
     expect(await pasteIntoAgent(effects, "s1", "agent-1", "the review")).toBe("agent-gone");
+    expect(effects.pasted).toEqual([]);
+  });
+});
+
+describe("a paste whose terminal opens slowly", () => {
+  it("goes nowhere once claude exited while the tab's socket opened", async () => {
+    const effects = world([[CLAUDE, SHELL], [CLAUDE, SHELL], [SHELL]], "agent-1");
+    expect(await pasteIntoAgent(effects, "s1", "agent-1", "the review")).toBe("agent-gone");
+    expect(effects.pasted).toEqual([]);
+  });
+
+  it("pastes nothing, and says VS Code connected elsewhere, when it connected elsewhere while the tab's socket opened", async () => {
+    let reads = 0;
+    const effects = {
+      ...world([[CLAUDE, SHELL]], "agent-1"),
+      detail: async () => {
+        reads += 1;
+        if (reads > 2) throw new Unbound("switched");
+        return detail([CLAUDE, SHELL]);
+      },
+    };
+    await expect(pasteIntoAgent(effects, "s1", "agent-1", "the review")).rejects.toBeInstanceOf(
+      Unbound,
+    );
     expect(effects.pasted).toEqual([]);
   });
 });

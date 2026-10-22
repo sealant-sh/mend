@@ -18,9 +18,15 @@ export const memberName = async (client: MendClient, userId: string | null): Pro
 /** Each tab's pseudoterminal, so the review can paste into the agent's terminal (G12 fallback). */
 const ptys = new WeakMap<vscode.Terminal, MendTtyTerminal>();
 
-/** Pastes into one of Mend's terminal tabs, without Enter; false when it is not one or never opened. */
-export const pasteInto = async (terminal: vscode.Terminal, text: string): Promise<boolean> =>
-  (await ptys.get(terminal)?.paste(text)) ?? false;
+/**
+ * Pastes into one of Mend's terminal tabs, without Enter, once `ready` answers true right before
+ * the write; false when it is not one, never opened, or `ready` said no.
+ */
+export const pasteInto = async (
+  terminal: vscode.Terminal,
+  text: string,
+  ready: () => Promise<boolean>,
+): Promise<boolean> => (await ptys.get(terminal)?.paste(text, ready)) ?? false;
 
 /** The process one of Mend's terminal tabs is attached to: its socket reaches that one alone. */
 export const terminalProcess = (terminal: vscode.Terminal): string | null =>
