@@ -254,6 +254,8 @@ export type SendEvent =
       readonly agent: LiveAgent;
     }
   | { readonly kind: "paste-started" }
+  /** The paste was refused before anything reached the terminal: it is due again. */
+  | { readonly kind: "paste-unstarted" }
   /** The paste reached the agent's input. */
   | { readonly kind: "pasted" }
   /** Nothing was pasted, and she was told why: the input holds what it held. */
@@ -514,6 +516,8 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
         : record;
     case "paste-started":
       return withPaste(record, "due", { kind: "pasting" });
+    case "paste-unstarted":
+      return withPaste(record, "pasting", { kind: "due" });
     case "pasted":
       return record.phase.kind === "in-terminal"
         ? withPaste(record, "pasting", {

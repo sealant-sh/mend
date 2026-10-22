@@ -78,8 +78,10 @@ const window = async (
     mend,
     new ReviewMemory(memento()),
     kept,
-    async (_sessionId, processId, text) => {
+    async (sessionId, processId, text, bound) => {
       expect(processId).toBe("agent-1");
+      // As the paste does: Mend's read of the agent's process right before the paste.
+      await bound.sessionDetail(sessionId);
       pastes.push(text);
       return pasted;
     },
@@ -1606,12 +1608,12 @@ describe("VS Code connects to another Mend server while a send waits on a read",
     const read = mend.comments.bind(mend);
     const held = Promise.withResolvers<void>();
     let holding = false;
-    mend.comments = async (changeId) => {
+    mend.comments = async () => {
       if (holding) {
         await held.promise;
         holding = false;
       }
-      return read(changeId);
+      return read();
     };
     const composed = store.compose();
     if (composed === null) throw new Error("nothing composed");
@@ -1657,14 +1659,9 @@ describe("VS Code connects to another Mend server while a send waits on a read",
       mend,
       new ReviewMemory(memento()),
       keptIn("/global-storage/reviews", watched),
-      async (
-        sessionId,
-        _processId,
-        text,
-        reads?: { sessionDetail(id: string): Promise<unknown> },
-      ) => {
+      async (sessionId, _processId, text, bound) => {
         // As the paste does: Mend's read of the agent's process right before the paste.
-        await reads?.sessionDetail(sessionId);
+        await bound.sessionDetail(sessionId);
         pastes.push(text);
         return "pasted";
       },

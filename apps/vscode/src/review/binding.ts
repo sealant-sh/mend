@@ -1,4 +1,5 @@
 import type { MendConnection } from "../config.js";
+import type { SessionDetail } from "../types.js";
 import type { ReviewPlace } from "./kept-reviews.js";
 
 /** Who VS Code is signed in as, read through one exact connection. */
@@ -6,6 +7,17 @@ export interface AccountReads {
   connection(): Promise<MendConnection>;
   /** The account `connection`'s token belongs to; null when Mend could not say. */
   accountOf(connection: MendConnection): Promise<string | null>;
+}
+
+/** The session reads a send's drive makes, the paste's among them. */
+export interface SessionReads {
+  sessionDetail(sessionId: string): Promise<SessionDetail>;
+}
+
+/** What a send's drive reads of Mend beside the review: each read can be bound to the send. */
+export interface DriverReads extends AccountReads, SessionReads {
+  /** The same reads, each made on the connection `connect` gives, or refused when it throws. */
+  pinned(connect: () => Promise<MendConnection>): SessionReads;
 }
 
 /**

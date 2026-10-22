@@ -368,6 +368,14 @@ export class MendClient {
     return this.connections.get();
   }
 
+  /** The same client, each request made on the connection `connect` gives when it starts. */
+  pinned(connect: () => Promise<MendConnection>): MendClient {
+    return new MendClient({
+      get: connect,
+      refused: (connection) => this.connections.refused(connection),
+    });
+  }
+
   /** A refused token is dropped wherever it was met, before its caller says so. */
   private async request(path: string, init?: RequestInit): Promise<unknown> {
     const connection = await this.connections.get();

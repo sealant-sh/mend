@@ -9,6 +9,7 @@ import {
   type ReviewCommentTarget,
 } from "@mend/domain/workbench";
 
+import type { MendConnection } from "../config.js";
 import { MendApiError } from "../mend-http.js";
 import type { Project, ProjectDetail, Session, SessionDetail } from "../types.js";
 import type { Pasted } from "./agent-paste.js";
@@ -234,6 +235,15 @@ export const sessionReads = (changeId: string | null) => ({
   accountOf: async (): Promise<string | null> => "dana",
   memberNames: async () => [{ userId: "dana", name: "Dana" }],
   projectDetail: async (): Promise<ProjectDetail> => ({ project: PROJECT, sessions: [] }),
+  /** Reads made only once `connect` gives a connection, as `MendClient.pinned` makes them. */
+  pinned(connect: () => Promise<MendConnection>) {
+    return {
+      sessionDetail: async (sessionId: string): Promise<SessionDetail> => {
+        await connect();
+        return this.sessionDetail(sessionId);
+      },
+    };
+  },
 });
 
 /** One VS Code's global storage, of its own, for a test's kept reviews. */
@@ -283,8 +293,18 @@ export class FakeMend extends ReviewClient {
     );
   }
 
-  override pinned(): ReviewClient {
-    return this;
+  /** This Mend, each call made only once `connect` gives a connection, as a pinned client's are. */
+  override pinned(connect: () => Promise<MendConnection>): ReviewClient {
+    return new Proxy(this, {
+      get: (target, property) => {
+        const value: unknown = Reflect.get(target, property);
+        if (typeof value !== "function") return value;
+        return async (...args: ReadonlyArray<unknown>) => {
+          await connect();
+          return Reflect.apply(value, target, args);
+        };
+      },
+    });
   }
 
   override async openReview(): Promise<PinnedSlice> {

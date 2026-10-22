@@ -1,8 +1,20 @@
 import { attachableProcesses } from "../tty-protocol.js";
 import type { SessionDetail } from "../types.js";
+import { Unbound, type SessionReads } from "./binding.js";
 
 /** Where a G12 paste went: into the agent's input, or nowhere, and why. */
 export type Pasted = "pasted" | "agent-gone" | "not-attached";
+
+/**
+ * The paste of a send's review into the agent process `processId`, its reads of Mend made through
+ * `reads`, bound to the send: one that refuses throws `Unbound`, and nothing is pasted.
+ */
+export type PasteReview = (
+  sessionId: string,
+  processId: string,
+  text: string,
+  reads: SessionReads,
+) => Promise<Pasted>;
 
 /** What a paste into a session's agent terminal does to the world, injected so it reads plain. */
 export interface PasteEffects<Tab> {
@@ -26,7 +38,8 @@ const ATTACH_POLL_MS = 100;
  * whatever the session runs now, and once the agent exits that is a supporting shell, where a
  * pasted line would run: so the paste goes only into a tab attached to that process, and only
  * while Mend lists the process live, read again right before the paste. A failure before the paste
- * pasted nothing, so it reads not attached; only the paste itself throws.
+ * pasted nothing, so it reads not attached; only the paste itself throws, and a read refused
+ * because VS Code connected elsewhere, which pasted nothing either.
  */
 export const pasteIntoAgent = async <Tab>(
   effects: PasteEffects<Tab>,
@@ -34,7 +47,10 @@ export const pasteIntoAgent = async <Tab>(
   processId: string,
   text: string,
 ): Promise<Pasted> => {
-  const found = await attach(effects, sessionId, processId).catch((): Pasted => "not-attached");
+  const found = await attach(effects, sessionId, processId).catch((cause: unknown): Pasted => {
+    if (cause instanceof Unbound) throw cause;
+    return "not-attached";
+  });
   if (typeof found === "string") return found;
   return (await effects.paste(found.tab, text)) ? "pasted" : "not-attached";
 };

@@ -653,10 +653,10 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     claims,
     // G12 fallback: her agent's terminal attached here, as Answer attaches it, and the review
     // pasted into that agent process for her to press Enter.
-    paste: (sessionId, processId, text) =>
+    paste: (sessionId, processId, text, reads) =>
       pasteIntoAgent(
         {
-          detail: (id) => client.sessionDetail(id),
+          detail: (id) => reads.sessionDetail(id),
           answer: (id) => workspaceWindow.answer(id),
           // VS Code makes the attached tab the active terminal a moment after Answer shows it.
           activeTab: (id) => {

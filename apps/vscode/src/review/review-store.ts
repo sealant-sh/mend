@@ -8,7 +8,8 @@ import { MendApiError } from "../mend-http.js";
 import { displaySession } from "../session-lines.js";
 import { accessChanged } from "../session-reads.js";
 import type { Project, Session } from "../types.js";
-import type { Pasted } from "./agent-paste.js";
+import type { PasteReview } from "./agent-paste.js";
+import type { DriverReads } from "./binding.js";
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
 import {
@@ -259,17 +260,14 @@ export class ReviewStore implements vscode.Disposable {
   readonly #driver: SendDriver;
 
   constructor(
-    private readonly sessions: Pick<
-      MendClient,
-      "sessionDetail" | "connection" | "accountOf" | "memberNames" | "projectDetail"
-    >,
+    private readonly sessions: DriverReads & Pick<MendClient, "memberNames" | "projectDetail">,
     private readonly client: ReviewClient,
     /** The keys pinning each change's slice. */
     private readonly memory: ReviewMemory,
     /** Her pending comments and the reviews she sent, per person and session, for every window. */
     private readonly kept: KeptReviews,
     /** G12 fallback: the agent's terminal attached here, the text pasted into that process, no Enter. */
-    paste: (sessionId: string, processId: string, text: string) => Promise<Pasted>,
+    paste: PasteReview,
   ) {
     this.#driver = new SendDriver(kept, client, sessions, paste, {
       keepAt: (place, update) => this.#keepAt(place, update),

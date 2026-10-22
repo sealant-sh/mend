@@ -1,9 +1,7 @@
-import type { MendClient } from "../client.js";
-import type { MendConnection } from "../config.js";
 import { MendApiError } from "../mend-http.js";
 import type { SessionDetail } from "../types.js";
-import type { Pasted } from "./agent-paste.js";
-import { boundConnection, Unbound } from "./binding.js";
+import type { PasteReview, Pasted } from "./agent-paste.js";
+import { boundConnection, Unbound, type DriverReads } from "./binding.js";
 import {
   commentIds,
   commentLabel,
@@ -162,7 +160,8 @@ const writing = async <T>(call: Promise<T>): Promise<T> => {
   try {
     return await call;
   } catch (cause) {
-    throw new WriteFailed(cause);
+    // A write the binding refused never left VS Code.
+    throw cause instanceof Unbound ? cause : new WriteFailed(cause);
   }
 };
 
@@ -186,8 +185,8 @@ export class SendDriver {
   constructor(
     private readonly kept: KeptReviews,
     private readonly client: ReviewClient,
-    private readonly sessions: Pick<MendClient, "sessionDetail" | "accountOf" | "connection">,
-    private readonly paste: (sessionId: string, processId: string, text: string) => Promise<Pasted>,
+    private readonly sessions: DriverReads,
+    private readonly paste: PasteReview,
     private readonly host: DriverHost,
   ) {}
 
@@ -214,20 +213,21 @@ export class SendDriver {
   }
 
   async retry(target: RetryTarget, author: string | null): Promise<Retried> {
-    let bound: MendConnection;
-    try {
-      bound = await boundConnection(this.sessions, target.place);
-    } catch (cause) {
-      return { retried: false, words: `Retry delivery sent nothing: ${errorWords(cause)}` };
-    }
     const record = sendOf((await this.kept.read(target.place)).review, target.key);
     if (record === undefined)
       return {
         retried: false,
         words: "Retry delivery sent nothing: VS Code no longer keeps this review",
       };
+    const bind = () => boundConnection(this.sessions, target.place);
+    let detail: SessionDetail;
+    try {
+      detail = await this.sessions.pinned(bind).sessionDetail(target.place.sessionId);
+    } catch (cause) {
+      if (!(cause instanceof Unbound)) throw cause;
+      return { retried: false, words: `Retry delivery sent nothing: ${cause.message}` };
+    }
     const viewer = target.place.viewer;
-    const detail = await this.sessions.sessionDetail(target.place.sessionId);
     const agent = liveAgent(detail, viewer);
     if (detail.changeId === null || !mayRetry(record, agent))
       return {
@@ -245,7 +245,7 @@ export class SendDriver {
     let mend: FollowUpRead | null = null;
     if (record.phase.kind !== "failed" && agent?.kind === "terminal")
       try {
-        mend = await this.#readFollowUp(this.client.pinned(bound), context, record);
+        mend = await this.#readFollowUp(this.client.pinned(bind), context, record);
       } catch (cause) {
         return {
           retried: false,
@@ -455,8 +455,19 @@ export class SendDriver {
     const { changeId } = context;
     const { sessionId } = context.place;
     const retry: RetryTarget = { place: context.place, key };
-    const still = () => boundConnection(this.sessions, context.place);
+    // Every read and write of the drive, the paste's included, is made only while VS Code's
+    // connection is the send's server and account; one that is not refuses before it goes out.
+    const bind = () => boundConnection(this.sessions, context.place);
+    const client = this.client.pinned(bind);
+    const reads = this.sessions.pinned(bind);
     const files = new Map<string, ReadonlyArray<ChangeFile>>();
+    const sliceFiles = async (sliceId: string): Promise<ReadonlyArray<ChangeFile>> => {
+      const known = files.get(sliceId);
+      if (known !== undefined) return known;
+      const read = (await client.sliceDiff(changeId, sliceId)).files;
+      files.set(sliceId, read);
+      return read;
+    };
     let watches = 0;
     while (watches < MAX_WATCHES) {
       if (!(await this.kept.renewDrive(context.place, key))) return;
@@ -464,14 +475,6 @@ export class SendDriver {
       if (record === undefined) return;
       const action = nextAction(record);
       try {
-        const client = this.client.pinned(await still());
-        const sliceFiles = async (sliceId: string): Promise<ReadonlyArray<ChangeFile>> => {
-          const known = files.get(sliceId);
-          if (known !== undefined) return known;
-          const read = (await client.sliceDiff(changeId, sliceId)).files;
-          files.set(sliceId, read);
-          return read;
-        };
         switch (action.kind) {
           case "idle":
             this.#sayFailed(context.place, record);
@@ -544,6 +547,7 @@ export class SendDriver {
               if (draft?.state === "draft")
                 await client.setCommentState(changeId, action.draftId, "dismissed");
             } catch (cause) {
+              if (cause instanceof Unbound) throw cause;
               await this.#step(context, key, {
                 kind: "draft-left",
                 draftId: action.draftId,
@@ -556,8 +560,7 @@ export class SendDriver {
           }
           case "deliver": {
             const answered = await writing(client.deliver(sessionId, action.request));
-            await still();
-            const detail = await this.sessions.sessionDetail(sessionId);
+            const detail = await reads.sessionDetail(sessionId);
             const next = await this.#step(context, key, {
               kind: "answered",
               status: answered.status,
@@ -581,8 +584,13 @@ export class SendDriver {
               break;
             let pasted: Pasted;
             try {
-              pasted = await this.paste(sessionId, action.processId, action.text);
+              pasted = await this.paste(sessionId, action.processId, action.text, reads);
             } catch (cause) {
+              if (cause instanceof Unbound) {
+                // Refused before anything reached the terminal: the paste is due again.
+                await this.#step(context, key, { kind: "paste-unstarted" });
+                throw cause;
+              }
               await this.#step(context, key, { kind: "paste-failed", why: "interrupted" });
               this.host.fail(
                 `paste:${key}`,
@@ -610,10 +618,9 @@ export class SendDriver {
             watches += 1;
             await new Promise((resolve) => setTimeout(resolve, WATCH_MS));
             const read = await this.#readFollowUp(client, context, record);
-            if (read.status === "pending") await still();
             const agent =
               read.status === "pending"
-                ? liveAgent(await this.sessions.sessionDetail(sessionId), context.viewer)
+                ? liveAgent(await reads.sessionDetail(sessionId), context.viewer)
                 : null;
             await this.#step(context, key, { kind: "follow-up", ...read, agent });
             break;

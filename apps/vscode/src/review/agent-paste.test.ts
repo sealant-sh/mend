@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { SessionDetail, SessionProcess } from "../types.js";
 import { pasteIntoAgent, type PasteEffects } from "./agent-paste.js";
+import { Unbound } from "./binding.js";
 import { session } from "./test-fixtures.js";
 
 const process = (id: string, kind: string, exited = false): SessionProcess => ({
@@ -55,6 +56,22 @@ describe("the review pasted into claude's terminal (G12 fallback)", () => {
     const effects = world([[CLAUDE, SHELL]], "agent-1");
     expect(await pasteIntoAgent(effects, "s1", "agent-1", "the review")).toBe("pasted");
     expect(effects.pasted).toEqual([["tab of agent-1", "the review"]]);
+  });
+
+  it("pastes nothing, and says VS Code connected elsewhere, when Mend's read before the paste is refused for that", async () => {
+    let reads = 0;
+    const effects = {
+      ...world([[CLAUDE, SHELL]], "agent-1"),
+      detail: async () => {
+        reads += 1;
+        if (reads > 1) throw new Unbound("switched");
+        return detail([CLAUDE, SHELL]);
+      },
+    };
+    await expect(pasteIntoAgent(effects, "s1", "agent-1", "the review")).rejects.toBeInstanceOf(
+      Unbound,
+    );
+    expect(effects.pasted).toEqual([]);
   });
 
   it("goes nowhere once claude exited and Answer attached the supporting shell", async () => {

@@ -34,8 +34,9 @@ export class ReviewClient {
     private readonly refused: (connection: MendConnection) => void,
   ) {}
 
-  pinned(connection: MendConnection): ReviewClient {
-    return new ReviewClient(async () => connection, this.refused);
+  /** The same reads and writes, each made on the connection `connect` gives when it starts. */
+  pinned(connect: () => Promise<MendConnection>): ReviewClient {
+    return new ReviewClient(connect, this.refused);
   }
 
   private async request(path: string, init?: RequestInit): Promise<unknown> {
