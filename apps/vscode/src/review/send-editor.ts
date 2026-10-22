@@ -108,9 +108,15 @@ class ReviewFiles implements vscode.FileSystemProvider {
   }
 }
 
-const closeWithoutSaving = async (document: vscode.TextDocument): Promise<void> => {
-  await vscode.window.showTextDocument(document);
-  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
+/** Closes the review's tabs, never reverting one: a tab holding words she typed asks to save them. */
+const closeTabs = async (uri: vscode.Uri): Promise<void> => {
+  const tabs = vscode.window.tabGroups.all
+    .flatMap((group) => group.tabs)
+    .filter(
+      (tab) =>
+        tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString(),
+    );
+  if (tabs.length > 0) await vscode.window.tabGroups.close(tabs);
 };
 
 export class SendEditor implements vscode.Disposable {
@@ -184,20 +190,17 @@ export class SendEditor implements vscode.Disposable {
         );
         return;
       }
-      const { version } = document;
       const sent = await this.store.send(ref, revision);
       // Not recorded: the editor stays, and her words in it.
       if (!sent.sent) {
         void vscode.window.showWarningMessage(sent.words);
         return;
       }
-      if (document.version === version) {
-        await closeWithoutSaving(document);
-        return;
-      }
-      void vscode.window.showInformationMessage(
-        "Mend sent the review as it read when you chose Send to session. What you typed since stays in this editor, and was not sent.",
-      );
+      if (document.isDirty)
+        void vscode.window.showInformationMessage(
+          "Mend sent the review as you saved it when you chose Send to session. What you typed since was not sent.",
+        );
+      await closeTabs(uri);
     } catch (cause) {
       this.onError(cause);
     }

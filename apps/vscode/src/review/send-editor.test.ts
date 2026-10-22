@@ -103,11 +103,15 @@ vi.mock("vscode", async () => {
       this.release();
     }
   }
+  class TabInputText {
+    constructor(readonly uri: Uri) {}
+  }
   return {
     ...base,
     Uri,
     FileSystemError,
     Disposable,
+    TabInputText,
     FileType: { File: 1 },
     FileChangeType: { Changed: 1 },
     window: {
@@ -115,6 +119,15 @@ vi.mock("vscode", async () => {
       showWarningMessage: vi.fn(async (..._: ReadonlyArray<unknown>) => undefined),
       showTextDocument: vi.fn(async (..._: ReadonlyArray<unknown>) => undefined),
       activeTextEditor: undefined,
+      /** A tab per loaded review; closing one never reverts it, and a dirty one asks to save. */
+      tabGroups: {
+        get all() {
+          return [
+            { tabs: ui.documents.map((document) => ({ input: new TabInputText(document.uri) })) },
+          ];
+        },
+        close: vi.fn(async (..._: ReadonlyArray<unknown>) => true),
+      },
     },
     workspace: {
       ...base.workspace,
@@ -205,6 +218,7 @@ const mendWithOpen = (): FakeMend => {
 beforeEach(() => {
   vi.mocked(vscode.window.showWarningMessage).mockClear();
   vi.mocked(vscode.commands.executeCommand).mockClear();
+  vi.mocked(vscode.window.tabGroups.close).mockClear();
   ui.commands.clear();
   ui.providers.length = 0;
   ui.documents.length = 0;
@@ -232,11 +246,14 @@ describe("Send to session", () => {
     window.close();
   });
 
-  it("closes the editor without saving once what she sent is all it holds", async () => {
+  it("closes the review's tab, never reverting it", async () => {
     const window = await windowOn(memoryFiles(), mendWithOpen());
     const opened = await sendReview();
     await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
-    expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+    expect(vscode.window.tabGroups.close).toHaveBeenCalledWith([
+      expect.objectContaining({ input: expect.objectContaining({ uri: opened.uri }) }),
+    ]);
+    expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
       "workbench.action.revertAndCloseActiveEditor",
     );
     window.close();
@@ -245,14 +262,13 @@ describe("Send to session", () => {
   it("never discards words she types while VS Code closes the editor", async () => {
     const window = await windowOn(memoryFiles(), mendWithOpen());
     const opened = await sendReview();
-    vi.mocked(vscode.window.showTextDocument).mockImplementationOnce(async () => {
+    vi.mocked(vscode.window.tabGroups.close).mockImplementationOnce(async () => {
       opened.text = `${opened.text}\nTyped as it closed.`;
       opened.version += 1;
       opened.isDirty = true;
-      return undefined;
+      return false;
     });
     await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
-    vi.mocked(vscode.window.showTextDocument).mockImplementation(async () => undefined);
     expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
       "workbench.action.revertAndCloseActiveEditor",
     );
