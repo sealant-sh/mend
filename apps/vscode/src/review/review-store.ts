@@ -892,29 +892,25 @@ export class ReviewStore implements vscode.Disposable {
 
   /**
    * The session's one review for Send review: the one kept while it is still current, else this
-   * composition. `replaced` is the text she saved in the one it replaced, so nothing she wrote goes.
+   * composition. `carried` says the text she saved in the one it replaced follows the composition,
+   * kept in the same write, so nothing she wrote goes.
    */
   async keepDocument(composition: Composition): Promise<{
     readonly ref: DocumentRef;
     readonly document: ReviewDocument;
-    readonly replaced: string | null;
+    readonly carried: boolean;
   }> {
     const place = this.#place;
     if (place === null) throw new Error("Mend has not finished reading this session.");
     const { text, ...composed } = composition;
-    const kept: { replaced: ReviewDocument | null } = { replaced: null };
+    let carried = false;
     const { document } = await this.#keepAt(place, (review) => {
       const next = keepComposed(review, composed, text);
-      kept.replaced = next.replaced;
+      carried = next.carried;
       return next.review;
     });
     if (document === null) throw new Error("VS Code did not keep the review.");
-    const { replaced } = kept;
-    return {
-      ref: { place, id: document.composed.documentId },
-      document,
-      replaced: replaced !== null && replaced.revision > 1 ? replaced.text : null,
-    };
+    return { ref: { place, id: document.composed.documentId }, document, carried };
   }
 
   async document(ref: DocumentRef): Promise<ReviewDocument | null> {

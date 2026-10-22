@@ -151,16 +151,10 @@ export class SendEditor implements vscode.Disposable {
     const composition = this.store.compose();
     if (composition === null) return;
     const kept = await this.store.keepDocument(composition);
-    if (kept.replaced !== null) {
-      const saved = await vscode.workspace.openTextDocument({
-        content: kept.replaced,
-        language: "markdown",
-      });
-      await vscode.window.showTextDocument(saved, { preview: false });
+    if (kept.carried)
       void vscode.window.showInformationMessage(
-        "Your comments changed since you saved this review, so Send review composed it again. The text you saved is open in an untitled editor.",
+        'Your comments changed since you saved this review, so Send review composed it again. The text you saved follows it, under "Your earlier text".',
       );
-    }
     const document = await vscode.workspace.openTextDocument(
       documentUri(kept.ref, kept.document.composed.sessionName),
     );

@@ -32,8 +32,6 @@ const ui = vi.hoisted(() => ({
   commands: new Map<string, (...args: ReadonlyArray<unknown>) => unknown>(),
   providers: new Array<vscode.FileSystemProvider>(),
   documents: new Array<OpenDocument>(),
-  /** The text of every untitled editor opened. */
-  untitled: new Array<string>(),
   providerOfThisWindow(): vscode.FileSystemProvider | undefined {
     return this.providers.at(-1);
   },
@@ -125,12 +123,7 @@ vi.mock("vscode", async () => {
         ui.providers.push(provider);
         return { dispose: () => undefined };
       },
-      openTextDocument: async (target: vscode.Uri | { readonly content: string }) => {
-        if ("content" in target) {
-          ui.untitled.push(target.content);
-          return { getText: () => target.content };
-        }
-        const uri = target;
+      openTextDocument: async (uri: vscode.Uri) => {
         // VS Code hands back the document it has for a URI, loaded or not.
         const loaded = ui.documents.find((open) => open.uri.toString() === uri.toString());
         if (loaded !== undefined) return loaded;
@@ -215,7 +208,6 @@ beforeEach(() => {
   ui.commands.clear();
   ui.providers.length = 0;
   ui.documents.length = 0;
-  ui.untitled.length = 0;
 });
 
 describe("Send to session", () => {
@@ -280,7 +272,7 @@ describe("Send review, chosen again", () => {
     second.close();
   });
 
-  it("composes anew once her comments changed, and first opens the text she saved", async () => {
+  it("composes anew once her comments changed, with the text she saved after it", async () => {
     const mend = mendWithOpen();
     const window = await windowOn(memoryFiles(), mend);
     const opened = await sendReview();
@@ -290,7 +282,27 @@ describe("Send review, chosen again", () => {
     await vi.waitFor(() => expect(window.store.compose()?.open).toEqual(["c1", "c2"]), SETTLE);
     const fresh = await sendReview();
     expect(fresh.uri.toString()).not.toBe(opened.uri.toString());
-    expect(ui.untitled).toEqual(["her saved words"]);
+    expect(fresh.text).toMatch(/Your earlier text[^]*her saved words/);
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringMatching(/The text you saved follows it/),
+    );
+    window.close();
+  });
+
+  it("carries the text she saved once more when composed anew again before she saves", async () => {
+    const mend = mendWithOpen();
+    const window = await windowOn(memoryFiles(), mend);
+    const opened = await sendReview();
+    await window.provider.writeFile(opened.uri, encoded("her saved words"), SAVE);
+    for (const id of ["c2", "c3"]) {
+      mend.serverComments = [...mend.serverComments, comment({ id, line: 13 })];
+      window.store.reread();
+      await vi.waitFor(() => expect(window.store.compose()?.open).toContain(id), SETTLE);
+      ui.documents.length = 0;
+      await sendReview();
+    }
+    const last = await sendReview();
+    expect(last.text).toContain("her saved words");
     window.close();
   });
 });

@@ -11,6 +11,7 @@ import type {
   SendSlice,
   TerminalInput,
 } from "./delivery.js";
+import { withEarlierText } from "./instruction.js";
 import type { CommentAnchor, RecordLink } from "./review-wire.js";
 
 /**
@@ -435,24 +436,27 @@ export const parseSessionReview = (value: unknown): SessionReview =>
 
 /**
  * The session's review for a fresh composition: the one kept while it still lists the same
- * comments, with the same words, after the same reviews; else the composition, replacing it.
+ * comments, with the same words, after the same reviews; else the composition, replacing it. The
+ * text she saved in the one it replaces follows the composition (`carried`), in the same write.
  */
 export const keepComposed = (
   review: SessionReview,
   composed: Composed,
   words: string,
-): { readonly review: SessionReview; readonly replaced: ReviewDocument | null } => {
+): { readonly review: SessionReview; readonly carried: boolean } => {
   const kept = review.document;
   if (
     kept !== null &&
     kept.composed.digest === composed.digest &&
     kept.composed.generation === composed.generation
   )
-    return { review, replaced: null };
-  return {
-    review: { ...review, document: { composed, text: words, revision: 1 } },
-    replaced: kept,
-  };
+    return { review, carried: false };
+  // Revision 1 is the composition as written; any later one holds words she saved.
+  const carried = kept !== null && kept.revision > 1;
+  const document: ReviewDocument = carried
+    ? { composed, text: withEarlierText(words, kept.text, composed.sessionName), revision: 2 }
+    : { composed, text: words, revision: 1 };
+  return { review: { ...review, document }, carried };
 };
 
 export type DocumentSave =
