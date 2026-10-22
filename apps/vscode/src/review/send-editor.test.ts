@@ -20,6 +20,7 @@ import {
 interface OpenDocument {
   readonly uri: vscode.Uri;
   text: string;
+  version: number;
   getText(): string;
   save(): Promise<boolean>;
 }
@@ -101,6 +102,7 @@ vi.mock("vscode", async () => {
         const opened: OpenDocument = {
           uri,
           text: new TextDecoder().decode(await provider.readFile(uri)),
+          version: 1,
           getText() {
             return this.text;
           },
@@ -179,10 +181,43 @@ const mendWithOpen = (): FakeMend => {
 
 beforeEach(() => {
   vi.mocked(vscode.window.showWarningMessage).mockClear();
+  vi.mocked(vscode.commands.executeCommand).mockClear();
   ui.commands.clear();
   ui.providers.length = 0;
   ui.documents.length = 0;
   ui.untitled.length = 0;
+});
+
+describe("Send to session", () => {
+  it("leaves the editor open with words she typed while it sent, and says what was sent", async () => {
+    const mend = mendWithOpen();
+    const window = await windowOn(memoryFiles(), mend);
+    const opened = await sendReview();
+    const sending = ui.commands.get("mend.change.sendToSession")?.(opened.uri);
+    opened.text = `${opened.text}\nAnd keep the burst test.`;
+    opened.version += 1;
+    await sending;
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    expect(mend.delivered[0]?.instruction).not.toContain("And keep the burst test.");
+    expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+      "workbench.action.revertAndCloseActiveEditor",
+    );
+    expect(opened.text).toContain("And keep the burst test.");
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringMatching(/typed since .* not sent/),
+    );
+    window.close();
+  });
+
+  it("closes the editor without saving once what she sent is all it holds", async () => {
+    const window = await windowOn(memoryFiles(), mendWithOpen());
+    const opened = await sendReview();
+    await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+      "workbench.action.revertAndCloseActiveEditor",
+    );
+    window.close();
+  });
 });
 
 describe("Send review, chosen again", () => {
