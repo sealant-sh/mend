@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { needs } from "./delivery.js";
 import {
+  asComposed,
   EMPTY_REVIEW,
   NOTHING_UNREAD,
   parseSessionReview,
@@ -57,7 +59,10 @@ export const NODE_FILES: KeptFiles = {
     ),
 };
 
-/** A session's review untouched this long goes: nobody reviews a session a month on. */
+/**
+ * A session's review untouched this long goes, unless it holds something she could still need:
+ * nobody reviews a session a month on, and nothing of hers is lost when it goes.
+ */
 export const KEPT_REVIEW_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** A lock its holder has not renewed this long was left by a window that died holding it. */
@@ -130,12 +135,33 @@ const openKept = (file: string, text: string): Opened => {
   };
 };
 
+/** A file the sweep could not read: it stays. */
+const NOT_READ: Opened = {
+  kept: { rev: 0, review: EMPTY_REVIEW },
+  unread: NOTHING_UNREAD,
+  stored: {},
+  unwritable: "VS Code could not read it.",
+};
+
 const NOTHING_KEPT: Opened = {
   kept: { rev: 0, review: EMPTY_REVIEW },
   unread: NOTHING_UNREAD,
   stored: {},
   unwritable: null,
 };
+
+/**
+ * Whether a kept file holds nothing she could still need: no comment she has not sent, no words of
+ * a review she is writing, no send unfinished or waiting on her, and nothing this build cannot read.
+ */
+const holdsNothing = ({ kept: { review }, unread, unwritable }: Opened): boolean =>
+  unwritable === null &&
+  unread.pending.length === 0 &&
+  unread.sends.length === 0 &&
+  unread.document === null &&
+  review.pending.length === 0 &&
+  (review.document === null || asComposed(review.document)) &&
+  review.sends.every((record) => needs(record) === "nothing");
 
 /** `review` as stored, with every entry this build could not read written back as it was. */
 const storedReview = (
@@ -444,8 +470,9 @@ export class KeptReviews {
   }
 
   /**
-   * Reviews untouched past the expiry, and what a crash left, go; at most hourly. An expired
-   * review goes only under its own lock, so a window writing it at that moment keeps its write.
+   * Reviews untouched past the expiry that hold nothing she could still need, and what a crash
+   * left, go; at most hourly. An expired review is read and goes only under its own lock, so a
+   * window writing it at that moment keeps its write.
    */
   async #sweep(directory: string): Promise<void> {
     if (this.now() - (this.#swept.get(directory) ?? Number.NEGATIVE_INFINITY) < SWEEP_EVERY_MS)
@@ -472,7 +499,11 @@ export class KeptReviews {
         const owner = randomUUID();
         if (!(await this.#take(lock, owner).catch(() => false))) return;
         try {
-          if (await expired(path, KEPT_REVIEW_TTL_MS)) await this.files.rm(path);
+          if (
+            (await expired(path, KEPT_REVIEW_TTL_MS)) &&
+            holdsNothing(await this.#open(path).catch(() => NOT_READ))
+          )
+            await this.files.rm(path);
         } finally {
           await this.#release(lock, owner).catch(() => undefined);
         }

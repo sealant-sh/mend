@@ -592,6 +592,10 @@ export const keepComposed = (
   return { review: { ...review, document }, carried };
 };
 
+/** A review she is writing whose text is as Send review composed it, with none of hers in it. */
+export const asComposed = (document: ReviewDocument): boolean =>
+  document.revision === AS_COMPOSED && document.earlier === null;
+
 export type DocumentSave =
   | { readonly kind: "saved"; readonly review: SessionReview; readonly revision: number }
   | { readonly kind: "gone" }
