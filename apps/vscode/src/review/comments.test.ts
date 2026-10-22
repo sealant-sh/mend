@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ReviewComments } from "./comments.js";
+import { NODE_FILES, type KeptFiles } from "./kept-reviews.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore } from "./review-store.js";
+import type { ServerComment } from "./review-wire.js";
 import {
   comment,
   FakeMend,
@@ -260,5 +262,73 @@ describe("saving an edit to a pending comment", () => {
     comments.dispose();
     sender.dispose();
     editor.dispose();
+  });
+});
+
+describe("her words under a Mend draft", () => {
+  const WORDS = "I ran them by hand";
+  const DRAFT = comment({
+    id: "d1",
+    state: "draft",
+    line: 3,
+    author: { kind: "mend", name: "Mend" },
+    body: "Nothing in this session ran the tests.",
+  });
+  const fullDisk: KeptFiles = {
+    ...NODE_FILES,
+    writeFile: async () => {
+      throw new Error("the disk is full.");
+    },
+  };
+
+  /** One window's review with the draft drawn in its thread, and her words typed under it. */
+  const underDraft = async (mend: FakeMend, files: KeptFiles = NODE_FILES) => {
+    mend.serverComments = [DRAFT];
+    const store = new ReviewStore(
+      sessionReads("change-1"),
+      mend,
+      new ReviewMemory(memento()),
+      keptIn(await storage(), files),
+      noPaste,
+    );
+    store.follow(PROJECT, session("s1"));
+    const comments = new ReviewComments(store);
+    await vi.waitFor(() =>
+      expect(ui.controllers.flatMap((controller) => controller.threads)).toHaveLength(1),
+    );
+    const thread = ui.controllers.flatMap((controller) => controller.threads).at(0);
+    if (thread === undefined) throw new Error("no draft drawn");
+    const keptOrHeld = (): ReadonlyArray<unknown> => [
+      ...store.review().pending.map(({ body }) => body),
+      ...thread.comments.map(({ body }) => body),
+    ];
+    return { reply: { thread, text: WORDS }, keptOrHeld, done: () => comments.dispose() };
+  };
+
+  it("stay in the thread, with why, when VS Code could not keep an Accept", async () => {
+    const { reply, keptOrHeld, done } = await underDraft(new FakeMend(), fullDisk);
+    await Promise.resolve(ui.commands.get("mend.review.accept")?.(reply)).catch(() => undefined);
+    expect(keptOrHeld()).toContain(WORDS);
+    expect(ui.warn).toHaveBeenCalledWith(expect.stringMatching(/the disk is full/));
+    done();
+  });
+
+  it("stay when VS Code could not keep a Dismiss", async () => {
+    const { reply, keptOrHeld, done } = await underDraft(new FakeMend(), fullDisk);
+    await Promise.resolve(ui.commands.get("mend.review.dismiss")?.(reply)).catch(() => undefined);
+    expect(keptOrHeld()).toContain(WORDS);
+    done();
+  });
+
+  it("stay when Mend refused the Dismiss", async () => {
+    class Refusing extends FakeMend {
+      override async setCommentState(): Promise<ServerComment> {
+        throw new Error("Mend is restarting.");
+      }
+    }
+    const { reply, keptOrHeld, done } = await underDraft(new Refusing());
+    await ui.commands.get("mend.review.dismiss")?.(reply);
+    expect(keptOrHeld()).toContain(WORDS);
+    done();
   });
 });

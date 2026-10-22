@@ -211,6 +211,22 @@ describe("two windows on one session", () => {
     expect(kept.map(({ origin }) => origin.kind)).toEqual(["accepted"]);
   });
 
+  it("accept a draft once and keep both replies, when each accepts it with words of its own", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.serverComments = [DRAFT];
+    const first = await readyStore(keptIn(directory), mend);
+    const second = await readyStore(keptIn(directory), mend);
+    await first.accept("d1", "reply from the first window");
+    await second.accept("d1", "reply from the second window");
+    const kept = (await keptIn(directory).read(DANA_S1)).review.pending;
+    expect(kept.map(({ origin, body }) => ({ kind: origin.kind, body }))).toEqual([
+      { kind: "accepted", body: DRAFT.body },
+      { kind: "own", body: "reply from the first window" },
+      { kind: "own", body: "reply from the second window" },
+    ]);
+  });
+
   it("accept a draft once, when the other already sent it in a review", async () => {
     const directory = await storage();
     const mend = new FakeMend();
