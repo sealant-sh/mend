@@ -928,6 +928,58 @@ describe("Retry from the toast when nothing was pasted", () => {
   });
 });
 
+describe("two Retry deliveries of one review at once in one window", () => {
+  it("paste it once, keep it pasted, and leave no lease behind", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    mend.serverComments = [comment({ id: "c1" })];
+    const directory = await storage();
+    const kept = keptIn(directory);
+    const pastes: Array<string> = [];
+    const answers: Array<Pasted> = ["not-attached"];
+    const store = new ReviewStore(
+      withAgent(CLAUDE),
+      mend,
+      new ReviewMemory(memento()),
+      kept,
+      async (sessionId, _processId, text, bound) => {
+        await bound.sessionDetail(sessionId);
+        const pasted = answers.shift() ?? "pasted";
+        if (pasted === "pasted") pastes.push(text);
+        return pasted;
+      },
+    );
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    await sendComposed(store, composed, composed.text);
+    await vi.waitFor(
+      () =>
+        expect(store.review().sends.at(-1)?.phase).toMatchObject({
+          paste: { kind: "failed", mayHaveLanded: false },
+        }),
+      SETTLE,
+    );
+    const target = store.retryTarget();
+    if (target === null) throw new Error("no Retry delivery offered");
+
+    const retried = await Promise.all([store.retry(target), store.retry(target)]);
+    expect(retried.filter(({ retried }) => retried)).toHaveLength(1);
+    await vi.waitFor(
+      () =>
+        expect(store.review().sends.at(-1)?.phase).toMatchObject({
+          kind: "in-terminal",
+          paste: { kind: "done" },
+        }),
+      SETTLE,
+    );
+    expect(pastes).toHaveLength(1);
+    expect(kept.drives(target.place, target.key)).toBe(false);
+    expect(await keptIn(directory).drivenFor(target.place, target.key)).toBeNull();
+  }, 15_000);
+});
+
 describe("Retry delivery of a review Mend held pending, once claude runs in its terminal again", () => {
   /** Dana's session with no agent until `start`, then claude live in its terminal. */
   const relaunched = () => {
