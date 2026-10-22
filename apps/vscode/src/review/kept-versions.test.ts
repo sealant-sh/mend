@@ -99,6 +99,21 @@ describe("the kept review, across versions of the extension", () => {
     ]);
   });
 
+  it("does not read a send whose paste step it does not know as due, so it never pastes it again", async () => {
+    const directory = await storage();
+    const file = await fileIn(directory);
+    const [record] = sentReview().sends;
+    const later = {
+      ...record,
+      phase: { kind: "in-terminal", agent: "claude", processId: "p-1", paste: { kind: "queued" } },
+    };
+    await writeFile(file, JSON.stringify({ rev: 3, review: { pending: [], sends: [later] } }));
+    const kept = keptIn(directory);
+    expect((await kept.read(DANA)).review.sends).toEqual([]);
+    await kept.update(DANA, addOne);
+    expect(JSON.stringify((await stored(file))["review"])).toContain(JSON.stringify(later));
+  });
+
   it("is never written over when its bytes do not read as JSON", async () => {
     const directory = await storage();
     const file = await fileIn(directory);
