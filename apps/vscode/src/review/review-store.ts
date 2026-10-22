@@ -667,7 +667,7 @@ export class ReviewStore implements vscode.Disposable {
    * being sent or delivered holds them. One Mend holds pending goes too: a new key supersedes it.
    */
   #openOnMend(read: ChangeRead): ReadonlyArray<ServerComment> {
-    const onTheirWay = commentsOnTheirWay(this.#review.sends);
+    const onTheirWay = commentsOnTheirWay(this.#review.sends, read.facts.agent);
     return read.comments.filter(
       (comment) =>
         comment.state === "open" &&
@@ -681,7 +681,7 @@ export class ReviewStore implements vscode.Disposable {
     const read = this.ready();
     if (read === null) return { kind: "nothing" };
     const open = openRecord(this.#review.sends);
-    const onTheirWay = commentsOnTheirWay(this.#review.sends);
+    const onTheirWay = commentsOnTheirWay(this.#review.sends, read.facts.agent);
     const retry = retryRecord(this.#review.sends, read.facts.agent);
     return sendOffer({
       session: read.facts.session,

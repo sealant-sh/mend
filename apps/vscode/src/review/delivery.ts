@@ -875,6 +875,12 @@ export const onFailure = (record: SendRecord, failure: DriveFailure, waited: num
 const isHeld = (record: SendRecord): boolean =>
   record.phase.kind === "pending" || record.phase.kind === "in-terminal";
 
+/** A review pasted into an agent process other than `agent`, or into one no agent is now. */
+const pastedIntoAnother = (record: SendRecord, agent: LiveAgent | null): boolean =>
+  record.phase.kind === "in-terminal" &&
+  record.phase.paste.kind === "done" &&
+  (agent?.kind !== "terminal" || agent.processId !== record.phase.processId);
+
 export const retryRecord = (
   records: ReadonlyArray<SendRecord>,
   agent: LiveAgent | null,
@@ -885,12 +891,20 @@ export const retryRecord = (
   return held !== undefined && mayRetry(held, agent) ? held : null;
 };
 
+/**
+ * Where each comment of a review on its way is: `sending` while a drive sends, delivers or pastes
+ * it, `held` while Mend holds it pending and Retry delivery or her live agent's input carries it.
+ * A review pasted into an agent process `agent` is not, as after it exited, holds nothing: no
+ * Retry delivers it again, so the next Send carries its comments under a new key.
+ */
 export const commentsOnTheirWay = (
   records: ReadonlyArray<SendRecord>,
+  agent: LiveAgent | null,
 ): ReadonlyMap<string, "sending" | "held"> => {
   const where = new Map<string, "sending" | "held">();
   for (const record of records)
-    if (isHeld(record)) for (const id of idsOf(record)) if (!where.has(id)) where.set(id, "held");
+    if (isHeld(record) && !pastedIntoAnother(record, agent))
+      for (const id of idsOf(record)) if (!where.has(id)) where.set(id, "held");
   for (const record of records)
     if (holdsComments(record)) for (const id of idsOf(record)) where.set(id, "sending");
   return where;
@@ -1125,7 +1139,7 @@ export const startSend = (
   if (moving.length !== chosen.size) return null;
   if (!admits(review.sends)) return null;
   // Another window sent these comments a moment ago: one review takes them, under one key.
-  const onTheirWay = commentsOnTheirWay(review.sends);
+  const onTheirWay = commentsOnTheirWay(review.sends, null);
   if (input.open.some((id) => onTheirWay.get(id) === "sending")) return null;
   const items: ReadonlyArray<SendItem> = [
     ...moving.map((pending): SendItem => {

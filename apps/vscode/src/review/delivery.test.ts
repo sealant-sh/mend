@@ -214,12 +214,14 @@ describe("sending a review (story d, step 6)", () => {
     expect(mayRetry(only(pasted), HERS)).toBe(false);
     expect(mayRetry(only(pasted), null)).toBe(false);
     // While claude holds the paste, its comments are not new to Send review, and Retry waits.
-    expect(commentsOnTheirWay(pasted.sends)).toEqual(
+    expect(commentsOnTheirWay(pasted.sends, HERS)).toEqual(
       new Map([
         ["c1", "held"],
         ["c2", "held"],
       ]),
     );
+    // Once no live agent holds it, the next Send carries them.
+    expect(commentsOnTheirWay(pasted.sends, null)).toEqual(new Map());
     expect(retryRecord(pasted.sends, HERS)).toBeNull();
     expect(retryRecord(pasted.sends, null)).toBeNull();
     const unpasted = apply(inTerminal, { kind: "paste-failed", why: "not-attached" });
@@ -330,7 +332,7 @@ describe("a review whose paste into claude's terminal is due or under way", () =
       const review = withPaste(paste);
       expect(startSend(review, SEND_AGAIN)).toBeNull();
       expect(openRecord(review.sends)?.key).toBe("key-1");
-      expect(commentsOnTheirWay(review.sends)).toEqual(
+      expect(commentsOnTheirWay(review.sends, null)).toEqual(
         new Map([
           ["c1", "sending"],
           ["c2", "sending"],
