@@ -10,6 +10,8 @@ import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore, type NewComment, type ReviewFailure } from "./review-store.js";
 import type { CommentAnchor, ReadPass, ServerComment, TranscriptEntry } from "./review-wire.js";
 import {
+  checkpoint,
+  CHECKPOINTS,
   comment,
   FakeMend,
   keptIn,
@@ -635,6 +637,39 @@ describe("sending a review from the store", () => {
       expect(store.review().document?.text).toBe(text);
     },
   );
+
+  it("delivers the review she composed on the slice it was composed on, after she repinned", async () => {
+    const mend = new FakeMend();
+    const store = await readyStore(inMemory(), mend);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    const { ref, document } = await store.keepDocument(composed);
+    // Review the newer change while the composed review's editor is open.
+    const newer = {
+      ...PINNED,
+      id: "slice-2",
+      diffDigest: "d2",
+      head: checkpoint(3, "review-open"),
+    };
+    mend.chain = async () => ({
+      worktreeId: "w1",
+      baseName: "main",
+      checkpoints: [...CHECKPOINTS, newer.head],
+    });
+    mend.openReview = async () => newer;
+    await store.repin(false);
+    await vi.waitFor(() => expect(store.ready()?.pinned.id).toBe("slice-2"), SETTLE);
+    expect(await store.send(ref, document.revision)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    expect(mend.delivered[0]).toMatchObject({
+      reviewSliceId: PINNED.id,
+      checkpointAId: PINNED.base.id,
+      checkpointBId: PINNED.head.id,
+      diffDigest: PINNED.diffDigest,
+      instruction: expect.stringContaining("Use the shared limiter"),
+    });
+  });
 
   it("reads delivered only when Mend reads the comments back as sent", async () => {
     vi.useFakeTimers();
