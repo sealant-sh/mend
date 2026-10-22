@@ -192,3 +192,24 @@ describe("a worktree's handoff", () => {
     expect(detail.worktrees?.map((one) => one.handoff?.machine)).toEqual(["m".repeat(64)]);
   });
 });
+
+describe("whose a sign-in is", () => {
+  it("reads it through that sign-in's own token, says unknown when Mend cannot answer, and keeps an answer per server and token", async () => {
+    let up = true;
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (!up) throw new TypeError("fetch failed");
+      const token = new Headers(init?.headers).get("authorization");
+      return new Response(JSON.stringify({ userId: token === "Bearer dana" ? "dana" : "erin" }));
+    });
+    vi.stubGlobal("fetch", fetch);
+    const mend = client();
+    const url = "http://mend-mini:3105";
+    expect(await mend.accountOf({ url, token: "dana" })).toBe("dana");
+    expect(await mend.accountOf({ url, token: "erin" })).toBe("erin");
+    up = false;
+    expect(await mend.accountOf({ url, token: "dana" })).toBe("dana");
+    expect(await mend.accountOf({ url, token: "dana-again" })).toBeNull();
+    expect(await mend.accountOf({ url: "http://other", token: "dana" })).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+});

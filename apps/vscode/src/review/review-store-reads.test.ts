@@ -199,7 +199,7 @@ const storeOver = (
         }
       },
       connection: async () => ({ url: "http://mend.test", token: "t" }),
-      viewerId: async (): Promise<string | null> => options.viewer ?? "dana",
+      accountOf: async (): Promise<string | null> => options.viewer ?? "dana",
       projectDetail: async () => ({ project, sessions: [] }),
       memberNames: async () => [
         { userId: "dana", name: "Dana" },

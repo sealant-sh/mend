@@ -240,8 +240,6 @@ export class ReviewStore implements vscode.Disposable {
   #place: ReviewPlace | null = null;
   /** The revision of `#review` as kept: a read that began before a later write shows nothing. */
   #rev = -1;
-  /** Who she is on each server, as Mend last said: a read that cannot say keeps her place. */
-  readonly #viewers = new Map<string, string>();
   #you = "You";
   /** Her name as Mend writes it on her comments; null when it is not known. */
   #author: string | null = null;
@@ -263,7 +261,7 @@ export class ReviewStore implements vscode.Disposable {
   constructor(
     private readonly sessions: Pick<
       MendClient,
-      "sessionDetail" | "connection" | "viewerId" | "memberNames" | "projectDetail"
+      "sessionDetail" | "connection" | "accountOf" | "memberNames" | "projectDetail"
     >,
     private readonly client: ReviewClient,
     /** The keys pinning each change's slice. */
@@ -349,7 +347,6 @@ export class ReviewStore implements vscode.Disposable {
     this.#generation++;
     this.#review = EMPTY_REVIEW;
     this.#place = null;
-    this.#viewers.clear();
     this.#asked = null;
     this.#set({ kind: "idle" });
   }
@@ -1133,18 +1130,15 @@ export class ReviewStore implements vscode.Disposable {
 
   async #readChange(followed: Followed): Promise<ReviewState> {
     const { session } = followed;
-    const [detail, { url }, viewer] = await Promise.all([
+    const connection = await this.sessions.connection();
+    const { url } = connection;
+    // Her place is the account of the token VS Code reads with: one Mend cannot name is no one's.
+    const [detail, viewer] = await Promise.all([
       this.sessions.sessionDetail(session.id),
-      this.sessions.connection(),
-      this.sessions.viewerId(),
+      this.sessions.accountOf(connection),
     ]);
     const worktreeId = detail.session.worktreeId;
-    if (viewer !== null) this.#viewers.set(url, viewer);
-    const place: ReviewPlace = {
-      url,
-      viewer: this.#viewers.get(url) ?? "unknown",
-      sessionId: session.id,
-    };
+    const place: ReviewPlace = { url, viewer: viewer ?? "unknown", sessionId: session.id };
     // Only the followed session's own read loads its comments: a read of the one followed before,
     // landing late, must not put that session's comments under this one.
     if (this.followed()?.session.id === session.id) {

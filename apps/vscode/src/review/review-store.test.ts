@@ -600,7 +600,7 @@ describe("sending a review from the store", () => {
 
   it("sends nothing when only Mend's note is left, though the session was renamed since she composed it", async () => {
     let label = "add-rate-limit";
-    const reads = {
+    const renamed = {
       ...sessionReads("change-1"),
       sessionDetail: async (sessionId: string): Promise<SessionDetail> => ({
         session: { ...session(sessionId), ownerUserId: "dana", label },
@@ -610,7 +610,7 @@ describe("sending a review from the store", () => {
       }),
     };
     const mend = new FakeMend();
-    const store = new ReviewStore(reads, mend, new ReviewMemory(memento()), inMemory(), noPaste);
+    const store = new ReviewStore(renamed, mend, new ReviewMemory(memento()), inMemory(), noPaste);
     store.follow(PROJECT, session("s1"));
     await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     await store.comment(onLine(3, "Use the shared limiter"));
@@ -1092,10 +1092,9 @@ const signIns = () => {
     at.says && token !== null ? (owners[token] ?? null) : null;
   return {
     at,
-    reads: {
+    sessions: {
       ...sessionReads("change-1"),
       connection: async () => ({ url: "http://mend", token: at.token }),
-      viewerId: async (): Promise<string | null> => ownerOf(at.token),
       accountOf: async (connection: { readonly token: string | null }): Promise<string | null> =>
         ownerOf(connection.token),
     },
@@ -1111,8 +1110,8 @@ describe("a review on its way while VS Code's sign-in changes on the same server
       asked += 1;
       throw new MendApiError("Mend is restarting.", 503);
     };
-    const { at, reads } = signIns();
-    const store = new ReviewStore(reads, mend, new ReviewMemory(memento()), kept, noPaste);
+    const { at, sessions } = signIns();
+    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
     store.follow(PROJECT, session("s1"));
     await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     const key = await sendAll(store);
@@ -1134,32 +1133,66 @@ describe("a review on its way while VS Code's sign-in changes on the same server
     const kept = inMemory();
     const mend = mendWithOpen();
     mend.answer = "pending";
-    let land: (() => void) | null = null;
+    const held: { land: (() => void) | null } = { land: null };
     const deliver = mend.deliver.bind(mend);
     mend.deliver = async (sessionId, request) => {
       await new Promise<void>((resolve) => {
-        land = resolve;
+        held.land = resolve;
       });
       return deliver(sessionId, request);
     };
-    const { at, reads } = signIns();
-    const store = new ReviewStore(reads, mend, new ReviewMemory(memento()), kept, noPaste);
+    const { at, sessions } = signIns();
+    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
     store.follow(PROJECT, session("s1"));
     await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     const key = await sendAll(store);
-    await vi.waitFor(() => expect(land).not.toBeNull(), SETTLE);
+    await vi.waitFor(() => expect(held.land).not.toBeNull(), SETTLE);
 
     at.token = "dana-2";
-    land?.();
+    held.land?.();
     await vi.waitFor(async () => expect(await phaseOf(kept, key)).not.toBe("sending"), SETTLE);
     expect(await phaseOf(kept, key)).toBe("pending");
     expect(mend.delivered).toHaveLength(1);
   });
 
+  it("waits, sending nothing and reading nothing failed, while Mend cannot say whose a new sign-in is, and goes on once it can", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    mend.answer = "pending";
+    const held: { land: (() => void) | null } = { land: null };
+    const deliver = mend.deliver.bind(mend);
+    mend.deliver = async (sessionId, request) => {
+      if (held.land === null)
+        await new Promise<void>((resolve) => {
+          held.land = resolve;
+        });
+      return deliver(sessionId, request);
+    };
+    const { at, sessions } = signIns();
+    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    const key = await sendAll(store);
+    await vi.waitFor(() => expect(held.land).not.toBeNull(), SETTLE);
+
+    at.token = "erin";
+    at.says = false;
+    held.land?.();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(await phaseOf(kept, key)).toBe("sending");
+
+    at.token = "dana-1";
+    at.says = true;
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("pending"), SETTLE);
+    expect(new Set(mend.delivered.map((request) => request.idempotencyKey))).toEqual(
+      new Set([key]),
+    );
+  });
+
   it("never shows Dana's pending comments once another sign-in Mend cannot name reads the session", async () => {
-    const { at, reads } = signIns();
+    const { at, sessions } = signIns();
     const store = new ReviewStore(
-      reads,
+      sessions,
       new FakeMend(),
       new ReviewMemory(memento()),
       inMemory(),

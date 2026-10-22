@@ -360,6 +360,8 @@ export const EVENT_STREAM_STALL_MS = 60_000;
 
 /** Small authenticated client for the extension's project and session jobs. */
 export class MendClient {
+  readonly #accounts = new Map<string, string>();
+
   constructor(private readonly connections: Pick<ConnectionStore, "get" | "refused">) {}
 
   async connection(): Promise<MendConnection> {
@@ -420,6 +422,25 @@ export class MendClient {
       const view = await this.request("/organization");
       return isRecord(view) && typeof view["userId"] === "string" ? view["userId"] : null;
     } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The account `connection`'s token belongs to, read through that connection; null when Mend
+   * could not say. A token never changes account, so an answer is kept per server and token.
+   */
+  async accountOf(connection: MendConnection): Promise<string | null> {
+    const key = JSON.stringify([connection.url, connection.token]);
+    const known = this.#accounts.get(key);
+    if (known !== undefined) return known;
+    try {
+      const view = await requestMend(connection, "/organization");
+      const account = isRecord(view) && typeof view["userId"] === "string" ? view["userId"] : null;
+      if (account !== null) this.#accounts.set(key, account);
+      return account;
+    } catch (cause) {
+      if (cause instanceof MendApiError && cause.status === 401) this.refused(connection);
       return null;
     }
   }
