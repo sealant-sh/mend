@@ -424,6 +424,23 @@ export const ignoredEnvCheckout = (w: HandoffWorld): string => {
   return dana;
 };
 
+export const envFilesCheckout = (w: HandoffWorld) => {
+  const dana = w.clone("env-files");
+  const at = (file: string) => path.join(dana, file);
+  w.git(dana, ["switch", "-q", "-c", "fix/env"]);
+  w.write(at(".env"), "committed=1\n");
+  w.git(dana, ["add", ".env"]);
+  w.git(dana, ["commit", "-q", "-m", "add .env"]);
+  const committed = w.git(dana, ["rev-parse", "--short=7", "HEAD"]);
+  w.write(at(".env"), "committed=2\n");
+  w.write(at(".env.local"), "local=1\n");
+  fs.appendFileSync(at(".git/info/exclude"), ".env.secret\n");
+  w.write(at(".env.secret"), "secret=1\n");
+  w.write(at(".env.big"), Buffer.alloc(w.fileBytes + 1, 9));
+  w.write(at(".env.dat"), "filtered\n");
+  return { checkout: dana, committed };
+};
+
 export const mergedMainCheckout = (w: HandoffWorld) => {
   const dana = w.clone("merged-main");
   const forkPoint = w.git(dana, ["rev-parse", "HEAD"]);

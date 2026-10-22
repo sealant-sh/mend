@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -8,8 +9,10 @@ import { describe, expect, it } from "vitest";
 import {
   committedEnvCheckout,
   countedCheckout,
+  danglingOriginHeadCheckout,
   detachedCheckout,
   dirToFileCheckout,
+  envFilesCheckout,
   evilMergeCheckout,
   fingerprint,
   type HandoffWorld,
@@ -21,6 +24,7 @@ import {
   mixedCheckout,
   noOriginMainCheckout,
   nonUtf8Checkout,
+  otherDefaultCheckout,
   partialClone,
   replacedCheckout,
   SAME_TICKS,
@@ -28,33 +32,63 @@ import {
   signedCheckout,
   sparseIndexCheckout,
   unmergedCheckout,
+  unsetDefaultCheckout,
 } from "../test/testing.ts";
 import {
-  type HandoffSnapshot,
+  captureCheckout,
+  type CaptureRequest,
+  type CaptureSummary,
+  type CapturedCheckout,
+  checkoutOf,
+  type EnvFiles,
+  type GitRuntime,
+  type LeftOut,
   machineName,
-  snapshotCheckout,
-  type SnapshotOutcome,
+  preflightIssue,
 } from "./handoff.ts";
 
 const world = handoffWorlds();
 const CUT = new Date("2026-10-18T07:42:05.000Z");
 
-const outcomeOf = (w: HandoffWorld, checkout: string): SnapshotOutcome =>
-  snapshotCheckout({
-    checkout,
-    defaultBranch: "main",
-    machine: "dana-mbp",
-    maxFileBytes: w.fileBytes,
-    scratch: fs.mkdtempSync(path.join(w.root, "scratch-")),
-    cutAt: CUT,
-    env: w.hostileEnv,
-  });
+const requestFor = (
+  w: HandoffWorld,
+  checkout: string,
+  options: { readonly envFiles?: EnvFiles; readonly runtime?: GitRuntime } = {},
+): CaptureRequest => ({
+  checkout,
+  defaultBranch: "main",
+  machine: "dana-mbp",
+  maxFileBytes: w.fileBytes,
+  envFiles: options.envFiles ?? "exclude",
+  cutAt: CUT,
+  scratchParent: fs.mkdtempSync(path.join(w.root, "scratch-")),
+  runtime: { env: w.hostileEnv, ...options.runtime },
+});
 
-const snapshotOf = (w: HandoffWorld, checkout: string): HandoffSnapshot => {
-  const outcome = outcomeOf(w, checkout);
-  if (outcome._tag === "refused") throw new Error(outcome.message);
-  return outcome.snapshot;
+type Cut = CaptureSummary & { readonly bundlePath: string; readonly bundleBytes: number };
+
+const capturedOf = (request: CaptureRequest): CapturedCheckout => {
+  const outcome = captureCheckout(request);
+  if (outcome._tag !== "captured") throw new Error(JSON.stringify(outcome));
+  return outcome.capture;
 };
+
+const packedOf = (capture: CapturedCheckout): Cut => {
+  const packed = capture.pack();
+  if (packed._tag !== "packed") throw new Error(JSON.stringify(packed));
+  return { ...capture.summary, bundlePath: packed.bundlePath, bundleBytes: packed.bundleBytes };
+};
+
+const outcomeOf = (w: HandoffWorld, checkout: string) => {
+  const outcome = captureCheckout(requestFor(w, checkout));
+  return outcome._tag === "captured" ? outcome.capture.pack() : outcome;
+};
+
+const snapshotOf = (
+  w: HandoffWorld,
+  checkout: string,
+  options: { readonly envFiles?: EnvFiles; readonly runtime?: GitRuntime } = {},
+): Cut => packedOf(capturedOf(requestFor(w, checkout, options)));
 
 const splitNul = (bytes: Buffer): ReadonlyArray<Buffer> => {
   const fields: Array<Buffer> = [];
@@ -104,7 +138,24 @@ const without = (
 ): Record<string, string> =>
   Object.fromEntries(Object.entries(files).filter(([file]) => !gone.includes(file)));
 
-const storeWithBundle = (w: HandoffWorld, snapshot: HandoffSnapshot): string => {
+const mixedTrees = (w: HandoffWorld) => {
+  const head = { ...w.seedFiles, "a.txt": "one\ntwo\n", "c.txt": "three\n" };
+  return {
+    head,
+    index: { ...without(head, "b.txt"), "a.txt": "one\ntwo\nstaged-a\n", "s.txt": "staged\n" },
+    worktree: {
+      ...without(head, "b.txt", "d.txt"),
+      "a.txt": "one\ntwo\nstaged-a\nunstaged-a\n",
+      "s.txt": "staged\n",
+      "c.txt": "unstaged\n",
+      "u.txt": "new\n",
+      "reuses-main-blob.txt": "one\n",
+      "ita.txt": "ita\n",
+    },
+  };
+};
+
+const storeWithBundle = (w: HandoffWorld, snapshot: Cut): string => {
   const store = path.join(w.root, `store-${snapshot.worktree.slice(0, 7)}`);
   w.git(w.root, ["clone", "-q", "--bare", w.origin, store]);
   w.git(store, ["bundle", "verify", "-q", snapshot.bundlePath]);
@@ -118,7 +169,7 @@ const storeWithBundle = (w: HandoffWorld, snapshot: HandoffSnapshot): string => 
   return store;
 };
 
-describe("snapshotCheckout", () => {
+describe("captureCheckout, then pack", () => {
   it("leaves the checkout byte-identical under a hostile environment, a split index, signing and a clean filter", () => {
     const w = world();
     const { checkout: dana, marker } = mixedCheckout(w);
@@ -157,26 +208,10 @@ describe("snapshotCheckout", () => {
     expect(w.git(store, ["rev-parse", `${W}^@`])).toBe(snapshot.index);
     expect(w.git(store, ["rev-parse", `${snapshot.index}^@`])).toBe(snapshot.head);
     expect(w.git(store, ["rev-parse", "main"])).toBe(snapshot.mergeBase);
-    const head = {
-      ...w.seedFiles,
-      "a.txt": "one\ntwo\n",
-      "c.txt": "three\n",
-    };
-    expect(treeFiles(w, store, `${snapshot.head}^{tree}`)).toEqual(head);
-    expect(treeFiles(w, store, `${snapshot.index}^{tree}`)).toEqual({
-      ...without(head, "b.txt"),
-      "a.txt": "one\ntwo\nstaged-a\n",
-      "s.txt": "staged\n",
-    });
-    expect(treeFiles(w, store, `${W}^{tree}`)).toEqual({
-      ...without(head, "b.txt", "d.txt"),
-      "a.txt": "one\ntwo\nstaged-a\nunstaged-a\n",
-      "s.txt": "staged\n",
-      "c.txt": "unstaged\n",
-      "u.txt": "new\n",
-      "reuses-main-blob.txt": "one\n",
-      "ita.txt": "ita\n",
-    });
+    const trees = mixedTrees(w);
+    expect(treeFiles(w, store, `${snapshot.head}^{tree}`)).toEqual(trees.head);
+    expect(treeFiles(w, store, `${snapshot.index}^{tree}`)).toEqual(trees.index);
+    expect(treeFiles(w, store, `${W}^{tree}`)).toEqual(trees.worktree);
   });
 
   it("keeps staged and unstaged apart in a checkout made from the bundle", () => {
@@ -419,7 +454,7 @@ describe("snapshotCheckout", () => {
   it("names the gitignored .env files that stay behind", () => {
     const w = world();
     const snapshot = snapshotOf(w, ignoredEnvCheckout(w));
-    expect(snapshot.leftOut).toEqual([{ path: ".env.production", reason: "env" }]);
+    expect(snapshot.leftOut).toEqual([{ path: ".env.production", reason: "ignored-env" }]);
     expect(snapshot.facts).toEqual({ commitsAhead: 0, uncommitted: 0, untracked: 0 });
   });
 
@@ -442,6 +477,280 @@ describe("snapshotCheckout", () => {
     );
     expect(w.git(store, ["show", `${snapshot.worktree}:fix.txt`])).toBe("fix, after the merge");
     expect(snapshot.facts).toEqual({ commitsAhead: 3, uncommitted: 0, untracked: 0 });
+  });
+});
+
+const byPath = (leftOut: ReadonlyArray<LeftOut>) =>
+  leftOut.toSorted((a, b) => a.path.localeCompare(b.path));
+
+describe("a capture", () => {
+  it("packs what it captured, whatever the checkout and its index do after", () => {
+    const w = world();
+    const { checkout: dana } = mixedCheckout(w);
+    const capture = capturedOf(requestFor(w, dana));
+    w.write(path.join(dana, "a.txt"), "changed after the capture\n");
+    w.write(path.join(dana, "later.txt"), "added after the capture\n");
+    fs.rmSync(path.join(dana, "c.txt"));
+    fs.rmSync(path.join(dana, "u.txt"));
+    w.git(dana, ["add", "a.txt", "later.txt"]);
+    w.git(dana, ["rm", "-q", "--cached", "s.txt"]);
+    const snapshot = packedOf(capture);
+    const store = storeWithBundle(w, snapshot);
+    expect(w.git(store, ["rev-parse", HANDOFF_SNAPSHOT_REF])).toBe(capture.summary.worktree);
+    const trees = mixedTrees(w);
+    expect(treeFiles(w, store, `${snapshot.index}^{tree}`)).toEqual(trees.index);
+    expect(treeFiles(w, store, `${snapshot.worktree}^{tree}`)).toEqual(trees.worktree);
+  });
+
+  it("packs after its checkout is gone, a linked worktree removed", () => {
+    const w = world();
+    const { main, linked } = linkedWorktree(w);
+    const capture = capturedOf(requestFor(w, linked));
+    w.git(main, ["worktree", "remove", "--force", linked]);
+    const store = storeWithBundle(w, packedOf(capture));
+    expect(w.git(store, ["rev-parse", HANDOFF_SNAPSHOT_REF])).toBe(capture.summary.worktree);
+    expect(w.git(store, ["show", `${capture.summary.worktree}:fresh.txt`])).toBe("fresh");
+    capture.dispose();
+  });
+
+  it("takes origin's default branch from origin/HEAD when none is named, or main when that is unset or dangling", () => {
+    const cases = [
+      { scenario: unsetDefaultCheckout, branch: "main" },
+      { scenario: danglingOriginHeadCheckout, branch: "main" },
+      {
+        scenario: (w: HandoffWorld, origin: string) => {
+          const dana = otherDefaultCheckout(w, origin);
+          w.git(dana, ["remote", "set-head", "origin", "trunk"]);
+          return dana;
+        },
+        branch: "trunk",
+      },
+    ];
+    for (const { scenario, branch } of cases) {
+      const w = world();
+      const checkout = scenario(w, w.origin);
+      const capture = capturedOf({ ...requestFor(w, checkout), defaultBranch: null });
+      expect(capture.summary.defaultBranch).toBe(branch);
+      expect(capture.summary.defaultTip).toBe(w.git(checkout, ["rev-parse", `origin/${branch}`]));
+      capture.dispose();
+    }
+  });
+
+  it("carries tracked and untracked .env edits only on include; gitignored ones stay either way", () => {
+    const w = world();
+    const { checkout, committed } = envFilesCheckout(w);
+    const excluded = snapshotOf(w, checkout);
+    const included = snapshotOf(w, checkout, { envFiles: "include" });
+    expect(byPath(excluded.leftOut)).toEqual([
+      { path: ".env", reason: "env" },
+      { path: ".env.big", reason: "env" },
+      { path: ".env.dat", reason: "env" },
+      { path: ".env.local", reason: "env" },
+      { path: ".env.secret", reason: "ignored-env" },
+    ]);
+    expect(byPath(included.leftOut)).toEqual([
+      { path: ".env.big", reason: "over-limit", bytes: w.fileBytes + 1 },
+      { path: ".env.dat", reason: "filter", filter: "marker" },
+      { path: ".env.secret", reason: "ignored-env" },
+    ]);
+    expect([excluded.envFiles, included.envFiles]).toEqual(["exclude", "include"]);
+    expect(excluded.facts).toEqual({ commitsAhead: 1, uncommitted: 0, untracked: 0 });
+    expect(included.facts).toEqual({ commitsAhead: 1, uncommitted: 1, untracked: 1 });
+    for (const cut of [excluded, included]) {
+      expect(cut.committedEnv).toEqual([{ path: ".env", commit: committed }]);
+    }
+    expect(treeFiles(w, storeWithBundle(w, excluded), `${excluded.worktree}^{tree}`)).toEqual({
+      ...w.seedFiles,
+      ".env": "committed=1\n",
+    });
+    expect(treeFiles(w, storeWithBundle(w, included), `${included.worktree}^{tree}`)).toEqual({
+      ...w.seedFiles,
+      ".env": "committed=2\n",
+      ".env.local": "local=1\n",
+    });
+  });
+});
+
+describe("a capture's directory", () => {
+  it("is private to this user while held, and gone once disposed", () => {
+    const w = world();
+    const request = requestFor(w, countedCheckout(w));
+    const capture = capturedOf(request);
+    const held = fs.readdirSync(request.scratchParent).map((name) => {
+      const dir = path.join(request.scratchParent, name);
+      return { dir, mode: fs.statSync(dir).mode & 0o777 };
+    });
+    expect(held).toEqual([{ dir: expect.any(String), mode: 0o700 }]);
+    const { bundlePath } = packedOf(capture);
+    expect(bundlePath.startsWith(`${held[0]?.dir}${path.sep}`)).toBe(true);
+    capture.dispose();
+    capture.dispose();
+    expect(fs.readdirSync(request.scratchParent)).toEqual([]);
+    expect(() => capture.pack()).toThrow();
+  });
+
+  it("is gone after a refusal, made before or after it", () => {
+    const w = world();
+    for (const checkout of [unmergedCheckout(w), noOriginMainCheckout(w)]) {
+      const request = requestFor(w, checkout);
+      expect(captureCheckout(request)._tag).toBe("refused");
+      expect(fs.readdirSync(request.scratchParent)).toEqual([]);
+    }
+  });
+});
+
+const cancelling = (at = Infinity) => {
+  const counter = {
+    at,
+    checks: 0,
+    cancelled: () => {
+      counter.checks += 1;
+      return counter.checks >= counter.at;
+    },
+  };
+  return counter;
+};
+
+describe("a cancelled capture", () => {
+  it("stops before its first git command, mid-capture or at its last command", () => {
+    const w = world();
+    const { checkout } = mixedCheckout(w);
+    const full = cancelling();
+    capturedOf(requestFor(w, checkout, { runtime: { cancelled: full.cancelled } })).dispose();
+    for (const at of [1, Math.floor(full.checks / 2), full.checks]) {
+      const { cancelled } = cancelling(at);
+      const request = requestFor(w, checkout, { runtime: { cancelled } });
+      expect(captureCheckout(request), `cancelled at check ${at}`).toEqual({ _tag: "cancelled" });
+      expect(fs.readdirSync(request.scratchParent)).toEqual([]);
+    }
+  });
+
+  it("stops during its pack, and leaves nothing", () => {
+    const w = world();
+    const counter = cancelling();
+    const request = requestFor(w, countedCheckout(w), {
+      runtime: { cancelled: counter.cancelled },
+    });
+    const capture = capturedOf(request);
+    counter.at = counter.checks + 2;
+    expect(capture.pack()).toEqual({ _tag: "cancelled" });
+    expect(fs.readdirSync(request.scratchParent)).toEqual([]);
+    capture.dispose();
+  });
+
+  it("stops a preflight at its last command, which leaves nothing", () => {
+    const w = world();
+    const checkout = countedCheckout(w);
+    const scratchParent = fs.mkdtempSync(path.join(w.root, "scratch-"));
+    const full = cancelling();
+    const runtime = (cancelled: () => boolean) => ({ env: w.hostileEnv, cancelled });
+    expect(preflightIssue({ checkout, scratchParent, runtime: runtime(full.cancelled) })).toEqual({
+      _tag: "clear",
+    });
+    const last = cancelling(full.checks);
+    expect(preflightIssue({ checkout, scratchParent, runtime: runtime(last.cancelled) })).toEqual({
+      _tag: "cancelled",
+    });
+    expect(fs.readdirSync(scratchParent)).toEqual([]);
+  });
+});
+
+const REAL_GIT = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+
+const gitWrapper = (w: HandoffWorld, name: string, before: string): string => {
+  const file = path.join(w.root, name);
+  fs.writeFileSync(file, `#!/bin/sh\n${before}\nexec '${REAL_GIT}' "$@"\n`, { mode: 0o755 });
+  return file;
+};
+
+describe("the git a capture runs", () => {
+  it("is the one it is given, for discovery, preflight, capture and pack", () => {
+    const w = world();
+    const log = path.join(w.root, "git.log");
+    const git = gitWrapper(w, "logging-git", `printf '%s\\n' "$*" >> '${log}'`);
+    const noGitOnPath = { ...w.hostileEnv, PATH: path.join(w.root, "no-bin") };
+    const checkout = countedCheckout(w);
+    expect(checkoutOf(checkout, { git, env: noGitOnPath })).toMatchObject({ _tag: "checkout" });
+    const scratchParent = fs.mkdtempSync(path.join(w.root, "scratch-"));
+    expect(preflightIssue({ checkout, scratchParent, runtime: { git, env: noGitOnPath } })).toEqual(
+      {
+        _tag: "clear",
+      },
+    );
+    const snapshot = snapshotOf(w, checkout, { runtime: { git, env: noGitOnPath } });
+    expect(snapshot.facts).toEqual({ commitsAhead: 2, uncommitted: 3, untracked: 1 });
+    const ran = fs.readFileSync(log, "utf8");
+    expect(ran).toContain("rev-parse --show-toplevel");
+    expect(ran).toContain("ls-files --unmerged");
+    expect(ran).toContain(`bundle create -q ${snapshot.bundlePath}`);
+  });
+
+  it("refuses when a git command outlasts its timeout, and leaves nothing", () => {
+    const w = world();
+    const git = gitWrapper(w, "slow-git", `case " $* " in *" status "*) exec sleep 30;; esac`);
+    const request = requestFor(w, countedCheckout(w), { runtime: { git, timeoutMs: 2000 } });
+    expect(captureCheckout(request)).toEqual({
+      _tag: "refused",
+      message: "git status timed out after 2 s · nothing was created",
+    });
+    expect(fs.readdirSync(request.scratchParent)).toEqual([]);
+  });
+
+  it("refuses when it cannot run, and never reads that as no checkout", () => {
+    const w = world();
+    const git = path.join(w.root, "no-such-git");
+    const checkout = countedCheckout(w);
+    const refusal = {
+      _tag: "refused",
+      message: `git rev-parse could not run · spawnSync ${git} ENOENT · nothing was created`,
+    };
+    const scratchParent = fs.mkdtempSync(path.join(w.root, "scratch-"));
+    expect(checkoutOf(checkout, { git })).toEqual(refusal);
+    expect(preflightIssue({ checkout, scratchParent, runtime: { git } })).toEqual(refusal);
+    expect(captureCheckout(requestFor(w, checkout, { runtime: { git } }))).toEqual(refusal);
+    expect(checkoutOf(w.root, { env: w.hostileEnv })).toEqual({
+      _tag: "refused",
+      message: `${w.root} is not inside a git checkout · run mend handoff in one · nothing was created`,
+    });
+  });
+
+  it("refuses in git's words when a question it asks fails, never reading that as no", () => {
+    const w = world();
+    const checkout = countedCheckout(w);
+    const failingAt = (name: string, argument: string, words: string) =>
+      gitWrapper(w, name, `case " $* " in *" ${argument} "*) echo "${words}" >&2; exit 128;; esac`);
+    const doubted = `fatal: detected dubious ownership in repository at '${checkout}'`;
+    const doubting = failingAt("doubting-git", "--show-toplevel", doubted);
+    const notOwned = {
+      _tag: "refused",
+      message: `git rev-parse failed · ${doubted} · nothing was created`,
+    };
+    expect(checkoutOf(checkout, { git: doubting, env: w.hostileEnv })).toEqual(notOwned);
+    expect(captureCheckout(requestFor(w, checkout, { runtime: { git: doubting } }))).toEqual(
+      notOwned,
+    );
+    const broken = failingAt("broken-git", "merge-base", "fatal: unable to read tree 1234567");
+    const unread = {
+      _tag: "refused",
+      message: "git merge-base failed · fatal: unable to read tree 1234567 · nothing was created",
+    };
+    const scratchParent = fs.mkdtempSync(path.join(w.root, "scratch-"));
+    const runtime = { git: broken, env: w.hostileEnv };
+    expect(preflightIssue({ checkout, scratchParent, runtime })).toEqual(unread);
+    expect(captureCheckout(requestFor(w, checkout, { runtime: { git: broken } }))).toEqual(unread);
+  });
+
+  it("takes a timeout only as a positive number of milliseconds", () => {
+    const w = world();
+    const checkout = countedCheckout(w);
+    for (const timeoutMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => checkoutOf(checkout, { env: w.hostileEnv, timeoutMs })).toThrow(
+        `timeoutMs is ${timeoutMs}`,
+      );
+      expect(() => captureCheckout(requestFor(w, checkout, { runtime: { timeoutMs } }))).toThrow(
+        `timeoutMs is ${timeoutMs}`,
+      );
+    }
   });
 });
 

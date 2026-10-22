@@ -5,7 +5,7 @@ import * as path from "node:path";
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import { snapshotCheckout } from "../src/handoff.ts";
+import { captureCheckout, type LeftOut } from "../src/handoff.ts";
 import {
   committedEnvCheckout,
   conflictedNewsroomCheckout,
@@ -79,8 +79,7 @@ const SCENARIOS: ReadonlyArray<readonly [string, (w: HandoffWorld) => string]> =
   ["unset-default", (w) => unsetDefaultCheckout(w, ORIGIN)],
 ];
 
-const bundleFacts = (file: string) => {
-  const bytes = fs.readFileSync(file);
+const bundleFacts = (bytes: Buffer) => {
   const end = bytes.indexOf("\n\n");
   const header = bytes.subarray(0, end).toString().split("\n").slice(1);
   const pack = bytes.subarray(end + 2);
@@ -100,19 +99,39 @@ const withoutGitsWords = (message: string): string =>
 
 const world = handoffWorlds();
 
+const refusalOf = (outcome: { readonly _tag: "refused"; readonly message: string } | Cancelled) => {
+  if (outcome._tag === "cancelled") throw new Error("nothing cancelled this cut");
+  return { record: { refused: withoutGitsWords(outcome.message) }, bundle: null };
+};
+
+type Cancelled = { readonly _tag: "cancelled" };
+
+// The golden predates the ignored-env reason, and names those files env as the cut then did.
+const asRecorded = (out: LeftOut) =>
+  out.reason === "ignored-env" ? { ...out, reason: "env" } : out;
+
 const cutOf = (w: HandoffWorld, checkout: string) => {
-  const outcome = snapshotCheckout({
+  const captured = captureCheckout({
     checkout,
     defaultBranch: "main",
     machine: "dana-mbp",
     maxFileBytes: w.fileBytes,
-    scratch: fs.mkdtempSync(path.join(w.root, "scratch-")),
+    envFiles: "exclude",
     cutAt: CUT,
-    env: w.hostileEnv,
+    scratchParent: fs.mkdtempSync(path.join(w.root, "scratch-")),
+    runtime: { env: w.hostileEnv },
   });
-  if (outcome._tag === "refused") return { refused: withoutGitsWords(outcome.message) };
-  const { bundlePath, bundleBytes: _, ...summary } = outcome.snapshot;
-  return { ...summary, bundle: bundleFacts(bundlePath) };
+  if (captured._tag !== "captured") return refusalOf(captured);
+  const packed = captured.capture.pack();
+  if (packed._tag !== "packed") return refusalOf(packed);
+  expect(captured.capture.pack(), "packed twice").toEqual(packed);
+  const bundle = fs.readFileSync(packed.bundlePath);
+  captured.capture.dispose();
+  const { defaultBranch: _, envFiles: __, ...summary } = captured.capture.summary;
+  return {
+    record: { ...summary, leftOut: summary.leftOut.map(asRecorded), bundle: bundleFacts(bundle) },
+    bundle,
+  };
 };
 
 const golden: Readonly<Record<string, unknown>> = WRITING
@@ -127,9 +146,13 @@ afterAll(() => {
 describe("a handoff cut", () => {
   it.each(SCENARIOS)("yields what it always has: %s", (name, scenario) => {
     const w = world();
-    const cut = cutOf(w, scenario(w));
-    if (WRITING) written[name] = cut;
-    else expect(cut).toEqual(golden[name]);
+    const checkout = scenario(w);
+    const cut = cutOf(w, checkout);
+    if (WRITING) written[name] = cut.record;
+    else expect(cut.record).toEqual(golden[name]);
+    if (cut.bundle !== null) {
+      expect(cutOf(w, checkout).bundle?.equals(cut.bundle), "a second capture's bundle").toBe(true);
+    }
   });
 
   it("has a golden entry for every scenario and no other", () => {

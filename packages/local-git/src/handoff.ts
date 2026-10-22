@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -11,8 +10,45 @@ import {
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
+import {
+  type Cancelled,
+  type Env,
+  type Git,
+  GitFailure,
+  gitIn,
+  type GitRuntime,
+  type Refused,
+  refused,
+  type Runtime,
+  runtimeOf,
+  SAFE_CONFIG,
+  scrubbed,
+  settled,
+} from "./git.ts";
+import {
+  bytesOf,
+  displayPath,
+  GitPath,
+  leadOf,
+  namesDirectory,
+  NUL,
+  nulFields,
+  nulList,
+  parseStatus,
+  pathOf,
+  statOnDisk,
+  TAB,
+  type TrackedEntry,
+} from "./paths.ts";
+
+export { type Cancelled, HANDOFF_GIT_TIMEOUT_MS, type GitRuntime, type Refused } from "./git.ts";
+
+/** Whether uncommitted `.env*` edits travel. Gitignored ones never do. */
+export type EnvFiles = "exclude" | "include";
+
 export type LeftOut =
   | { readonly path: string; readonly reason: "env" }
+  | { readonly path: string; readonly reason: "ignored-env" }
   | { readonly path: string; readonly reason: "over-limit"; readonly bytes: number }
   | { readonly path: string; readonly reason: "filter"; readonly filter: string };
 
@@ -35,176 +71,55 @@ export interface HandoffFacts {
   readonly untracked: number;
 }
 
-export interface HandoffSnapshot {
+export interface CaptureSummary {
   readonly head: string;
   readonly index: string;
   readonly worktree: string;
   readonly mergeBase: string;
   readonly defaultTip: string;
+  readonly defaultBranch: string;
   readonly localBranch: string | null;
   readonly facts: HandoffFacts;
   readonly leftOut: ReadonlyArray<LeftOut>;
   readonly committedEnv: ReadonlyArray<CommittedEnv>;
   readonly hidden: ReadonlyArray<Hidden>;
-  readonly bundlePath: string;
-  readonly bundleBytes: number;
   readonly cutAt: string;
+  readonly envFiles: EnvFiles;
 }
 
-export type SnapshotOutcome =
-  | { readonly _tag: "snapshot"; readonly snapshot: HandoffSnapshot }
-  | { readonly _tag: "refused"; readonly message: string };
-
-export interface SnapshotRequest {
+export interface CaptureRequest {
   readonly checkout: string;
-  readonly defaultBranch: string;
+  /** Null takes origin's default branch as this checkout knows it. */
+  readonly defaultBranch: string | null;
   readonly machine: string;
   readonly maxFileBytes: number;
-  readonly scratch: string;
+  readonly envFiles: EnvFiles;
   readonly cutAt: Date;
-  readonly env?: NodeJS.ProcessEnv;
+  /** The capture makes its private directory here; dispose removes it. */
+  readonly scratchParent: string;
+  readonly runtime?: GitRuntime;
 }
 
-const SAFE_CONFIG = [
-  "core.fsmonitor=false",
-  "core.splitIndex=false",
-  "core.untrackedCache=false",
-  "gc.auto=0",
-  "core.hooksPath=/dev/null",
-  "log.showSignature=false",
-];
+export type PackOutcome =
+  | { readonly _tag: "packed"; readonly bundlePath: string; readonly bundleBytes: number }
+  | Refused
+  | Cancelled;
 
-class GitFailure extends Error {
-  readonly words: string;
-  constructor(command: string, words: string) {
-    super(`git ${command} failed · ${words}`);
-    this.words = words;
-  }
+export interface CapturedCheckout {
+  readonly summary: CaptureSummary;
+  /** Packs once; later calls return the first outcome. */
+  readonly pack: () => PackOutcome;
+  /** Removes the capture's directory, the bundle included. */
+  readonly dispose: () => void;
 }
 
-type Env = Readonly<Record<string, string>>;
-
-interface Git {
-  readonly run: (env: Env, args: ReadonlyArray<string>, input?: Buffer | string) => Buffer;
-  readonly attempt: (env: Env, args: ReadonlyArray<string>) => string | null;
-}
-
-const gitIn = (cwd: string, config: ReadonlyArray<string>): Git => {
-  const spawn = (env: Env, args: ReadonlyArray<string>, input?: Buffer | string) =>
-    spawnSync("git", [...config.flatMap((pair) => ["-c", pair]), ...args], {
-      cwd,
-      env,
-      maxBuffer: 1 << 30,
-      ...(input === undefined ? {} : { input }),
-    });
-  return {
-    run: (env, args, input) => {
-      const result = spawn(env, args, input);
-      if (result.status !== 0) {
-        const words = (result.stderr?.toString() ?? result.error?.message ?? "")
-          .split("\n")
-          .map((line) => line.trim())
-          .filter((line) => line !== "" && !line.startsWith("hint:"))
-          .join(" · ");
-        throw new GitFailure(args[0] ?? "", words || `exit ${result.status}`);
-      }
-      return result.stdout;
-    },
-    attempt: (env, args) => {
-      const result = spawn(env, args);
-      return result.status === 0 ? result.stdout.toString() : null;
-    },
-  };
-};
-
-const scrubbed = (inherited: NodeJS.ProcessEnv): Env => {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(inherited)) {
-    if (!key.startsWith("GIT_") && value !== undefined) env[key] = value;
-  }
-  return {
-    ...env,
-    GIT_OPTIONAL_LOCKS: "0",
-    GIT_TERMINAL_PROMPT: "0",
-    GIT_LITERAL_PATHSPECS: "1",
-    GIT_NO_LAZY_FETCH: "1",
-    GIT_NO_REPLACE_OBJECTS: "1",
-    LC_ALL: "C",
-  };
-};
-
-const GitPath = Schema.String.pipe(Schema.brand("GitPath"));
-type GitPath = typeof GitPath.Type;
-
-const NUL = Buffer.from([0]);
-const TAB = 0x09;
-const pathOf = (bytes: Buffer): GitPath => GitPath.make(bytes.toString("latin1"));
-const bytesOf = (file: GitPath): Buffer => Buffer.from(file, "latin1");
-const nulList = (files: Iterable<GitPath>): Buffer =>
-  Buffer.concat([...files].flatMap((file) => [bytesOf(file), NUL]));
-const onDisk = (top: string, file: GitPath): Buffer =>
-  Buffer.concat([Buffer.from(`${top}/`), bytesOf(file)]);
-
-/** What is at the file's path; undefined when nothing is, a file where its directory was included. */
-const statOnDisk = (top: string, file: GitPath): fs.Stats | undefined => {
-  try {
-    return fs.lstatSync(onDisk(top, file));
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      "code" in error &&
-      ["ENOENT", "ENOTDIR"].includes(String(error.code))
-    ) {
-      return undefined;
-    }
-    throw error;
-  }
-};
-
-const UTF8 = new TextDecoder("utf-8", { fatal: true });
-const octal = (byte: number): string => `\\${byte.toString(8).padStart(3, "0")}`;
-
-const displayPath = (file: GitPath): string => {
-  const bytes = bytesOf(file);
-  try {
-    return UTF8.decode(bytes).replace(/\p{Cc}/gu, (control) =>
-      [...Buffer.from(control)].map(octal).join(""),
-    );
-  } catch {
-    return [...bytes]
-      .map((byte) => (byte >= 0x20 && byte < 0x7f ? String.fromCharCode(byte) : octal(byte)))
-      .join("");
-  }
-};
-
-const nulFields = (bytes: Buffer): ReadonlyArray<Buffer> => {
-  const fields: Array<Buffer> = [];
-  for (let at = 0; at < bytes.length; ) {
-    const end = bytes.indexOf(0, at);
-    const stop = end === -1 ? bytes.length : end;
-    if (stop > at) fields.push(bytes.subarray(at, stop));
-    at = stop + 1;
-  }
-  return fields;
-};
-
-const wordsAndPath = (
-  field: Buffer,
-  count: number,
-): { readonly words: ReadonlyArray<string>; readonly path: GitPath } => {
-  let at = 0;
-  for (let seen = 0; seen < count; seen += 1) at = field.indexOf(0x20, at) + 1;
-  return {
-    words: field
-      .subarray(0, at - 1)
-      .toString()
-      .split(" "),
-    path: pathOf(field.subarray(at)),
-  };
-};
+export type CaptureOutcome =
+  | { readonly _tag: "captured"; readonly capture: CapturedCheckout }
+  | Refused
+  | Cancelled;
 
 const filtersOff = (git: Git, env: Env): ReadonlyArray<string> => {
-  const keys = git.attempt(env, ["config", "--name-only", "--get-regexp", "^filter\\."]) ?? "";
+  const keys = git.attempt(env, ["config", "--name-only", "--get-regexp", "^filter\\."], 1) ?? "";
   const names = new Set(
     keys
       .split("\n")
@@ -218,82 +133,46 @@ const filtersOff = (git: Git, env: Env): ReadonlyArray<string> => {
   ]);
 };
 
-interface TrackedEntry {
-  readonly kind: "tracked";
-  readonly path: GitPath;
-  readonly staged: string;
-  readonly unstaged: string;
-  readonly headMode: string;
-  readonly headSha: string;
-  readonly indexSha: string;
-}
-
-type StatusEntry =
-  | TrackedEntry
-  | { readonly kind: "untracked"; readonly path: GitPath }
-  | { readonly kind: "unmerged"; readonly path: GitPath };
-
-const leadOf = (field: Buffer): string => String.fromCharCode(field[0] ?? 0);
-const namesDirectory = (field: Buffer): boolean => field.at(-1) === 0x2f;
-
-const parseStatus = (fields: ReadonlyArray<Buffer>): ReadonlyArray<StatusEntry> =>
-  fields.flatMap((field): ReadonlyArray<StatusEntry> => {
-    if (leadOf(field) === "1") {
-      // 1 XY sub mH mI mW hH hI path
-      const { words, path: file } = wordsAndPath(field, 8);
-      const xy = words[1] ?? "..";
-      return [
-        {
-          kind: "tracked",
-          path: file,
-          staged: xy[0] ?? ".",
-          unstaged: xy[1] ?? ".",
-          headMode: words[3] ?? "000000",
-          headSha: words[6] ?? "",
-          indexSha: words[7] ?? "",
-        },
-      ];
-    }
-    if (leadOf(field) === "u") return [{ kind: "unmerged", path: wordsAndPath(field, 10).path }];
-    // An untracked directory is a nested repository; it is not the checkout's to carry.
-    if (leadOf(field) === "?" && !namesDirectory(field)) {
-      return [{ kind: "untracked", path: pathOf(field.subarray(2)) }];
-    }
-    return [];
-  });
-
-const refused = (message: string): SnapshotOutcome => ({ _tag: "refused", message });
-
 interface CheckoutPaths {
   readonly top: string;
   readonly gitDir: string;
   readonly commonDir: string;
 }
 
-const pathsOf = (cwd: string, base: Env): CheckoutPaths | null => {
-  const top = gitIn(cwd, SAFE_CONFIG).attempt(base, ["rev-parse", "--show-toplevel"])?.trim() ?? "";
+const pathsOf = (cwd: string, base: Env, runtime: Runtime): CheckoutPaths | null => {
+  const top =
+    gitIn(cwd, SAFE_CONFIG, runtime)
+      .attempt(base, ["rev-parse", "--show-toplevel"], 128, "not a git repository")
+      ?.trim() ?? "";
   if (top === "") return null;
-  const [gitDir = "", commonDir = ""] = (
-    gitIn(top, SAFE_CONFIG).attempt(base, [
-      "rev-parse",
-      "--absolute-git-dir",
-      "--git-common-dir",
-    ]) ?? ""
-  ).split("\n");
+  const [gitDir = "", commonDir = ""] = gitIn(top, SAFE_CONFIG, runtime)
+    .run(base, ["rev-parse", "--absolute-git-dir", "--git-common-dir"])
+    .toString()
+    .split("\n");
   return { top, gitDir, commonDir: path.resolve(top, commonDir) };
 };
 
-export const checkoutOf = (
-  cwd: string,
-  env: NodeJS.ProcessEnv = process.env,
-): (CheckoutPaths & { readonly originUrl: string | null }) | null => {
-  const base = scrubbed(env);
-  const paths = pathsOf(cwd, base);
-  if (paths === null) return null;
-  const origin =
-    gitIn(paths.top, SAFE_CONFIG).attempt(base, ["remote", "get-url", "origin"])?.trim() ?? "";
-  return { ...paths, originUrl: origin === "" ? null : origin };
-};
+export interface LocalCheckout extends CheckoutPaths {
+  readonly originUrl: string | null;
+}
+
+export type CheckoutOutcome =
+  | { readonly _tag: "checkout"; readonly checkout: LocalCheckout }
+  | Refused
+  | Cancelled;
+
+export const checkoutOf = (cwd: string, runtime?: GitRuntime): CheckoutOutcome =>
+  settled(() => {
+    const resolved = runtimeOf(runtime);
+    const base = scrubbed(resolved.env);
+    const paths = pathsOf(cwd, base, resolved);
+    if (paths === null) return refused(notACheckout(cwd));
+    const origin =
+      gitIn(paths.top, SAFE_CONFIG, resolved)
+        .attempt(base, ["remote", "get-url", "origin"], 2)
+        ?.trim() ?? "";
+    return { _tag: "checkout", checkout: { ...paths, originUrl: origin === "" ? null : origin } };
+  });
 
 const realOrResolved = (dir: string): string => {
   try {
@@ -314,6 +193,21 @@ export const scratchParentIssue = (parent: string, checkout: CheckoutPaths): str
     : null;
 };
 
+const scratchUnder = (parent: string, checkout: CheckoutPaths): string | Refused => {
+  const issue = scratchParentIssue(parent, checkout);
+  if (issue !== null) return refused(issue);
+  const dir = fs.mkdtempSync(path.join(parent, "mend-handoff-"));
+  if ((fs.statSync(dir).mode & 0o077) !== 0) {
+    removeScratch(dir);
+    return refused(
+      `the directory a handoff made under ${parent} was readable by others · nothing was created`,
+    );
+  }
+  return dir;
+};
+
+const removeScratch = (dir: string): void => fs.rmSync(dir, { recursive: true, force: true });
+
 const NO_COMMIT =
   "this branch has no commit yet · commit once, then hand off · nothing was created";
 
@@ -330,21 +224,21 @@ interface Opened {
 }
 
 /** The checkout, and the one git every read of it goes through. */
-const openCheckout = (dir: string, env: NodeJS.ProcessEnv): Opened | null => {
-  const base = scrubbed(env);
-  const paths = pathsOf(dir, base);
+const openCheckout = (dir: string, runtime: Runtime): Opened | null => {
+  const base = scrubbed(runtime.env);
+  const paths = pathsOf(dir, base, runtime);
   if (paths === null) return null;
-  const filters = filtersOff(gitIn(paths.top, SAFE_CONFIG), base);
-  return { base, paths, git: gitIn(paths.top, [...SAFE_CONFIG, ...filters]) };
+  const filters = filtersOff(gitIn(paths.top, SAFE_CONFIG, runtime), base);
+  return { base, paths, git: gitIn(paths.top, [...SAFE_CONFIG, ...filters], runtime) };
 };
 
 const headOf = (git: Git, base: Env): string | null =>
-  git.attempt(base, ["rev-parse", "--verify", "-q", "HEAD^{commit}"])?.trim() ?? null;
+  git.attempt(base, ["rev-parse", "--verify", "-q", "HEAD^{commit}"], 1)?.trim() ?? null;
 
 const TRACKING = "refs/remotes/origin/";
 
 const commitAt = (git: Git, base: Env, ref: string): boolean =>
-  git.attempt(base, ["rev-parse", "--verify", "-q", `${ref}^{commit}`]) !== null;
+  git.attempt(base, ["rev-parse", "--verify", "-q", `${ref}^{commit}`], 1) !== null;
 
 /**
  * origin's default branch as this checkout knows it: `origin/HEAD` when it names a branch the
@@ -353,11 +247,13 @@ const commitAt = (git: Git, base: Env, ref: string): boolean =>
  * common names stand in for it, in this order.
  */
 const originDefaultOf = (git: Git, base: Env): string | { readonly refused: string } => {
-  const head = git.attempt(base, ["symbolic-ref", "-q", `${TRACKING}HEAD`])?.trim() ?? "";
+  const head = git.attempt(base, ["symbolic-ref", "-q", `${TRACKING}HEAD`], 1)?.trim() ?? "";
   if (head.startsWith(TRACKING) && commitAt(git, base, head)) return head.slice(TRACKING.length);
   const known = ["main", "master"].find((name) => commitAt(git, base, `${TRACKING}${name}`));
   if (known !== undefined) return known;
-  const tracked = (git.attempt(base, ["for-each-ref", "--format=%(refname)", TRACKING]) ?? "")
+  const tracked = git
+    .run(base, ["for-each-ref", "--format=%(refname)", TRACKING])
+    .toString()
     .split("\n")
     .filter((ref) => ref !== "" && ref !== `${TRACKING}HEAD`);
   return {
@@ -376,13 +272,13 @@ const basesOf = (
 ): { readonly defaultTip: string; readonly mergeBase: string } | { readonly refused: string } => {
   const tracking = `${TRACKING}${defaultBranch}`;
   const defaultTip =
-    git.attempt(base, ["rev-parse", "--verify", "-q", `${tracking}^{commit}`])?.trim() ?? null;
+    git.attempt(base, ["rev-parse", "--verify", "-q", `${tracking}^{commit}`], 1)?.trim() ?? null;
   if (defaultTip === null) {
     return {
       refused: `this checkout has no origin/${defaultBranch} · run git fetch origin, then hand off again · nothing was created`,
     };
   }
-  const mergeBase = git.attempt(base, ["merge-base", head, defaultTip])?.trim() ?? null;
+  const mergeBase = git.attempt(base, ["merge-base", head, defaultTip], 1)?.trim() ?? null;
   if (mergeBase === null) {
     return { refused: `HEAD shares no history with origin/${defaultBranch} · nothing was created` };
   }
@@ -396,6 +292,7 @@ interface Checkout extends CheckoutPaths {
   /** `--sparse` for ls-files when the index may be sparse; older git has no such flag. */
   readonly sparseFlag: ReadonlyArray<string>;
   readonly head: string;
+  readonly defaultBranch: string;
   readonly defaultTip: string;
   readonly mergeBase: string;
   readonly localBranch: string | null;
@@ -416,24 +313,28 @@ const locate = (
   const bases = basesOf(git, base, head, branch);
   if ("refused" in bases) return bases;
   const { defaultTip, mergeBase } = bases;
-  const branchRef = git.attempt(base, ["symbolic-ref", "-q", "HEAD"])?.trim() ?? "";
+  const branchRef = git.attempt(base, ["symbolic-ref", "-q", "HEAD"], 1)?.trim() ?? "";
   return {
     ...paths,
     objects: path.resolve(paths.top, text(["rev-parse", "--git-path", "objects"])),
     format: text(["rev-parse", "--show-object-format"]),
     partial:
-      (git.attempt(base, ["config", "--get", "extensions.partialClone"]) ?? "").trim() !== "" ||
+      (git.attempt(base, ["config", "--get", "extensions.partialClone"], 1) ?? "").trim() !== "" ||
       (
-        git.attempt(base, ["config", "--type=bool", "--get-regexp", "^remote\\..+\\.promisor$"]) ??
-        ""
+        git.attempt(
+          base,
+          ["config", "--type=bool", "--get-regexp", "^remote\\..+\\.promisor$"],
+          1,
+        ) ?? ""
       )
         .split("\n")
         .some((line) => line.endsWith(" true")),
     sparseFlag:
-      git.attempt(base, ["config", "--type=bool", "--get", "index.sparse"])?.trim() === "true"
+      git.attempt(base, ["config", "--type=bool", "--get", "index.sparse"], 1)?.trim() === "true"
         ? ["--sparse"]
         : [],
     head,
+    defaultBranch: branch,
     defaultTip,
     mergeBase,
     localBranch: branchRef.startsWith("refs/heads/") ? branchRef.slice("refs/heads/".length) : null,
@@ -506,41 +407,44 @@ const scratchFor = (git: Git, base: Env, checkout: Checkout, dir: string): Scrat
 
 export interface PreflightRequest {
   readonly checkout: string;
-  readonly scratch: string;
-  readonly env?: NodeJS.ProcessEnv;
+  readonly scratchParent: string;
+  readonly runtime?: GitRuntime;
 }
 
-const preflight = (request: PreflightRequest): string | null => {
-  const opened = openCheckout(request.checkout, request.env ?? process.env);
-  if (opened === null) return notACheckout(request.checkout);
+export type PreflightOutcome = { readonly _tag: "clear" } | Refused | Cancelled;
+
+const preflight = (request: PreflightRequest, runtime: Runtime): PreflightOutcome => {
+  const opened = openCheckout(request.checkout, runtime);
+  if (opened === null) return refused(notACheckout(request.checkout));
   const { base, git, paths } = opened;
   const checkout = locate(git, base, paths, null);
-  if ("refused" in checkout) return checkout.refused;
-  const { reads } = scratchFor(git, base, checkout, request.scratch);
-  const unmerged = new Set(
-    nulFields(git.run(reads, ["ls-files", "--unmerged", "-z", ...checkout.sparseFlag])).map(
-      (field) => pathOf(field.subarray(field.indexOf(TAB) + 1)),
-    ),
-  );
-  return unmerged.size === 0 ? null : unmergedRefusal(unmerged.size);
-};
-
-/**
- * What a snapshot of this checkout would refuse, read the way a snapshot reads it, before any
- * server knows a default branch: no commit, no default branch of origin's, no shared history,
- * unmerged paths. Null when none applies.
- */
-export const preflightIssue = (request: PreflightRequest): string | null => {
+  if ("refused" in checkout) return refused(checkout.refused);
+  const dir = scratchUnder(request.scratchParent, checkout);
+  if (typeof dir !== "string") return dir;
   try {
-    return preflight(request);
-  } catch (error) {
-    if (error instanceof GitFailure) return `${error.message} · nothing was created`;
-    throw error;
+    const { reads } = scratchFor(git, base, checkout, dir);
+    const unmerged = new Set(
+      nulFields(git.run(reads, ["ls-files", "--unmerged", "-z", ...checkout.sparseFlag])).map(
+        (field) => pathOf(field.subarray(field.indexOf(TAB) + 1)),
+      ),
+    );
+    return unmerged.size === 0 ? { _tag: "clear" } : refused(unmergedRefusal(unmerged.size));
+  } finally {
+    removeScratch(dir);
   }
 };
 
+/**
+ * What a capture of this checkout would refuse, read the way a capture reads it, before any
+ * server knows a default branch: no commit, no default branch of origin's, no shared history,
+ * unmerged paths.
+ */
+export const preflightIssue = (request: PreflightRequest): PreflightOutcome =>
+  settled(() => preflight(request, runtimeOf(request.runtime)));
+
 type Excluded =
   | { readonly path: GitPath; readonly reason: "env" }
+  | { readonly path: GitPath; readonly reason: "ignored-env" }
   | { readonly path: GitPath; readonly reason: "over-limit"; readonly bytes: number }
   | { readonly path: GitPath; readonly reason: "filter"; readonly filter: string };
 
@@ -642,6 +546,7 @@ const inspect = (
   base: Env,
   reads: Env,
   maxFileBytes: number,
+  envFiles: EnvFiles,
 ): Inspection | { readonly refused: string } => {
   const hiddenBits = revealHiddenEdits(git, checkout, reads);
   const status = parseStatus(
@@ -697,7 +602,9 @@ const inspect = (
     return stat?.isFile() === true ? stat.size : 0;
   };
   const excludedOf = (file: GitPath): Excluded | null => {
-    if (isEnvPath(displayPath(file))) return { path: file, reason: "env" };
+    if (envFiles === "exclude" && isEnvPath(displayPath(file))) {
+      return { path: file, reason: "env" };
+    }
     const filter = filters.get(file);
     if (filter !== undefined) return { path: file, reason: "filter", filter };
     const bytes = Math.max(indexSizes.get(file) ?? 0, workingSize(file));
@@ -721,7 +628,7 @@ const inspect = (
   ).flatMap((field): ReadonlyArray<Excluded> => {
     const file = pathOf(field);
     return !namesDirectory(field) && isEnvPath(displayPath(file))
-      ? [{ path: file, reason: "env" }]
+      ? [{ path: file, reason: "ignored-env" }]
       : [];
   });
 
@@ -807,19 +714,18 @@ const buildTrees = (
   };
 };
 
-interface Bundle {
+interface Commits {
   readonly index: string;
   readonly worktree: string;
-  readonly bundlePath: string;
 }
 
-const bundleOf = (
+const commitsOf = (
   git: Git,
   checkout: Checkout,
   trees: Trees,
   scratch: Scratch,
-  request: SnapshotRequest,
-): Bundle => {
+  request: CaptureRequest,
+): Commits => {
   const seconds = Math.floor(request.cutAt.getTime() / 1000);
   const ident = `mend <mend@mend.invalid> ${seconds} +0000`;
   const writes = scratch.writes(path.join(scratch.dir, "index"));
@@ -849,78 +755,144 @@ const bundleOf = (
     defaultTip: checkout.defaultTip,
     mergeBase: checkout.mergeBase,
   });
-  const worktree = writeCommit(trees.worktreeTree, index, formatHandoffMessage(trailers));
+  return {
+    index,
+    worktree: writeCommit(trees.worktreeTree, index, formatHandoffMessage(trailers)),
+  };
+};
 
-  fs.mkdirSync(path.join(scratch.objects, "info"), { recursive: true });
-  fs.writeFileSync(path.join(scratch.objects, "info", "alternates"), `${checkout.objects}\n`);
-  git.run(scratch.inRepo, ["update-ref", HANDOFF_SNAPSHOT_REF, worktree]);
-  const bundlePath = path.join(scratch.dir, "handoff.bundle");
-  git.run(scratch.inRepo, [
-    "bundle",
-    "create",
-    "-q",
-    bundlePath,
-    HANDOFF_SNAPSHOT_REF,
-    `^${checkout.mergeBase}`,
-  ]);
-  return { index, worktree, bundlePath };
+const missingObjects = (checkout: Checkout, error: unknown): Refused | null =>
+  error instanceof GitFailure && checkout.partial
+    ? refused(
+        `this partial clone lacks objects a handoff reads, and mend handoff never fetches · git log -p ${checkout.mergeBase.slice(0, 7)}..HEAD fetches them, then hand off again · git said: ${error.words} · nothing was created`,
+      )
+    : null;
+
+const bundleOf = (
+  git: Git,
+  checkout: Checkout,
+  scratch: Scratch,
+  worktree: string,
+): PackOutcome => {
+  try {
+    fs.mkdirSync(path.join(scratch.objects, "info"), { recursive: true });
+    fs.writeFileSync(path.join(scratch.objects, "info", "alternates"), `${checkout.objects}\n`);
+    git.run(scratch.inRepo, ["update-ref", HANDOFF_SNAPSHOT_REF, worktree]);
+    const bundlePath = path.join(scratch.dir, "handoff.bundle");
+    git.run(scratch.inRepo, [
+      "bundle",
+      "create",
+      "-q",
+      bundlePath,
+      HANDOFF_SNAPSHOT_REF,
+      `^${checkout.mergeBase}`,
+    ]);
+    return { _tag: "packed", bundlePath, bundleBytes: fs.statSync(bundlePath).size };
+  } catch (error) {
+    const missing = missingObjects(checkout, error);
+    if (missing !== null) return missing;
+    throw error;
+  }
+};
+
+type Held =
+  | { readonly _tag: "held" }
+  | { readonly _tag: "packed"; readonly outcome: PackOutcome }
+  | { readonly _tag: "disposed" };
+
+const heldCapture = (
+  git: Git,
+  checkout: Checkout,
+  scratch: Scratch,
+  summary: CaptureSummary,
+): CapturedCheckout => {
+  let state: Held = { _tag: "held" };
+  const dispose = () => {
+    removeScratch(scratch.dir);
+    state = { _tag: "disposed" };
+  };
+  return {
+    summary,
+    pack: () => {
+      if (state._tag === "disposed") throw new Error("this capture was disposed before its pack");
+      if (state._tag === "packed") return state.outcome;
+      let outcome: PackOutcome;
+      try {
+        outcome = settled(() => bundleOf(git, checkout, scratch, summary.worktree));
+      } catch (error) {
+        dispose();
+        throw error;
+      }
+      if (outcome._tag !== "packed") removeScratch(scratch.dir);
+      state = { _tag: "packed", outcome };
+      return outcome;
+    },
+    dispose,
+  };
 };
 
 const leftOutFor = (out: Excluded): LeftOut => ({ ...out, path: displayPath(out.path) });
 
-const cutSnapshot = (request: SnapshotRequest): SnapshotOutcome => {
-  const opened = openCheckout(request.checkout, request.env ?? process.env);
+const capture = (request: CaptureRequest, runtime: Runtime): CaptureOutcome => {
+  const opened = openCheckout(request.checkout, runtime);
   if (opened === null) return refused(notACheckout(request.checkout));
   const { base, git, paths } = opened;
   const checkout = locate(git, base, paths, request.defaultBranch);
   if ("refused" in checkout) return refused(checkout.refused);
+  const dir = scratchUnder(request.scratchParent, checkout);
+  if (typeof dir !== "string") return dir;
+  let kept = false;
   try {
-    const scratch = scratchFor(git, base, checkout, request.scratch);
-    const inspection = inspect(git, checkout, base, scratch.reads, request.maxFileBytes);
+    const scratch = scratchFor(git, base, checkout, dir);
+    const inspection = inspect(
+      git,
+      checkout,
+      base,
+      scratch.reads,
+      request.maxFileBytes,
+      request.envFiles,
+    );
     if ("refused" in inspection) return refused(inspection.refused);
     const trees = buildTrees(git, checkout, inspection, scratch);
-    const bundle = bundleOf(git, checkout, trees, scratch, request);
+    const commits = commitsOf(git, checkout, trees, scratch, request);
     const travels = (file: GitPath) => !inspection.stays.has(file);
-    return {
-      _tag: "snapshot",
-      snapshot: {
-        head: checkout.head,
-        index: bundle.index,
-        worktree: bundle.worktree,
-        mergeBase: checkout.mergeBase,
-        defaultTip: checkout.defaultTip,
-        localBranch: checkout.localBranch,
-        facts: {
-          commitsAhead: inspection.commitsAhead,
-          uncommitted: inspection.tracked.filter((entry) => travels(entry.path)).length,
-          untracked: inspection.untracked.filter(travels).length,
-        },
-        leftOut: inspection.leftOut.map(leftOutFor),
-        committedEnv: inspection.committedEnv,
-        hidden: inspection.hidden.map((file) => ({ ...file, path: displayPath(file.path) })),
-        bundlePath: bundle.bundlePath,
-        bundleBytes: fs.statSync(bundle.bundlePath).size,
-        cutAt: request.cutAt.toISOString(),
+    const summary: CaptureSummary = {
+      head: checkout.head,
+      index: commits.index,
+      worktree: commits.worktree,
+      mergeBase: checkout.mergeBase,
+      defaultTip: checkout.defaultTip,
+      defaultBranch: checkout.defaultBranch,
+      localBranch: checkout.localBranch,
+      facts: {
+        commitsAhead: inspection.commitsAhead,
+        uncommitted: inspection.tracked.filter((entry) => travels(entry.path)).length,
+        untracked: inspection.untracked.filter(travels).length,
       },
+      leftOut: inspection.leftOut.map(leftOutFor),
+      committedEnv: inspection.committedEnv,
+      hidden: inspection.hidden.map((file) => ({ ...file, path: displayPath(file.path) })),
+      cutAt: request.cutAt.toISOString(),
+      envFiles: request.envFiles,
     };
+    kept = true;
+    const gitInScratch = gitIn(scratch.dir, SAFE_CONFIG, runtime);
+    return { _tag: "captured", capture: heldCapture(gitInScratch, checkout, scratch, summary) };
   } catch (error) {
-    if (error instanceof GitFailure && checkout.partial) {
-      return refused(
-        `this partial clone lacks objects a handoff reads, and mend handoff never fetches · git log -p ${checkout.mergeBase.slice(0, 7)}..HEAD fetches them, then hand off again · git said: ${error.words} · nothing was created`,
-      );
-    }
+    const missing = missingObjects(checkout, error);
+    if (missing !== null) return missing;
     throw error;
+  } finally {
+    if (!kept) removeScratch(dir);
   }
 };
 
-export const snapshotCheckout = (request: SnapshotRequest): SnapshotOutcome => {
-  try {
-    return cutSnapshot(request);
-  } catch (error) {
-    if (error instanceof GitFailure) return refused(`${error.message} · nothing was created`);
-    throw error;
-  }
-};
+/**
+ * Reads the checkout and never writes to it: the I and W commits go into a private directory
+ * under `scratchParent` that lives until `dispose()`.
+ */
+export const captureCheckout = (request: CaptureRequest): CaptureOutcome =>
+  settled(() => capture(request, runtimeOf(request.runtime)));
 
 export const machineName = (hostname: string = os.hostname()): string => {
   const name = [
