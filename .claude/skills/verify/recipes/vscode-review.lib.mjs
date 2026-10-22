@@ -441,15 +441,29 @@ export const said = (section) =>
     )
     .join(" | ");
 
-/** The editor tabs of the active group: their labels, and which is active. */
+/** The editor tabs of the active group: their labels, which is active, which has unsaved edits. */
 export const editorTabs = (h) =>
   h.page().evaluate(() =>
     [...document.querySelectorAll(".part.editor .tabs-container .tab")].map((tab) => ({
       label: (tab.querySelector(".label-name")?.textContent ?? "").trim(),
       title: tab.getAttribute("aria-label") ?? "",
       active: tab.classList.contains("active"),
+      dirty: tab.classList.contains("dirty"),
     })),
   );
+
+/** What the active editor says in place of its text when it cannot open it; "" when it shows text. */
+export const editorPlaceholder = (h) =>
+  h
+    .page()
+    .evaluate(() =>
+      (
+        document.querySelector(".editor-group-container.active .monaco-editor-pane-placeholder")
+          ?.textContent ?? ""
+      )
+        .replace(/\s+/g, " ")
+        .trim(),
+    );
 
 /** The active diff editor's two sides, as their visible lines read (spaces as spaces). */
 export const diffSides = (h) =>

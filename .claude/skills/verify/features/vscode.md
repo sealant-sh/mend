@@ -689,6 +689,33 @@ the row takes the job's name.
     notify inside the transaction waited for a second pooled connection); if the step times out
     again, its error carries the rows and what Mend's Postgres connections are doing
     (`serverActivity()`).
+  - Files the base already has: `recipes/vscode-review-send-modified.mjs`. One session modifies
+    `README` and adds `docs/greet.md`, another renames `README` to `GREETING.md` (`[M]`, `[A]`,
+    `[R]`); a comment on each, **Send review**, **Send to session**, then
+    `GET /changes/:id/comments` (`via: "api"`) must hold each with her words, both paths of its file
+    and its line. Observed on `c1ddcd1da`'s extension (run `i10a`, 2026-10-22): the added file's
+    comment lands `open`; the modified one's POST answers 422, one toast
+    `Mend could not deliver the review: The comment anchor is not present in this Review slice.`,
+    the thread back to `pending`, the section `1 pending · 1 open`, nothing pasted; the renamed
+    one's 422 shows no toast, the section stays `1 pending`. The extension posts `oldPath: null`
+    where Mend's file reads `README` on both sides. With the fix (`fix/vscode-review-words`, run
+    `fixed-2`) Mend holds all three, `README` with `oldPath: "README"` and `GREETING.md` with
+    `oldPath: "README"`, and each section reads `follow-up pending · pasted into claude's terminal`.
+  - The same recipe drives two more steps. A step under test that fails is kept failed in
+    `steps.jsonl`, the run goes on, and its last step fails the run, so one run shows each failure.
+    - Her comment's row under **Comments** (`treeItem(<her words>, { pane: "Change" })`) on the
+      added `docs/greet.md` opens `greet.md (master ↔ checkpoint 3)`. On `c1ddcd1da` the tab opens
+      with no diff and the placeholder `The editor could not be opened due to an unexpected error.`
+      (`editorPlaceholder(h)`); the renderer log reads
+      `Mend has no docs/greet.md at this checkpoint: Not found`, because the left side asks for the
+      file at the base. Fixed: left `[""]`, right the file, no toast.
+    - A third session adds `docs/saved.md`. She comments on it, presses **Send review**, types a
+      line at the end of `review · <label>.md`, presses Ctrl+S (the tab's `dirty` clears), then
+      `Developer: Reload Window`, then **Send to session**, and `GET /sessions/:id/follow-up`
+      (`via: "api"`) must hold her line. On `c1ddcd1da` the restored tab reads
+      `The editor could not be opened because the file was not found.`, **Send review** composes the
+      review again without her line, and that is what Mend holds. Fixed: the restored tab reads her
+      line, and the follow-up's instruction ends with it.
 - **e. Dana wants to drive by hand.** `recipes/vscode-open.mjs`, from the default `up`.
   - The gesture is Open; typing into the attached `claude · add-rate-limit` is story c's last lane.
   - **Continue here.** `contextMenu("Mend: Open in New Window")` on `from-phone`: the tab
