@@ -8,6 +8,7 @@ import {
   commentsOnTheirWay,
   mayRetry,
   needs,
+  MAX_ACCOUNT_WAITS,
   nextAction,
   onFailure,
   openRecord,
@@ -465,8 +466,12 @@ describe("a step of a drive that fails", () => {
     ["in-terminal, pasting", terminal({ kind: "pasting" })],
   ];
   const FAILURES: ReadonlyArray<readonly [string, DriveFailure]> = [
-    ["VS Code connected to another server or account", { kind: "unbound", why: "switched" }],
-    ["Mend could not name VS Code's sign-in", { kind: "unbound", why: "unknown" }],
+    [
+      "VS Code connected to another server or account",
+      { kind: "unbound", why: "switched", words: "" },
+    ],
+    ["VS Code was signed out", { kind: "unbound", why: "signed-out", words: "" }],
+    ["Mend could not name VS Code's sign-in", { kind: "unbound", why: "unknown", words: "" }],
     ["Mend refused a write", { kind: "refused", words: "Mend refused the review" }],
     ["anything else failed", { kind: "failed", words: "Mend is restarting" }],
   ];
@@ -484,7 +489,7 @@ describe("a step of a drive that fails", () => {
   it.each(CASES)(
     "%s, when %s, stops, waits, or leaves the review on her or on no one",
     (_name, _what, phase, failure) => {
-      const next = onFailure(inPhase(phase), failure);
+      const next = onFailure(inPhase(phase), failure, 0);
       if (next.kind === "event")
         expect(needs(step(inPhase(phase), next.event, NOW))).not.toBe("driver");
       else expect(["stop", "wait"]).toContain(next.kind);
@@ -492,36 +497,56 @@ describe("a step of a drive that fails", () => {
   );
 
   it.each(DRIVEN)(
-    "%s stops for a connection elsewhere, and waits for a sign-in Mend could not name",
+    "%s stops for a connection elsewhere or a sign-out, and waits a while for a sign-in Mend could not name",
     (_name, phase) => {
-      expect(onFailure(inPhase(phase), { kind: "unbound", why: "switched" })).toEqual({
+      expect(onFailure(inPhase(phase), { kind: "unbound", why: "switched", words: "" }, 0)).toEqual(
+        {
+          kind: "stop",
+          why: { kind: "switched" },
+        },
+      );
+      expect(
+        onFailure(inPhase(phase), { kind: "unbound", why: "signed-out", words: "" }, 0),
+      ).toEqual({
         kind: "stop",
-        why: { kind: "switched" },
+        why: { kind: "signed-out" },
       });
-      expect(onFailure(inPhase(phase), { kind: "unbound", why: "unknown" })).toEqual({
-        kind: "wait",
-      });
+      const unknown: DriveFailure = {
+        kind: "unbound",
+        why: "unknown",
+        words: "Mend could not say",
+      };
+      expect(onFailure(inPhase(phase), unknown, MAX_ACCOUNT_WAITS - 1)).toEqual({ kind: "wait" });
+      expect(onFailure(inPhase(phase), unknown, MAX_ACCOUNT_WAITS)).toEqual(
+        onFailure(inPhase(phase), { kind: "failed", words: "Mend could not say" }, 0),
+      );
     },
   );
 
   it("stops a paste on any other failure, in its words: Mend holds the follow-up", () => {
     expect(
-      onFailure(inPhase(terminal({ kind: "due" })), {
-        kind: "failed",
-        words: "VS Code could not keep the review",
-      }),
+      onFailure(
+        inPhase(terminal({ kind: "due" })),
+        { kind: "failed", words: "VS Code could not keep the review" },
+        0,
+      ),
     ).toEqual({ kind: "stop", why: { kind: "error", words: "VS Code could not keep the review" } });
   });
 
   it("keeps what Mend answered when her agent could not be read after it: the review waits on her", () => {
-    const delivered = onFailure(inPhase({ kind: "sending", since: NOW }), {
-      kind: "agent-unread",
-      answer: { via: "deliver", status: "pending", error: null },
-    });
-    const watch = onFailure(inPhase({ kind: "delivering" }), {
-      kind: "agent-unread",
-      answer: { via: "watch", status: "pending", error: null, others: false, sent: false },
-    });
+    const delivered = onFailure(
+      inPhase({ kind: "sending", since: NOW }),
+      { kind: "agent-unread", answer: { via: "deliver", status: "pending", error: null } },
+      0,
+    );
+    const watch = onFailure(
+      inPhase({ kind: "delivering" }),
+      {
+        kind: "agent-unread",
+        answer: { via: "watch", status: "pending", error: null, others: false, sent: false },
+      },
+      0,
+    );
     if (delivered.kind !== "event" || watch.kind !== "event") throw new Error("no event kept");
     expect(step(inPhase({ kind: "sending", since: NOW }), delivered.event, NOW).phase).toEqual({
       kind: "pending",
@@ -533,11 +558,11 @@ describe("a step of a drive that fails", () => {
 
   it("reads a send failed, with Retry, or refused when Mend refused a write", () => {
     const sending = inPhase({ kind: "sending", since: NOW });
-    expect(onFailure(sending, { kind: "failed", words: "Mend is restarting" })).toEqual({
+    expect(onFailure(sending, { kind: "failed", words: "Mend is restarting" }, 0)).toEqual({
       kind: "event",
       event: { kind: "failed", words: "Mend is restarting", retryable: true },
     });
-    expect(onFailure(sending, { kind: "refused", words: "Mend refused the review" })).toEqual({
+    expect(onFailure(sending, { kind: "refused", words: "Mend refused the review" }, 0)).toEqual({
       kind: "event",
       event: { kind: "failed", words: "Mend refused the review", retryable: false },
     });

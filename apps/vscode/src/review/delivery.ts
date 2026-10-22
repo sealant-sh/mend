@@ -144,11 +144,13 @@ export type PasteStep =
 
 /**
  * Why a drive stopped before the send moved on: VS Code closed (as a window that finds it left
- * reads it), VS Code connected to another server or account, or a failure in its own words.
+ * reads it), VS Code connected to another server or account, VS Code was signed out, or a failure
+ * in its own words.
  */
 export type StopReason =
   | { readonly kind: "closed" }
   | { readonly kind: "switched" }
+  | { readonly kind: "signed-out" }
   | { readonly kind: "error"; readonly words: string };
 
 /** What VS Code did when a drive stopped, before `when`. */
@@ -158,6 +160,8 @@ const stopClause = (why: StopReason, when: string): string => {
       return `VS Code closed ${when}`;
     case "switched":
       return `VS Code connected to another Mend server or account ${when}`;
+    case "signed-out":
+      return `VS Code was signed out of Mend ${when}`;
     case "error":
       return why.words;
   }
@@ -796,11 +800,15 @@ export type MendAnswer =
 
 /**
  * What failed in a step of a send's drive: VS Code's connection is not the send's (another server
- * or account, or one Mend could not name), Mend refused a write, or anything else failed: a read,
- * a write Mend never answered, VS Code's own keep.
+ * or account, signed out, or a sign-in Mend could not name), Mend refused a write, or anything else
+ * failed: a read, a write Mend never answered, VS Code's own keep.
  */
 export type DriveFailure =
-  | { readonly kind: "unbound"; readonly why: "switched" | "unknown" }
+  | {
+      readonly kind: "unbound";
+      readonly why: "switched" | "signed-out" | "unknown";
+      readonly words: string;
+    }
   /** Mend answered, and the read of her agent that answer needs failed. */
   | { readonly kind: "agent-unread"; readonly answer: MendAnswer }
   | { readonly kind: "refused"; readonly words: string }
@@ -812,8 +820,17 @@ export type OnFailure =
   | { readonly kind: "wait" }
   | { readonly kind: "event"; readonly event: SendEvent };
 
-/** What the drive does when a step fails, by the send as the drive read it before that step. */
-export const onFailure = (record: SendRecord, failure: DriveFailure): OnFailure => {
+/**
+ * How many times a drive waits on a sign-in Mend could not name before the send reads failed: Mend
+ * that cannot answer for that long cannot take the review either.
+ */
+export const MAX_ACCOUNT_WAITS = 5;
+
+/**
+ * What the drive does when a step fails, by the send as the drive read it before that step and
+ * how many times the drive already waited on a sign-in Mend could not name.
+ */
+export const onFailure = (record: SendRecord, failure: DriveFailure, waited: number): OnFailure => {
   // What Mend answered stands without her agent: a review it holds pending then waits on her.
   if (failure.kind === "agent-unread") {
     const { answer } = failure;
@@ -837,11 +854,11 @@ export const onFailure = (record: SendRecord, failure: DriveFailure): OnFailure 
             },
     };
   }
-  if (failure.kind === "unbound")
-    // Mend could not say whose VS Code's sign-in is: nothing more is sent until it can.
-    return failure.why === "switched"
-      ? { kind: "stop", why: { kind: "switched" } }
-      : { kind: "wait" };
+  // Nothing more is sent on a connection that is not the send's: a read of its own server, signed
+  // in, picks the send up. One Mend could not name yet is waited on, for a while.
+  if (failure.kind === "unbound" && failure.why !== "unknown")
+    return { kind: "stop", why: { kind: failure.why } };
+  if (failure.kind === "unbound" && waited < MAX_ACCOUNT_WAITS) return { kind: "wait" };
   // Mend holds the follow-up: what failed is VS Code's, and the paste step stops on it.
   if (record.phase.kind === "in-terminal")
     return { kind: "stop", why: { kind: "error", words: failure.words } };

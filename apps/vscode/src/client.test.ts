@@ -212,4 +212,16 @@ describe("whose a sign-in is", () => {
     expect(await mend.accountOf({ url: "http://other", token: "dana" })).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(4);
   });
+
+  it("throws Mend's refusal when Mend refused the token, rather than reading it as unknown", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ message: "Sign in" }), { status: 401 })),
+    );
+    await expect(
+      client().accountOf({ url: "http://mend-mini:3105", token: null }),
+    ).rejects.toMatchObject({
+      status: 401,
+    });
+  });
 });

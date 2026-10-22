@@ -186,6 +186,8 @@ const backoff = (failures: number): number =>
  * posting her comments and dismissing drafts end on their own, however many there are.
  */
 const WATCH_MS = 3_000;
+/** How long a drive waits before it asks again whose a sign-in Mend could not name is. */
+const ACCOUNT_WAIT_MS = 1_000;
 const MAX_WATCHES = 400;
 
 export const errorWords = (cause: unknown): string =>
@@ -255,7 +257,7 @@ const refuses = (thrown: unknown): boolean =>
 
 /** What a step of the drive threw, as `onFailure` reads it. */
 const failureOf = (thrown: unknown): DriveFailure => {
-  if (thrown instanceof Unbound) return { kind: "unbound", why: thrown.why };
+  if (thrown instanceof Unbound) return { kind: "unbound", why: thrown.why, words: thrown.message };
   if (thrown instanceof AgentUnread) return { kind: "agent-unread", answer: thrown.answered };
   const words = errorWords(thrown instanceof WriteFailed ? thrown.failure : thrown);
   return refuses(thrown) ? { kind: "refused", words } : { kind: "failed", words };
@@ -563,7 +565,7 @@ export class SendDriver {
       // The drive stopped and could not keep why: it is looked at again soon, as stopped then.
       .catch((cause: unknown) => {
         const why = cause instanceof Stopped ? cause.why : stopsFor(cause);
-        if (why.kind !== "switched") this.host.fail("error", errorWords(cause), { cause });
+        if (!offConnection(why)) this.host.fail("error", errorWords(cause), { cause });
         this.#lookAgainIn(context, key, LOOK_AGAIN_MS, 0, why);
       })
       .finally(() => {
@@ -604,6 +606,7 @@ export class SendDriver {
       return read;
     };
     let watches = 0;
+    let accountWaits = 0;
     while (watches < MAX_WATCHES) {
       if (!(await this.kept.renewDrive(context.place, key))) return;
       const record = sendOf((await this.kept.read(context.place)).review, key);
@@ -742,12 +745,13 @@ export class SendDriver {
       } catch (thrown) {
         if (thrown instanceof DriveLost || thrown instanceof Stopped) throw thrown;
         const cause = thrown instanceof WriteFailed ? thrown.failure : thrown;
-        const next = onFailure(record, failureOf(thrown));
+        const next = onFailure(record, failureOf(thrown), accountWaits);
         switch (next.kind) {
           case "stop":
             throw new Stopped(next.why);
           case "wait":
-            await new Promise((resolve) => setTimeout(resolve, WATCH_MS));
+            accountWaits += 1;
+            await new Promise((resolve) => setTimeout(resolve, ACCOUNT_WAIT_MS));
             continue;
           case "event":
             try {
@@ -768,8 +772,9 @@ export class SendDriver {
   }
 
   /**
-   * Keeps why the drive stopped in the send, under its lease, where every window reads it. A send still needing a drive (a launch being watched) is looked at again soon, unless VS Code
-   * connected elsewhere: a read of its own server picks it up then.
+   * Keeps why the drive stopped in the send, under its lease, where every window reads it. A send
+   * still needing a drive (a launch being watched) is looked at again soon, unless VS Code
+   * connected elsewhere or was signed out: a read of its own server, signed in, picks it up then.
    */
   async #stop(context: SendContext, key: string, why: StopReason): Promise<void> {
     let left: SendRecord | null;
@@ -779,8 +784,7 @@ export class SendDriver {
       if (cause instanceof DriveLost) return;
       throw new Stopped(why, errorWords(cause));
     }
-    if (left !== null && needs(left) === "driver" && why.kind !== "switched")
-      throw new Stopped(why);
+    if (left !== null && needs(left) === "driver" && !offConnection(why)) throw new Stopped(why);
   }
 
   /** What Mend reads now about the record's key and its comments. */
@@ -810,6 +814,13 @@ export class SendDriver {
 }
 
 const stopsFor = (cause: unknown): StopReason => ({ kind: "error", words: errorWords(cause) });
+
+/**
+ * A drive stopped because VS Code's connection is not the send's: no toast says it, and nothing
+ * looks at the send again until a read of its own server, signed in, does.
+ */
+const offConnection = (why: StopReason): boolean =>
+  why.kind === "switched" || why.kind === "signed-out";
 
 export const liveAgent = (detail: SessionDetail, viewer: string | null): LiveAgent | null => {
   const agent = detail.currentAgent;

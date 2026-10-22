@@ -436,7 +436,8 @@ export class MendClient {
 
   /**
    * The account `connection`'s token belongs to, read through that connection; null when Mend
-   * could not say. A token never changes account, so an answer is kept per server and token.
+   * could not say. A token never changes account, so an answer is kept per server and token. Mend's
+   * refusal of the token (401) is thrown, the token dropped first: VS Code is signed out.
    */
   async accountOf(connection: MendConnection): Promise<string | null> {
     const key = JSON.stringify([connection.url, connection.token]);
@@ -448,8 +449,9 @@ export class MendClient {
       if (account !== null) this.#accounts.set(key, account);
       return account;
     } catch (cause) {
-      if (cause instanceof MendApiError && cause.status === 401) this.refused(connection);
-      return null;
+      if (!(cause instanceof MendApiError && cause.status === 401)) return null;
+      this.refused(connection);
+      throw cause;
     }
   }
 

@@ -323,6 +323,8 @@ const parseStop = (value: unknown): StopReason | null => {
       return { kind: "closed" };
     case "switched":
       return { kind: "switched" };
+    case "signed-out":
+      return { kind: "signed-out" };
     case "error": {
       const words = text(value, "words");
       return words === null ? null : { kind: "error", words };
