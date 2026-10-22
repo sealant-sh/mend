@@ -161,17 +161,25 @@ const approvePage = async (web, page) => {
 };
 
 /**
- * Mend's server behind a loopback port that holds every `POST /api/cli/auth` for `holdMs` before
- * passing it on: a sign-in request still out while she cancels.
+ * Mend's server behind a loopback port that holds every `POST /api/cli/auth` until `release()`
+ * before passing it on: a sign-in request still out while she cancels. `boundMs` caps the hold, so
+ * a run that never releases cannot hang.
  */
-const slowSignInServer = (origin, holdMs) =>
+const slowSignInServer = (origin, boundMs) =>
   new Promise((resolve) => {
+    let held = 0;
     let answered = 0;
+    const released = Promise.withResolvers();
     const server = createServer(async (request, response) => {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const holding = request.method === "POST" && request.url === "/api/cli/auth";
-      if (holding) await new Promise((done) => setTimeout(done, holdMs));
+      if (holding) {
+        held += 1;
+        const bound = setTimeout(released.resolve, boundMs);
+        await released.promise;
+        clearTimeout(bound);
+      }
       const upstream = await fetch(new URL(request.url ?? "/", origin), {
         method: request.method,
         headers: { "content-type": request.headers["content-type"] ?? "application/json" },
@@ -188,8 +196,13 @@ const slowSignInServer = (origin, holdMs) =>
       const port = typeof address === "object" && address !== null ? address.port : 0;
       resolve({
         url: `http://127.0.0.1:${port}`,
+        held: () => held,
+        release: () => released.resolve(),
         answered: () => answered,
-        close: () => new Promise((done) => server.close(done)),
+        close: () => {
+          released.resolve();
+          return new Promise((done) => server.close(done));
+        },
       });
     });
   });
@@ -789,7 +802,7 @@ async function cliSignedIn(h) {
   await step(
     "edge: Connect cancelled while its sign-in request is out opens no approve page and keeps the connection",
     async () => {
-      const slow = await slowSignInServer(origin, 8_000);
+      const slow = await slowSignInServer(origin, 300_000);
       try {
         const opened = browserOpened().length;
         const watching = await watch();
@@ -797,10 +810,16 @@ async function cliSignedIn(h) {
         await quickInput.waitFor();
         await quickInput.type(slow.url);
         await quickInput.accept();
+        await waitUntil(
+          "the sign-in request held at the proxy",
+          async () => (slow.held() === 1 ? true : null),
+          30_000,
+        );
         const asking = notification(`Asking ${new URL(slow.url).host} for a sign-in code`);
         await asking.waitFor(30_000);
         await shot("edge-sign-in-asking");
         await asking.click("Cancel");
+        slow.release();
         await waitUntil(
           "the held sign-in request answered",
           async () => (slow.answered() === 1 ? true : null),
