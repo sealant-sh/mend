@@ -525,6 +525,84 @@ describe("a second Send while the first review is being pasted into claude's ter
   });
 });
 
+/** Mend whose answer to the `held`th follow-up waits until `land`. */
+class HeldDelivery extends FakeMend {
+  held = 0;
+  readonly #landed = Promise.withResolvers<void>();
+  readonly #asked = Promise.withResolvers<void>();
+  /** Settles once the held follow-up reaches Mend. */
+  readonly asked = this.#asked.promise;
+
+  override async deliver(
+    ...args: Parameters<FakeMend["deliver"]>
+  ): ReturnType<FakeMend["deliver"]> {
+    this.held -= 1;
+    if (this.held === 0) {
+      this.#asked.resolve();
+      await this.#landed.promise;
+    }
+    return super.deliver(...args);
+  }
+
+  land(): void {
+    this.#landed.resolve();
+  }
+}
+
+describe("Retry delivery of an older review while a newer one is on its way to Mend", () => {
+  it("sends nothing, says why, and claude's input gets only the newer review", async () => {
+    const mend = new HeldDelivery();
+    mend.answer = "pending";
+    mend.held = 2;
+    mend.serverComments = [comment({ id: "c1" })];
+    const pastes: Array<string> = [];
+    const answers: Array<Pasted> = ["not-attached"];
+    const store = new ReviewStore(
+      withAgent(CLAUDE),
+      mend,
+      new ReviewMemory(memento()),
+      keptIn(await storage()),
+      async (sessionId, _processId, text, bound) => {
+        await bound.sessionDetail(sessionId);
+        const pasted = answers.shift() ?? "pasted";
+        if (pasted === "pasted") pastes.push(text);
+        return pasted;
+      },
+    );
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    const first = store.compose();
+    if (first === null) throw new Error("nothing composed");
+    expect(await sendComposed(store, first, first.text)).toEqual({ sent: true });
+    await vi.waitFor(
+      () =>
+        expect(store.review().sends.at(-1)?.phase).toMatchObject({
+          paste: { kind: "failed", mayHaveLanded: false },
+        }),
+      SETTLE,
+    );
+    const older = store.review().sends.at(-1);
+    if (older === undefined) throw new Error("no review kept");
+
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const second = store.compose();
+    if (second === null) throw new Error("nothing composed");
+    expect(await sendComposed(store, second, second.text)).toEqual({ sent: true });
+    await mend.asked;
+
+    const place = { url: "http://mend", viewer: "dana", sessionId: "s1" };
+    expect(await store.retry({ place, key: older.key })).toEqual({
+      retried: false,
+      words: "Retry delivery sent nothing: Mend is still sending your last review",
+    });
+    mend.land();
+    await vi.waitFor(() => expect(pastes).toHaveLength(1), SETTLE);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(pastes).toEqual([store.review().sends.at(-1)?.instruction]);
+    expect(store.review().sends.map(({ phase }) => phase.kind)).toEqual(["refused", "in-terminal"]);
+  });
+});
+
 const exitable = () => {
   let agent: SessionProcess = CLAUDE;
   return {
