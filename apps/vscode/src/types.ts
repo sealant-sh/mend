@@ -1,3 +1,6 @@
+import { HandoffCutAt, HandoffMachine, HexSha } from "@mend/domain/workbench";
+import { Schema } from "effect";
+
 export const SESSION_STATUSES = [
   "starting",
   "running",
@@ -27,6 +30,19 @@ export interface Worktree {
   readonly baseSha: string;
   readonly baseRef: string | null;
   readonly createdAt: string;
+  readonly handoff: HandoffProvenance | null;
+}
+
+export const HandoffProvenance = Schema.Struct({
+  machine: HandoffMachine,
+  cutAt: HandoffCutAt,
+  checkpoint: HexSha,
+});
+export type HandoffProvenance = typeof HandoffProvenance.Type;
+
+export interface ReceivedHandoff {
+  readonly session: Session;
+  readonly worktree: Worktree;
 }
 
 export interface Session {

@@ -171,6 +171,7 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
   #tooltip(view: SessionView, lines: ReadonlyArray<string>): string {
     return sessionTooltip(view.project, view.session, [
       view.line,
+      ...(view.provenance === null ? [] : [view.provenance]),
       ...lines,
       ...whyLine(view.capability),
       ...(this.store.model()?.offline === true ? ["Mend is offline"] : []),

@@ -5,6 +5,7 @@ import type {
   AgentRequestDto,
   AgentRequestResponse,
 } from "@mend/agent-conversation";
+import { Option, Schema } from "effect";
 import * as vscode from "vscode";
 
 import type { ConnectionStore, MendConnection } from "./config.js";
@@ -22,6 +23,7 @@ import {
 import type { LandingFact } from "./session-model.js";
 import {
   SESSION_STATUSES,
+  HandoffProvenance,
   type Effort,
   type HarnessModelCatalog,
   type LaunchExpected,
@@ -146,6 +148,16 @@ const parseHarnessModelCatalog = (value: unknown): HarnessModelCatalog => {
   };
 };
 
+const decodeHandoffProvenance = Schema.decodeUnknownOption(HandoffProvenance);
+
+const parseHandoffProvenance = (value: unknown): HandoffProvenance | null => {
+  if (value === undefined || value === null) return null;
+  return Option.getOrThrowWith(
+    decodeHandoffProvenance(value),
+    () => new Error("Mend returned an invalid handoff."),
+  );
+};
+
 const parseWorktree = (value: unknown): Worktree => {
   if (!isRecord(value)) throw new Error("Mend returned an invalid worktree.");
   return {
@@ -156,6 +168,7 @@ const parseWorktree = (value: unknown): Worktree => {
     baseSha: stringField(value, "baseSha"),
     baseRef: nullableStringField(value, "baseRef"),
     createdAt: stringField(value, "createdAt"),
+    handoff: parseHandoffProvenance(value["handoff"]),
   };
 };
 

@@ -854,6 +854,9 @@ importers:
       '@mend/workspace-ssh':
         specifier: workspace:*
         version: link:../../packages/workspace-ssh
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.5
     devDependencies:
       '@mend/test-ci':
         specifier: workspace:*

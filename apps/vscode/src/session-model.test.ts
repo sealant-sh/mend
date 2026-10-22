@@ -1,3 +1,4 @@
+import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -18,7 +19,7 @@ import {
   waitsOf,
 } from "./session-model.js";
 import { pendingRequest, requestWait } from "./test-requests.js";
-import type { Project, Session } from "./types.js";
+import { HandoffProvenance, type Project, type Session, type Worktree } from "./types.js";
 
 const NOW = new Date("2026-10-19T09:00:00.000Z");
 const YESTERDAY = "2026-10-18T18:00:00.000Z";
@@ -712,5 +713,111 @@ describe("a session the model has not read yet (N2)", () => {
       "running · reading src/auth",
     );
     expect(ownLine(session({ id: "d", status: "waiting" }))).toBe("waiting");
+  });
+});
+
+describe("a handed-off session (story g)", () => {
+  const CUT_AT = "2026-10-19T07:42:05.000Z";
+  const fixLogin: Worktree = {
+    id: "w1",
+    name: "fix-login",
+    directory: "/store/newsroom-api/worktrees/fix-login",
+    branch: "fix-login",
+    baseSha: "a".repeat(40),
+    baseRef: "refs/heads/main",
+    createdAt: CUT_AT,
+    handoff: Schema.decodeUnknownSync(HandoffProvenance)({
+      machine: "dana-mbp",
+      cutAt: CUT_AT,
+      checkpoint: "b".repeat(40),
+    }),
+  };
+  const held = session({ id: "1a2b3c4d-5e6f", label: null, worktreeId: "w1", status: "idle" });
+  const read = (sessions: ReadonlyArray<Session>, overrides: Partial<ModelInput> = {}) =>
+    sessionModel(
+      input(sessions, {
+        details: [{ project: newsroom, sessions, worktrees: [fixLogin] }],
+        ...overrides,
+      }),
+    );
+  const fromDanaMbp = `handed off from dana-mbp at ${clockTime(CUT_AT)}`;
+
+  it("reads a held one as handed off from its machine, by the name it came with", () => {
+    const model = read([held]);
+    expect(model.sessions.get(held.id)).toMatchObject({
+      name: "fix-login",
+      line: "idle · handed off from dana-mbp",
+      provenance: null,
+    });
+    expect(rowsOf(model)[0]).toEqual({
+      group: "running",
+      rows: ["fix-login · idle · handed off from dana-mbp"],
+    });
+  });
+
+  it("takes the server's label once it has one", () => {
+    const labelled = { ...held, label: "Fix the login redirect" };
+    expect(read([labelled]).sessions.get(held.id)?.name).toBe("Fix the login redirect");
+  });
+
+  it("keeps each fact Mend observed in its line, and says where it came from in the tooltip", () => {
+    const since = "2026-10-19T08:30:00.000Z";
+    const refusal = "launch refused · Connect Claude to start a session here.";
+    const rows = [
+      read([{ ...held, status: "waiting" }], {
+        waits: new Map([[held.id, waitFor(since)]]),
+      }),
+      read([{ ...held, status: "starting" }], {
+        launches: new Map([
+          [held.id, { n: 1, after: null, refusal: { line: refusal, at: since, confirmed: true } }],
+        ]),
+      }),
+      read([{ ...held, status: "failed", summary: "agent exited 1", settledAt: since }]),
+      read([{ ...held, status: "completed", settledAt: since }], {
+        landings: new Map([
+          [
+            held.id,
+            {
+              id: "l1",
+              userId: "dana",
+              createdAt: "2026-10-19T08:45:00.000Z",
+              remoteBranch: "fix-login",
+              pullRequest: { number: 412, state: "open" },
+            },
+          ],
+        ]),
+      }),
+      read([{ ...held, summary: "reading src/auth" }]),
+    ].map((model) => model.sessions.get(held.id));
+    expect(rows.map((row) => row?.line)).toEqual([
+      `waiting · claude needs your permission to use Bash · since ${clockTime(since)}`,
+      `starting · ${refusal}`,
+      "failed · agent exited 1",
+      "landed · pull request #412 · open · observed",
+      "idle · reading src/auth",
+    ]);
+    expect(rows.map((row) => row?.provenance)).toEqual(Array(5).fill(fromDanaMbp));
+  });
+
+  it("says nothing of a handoff for a worktree that was not handed off", () => {
+    const started = session({ id: "add-rate-limit", worktreeId: "w2", status: "idle" });
+    const model = sessionModel(
+      input([started], {
+        details: [
+          {
+            project: newsroom,
+            sessions: [started],
+            worktrees: [{ ...fixLogin, id: "w2", name: "add-rate-limit", handoff: null }],
+          },
+        ],
+      }),
+    );
+    expect(model.sessions.get(started.id)).toMatchObject({ line: "idle", provenance: null });
+  });
+
+  it("badges nothing and raises no notification as it appears", () => {
+    const next = read([held]);
+    expect(next.badge).toBe(0);
+    expect(transitions(read([]), next, looking)).toEqual([]);
   });
 });

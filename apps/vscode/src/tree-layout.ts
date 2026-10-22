@@ -90,6 +90,7 @@ const drawnRow = (view: SessionView, viewer: string | null): string =>
   JSON.stringify([
     view.name,
     view.line,
+    view.provenance,
     view.word,
     view.needsYou,
     view.live,
