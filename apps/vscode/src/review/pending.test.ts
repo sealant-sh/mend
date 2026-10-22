@@ -38,6 +38,11 @@ describe("her pending comments (story d, step 4)", () => {
     expect(removePending(review, "p1").pending).toEqual([]);
   });
 
+  it("read a comment kept without the text of its line: nothing reads that text", () => {
+    const { lineText: _unread, ...without } = { ...pending({}), lineText: "the line" };
+    expect(parseSessionReview({ pending: [without] }).review.pending).toEqual([without]);
+  });
+
   it("read only a comment that reads back, and keep any other as it was", () => {
     expect(parseSessionReview({ pending: [pending({}), { id: "broken" }] })).toEqual({
       review: { ...EMPTY_REVIEW, pending: [pending({})] },
