@@ -1317,6 +1317,41 @@ describe("a window already following the session when another window's send is l
     expect(following.store.retryTarget()).not.toBeNull();
   });
 
+  it("takes the send over before it reads it failed, so the window that wakes from sleep stops and says nothing", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    mend.serverComments = [comment({ id: "c1" })];
+    const { promise: asked, resolve: ask } = Promise.withResolvers<void>();
+    const { promise: answers, resolve: answer } = Promise.withResolvers<void>();
+    const deliver = mend.deliver.bind(mend);
+    mend.deliver = async (...args) => {
+      ask();
+      await answers;
+      return deliver(...args);
+    };
+    const asleep = await window(keptIn(directory), mend);
+    const toldAsleep = failures(asleep.store);
+    const fromAsleep = asleep.store.compose();
+    if (fromAsleep === null) throw new Error("nothing composed");
+    await sendComposed(asleep.store, fromAsleep, fromAsleep.text);
+    await asked;
+
+    // The other window's clock reads the sleeping window's lease stale, as after a laptop sleep.
+    const awake = await window(
+      new KeptReviews(directory, NODE_FILES, () => Date.now() + DRIVE_STALE_MS),
+      mend,
+    );
+    await vi.waitFor(
+      () => expect(awake.store.review().sends.map(({ phase }) => phase.kind)).toEqual(["failed"]),
+      SETTLE,
+    );
+    answer();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(toldAsleep).toEqual([]);
+    expect(asleep.pastes).toEqual([]);
+  });
+
   it("looks again, and reads its own send failed with Retry delivery, when its first look could not keep it either", async () => {
     const mend = new FakeMend();
     mend.serverComments = [comment({ id: "c1" })];
