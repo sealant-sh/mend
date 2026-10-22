@@ -548,7 +548,6 @@ const transition = (record: SendRecord, event: SendEvent, now: string): Stepped 
         (phase.paste.kind !== "due" && phase.paste.kind !== "pasting")
       )
         return quiet(record);
-      // Under way, some or all of it may be in the agent's input.
       const mayHaveLanded = phase.paste.kind === "pasting";
       return {
         record: {

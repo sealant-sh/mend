@@ -13,11 +13,11 @@ import type { DriverReads } from "./binding.js";
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
 import {
+  admits,
   handedOver,
   commentsOnTheirWay,
   needs,
   openRecord,
-  admits,
   retryRecord,
   startSend,
   type SendSlice,
@@ -1189,14 +1189,13 @@ export class ReviewStore implements vscode.Disposable {
       viewer === null ? null : { url, viewer, sessionId: session.id };
     // Only the followed session's own read loads its comments: a read of the one followed before,
     // landing late, must not put that session's comments under this one.
-    if (this.followed()?.session.id === session.id && place === null) {
-      if (this.#place !== null) {
-        this.#place = null;
-        this.#rev = -1;
-        this.#review = EMPTY_REVIEW;
-        this.#changed.fire();
-      }
-    } else if (this.followed()?.session.id === session.id && place !== null) {
+    const followedNow = this.followed()?.session.id === session.id;
+    if (followedNow && place === null && this.#place !== null) {
+      this.#place = null;
+      this.#rev = -1;
+      this.#review = EMPTY_REVIEW;
+      this.#changed.fire();
+    } else if (followedNow && place !== null) {
       const kept = await this.kept.read(place);
       if (this.followed()?.session.id === session.id) {
         if (!samePlace(this.#place, place)) {

@@ -18,9 +18,9 @@ import {
   type FollowUpRead,
   type LiveAgent,
   type MendAnswer,
-  type StopReason,
   type SendEvent,
   type SendRecord,
+  type StopReason,
 } from "./delivery.js";
 import type { KeptReviews, ReviewPlace } from "./kept-reviews.js";
 import type { SessionReview } from "./pending.js";
@@ -145,9 +145,9 @@ const backoff = (failures: number): number =>
  * posting her comments and dismissing drafts end on their own, however many there are.
  */
 const WATCH_MS = 3_000;
+const MAX_WATCHES = 400;
 /** How long a drive waits before it asks again whose a sign-in Mend could not name is. */
 const ACCOUNT_WAIT_MS = 1_000;
-const MAX_WATCHES = 400;
 
 export const errorWords = (cause: unknown): string =>
   cause instanceof Error ? cause.message : "Mend could not read this change.";
@@ -181,8 +181,7 @@ const agentAfter = async (
   try {
     return liveAgent(await reads.sessionDetail(context.place.sessionId), context.viewer);
   } catch (cause) {
-    // A sign-in Mend cannot name yet is waited on: the next turn asks Mend again, with the same
-    // key.
+    // A sign-in Mend cannot name yet is waited on: the next turn asks Mend again, same key.
     if (cause instanceof Unbound && cause.why === "unknown") throw cause;
     throw new AgentUnread(answered, cause);
   }
@@ -684,7 +683,6 @@ export class SendDriver {
               pasted = await this.paste(sessionId, action.processId, action.text, reads);
             } catch (cause) {
               if (cause instanceof Unbound) {
-                // Refused before anything reached the terminal: the paste is due again.
                 await this.#step(context, key, { kind: "paste-unstarted" });
                 throw cause;
               }
