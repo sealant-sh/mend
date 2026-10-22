@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { MendClient } from "../client.js";
+import type { MendConnection } from "../config.js";
 import { MendApiError } from "../mend-http.js";
 import type { Session, SessionDetail } from "../types.js";
 import { mendNote } from "./instruction.js";
@@ -1100,6 +1102,91 @@ const signIns = () => {
     },
   };
 };
+
+/**
+ * Dana's sign-ins, whose account MendClient reads from Mend's `/organization` through each
+ * sign-in's own token: `dana-1` is Dana's, no token is signed out (401), and any other token gets
+ * `failing`, Mend's answer while it cannot say.
+ */
+const organization = (failing: () => Response) => {
+  const at: { token: string | null } = { token: "dana-1" };
+  const asked = { count: 0 };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string, init?: RequestInit) => {
+      asked.count += 1;
+      const token = new Headers(init?.headers).get("authorization");
+      if (token === "Bearer dana-1") return new Response(JSON.stringify({ userId: "dana" }));
+      if (token === null)
+        return new Response(JSON.stringify({ message: "Sign in" }), { status: 401 });
+      return failing();
+    }),
+  );
+  const client = new MendClient({
+    get: async () => ({ url: "http://mend", token: at.token }),
+    refused: async () => undefined,
+  });
+  return {
+    at,
+    asked,
+    sessions: {
+      ...sessionReads("change-1"),
+      connection: async () => ({ url: "http://mend", token: at.token }),
+      accountOf: (connection: MendConnection) => client.accountOf(connection),
+    },
+  };
+};
+
+describe("a review on its way while VS Code is signed out, or Mend cannot say who signed in", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("stops once VS Code is signed out: the review reads failed, with Retry, and Mend is asked nothing more", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    const { at, asked, sessions } = organization(() => new Response("{}", { status: 503 }));
+    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+
+    at.token = null;
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("failed"), SETTLE);
+    const record = (await kept.read(DANA_S1)).review.sends.find(
+      (candidate) => candidate.key === key,
+    );
+    expect(record?.phase).toMatchObject({
+      words: "VS Code was signed out of Mend before Mend answered",
+    });
+    const before = asked.count;
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(asked.count).toBe(before);
+    expect(mend.delivered).toEqual([]);
+  }, 15_000);
+
+  it("reads the review failed, with Retry, once Mend could not say whose a new sign-in is for a while", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    const { at, sessions } = organization(() => new Response("{}", { status: 503 }));
+    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+
+    at.token = "dana-2";
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("failed"), {
+      timeout: 12_000,
+    });
+    const record = (await kept.read(DANA_S1)).review.sends.find(
+      (candidate) => candidate.key === key,
+    );
+    expect(record?.phase).toMatchObject({
+      words: "Mend could not say which account VS Code is signed in as",
+    });
+    expect(mend.delivered).toEqual([]);
+  }, 20_000);
+});
 
 describe("a review on its way while VS Code's sign-in changes on the same server", () => {
   it("sends nothing on Retry while Mend cannot say whose a new sign-in is", async () => {
