@@ -654,6 +654,30 @@ describe("an accepted draft in a review she sent", () => {
     expect(acceptedDrafts(refused).has("d1")).toBe(true);
   });
 
+  it("stays hers once her words in its place are on Mend, after the review that posted them is no longer kept", () => {
+    const review = sent({
+      pending: [{ ...accepted, body: "Run the burst test too." }],
+      sends: [],
+      document: null,
+    });
+    const left = apply(
+      review,
+      { kind: "posted", pendingId: "a1", commentId: "c9" },
+      { kind: "draft-left", draftId: "d1", words: "Mend refused the dismissal." },
+    );
+    const done: SendPhase = { kind: "delivered", at: NOW };
+    const later = ["key-2", "key-3", "key-4", "key-5"].reduce<SessionReview>(
+      (next, key) => ({
+        ...next,
+        sends: [...next.sends, { ...only(sent(undefined, key), key), phase: done }],
+      }),
+      { ...left, sends: left.sends.map((record) => ({ ...record, phase: done })) },
+    );
+    const trimmed = sent({ ...later, pending: [pending({ id: "p9" })] }, "key-6");
+    expect(trimmed.sends.map(({ key }) => key)).not.toContain("key-1");
+    expect(acceptedDrafts(trimmed).has("d1")).toBe(true);
+  });
+
   it("leaves the review when it is dismissed on Mend, and is never opened", () => {
     const review = sent({ pending: [accepted, pending({})], sends: [], document: null });
     expect(nextAction(only(review))).toMatchObject({ kind: "open", draftId: "d1" });
