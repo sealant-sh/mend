@@ -819,12 +819,12 @@ export class ReviewStore implements vscode.Disposable {
   }
 
   /**
-   * Send to session: the text she sent, with exactly the comments it was composed with, under one
-   * new idempotency key kept in the record; the record is then driven until Mend answers. `text`
-   * is her editor's, based on the document's `revision`: one another window saved since is not sent
-   * over. Says whether the send was recorded, and why not in Mend's words.
+   * Send to session: the review's text as kept at `revision`, the one her editor saved or read,
+   * with exactly the comments it was composed with, under one new idempotency key kept in the
+   * record; the record is then driven until Mend answers. A revision another window saved since is
+   * not sent. Says whether the send was recorded, and why not in Mend's words.
    */
-  async send(ref: DocumentRef, text: string, revision: number): Promise<Sent> {
+  async send(ref: DocumentRef, revision: number): Promise<Sent> {
     const read = this.ready();
     const place = this.#place;
     if (read === null || place === null || !samePlace(place, ref.place))
@@ -844,7 +844,7 @@ export class ReviewStore implements vscode.Disposable {
     const open = this.#openOnMend(read);
     if (digestOf(this.#review.pending, open) !== composed.digest)
       return { sent: false, words: COMMENTS_CHANGED };
-    const instruction = textToSend(text, read.sessionName);
+    const instruction = textToSend(document.text, read.sessionName);
     const paste: PastePlan =
       composed.base === null ? { kind: "all" } : addedText(instruction, composed.base);
     const key = `vscode-follow-up:${read.changeId}:${randomUUID()}`;

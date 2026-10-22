@@ -354,14 +354,20 @@ export class FakeMend extends ReviewClient {
   }
 }
 
-/** Send review as its editor does: the composition kept as the session's review, sent with `text`. */
+/**
+ * Send review as its editor does: the composition kept as the session's review, `text` saved over
+ * it, and sent as saved.
+ */
 export const sendComposed = async (
   store: ReviewStore,
   composition: Composition,
   text: string,
 ): Promise<Sent> => {
   const { ref, document } = await store.keepDocument(composition);
-  return store.send(ref, text, document.revision);
+  const saved = await store.saveDocument(ref, document.revision, text);
+  return saved.kind === "saved"
+    ? store.send(ref, saved.revision)
+    : { sent: false, words: `VS Code did not save the review: ${saved.kind}` };
 };
 
 /** Long enough for a store's read of the fakes to land. */

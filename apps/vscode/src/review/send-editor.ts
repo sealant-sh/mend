@@ -174,6 +174,14 @@ export class SendEditor implements vscode.Disposable {
     );
     if (document === undefined) return;
     try {
+      // Saved through VS Code first: its own check refuses a save over a newer one, as for
+      // words it restored from a backup of an older revision.
+      if (document.isDirty && !(await document.save())) {
+        void vscode.window.showWarningMessage(
+          "VS Code did not save this review, so nothing was sent. Your text stays in this editor.",
+        );
+        return;
+      }
       const ref = refOf(uri);
       const revision = this.#files.basedOn(uri);
       if (ref === null || revision === undefined) {
@@ -183,7 +191,7 @@ export class SendEditor implements vscode.Disposable {
         return;
       }
       const { version } = document;
-      const sent = await this.store.send(ref, document.getText(), revision);
+      const sent = await this.store.send(ref, revision);
       // Not recorded: the editor stays, and her words in it.
       if (!sent.sent) {
         void vscode.window.showWarningMessage(sent.words);

@@ -578,7 +578,7 @@ describe("sending a review from the store", () => {
     expect(refused).toEqual({ sent: false, words: expect.stringMatching(/changed/) });
     const { ref } = await store.keepDocument(composed);
     const elsewhere = { ...ref, place: { ...ref.place, sessionId: "s2" } };
-    expect(await store.send(elsewhere, composed.text, 1)).toMatchObject({ sent: false });
+    expect(await store.send(elsewhere, 1)).toMatchObject({ sent: false });
     expect(store.review().sends).toEqual([]);
     expect(store.review().pending.map(({ body }) => body)).toEqual([
       "first",
