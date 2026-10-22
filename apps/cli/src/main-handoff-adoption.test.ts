@@ -12,7 +12,7 @@ import {
   ORIGIN,
   project,
   received,
-} from "./main-handoff-test-fixtures.ts";
+} from "./test/main-handoff-fixtures.ts";
 
 const { handoffServer, json, run, spawning, world } = mainHandoffFixtures();
 

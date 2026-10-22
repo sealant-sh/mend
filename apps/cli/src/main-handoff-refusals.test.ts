@@ -14,7 +14,7 @@ import {
   OLD_SERVER,
   ORIGIN,
   project,
-} from "./main-handoff-test-fixtures.ts";
+} from "./test/main-handoff-fixtures.ts";
 
 const { handoffServer, json, run, spawning, startCli, waitFor, world } = mainHandoffFixtures();
 
