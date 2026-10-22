@@ -5,6 +5,7 @@ import type { LaunchExpected, Session } from "./types.js";
 
 /** What a launch needs of the client. */
 export interface LaunchClient {
+  isCurrent?(): Promise<boolean>;
   launchSession(
     sessionId: string,
     start: LaunchRequest & { readonly expected?: LaunchExpected },
@@ -71,6 +72,7 @@ const UNDER_WAY = /already under way/;
  */
 export class Launches {
   readonly #sent = new Map<string, LaunchRequest>();
+  readonly #clients = new Map<string, LaunchClient>();
   readonly #attempts = new Map<string, LaunchAttempt>();
   /** Sessions with a launch or a Retry on its way, until it is answered: a second click sends nothing. */
   readonly #busy = new Map<string, Promise<void>>();
@@ -86,11 +88,16 @@ export class Launches {
   }
 
   /** The first launch of a session this window created. */
-  async launch(sessionId: string, start: LaunchRequest): Promise<void> {
+  async launch(
+    sessionId: string,
+    start: LaunchRequest,
+    client: LaunchClient = this.client,
+  ): Promise<void> {
     if (this.#busy.has(sessionId)) return;
+    this.#clients.set(sessionId, client);
     const sent = await this.#hold(sessionId, () => this.#send(sessionId, start, null, null));
     // Said once nothing is on its way, so the toast it raises may offer Retry.
-    if (sent.kind === "answered") this.#say(sessionId, sent.attempt);
+    if (sent.kind === "answered") await this.#say(sessionId, sent.attempt);
   }
 
   /**
@@ -120,7 +127,7 @@ export class Launches {
       const expected = settledAt === null ? null : { settledAt };
       const sent = await this.#send(sessionId, start, offer.read.settledAt, expected);
       if (sent.kind === "answered") {
-        this.#say(sessionId, sent.attempt);
+        await this.#say(sessionId, sent.attempt);
         return { kind: "sent" };
       }
       return { kind: sent.kind, read: await this.#read(sessionId), said: sent.said };
@@ -139,7 +146,7 @@ export class Launches {
   }
 
   async #read(sessionId: string): Promise<Session | null> {
-    return this.client.sessionDetail(sessionId).then(
+    return (this.#clients.get(sessionId) ?? this.client).sessionDetail(sessionId).then(
       ({ session }) => session,
       () => null,
     );
@@ -153,7 +160,11 @@ export class Launches {
     if (read === null) return { kind: "none" };
     const refusal = this.#attempts.get(sessionId)?.refusal ?? null;
     if (read.status === "failed") return { kind: "retry", read };
-    if (read.status === "starting" && refusal !== null && !UNDER_WAY.test(refusal.line))
+    if (
+      (read.status === "starting" || read.status === "idle") &&
+      refusal !== null &&
+      !UNDER_WAY.test(refusal.line)
+    )
       return { kind: "retry", read };
     return { kind: "moved", read };
   }
@@ -171,9 +182,9 @@ export class Launches {
     const before = this.#attempts.get(sessionId);
     const attempt: LaunchAttempt = { n: (before?.n ?? 0) + 1, after, refusal: null };
     this.#sent.set(sessionId, start);
-    this.#say(sessionId, attempt);
+    await this.#say(sessionId, attempt);
     try {
-      await this.client.launchSession(
+      await (this.#clients.get(sessionId) ?? this.client).launchSession(
         sessionId,
         expected === null ? start : { ...start, expected },
       );
@@ -188,7 +199,7 @@ export class Launches {
       if (precondition !== undefined) {
         if (before === undefined) this.#attempts.delete(sessionId);
         else this.#attempts.set(sessionId, before);
-        this.sink.forget(sessionId);
+        if (await this.#current(sessionId)) this.sink.forget(sessionId);
         return { kind: precondition, said: cause.message };
       }
       // The server settles most refusals failed before it answers: then that failure, keyed by
@@ -219,8 +230,12 @@ export class Launches {
     return read.status === "failed" && read.settledAt !== after ? "settled" : "unsettled";
   }
 
-  #say(sessionId: string, attempt: LaunchAttempt): void {
+  async #current(sessionId: string): Promise<boolean> {
+    return (this.#clients.get(sessionId) ?? this.client).isCurrent?.() ?? true;
+  }
+
+  async #say(sessionId: string, attempt: LaunchAttempt): Promise<void> {
     this.#attempts.set(sessionId, attempt);
-    this.sink.attempted(sessionId, attempt);
+    if (await this.#current(sessionId)) this.sink.attempted(sessionId, attempt);
   }
 }

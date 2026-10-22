@@ -760,6 +760,29 @@ describe("a handed-off session (story g)", () => {
     expect(read([labelled]).sessions.get(held.id)?.name).toBe("Fix the login redirect");
   });
 
+  it("keeps an idle hold's launch refusal and Retry alongside its provenance", () => {
+    const refusal = "launch refused · Connect Claude to start a session here.";
+    const model = read([held], {
+      launches: new Map([
+        [
+          held.id,
+          {
+            n: 1,
+            after: null,
+            refusal: { line: refusal, at: NOW.toISOString(), confirmed: true },
+          },
+        ],
+      ]),
+    });
+    expect(model.sessions.get(held.id)).toMatchObject({
+      line: `idle · ${refusal}`,
+      provenance: fromDanaMbp,
+    });
+    expect(
+      transitions(read([held]), model, looking).map((notification) => notification.kind),
+    ).toContain("launchFailed");
+  });
+
   it("keeps each fact Mend observed in its line, and says where it came from in the tooltip", () => {
     const since = "2026-10-19T08:30:00.000Z";
     const refusal = "launch refused · Connect Claude to start a session here.";

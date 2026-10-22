@@ -303,3 +303,23 @@ describe("Launches", () => {
     ]);
   });
 });
+
+describe("a held handoff's launch", () => {
+  it("keeps the bound client for the first launch and its Retry after a connection switch", async () => {
+    const original = fakeServer(["refused", "ok"], [session("idle")]);
+    const switched = fakeServer(["ok"], [session("idle")]);
+    const attempts: LaunchAttempt[] = [];
+    const launches = new Launches(switched, {
+      attempted: (_id, attempt) => {
+        attempts.push(attempt);
+      },
+      forget: () => undefined,
+    });
+    await launches.launch("s1", START, original);
+    expect((await launches.offer("s1")).kind).toBe("retry");
+    expect(await launches.relaunch("s1", null)).toEqual({ kind: "sent" });
+    expect(original.launched).toHaveLength(2);
+    expect(switched.launched).toEqual([]);
+    expect(attempts.some((attempt) => attempt.refusal?.line.includes("budget"))).toBe(true);
+  });
+});

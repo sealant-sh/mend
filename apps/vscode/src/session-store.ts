@@ -909,7 +909,8 @@ export class SessionStore implements vscode.Disposable {
     // A launch that ran is over: a failure after it is the run's, not the launch's.
     for (const sessionId of this.#launches.keys()) {
       const status = this.find(sessionId)?.session.status ?? "starting";
-      if (status !== "starting" && status !== "failed") this.#launches.delete(sessionId);
+      if (status !== "starting" && status !== "failed" && status !== "idle")
+        this.#launches.delete(sessionId);
     }
     const prev = this.#modelRead ? this.#model : null;
     let next = this.#modelAt(now);
