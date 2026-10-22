@@ -1,3 +1,6 @@
+import { readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MendClient } from "../client.js";
@@ -5,8 +8,7 @@ import type { MendConnection } from "../config.js";
 import { MendApiError } from "../mend-http.js";
 import type { Session, SessionDetail } from "../types.js";
 import { mendNote } from "./instruction.js";
-import { NODE_FILES } from "./kept-reviews.js";
-import type { KeptReviews } from "./kept-reviews.js";
+import { KEPT_REVIEW_TTL_MS, KeptReviews, NODE_FILES } from "./kept-reviews.js";
 import { addPending, MAX_PENDING } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
@@ -205,6 +207,54 @@ describe("two windows on one session", () => {
           .pending.map(({ body }) => body)
           .toSorted(),
       ).toEqual(["from the first window", "from the second window"]);
+  });
+
+  it("show what the other wrote after her review's file was swept and written anew", async () => {
+    const directory = await storage();
+    let now = Date.now();
+    const first = await readyStore(new KeptReviews(directory, NODE_FILES, () => now));
+    const second = await readyStore(new KeptReviews(directory, NODE_FILES, () => now));
+    for (const body of ["one", "two", "three"]) {
+      await first.comment(onLine(3, body));
+      const [kept] = first.review().pending;
+      if (kept !== undefined) await first.remove(kept.id);
+    }
+    const [folder] = await readdir(directory);
+    if (folder === undefined) throw new Error("no folder was made for her reviews");
+    await rm(join(directory, folder, "s1.json"));
+    now += KEPT_REVIEW_TTL_MS;
+    expect(await second.comment(onLine(4, "after the sweep"))).toEqual({ kept: true });
+    await first.reloadReview();
+    expect(first.review().pending.map(({ body }) => body)).toEqual(["after the sweep"]);
+  });
+
+  it("never shows a read that began before this window's own later write", async () => {
+    const directory = await storage();
+    let hold: PromiseWithResolvers<void> | null = null;
+    const reached = Promise.withResolvers<void>();
+    const files = {
+      ...NODE_FILES,
+      readFile: async (path: string) => {
+        const text = await NODE_FILES.readFile(path);
+        const held = hold;
+        if (held !== null && path.endsWith("s1.json")) {
+          hold = null;
+          reached.resolve();
+          await held.promise;
+        }
+        return text;
+      },
+    };
+    const store = await readyStore(keptIn(directory, files));
+    await store.comment(onLine(3, "before"));
+    const late = Promise.withResolvers<void>();
+    hold = late;
+    const reload = store.reloadReview();
+    await reached.promise;
+    await store.comment(onLine(4, "after"));
+    late.resolve();
+    await reload;
+    expect(store.review().pending.map(({ body }) => body)).toEqual(["before", "after"]);
   });
 
   it("accept one draft once, when both accept it at once", async () => {
