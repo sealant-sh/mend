@@ -454,7 +454,16 @@ const scratchFor = (git: Git, base: Env, checkout: Checkout, dir: string): Scrat
   fs.writeFileSync(path.join(shadow, "HEAD"), `${checkout.head}\n`);
   for (const file of fs.readdirSync(checkout.gitDir)) {
     if (file === "index" || file === "config.worktree" || file.startsWith("sharedindex.")) {
-      fs.copyFileSync(path.join(checkout.gitDir, file), path.join(shadow, file));
+      const from = path.join(checkout.gitDir, file);
+      // Git rereads a file whose stat matches its entry only when the index is not newer than it,
+      // so a copy dated now would trust a same-size edit made in the index's own tick. Stat before
+      // copying and floor to the second: an older date only makes git reread more. Git keeps those
+      // seconds in 32 bits; outside them the copy is dated 1 s after the epoch, so git rereads all.
+      const ns = fs.statSync(from, { bigint: true }).mtimeNs;
+      const seconds = ns / 1_000_000_000n - (ns % 1_000_000_000n < 0n ? 1n : 0n);
+      const written = seconds >= 0n && seconds < 2n ** 32n ? Number(seconds) : 1;
+      fs.copyFileSync(from, path.join(shadow, file));
+      fs.utimesSync(path.join(shadow, file), written, written);
     }
   }
   // Without its patterns git takes every checked-out file for one outside them, and expands a

@@ -413,6 +413,29 @@ describe("snapshotCheckout", () => {
     );
   });
 
+  it.each([
+    ["now", new Date("2026-10-18T07:00:00.000Z")],
+    ["before 1970", new Date(-500)],
+    ["before 1834", new Date(-4_294_967_294_500)],
+  ])("carries a same-size edit made in the tick its commit wrote the index (%s)", (_, tick) => {
+    const w = world();
+    const dana = w.clone("same-tick");
+    const file = path.join(dana, "a.txt");
+    // ctime cannot be set, so a test can only line up mtime and size; CI lined up all three.
+    w.git(dana, ["config", "core.trustctime", "false"]);
+    w.write(file, "v1\n");
+    fs.utimesSync(file, tick, tick);
+    w.git(dana, ["commit", "-q", "-am", "v1"]);
+    w.write(file, "v2\n");
+    fs.utimesSync(file, tick, tick);
+    fs.utimesSync(path.join(dana, ".git", "index"), tick, tick);
+    const snapshot = snapshotOf(w, dana);
+    expect(w.git(dana, ["--no-optional-locks", "status", "--porcelain"])).toBe("M a.txt");
+    expect(snapshot.facts.uncommitted).toBe(1);
+    const store = storeWithBundle(w, snapshot);
+    expect(blobAt(w, store, snapshot.worktree, Buffer.from("a.txt"))).toBe("v2");
+  });
+
   it("carries a directory replaced by a file, its old files gone", () => {
     const w = world();
     const dana = w.clone("dir-to-file");
