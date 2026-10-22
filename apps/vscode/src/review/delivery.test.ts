@@ -399,8 +399,8 @@ describe("where a comment goes on Mend", () => {
 
   it("is a deleted file, with her words unchanged, for a comment about that whole file", () => {
     const whole = pending({ path: "README", line: null, endLine: null, body: "Keep the notes." });
-    const posted = commentTarget(FILES, whole);
-    expect(posted).toEqual({
+    const filed = commentTarget(FILES, whole);
+    expect(filed).toEqual({
       target: {
         oldPath: "README",
         newPath: null,
@@ -411,7 +411,7 @@ describe("where a comment goes on Mend", () => {
       },
       body: "Keep the notes.",
     });
-    expect(reviewTargetExists(FILES, posted.target)).toBe(true);
+    expect(reviewTargetExists(FILES, filed.target)).toBe(true);
   });
 
   it("is a target Mend accepts on an added, modified, renamed or deleted file, on either side", () => {

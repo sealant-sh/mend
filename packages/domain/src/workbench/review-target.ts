@@ -63,9 +63,8 @@ export const lineAnchorExists = (
  * The file Mend files a review comment under: the old path for a line on the old side, else the
  * new path, or the old path of a deleted file; none for the change as a whole.
  */
-export const reviewTargetFile = (
-  target: Pick<ReviewCommentTarget, "oldPath" | "newPath" | "side">,
-): string | null => (target.side === "old" ? target.oldPath : (target.newPath ?? target.oldPath));
+export const reviewTargetFile = (target: ReviewCommentTarget): string | null =>
+  target.side === "old" ? target.oldPath : (target.newPath ?? target.oldPath);
 
 /** The file of a slice a comment filed under `path` is on, by the rule `reviewTargetFile` files by. */
 export const targetFileFor = <File extends Pick<ReviewTargetFile, "oldPath" | "newPath">>(
@@ -74,7 +73,15 @@ export const targetFileFor = <File extends Pick<ReviewTargetFile, "oldPath" | "n
   side: ReviewAnchorSide | null,
 ): File | undefined =>
   files.find(
-    (file) => reviewTargetFile({ oldPath: file.oldPath, newPath: file.newPath, side }) === path,
+    (file) =>
+      reviewTargetFile({
+        oldPath: file.oldPath,
+        newPath: file.newPath,
+        side,
+        startLine: null,
+        endLine: null,
+        hunkContextHash: null,
+      }) === path,
   );
 
 export const reviewTargetExists = (
