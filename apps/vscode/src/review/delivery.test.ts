@@ -276,7 +276,7 @@ describe("an accepted draft in a review she sent", () => {
 
   it("leaves the review when it is dismissed on Mend, and is never opened", () => {
     const review = sent({ pending: [accepted, pending({})], sends: [] });
-    expect(nextAction(only(review))).toEqual({ kind: "open", draftId: "d1" });
+    expect(nextAction(only(review))).toMatchObject({ kind: "open", draftId: "d1" });
     const gone = apply(review, { kind: "draft-gone", draftId: "d1" });
     expect(only(gone).items.map((item) => item.kind)).toEqual(["own"]);
     const alone = apply(sent({ pending: [accepted], sends: [] }), {

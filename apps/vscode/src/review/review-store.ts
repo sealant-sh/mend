@@ -24,6 +24,7 @@ import {
   openRecord,
   postedComment,
   commentLabel,
+  replacedDrafts,
   retryRecord,
   sendGeneration,
   startSend,
@@ -1083,12 +1084,22 @@ export class ReviewStore implements vscode.Disposable {
               this.#rereadIfFollowed(sessionId);
               return;
             }
+            if (draft.body.trim() !== action.pending.body.trim()) {
+              await this.#step(context, key, { kind: "replaced", draftId: action.draftId });
+              break;
+            }
             if (draft.state === "draft")
               await this.client.setCommentState(changeId, action.draftId, "open");
             await this.#step(context, key, { kind: "opened", draftId: action.draftId });
             break;
           }
           case "deliver": {
+            // Her words are on Mend now: a draft they replace, still a draft there, is dismissed.
+            const replaced = replacedDrafts(record);
+            if (replaced.length > 0)
+              for (const draft of await this.client.comments(changeId))
+                if (draft.state === "draft" && replaced.includes(draft.id))
+                  await this.client.setCommentState(changeId, draft.id, "dismissed");
             const detail = await this.sessions.sessionDetail(sessionId);
             const answered = await this.client.deliver(sessionId, action.request);
             await this.#step(context, key, {

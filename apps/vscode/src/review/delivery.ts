@@ -149,6 +149,11 @@ export type SendEvent =
   /** The reconcile read found nothing posted for this comment: it is posted again. */
   | { readonly kind: "not-posted"; readonly pendingId: string }
   | { readonly kind: "opened"; readonly draftId: string }
+  /**
+   * She edited the draft she accepted, and Mend keeps a draft's words as written: her words go as
+   * her own comment on its lines, posted as any of hers is, and the draft is dismissed after.
+   */
+  | { readonly kind: "replaced"; readonly draftId: string }
   /** The draft she accepted is dismissed on Mend, or gone: it leaves the review, never reopened. */
   | { readonly kind: "draft-gone"; readonly draftId: string }
   /** A newer review of hers reached Mend, which supersedes every follow-up it held before. */
@@ -194,7 +199,7 @@ export type SendEvent =
 export type SendAction =
   | { readonly kind: "reconcile"; readonly pendingIds: ReadonlyArray<string> }
   | { readonly kind: "post"; readonly pending: PendingComment }
-  | { readonly kind: "open"; readonly draftId: string }
+  | { readonly kind: "open"; readonly draftId: string; readonly pending: PendingComment }
   | { readonly kind: "deliver"; readonly request: DeliverRequest }
   | { readonly kind: "paste"; readonly text: string; readonly processId: string }
   /** Nothing to paste into the agent's terminal, and why, said once. */
@@ -275,7 +280,8 @@ export const nextAction = (record: SendRecord): SendAction => {
   for (const item of record.items) {
     if (item.kind === "own" && item.post.kind === "unposted")
       return { kind: "post", pending: item.pending };
-    if (item.kind === "accepted" && !item.opened) return { kind: "open", draftId: item.draftId };
+    if (item.kind === "accepted" && !item.opened)
+      return { kind: "open", draftId: item.draftId, pending: item.pending };
   }
   const ids = commentIds(record);
   return ids === null
@@ -391,6 +397,16 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
             : item,
         ),
       };
+    case "replaced":
+      return {
+        ...record,
+        items: record.items.map(
+          (item): SendItem =>
+            item.kind === "accepted" && item.draftId === event.draftId
+              ? { kind: "own", pending: item.pending, post: { kind: "unposted" } }
+              : item,
+        ),
+      };
     case "answered":
       return record.phase.kind === "sending"
         ? { ...record, phase: answeredPhase(event.status, event.error, event.agent) }
@@ -483,6 +499,14 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
       };
   }
 };
+
+/** The Mend drafts her own words replace in this review, by their id on Mend. */
+export const replacedDrafts = (record: SendRecord): ReadonlyArray<string> =>
+  record.items.flatMap((item) =>
+    item.kind === "own" && item.pending.origin.kind === "accepted"
+      ? [item.pending.origin.draftId]
+      : [],
+  );
 
 export const DRAFT_GONE =
   "A Mend draft in this review was dismissed before it was sent, and the review's text still asks for it, so nothing was sent";

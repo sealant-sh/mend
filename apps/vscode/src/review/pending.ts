@@ -344,10 +344,14 @@ export const acceptedDrafts = (review: SessionReview): ReadonlySet<string> =>
     ...review.pending.flatMap((comment) =>
       comment.origin.kind === "accepted" ? [comment.origin.draftId] : [],
     ),
-    // One on its way in a review she sent is hers too, until Mend opens it.
+    // One on its way in a review she sent is hers too, as is one her own words replace there.
     ...review.sends.flatMap((record) =>
       record.phase.kind === "refused"
         ? []
-        : record.items.flatMap((item) => (item.kind === "accepted" ? [item.draftId] : [])),
+        : record.items.flatMap((item) =>
+            item.kind !== "open" && item.pending.origin.kind === "accepted"
+              ? [item.pending.origin.draftId]
+              : [],
+          ),
     ),
   ]);
