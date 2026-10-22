@@ -59,6 +59,10 @@ export interface DriverHost {
   settled(sessionId: string): void;
 }
 
+/**
+ * A failed delivery's toast, named by its record and when it failed: the same in every window, so
+ * whichever window she focuses shows it, once.
+ */
 export const failedDelivery = (
   place: ReviewPlace,
   record: SendRecord,
@@ -71,6 +75,7 @@ export const failedDelivery = (
         options: { retry: { place, key: record.key }, at: record.phase.at },
       };
 
+/** Whether a new record was kept and is now driven, and why not. */
 export type Recorded =
   | { readonly kind: "recorded" }
   | { readonly kind: "not-recorded" }
@@ -78,6 +83,21 @@ export type Recorded =
 
 const sendOf = (review: SessionReview, key: string): SendRecord | undefined =>
   review.sends.find((record) => record.key === key);
+
+/** A keep that leaves the send needing its drive when it did not before: a new send, or a Retry. */
+const startsDrive = (before: SendRecord | undefined, after: SendRecord | undefined): boolean =>
+  after !== undefined &&
+  needs(after) === "driver" &&
+  (before === undefined || needs(before) !== "driver");
+
+/**
+ * What a claimed keep did: kept the send needing its drive, under this window's lease; left it as
+ * it reads, the lease given back; or found another window driving it.
+ */
+type Claimed =
+  | { readonly kind: "kept"; readonly record: SendRecord }
+  | { readonly kind: "unmoved"; readonly record: SendRecord | undefined }
+  | { readonly kind: "elsewhere" };
 
 const driveId = (context: SendContext, key: string): string =>
   JSON.stringify([context.place.url, context.place.viewer, context.place.sessionId, key]);
@@ -111,6 +131,10 @@ const CLOSED = "VS Code closed before Mend answered";
 
 const LOOK_AGAIN_MS = 1_000;
 
+/**
+ * How often a launch is watched, and how many times before it reads failed. Only watching counts:
+ * posting her comments and dismissing drafts end on their own, however many there are.
+ */
 const WATCH_MS = 3_000;
 const MAX_WATCHES = 400;
 
@@ -131,6 +155,7 @@ const writing = async <T>(call: Promise<T>): Promise<T> => {
   }
 };
 
+/** 4xx answers that ask for a sign-in or for later: they say nothing against the review. */
 const NOT_A_REFUSAL: ReadonlySet<number> = new Set([401, 408, 429]);
 
 const refuses = (thrown: unknown): boolean =>
@@ -165,19 +190,13 @@ export class SendDriver {
     key: string,
     keep: (review: SessionReview) => SessionReview,
   ): Promise<Recorded> {
-    const { place } = context;
-    let next: SessionReview;
+    let claimed: Claimed;
     try {
-      await this.kept.claimDrive(place, key);
-      next = await this.host.keepAt(place, keep);
+      claimed = await this.#claimAndKeep(context.place, key, keep);
     } catch (cause) {
-      await this.kept.releaseDrive(place, key).catch(() => undefined);
       return { kind: "failed", cause };
     }
-    if (sendOf(next, key) === undefined) {
-      await this.kept.releaseDrive(place, key);
-      return { kind: "not-recorded" };
-    }
+    if (claimed.kind !== "kept") return { kind: "not-recorded" };
     void this.#drive(context, key);
     return { kind: "recorded" };
   }
@@ -211,37 +230,59 @@ export class SendDriver {
       viewer,
       author,
     };
-    if (!(await this.kept.claimDrive(target.place, target.key)))
-      return {
-        retried: false,
-        words: "Retry delivery sent nothing: another window of VS Code is delivering this review",
-      };
     const at = new Date().toISOString();
-    let moved = false;
-    const retried = await this.host
-      .keepAt(target.place, (review) => {
-        const next = stepReview(review, target.key, { kind: "retry", at, agent }, at);
-        moved = sendOf(next, target.key)?.phase !== sendOf(review, target.key)?.phase;
-        return next;
-      })
-      .catch(async (cause: unknown) => {
-        await this.kept.releaseDrive(target.place, target.key).catch(() => undefined);
-        throw cause;
-      });
-    const after = sendOf(retried, target.key);
-    if (!moved || after === undefined) {
-      await this.kept.releaseDrive(target.place, target.key);
-      return {
-        retried: false,
-        words:
-          after === undefined
-            ? "Retry delivery sent nothing: VS Code no longer keeps this review"
-            : `Retry delivery sent nothing: this review already reads ${commentLabel(after, null, agent)}`,
-      };
+    const claimed = await this.#claimAndKeep(target.place, target.key, (review) =>
+      stepReview(review, target.key, { kind: "retry", at, agent }, at),
+    );
+    switch (claimed.kind) {
+      case "elsewhere":
+        return {
+          retried: false,
+          words: "Retry delivery sent nothing: another window of VS Code is delivering this review",
+        };
+      case "unmoved":
+        return {
+          retried: false,
+          words:
+            claimed.record === undefined
+              ? "Retry delivery sent nothing: VS Code no longer keeps this review"
+              : `Retry delivery sent nothing: this review already reads ${commentLabel(claimed.record, null, agent)}`,
+        };
+      case "kept":
+        if (nextAction(claimed.record).kind !== "idle") await this.#drive(context, target.key);
+        else await this.kept.releaseDrive(target.place, target.key);
+        return { retried: true };
     }
-    if (nextAction(after).kind !== "idle") await this.#drive(context, target.key);
-    else await this.kept.releaseDrive(target.place, target.key);
-    return { retried: true };
+  }
+
+  /**
+   * Keeps `update` to the send with this key, its drive claimed first: a window loading the review
+   * between this keep and the drive reads the send driven here, so it never fails it as one a
+   * closed window left. The claim is given back when the keep fails, or when the send does not
+   * need its drive after it.
+   */
+  async #claimAndKeep(
+    place: ReviewPlace,
+    key: string,
+    update: (review: SessionReview) => SessionReview,
+  ): Promise<Claimed> {
+    if (!(await this.kept.claimDrive(place, key))) return { kind: "elsewhere" };
+    let moved = false;
+    let review: SessionReview;
+    try {
+      review = await this.host.keepAt(place, (current) => {
+        const next = update(current);
+        moved = startsDrive(sendOf(current, key), sendOf(next, key));
+        return next;
+      });
+    } catch (cause) {
+      await this.kept.releaseDrive(place, key).catch(() => undefined);
+      throw cause;
+    }
+    const record = sendOf(review, key);
+    if (moved && record !== undefined) return { kind: "kept", record };
+    await this.kept.releaseDrive(place, key);
+    return { kind: "unmoved", record };
   }
 
   async recover(context: SendContext, review: SessionReview): Promise<void> {
