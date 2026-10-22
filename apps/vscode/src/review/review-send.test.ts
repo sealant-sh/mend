@@ -417,6 +417,112 @@ describe("a paste into claude's terminal that never finished", () => {
   });
 });
 
+/** A window whose first paste into claude's terminal waits until the test lets it land. */
+const pastingWindow = async (kept: KeptReviews, mend: FakeMend) => {
+  const pastes: Array<string> = [];
+  const { promise: reached, resolve: reach } = Promise.withResolvers<void>();
+  const { promise: landed, resolve: land } = Promise.withResolvers<Pasted>();
+  const store = new ReviewStore(
+    withAgent(CLAUDE),
+    mend,
+    new ReviewMemory(memento()),
+    kept,
+    async (_sessionId, _processId, text) => {
+      pastes.push(text);
+      reach();
+      return pastes.length === 1 ? landed : "pasted";
+    },
+  );
+  store.follow(PROJECT, session("s1"));
+  await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+  return { store, pastes, reached, land: () => land("pasted") };
+};
+
+describe("a second Send while the first review is being pasted into claude's terminal", () => {
+  it("is not offered in another window, records nothing, and claude's input gets the first review once", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    const a = await pastingWindow(keptIn(directory), mend);
+    await a.store.comment(onLine(3, "Use the shared limiter"));
+    const first = a.store.compose();
+    if (first === null) throw new Error("nothing composed");
+    expect(await sendComposed(a.store, first, first.text)).toEqual({ sent: true });
+    await a.reached;
+
+    const b = await window(keptIn(directory), mend);
+    await b.store.comment(onLine(5, "Name the constant"));
+    await vi.waitFor(
+      () =>
+        expect(b.store.review().sends.at(-1)?.phase).toMatchObject({
+          paste: { kind: "pasting" },
+        }),
+      SETTLE,
+    );
+    expect(b.store.offer()).toEqual({ kind: "busy" });
+    const second = b.store.compose();
+    if (second === null) throw new Error("nothing composed");
+    expect((await sendComposed(b.store, second, second.text)).sent).toBe(false);
+
+    a.land();
+    await vi.waitFor(
+      () => expect(a.store.review().sends.at(-1)?.phase).toMatchObject({ paste: { kind: "done" } }),
+      SETTLE,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect([...a.pastes, ...b.pastes]).toHaveLength(1);
+    expect(mend.delivered).toHaveLength(1);
+    expect(a.store.review().sends.map(({ phase }) => phase.kind)).toEqual(["in-terminal"]);
+    expect(a.store.review().pending.map(({ body }) => body)).toEqual(["Name the constant"]);
+  });
+
+  it("pastes nothing when another window's newer review replaced it before its paste began", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    const other = keptIn(directory);
+    const place = { url: "http://mend", viewer: "dana", sessionId: "s1" };
+    let due = false;
+    const files: KeptFiles = {
+      ...NODE_FILES,
+      readFile: async (path) => {
+        const text = await NODE_FILES.readFile(path);
+        if (path.endsWith(".json") && text.includes('"paste":{"kind":"due"}')) due = true;
+        return text;
+      },
+      create: async (path, text) => {
+        // The drive read its review due to paste: before it keeps the paste as started, a newer
+        // review of hers reaches Mend from another window, which replaces this one.
+        if (due && path.endsWith(".json.lock")) {
+          due = false;
+          await other.update(place, (review) => ({
+            ...review,
+            sends: review.sends.map((record) => ({
+              ...record,
+              phase: {
+                kind: "refused",
+                words: "Mend replaced this follow-up with a newer review.",
+              },
+            })),
+          }));
+        }
+        await NODE_FILES.create(path, text);
+      },
+    };
+    const { store, pastes } = await window(keptIn(directory, files), mend);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
+    await vi.waitFor(
+      () => expect(store.review().sends.map(({ phase }) => phase.kind)).toEqual(["refused"]),
+      SETTLE,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(pastes).toEqual([]);
+  });
+});
+
 const exitable = () => {
   let agent: SessionProcess = CLAUDE;
   return {

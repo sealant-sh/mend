@@ -17,6 +17,7 @@ import {
   type LiveAgent,
   type PostAttempt,
   type Needs,
+  type PasteStep,
   type SendEvent,
   type SendPhase,
   type SendRecord,
@@ -286,6 +287,52 @@ const terminal = (paste: Extract<SendPhase, { kind: "in-terminal" }>["paste"]): 
   agent: "claude",
   processId: "agent-1",
   paste,
+});
+
+describe("a review whose paste into claude's terminal is due or under way", () => {
+  const SEND_AGAIN = {
+    key: "key-2",
+    slice: SLICE,
+    instruction: instructionOf("the newer review"),
+    paste: ALL,
+    pending: ["p3"],
+    open: [],
+    now: NOW,
+  };
+  const withPaste = (paste: PasteStep): SessionReview => {
+    const held = posted(sent());
+    return {
+      ...held,
+      pending: [pending({ id: "p3", line: 20, endLine: 20 })],
+      sends: held.sends.map((record) => ({ ...record, phase: terminal(paste) })),
+    };
+  };
+
+  const UNDER_WAY: ReadonlyArray<readonly [string, PasteStep]> = [
+    ["due", { kind: "due" }],
+    ["under way", { kind: "pasting" }],
+  ];
+
+  it.each(UNDER_WAY)(
+    "takes no new Send while its paste is %s, and holds its comments",
+    (_when, paste) => {
+      const review = withPaste(paste);
+      expect(startSend(review, SEND_AGAIN)).toBeNull();
+      expect(openRecord(review.sends)?.key).toBe("key-1");
+      expect(commentsOnTheirWay(review.sends)).toEqual(
+        new Map([
+          ["c1", "sending"],
+          ["c2", "sending"],
+        ]),
+      );
+    },
+  );
+
+  it("takes a new Send once its paste is done", () => {
+    const review = withPaste({ kind: "done", input: { text: "the review", ids: ["c1", "c2"] } });
+    expect(only(started(startSend(review, SEND_AGAIN)), "key-2").phase.kind).toBe("sending");
+    expect(openRecord(review.sends)).toBeNull();
+  });
 });
 
 describe("every phase a review is kept in", () => {
