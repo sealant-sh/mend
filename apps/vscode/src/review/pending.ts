@@ -57,7 +57,8 @@ export interface PendingComment {
   readonly origin: PendingOrigin;
   /**
    * Where the Mend draft it came from hangs, kept through Accept and her reply under it: a draft on
-   * a deleted line stays on the old side. Null for a comment she wrote on a line of the pinned slice.
+   * a deleted line stays on the old side. Null for a comment she wrote on a line of the pinned
+   * slice.
    */
   readonly anchor: CommentAnchor | null;
 }
@@ -542,7 +543,9 @@ export type DocumentSave =
   | { readonly kind: "gone" }
   | { readonly kind: "newer" };
 
-/** Her words saved over `revision`, the one her editor's text is based on; never over a newer one. */
+/**
+ * Her words saved over `revision`, the one her editor's text is based on; never over a newer one.
+ */
 export const saveDocument = (
   review: SessionReview,
   documentId: string,
@@ -565,7 +568,9 @@ export const addPending = (review: SessionReview, comment: PendingComment): Sess
   pending: [...review.pending, comment],
 });
 
-/** G1: a pending comment is edited freely until it is sent. A Mend draft's words she edits are hers. */
+/**
+ * G1: a pending comment is edited freely until it is sent. A Mend draft's words she edits are hers.
+ */
 export const editPending = (review: SessionReview, id: string, body: string): SessionReview => ({
   ...review,
   pending: review.pending.map((comment) => (comment.id === id ? { ...comment, body } : comment)),
@@ -576,6 +581,13 @@ export interface HeldWords {
   readonly edits: { readonly id: string; readonly body: string } | null;
 }
 
+/**
+ * Her words VS Code held, kept, and which of them were. Words held for a comment still pending, or
+ * for an edit whose comment still reads the words she edited (or already hers), edit it in place.
+ * Any other, for a comment a review took, another window changed or she deleted, is added under
+ * the id minted when it was held, so both words stay. One to add while the review holds
+ * `MAX_PENDING` stays held.
+ */
 export const keepHeld = (
   review: SessionReview,
   held: ReadonlyArray<HeldWords>,

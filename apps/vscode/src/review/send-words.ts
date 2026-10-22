@@ -39,7 +39,9 @@ const pasteFailed = (words: string): Notice => ({
   text: false,
 });
 
-/** A paste into `agent` that went nowhere, or that the paste's own failure, in `words`, cut short. */
+/**
+ * A paste into `agent` that went nowhere, or that the paste's own failure, in `words`, cut short.
+ */
 export const pasteFailedNotice = (
   failed:
     | { readonly why: "agent-gone" | "not-attached" }
@@ -97,7 +99,7 @@ export const refusedNotice = (words: string): Notice => ({
 });
 
 /** What a thread of a comment in this record reads, as Mend observed it. */
-export const recordLabel = (phase: SendPhase): string => {
+const recordLabel = (phase: SendPhase): string => {
   switch (phase.kind) {
     case "sending":
       return "sending";

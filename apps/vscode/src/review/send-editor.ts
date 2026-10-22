@@ -44,6 +44,11 @@ const UNREAD =
 class ReviewFiles implements vscode.FileSystemProvider {
   readonly #changed = new vscode.EventEmitter<Array<vscode.FileChangeEvent>>();
   readonly onDidChangeFile = this.#changed.event;
+  /**
+   * The revision each editor's text is based on: the first this window looked at, or the one it
+   * read or saved since. VS Code restores unsaved words over what it last looked at, and checks
+   * only by `mtime` and size before a save, so a save is checked here against this revision.
+   */
   readonly #based = new Map<string, number>();
 
   constructor(private readonly store: ReviewStore) {}
@@ -110,7 +115,9 @@ class ReviewFiles implements vscode.FileSystemProvider {
   }
 }
 
-/** Closes the review's tabs, never reverting one: a tab holding words she typed asks to save them. */
+/**
+ * Closes the review's tabs, never reverting one: a tab holding words she typed asks to save them.
+ */
 const closeTabs = async (uri: vscode.Uri): Promise<void> => {
   const tabs = vscode.window.tabGroups.all
     .flatMap((group) => group.tabs)

@@ -9,7 +9,10 @@ export interface TerminalInput {
   readonly ids: ReadonlyArray<string>;
 }
 
-/** What one agent process's input holds, as VS Code pasted it: another process's input holds none of it. */
+/**
+ * What one agent process's input holds, as VS Code pasted it: another process's input holds none of
+ * it.
+ */
 export interface HeldInput {
   readonly input: TerminalInput;
   readonly agent: string;
@@ -65,7 +68,10 @@ export const inputAfter = (
   }
 };
 
-/** What an agent process's input holds, by the newest review not refused; null when nothing of hers is. */
+/**
+ * What an agent process's input holds, by the newest review not refused; null when nothing of hers
+ * is.
+ */
 const recordedInput = (records: ReadonlyArray<SendRecord>): HeldInput | null => {
   const latest = records.findLast((record) => record.phase.kind !== "refused");
   if (latest?.phase.kind !== "in-terminal") return null;

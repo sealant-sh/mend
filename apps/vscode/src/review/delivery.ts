@@ -95,7 +95,9 @@ export type SendPhase =
 export type PasteStep =
   | { readonly kind: "due" }
   | { readonly kind: "pasting" }
-  /** Pasted, or nothing to paste and she was told why: what VS Code pasted into the agent's input. */
+  /**
+   * Pasted, or nothing to paste and she was told why: what VS Code pasted into the agent's input.
+   */
   | { readonly kind: "done"; readonly input: TerminalInput }
   /** Not pasted, or cut short; `stopped` is why the drive stopped, when it did, as it stopped. */
   | {
@@ -139,7 +141,7 @@ export interface SendNotice {
 }
 
 /** How many notices a send keeps, the newest. */
-export const KEPT_NOTICES = 8;
+const KEPT_NOTICES = 8;
 
 export interface SendRecord {
   /** The follow-up's idempotency key: the same on every retry. */
@@ -291,7 +293,7 @@ export const commentIds = (record: SendRecord): ReadonlyArray<string> | null => 
   return ids;
 };
 
-export const deliverRequest = (record: SendRecord, ids: ReadonlyArray<string>): DeliverRequest => ({
+const deliverRequest = (record: SendRecord, ids: ReadonlyArray<string>): DeliverRequest => ({
   reviewSliceId: record.sliceId,
   checkpointAId: record.baseId,
   checkpointBId: record.headId,
@@ -653,7 +655,9 @@ export type DriveFailure =
   | { readonly kind: "refused"; readonly words: string }
   | { readonly kind: "failed"; readonly words: string };
 
-/** What a drive does after a failed step: stops for why, waits and tries again, or keeps an event. */
+/**
+ * What a drive does after a failed step: stops for why, waits and tries again, or keeps an event.
+ */
 export type OnFailure =
   | { readonly kind: "stop"; readonly why: StopReason }
   | { readonly kind: "wait" }
@@ -772,7 +776,7 @@ export const stepReview = (
 const holdsComments = (record: SendRecord): boolean => needs(record) === "driver";
 
 /** A paste into her agent's terminal not yet made, or being made. */
-export const pasteUnderway = (record: SendRecord): boolean =>
+const pasteUnderway = (record: SendRecord): boolean =>
   record.phase.kind === "in-terminal" &&
   (record.phase.paste.kind === "due" || record.phase.paste.kind === "pasting");
 
@@ -786,7 +790,7 @@ export const admits = (records: ReadonlyArray<SendRecord>): boolean =>
   !records.some((record) => record.phase.kind === "sending" || pasteUnderway(record));
 
 /** Why each Mend draft her posted words replace was left on Mend. */
-export const draftsLeft = (record: SendRecord): ReadonlyArray<string> =>
+const draftsLeft = (record: SendRecord): ReadonlyArray<string> =>
   record.items.flatMap((item) =>
     item.kind === "rewrite" && item.dismissal.kind === "left" ? [item.dismissal.words] : [],
   );
@@ -870,8 +874,10 @@ export const startSend = (
   };
 };
 
-/** The record with this key, after `change`; a record that is refused gives back what Mend lacks. */
-export const withSend = (
+/**
+ * The record with this key, after `change`; a record that is refused gives back what Mend lacks.
+ */
+const withSend = (
   review: SessionReview,
   key: string,
   change: (record: SendRecord) => SendRecord,

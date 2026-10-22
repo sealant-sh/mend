@@ -37,7 +37,10 @@ export const startReview = (deps: {
   readonly onError: (cause: unknown) => void;
   /** The toast claims every window of this VS Code shares with the notifier. */
   readonly claims: Pick<ToastClaims, "claim" | "release">;
-  /** G12 fallback: the session's agent terminal attached here, the review pasted into that agent process, without Enter. */
+  /**
+   * G12 fallback: the session's agent terminal attached here, the review pasted into that agent
+   * process, without Enter.
+   */
   readonly paste: PasteReview;
 }): Review => {
   const client = new ReviewClient(

@@ -53,7 +53,9 @@ export interface FailOptions {
 }
 
 export interface DriverHost {
-  /** The review kept at `place` now, as every read of it is: shown, and looked at for a left send. */
+  /**
+   * The review kept at `place` now, as every read of it is: shown, and looked at for a left send.
+   */
   read(place: ReviewPlace): Promise<SessionReview>;
   keepAt(
     place: ReviewPlace,
@@ -179,7 +181,8 @@ const agentAfter = async (
   try {
     return liveAgent(await reads.sessionDetail(context.place.sessionId), context.viewer);
   } catch (cause) {
-    // A sign-in Mend cannot name yet is waited on: the next turn asks Mend again, with the same key.
+    // A sign-in Mend cannot name yet is waited on: the next turn asks Mend again, with the same
+    // key.
     if (cause instanceof Unbound && cause.why === "unknown") throw cause;
     throw new AgentUnread(answered, cause);
   }
@@ -227,7 +230,8 @@ export class SendDriver {
   /**
    * How many claims this window holds on each send's lease: a new send's, a Retry's, a recovery's.
    * Each claim is given back once by whoever made it, or by the drive it was handed to, and the
-   * lease goes only with the last: a Retry that loses never takes the lease from the drive that won.
+   * lease goes only with the last: a Retry that loses never takes the lease from the drive that
+   * won.
    */
   readonly #claims = new Map<string, number>();
   /** Claims and releases of each lease, one at a time. */
@@ -384,7 +388,9 @@ export class SendDriver {
     return { kind: "unmoved", record };
   }
 
-  /** A claim of the send's lease, counted, so this window gives the lease back only with its last. */
+  /**
+   * A claim of the send's lease, counted, so this window gives the lease back only with its last.
+   */
   async #claim(place: ReviewPlace, key: string): Promise<boolean> {
     const id = driveId(place, key);
     return queued(this.#leasing, id, async () => {

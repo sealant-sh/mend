@@ -272,7 +272,10 @@ export class ReviewStore implements vscode.Disposable {
     private readonly memory: ReviewMemory,
     /** Her pending comments and the reviews she sent, per person and session, for every window. */
     private readonly kept: KeptReviews,
-    /** G12 fallback: the agent's terminal attached here, the text pasted into that process, no Enter. */
+    /**
+     * G12 fallback: the agent's terminal attached here, the text pasted into that process, no
+     * Enter.
+     */
     paste: PasteReview,
   ) {
     this.#driver = new SendDriver(kept, client, sessions, paste, {
@@ -1023,7 +1026,9 @@ export class ReviewStore implements vscode.Disposable {
     return review;
   }
 
-  /** Why nothing is kept for the followed session: it is not read yet, or its account is unnamed. */
+  /**
+   * Why nothing is kept for the followed session: it is not read yet, or its account is unnamed.
+   */
   #unkept(): string {
     return this.ready() === null ? "Mend has not finished reading this session." : `${UNNAMED}.`;
   }
