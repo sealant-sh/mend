@@ -59,6 +59,12 @@ export class HandoffReceived extends Schema.Class<HandoffReceived>("HandoffRecei
 
 export const handoffsGroup = HttpApiGroup.make("handoffs")
   .add(
+    HttpApiEndpoint.get("instanceTerms", "/handoffs", {
+      success: HandoffTerms,
+      error: [HandoffRefused],
+    }),
+  )
+  .add(
     HttpApiEndpoint.get("terms", "/projects/:id/handoffs", {
       params: { id: ProjectId },
       success: HandoffTerms,

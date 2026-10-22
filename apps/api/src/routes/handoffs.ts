@@ -13,6 +13,12 @@ export const HandoffsGroupLive = HttpApiBuilder.group(MendApi, "handoffs", (hand
         return yield* start.termsAs(caller.user.id, params.id);
       }),
     )
+    .handle("instanceTerms", () =>
+      Effect.gen(function* () {
+        const start = yield* HandoffStart;
+        return yield* start.instanceTerms;
+      }),
+    )
     .handle("receive", ({ params, query, payload }) =>
       Effect.gen(function* () {
         const caller = yield* CurrentUser;

@@ -330,6 +330,84 @@ const until = async (condition: () => boolean, what: string) => {
   throw new Error(`waited 2 s for ${what}`);
 };
 
+const worldSize = (tenancy: TenancyApi) => ({
+  projects: tenancy.world.projects.size,
+  worktrees: tenancy.world.worktrees.size,
+  sessions: tenancy.world.sessions.size,
+});
+
+describe("GET /handoffs", () => {
+  it("answers 401 without credentials", async () => {
+    api = await worldWith({}, freshSeen());
+    const terms = await api.request(null, "GET", "/api/handoffs");
+    expect(terms.status).toBe(401);
+  });
+
+  it("answers the instance's terms to an account that can see no project, and changes nothing", async () => {
+    const seen = freshSeen();
+    api = await worldWith({}, seen);
+    const before = worldSize(api);
+    api.world.calls.splice(0, api.world.calls.length);
+    const missing = await api.request("dave", "GET", `/api/projects/${sharedA.project}/handoffs`);
+    expect(missing.status).toBe(404);
+    const terms = await api.request("dave", "GET", "/api/handoffs");
+    expect(terms.status).toBe(200);
+    expect(await terms.json()).toEqual({
+      bundleBytes: 64 * 1024 * 1024,
+      fileBytes: 8 * 1024 * 1024,
+    });
+    expect(api.world.calls).toEqual([]);
+    expect(worldSize(api)).toEqual(before);
+    expect(seen).toEqual(freshSeen());
+  });
+
+  it("answers what the project's terms answer, for limits set and for limits off", async () => {
+    const MAX = Number.MAX_SAFE_INTEGER;
+    for (const [limits, expected] of [
+      [
+        { bundleBytes: 3 * 1024 * 1024, handoffFileBytes: 512 * 1024 },
+        { bundleBytes: 3 * 1024 * 1024, fileBytes: 512 * 1024 },
+      ],
+      [
+        { bundleBytes: 0, handoffFileBytes: 0 },
+        { bundleBytes: MAX, fileBytes: MAX },
+      ],
+    ] satisfies ReadonlyArray<[Parameters<typeof createTenancyApi>[0], unknown]>) {
+      api = await worldWith(limits, freshSeen());
+      const instance = await api.request("alice", "GET", "/api/handoffs");
+      const project = await api.request(
+        "alice",
+        "GET",
+        `/api/projects/${sharedA.project}/handoffs`,
+      );
+      expect(instance.status).toBe(200);
+      expect(project.status).toBe(200);
+      expect(await instance.json()).toEqual(expected);
+      expect(await project.json()).toEqual(expected);
+      await api.dispose();
+      api = null;
+    }
+  });
+
+  it("refuses a co-located store in the project route's words, touching nothing", async () => {
+    api = await createTenancyApi({}, { sessionStore: "colocated" });
+    const before = worldSize(api);
+    api.world.calls.splice(0, api.world.calls.length);
+    const instance = await api.request("dave", "GET", "/api/handoffs");
+    expect(instance.status).toBe(422);
+    const refusal = await instance.json();
+    expect(refusal).toMatchObject({
+      _tag: "HandoffRefused",
+      reason: "store-co-located",
+      message: expect.stringMatching(/co-located store.*nothing was created$/),
+    });
+    expect(api.world.calls).toEqual([]);
+    expect(worldSize(api)).toEqual(before);
+    const project = await api.request("alice", "GET", `/api/projects/${sharedA.project}/handoffs`);
+    expect(await project.json()).toEqual(refusal);
+  });
+});
+
 describe("GET /projects/:id/handoffs", () => {
   it("answers the budgets, and the largest size the wire carries for a budget that is off", async () => {
     api = await worldWith({}, freshSeen());

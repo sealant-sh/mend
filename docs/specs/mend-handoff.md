@@ -188,6 +188,9 @@ checkout with nothing ahead and nothing uncommitted still hands off, as a held w
 
 **Contract.** `packages/api-contracts/src/handoffs.ts` defines the `handoffs` group:
 
+- `GET /handoffs` answers the same `HandoffTerms` without a project, for a client that has not
+  adopted the checkout yet. It reads no project and creates nothing. Past authentication (401), its
+  only error is `HandoffRefused` (`store-co-located`, 422).
 - `GET /projects/:id/handoffs` answers `HandoffTerms {bundleBytes, fileBytes}`. Errors are
   `NotFound` and `HandoffRefused`.
 - `POST /projects/:id/handoffs?harness=&hold=` takes `HandoffBundleBytes`
