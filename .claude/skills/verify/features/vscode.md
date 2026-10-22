@@ -716,6 +716,9 @@ the row takes the job's name.
       `The editor could not be opened because the file was not found.`, **Send review** composes the
       review again without her line, and that is what Mend holds. Fixed: the restored tab reads her
       line, and the follow-up's instruction ends with it.
+  - Each run starts three sessions under new names (`MEND_REVIEW_SESSION` names the first). A world
+    holds 24 unsettled sessions per account (`429 BudgetExceeded accountLiveSessions`): stop the
+    earlier runs' sessions first, then wait out `120 launches per minute` if the stops tripped it.
 - **e. Dana wants to drive by hand.** `recipes/vscode-open.mjs`, from the default `up`.
   - The gesture is Open; typing into the attached `claude · add-rate-limit` is story c's last lane.
   - **Continue here.** `contextMenu("Mend: Open in New Window")` on `from-phone`: the tab

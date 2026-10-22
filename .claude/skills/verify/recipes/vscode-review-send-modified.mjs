@@ -14,7 +14,8 @@ import {
   said,
 } from "./vscode-review.lib.mjs";
 
-const SESSION = process.env.MEND_REVIEW_SESSION ?? "greet-modified";
+const SESSION =
+  process.env.MEND_REVIEW_SESSION ?? `greet${Date.now().toString(36).slice(-4)}-modified`;
 const RENAMED = `${SESSION.replace(/-modified$/, "")}-moved`;
 const SAVED = `${SESSION.replace(/-modified$/, "")}-saved`;
 const ADDED_WORDS = "Link the greeting from the docs index";
