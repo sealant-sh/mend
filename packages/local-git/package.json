@@ -2,9 +2,10 @@
   "name": "@mend/local-git",
   "version": "0.0.0",
   "private": true,
-  "description": "Git on the person's machine: the handoff snapshot and the origin rule",
+  "description": "Git on the person's machine: the handoff snapshot, the origin rule and the agent share",
   "type": "module",
   "exports": {
+    "./agent-share": "./src/agent-share.ts",
     "./handoff": "./src/handoff.ts",
     "./origin": "./src/origin.ts",
     "./testing": "./test/testing.ts"
