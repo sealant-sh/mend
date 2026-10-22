@@ -328,30 +328,43 @@ export class SendDriver {
   async #load(context: SendContext): Promise<void> {
     if ((await this.#bind(context.place)) === null)
       throw new Error("VS Code is connected to another Mend server or account than this review's");
+    const { place } = context;
     const now = new Date().toISOString();
     const undriven = new Set<string>();
     const drivenFor = new Map<string, number>();
-    const loaded = await this.host.keepAt(context.place, async (review) => {
-      for (const record of review.sends) {
-        if (needs(record) !== "driver" || this.#driving.has(driveId(context, record.key))) continue;
-        if (this.kept.drives(context.place, record.key)) continue;
-        const left = await this.kept.drivenFor(context.place, record.key);
-        if (left === null) undriven.add(record.key);
-        else drivenFor.set(record.key, left);
-      }
-      return {
-        ...review,
-        sends: review.sends.map((record) => {
-          if (!undriven.has(record.key)) return record;
-          const words = this.#stopped.get(driveId(context, record.key)) ?? CLOSED;
-          return step(record, { kind: "abandoned", words }, now);
-        }),
-      };
-    });
+    let loaded: SessionReview;
+    try {
+      loaded = await this.host.keepAt(place, async (review) => {
+        for (const record of review.sends) {
+          const id = driveId(context, record.key);
+          if (needs(record) !== "driver" || this.#driving.has(id) || undriven.has(record.key))
+            continue;
+          if (this.kept.drives(place, record.key)) continue;
+          const left = await this.kept.drivenFor(place, record.key);
+          if (left !== null) drivenFor.set(record.key, left);
+          // A stale lease is taken over before the send is stepped: the window that held it, if
+          // it only slept, finds its next renewal refused and stops.
+          else if (await this.kept.claimDrive(place, record.key)) undriven.add(record.key);
+          else drivenFor.set(record.key, LOOK_AGAIN_MS);
+        }
+        return {
+          ...review,
+          sends: review.sends.map((record) => {
+            if (!undriven.has(record.key)) return record;
+            const words = this.#stopped.get(driveId(context, record.key)) ?? CLOSED;
+            return step(record, { kind: "abandoned", words }, now);
+          }),
+        };
+      });
+    } catch (cause) {
+      for (const key of undriven) await this.kept.releaseDrive(place, key).catch(() => undefined);
+      throw cause;
+    }
     for (const key of undriven) this.#stopped.delete(driveId(context, key));
     for (const record of loaded.sends) {
       if (!undriven.has(record.key)) continue;
       if (nextAction(record).kind !== "idle") void this.#drive(context, record.key);
+      else await this.kept.releaseDrive(place, record.key);
       const words = abandonedPasteWords(record);
       if (words !== null)
         this.host.fail(`paste:${record.key}`, words, {
