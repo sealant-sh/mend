@@ -1317,6 +1317,37 @@ describe("a window already following the session when another window's send is l
     expect(following.store.retryTarget()).not.toBeNull();
   });
 
+  it("looks again, and reads its own send failed with Retry delivery, when its first look could not keep it either", async () => {
+    const mend = new FakeMend();
+    mend.serverComments = [comment({ id: "c1" })];
+    let failWrites = 0;
+    const files: KeptFiles = {
+      ...NODE_FILES,
+      rename: async (from, to) => {
+        if (failWrites > 0 && to.endsWith(".json")) {
+          failWrites -= 1;
+          throw new Error("EIO: the disk did not take the write");
+        }
+        await NODE_FILES.rename(from, to);
+      },
+    };
+    mend.deliver = async () => {
+      failWrites = 2;
+      throw new MendApiError("Mend is restarting.", 503);
+    };
+    const { store } = await window(keptIn(await storage(), files), mend);
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    await sendComposed(store, composed, composed.text);
+    await vi.waitFor(() => expect(failWrites).toBe(0), SETTLE);
+    await vi.waitFor(
+      () => expect(store.review().sends.map(({ phase }) => phase.kind)).toEqual(["failed"]),
+      { timeout: 6_000 },
+    );
+    expect(store.offer()).toEqual({ kind: "retry" });
+    expect(store.retryTarget()).not.toBeNull();
+  }, 15_000);
+
   it("reads its own send failed, with Retry delivery, when it could not keep the failure", async () => {
     const mend = new FakeMend();
     mend.serverComments = [comment({ id: "c1" })];
