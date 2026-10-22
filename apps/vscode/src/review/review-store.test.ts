@@ -762,6 +762,37 @@ describe("sending a review from the store", () => {
     });
   });
 
+  it("delivers the review though the draft her edited words replace could not be dismissed, and says that draft is still on Mend", async () => {
+    class NoDismiss extends FakeMend {
+      override async setCommentState(
+        changeId: string,
+        commentId: string,
+        state: "open" | "addressed" | "dismissed",
+      ): Promise<ServerComment> {
+        if (state === "dismissed") throw new Error("Mend is restarting.");
+        return super.setCommentState(changeId, commentId, state);
+      }
+    }
+    const mend = new NoDismiss();
+    mend.serverComments = [DRAFT];
+    const words = "Keep the limiter, and add a test for the burst case.";
+    const store = await rewrite(mend, words);
+    const said: Array<string> = [];
+    store.onDidFail((failure) => said.push(failure.words));
+    const key = await sendAll(store);
+    await vi.waitFor(() => expect(said).toHaveLength(1), SETTLE);
+    expect(mend.delivered).toHaveLength(1);
+    expect(said[0]).toMatch(/sent the review.*draft .* is still on Mend.*Mend is restarting/);
+    expect(store.review().sends.find((record) => record.key === key)?.phase.kind).not.toBe(
+      "refused",
+    );
+    const read = store.ready();
+    if (read === null) throw new Error("the change is not read");
+    expect(
+      threadsOf(read, store.review(), "Dana").filter((thread) => thread.kind === "draft"),
+    ).toEqual([]);
+  });
+
   it("says the draft her edited words replace was not dismissed, not that the review was not delivered", async () => {
     class NoDismiss extends FakeMend {
       override async setCommentState(
