@@ -2,6 +2,7 @@ import { join } from "node:path";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { MendConnection } from "../config.js";
 import { MendApiError } from "../mend-http.js";
 import { fake, window as vscodeWindow } from "../test-vscode.js";
 import { ToastClaims } from "../toast-claims.js";
@@ -2039,14 +2040,20 @@ describe("VS Code connects to another Mend server while claude's terminal opens 
 });
 
 describe("a session read that fails after Mend answered the follow-up", () => {
-  /** Dana's session with claude live, read until Mend got the follow-up, then not at all. */
-  const unreadAfter = (mend: FakeMend) => ({
-    ...withAgent(CLAUDE),
-    sessionDetail: async (sessionId: string): Promise<SessionDetail> => {
-      if (mend.delivered.length > 0) throw new Error("Mend did not answer the session read");
-      return withAgent(CLAUDE).sessionDetail(sessionId);
-    },
-  });
+  /** Dana's session with claude live, which the send's drive cannot read once Mend got it. */
+  const unreadAfter = (mend: FakeMend) => {
+    const reads = withAgent(CLAUDE);
+    return {
+      ...reads,
+      pinned: (connect: () => Promise<MendConnection>) => ({
+        sessionDetail: async (sessionId: string): Promise<SessionDetail> => {
+          await connect();
+          if (mend.delivered.length > 0) throw new Error("Mend did not answer the session read");
+          return reads.sessionDetail(sessionId);
+        },
+      }),
+    };
+  };
 
   const answered = async (status: "delivering" | "pending") => {
     const mend = new FakeMend();

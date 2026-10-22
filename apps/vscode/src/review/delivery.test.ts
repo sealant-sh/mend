@@ -513,6 +513,24 @@ describe("a step of a drive that fails", () => {
     ).toEqual({ kind: "stop", why: { kind: "error", words: "VS Code could not keep the review" } });
   });
 
+  it("keeps what Mend answered when her agent could not be read after it: the review waits on her", () => {
+    const delivered = onFailure(inPhase({ kind: "sending", since: NOW }), {
+      kind: "agent-unread",
+      answer: { via: "deliver", status: "pending", error: null },
+    });
+    const watch = onFailure(inPhase({ kind: "delivering" }), {
+      kind: "agent-unread",
+      answer: { via: "watch", status: "pending", error: null, others: false, sent: false },
+    });
+    if (delivered.kind !== "event" || watch.kind !== "event") throw new Error("no event kept");
+    expect(step(inPhase({ kind: "sending", since: NOW }), delivered.event, NOW).phase).toEqual({
+      kind: "pending",
+    });
+    expect(step(inPhase({ kind: "delivering" }), watch.event, NOW).phase).toEqual({
+      kind: "pending",
+    });
+  });
+
   it("reads a send failed, with Retry, or refused when Mend refused a write", () => {
     const sending = inPhase({ kind: "sending", since: NOW });
     expect(onFailure(sending, { kind: "failed", words: "Mend is restarting" })).toEqual({

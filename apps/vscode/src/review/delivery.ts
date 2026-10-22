@@ -789,6 +789,11 @@ export const needs = (record: SendRecord): Needs => {
   }
 };
 
+/** What Mend answered a drive's deliver, or its watch, before the drive read her agent. */
+export type MendAnswer =
+  | { readonly via: "deliver"; readonly status: FollowUpStatus; readonly error: string | null }
+  | ({ readonly via: "watch" } & FollowUpRead);
+
 /**
  * What failed in a step of a send's drive: VS Code's connection is not the send's (another server
  * or account, or one Mend could not name), Mend refused a write, or anything else failed: a read,
@@ -796,6 +801,8 @@ export const needs = (record: SendRecord): Needs => {
  */
 export type DriveFailure =
   | { readonly kind: "unbound"; readonly why: "switched" | "unknown" }
+  /** Mend answered, and the read of her agent that answer needs failed. */
+  | { readonly kind: "agent-unread"; readonly answer: MendAnswer }
   | { readonly kind: "refused"; readonly words: string }
   | { readonly kind: "failed"; readonly words: string };
 
@@ -807,6 +814,29 @@ export type OnFailure =
 
 /** What the drive does when a step fails, by the send as the drive read it before that step. */
 export const onFailure = (record: SendRecord, failure: DriveFailure): OnFailure => {
+  // What Mend answered stands without her agent: a review it holds pending then waits on her.
+  if (failure.kind === "agent-unread") {
+    const { answer } = failure;
+    return {
+      kind: "event",
+      event:
+        answer.via === "deliver"
+          ? {
+              kind: "answered",
+              status: answer.status,
+              error: answer.error,
+              agent: { kind: "other" },
+            }
+          : {
+              kind: "follow-up",
+              status: answer.status,
+              error: answer.error,
+              others: answer.others,
+              sent: answer.sent,
+              agent: null,
+            },
+    };
+  }
   if (failure.kind === "unbound")
     // Mend could not say whose VS Code's sign-in is: nothing more is sent until it can.
     return failure.why === "switched"

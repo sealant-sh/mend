@@ -2,7 +2,7 @@ import { refusedSignIn } from "../error-toast.js";
 import { MendApiError } from "../mend-http.js";
 import type { SessionDetail } from "../types.js";
 import type { PasteReview, Pasted } from "./agent-paste.js";
-import { boundConnection, Unbound, type DriverReads } from "./binding.js";
+import { boundConnection, Unbound, type DriverReads, type SessionReads } from "./binding.js";
 import {
   admits,
   commentIds,
@@ -19,6 +19,7 @@ import {
   type DriveFailure,
   type FollowUpRead,
   type LiveAgent,
+  type MendAnswer,
   type StopReason,
   type SendEvent,
   type SendRecord,
@@ -196,6 +197,35 @@ class WriteFailed extends Error {
   }
 }
 
+/** Mend answered, and the read of her agent that answer needs failed. */
+class AgentUnread extends Error {
+  constructor(
+    readonly answered: MendAnswer,
+    cause: unknown,
+  ) {
+    super(errorWords(cause));
+  }
+}
+
+/**
+ * Her live agent, read only when Mend holds the follow-up pending, the one answer that needs it:
+ * a review pending in her own terminal agent is pasted there.
+ */
+const agentAfter = async (
+  answered: MendAnswer,
+  reads: SessionReads,
+  context: SendContext,
+): Promise<LiveAgent | null> => {
+  if (answered.status !== "pending") return null;
+  try {
+    return liveAgent(await reads.sessionDetail(context.place.sessionId), context.viewer);
+  } catch (cause) {
+    // A sign-in Mend cannot name yet is waited on: the next turn asks Mend again, with the same key.
+    if (cause instanceof Unbound && cause.why === "unknown") throw cause;
+    throw new AgentUnread(answered, cause);
+  }
+};
+
 /** VS Code could not keep a step of the send: its own failure, never Mend's. */
 class KeepFailed extends Error {
   constructor(cause: unknown) {
@@ -226,6 +256,7 @@ const refuses = (thrown: unknown): boolean =>
 /** What a step of the drive threw, as `onFailure` reads it. */
 const failureOf = (thrown: unknown): DriveFailure => {
   if (thrown instanceof Unbound) return { kind: "unbound", why: thrown.why };
+  if (thrown instanceof AgentUnread) return { kind: "agent-unread", answer: thrown.answered };
   const words = errorWords(thrown instanceof WriteFailed ? thrown.failure : thrown);
   return refuses(thrown) ? { kind: "refused", words } : { kind: "failed", words };
 };
@@ -658,12 +689,13 @@ export class SendDriver {
           }
           case "deliver": {
             const answered = await writing(client.deliver(sessionId, action.request));
-            const detail = await reads.sessionDetail(sessionId);
+            const { status, error } = answered;
+            const agent = await agentAfter({ via: "deliver", status, error }, reads, context);
             await this.#step(context, key, {
               kind: "answered",
-              status: answered.status,
-              error: answered.error,
-              agent: liveAgent(detail, context.viewer) ?? { kind: "other" },
+              status,
+              error,
+              agent: agent ?? { kind: "other" },
             });
             break;
           }
@@ -702,10 +734,7 @@ export class SendDriver {
             watches += 1;
             await new Promise((resolve) => setTimeout(resolve, WATCH_MS));
             const read = await this.#readFollowUp(client, context, record);
-            const agent =
-              read.status === "pending"
-                ? liveAgent(await reads.sessionDetail(sessionId), context.viewer)
-                : null;
+            const agent = await agentAfter({ via: "watch", ...read }, reads, context);
             await this.#step(context, key, { kind: "follow-up", ...read, agent });
             break;
           }
@@ -729,8 +758,7 @@ export class SendDriver {
             }
             // A refused sign-in reads as it does on every surface, beside the send's own words.
             if (refusedSignIn(cause)) this.host.fail("error", errorWords(cause), { cause });
-            this.host.settled(sessionId);
-            return;
+            continue;
         }
       }
     }
