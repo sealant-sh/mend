@@ -1,6 +1,12 @@
 import { reviewTargetFile, targetFileFor, type ReviewCommentTarget } from "@mend/domain/workbench";
 
-import { KEPT_SENDS, type PendingComment, type SessionReview } from "./pending.js";
+import {
+  KEPT_SENDS,
+  rewritten,
+  type AcceptedComment,
+  type PendingComment,
+  type SessionReview,
+} from "./pending.js";
 import type { ChangeFile, ServerComment } from "./review-wire.js";
 
 /**
@@ -31,14 +37,21 @@ export type PostState =
   | ({ readonly kind: "posting" } & PostAttempt)
   | { readonly kind: "posted"; readonly commentId: string };
 
+/** Where the Mend draft her posted words replace is. */
+export type DraftDismissal = { readonly kind: "due" } | { readonly kind: "dismissed" };
+
 /** One comment of the review she sends. */
 export type SendItem =
+  | { readonly kind: "own"; readonly pending: PendingComment; readonly post: PostState }
+  /**
+   * Her words in place of a Mend draft she accepted (`pending.origin` names it): posted as hers,
+   * then the draft is dismissed, if still a draft.
+   */
   | {
-      readonly kind: "own";
-      readonly pending: PendingComment;
+      readonly kind: "rewrite";
+      readonly pending: AcceptedComment;
       readonly post: PostState;
-      /** The Mend draft her words replace: dismissed once they are on Mend, if still a draft. */
-      readonly replaces: { readonly draftId: string; readonly dismissed: boolean } | null;
+      readonly dismissal: DraftDismissal;
     }
   /** A Mend draft she accepted: Send opens it on Mend, then sends it. */
   | {
@@ -230,6 +243,12 @@ export interface DeliverRequest {
   readonly idempotencyKey: string;
 }
 
+/** An item whose words VS Code posts to Mend. */
+export type PostedItem = Extract<SendItem, { readonly post: PostState }>;
+
+export const posts = (item: SendItem): item is PostedItem =>
+  item.kind === "own" || item.kind === "rewrite";
+
 /** Every comment a record carries, by the id Mend knows it by once it is there. */
 const idsOf = (record: SendRecord): ReadonlyArray<string> =>
   record.items.flatMap((item) =>
@@ -287,14 +306,14 @@ export const nextAction = (record: SendRecord): SendAction => {
   if (record.phase.kind === "delivering") return { kind: "watch" };
   if (record.phase.kind !== "sending") return { kind: "idle" };
   const posting = record.items.flatMap((item) =>
-    item.kind === "own" && item.post.kind === "posting" ? [item.pending.id] : [],
+    posts(item) && item.post.kind === "posting" ? [item.pending.id] : [],
   );
   if (posting.length > 0) return { kind: "reconcile", pendingIds: posting };
   for (const item of record.items) {
-    if (item.kind === "own" && item.post.kind === "unposted")
+    if (posts(item) && item.post.kind === "unposted")
       return { kind: "post", pending: item.pending };
-    if (item.kind === "own" && item.replaces !== null && !item.replaces.dismissed)
-      return { kind: "dismiss-draft", draftId: item.replaces.draftId };
+    if (item.kind === "rewrite" && item.dismissal.kind === "due")
+      return { kind: "dismiss-draft", draftId: item.pending.origin.draftId };
     if (item.kind === "accepted" && !item.opened)
       return { kind: "open", draftId: item.draftId, pending: item.pending };
   }
@@ -364,7 +383,7 @@ export const sendGeneration = (records: ReadonlyArray<SendRecord>): string =>
 const withPost = (record: SendRecord, pendingId: string, post: PostState): SendRecord => ({
   ...record,
   items: record.items.map((item) =>
-    item.kind === "own" && item.pending.id === pendingId ? { ...item, post } : item,
+    posts(item) && item.pending.id === pendingId ? { ...item, post } : item,
   ),
 });
 
@@ -416,8 +435,8 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
       return {
         ...record,
         items: record.items.map((item) =>
-          item.kind === "own" && item.replaces?.draftId === event.draftId
-            ? { ...item, replaces: { ...item.replaces, dismissed: true } }
+          item.kind === "rewrite" && item.pending.origin.draftId === event.draftId
+            ? { ...item, dismissal: { kind: "dismissed" } }
             : item,
         ),
       };
@@ -767,17 +786,16 @@ export const startSend = (
   if (input.open.some((id) => onTheirWay.has(id))) return null;
   const items: ReadonlyArray<SendItem> = [
     ...moving.map((pending): SendItem => {
+      if (rewritten(pending))
+        return {
+          kind: "rewrite",
+          pending,
+          post: { kind: "unposted" },
+          dismissal: { kind: "due" },
+        };
       const { origin } = pending;
-      if (origin.kind === "own")
-        return { kind: "own", pending, post: { kind: "unposted" }, replaces: null };
-      // Her words in place of the draft's: posted as hers, then the draft is dismissed.
-      return origin.rewritten
-        ? {
-            kind: "own",
-            pending,
-            post: { kind: "unposted" },
-            replaces: { draftId: origin.draftId, dismissed: false },
-          }
+      return origin.kind === "own"
+        ? { kind: "own", pending, post: { kind: "unposted" } }
         : { kind: "accepted", pending, draftId: origin.draftId, opened: false };
     }),
     ...input.open.map((commentId): SendItem => ({ kind: "open", commentId })),
@@ -817,8 +835,7 @@ export const withSend = (
     };
   // Refused: a comment not on Mend yet is pending again, so nothing she wrote is lost.
   const back = next.items.flatMap((item) =>
-    (item.kind === "own" && item.post.kind !== "posted") ||
-    (item.kind === "accepted" && !item.opened)
+    (posts(item) && item.post.kind !== "posted") || (item.kind === "accepted" && !item.opened)
       ? [item.pending]
       : [],
   );

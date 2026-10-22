@@ -1,6 +1,6 @@
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
-import { commentLabel, mayRetry, type LiveAgent, type SendRecord } from "./delivery.js";
+import { commentLabel, mayRetry, posts, type LiveAgent, type SendRecord } from "./delivery.js";
 import { acceptedDrafts, type PendingComment, type SessionReview } from "./pending.js";
 import type { CommentAnchor, RecordLink, ServerComment } from "./review-wire.js";
 
@@ -197,7 +197,7 @@ export const threadsOf = (
       else if (item.kind === "accepted" && item.opened) {
         sentIn.set(item.draftId, record);
         acceptedIn.add(item.draftId);
-      } else if (item.kind === "own" && item.post.kind === "posted")
+      } else if (posts(item) && item.post.kind === "posted")
         sentIn.set(item.post.commentId, record);
       else
         threads.push({

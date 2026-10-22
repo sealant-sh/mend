@@ -382,7 +382,7 @@ describe("a Mend draft she acts on", () => {
       kind: "accepted",
       draftId: "d1",
       evidence: DRAFT.evidence,
-      rewritten: false,
+      draftBody: DRAFT.body,
     });
   });
 });

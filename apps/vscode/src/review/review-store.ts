@@ -23,6 +23,7 @@ import {
   nextAction,
   openRecord,
   postedComment,
+  posts,
   commentLabel,
   retryRecord,
   sendGeneration,
@@ -596,7 +597,7 @@ export class ReviewStore implements vscode.Disposable {
       kind: "accepted",
       draftId,
       evidence: draft.evidence,
-      rewritten: false,
+      draftBody: draft.body,
     });
     try {
       await this.#keepAt(place, (review) => {
@@ -1152,11 +1153,11 @@ export class ReviewStore implements vscode.Disposable {
             const comments = await this.client.comments(changeId);
             const claimed = new Set(
               record.items.flatMap((item) =>
-                item.kind === "own" && item.post.kind === "posted" ? [item.post.commentId] : [],
+                posts(item) && item.post.kind === "posted" ? [item.post.commentId] : [],
               ),
             );
             for (const item of record.items) {
-              if (item.kind !== "own" || item.post.kind !== "posting") continue;
+              if (!posts(item) || item.post.kind !== "posting") continue;
               const found = postedComment(item.post, item.pending.sliceId, comments, claimed);
               if (found !== null) claimed.add(found);
               await this.#step(

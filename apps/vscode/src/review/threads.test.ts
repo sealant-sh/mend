@@ -77,7 +77,12 @@ describe("a change's comments as threads", () => {
             id: "a1",
             line: 13,
             body: draft.body,
-            origin: { kind: "accepted", draftId: "d1", evidence: draft.evidence, rewritten: false },
+            origin: {
+              kind: "accepted",
+              draftId: "d1",
+              evidence: draft.evidence,
+              draftBody: draft.body,
+            },
           }),
         ],
         sends: [],
@@ -185,7 +190,12 @@ describe("the threads of a review she sent", () => {
     id: "a1",
     line: 13,
     endLine: 13,
-    origin: { kind: "accepted", draftId: "d1", evidence: [], rewritten: false },
+    origin: {
+      kind: "accepted",
+      draftId: "d1",
+      evidence: [],
+      draftBody: "Use the shared limiter from guard.ts",
+    },
   });
 
   it("show a draft she accepted once while its review is on its way, as hers", () => {
