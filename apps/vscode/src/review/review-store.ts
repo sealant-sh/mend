@@ -17,7 +17,7 @@ import {
   commentsOnTheirWay,
   needs,
   openRecord,
-  pasteUnderway,
+  admits,
   retryRecord,
   sendGeneration,
   startSend,
@@ -778,7 +778,7 @@ export class ReviewStore implements vscode.Disposable {
       const kept = ofRef(review);
       saved = kept === undefined ? "gone" : kept.revision === revision ? null : "newer";
       stale = sendGeneration(review.sends) !== composed.generation;
-      busy = review.sends.some(pasteUnderway);
+      busy = !admits(review.sends);
       if (saved !== null || stale || busy || digestOf(review.pending, open) !== composed.digest)
         return review;
       const started = startSend(review, {

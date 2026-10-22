@@ -4,6 +4,7 @@ import type { SessionDetail } from "../types.js";
 import type { PasteReview, Pasted } from "./agent-paste.js";
 import { boundConnection, Unbound, type DriverReads } from "./binding.js";
 import {
+  admits,
   commentIds,
   commentLabel,
   commentTarget,
@@ -268,9 +269,18 @@ export class SendDriver {
         };
       }
     const at = new Date().toISOString();
-    const claimed = await this.#claimAndKeep(target.place, target.key, (review) =>
-      stepReview(review, target.key, { kind: "retry", at, agent, mend }, at),
-    );
+    let busy = false;
+    const claimed = await this.#claimAndKeep(target.place, target.key, (review) => {
+      const next = stepReview(review, target.key, { kind: "retry", at, agent, mend }, at);
+      busy =
+        startsDrive(sendOf(review, target.key), sendOf(next, target.key)) && !admits(review.sends);
+      return busy ? review : next;
+    });
+    if (busy)
+      return {
+        retried: false,
+        words: "Retry delivery sent nothing: Mend is still sending your last review",
+      };
     switch (claimed.kind) {
       case "elsewhere":
         return {

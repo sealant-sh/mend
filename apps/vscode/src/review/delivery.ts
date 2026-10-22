@@ -844,6 +844,15 @@ export const pasteUnderway = (record: SendRecord): boolean =>
   record.phase.kind === "in-terminal" &&
   (record.phase.paste.kind === "due" || record.phase.paste.kind === "pasting");
 
+/**
+ * Whether a send may start its drive now, a new one or a Retry: one review at a time goes to Mend
+ * and into her agent's input, so none starts while another is sending, or its paste is due or under
+ * way. A newer review would supersede it on Mend, or paste over it. Send and Retry both ask under
+ * the kept review's lock.
+ */
+export const admits = (records: ReadonlyArray<SendRecord>): boolean =>
+  !records.some((record) => record.phase.kind === "sending" || pasteUnderway(record));
+
 /** What a thread of a comment in this record reads, as Mend observed it. */
 export const recordLabel = (phase: SendPhase): string => {
   switch (phase.kind) {
@@ -1031,8 +1040,7 @@ export const startSend = (
   const chosen = new Set(input.pending);
   const moving = review.pending.filter((pending) => chosen.has(pending.id));
   if (moving.length !== chosen.size) return null;
-  // One review at a time goes into her agent's input: a newer one would paste over it.
-  if (review.sends.some(pasteUnderway)) return null;
+  if (!admits(review.sends)) return null;
   // Another window sent these comments a moment ago: one review takes them, under one key.
   const onTheirWay = commentsOnTheirWay(review.sends);
   if (input.open.some((id) => onTheirWay.get(id) === "sending")) return null;

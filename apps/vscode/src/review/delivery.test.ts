@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { changeRows } from "./change-rows.js";
 import {
+  admits,
   commentTarget,
   commentsOnTheirWay,
   mayRetry,
@@ -334,6 +335,13 @@ describe("a review whose paste into claude's terminal is due or under way", () =
       );
     },
   );
+
+  it("takes no new Send while an earlier review is still sending", () => {
+    const sending = sent();
+    const review = { ...sending, pending: [pending({ id: "p3", line: 20, endLine: 20 })] };
+    expect(admits(review.sends)).toBe(false);
+    expect(startSend(review, SEND_AGAIN)).toBeNull();
+  });
 
   it("takes a new Send once its paste is done", () => {
     const review = withPaste({ kind: "done", input: { text: "the review", ids: ["c1", "c2"] } });
