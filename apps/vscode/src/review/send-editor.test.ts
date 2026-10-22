@@ -356,6 +356,46 @@ describe("Send review, chosen again", () => {
     window.close();
   });
 
+  it("saves what she typed in the open review before composing it anew, and carries it", async () => {
+    const mend = mendWithOpen();
+    const window = await windowOn(memoryFiles(), mend);
+    const opened = await sendReview();
+    opened.text = "her unsaved typing";
+    opened.version += 1;
+    opened.isDirty = true;
+    mend.serverComments = [...mend.serverComments, comment({ id: "c2", line: 13 })];
+    window.store.reread();
+    await vi.waitFor(() => expect(window.store.compose()?.open).toContain("c2"), SETTLE);
+    const fresh = await sendReview();
+    expect(opened.isDirty).toBe(false);
+    expect(fresh.uri.toString()).not.toBe(opened.uri.toString());
+    expect(fresh.text).toMatch(/Your earlier text[^]*her unsaved typing/);
+    window.close();
+  });
+
+  it("composes nothing, and says so, when VS Code cannot save what she typed in the open review", async () => {
+    const mend = mendWithOpen();
+    const window = await windowOn(memoryFiles(), mend);
+    const opened = await sendReview();
+    const id = new URLSearchParams(opened.uri.query).get("id");
+    const place = window.store.place();
+    if (id === null || place === null) throw new Error("no review kept");
+    await window.store.saveDocument({ place, id }, 1, "words saved in another window");
+    opened.text = "her unsaved typing";
+    opened.version += 1;
+    opened.isDirty = true;
+    mend.serverComments = [...mend.serverComments, comment({ id: "c2", line: 13 })];
+    window.store.reread();
+    await vi.waitFor(() => expect(window.store.compose()?.open).toContain("c2"), SETTLE);
+    await ui.commands.get("mend.change.sendReview")?.();
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringMatching(/Your text stays in its editor/),
+    );
+    expect(window.store.review().document?.composed.documentId).toBe(id);
+    expect(opened.text).toBe("her unsaved typing");
+    window.close();
+  });
+
   it("carries what she saved in a review composed anew, in place of the text it carried", async () => {
     const mend = mendWithOpen();
     const window = await windowOn(memoryFiles(), mend);
