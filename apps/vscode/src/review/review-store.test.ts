@@ -210,6 +210,19 @@ describe("two windows on one session", () => {
     const kept = (await keptIn(directory).read(DANA_S1)).review.pending;
     expect(kept.map(({ origin }) => origin.kind)).toEqual(["accepted"]);
   });
+
+  it("accept a draft once, when the other already sent it in a review", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.serverComments = [DRAFT];
+    const first = await readyStore(keptIn(directory), mend);
+    const second = await readyStore(keptIn(directory), mend);
+    await first.accept("d1", "");
+    await sendAll(first);
+    await second.accept("d1", "");
+    const { review } = await keptIn(directory).read(DANA_S1);
+    expect(review.pending).toEqual([]);
+  });
 });
 
 describe("a comment she submits", () => {
