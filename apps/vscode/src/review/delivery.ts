@@ -175,18 +175,6 @@ const stopClause = (why: StopReason, when: string): string =>
 export const cutShortWords = (why: string, agent: string): string =>
   `${why}, so some or all of it may be in ${agent}'s input. Mend holds the follow-up pending: check ${agent}'s input before Retry delivery pastes it again.`;
 
-/** What a review whose drive stopped before or during its paste reads, from why it stopped. */
-export const stoppedPasteWords = (record: SendRecord): string | null => {
-  const { phase } = record;
-  if (phase.kind !== "in-terminal" || phase.paste.kind !== "failed") return null;
-  const { stopped, mayHaveLanded } = phase.paste;
-  if (stopped === null) return null;
-  const terminal = `the review into ${phase.agent}'s terminal`;
-  return mayHaveLanded
-    ? cutShortWords(stopClause(stopped, `while it pasted ${terminal}`), phase.agent)
-    : `${stopClause(stopped, `before it pasted ${terminal}`)}, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it.`;
-};
-
 export interface SendSlice {
   readonly id: string;
   readonly baseId: string;
@@ -504,14 +492,22 @@ const answeredPhase = (
 const NOT_LISTED =
   "Mend no longer lists this follow-up, and it does not read its comments as sent to the session";
 
-/** A record after an event; an event its phase does not take leaves it as it was. */
-/** The send after `event`, with what it leaves her to know, if anything, as a notice. */
+/** What a step leaves her to know, before it is stamped with when. */
+type Notice = Omit<SendNotice, "at">;
+
+/** A send after an event, and what the change it made leaves her to know, if anything. */
+interface Stepped {
+  readonly record: SendRecord;
+  readonly notice: Notice | null;
+}
+
+const quiet = (record: SendRecord): Stepped => ({ record, notice: null });
+
+/** The send after `event`; an event its phase does not take leaves it as it was, with no notice. */
 export const step = (record: SendRecord, event: SendEvent, now: string): SendRecord => {
-  const next = transition(record, event, now);
-  const words = noticeOf(record, event, next);
-  if (words === null) return next;
-  const notice: SendNotice = { ...words, at: now };
-  return { ...next, notices: [...next.notices, notice].slice(-KEPT_NOTICES) };
+  const { record: next, notice } = transition(record, event, now);
+  if (notice === null) return next;
+  return { ...next, notices: [...next.notices, { ...notice, at: now }].slice(-KEPT_NOTICES) };
 };
 
 /** A paste that went nowhere, and why. */
@@ -521,7 +517,7 @@ const notPastedWords = (why: "agent-gone" | "not-attached", agent: string): stri
     : `VS Code could not attach ${agent}'s terminal here, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it again.`;
 
 /** A paste that failed: she checks the terminal and retries. */
-const pasteFailed = (words: string): Omit<SendNotice, "at"> => ({
+const pasteFailed = (words: string): Notice => ({
   kind: "paste",
   words,
   tone: "error",
@@ -529,224 +525,236 @@ const pasteFailed = (words: string): Omit<SendNotice, "at"> => ({
   text: false,
 });
 
-/** What a step leaves her to know: once, when the send first reads that way. */
-const noticeOf = (
-  before: SendRecord,
-  event: SendEvent,
-  after: SendRecord,
-): Omit<SendNotice, "at"> | null => {
-  const agent = before.phase.kind === "in-terminal" ? before.phase.agent : "the agent";
-  switch (event.kind) {
-    case "paste-failed":
-      if (before.phase.kind !== "in-terminal" || after === before) return null;
-      return pasteFailed(
-        event.why === "interrupted"
-          ? cutShortWords(
-              `VS Code could not finish pasting the review into ${agent}'s terminal: ${event.words}`,
-              agent,
-            )
-          : notPastedWords(event.why, agent),
-      );
-    case "abandoned": {
-      const words = after === before ? null : stoppedPasteWords(after);
-      return words === null ? null : pasteFailed(words);
-    }
-    case "skipped":
-      return after === before
-        ? null
-        : { kind: "paste", words: event.words, tone: "warning", retry: false, text: false };
-    case "draft-gone":
-      return before.phase.kind === "refused"
-        ? null
-        : {
-            kind: "draft-gone",
-            words: `${DRAFT_GONE}. Send review composes it again without that draft, from your comments as they are now.`,
-            tone: "warning",
-            retry: false,
-            text: true,
-          };
-    case "answered": {
-      const left = handedOver(after) ? draftsLeft(after) : [];
-      return before.phase.kind !== "sending" || left.length === 0
-        ? null
-        : {
-            kind: "draft-left",
-            words: `Mend sent the review. The Mend draft your words replace is still on Mend, because VS Code could not dismiss it: ${left.join(" ")}`,
-            tone: "warning",
-            retry: false,
-            text: false,
-          };
-    }
-    case "failed":
-      return after.phase.kind !== "refused" || before.phase.kind === "refused"
-        ? null
-        : {
-            kind: "refused",
-            words: `Mend could not deliver the review: ${event.words}`,
-            tone: "error",
-            retry: false,
-            text: false,
-          };
-    default:
-      return null;
-  }
+/** What a review whose drive stopped before or during its paste into `agent` reads. */
+const stoppedPasteWords = (agent: string, why: StopReason, mayHaveLanded: boolean): string => {
+  const terminal = `the review into ${agent}'s terminal`;
+  return mayHaveLanded
+    ? cutShortWords(stopClause(why, `while it pasted ${terminal}`), agent)
+    : `${stopClause(why, `before it pasted ${terminal}`)}, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it.`;
 };
 
-const transition = (record: SendRecord, event: SendEvent, now: string): SendRecord => {
+const transition = (record: SendRecord, event: SendEvent, now: string): Stepped => {
   switch (event.kind) {
     case "post-started":
-      return withPost(record, event.pendingId, { kind: "posting", ...event.attempt });
+      return quiet(withPost(record, event.pendingId, { kind: "posting", ...event.attempt }));
     case "posted":
-      return withPost(record, event.pendingId, { kind: "posted", commentId: event.commentId });
+      return quiet(
+        withPost(record, event.pendingId, { kind: "posted", commentId: event.commentId }),
+      );
     case "not-posted":
-      return withPost(record, event.pendingId, { kind: "unposted" });
+      return quiet(withPost(record, event.pendingId, { kind: "unposted" }));
     case "opened":
-      return {
+      return quiet({
         ...record,
         items: record.items.map((item) =>
           item.kind === "accepted" && item.draftId === event.draftId
             ? { ...item, opened: true }
             : item,
         ),
-      };
+      });
     case "draft-dismissed":
-      return {
+      return quiet({
         ...record,
         items: record.items.map((item) =>
           item.kind === "rewrite" && item.pending.origin.draftId === event.draftId
             ? { ...item, dismissal: { kind: "dismissed" } }
             : item,
         ),
-      };
+      });
     case "draft-left":
-      return {
+      return quiet({
         ...record,
         items: record.items.map((item) =>
           item.kind === "rewrite" && item.pending.origin.draftId === event.draftId
             ? { ...item, dismissal: { kind: "left", words: event.words } }
             : item,
         ),
+      });
+    case "answered": {
+      if (record.phase.kind !== "sending") return quiet(record);
+      const next = { ...record, phase: answeredPhase(event.status, event.error, event.agent, now) };
+      const left = handedOver(next) ? draftsLeft(next) : [];
+      return {
+        record: next,
+        notice:
+          left.length === 0
+            ? null
+            : {
+                kind: "draft-left",
+                words: `Mend sent the review. The Mend draft your words replace is still on Mend, because VS Code could not dismiss it: ${left.join(" ")}`,
+                tone: "warning",
+                retry: false,
+                text: false,
+              },
       };
-    case "answered":
-      return record.phase.kind === "sending"
-        ? { ...record, phase: answeredPhase(event.status, event.error, event.agent, now) }
-        : record;
+    }
     case "paste-started":
-      return withPaste(record, "due", { kind: "pasting" });
+      return quiet(withPaste(record, "due", { kind: "pasting" }));
     case "paste-unstarted":
-      return withPaste(record, "pasting", { kind: "due" });
+      return quiet(withPaste(record, "pasting", { kind: "due" }));
     case "pasted":
-      return record.phase.kind === "in-terminal"
-        ? withPaste(record, "pasting", {
-            kind: "done",
-            input: inputAfter(record, record.phase.processId, true),
-          })
-        : record;
+      return quiet(
+        record.phase.kind === "in-terminal"
+          ? withPaste(record, "pasting", {
+              kind: "done",
+              input: inputAfter(record, record.phase.processId, true),
+            })
+          : record,
+      );
     case "skipped":
-      return record.phase.kind === "in-terminal"
-        ? withPaste(record, "due", {
-            kind: "done",
-            input: inputAfter(record, record.phase.processId, false),
-          })
-        : record;
+      if (record.phase.kind !== "in-terminal" || record.phase.paste.kind !== "due")
+        return quiet(record);
+      return {
+        record: withPaste(record, "due", {
+          kind: "done",
+          input: inputAfter(record, record.phase.processId, false),
+        }),
+        notice: { kind: "paste", words: event.words, tone: "warning", retry: false, text: false },
+      };
     case "paste-failed": {
       const { phase } = record;
       if (
         phase.kind !== "in-terminal" ||
         (phase.paste.kind !== "due" && phase.paste.kind !== "pasting")
       )
-        return record;
+        return quiet(record);
+      const notice = pasteFailed(
+        event.why === "interrupted"
+          ? cutShortWords(
+              `VS Code could not finish pasting the review into ${phase.agent}'s terminal: ${event.words}`,
+              phase.agent,
+            )
+          : notPastedWords(event.why, phase.agent),
+      );
       return event.why === "agent-gone"
-        ? { ...record, phase: { kind: "pending" } }
+        ? { record: { ...record, phase: { kind: "pending" } }, notice }
         : {
-            ...record,
-            phase: {
-              ...phase,
-              paste: { kind: "failed", mayHaveLanded: event.why === "interrupted", stopped: null },
+            record: {
+              ...record,
+              phase: {
+                ...phase,
+                paste: {
+                  kind: "failed",
+                  mayHaveLanded: event.why === "interrupted",
+                  stopped: null,
+                },
+              },
             },
+            notice,
           };
     }
     case "failed":
-      return record.phase.kind === "sending" || record.phase.kind === "delivering"
-        ? {
-            ...record,
-            phase: event.retryable
-              ? { kind: "failed", words: event.words, at: now }
-              : { kind: "refused", words: event.words },
-          }
-        : record;
+      if (record.phase.kind !== "sending" && record.phase.kind !== "delivering")
+        return quiet(record);
+      // A failed delivery says itself from its phase; only a refusal is a notice.
+      return event.retryable
+        ? quiet({ ...record, phase: { kind: "failed", words: event.words, at: now } })
+        : {
+            record: { ...record, phase: { kind: "refused", words: event.words } },
+            notice: {
+              kind: "refused",
+              words: `Mend could not deliver the review: ${event.words}`,
+              tone: "error",
+              retry: false,
+              text: false,
+            },
+          };
     case "draft-gone": {
       // Its words are in the instruction: the review stops, and Send review composes it anew.
       const items = record.items.filter(
         (item) => item.kind !== "accepted" || item.draftId !== event.draftId,
       );
-      if (record.phase.kind === "refused") return { ...record, items };
-      return { ...record, items, phase: { kind: "refused", words: DRAFT_GONE } };
+      if (record.phase.kind === "refused") return quiet({ ...record, items });
+      return {
+        record: { ...record, items, phase: { kind: "refused", words: DRAFT_GONE } },
+        notice: {
+          kind: "draft-gone",
+          words: `${DRAFT_GONE}. Send review composes it again without that draft, from your comments as they are now.`,
+          tone: "warning",
+          retry: false,
+          text: true,
+        },
+      };
     }
     case "superseded":
-      return record.phase.kind === "pending" ||
-        record.phase.kind === "in-terminal" ||
-        record.phase.kind === "failed"
-        ? {
-            ...record,
-            phase: { kind: "refused", words: "Mend replaced this follow-up with a newer review." },
-          }
-        : record;
+      return quiet(
+        record.phase.kind === "pending" ||
+          record.phase.kind === "in-terminal" ||
+          record.phase.kind === "failed"
+          ? {
+              ...record,
+              phase: {
+                kind: "refused",
+                words: "Mend replaced this follow-up with a newer review.",
+              },
+            }
+          : record,
+      );
     case "retry":
-      if (!mayRetry(record, event.agent)) return record;
+      if (!mayRetry(record, event.agent)) return quiet(record);
       // Mend held it pending for her live agent: only the paste is done again, and only while
       // Mend still holds this key and has not sent its comments.
       if (
         (record.phase.kind === "in-terminal" || record.phase.kind === "pending") &&
         event.agent?.kind === "terminal"
       )
-        return event.mend === null
-          ? record
-          : { ...record, phase: heldPhase(event.mend, event.agent, now) };
-      return { ...record, phase: { kind: "sending", since: event.at } };
-    case "abandoned":
-      if (record.phase.kind === "sending")
-        return {
+        return quiet(
+          event.mend === null
+            ? record
+            : { ...record, phase: heldPhase(event.mend, event.agent, now) },
+        );
+      return quiet({ ...record, phase: { kind: "sending", since: event.at } });
+    case "abandoned": {
+      const { phase } = record;
+      if (phase.kind === "sending")
+        return quiet({
           ...record,
           phase: { kind: "failed", words: stopClause(event.why, "before Mend answered"), at: now },
-        };
-      if (record.phase.kind !== "in-terminal") return record;
-      switch (record.phase.paste.kind) {
-        case "due":
-          return withPaste(record, "due", {
-            kind: "failed",
-            mayHaveLanded: false,
-            stopped: event.why,
-          });
-        case "pasting":
-          return withPaste(record, "pasting", {
-            kind: "failed",
-            mayHaveLanded: true,
-            stopped: event.why,
-          });
-        default:
-          return record;
-      }
+        });
+      if (
+        phase.kind !== "in-terminal" ||
+        (phase.paste.kind !== "due" && phase.paste.kind !== "pasting")
+      )
+        return quiet(record);
+      // Under way, some or all of it may be in the agent's input.
+      const mayHaveLanded = phase.paste.kind === "pasting";
+      return {
+        record: {
+          ...record,
+          phase: { ...phase, paste: { kind: "failed", mayHaveLanded, stopped: event.why } },
+        },
+        notice: pasteFailed(stoppedPasteWords(phase.agent, event.why, mayHaveLanded)),
+      };
+    }
     case "follow-up":
-      if (record.phase.kind !== "delivering") return record;
-      if (event.sent) return { ...record, phase: { kind: "delivered", at: now } };
-      if (event.status === "delivery_failed")
-        return {
-          ...record,
-          phase: {
-            kind: "failed",
-            words: event.error ?? "Mend could not deliver the review.",
-            at: now,
-          },
-        };
-      if (event.status === "pending")
-        return {
-          ...record,
-          phase: answeredPhase("pending", null, event.agent ?? { kind: "other" }, now),
-        };
-      if (event.status !== null || event.others) return record;
-      return { ...record, phase: { kind: "failed", words: NOT_LISTED, at: now } };
+      return quiet(followedUp(record, event, now));
   }
+};
+
+/** A launch after a watch read what Mend holds for its key. */
+const followedUp = (
+  record: SendRecord,
+  event: Extract<SendEvent, { kind: "follow-up" }>,
+  now: string,
+): SendRecord => {
+  if (record.phase.kind !== "delivering") return record;
+  if (event.sent) return { ...record, phase: { kind: "delivered", at: now } };
+  if (event.status === "delivery_failed")
+    return {
+      ...record,
+      phase: {
+        kind: "failed",
+        words: event.error ?? "Mend could not deliver the review.",
+        at: now,
+      },
+    };
+  if (event.status === "pending")
+    return {
+      ...record,
+      phase: answeredPhase("pending", null, event.agent ?? { kind: "other" }, now),
+    };
+  if (event.status !== null || event.others) return record;
+  return { ...record, phase: { kind: "failed", words: NOT_LISTED, at: now } };
 };
 
 /** Where a review Mend held pending is, as Mend reads its key now. */
