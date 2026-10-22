@@ -77,6 +77,7 @@ export const mainHandoffFixtures = () => {
       readonly launch?: (response: ServerResponse) => void;
       readonly mountDelivery?: "bind" | "sources";
       readonly socket?: "end" | "drop";
+      readonly accountMode?: "mend-key" | "bridge";
     } = {},
   ) => {
     const fake: Fake = { routes: [], bodies: [], launches: [], adoptions: [] };
@@ -87,7 +88,8 @@ export const mainHandoffFixtures = () => {
       else if (route === "GET /api/health") json(response, { version: "0.35.1" });
       else if (route === "GET /api/organization") {
         json(response, { mountDelivery: options.mountDelivery ?? "sources" });
-      } else if (route === "GET /api/me/git-access") json(response, { mode: "bridge" });
+      } else if (route === "GET /api/me/git-access")
+        json(response, { mode: options.accountMode ?? "bridge" });
       else if (route === `GET /api/projects/${project.id}/handoffs`) {
         if (options.terms === undefined) {
           json(response, { bundleBytes: 64 * 1024 * 1024, fileBytes: FILE_BYTES });
