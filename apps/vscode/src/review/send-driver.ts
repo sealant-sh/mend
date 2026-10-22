@@ -89,6 +89,9 @@ export type Recorded =
   | { readonly kind: "not-recorded" }
   | { readonly kind: "failed"; readonly cause: unknown };
 
+const sendOf = (review: SessionReview, key: string): SendRecord | undefined =>
+  review.sends.find((record) => record.key === key);
+
 const driveId = (context: SendContext, key: string): string =>
   JSON.stringify([context.place.url, context.place.viewer, context.place.sessionId, key]);
 
@@ -219,7 +222,7 @@ export class SendDriver {
       await this.kept.releaseDrive(place, key).catch(() => undefined);
       return { kind: "failed", cause };
     }
-    if (!next.sends.some((record) => record.key === key)) {
+    if (sendOf(next, key) === undefined) {
       await this.kept.releaseDrive(place, key);
       return { kind: "not-recorded" };
     }
@@ -239,9 +242,7 @@ export class SendDriver {
         words:
           "Retry delivery sent nothing: VS Code is connected to another Mend server or account than this review's",
       };
-    const record = (await this.kept.read(target.place)).review.sends.find(
-      (candidate) => candidate.key === target.key,
-    );
+    const record = sendOf((await this.kept.read(target.place)).review, target.key);
     if (record === undefined)
       return {
         retried: false,
@@ -270,26 +271,19 @@ export class SendDriver {
         words: "Retry delivery sent nothing: another window of VS Code is delivering this review",
       };
     const at = new Date().toISOString();
-    const ofKey = (review: SessionReview): SendRecord | undefined =>
-      review.sends.find((candidate) => candidate.key === target.key);
     // Checked again as kept, under the lock: another window may have moved it since it was read.
     let moved = false;
     const retried = await this.host
       .keepAt(target.place, (review) => {
         const next = stepReview(review, target.key, { kind: "retry", at, agent }, at);
-        const before = ofKey(review);
-        const after = ofKey(next);
-        moved =
-          before !== undefined &&
-          after !== undefined &&
-          JSON.stringify(before.phase) !== JSON.stringify(after.phase);
+        moved = sendOf(next, target.key)?.phase !== sendOf(review, target.key)?.phase;
         return next;
       })
       .catch(async (cause: unknown) => {
         await this.kept.releaseDrive(target.place, target.key).catch(() => undefined);
         throw cause;
       });
-    const after = ofKey(retried);
+    const after = sendOf(retried, target.key);
     if (!moved || after === undefined) {
       await this.kept.releaseDrive(target.place, target.key);
       return {
@@ -332,8 +326,6 @@ export class SendDriver {
     /** How long another window drives each send for, unless it renews its lease. */
     const drivenFor = new Map<string, number>();
     const loaded = await this.host.keepAt(context.place, async (review) => {
-      undriven.clear();
-      drivenFor.clear();
       for (const record of review.sends) {
         if (needs(record) !== "driver" || this.#driving.has(driveId(context, record.key))) continue;
         if (this.kept.drives(context.place, record.key)) continue;
@@ -389,7 +381,7 @@ export class SendDriver {
     const next = await this.host.keepAt(context.place, (review) =>
       stepReview(review, key, event, now),
     );
-    return next.sends.find((record) => record.key === key) ?? null;
+    return sendOf(next, key) ?? null;
   }
 
   /**
@@ -465,9 +457,7 @@ export class SendDriver {
     while (watches < MAX_WATCHES) {
       if (!(await this.kept.renewDrive(context.place, key))) return;
       await this.#still(bound);
-      const record = (await this.kept.read(context.place)).review.sends.find(
-        (candidate) => candidate.key === key,
-      );
+      const record = sendOf((await this.kept.read(context.place)).review, key);
       if (record === undefined) return;
       const action = nextAction(record);
       try {

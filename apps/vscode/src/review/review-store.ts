@@ -12,9 +12,9 @@ import type { Pasted } from "./agent-paste.js";
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
 import {
-  awaitsRetry,
   handedOver,
   commentsOnTheirWay,
+  needs,
   openRecord,
   retryRecord,
   sendGeneration,
@@ -958,7 +958,7 @@ export class ReviewStore implements vscode.Disposable {
     if (retry === null) return true;
     void this.reloadReview();
     return (await this.kept.read(retry.place)).review.sends.some(
-      (record) => record.key === retry.key && awaitsRetry(record),
+      (record) => record.key === retry.key && needs(record) === "her",
     );
   }
 

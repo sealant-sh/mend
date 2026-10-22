@@ -610,19 +610,9 @@ export const DRAFT_GONE =
  * delivered with the same key, which launches the stopped session on the review. Never on one VS
  * Code pasted: she may have entered it, and the same key would hand the agent that review again.
  */
-export const mayRetry = (record: SendRecord, agent: LiveAgent | null): boolean => {
-  const hers = agent === null || (agent.kind === "terminal" && agent.hers);
-  switch (record.phase.kind) {
-    case "failed":
-      return true;
-    case "pending":
-      return hers;
-    case "in-terminal":
-      return record.phase.paste.kind === "failed" && hers;
-    default:
-      return false;
-  }
-};
+export const mayRetry = (record: SendRecord, agent: LiveAgent | null): boolean =>
+  needs(record) === "her" &&
+  (record.phase.kind === "failed" || agent === null || (agent.kind === "terminal" && agent.hers));
 
 /**
  * Who moves a record on from where it is: a window's driver, which posts, delivers, pastes and
@@ -654,15 +644,6 @@ export const needs = (record: SendRecord): Needs => {
       return "nothing";
   }
 };
-
-/**
- * A record a toast of hers offered Retry delivery on, and that still waits for it: failed, or held
- * pending with nothing pasted. One sent, or retried meanwhile, does not.
- */
-export const awaitsRetry = (record: SendRecord): boolean =>
-  record.phase.kind === "failed" ||
-  record.phase.kind === "pending" ||
-  (record.phase.kind === "in-terminal" && record.phase.paste.kind === "failed");
 
 const isHeld = (record: SendRecord): boolean =>
   record.phase.kind === "pending" || record.phase.kind === "in-terminal";
@@ -722,7 +703,7 @@ export const stepReview = (
 };
 
 /** A record that still holds its comments: this window is sending or delivering it. */
-export const holdsComments = (record: SendRecord): boolean =>
+const holdsComments = (record: SendRecord): boolean =>
   record.phase.kind === "sending" || record.phase.kind === "delivering";
 
 /** What a thread of a comment in this record reads, as Mend observed it. */
