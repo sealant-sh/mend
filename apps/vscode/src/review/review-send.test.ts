@@ -18,6 +18,7 @@ import {
   comment,
   FakeMend,
   keptIn,
+  memoryFiles,
   PINNED,
   PROJECT,
   session,
@@ -292,6 +293,128 @@ describe("the agent exits after Mend holds the review", () => {
     );
     expect(told[0]?.retry).not.toBeNull();
     expect(store.review().sends.at(-1)?.phase).toEqual({ kind: "pending" });
+  });
+});
+
+describe("a paste into claude's terminal that never finished", () => {
+  it("reads not pasted when the paste throws, says to check claude's input, and Retry delivery pastes it again", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    const pastes: Array<string> = [];
+    const store = new ReviewStore(
+      withAgent(CLAUDE),
+      mend,
+      new ReviewMemory(memento()),
+      keptIn(await storage()),
+      async (_sessionId, _processId, text) => {
+        pastes.push(text);
+        if (pastes.length === 1) throw new Error("the terminal's socket closed");
+        return "pasted";
+      },
+    );
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    const told = failures(store);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    await sendComposed(store, composed, composed.text);
+    await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
+    expect(told[0]?.words).toMatch(/check claude's input/i);
+    expect(told[0]?.retry).not.toBeNull();
+    const target = store.retryTarget();
+    if (target === null) throw new Error("no Retry delivery offered");
+    expect(await store.retry(target)).toEqual({ retried: true });
+    await vi.waitFor(() => expect(pastes).toHaveLength(2), SETTLE);
+    expect(pastes[1]).toBe(pastes[0]);
+    expect(mend.delivered).toHaveLength(1);
+  });
+
+  it("reads not pasted, with Retry delivery, in the window opened after the one pasting closed", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    mend.serverComments = [comment({ id: "c1" })];
+    let late = 0;
+    const clock = (): number => Date.now() + late;
+    const { promise: pasting, resolve: pasted } = Promise.withResolvers<void>();
+    const closing = new ReviewStore(
+      withAgent(CLAUDE),
+      mend,
+      new ReviewMemory(memento()),
+      new KeptReviews(directory, NODE_FILES, clock),
+      async () => {
+        pasted();
+        return new Promise<Pasted>(() => undefined);
+      },
+    );
+    closing.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(closing.ready()).not.toBeNull(), SETTLE);
+    const composed = closing.compose();
+    if (composed === null) throw new Error("nothing composed");
+    await sendComposed(closing, composed, composed.text);
+    await pasting;
+
+    // The window closed mid-paste: one opened once its lease went stale finds the review.
+    late += DRIVE_STALE_MS + 1_000;
+    const opened = await window(new KeptReviews(directory, NODE_FILES, clock), mend);
+    await vi.waitFor(() => expect(opened.store.retryTarget()).not.toBeNull(), SETTLE);
+    expect(opened.store.review().sends.at(-1)?.phase).toMatchObject({
+      kind: "in-terminal",
+      paste: { kind: "failed" },
+    });
+    expect(opened.store.offer()).toEqual({ kind: "retry" });
+    expect(opened.pastes).toEqual([]);
+  });
+
+  it("pastes into claude's terminal when Mend read the follow-up back pending while claude is live", async () => {
+    const mend = new FakeMend();
+    mend.answer = "delivering";
+    const { store, pastes } = await window(keptIn("/global-storage/reviews", memoryFiles()), mend);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await sendComposed(store, composed, composed.text);
+      await vi.advanceTimersByTimeAsync(0);
+      const key = store.review().sends.at(-1)?.key;
+      if (key === undefined) throw new Error("no review kept");
+      mend.listed = { key, status: "pending", error: null };
+      await vi.advanceTimersByTimeAsync(3_100);
+    } finally {
+      vi.useRealTimers();
+    }
+    await vi.waitFor(() => expect(pastes).toHaveLength(1), SETTLE);
+    await vi.waitFor(
+      () =>
+        expect(store.review().sends.at(-1)?.phase).toMatchObject({
+          kind: "in-terminal",
+          paste: { kind: "done" },
+        }),
+      SETTLE,
+    );
+  });
+
+  it("pastes into claude's terminal when claude started while Mend took the follow-up", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    const reads = {
+      ...withAgent(CLAUDE),
+      sessionDetail: async (sessionId: string): Promise<SessionDetail> => ({
+        session: { ...session(sessionId), ownerUserId: "dana" },
+        processes: mend.delivered.length > 0 ? [CLAUDE] : [],
+        currentAgent: mend.delivered.length > 0 ? CLAUDE : null,
+        changeId: "change-1",
+      }),
+    };
+    const { store, pastes } = await window(keptIn(await storage()), mend, reads);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    await sendComposed(store, composed, composed.text);
+    await vi.waitFor(() => expect(pastes).toHaveLength(1), SETTLE);
+    expect(store.review().sends.at(-1)?.phase).toMatchObject({ kind: "in-terminal" });
   });
 });
 
