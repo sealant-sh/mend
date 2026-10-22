@@ -455,7 +455,7 @@ const scratchFor = (git: Git, base: Env, checkout: Checkout, dir: string): Scrat
   for (const file of fs.readdirSync(checkout.gitDir)) {
     if (file === "index" || file === "config.worktree" || file.startsWith("sharedindex.")) {
       const from = path.join(checkout.gitDir, file);
-      // Git rereads a file whose stat matches its entry only when the index is not older than it,
+      // Git rereads a file whose stat matches its entry only when the index is not newer than it,
       // so a copy dated now would trust a same-size edit made in the index's own tick. Stat before
       // copying and floor to the second: an older date only makes git reread more. Git keeps those
       // seconds in 32 bits; outside them the copy is dated 1 s after the epoch, so git rereads all.
