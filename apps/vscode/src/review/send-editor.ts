@@ -35,6 +35,9 @@ const NEWER =
 const GONE =
   "This review was sent, or VS Code no longer keeps it, so your text is not saved. Your text stays in this editor.";
 
+const ELSEWHERE =
+  "You typed in an earlier review of this session that another window composed anew or sent since, so this review does not hold that text. Your text stays in its editor: copy what you need into this review.";
+
 const UNREAD =
   "This window has not read this review, so your text is not saved over it. Your text stays in this editor.";
 
@@ -155,7 +158,8 @@ export class SendEditor implements vscode.Disposable {
   async #open(): Promise<void> {
     // Words this window holds are kept first, so the review lists them and is current when sent.
     await this.store.reloadReview();
-    if (!(await this.#saveOpen())) {
+    const typed = await this.#saveOpen();
+    if (typed === "unsaved") {
       void vscode.window.showWarningMessage(
         "VS Code did not save the review you are writing, so Send review did not compose it again. Your text stays in its editor.",
       );
@@ -172,24 +176,26 @@ export class SendEditor implements vscode.Disposable {
       documentUri(kept.ref, kept.document.composed.sessionName),
     );
     await vscode.window.showTextDocument(document, { preview: false });
+    if (typed === "elsewhere") void vscode.window.showWarningMessage(ELSEWHERE);
   }
 
-  async #saveOpen(): Promise<boolean> {
+  /**
+   * Saves what she typed in every editor of the session's review: `unsaved` when VS Code could not
+   * save the review kept now, `elsewhere` when an editor holds typing in a review another window
+   * composed anew or sent since, which no save can keep.
+   */
+  async #saveOpen(): Promise<"saved" | "unsaved" | "elsewhere"> {
     const place = this.store.place();
-    const kept = this.store.review().document;
-    if (place === null || kept === null) return true;
+    if (place === null) return "saved";
+    const keptId = this.store.review().document?.composed.documentId ?? null;
+    let typed: "saved" | "elsewhere" = "saved";
     for (const document of vscode.workspace.textDocuments) {
       const ref = refOf(document.uri);
-      if (
-        document.isDirty &&
-        ref !== null &&
-        samePlace(ref.place, place) &&
-        ref.id === kept.composed.documentId &&
-        !(await document.save())
-      )
-        return false;
+      if (!document.isDirty || ref === null || !samePlace(ref.place, place)) continue;
+      if (ref.id !== keptId) typed = "elsewhere";
+      else if (!(await document.save())) return "unsaved";
     }
-    return true;
+    return typed;
   }
 
   async #send(uri: vscode.Uri | undefined): Promise<void> {
