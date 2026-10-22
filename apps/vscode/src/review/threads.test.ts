@@ -77,7 +77,7 @@ describe("a change's comments as threads", () => {
             id: "a1",
             line: 13,
             body: draft.body,
-            origin: { kind: "accepted", draftId: "d1", evidence: draft.evidence },
+            origin: { kind: "accepted", draftId: "d1", evidence: draft.evidence, rewritten: false },
           }),
         ],
         sends: [],
@@ -185,7 +185,7 @@ describe("the threads of a review she sent", () => {
     id: "a1",
     line: 13,
     endLine: 13,
-    origin: { kind: "accepted", draftId: "d1", evidence: [] },
+    origin: { kind: "accepted", draftId: "d1", evidence: [], rewritten: false },
   });
 
   it("show a draft she accepted once while its review is on its way, as hers", () => {

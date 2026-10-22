@@ -33,7 +33,13 @@ export type PostState =
 
 /** One comment of the review she sends. */
 export type SendItem =
-  | { readonly kind: "own"; readonly pending: PendingComment; readonly post: PostState }
+  | {
+      readonly kind: "own";
+      readonly pending: PendingComment;
+      readonly post: PostState;
+      /** The Mend draft her words replace: dismissed once they are on Mend, if still a draft. */
+      readonly replaces: { readonly draftId: string; readonly dismissed: boolean } | null;
+    }
   /** A Mend draft she accepted: Send opens it on Mend, then sends it. */
   | {
       readonly kind: "accepted";
@@ -158,7 +164,8 @@ export type SendEvent =
   /** The reconcile read found nothing posted for this comment: it is posted again. */
   | { readonly kind: "not-posted"; readonly pendingId: string }
   | { readonly kind: "opened"; readonly draftId: string }
-  | { readonly kind: "rewritten"; readonly draftId: string }
+  /** The draft her posted words replace reads dismissed on Mend, or is gone. */
+  | { readonly kind: "draft-dismissed"; readonly draftId: string }
   /** The draft she accepted is dismissed on Mend, or gone: it leaves the review, never reopened. */
   | { readonly kind: "draft-gone"; readonly draftId: string }
   /** A newer review of hers reached Mend, which supersedes every follow-up it held before. */
@@ -205,6 +212,7 @@ export type SendAction =
   | { readonly kind: "reconcile"; readonly pendingIds: ReadonlyArray<string> }
   | { readonly kind: "post"; readonly pending: PendingComment }
   | { readonly kind: "open"; readonly draftId: string; readonly pending: PendingComment }
+  | { readonly kind: "dismiss-draft"; readonly draftId: string }
   | { readonly kind: "deliver"; readonly request: DeliverRequest }
   | { readonly kind: "paste"; readonly text: string; readonly processId: string }
   /** Nothing to paste into the agent's terminal, and why, said once. */
@@ -285,6 +293,8 @@ export const nextAction = (record: SendRecord): SendAction => {
   for (const item of record.items) {
     if (item.kind === "own" && item.post.kind === "unposted")
       return { kind: "post", pending: item.pending };
+    if (item.kind === "own" && item.replaces !== null && !item.replaces.dismissed)
+      return { kind: "dismiss-draft", draftId: item.replaces.draftId };
     if (item.kind === "accepted" && !item.opened)
       return { kind: "open", draftId: item.draftId, pending: item.pending };
   }
@@ -402,14 +412,13 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
             : item,
         ),
       };
-    case "rewritten":
+    case "draft-dismissed":
       return {
         ...record,
-        items: record.items.map(
-          (item): SendItem =>
-            item.kind === "accepted" && item.draftId === event.draftId
-              ? { kind: "own", pending: item.pending, post: { kind: "unposted" } }
-              : item,
+        items: record.items.map((item) =>
+          item.kind === "own" && item.replaces?.draftId === event.draftId
+            ? { ...item, replaces: { ...item.replaces, dismissed: true } }
+            : item,
         ),
       };
     case "answered":
@@ -504,13 +513,6 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
       };
   }
 };
-
-export const rewrittenDrafts = (record: SendRecord): ReadonlyArray<string> =>
-  record.items.flatMap((item) =>
-    item.kind === "own" && item.pending.origin.kind === "accepted"
-      ? [item.pending.origin.draftId]
-      : [],
-  );
 
 export const DRAFT_GONE =
   "A Mend draft in this review was dismissed before it was sent, and the review's text still asks for it, so nothing was sent";
@@ -648,7 +650,8 @@ export const openRecord = (records: ReadonlyArray<SendRecord>): SendRecord | nul
 
 /**
  * The target for a pending comment in the slice it was written on: its lines when one hunk holds
- * them, else its file (the words then say which line), else the change as a whole.
+ * them, else its file (the words then say which line, when it is on one), else the change as a
+ * whole.
  */
 export const commentTarget = (
   files: ReadonlyArray<ChangeFile>,
@@ -656,28 +659,32 @@ export const commentTarget = (
 ): { readonly target: ReviewCommentTarget; readonly body: string } => {
   // Her reply under a Mend draft on the old side goes where the draft is: the base's lines.
   const old = comment.anchor?.side === "old";
+  const { line, endLine } = comment;
   const file =
     comment.path === null
       ? undefined
       : files.find((candidate) => (old ? candidate.oldPath : candidate.newPath) === comment.path);
-  const hunk = file?.hunks.find((candidate) => {
-    const start = old ? candidate.oldStart : candidate.newStart;
-    const lines = old ? candidate.oldLines : candidate.newLines;
-    return lines > 0 && comment.line >= start && comment.endLine <= start + lines - 1;
-  });
-  if (file !== undefined && hunk !== undefined)
+  const hunk =
+    line === null || endLine === null
+      ? undefined
+      : file?.hunks.find((candidate) => {
+          const start = old ? candidate.oldStart : candidate.newStart;
+          const lines = old ? candidate.oldLines : candidate.newLines;
+          return lines > 0 && line >= start && endLine <= start + lines - 1;
+        });
+  if (file !== undefined && hunk !== undefined && line !== null && endLine !== null)
     return {
       target: {
         oldPath: file.oldPath,
         newPath: file.newPath,
         side: old ? "old" : "new",
-        startLine: comment.line,
-        endLine: comment.endLine,
+        startLine: line,
+        endLine,
         hunkContextHash: hunk.contextHash,
       },
       body: comment.body,
     };
-  const where = `line ${comment.line}: `;
+  const where = line === null ? "" : `line ${line}: `;
   if (file !== undefined)
     return {
       target: {
@@ -699,7 +706,10 @@ export const commentTarget = (
       endLine: null,
       hunkContextHash: null,
     },
-    body: comment.path === null ? comment.body : `${comment.path}:${comment.line}: ${comment.body}`,
+    body:
+      comment.path === null
+        ? comment.body
+        : `${comment.path}${line === null ? "" : `:${line}`}: ${comment.body}`,
   };
 };
 
@@ -759,12 +769,20 @@ export const startSend = (
   const onTheirWay = new Set(review.sends.filter(holdsComments).flatMap((record) => idsOf(record)));
   if (input.open.some((id) => onTheirWay.has(id))) return null;
   const items: ReadonlyArray<SendItem> = [
-    ...moving.map(
-      (pending): SendItem =>
-        pending.origin.kind === "accepted"
-          ? { kind: "accepted", pending, draftId: pending.origin.draftId, opened: false }
-          : { kind: "own", pending, post: { kind: "unposted" } },
-    ),
+    ...moving.map((pending): SendItem => {
+      const { origin } = pending;
+      if (origin.kind === "own")
+        return { kind: "own", pending, post: { kind: "unposted" }, replaces: null };
+      // Her words in place of the draft's: posted as hers, then the draft is dismissed.
+      return origin.rewritten
+        ? {
+            kind: "own",
+            pending,
+            post: { kind: "unposted" },
+            replaces: { draftId: origin.draftId, dismissed: false },
+          }
+        : { kind: "accepted", pending, draftId: origin.draftId, opened: false };
+    }),
     ...input.open.map((commentId): SendItem => ({ kind: "open", commentId })),
   ];
   const record: SendRecord = {

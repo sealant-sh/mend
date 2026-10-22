@@ -268,7 +268,7 @@ describe("sending a review (story d, step 6)", () => {
 describe("an accepted draft in a review she sent", () => {
   const accepted = pending({
     id: "a1",
-    origin: { kind: "accepted", draftId: "d1", evidence: [] },
+    origin: { kind: "accepted", draftId: "d1", evidence: [], rewritten: false },
   });
 
   it("stays hers while the review is on its way, not a draft beside it", () => {

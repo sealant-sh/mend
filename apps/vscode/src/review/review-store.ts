@@ -24,7 +24,6 @@ import {
   openRecord,
   postedComment,
   commentLabel,
-  rewrittenDrafts,
   retryRecord,
   sendGeneration,
   startSend,
@@ -584,6 +583,7 @@ export class ReviewStore implements vscode.Disposable {
       kind: "accepted",
       draftId,
       evidence: draft.evidence,
+      rewritten: false,
     });
     const own = onDraft(read, draft, reply.trim(), { kind: "own" });
     try {
@@ -1059,14 +1059,6 @@ export class ReviewStore implements vscode.Disposable {
     return next.sends.find((record) => record.key === key) ?? null;
   }
 
-  async #dismissRewrittenDrafts(changeId: string, record: SendRecord): Promise<void> {
-    const rewritten = rewrittenDrafts(record);
-    if (rewritten.length === 0) return;
-    for (const draft of await this.client.comments(changeId))
-      if (draft.state === "draft" && rewritten.includes(draft.id))
-        await this.client.setCommentState(changeId, draft.id, "dismissed");
-  }
-
   /**
    * One drive per record, by server, session and key: a second Send or Retry while one runs goes
    * after it, so a record put back to sending is always driven.
@@ -1118,6 +1110,7 @@ export class ReviewStore implements vscode.Disposable {
       );
       if (record === undefined) return;
       const action = nextAction(record);
+      let failing = "Mend could not deliver the review";
       try {
         switch (action.kind) {
           case "idle":
@@ -1183,17 +1176,22 @@ export class ReviewStore implements vscode.Disposable {
               this.#rereadIfFollowed(sessionId);
               return;
             }
-            if (draft.body.trim() !== action.pending.body.trim()) {
-              await this.#step(context, key, { kind: "rewritten", draftId: action.draftId });
-              break;
-            }
             if (draft.state === "draft")
               await this.client.setCommentState(changeId, action.draftId, "open");
             await this.#step(context, key, { kind: "opened", draftId: action.draftId });
             break;
           }
+          case "dismiss-draft": {
+            failing = "Mend posted your words, and could not dismiss the Mend draft they replace";
+            const draft = (await this.client.comments(changeId)).find(
+              (comment) => comment.id === action.draftId,
+            );
+            if (draft?.state === "draft")
+              await this.client.setCommentState(changeId, action.draftId, "dismissed");
+            await this.#step(context, key, { kind: "draft-dismissed", draftId: action.draftId });
+            break;
+          }
           case "deliver": {
-            await this.#dismissRewrittenDrafts(changeId, record);
             const detail = await this.sessions.sessionDetail(sessionId);
             const answered = await this.client.deliver(sessionId, action.request);
             await this.#step(context, key, {
@@ -1249,7 +1247,7 @@ export class ReviewStore implements vscode.Disposable {
         const retryable =
           !(cause instanceof MendApiError) || cause.status === null || cause.status >= 500;
         await this.#step(context, key, { kind: "failed", words: errorWords(cause), retryable });
-        this.#fail(`delivery:${key}`, `Mend could not deliver the review: ${errorWords(cause)}`, {
+        this.#fail(`delivery:${key}`, `${failing}: ${errorWords(cause)}`, {
           cause,
           retry: retryable ? retry : null,
         });
@@ -1577,21 +1575,24 @@ const sliceOf = (read: ChangeRead): SendSlice => ({
   diffDigest: read.pinned.diffDigest,
 });
 
-/** A pending comment on a Mend draft's place: its lines where the draft hangs, or the whole change. */
+/**
+ * A pending comment on a Mend draft's place: the slice it was written on, and its lines, its whole
+ * file or the whole change, as the draft has them.
+ */
 const onDraft = (
   read: ChangeRead,
   draft: ServerComment,
   body: string,
   origin: PendingComment["origin"],
 ): PendingComment => {
-  const line = draft.file === null ? 1 : (draft.line ?? 1);
+  const line = draft.file === null ? null : draft.line;
   return {
     id: randomUUID(),
-    sliceId: read.pinned.id,
-    headId: read.pinned.head.id,
+    sliceId: draft.anchor?.sliceId ?? read.pinned.id,
+    headId: draft.anchor?.headId ?? read.pinned.head.id,
     path: draft.file,
     line,
-    endLine: draft.file === null ? 1 : Math.max(line, draft.endLine ?? line),
+    endLine: line === null ? null : Math.max(line, draft.endLine ?? line),
     lineText: "",
     body,
     createdAt: new Date().toISOString(),

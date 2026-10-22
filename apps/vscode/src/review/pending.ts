@@ -31,18 +31,23 @@ export type PendingOrigin =
       /** The draft on Mend: it stays a draft there until Send review opens it. */
       readonly draftId: string;
       readonly evidence: ReadonlyArray<RecordLink>;
+      /** She edited its words: Send review posts hers on the draft's place, and dismisses it. */
+      readonly rewritten: boolean;
     };
 
 export interface PendingComment {
   readonly id: string;
-  /** The pinned slice she wrote it on, and its head: its hunks anchor it when it is sent. */
+  /**
+   * The slice she wrote it on, and its head: its hunks anchor it when it is sent. The pinned slice,
+   * or for words on a Mend draft, the slice the draft was written on.
+   */
   readonly sliceId: string;
   readonly headId: string;
   /** Null for a comment on the change as a whole, as a Mend draft about the whole change is. */
   readonly path: string | null;
-  /** Lines on the slice's new side, from 1; 1 for the whole change. */
-  readonly line: number;
-  readonly endLine: number;
+  /** Lines from 1; null for a comment about its whole file, or the change as a whole. */
+  readonly line: number | null;
+  readonly endLine: number | null;
   /** The first commented line as it read: what carries the comment to a newer slice. */
   readonly lineText: string;
   readonly body: string;
@@ -115,7 +120,12 @@ const parseOrigin = (value: unknown): PendingOrigin | null => {
   if (value["kind"] === "own") return { kind: "own" };
   const draftId = text(value, "draftId");
   return value["kind"] === "accepted" && draftId !== null
-    ? { kind: "accepted", draftId, evidence: parseEvidence(value["evidence"]) }
+    ? {
+        kind: "accepted",
+        draftId,
+        evidence: parseEvidence(value["evidence"]),
+        rewritten: value["rewritten"] === true,
+      }
     : null;
 };
 
@@ -136,8 +146,8 @@ const parsePending = (value: unknown): ReadonlyArray<PendingComment> => {
   const sliceId = text(value, "sliceId");
   const headId = text(value, "headId");
   const path = value["path"] === null ? null : text(value, "path");
-  const line = whole(value, "line");
-  const endLine = whole(value, "endLine");
+  const line = nullableWhole(value, "line");
+  const endLine = nullableWhole(value, "endLine");
   const lineText = text(value, "lineText");
   const body = text(value, "body");
   const createdAt = text(value, "createdAt");
@@ -148,8 +158,9 @@ const parsePending = (value: unknown): ReadonlyArray<PendingComment> => {
     sliceId === null ||
     headId === null ||
     (path === null && value["path"] !== null) ||
-    line === null ||
-    endLine === null ||
+    line === undefined ||
+    endLine === undefined ||
+    (line === null) !== (endLine === null) ||
     lineText === null ||
     body === null ||
     createdAt === null ||
@@ -223,8 +234,20 @@ const parseItem = (value: unknown): ReadonlyArray<SendItem> => {
   const post = parsePost(value["post"]);
   const draftId = text(value, "draftId");
   const commentId = text(value, "commentId");
+  const replaces = value["replaces"];
+  const replacedDraft = isRecord(replaces) ? text(replaces, "draftId") : null;
   if (value["kind"] === "own" && pending !== undefined && post !== null)
-    return [{ kind: "own", pending, post }];
+    return [
+      {
+        kind: "own",
+        pending,
+        post,
+        replaces:
+          isRecord(replaces) && replacedDraft !== null
+            ? { draftId: replacedDraft, dismissed: replaces["dismissed"] === true }
+            : null,
+      },
+    ];
   if (value["kind"] === "accepted" && pending !== undefined && draftId !== null)
     return [{ kind: "accepted", pending, draftId, opened: value["opened"] === true }];
   if (value["kind"] === "open" && commentId !== null) return [{ kind: "open", commentId }];
@@ -460,10 +483,21 @@ export const addPending = (review: SessionReview, comment: PendingComment): Sess
   pending: [...review.pending, comment],
 });
 
-/** G1: a pending comment is edited freely until it is sent. */
+/** G1: a pending comment is edited freely until it is sent. A Mend draft's words she edits are hers. */
 export const editPending = (review: SessionReview, id: string, body: string): SessionReview => ({
   ...review,
-  pending: review.pending.map((comment) => (comment.id === id ? { ...comment, body } : comment)),
+  pending: review.pending.map((comment) =>
+    comment.id !== id || comment.body === body
+      ? comment
+      : {
+          ...comment,
+          body,
+          origin:
+            comment.origin.kind === "accepted"
+              ? { ...comment.origin, rewritten: true }
+              : comment.origin,
+        },
+  ),
 });
 
 export const removePending = (review: SessionReview, id: string): SessionReview => ({
