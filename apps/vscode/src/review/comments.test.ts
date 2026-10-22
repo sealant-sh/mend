@@ -23,6 +23,8 @@ import {
 interface Thread {
   readonly uri: { readonly scheme: string };
   comments: ReadonlyArray<{ readonly body: unknown; readonly mode?: number }>;
+  disposed: boolean;
+  dispose(): void;
 }
 
 interface Controller {
@@ -81,7 +83,15 @@ vi.mock("vscode", async () => {
         ui.controllers.push(controller);
         return Object.assign(controller, {
           createCommentThread: (uri: { readonly scheme: string }) => {
-            const thread = { uri, comments: [], dispose: () => undefined };
+            const thread: Thread = {
+              uri,
+              comments: [],
+              disposed: false,
+              dispose: () => {
+                thread.disposed = true;
+                controller.threads.splice(controller.threads.indexOf(thread), 1);
+              },
+            };
             controller.threads.push(thread);
             return thread;
           },
@@ -91,6 +101,22 @@ vi.mock("vscode", async () => {
     },
   };
 });
+
+/** The threads VS Code shows: a disposed one is gone, and so is every word in it. */
+const liveThreads = (): ReadonlyArray<Thread> =>
+  ui.controllers.flatMap((controller) => controller.threads);
+
+/** Every word the live threads show. */
+const shownWords = (): ReadonlyArray<string> =>
+  liveThreads().flatMap((thread) =>
+    thread.comments.map(({ body }) =>
+      typeof body === "string"
+        ? body
+        : typeof body === "object" && body !== null && "value" in body
+          ? String(body.value)
+          : "",
+    ),
+  );
 
 const memento = (): ReviewMemento => {
   const saved = new Map<string, unknown>();
@@ -217,7 +243,7 @@ describe("the reply box", () => {
 });
 
 describe("saving an edit to a pending comment", () => {
-  it("keeps her edited words, and says why, when another window already sent the comment", async () => {
+  it("keeps her edited words as a new pending comment at its place, and says so, when another window already sent the comment", async () => {
     const directory = await storage();
     const mend = new FakeMend();
     const window = async () => {
@@ -249,7 +275,7 @@ describe("saving an edit to a pending comment", () => {
       body: "Use the shared limiter",
     });
     await editor.reloadReview();
-    const thread = ui.controllers.flatMap((controller) => controller.threads).at(0);
+    const thread = liveThreads().at(0);
     if (thread === undefined) throw new Error("no thread drawn");
     await ui.commands.get("mend.review.edit")?.(thread.comments[0]);
     const [editing] = thread.comments;
@@ -259,8 +285,15 @@ describe("saving an edit to a pending comment", () => {
     if (composed === null) throw new Error("nothing composed");
     expect(await sender.send(composed, composed.text)).toEqual({ sent: true });
     await ui.commands.get("mend.review.save")?.(editing);
-    expect(thread.comments.map(({ body }) => body)).toEqual(["Use guard.ts instead"]);
-    expect(ui.warn).toHaveBeenCalledWith(expect.stringMatching(/already sent/));
+    expect(
+      editor
+        .review()
+        .pending.map(({ path, line, endLine, body }) => ({ path, line, endLine, body })),
+    ).toEqual([{ path: "src/auth/limit.ts", line: 3, endLine: 3, body: "Use guard.ts instead" }]);
+    expect(shownWords()).toContain("Use guard.ts instead");
+    expect(ui.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/already sent.*kept as a new pending comment/),
+    );
     comments.dispose();
     sender.dispose();
     editor.dispose();
@@ -298,13 +331,22 @@ describe("her words under a Mend draft", () => {
       () => expect(ui.controllers.flatMap((controller) => controller.threads)).toHaveLength(1),
       SETTLE,
     );
-    const thread = ui.controllers.flatMap((controller) => controller.threads).at(0);
+    const thread = liveThreads().at(0);
     if (thread === undefined) throw new Error("no draft drawn");
     const keptOrHeld = (): ReadonlyArray<unknown> => [
       ...store.review().pending.map(({ body }) => body),
-      ...thread.comments.map(({ body }) => body),
+      ...shownWords(),
     ];
-    return { reply: { thread, text: WORDS }, keptOrHeld, done: () => comments.dispose() };
+    return {
+      store,
+      thread,
+      reply: { thread, text: WORDS },
+      keptOrHeld,
+      done: () => {
+        comments.dispose();
+        store.dispose();
+      },
+    };
   };
 
   it("stay in the thread, with why, when VS Code could not keep an Accept", async () => {
@@ -331,6 +373,45 @@ describe("her words under a Mend draft", () => {
     const { reply, keptOrHeld, done } = await underDraft(new Refusing());
     await ui.commands.get("mend.review.dismiss")?.(reply);
     expect(keptOrHeld()).toContain(WORDS);
+    done();
+  });
+
+  it("stay when the draft's thread is drawn away, after VS Code could not keep an Accept", async () => {
+    const mend = new FakeMend();
+    const { store, reply, done } = await underDraft(mend, fullDisk);
+    await Promise.resolve(ui.commands.get("mend.review.accept")?.(reply)).catch(() => undefined);
+    mend.serverComments = [{ ...DRAFT, state: "dismissed" }];
+    store.reread();
+    await vi.waitFor(
+      () => expect(shownWords()).not.toContain("Nothing in this session ran the tests."),
+      SETTLE,
+    );
+    expect(shownWords()).toContain(WORDS);
+    done();
+  });
+
+  it("are not dropped by a newer reply, held or kept", async () => {
+    let full = true;
+    const fullUntilFreed: KeptFiles = {
+      ...NODE_FILES,
+      writeFile: async (path, text) => {
+        if (full) throw new Error("the disk is full.");
+        await NODE_FILES.writeFile(path, text);
+      },
+    };
+    const { store, thread, done } = await underDraft(new FakeMend(), fullUntilFreed);
+    const accept = (text: string) =>
+      Promise.resolve(ui.commands.get("mend.review.accept")?.({ thread, text })).catch(
+        () => undefined,
+      );
+    await accept(WORDS);
+    await accept("and on CI");
+    expect(shownWords()).toEqual(expect.arrayContaining([WORDS, "and on CI"]));
+    full = false;
+    await accept("then merged");
+    expect(store.review().pending.map(({ body }) => body)).toEqual(
+      expect.arrayContaining([WORDS, "and on CI", "then merged"]),
+    );
     done();
   });
 });
