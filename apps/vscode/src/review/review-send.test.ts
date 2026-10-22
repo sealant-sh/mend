@@ -1236,6 +1236,46 @@ class SlowPosts extends FakeMend {
   }
 }
 
+describe("a send on its way when VS Code connects to another Mend server", () => {
+  it("sends nothing more to either server, and the review reads failed with Retry once she is back", async () => {
+    const directory = await storage();
+    const server = new SlowPosts();
+    server.answer = "pending";
+    server.held = 1;
+    let url = "http://mend";
+    const reads = { ...withAgent(CLAUDE), connection: async () => ({ url, token: null }) };
+    const { store } = await window(keptIn(directory), server, reads);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    await store.comment(onLine(7, "Name the retry budget"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(server.asked).toHaveLength(1), SETTLE);
+    const record = store.review().sends.at(-1);
+    if (record === undefined) throw new Error("no review kept");
+    const place = { url: "http://mend", viewer: "dana", sessionId: "s1" };
+
+    // She signs in to another server while the first comment's POST is on its way.
+    url = "http://other";
+    store.forget();
+    server.land();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(server.asked).toHaveLength(1);
+    expect(server.delivered).toEqual([]);
+    const kept = await keptIn(directory).read(place);
+    expect(kept.review.sends.map(({ phase }) => phase.kind)).toEqual(["sending"]);
+    expect(await keptIn(directory).drivenFor(place, record.key)).toBeNull();
+
+    url = "http://mend";
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(
+      () => expect(store.review().sends.map(({ phase }) => phase.kind)).toEqual(["failed"]),
+      SETTLE,
+    );
+    expect(store.retryTarget()?.key).toBe(record.key);
+  });
+});
+
 describe("a window whose send another window took over while a POST was on its way", () => {
   it("posts nothing more once that POST lands, and the review is delivered once", async () => {
     const directory = await storage();
