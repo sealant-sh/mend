@@ -351,7 +351,27 @@ describe("Send review, chosen again", () => {
       await sendReview();
     }
     const last = await sendReview();
-    expect(last.text).toContain("her saved words");
+    expect(last.text.split("her saved words")).toHaveLength(2);
+    expect(last.text.split("Your earlier text")).toHaveLength(2);
+    window.close();
+  });
+
+  it("carries what she saved in a review composed anew, in place of the text it carried", async () => {
+    const mend = mendWithOpen();
+    const window = await windowOn(memoryFiles(), mend);
+    const opened = await sendReview();
+    await window.provider.writeFile(opened.uri, encoded("her saved words"), SAVE);
+    mend.serverComments = [...mend.serverComments, comment({ id: "c2", line: 13 })];
+    window.store.reread();
+    await vi.waitFor(() => expect(window.store.compose()?.open).toContain("c2"), SETTLE);
+    const carried = await sendReview();
+    await window.provider.writeFile(carried.uri, encoded("her words saved after"), SAVE);
+    mend.serverComments = [...mend.serverComments, comment({ id: "c3", line: 13 })];
+    window.store.reread();
+    await vi.waitFor(() => expect(window.store.compose()?.open).toContain("c3"), SETTLE);
+    const last = await sendReview();
+    expect(last.text).toMatch(/Your earlier text[^]*her words saved after/);
+    expect(last.text).not.toContain("her saved words");
     window.close();
   });
 });
