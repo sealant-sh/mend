@@ -295,6 +295,29 @@ describe("Send review, chosen again", () => {
   });
 });
 
+describe("a review composed anew over one she saved", () => {
+  it("holds the text she saved, kept before any editor shows it", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    const window = await windowOn(files, mend);
+    const opened = await sendReview();
+    await window.provider.writeFile(opened.uri, encoded("her saved words"), SAVE);
+    mend.serverComments = [...mend.serverComments, comment({ id: "c2", line: 13 })];
+    window.store.reread();
+    await vi.waitFor(() => expect(window.store.compose()?.open).toEqual(["c1", "c2"]), SETTLE);
+    const composition = window.store.compose();
+    if (composition === null) throw new Error("nothing composed");
+    const kept = await window.store.keepDocument(composition);
+    // VS Code reloads before any editor opens.
+    window.close();
+    const after = await windowOn(files, mend);
+    const document = await after.store.document(kept.ref);
+    expect(document?.text).toContain(composition.text);
+    expect(document?.text).toContain("her saved words");
+    after.close();
+  });
+});
+
 describe("a review she saved, when VS Code reloads", () => {
   it("opens with her words, and Send to session sends them", async () => {
     const files = memoryFiles();
