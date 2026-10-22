@@ -1,4 +1,4 @@
-import { reviewTargetFile, type ReviewCommentTarget } from "@mend/domain/workbench";
+import { reviewTargetFile, targetFileFor, type ReviewCommentTarget } from "@mend/domain/workbench";
 
 import { KEPT_SENDS, type PendingComment, type SessionReview } from "./pending.js";
 import type { ChangeFile, ServerComment } from "./review-wire.js";
@@ -658,12 +658,10 @@ export const commentTarget = (
   comment: Pick<PendingComment, "path" | "line" | "endLine" | "body" | "anchor">,
 ): { readonly target: ReviewCommentTarget; readonly body: string } => {
   // Her reply under a Mend draft on the old side goes where the draft is: the base's lines.
-  const old = comment.anchor?.side === "old";
+  const side = comment.anchor?.side ?? null;
+  const old = side === "old";
   const { line, endLine } = comment;
-  const file =
-    comment.path === null
-      ? undefined
-      : files.find((candidate) => (old ? candidate.oldPath : candidate.newPath) === comment.path);
+  const file = comment.path === null ? undefined : targetFileFor(files, comment.path, side);
   const hunk =
     line === null || endLine === null
       ? undefined
