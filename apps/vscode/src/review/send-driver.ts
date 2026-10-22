@@ -370,10 +370,12 @@ export class SendDriver {
       }
     const at = new Date().toISOString();
     let busy = false;
+    let moved = false;
     const claimed = await this.#claimAndKeep(target.place, target.key, (review) => {
       const next = stepReview(review, target.key, { kind: "retry", at, agent, mend }, at);
-      busy =
-        startsDrive(sendOf(review, target.key), sendOf(next, target.key)) && !admits(review.sends);
+      const [before, after] = [sendOf(review, target.key), sendOf(next, target.key)];
+      busy = startsDrive(before, after) && !admits(review.sends);
+      moved = !busy && JSON.stringify(before?.phase) !== JSON.stringify(after?.phase);
       return busy ? review : next;
     });
     if (busy) return answer("Mend is still sending your last review");
@@ -381,10 +383,10 @@ export class SendDriver {
       case "elsewhere":
         return answer("another window of VS Code is delivering this review");
       case "unmoved":
+        if (claimed.record === undefined) return answer("VS Code no longer keeps this review");
+        // Retry asked Mend, and kept what Mend reads now: that is no review already reading so.
         return answer(
-          claimed.record === undefined
-            ? "VS Code no longer keeps this review"
-            : `this review already reads ${commentLabel(claimed.record, null, agent)}`,
+          `${moved ? "Mend reads this review" : "this review already reads"} ${commentLabel(claimed.record, null, agent)}`,
         );
       case "kept":
         if (nextAction(claimed.record).kind !== "idle") return { kind: "drive", context };
