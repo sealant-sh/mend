@@ -4,7 +4,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { HANDOFF_SNAPSHOT_REF } from "@mend/domain/workbench";
-import { fingerprint } from "@mend/local-git/testing";
+import {
+  detachedNewsroomCheckout,
+  fingerprint,
+  hiddenNewsroomCheckout,
+} from "@mend/local-git/testing";
 import { describe, expect, it } from "vitest";
 
 import { formatBytes } from "./landing.ts";
@@ -169,10 +173,7 @@ describe("mend handoff", spawning, () => {
 
   it("names each file whose edit travels though it is hidden from git", async () => {
     const w = world();
-    const dana = newsroom(w);
-    w.git(dana, ["update-index", "--skip-worktree", "b.txt"]);
-    w.git(dana, ["update-index", "--assume-unchanged", "docs/guide.md"]);
-    w.write(path.join(dana, "docs/guide.md"), "guide, edited\n");
+    const dana = hiddenNewsroomCheckout(w, ORIGIN);
     const server = await handoffServer();
     const result = await run(server, [], dana);
     expect(result.code, result.stderr).toBe(0);
@@ -187,10 +188,7 @@ describe("mend handoff", spawning, () => {
 
   it("hands off a detached HEAD under its own name, and takes --with", async () => {
     const w = world();
-    const dana = w.clone("newsroom-api");
-    w.git(dana, ["remote", "set-url", "origin", ORIGIN]);
-    w.git(dana, ["checkout", "-q", "--detach"]);
-    w.write(path.join(dana, "a.txt"), "edited\n");
+    const dana = detachedNewsroomCheckout(w, ORIGIN);
     const head7 = w.git(dana, ["rev-parse", "--short=7", "HEAD"]);
     const server = await handoffServer({
       answer: (response) => json(response, received({ name: `handoff-${head7}` })),
