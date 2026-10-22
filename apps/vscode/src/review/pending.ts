@@ -282,14 +282,11 @@ const parsePhase = (value: unknown, failedAtFallback: string): SendPhase | null 
     case "in-terminal": {
       // A review pasted without the agent's process named goes nowhere: it waits for Retry.
       const processId = text(value, "processId");
-      return processId === null
-        ? { kind: "pending" }
-        : {
-            kind: "in-terminal",
-            agent: text(value, "agent") ?? "the agent",
-            processId,
-            paste: parsePasteStep(value["paste"]),
-          };
+      const paste = parsePasteStep(value["paste"]);
+      if (processId === null) return { kind: "pending" };
+      return paste === null
+        ? null
+        : { kind: "in-terminal", agent: text(value, "agent") ?? "the agent", processId, paste };
     }
     case "pending":
       return { kind: "pending" };
@@ -333,16 +330,28 @@ const parseStop = (value: unknown): StopReason | null => {
   }
 };
 
-const parsePasteStep = (value: unknown): PasteStep => {
-  if (isRecord(value) && value["kind"] === "failed")
-    return {
-      kind: "failed",
-      mayHaveLanded: value["mayHaveLanded"] === true,
-      stopped: parseStop(value["stopped"]),
-    };
-  if (isRecord(value) && value["kind"] === "pasting") return { kind: "pasting" };
-  const input = isRecord(value) && value["kind"] === "done" ? parseInput(value["input"]) : null;
-  return input === null ? { kind: "due" } : { kind: "done", input };
+/** Null for a step this build does not know: read as due, it would paste the review again. */
+const parsePasteStep = (value: unknown): PasteStep | null => {
+  if (!isRecord(value)) return null;
+  switch (value["kind"]) {
+    case "due":
+      return { kind: "due" };
+    case "pasting":
+      return { kind: "pasting" };
+    case "failed": {
+      const said = value["stopped"] ?? null;
+      const stopped = said === null ? null : parseStop(said);
+      return stopped === null && said !== null
+        ? null
+        : { kind: "failed", mayHaveLanded: value["mayHaveLanded"] === true, stopped };
+    }
+    case "done": {
+      const input = parseInput(value["input"]);
+      return input === null ? null : { kind: "done", input };
+    }
+    default:
+      return null;
+  }
 };
 
 /** What a review pastes; null for a plan that does not read back, so it is never pasted whole. */
@@ -384,6 +393,14 @@ const parseNotice = (value: unknown): ReadonlyArray<SendNotice> => {
   ];
 };
 
+/** A send kept before notices were kept says nothing more; one it cannot read is not read. */
+const parseNotices = (value: unknown): ReadonlyArray<SendNotice> | null => {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return null;
+  const notices = value.flatMap(parseNotice);
+  return notices.length === value.length ? notices : null;
+};
+
 const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
   if (!isRecord(value) || !Array.isArray(value["items"])) return [];
   const key = text(value, "key");
@@ -396,6 +413,7 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
   const phase = createdAt === null ? null : parsePhase(value["phase"], createdAt);
   const paste = parsePaste(value["paste"]);
   const items = value["items"].flatMap(parseItem);
+  const notices = parseNotices(value["notices"]);
   if (
     key === null ||
     sliceId === null ||
@@ -406,7 +424,8 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
     createdAt === null ||
     phase === null ||
     paste === null ||
-    items.length !== value["items"].length
+    items.length !== value["items"].length ||
+    notices === null
   )
     return [];
   return [
@@ -420,8 +439,7 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
       paste,
       items,
       phase,
-      // A send kept before notices were kept says nothing more.
-      notices: Array.isArray(value["notices"]) ? value["notices"].flatMap(parseNotice) : [],
+      notices,
       createdAt,
     },
   ];
@@ -496,15 +514,51 @@ const parseDocument = (value: unknown): ReviewDocument | null => {
   };
 };
 
-/** A session's review as stored; a comment or a review that does not read back is dropped alone. */
-export const parseSessionReview = (value: unknown): SessionReview =>
-  isRecord(value)
-    ? {
-        pending: Array.isArray(value["pending"]) ? value["pending"].flatMap(parsePending) : [],
-        sends: Array.isArray(value["sends"]) ? value["sends"].flatMap(parseSend) : [],
-        document: parseDocument(value["document"]),
-      }
-    : EMPTY_REVIEW;
+/**
+ * What a kept review holds that this build cannot read, as it was: a newer build wrote it, and
+ * writes it back as it is (`kept-reviews.ts`). Null for no document.
+ */
+export interface Unread {
+  readonly pending: ReadonlyArray<unknown>;
+  readonly sends: ReadonlyArray<unknown>;
+  readonly document: unknown;
+}
+
+export const NOTHING_UNREAD: Unread = { pending: [], sends: [], document: null };
+
+/** Each entry of `values` this build reads, and the ones it cannot. */
+const partition = <T>(
+  values: unknown,
+  parse: (value: unknown) => ReadonlyArray<T>,
+): { readonly read: ReadonlyArray<T>; readonly unread: ReadonlyArray<unknown> } => {
+  const read: Array<T> = [];
+  const unread: Array<unknown> = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const [parsed] = parse(value);
+    if (parsed === undefined) unread.push(value);
+    else read.push(parsed);
+  }
+  return { read, unread };
+};
+
+/** A session's review as stored: what this build reads of it, and each entry it cannot. */
+export const parseSessionReview = (
+  value: unknown,
+): { readonly review: SessionReview; readonly unread: Unread } => {
+  if (!isRecord(value)) return { review: EMPTY_REVIEW, unread: NOTHING_UNREAD };
+  const pending = partition(value["pending"], parsePending);
+  const sends = partition(value["sends"], parseSend);
+  const stored = value["document"] ?? null;
+  const document = parseDocument(stored);
+  return {
+    review: { pending: pending.read, sends: sends.read, document },
+    unread: {
+      pending: pending.unread,
+      sends: sends.unread,
+      document: document === null ? stored : null,
+    },
+  };
+};
 
 /** A review document's revision before she saves it: the text as Send review composed it. */
 const AS_COMPOSED = 1;

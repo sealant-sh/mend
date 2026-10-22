@@ -183,7 +183,7 @@ describe("sending a review (story d, step 6)", () => {
       kind: "reconcile",
       pendingIds: ["p1"],
     });
-    const kept = parseSessionReview(JSON.parse(JSON.stringify(cut)));
+    const kept = parseSessionReview(JSON.parse(JSON.stringify(cut))).review;
     expect(only(kept).items[0]).toMatchObject({ post: { kind: "posting", ...ATTEMPT } });
   });
 
@@ -287,7 +287,7 @@ describe("sending a review (story d, step 6)", () => {
   });
 
   it("keeps the record and its key across a reload", () => {
-    const kept = parseSessionReview(JSON.parse(JSON.stringify(posted(sent()))));
+    const kept = parseSessionReview(JSON.parse(JSON.stringify(posted(sent())))).review;
     expect(only(kept).key).toBe("key-1");
     expect(nextAction(only(kept))).toMatchObject({ kind: "deliver" });
   });
@@ -366,7 +366,7 @@ describe("what a send leaves her to know", () => {
     expect(only(twice).notices).toEqual([
       { kind: "paste", at: NOW, words, tone: "warning", retry: false, text: false },
     ]);
-    expect(only(parseSessionReview(JSON.parse(JSON.stringify(twice)))).notices).toEqual(
+    expect(only(parseSessionReview(JSON.parse(JSON.stringify(twice))).review).notices).toEqual(
       only(twice).notices,
     );
   });

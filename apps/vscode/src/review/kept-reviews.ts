@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { EMPTY_REVIEW, parseSessionReview, type SessionReview } from "./pending.js";
+import {
+  EMPTY_REVIEW,
+  NOTHING_UNREAD,
+  parseSessionReview,
+  type SessionReview,
+  type Unread,
+} from "./pending.js";
 
 /** Whose review it is: one person, signed in to one server, on one session. */
 export interface ReviewPlace {
@@ -75,13 +81,78 @@ export interface KeptReview {
   readonly review: SessionReview;
 }
 
-const parseKept = (text: string): KeptReview => {
-  const value: unknown = JSON.parse(text);
-  if (!isRecord(value)) return { rev: 0, review: EMPTY_REVIEW };
+/**
+ * The format this build writes the kept file in. Raise it only for a change an older build would
+ * write back wrongly: it then leaves the file as it is. An entry an older build cannot read (a new
+ * kind of send, phase or origin) needs no raise, since that build writes it back as it was.
+ */
+export const KEPT_FORMAT = 1;
+
+/** A kept file as this build reads it, and what it needs to write the file back whole. */
+interface Opened {
+  readonly kept: KeptReview;
+  readonly unread: Unread;
+  /** The file's fields as stored: a write keeps every one this build does not write itself. */
+  readonly stored: Readonly<Record<string, unknown>>;
+  /** Why this build leaves the file as it is; null when it may write it. */
+  readonly unwritable: string | null;
+}
+
+const NEWER =
+  "A newer version of the Mend extension keeps this session's review, so this window leaves it as that version wrote it. Reload this window to use the newer version.";
+
+const notJson = (file: string): string =>
+  `The file VS Code keeps this session's review in is not JSON, so VS Code leaves it as it is: ${file}.`;
+
+/** The file as stored; a file a build before formats were kept wrote reads as the first format. */
+const openKept = (file: string, text: string): Opened => {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    value = undefined;
+  }
+  const format = isRecord(value) ? (value["format"] ?? KEPT_FORMAT) : null;
+  if (!isRecord(value) || typeof format !== "number" || !Number.isInteger(format) || format < 1)
+    return {
+      kept: { rev: 0, review: EMPTY_REVIEW },
+      unread: NOTHING_UNREAD,
+      stored: {},
+      unwritable: notJson(file),
+    };
   const rev = value["rev"];
+  const { review, unread } = parseSessionReview(value["review"]);
   return {
-    rev: typeof rev === "number" && Number.isInteger(rev) ? rev : 0,
-    review: parseSessionReview(value["review"]),
+    kept: { rev: typeof rev === "number" && Number.isInteger(rev) ? rev : 0, review },
+    unread,
+    stored: value,
+    unwritable: format > KEPT_FORMAT ? NEWER : null,
+  };
+};
+
+const NOTHING_KEPT: Opened = {
+  kept: { rev: 0, review: EMPTY_REVIEW },
+  unread: NOTHING_UNREAD,
+  stored: {},
+  unwritable: null,
+};
+
+/** `review` as stored, with every entry this build could not read written back as it was. */
+const storedReview = (
+  stored: unknown,
+  review: SessionReview,
+  unread: Unread,
+): Record<string, unknown> => {
+  if (review.document !== null && unread.document !== null)
+    throw new Error(
+      "A newer version of the Mend extension keeps the review you are writing for this session, so this window does not compose another. Reload this window to use the newer version.",
+    );
+  return {
+    ...(isRecord(stored) ? stored : {}),
+    ...review,
+    pending: [...review.pending, ...unread.pending],
+    sends: [...review.sends, ...unread.sends],
+    document: review.document ?? unread.document,
   };
 };
 
@@ -128,13 +199,19 @@ export class KeptReviews {
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** The session's review as kept now; nothing kept reads as no comment. */
+  /**
+   * The session's review as kept now; nothing kept reads as no comment. A file this build leaves as
+   * it is reads as far as this build reads it.
+   */
   async read(place: ReviewPlace): Promise<KeptReview> {
+    return (await this.#open(this.#file(place))).kept;
+  }
+
+  async #open(file: string): Promise<Opened> {
     try {
-      return parseKept(await this.files.readFile(this.#file(place)));
+      return openKept(file, await this.files.readFile(file));
     } catch (cause) {
-      if (codeOf(cause) === "ENOENT" || cause instanceof SyntaxError)
-        return { rev: 0, review: EMPTY_REVIEW };
+      if (codeOf(cause) === "ENOENT") return NOTHING_KEPT;
       throw cause;
     }
   }
@@ -142,7 +219,7 @@ export class KeptReviews {
   /**
    * Applies `update` to the review as kept now, never to a copy this window read earlier, and
    * answers what was kept. Nothing is written when nothing changed. A write that fails throws, and
-   * what is kept stays as it was.
+   * what is kept stays as it was; so does a write to a file this build leaves as it is.
    */
   async update(
     place: ReviewPlace,
@@ -222,13 +299,21 @@ export class KeptReviews {
     update: (kept: SessionReview) => SessionReview | Promise<SessionReview>,
     held: () => Promise<boolean>,
   ): Promise<KeptReview> {
-    const current = await this.read(place);
+    const opened = await this.#open(file);
+    const current = opened.kept;
     const next = await update(current.review);
     if (JSON.stringify(next) === JSON.stringify(current.review)) return current;
+    if (opened.unwritable !== null) throw new Error(opened.unwritable);
     const kept: KeptReview = { rev: current.rev + 1, review: next };
+    const stored = {
+      ...opened.stored,
+      format: KEPT_FORMAT,
+      rev: kept.rev,
+      review: storedReview(opened.stored["review"], next, opened.unread),
+    };
     const written = `${file}.${randomUUID()}.tmp`;
     try {
-      await this.files.writeFile(written, JSON.stringify(kept));
+      await this.files.writeFile(written, JSON.stringify(stored));
       if (!(await held()))
         throw new Error(
           "another window of VS Code took over writing this review; this change was not kept.",
