@@ -4,7 +4,6 @@ import { originMatches } from "@mend/local-git/origin";
 import * as vscode from "vscode";
 
 import { isRecord } from "./client-data.js";
-import type { MendClient } from "./client.js";
 import { showErrorToast } from "./error-toast.js";
 import { gitRunner } from "./git.js";
 import type { HandoffClient } from "./handoff-client.js";
@@ -80,9 +79,15 @@ export class HandoffInput implements vscode.Disposable {
   #active: { readonly focus: () => void; readonly cancel: () => void } | null = null;
   #disposed = false;
   constructor(
-    private readonly context: vscode.ExtensionContext,
-    private readonly client: MendClient,
-    private readonly store: SessionStore,
+    private readonly context: {
+      readonly extensionUri: vscode.Uri;
+      readonly secrets: Pick<vscode.SecretStorage, "onDidChange">;
+    },
+    private readonly client: { bindHandoff(): Promise<HandoffClient> },
+    private readonly store: Pick<
+      SessionStore,
+      "onDidHearEvent" | "onDidChange" | "model" | "windowProject" | "recordHandoff"
+    >,
     private readonly launches: Launches,
     private readonly role: WindowRole,
   ) {
