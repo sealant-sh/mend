@@ -4,9 +4,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { HANDOFF_SNAPSHOT_REF } from "@mend/domain/workbench";
+import { fingerprint } from "@mend/local-git/testing";
 import { describe, expect, it } from "vitest";
 
-import { fingerprint } from "./handoff-test-fixtures.ts";
 import { formatBytes } from "./landing.ts";
 import {
   mainHandoffFixtures,

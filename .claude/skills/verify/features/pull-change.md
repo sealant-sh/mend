@@ -70,7 +70,7 @@ Preconditions:
 ## Gotchas
 
 - The clone must have a remote that names the project's origin (`sameRepository`,
-  `apps/cli/src/shared.ts`): the host in any case, the port unless it is the scheme's default, and
+  `@mend/local-git/origin`): the host in any case, the port unless it is the scheme's default, and
   the path, whose case counts except on `github.com`; ssh, https and scp-style spellings compare
   equal. So `ssh://git@<host>:2222/<path>` is not `git@<host>:<path>`, and on a host other than
   GitHub `Owner/Repo` is not `owner/repo`. `--force` bypasses the mismatch refusal; Mend still

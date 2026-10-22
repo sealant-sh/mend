@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as path from "node:path";
 
-import { type HandoffWorld, handoffWorlds } from "./handoff-test-fixtures.ts";
+import { type HandoffWorld, handoffWorlds } from "@mend/local-git/testing";
+
 import { mainTestFixtures } from "./main-test-fixtures.ts";
 
 export const ORIGIN = "https://github.com/acme/newsroom-api.git";

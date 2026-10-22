@@ -8,19 +8,21 @@ import {
   HexSha,
   repositoryCloneUrlIssue,
 } from "@mend/domain/workbench";
-import { Schema } from "effect";
-
-import { failureWords, noteRefusal } from "./failure-words.ts";
 import {
   checkoutOf,
   type HandoffSnapshot,
   type LeftOut,
+  machineName,
   preflightIssue,
   scratchParentIssue,
   snapshotCheckout,
   type SnapshotRequest,
-} from "./handoff-snapshot.ts";
-import { type Download, type Downloaded, formatBytes, remoteForOrigin } from "./landing.ts";
+} from "@mend/local-git/handoff";
+import { originMatches } from "@mend/local-git/origin";
+import { Schema } from "effect";
+
+import { failureWords, noteRefusal } from "./failure-words.ts";
+import { type Download, type Downloaded, formatBytes } from "./landing.ts";
 import type { ApiCall } from "./pair.ts";
 import { askYesNo, confirmPlan } from "./shared-workspace.ts";
 import {
@@ -149,19 +151,6 @@ const sizeOf = (bytes: number): string => formatBytes(bytes).replace(/\.0 /u, " 
 
 const count = (n: number, one: string, many: string): string =>
   n === 0 ? `no ${many}` : `${n} ${n === 1 ? one : many}`;
-
-export const machineName = (hostname: string = os.hostname()): string => {
-  const name = [
-    ...hostname
-      .replace(/\.local$/iu, "")
-      .replace(/\p{Cc}/gu, "")
-      .trim(),
-  ]
-    .slice(0, 64)
-    .join("")
-    .trim();
-  return name === "" ? "this machine" : name;
-};
 
 type NamedLeftOut = Exclude<LeftOut, { readonly reason: "env" }>;
 
@@ -379,10 +368,7 @@ const projectFor = async (
   }
   const origin = checkout.originUrl;
   if (found !== undefined) {
-    const originMatches =
-      origin !== null &&
-      remoteForOrigin([{ name: "origin", url: origin }], found.originUrl, checkout.top) !== null;
-    if (!originMatches) {
+    if (origin === null || !originMatches(origin, found.originUrl, checkout.top)) {
       return refuse(
         `this checkout's origin is ${origin ?? "not set"} · ${found.name}'s is ${found.originUrl ?? "not set"} · nothing was created`,
       );

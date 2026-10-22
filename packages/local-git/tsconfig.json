@@ -1,0 +1,4 @@
+{
+  "extends": "@mend/typescript/core.json",
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

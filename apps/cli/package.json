@@ -52,6 +52,7 @@
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@mend/domain": "workspace:*",
+    "@mend/local-git": "workspace:*",
     "@mend/network": "workspace:*",
     "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",

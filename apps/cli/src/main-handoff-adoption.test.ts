@@ -1,8 +1,8 @@
 import * as path from "node:path";
 
+import { fingerprint } from "@mend/local-git/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fingerprint } from "./handoff-test-fixtures.ts";
 import { handoffCommand, type HandoffDeps } from "./handoff.ts";
 import {
   FILE_BYTES,

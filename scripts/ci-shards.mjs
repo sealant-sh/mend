@@ -35,6 +35,7 @@ const shards = {
     "@mend/docs",
     "@mend/web",
     "@mend/domain",
+    "@mend/local-git",
     "@mend/network",
     "@mend/t3-contracts",
     "@mend/workspace-ssh",

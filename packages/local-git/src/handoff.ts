@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 import {
@@ -919,4 +920,17 @@ export const snapshotCheckout = (request: SnapshotRequest): SnapshotOutcome => {
     if (error instanceof GitFailure) return refused(`${error.message} · nothing was created`);
     throw error;
   }
+};
+
+export const machineName = (hostname: string = os.hostname()): string => {
+  const name = [
+    ...hostname
+      .replace(/\.local$/iu, "")
+      .replace(/\p{Cc}/gu, "")
+      .trim(),
+  ]
+    .slice(0, 64)
+    .join("")
+    .trim();
+  return name === "" ? "this machine" : name;
 };

@@ -112,7 +112,8 @@ one session.
 
 ### Client
 
-The client lives in `apps/cli/src/handoff-snapshot.ts` and `apps/cli/src/handoff.ts`.
+The client lives in `packages/local-git/src/handoff.ts` (`@mend/local-git/handoff`) and
+`apps/cli/src/handoff.ts`.
 
 "Byte-identical" covers every file under the work tree (tracked, untracked and ignored) and under
 the git dir and common dir: the index, `sharedindex.*`, HEAD, refs, packed-refs, logs, objects,
@@ -151,9 +152,9 @@ atime is outside the promise. The procedure:
    with `Mend-Merge-Base: M` among W's trailers. The bundle goes to a file, never to stdout.
 
 The project comes from `matchProjectByCwd`. The checkout's actual `origin` remote must then equal
-the project's origin through `normalizeRemoteUrl`. Neither the directory-name fallback nor
-`--project` bypasses that check, so a foreign origin is refused. When nothing matches, the CLI
-offers to adopt `origin` (`confirmPlan`, `askYesNo`). `M` is
+the project's origin through `originMatches` (`@mend/local-git/origin`). Neither the directory-name
+fallback nor `--project` bypasses that check, so a foreign origin is refused. When nothing matches,
+the CLI offers to adopt `origin` (`confirmPlan`, `askYesNo`). `M` is
 `merge-base HEAD refs/remotes/origin/<default>`. The CLI never fetches.
 
 The worktree name is `handoffWorktreeName`. It slugs the branch (`fix/login` becomes `fix-login`) to

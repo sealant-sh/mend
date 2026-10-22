@@ -4,16 +4,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { type LandingFact, landingFactLine, landingFactsFromWire } from "@mend/domain/workbench";
+import { originMatches } from "@mend/local-git/origin";
 
 import { failureWords, noteRefusal } from "./failure-words.ts";
 import type { ApiCall } from "./pair.ts";
-import {
-  gitCurrentBranch,
-  gitTopLevel,
-  normalizeRemoteUrl,
-  redactCredentials,
-  sameRepository,
-} from "./shared.ts";
+import { gitCurrentBranch, gitTopLevel, redactCredentials } from "./shared.ts";
 
 /**
  * Landing from a terminal (docs/adr/0007-landing.md): `mend land` pushes a session's change to
@@ -447,27 +442,11 @@ export const gitRemotes = (cwd: string): ReadonlyArray<GitRemote> => {
   return [...remotes].map(([name, url]) => ({ name, url }));
 };
 
-/**
- * The remote that is the project's origin: the same repository (sameRepository: host, port and
- * path, with ssh, https and scp-style spellings equal), or the same directory for an origin on
- * this machine.
- */
 export const remoteForOrigin = (
   remotes: ReadonlyArray<GitRemote>,
   originUrl: string | null,
   cwd: string,
-): GitRemote | null => {
-  if (originUrl === null) return null;
-  const isUrl = normalizeRemoteUrl(originUrl) !== null;
-  const originPath = isUrl ? null : path.resolve(originUrl.replace(/^file:\/\//, ""));
-  return (
-    remotes.find((remote) =>
-      isUrl
-        ? sameRepository(remote.url, originUrl)
-        : path.resolve(cwd, remote.url.replace(/^file:\/\//, "")) === originPath,
-    ) ?? null
-  );
-};
+): GitRemote | null => remotes.find((remote) => originMatches(remote.url, originUrl, cwd)) ?? null;
 
 export interface BundleFacts {
   readonly branch: string;
