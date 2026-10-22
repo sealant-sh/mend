@@ -131,6 +131,10 @@ const abandonedPasteWords = (record: SendRecord): string | null => {
 const CLOSED = "VS Code closed before Mend answered";
 
 const LOOK_AGAIN_MS = 1_000;
+/** How long a look that failed waits at most before the next: it doubles until then. */
+const LOOK_AGAIN_MAX_MS = 30_000;
+const backoff = (failures: number): number =>
+  Math.min(LOOK_AGAIN_MS * 2 ** failures, LOOK_AGAIN_MAX_MS);
 
 /**
  * How often a launch is watched, and how many times before it reads failed. Only watching counts:
@@ -172,6 +176,7 @@ export class SendDriver {
   readonly #leased = new Set<string>();
   readonly #lookAgain = new Map<string, NodeJS.Timeout>();
   readonly #stopped = new Map<string, string>();
+  #disposed = false;
 
   constructor(
     private readonly kept: KeptReviews,
@@ -182,6 +187,7 @@ export class SendDriver {
   ) {}
 
   dispose(): void {
+    this.#disposed = true;
     for (const timer of this.#lookAgain.values()) clearTimeout(timer);
     this.#lookAgain.clear();
   }
@@ -300,15 +306,28 @@ export class SendDriver {
   }
 
   async recover(context: SendContext, review: SessionReview): Promise<void> {
-    const left = review.sends.some((record) => {
+    const left = review.sends.flatMap((record) => {
       const id = driveId(context, record.key);
-      return needs(record) === "driver" && !this.#driving.has(id) && !this.#lookAgain.has(id);
+      return needs(record) === "driver" &&
+        !this.#driving.has(id) &&
+        !this.#lookAgain.has(id) &&
+        !this.kept.drives(context.place, record.key)
+        ? [record.key]
+        : [];
     });
-    if (left) await this.#load(context);
+    if (left.length === 0) return;
+    await this.#load(context).catch(() => {
+      for (const key of left) this.#lookAgainIn(context, key, backoff(1), 2);
+    });
   }
 
+  /**
+   * Picks up every send at `context.place` the driver needs and no window drives. Throws when it
+   * could not look, so the look that asked looks again.
+   */
   async #load(context: SendContext): Promise<void> {
-    if ((await this.#bind(context.place)) === null) return;
+    if ((await this.#bind(context.place)) === null)
+      throw new Error("VS Code is connected to another Mend server or account than this review's");
     const now = new Date().toISOString();
     const undriven = new Set<string>();
     const drivenFor = new Map<string, number>();
@@ -342,13 +361,21 @@ export class SendDriver {
     for (const [key, ms] of drivenFor) this.#lookAgainIn(context, key, ms);
   }
 
-  #lookAgainIn(context: SendContext, key: string, ms: number): void {
+  /**
+   * Looks at the send again in `ms`. A look that fails looks again later, each wait twice the
+   * last up to `LOOK_AGAIN_MAX_MS`: only a look that ran drops it, having left the send done,
+   * waiting on her, or driven by a live window, which looks again itself.
+   */
+  #lookAgainIn(context: SendContext, key: string, ms: number, failures = 0): void {
+    if (this.#disposed) return;
     const id = driveId(context, key);
     const armed = this.#lookAgain.get(id);
     if (armed !== undefined) clearTimeout(armed);
     const timer = setTimeout(() => {
       this.#lookAgain.delete(id);
-      void this.#load(context).catch(() => undefined);
+      void this.#load(context).catch(() =>
+        this.#lookAgainIn(context, key, backoff(failures + 1), failures + 1),
+      );
     }, ms);
     timer.unref();
     this.#lookAgain.set(id, timer);
