@@ -423,6 +423,7 @@ export class ReviewStore implements vscode.Disposable {
   async reloadReview(): Promise<void> {
     const place = this.#place;
     if (place === null) return;
+    if (await this.#keepHeld(place)) return;
     const { review } = await this.kept.read(place);
     if (!samePlace(this.#place, place)) return;
     this.#review = review;
@@ -1359,15 +1360,29 @@ export class ReviewStore implements vscode.Disposable {
   ): Promise<SessionReview> {
     if (place === null) throw new Error("Mend has not finished reading this session.");
     const held = this.#heldAt(place);
-    const { review } = await this.kept.update(place, async (kept) =>
-      held.reduce((next, comment) => keepHeld(next, comment, randomUUID()), await update(kept)),
-    );
-    this.#held = this.#held.filter((entry) => !held.includes(entry.comment));
+    let taken: ReadonlyArray<PendingComment> = [];
+    const { review } = await this.kept.update(place, async (current) => {
+      const next = keepHeld(await update(current), held, randomUUID);
+      taken = next.kept;
+      return next.review;
+    });
+    this.#held = this.#held.filter((entry) => !taken.includes(entry.comment));
     if (samePlace(this.#place, place)) {
       this.#review = review;
       this.#changed.fire();
     }
     return review;
+  }
+
+  /** Keeps the words held for `place`, if any: whether the review was written. */
+  async #keepHeld(place: ReviewPlace): Promise<boolean> {
+    if (this.#heldAt(place).length === 0) return false;
+    try {
+      await this.#keepAt(place, (review) => review);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   #heldAt(place: ReviewPlace | null): ReadonlyArray<PendingComment> {
@@ -1386,7 +1401,7 @@ export class ReviewStore implements vscode.Disposable {
       { place, comment },
     ];
     this.#changed.fire();
-    return " Your words stay beside the draft, marked not kept, until VS Code can keep them.";
+    return " Your words stay in this window, marked not kept, and VS Code keeps them when this window next reads this session's review.";
   }
 
   #set(state: ReviewState): void {
@@ -1426,6 +1441,7 @@ export class ReviewStore implements vscode.Disposable {
       this.#set(next);
       if (next.kind === "ready") {
         this.#see(next.read);
+        if (this.#place !== null) await this.#keepHeld(this.#place);
         this.#tellFailure(next.read);
         const unloaded = this.#unloaded;
         if (unloaded !== null && unloaded === this.#place) {

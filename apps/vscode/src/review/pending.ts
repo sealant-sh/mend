@@ -509,21 +509,35 @@ export const editPending = (review: SessionReview, id: string, body: string): Se
 });
 
 /**
- * Her words VS Code held, kept: an edit of a pending comment edits it, one of a comment a review
- * already took is a new pending comment of hers at that place, and any other is added as it is.
+ * Her words VS Code held, kept as far as the review takes them: an edit of a pending comment edits
+ * it, one of a comment a review already took is a new pending comment of hers at that place, and
+ * any other is added as it is while the review holds fewer than `MAX_PENDING`. `kept` lists those
+ * it took; the rest stay held.
  */
 export const keepHeld = (
   review: SessionReview,
-  comment: PendingComment,
-  freshId: string,
-): SessionReview => {
-  if (review.pending.some((candidate) => candidate.id === comment.id))
-    return editPending(review, comment.id, comment.body);
-  const taken = review.sends.some((record) =>
-    record.items.some((item) => item.kind !== "open" && item.pending.id === comment.id),
+  held: ReadonlyArray<PendingComment>,
+  freshId: () => string,
+): { readonly review: SessionReview; readonly kept: ReadonlyArray<PendingComment> } =>
+  held.reduce<{ review: SessionReview; kept: ReadonlyArray<PendingComment> }>(
+    (done, comment) => {
+      const next = done.review;
+      if (next.pending.some((candidate) => candidate.id === comment.id))
+        return {
+          review: editPending(next, comment.id, comment.body),
+          kept: [...done.kept, comment],
+        };
+      if (next.pending.length >= MAX_PENDING) return done;
+      const taken = next.sends.some((record) =>
+        record.items.some((item) => item.kind !== "open" && item.pending.id === comment.id),
+      );
+      const added: PendingComment = taken
+        ? { ...comment, id: freshId(), origin: { kind: "own" } }
+        : comment;
+      return { review: addPending(next, added), kept: [...done.kept, comment] };
+    },
+    { review, kept: [] },
   );
-  return addPending(review, taken ? { ...comment, id: freshId, origin: { kind: "own" } } : comment);
-};
 
 export const removePending = (review: SessionReview, id: string): SessionReview => ({
   ...review,

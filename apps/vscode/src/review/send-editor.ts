@@ -154,6 +154,8 @@ export class SendEditor implements vscode.Disposable {
 
   /** The session's one review, at one URI, so a tab VS Code restored is that same review. */
   async #open(): Promise<void> {
+    // Words this window holds are kept first, so the review lists them and is current when sent.
+    await this.store.reloadReview();
     const composition = this.store.compose();
     if (composition === null) return;
     const kept = await this.store.keepDocument(composition);
