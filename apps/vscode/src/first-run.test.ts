@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { keptCredential, secretWriteOf } from "./credentials.js";
@@ -148,7 +150,10 @@ describe("a machine whose Mend CLI is signed in (h1 variant)", () => {
   });
 
   it("after Mend refused the CLI's token, offers nothing on it, and connects on the CLI's next one", async () => {
-    const { key, value } = secretWriteOf({ kind: "refused", url: MINI, token: cli.token });
+    const { key, value } = secretWriteOf(
+      { kind: "refused", url: MINI, token: cli.token },
+      randomUUID(),
+    );
     const refused = await keptCredential(
       async (read) => (read === key ? value : undefined),
       MINI,

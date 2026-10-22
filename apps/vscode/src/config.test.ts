@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -110,13 +111,16 @@ const signedIn = (
   ...devices: ReadonlyArray<{ readonly url: string; readonly token: string; readonly id: string }>
 ): void => {
   for (const device of devices) {
-    const { key, value } = secretWriteOf({
-      kind: "signedIn",
-      url: device.url,
-      token: device.token,
-      deviceId: device.id,
-      email: "dana@example.com",
-    });
+    const { key, value } = secretWriteOf(
+      {
+        kind: "signedIn",
+        url: device.url,
+        token: device.token,
+        deviceId: device.id,
+        email: "dana@example.com",
+      },
+      randomUUID(),
+    );
     secrets.set(key, value);
   }
   settings.set("mend.serverUrl", devices[0]?.url);
@@ -399,7 +403,8 @@ describe("two windows writing the credentials at once", () => {
 /**
  * VS Code's secret storage as its windows see it: each window reads its own copy, and a write
  * reaches the other windows only when `deliver` runs (the main process's broadcast, ~100 ms after
- * the write resolved), in the order the writes were made.
+ * the write resolved), in the order the writes were made. Like VS Code's `Storage.set`, a window
+ * sends no write of the value its copy already holds.
  */
 const laggySecrets = () => {
   const copies: Array<Map<string, string>> = [];
@@ -411,6 +416,7 @@ const laggySecrets = () => {
       secrets: {
         get: async (key: string) => copy.get(key),
         store: async (key: string, value: string) => {
+          if (copy.get(key) === value) return;
           copy.set(key, value);
           sent.push({ key, value });
         },
@@ -482,6 +488,29 @@ describe("two windows writing the credentials before either sees the other's wri
     storage.deliver();
     for (const window of [here, there]) {
       expect(await window.state()).toMatchObject({ kind: "connected", token: "mdt_editor" });
+    }
+  }, 10_000);
+
+  it("keeps Use it made after another window's sign-in, though this window already read Use it", async () => {
+    const cliDir = path.join(home, ".config", "mend");
+    fs.mkdirSync(cliDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(cliDir, "cli.json"),
+      JSON.stringify({ url: MINI, token: "mdt_cli" }),
+    );
+    await store().effects().useCliSignIn(MINI);
+    vi.stubGlobal(
+      "fetch",
+      devicesServer(() => new Response(null, { status: 204 })),
+    );
+    ui.showInputBox.mockResolvedValueOnce(MINI);
+    const storage = laggySecrets();
+    const [here, there] = [storage.window(), storage.window()];
+    expect(await here.connect()).toBe(true);
+    await there.effects().useCliSignIn(MINI);
+    storage.deliver();
+    for (const window of [here, there]) {
+      expect(await window.state()).toMatchObject({ token: "mdt_cli", source: { kind: "cli" } });
     }
   }, 10_000);
 

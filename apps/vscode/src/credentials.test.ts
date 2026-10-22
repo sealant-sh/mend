@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -23,7 +25,7 @@ const secretsAfter = (
   const values = new Map<string, string>();
   if (legacy !== undefined) values.set("mend.serverToken", JSON.stringify(legacy));
   for (const change of changes) {
-    const { key, value } = secretWriteOf(change);
+    const { key, value } = secretWriteOf(change, randomUUID());
     values.set(key, value);
   }
   return { read: async (key) => values.get(key), values };
@@ -63,7 +65,7 @@ describe("which token the editor sends", () => {
         { kind: "signedOut", url: EDGE },
         { kind: "useCli", url: "http://other.example" },
       ] satisfies ReadonlyArray<CredentialChange>
-    ).map((change) => secretWriteOf(change).key);
+    ).map((change) => secretWriteOf(change, randomUUID()).key);
     expect(new Set(keys).size).toBe(3);
   });
 });
@@ -131,7 +133,11 @@ describe("one server, however its URL is spelled", () => {
         signedIn(CANONICAL, "mdt_editor"),
         { kind: "signedOut", url: alias },
       ]);
-      expect([...out.values.values()]).toEqual([JSON.stringify({ kind: "none" })]);
+      expect(out.values.size).toBe(1);
+      expect(await keptCredential(out.read, CANONICAL, null)).toEqual({
+        kind: "none",
+        url: CANONICAL,
+      });
     }
     // The path is not a spelling: instances under different paths stay apart, case kept.
     expect(canonicalServerUrl("https://review.example/Team-A/")).toBe(

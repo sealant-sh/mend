@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -131,7 +132,7 @@ export class ConnectionStore {
 
   /** Every write of the editor's credentials: one secret, from the change alone. */
   async #write(change: CredentialChange): Promise<void> {
-    const { key, value } = secretWriteOf(change);
+    const { key, value } = secretWriteOf(change, randomUUID());
     await this.context.secrets.store(key, value);
   }
 

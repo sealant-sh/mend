@@ -163,10 +163,13 @@ export type CredentialChange =
  * can read another's write late, so no write carries anything a window read: the value comes from
  * the change alone. A sign-in, a sign-out and Use it write their server's own key, so a change at
  * one server never rewrites another's. A refusal writes a key of its own token, so it never ends a
- * newer sign-in at the same server.
+ * newer sign-in at the same server. A server's value carries `writeId`, fresh for each write:
+ * VS Code sends no write of the value a window already holds, so an identical Use it or sign-out
+ * would be dropped while another window's earlier write is still on its way.
  */
 export const secretWriteOf = (
   change: CredentialChange,
+  writeId: string,
 ): { readonly key: string; readonly value: string } => {
   switch (change.kind) {
     case "signedIn":
@@ -177,12 +180,16 @@ export const secretWriteOf = (
           token: change.token,
           deviceId: change.deviceId,
           ...(change.email === undefined ? {} : { email: change.email }),
+          write: writeId,
         }),
       };
     case "signedOut":
-      return { key: serverKey(change.url), value: JSON.stringify({ kind: "none" }) };
+      return {
+        key: serverKey(change.url),
+        value: JSON.stringify({ kind: "none", write: writeId }),
+      };
     case "useCli":
-      return { key: serverKey(change.url), value: JSON.stringify({ kind: "cli" }) };
+      return { key: serverKey(change.url), value: JSON.stringify({ kind: "cli", write: writeId }) };
     case "refused":
       return { key: refusalKey(change.url, change.token), value: "refused" };
   }
