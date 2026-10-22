@@ -971,7 +971,6 @@ export class ReviewStore implements vscode.Disposable {
     if (failure.key.startsWith("review-read:")) return this.ready()?.pass?.kind !== "reading";
     const { retry } = failure;
     if (retry === null) return true;
-    void this.reloadReview();
     return (await this.#readKept(retry.place)).sends.some(
       (record) => record.key === retry.key && needs(record) === "her",
     );
