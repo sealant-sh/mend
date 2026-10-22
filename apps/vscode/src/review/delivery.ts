@@ -789,6 +789,38 @@ export const needs = (record: SendRecord): Needs => {
   }
 };
 
+/**
+ * What failed in a step of a send's drive: VS Code's connection is not the send's (another server
+ * or account, or one Mend could not name), Mend refused a write, or anything else failed: a read,
+ * a write Mend never answered, VS Code's own keep.
+ */
+export type DriveFailure =
+  | { readonly kind: "unbound"; readonly why: "switched" | "unknown" }
+  | { readonly kind: "refused"; readonly words: string }
+  | { readonly kind: "failed"; readonly words: string };
+
+/** What a drive does after a failed step: stops for why, waits and tries again, or keeps an event. */
+export type OnFailure =
+  | { readonly kind: "stop"; readonly why: StopReason }
+  | { readonly kind: "wait" }
+  | { readonly kind: "event"; readonly event: SendEvent };
+
+/** What the drive does when a step fails, by the send as the drive read it before that step. */
+export const onFailure = (record: SendRecord, failure: DriveFailure): OnFailure => {
+  if (failure.kind === "unbound")
+    // Mend could not say whose VS Code's sign-in is: nothing more is sent until it can.
+    return failure.why === "switched"
+      ? { kind: "stop", why: { kind: "switched" } }
+      : { kind: "wait" };
+  // Mend holds the follow-up: what failed is VS Code's, and the paste step stops on it.
+  if (record.phase.kind === "in-terminal")
+    return { kind: "stop", why: { kind: "error", words: failure.words } };
+  return {
+    kind: "event",
+    event: { kind: "failed", words: failure.words, retryable: failure.kind !== "refused" },
+  };
+};
+
 const isHeld = (record: SendRecord): boolean =>
   record.phase.kind === "pending" || record.phase.kind === "in-terminal";
 

@@ -9,12 +9,14 @@ import {
   mayRetry,
   needs,
   nextAction,
+  onFailure,
   openRecord,
   postedComment,
   retryRecord,
   startSend,
   step,
   stepReview,
+  type DriveFailure,
   type LiveAgent,
   type PostAttempt,
   type Needs,
@@ -452,6 +454,75 @@ describe("every phase a review is kept in", () => {
         expect(openRecord([record])).toBeNull();
         break;
     }
+  });
+});
+
+describe("a step of a drive that fails", () => {
+  const DRIVEN: ReadonlyArray<readonly [string, SendPhase]> = [
+    ["sending", { kind: "sending", since: NOW }],
+    ["delivering", { kind: "delivering" }],
+    ["in-terminal, paste due", terminal({ kind: "due" })],
+    ["in-terminal, pasting", terminal({ kind: "pasting" })],
+  ];
+  const FAILURES: ReadonlyArray<readonly [string, DriveFailure]> = [
+    ["VS Code connected to another server or account", { kind: "unbound", why: "switched" }],
+    ["Mend could not name VS Code's sign-in", { kind: "unbound", why: "unknown" }],
+    ["Mend refused a write", { kind: "refused", words: "Mend refused the review" }],
+    ["anything else failed", { kind: "failed", words: "Mend is restarting" }],
+  ];
+  const CASES: ReadonlyArray<readonly [string, string, SendPhase, DriveFailure]> = DRIVEN.flatMap(
+    ([name, phase]) =>
+      FAILURES.map(([what, failure]): readonly [string, string, SendPhase, DriveFailure] => [
+        name,
+        what,
+        phase,
+        failure,
+      ]),
+  );
+  const inPhase = (phase: SendPhase): SendRecord => ({ ...only(posted(sent())), phase });
+
+  it.each(CASES)(
+    "%s, when %s, stops, waits, or leaves the review on her or on no one",
+    (_name, _what, phase, failure) => {
+      const next = onFailure(inPhase(phase), failure);
+      if (next.kind === "event")
+        expect(needs(step(inPhase(phase), next.event, NOW))).not.toBe("driver");
+      else expect(["stop", "wait"]).toContain(next.kind);
+    },
+  );
+
+  it.each(DRIVEN)(
+    "%s stops for a connection elsewhere, and waits for a sign-in Mend could not name",
+    (_name, phase) => {
+      expect(onFailure(inPhase(phase), { kind: "unbound", why: "switched" })).toEqual({
+        kind: "stop",
+        why: { kind: "switched" },
+      });
+      expect(onFailure(inPhase(phase), { kind: "unbound", why: "unknown" })).toEqual({
+        kind: "wait",
+      });
+    },
+  );
+
+  it("stops a paste on any other failure, in its words: Mend holds the follow-up", () => {
+    expect(
+      onFailure(inPhase(terminal({ kind: "due" })), {
+        kind: "failed",
+        words: "VS Code could not keep the review",
+      }),
+    ).toEqual({ kind: "stop", why: { kind: "error", words: "VS Code could not keep the review" } });
+  });
+
+  it("reads a send failed, with Retry, or refused when Mend refused a write", () => {
+    const sending = inPhase({ kind: "sending", since: NOW });
+    expect(onFailure(sending, { kind: "failed", words: "Mend is restarting" })).toEqual({
+      kind: "event",
+      event: { kind: "failed", words: "Mend is restarting", retryable: true },
+    });
+    expect(onFailure(sending, { kind: "refused", words: "Mend refused the review" })).toEqual({
+      kind: "event",
+      event: { kind: "failed", words: "Mend refused the review", retryable: false },
+    });
   });
 });
 

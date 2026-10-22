@@ -11,10 +11,12 @@ import {
   needs,
   mayRetry,
   nextAction,
+  onFailure,
   postedComment,
   posts,
   step,
   stepReview,
+  type DriveFailure,
   type FollowUpRead,
   type LiveAgent,
   type StopReason,
@@ -170,7 +172,6 @@ class Stopped extends Error {
   }
 }
 
-const SWITCHED: StopReason = { kind: "switched" };
 const CLOSED: StopReason = { kind: "closed" };
 
 const LOOK_AGAIN_MS = 1_000;
@@ -221,6 +222,13 @@ const refuses = (thrown: unknown): boolean =>
   thrown.failure.status >= 400 &&
   thrown.failure.status < 500 &&
   !NOT_A_REFUSAL.has(thrown.failure.status);
+
+/** What a step of the drive threw, as `onFailure` reads it. */
+const failureOf = (thrown: unknown): DriveFailure => {
+  if (thrown instanceof Unbound) return { kind: "unbound", why: thrown.why };
+  const words = errorWords(thrown instanceof WriteFailed ? thrown.failure : thrown);
+  return refuses(thrown) ? { kind: "refused", words } : { kind: "failed", words };
+};
 
 export class SendDriver {
   readonly #driving = new Map<string, Promise<void>>();
@@ -704,26 +712,26 @@ export class SendDriver {
         }
       } catch (thrown) {
         if (thrown instanceof DriveLost || thrown instanceof Stopped) throw thrown;
-        if (thrown instanceof Unbound) {
-          if (thrown.why === "switched") throw new Stopped(SWITCHED);
-          // Mend could not say whose VS Code's sign-in is: nothing more is sent until it can.
-          await new Promise((resolve) => setTimeout(resolve, WATCH_MS));
-          continue;
-        }
-        // Mend holds the follow-up: what failed is VS Code's, and the paste step stops on it.
-        if (record.phase.kind === "in-terminal") throw new Stopped(stopsFor(thrown));
-        const retryable = !refuses(thrown);
         const cause = thrown instanceof WriteFailed ? thrown.failure : thrown;
-        try {
-          await this.#step(context, key, { kind: "failed", words: errorWords(cause), retryable });
-        } catch (keeping) {
-          if (keeping instanceof DriveLost) throw keeping;
-          throw new Stopped(stopsFor(cause));
+        const next = onFailure(record, failureOf(thrown));
+        switch (next.kind) {
+          case "stop":
+            throw new Stopped(next.why);
+          case "wait":
+            await new Promise((resolve) => setTimeout(resolve, WATCH_MS));
+            continue;
+          case "event":
+            try {
+              await this.#step(context, key, next.event);
+            } catch (keeping) {
+              if (keeping instanceof DriveLost) throw keeping;
+              throw new Stopped(stopsFor(cause));
+            }
+            // A refused sign-in reads as it does on every surface, beside the send's own words.
+            if (refusedSignIn(cause)) this.host.fail("error", errorWords(cause), { cause });
+            this.host.settled(sessionId);
+            return;
         }
-        // A refused sign-in reads as it does on every surface, beside the send's own words.
-        if (refusedSignIn(cause)) this.host.fail("error", errorWords(cause), { cause });
-        this.host.settled(sessionId);
-        return;
       }
     }
     const words = "Mend has not said the review was delivered";
