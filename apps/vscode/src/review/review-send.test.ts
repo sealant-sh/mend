@@ -1008,6 +1008,136 @@ class ReadingMend extends FakeMend {
   }
 }
 
+/** What one window's send leaves her to be told, and the toast that says it. */
+interface WaitsOnHer {
+  readonly name: string;
+  readonly mend: () => FakeMend;
+  readonly agent: SessionProcess;
+  readonly paste: (text: string) => Promise<Pasted>;
+  /** Before the send: what she does in the window that sends it. */
+  readonly before?: (store: ReviewStore, mend: FakeMend) => Promise<void>;
+  readonly show: "showErrorMessage" | "showWarningMessage";
+  readonly told: RegExp;
+  readonly actions: ReadonlyArray<string>;
+}
+
+const heldPending = (): FakeMend => {
+  const mend = new FakeMend();
+  mend.answer = "pending";
+  mend.serverComments = [comment({ id: "c1" })];
+  return mend;
+};
+
+const EXITED: SessionProcess = { ...CLAUDE, exitedAt: "now", status: "exited" };
+
+const WAITS_ON_HER: ReadonlyArray<WaitsOnHer> = [
+  {
+    name: "a paste VS Code could not attach",
+    mend: heldPending,
+    agent: CLAUDE,
+    paste: async () => "not-attached",
+    show: "showErrorMessage",
+    told: /could not attach claude's terminal here, so nothing was pasted/,
+    actions: ["Retry delivery"],
+  },
+  {
+    name: "a paste cut short",
+    mend: heldPending,
+    agent: CLAUDE,
+    paste: async () => {
+      throw new Error("the terminal's socket closed");
+    },
+    show: "showErrorMessage",
+    told: /check claude's input before Retry delivery/,
+    actions: ["Retry delivery"],
+  },
+  {
+    name: "a review Mend refused",
+    mend: () => {
+      const mend = new FakeMend();
+      mend.serverComments = [comment({ id: "c1" })];
+      mend.deliver = async () => {
+        throw new MendApiError("You cannot steer this session.", 403);
+      };
+      return mend;
+    },
+    agent: EXITED,
+    paste: async () => "pasted",
+    show: "showErrorMessage",
+    told: /could not deliver the review: You cannot steer this session/,
+    actions: [],
+  },
+  {
+    name: "a review whose draft was dismissed on its way",
+    mend: () => {
+      const mend = new FakeMend();
+      mend.serverComments = [
+        comment({ id: "d1", state: "draft", author: { kind: "mend", name: "Mend" } }),
+      ];
+      return mend;
+    },
+    agent: EXITED,
+    paste: async () => "pasted",
+    before: async (store, mend) => {
+      await store.accept("d1", "");
+      mend.serverComments = mend.serverComments.map((one) => ({ ...one, state: "dismissed" }));
+    },
+    show: "showWarningMessage",
+    told: new RegExp(DRAFT_GONE),
+    actions: ["Show its text"],
+  },
+];
+
+describe("a send that leaves her something to know while she looks at another window", () => {
+  it.each(WAITS_ON_HER)(
+    "$name toasts nowhere unfocused, and once in the window she then focuses",
+    async (waits) => {
+      const directory = await storage();
+      const mend = waits.mend();
+      const reads = withAgent(waits.agent);
+      const open = async (): Promise<ReviewStore> => {
+        const store = new ReviewStore(
+          reads,
+          mend,
+          new ReviewMemory(memento()),
+          keptIn(directory),
+          (_sessionId, _processId, text) => waits.paste(text),
+        );
+        store.follow(PROJECT, session("s1"));
+        await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+        return store;
+      };
+      const driving = await open();
+      const looking = await open();
+      const claims = new ToastClaims(join(directory, "toasts"));
+      const drove = failures(driving);
+      const seen = failures(looking);
+      await waits.before?.(driving, mend);
+      await driving.comment(onLine(3, "Use the shared limiter"));
+      const composed = driving.compose();
+      if (composed === null) throw new Error("nothing composed");
+      fake.focus(false);
+      await sendComposed(driving, composed, composed.text);
+      await vi.waitFor(() => expect(drove.length).toBeGreaterThan(0), SETTLE);
+      for (const told of drove) await reviewToast(driving, claims, () => undefined)(told);
+      expect(vscodeWindow[waits.show]).not.toHaveBeenCalled();
+
+      fake.focus(true);
+      await looking.reloadReview();
+      await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0), SETTLE);
+      for (const told of seen) await reviewToast(looking, claims, () => undefined)(told);
+      await looking.reloadReview();
+      for (const told of seen) await reviewToast(looking, claims, () => undefined)(told);
+      expect(vscodeWindow[waits.show]).toHaveBeenCalledTimes(1);
+      expect(vscodeWindow[waits.show]).toHaveBeenCalledWith(
+        expect.stringMatching(waits.told),
+        ...waits.actions,
+      );
+    },
+    20_000,
+  );
+});
+
 describe("a read Mend could not finish, its toast waiting while she starts another", () => {
   it("shows nothing once the newer read is running", async () => {
     const mend = new ReadingMend();
