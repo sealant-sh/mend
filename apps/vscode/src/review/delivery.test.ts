@@ -1,3 +1,4 @@
+import { reviewTargetExists } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import { changeRows } from "./change-rows.js";
@@ -16,7 +17,14 @@ import {
   type SendRecord,
 } from "./delivery.js";
 import type { PastePlan } from "./delivery.js";
-import { acceptedDrafts, EMPTY_REVIEW, parseSessionReview, type SessionReview } from "./pending.js";
+import {
+  acceptedDrafts,
+  EMPTY_REVIEW,
+  parseSessionReview,
+  type PendingComment,
+  type SessionReview,
+} from "./pending.js";
+import type { ChangeFile, CommentAnchor } from "./review-wire.js";
 import { comment, FILES, pending, PINNED, readOf } from "./test-fixtures.js";
 
 const ALL: PastePlan = { kind: "all" };
@@ -308,6 +316,24 @@ describe("the comment a cut-short post left on Mend", () => {
   });
 });
 
+const changeFile = (
+  oldPath: string | null,
+  newPath: string | null,
+  status: ChangeFile["status"],
+  hunk: ChangeFile["hunks"][number],
+): ChangeFile => ({
+  oldPath,
+  newPath,
+  status,
+  additions: 1,
+  deletions: 1,
+  binary: false,
+  hunks: [hunk],
+});
+
+const lineOf = (path: string, line: number, anchor: CommentAnchor | null = null): PendingComment =>
+  pending({ path, line, endLine: line, anchor });
+
 describe("where a comment goes on Mend", () => {
   it("is its lines when a hunk of its slice holds them, else its file with the line in words", () => {
     expect(commentTarget(FILES, pending({ line: 3, endLine: 4 }))).toEqual({
@@ -325,6 +351,61 @@ describe("where a comment goes on Mend", () => {
       "line 40: Use the shared limiter from guard.ts",
     );
     expect(commentTarget(FILES, pending({ path: "gone.ts" })).target.newPath).toBe(null);
+  });
+
+  it("is a target Mend accepts on an added, modified, renamed or deleted file, on either side", () => {
+    const files = [
+      changeFile(null, "src/auth/limit.ts", "added", {
+        oldStart: 0,
+        oldLines: 0,
+        newStart: 1,
+        newLines: 15,
+        contextHash: "a1",
+      }),
+      changeFile("src/app.ts", "src/app.ts", "modified", {
+        oldStart: 10,
+        oldLines: 4,
+        newStart: 10,
+        newLines: 5,
+        contextHash: "m1",
+      }),
+      changeFile("src/old-name.ts", "src/new-name.ts", "renamed", {
+        oldStart: 3,
+        oldLines: 3,
+        newStart: 3,
+        newLines: 3,
+        contextHash: "r1",
+      }),
+      changeFile("README", null, "deleted", {
+        oldStart: 1,
+        oldLines: 5,
+        newStart: 0,
+        newLines: 0,
+        contextHash: "d1",
+      }),
+    ];
+    const old: CommentAnchor = {
+      sliceId: PINNED.id,
+      baseId: PINNED.base.id,
+      headId: PINNED.head.id,
+      side: "old",
+    };
+    const cases: ReadonlyArray<readonly [string, PendingComment, "old" | "new" | null]> = [
+      ["added, a new line", lineOf("src/auth/limit.ts", 3), "new"],
+      ["modified, a new line", lineOf("src/app.ts", 11), "new"],
+      ["modified, a deleted line", lineOf("src/app.ts", 12, old), "old"],
+      ["modified, outside its hunks", lineOf("src/app.ts", 40), null],
+      ["renamed, a new line", lineOf("src/new-name.ts", 4), "new"],
+      ["renamed, a deleted line", lineOf("src/old-name.ts", 5, old), "old"],
+      ["renamed, outside its hunks", lineOf("src/new-name.ts", 30), null],
+      ["deleted, a deleted line", lineOf("README", 2, old), "old"],
+    ];
+    const refused = cases.flatMap(([name, written, side]) => {
+      const { target } = commentTarget(files, written);
+      const onItsFile = target.oldPath !== null || target.newPath !== null;
+      return onItsFile && target.side === side && reviewTargetExists(files, target) ? [] : [name];
+    });
+    expect(refused).toEqual([]);
   });
 
   it("is the old side's lines for her reply under a Mend draft on a deleted line", () => {
