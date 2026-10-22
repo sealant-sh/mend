@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { quickInputStep, remoteSshLogFiles, resolves } from "./drive-vscode.lib.mjs";
+import { menuItem, quickInputStep, remoteSshLogFiles, resolves } from "./drive-vscode.lib.mjs";
 import { CREDENTIAL_PATTERNS, redact } from "./redact.mjs";
 import { redactValues } from "./secrets.mjs";
 
@@ -34,6 +34,9 @@ const STATUS_ITEM = ".part.statusbar .statusbar-item";
 const WELCOME = ".welcome-view-content";
 const VIEW_ACTION =
   ".part.sidebar .title-actions .action-label, .part.sidebar .pane-header .actions .action-label";
+// VS Code 1.142 labels a pane header's `⋯` `More Actions...` and Source Control's title bar's
+// `Views and More Actions...`.
+const VIEW_OVERFLOW = /^(?:Views and )?More Actions\.{3}$/;
 
 /** A button's tooltip as VS Code labels it: its aria-label, else its title. */
 const tooltipOf = async (button) =>
@@ -457,6 +460,73 @@ export const workbenchHelpers = async (context, options) => {
         });
       },
     };
+  };
+
+  const openViewOverflow = async () => {
+    await closeMenu();
+    const rested = await restOnHeader();
+    const scope = rested
+      ? page().locator(".part.sidebar .pane-header").filter({ visible: true }).first()
+      : page().locator(".part.sidebar .composite.title");
+    let button = null;
+    for (const candidate of await scope.locator(".action-label").filter({ visible: true }).all())
+      if (VIEW_OVERFLOW.test((await candidate.getAttribute("aria-label")) ?? "")) {
+        button = candidate;
+        break;
+      }
+    if (button === null)
+      throw new Error(
+        `the view has no ⋯ button among ${JSON.stringify((await viewActions()).map((one) => one.title))}`,
+      );
+    await button.click();
+    const menu = page().locator(CONTEXT_MENU).first();
+    await menu.waitFor({ timeout });
+    return menu.evaluate((root) =>
+      [...root.querySelectorAll(".action-item")]
+        .filter((item) => item.closest(".monaco-menu") === root)
+        .map((item) => ({
+          label: (item.querySelector(".action-label")?.textContent ?? "")
+            .replace(/\s+/g, " ")
+            .trim(),
+          disabled: item.classList.contains("disabled"),
+        }))
+        .filter((item) => item.label !== ""),
+    );
+  };
+
+  const waitMenuClosed = (after) =>
+    waitUntil(
+      `the menu to close after ${after}`,
+      async () => ((await page().locator(CONTEXT_MENU).isVisible()) ? null : true),
+      5_000,
+    );
+
+  const viewOverflowItems = async () => {
+    const items = await openViewOverflow();
+    await page().keyboard.press("Escape");
+    await waitMenuClosed("Escape");
+    return items;
+  };
+
+  const viewOverflowItem = async (label) => {
+    const items = await openViewOverflow();
+    let found;
+    try {
+      found = menuItem(items, label);
+    } catch (cause) {
+      await page().keyboard.press("Escape");
+      await waitMenuClosed("Escape");
+      throw cause;
+    }
+    const entry = page()
+      .locator(CONTEXT_MENU_ITEM, { hasText: new RegExp(`^${escapeRegExp(found.label)}$`) })
+      .first();
+    // VS Code's menu ignores a click that lands right after it opens.
+    await entry.hover();
+    await sleep(300);
+    await entry.click();
+    await waitMenuClosed(`"${found.label}"`);
+    return found.label;
   };
 
   const quickInput = {
@@ -1305,6 +1375,8 @@ export const workbenchHelpers = async (context, options) => {
     view,
     viewActions,
     viewAction,
+    viewOverflowItems,
+    viewOverflowItem,
     welcome,
     welcomeAction,
     accounts,

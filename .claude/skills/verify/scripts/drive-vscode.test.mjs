@@ -11,6 +11,7 @@ import { test } from "node:test";
 
 import {
   UsageError,
+  menuItem,
   newRunName,
   parseArgs,
   pickRun,
@@ -212,6 +213,46 @@ test("opens count each Remote-SSH window's first resolve, across every window's 
     );
   } finally {
     rmSync(userData, { recursive: true, force: true });
+  }
+});
+
+test("a menu item is chosen by its whole label or a pattern, and only when enabled", () => {
+  const items = [
+    { label: "View & Sort", disabled: false },
+    { label: "Commit", disabled: true },
+    { label: "Commit Staged", disabled: false },
+    { label: "Show Source Control Repositories", disabled: false },
+  ];
+  assert.deepEqual(menuItem(items, "Commit Staged"), { label: "Commit Staged", disabled: false });
+  assert.deepEqual(menuItem(items, /^Show /), {
+    label: "Show Source Control Repositories",
+    disabled: false,
+  });
+  assert.equal(menuItem(items, /^Commit/).label, "Commit Staged", "the disabled Commit is passed");
+  assert.throws(
+    () => menuItem(items, "View"),
+    /no menu item View among/,
+    "a prefix is not a label",
+  );
+  assert.throws(
+    () => menuItem(items, "Commit"),
+    (error) =>
+      error.message.includes(
+        '["View & Sort","Commit (disabled)","Commit Staged","Show Source Control Repositories"]',
+      ),
+    "the error lists what the menu showed, the disabled item marked",
+  );
+  assert.throws(() => menuItem([], /Sort/), /among \[\]/);
+});
+
+test("a global or sticky pattern names the same menu item however often it is asked", () => {
+  const items = [
+    { label: "Commit Staged", disabled: false },
+    { label: "Commit All", disabled: false },
+  ];
+  for (const wanted of [/^Commit/g, /Commit/y]) {
+    const picked = [1, 2, 3].map(() => menuItem(items, wanted).label);
+    assert.deepEqual(picked, ["Commit Staged", "Commit Staged", "Commit Staged"], String(wanted));
   }
 });
 

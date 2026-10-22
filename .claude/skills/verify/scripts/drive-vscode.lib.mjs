@@ -213,6 +213,16 @@ export const quickInputStep = (shown) => {
   };
 };
 
+export const menuItem = (items, wanted) => {
+  // A fresh copy per call: a `g` or `y` pattern's `lastIndex` would carry over from the last call.
+  const pattern = typeof wanted === "string" ? null : new RegExp(wanted);
+  const matches = (label) => (pattern === null ? label === wanted : pattern.test(label));
+  const found = items.find((item) => !item.disabled && matches(item.label));
+  if (found !== undefined) return found;
+  const seen = items.map((item) => (item.disabled ? `${item.label} (disabled)` : item.label));
+  throw new Error(`no menu item ${wanted} among ${JSON.stringify(seen)}`);
+};
+
 /** The state file read, or an empty ledger when none is there. */
 export const readState = (stateFile) =>
   existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")) : {};
