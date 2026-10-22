@@ -377,6 +377,23 @@ describe("where a comment goes on Mend", () => {
     expect(commentTarget(FILES, pending({ path: "gone.ts" })).target.newPath).toBe(null);
   });
 
+  it("is a deleted file, with her words unchanged, for a comment about that whole file", () => {
+    const whole = pending({ path: "README", line: null, endLine: null, body: "Keep the notes." });
+    const posted = commentTarget(FILES, whole);
+    expect(posted).toEqual({
+      target: {
+        oldPath: "README",
+        newPath: null,
+        side: null,
+        startLine: null,
+        endLine: null,
+        hunkContextHash: null,
+      },
+      body: "Keep the notes.",
+    });
+    expect(reviewTargetExists(FILES, posted.target)).toBe(true);
+  });
+
   it("is a target Mend accepts on an added, modified, renamed or deleted file, on either side", () => {
     const files = [
       changeFile(null, "src/auth/limit.ts", "added", {
