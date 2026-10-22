@@ -1595,6 +1595,42 @@ describe("a send on its way when VS Code connects to another Mend server", () =>
   });
 });
 
+describe("a paste VS Code could not keep as pasted", () => {
+  it("says VS Code could not keep it, never that Mend could not deliver, and offers Retry delivery", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    mend.serverComments = [comment({ id: "c1" })];
+    let failed = false;
+    const files: KeptFiles = {
+      ...NODE_FILES,
+      writeFile: async (path, text) => {
+        if (!failed && text.includes('"paste":{"kind":"done"')) {
+          failed = true;
+          throw new Error("EIO: the disk did not take the write");
+        }
+        await NODE_FILES.writeFile(path, text);
+      },
+    };
+    const { store, pastes } = await window(keptIn(await storage(), files), mend);
+    const told = failures(store);
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(pastes).toHaveLength(1);
+    expect(told.map(({ words }) => words)).toEqual([
+      "VS Code could not keep the review: EIO: the disk did not take the write, so some or all of it may be in claude's input. Mend holds the follow-up pending: check claude's input before Retry delivery pastes it again.",
+    ]);
+    expect(told[0]?.retry).not.toBeNull();
+    expect(store.review().sends.at(-1)?.phase).toMatchObject({
+      kind: "in-terminal",
+      paste: { kind: "failed", mayHaveLanded: true },
+    });
+    expect(store.retryTarget()).not.toBeNull();
+  });
+});
+
 describe("a window whose send another window took over while a POST was on its way", () => {
   it("posts nothing more once that POST lands, and the review is delivered once", async () => {
     const directory = await storage();
