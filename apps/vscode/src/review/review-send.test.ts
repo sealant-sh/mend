@@ -1232,8 +1232,14 @@ describe("a window already following the session when another window's send is l
 
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      await following.store.reloadReview();
-      expect(following.store.review().sends.map(({ phase }) => phase.kind)).toEqual(["sending"]);
+      following.store.reread();
+      await vi.waitFor(
+        () =>
+          expect(following.store.review().sends.map(({ phase }) => phase.kind)).toEqual([
+            "sending",
+          ]),
+        SETTLE,
+      );
       late += DRIVE_STALE_MS;
       await vi.advanceTimersByTimeAsync(DRIVE_STALE_MS);
       vi.useRealTimers();
@@ -1274,7 +1280,7 @@ describe("a window already following the session when another window's send is l
     closed = false;
     late += DRIVE_STALE_MS;
     mend.markSent("s1");
-    await following.store.reloadReview();
+    following.store.reread();
     await vi.waitFor(
       () =>
         expect(following.store.review().sends.map(({ phase }) => phase.kind)).toEqual([
@@ -1284,6 +1290,32 @@ describe("a window already following the session when another window's send is l
     );
     expect(mend.delivered).toHaveLength(1);
   }, 15_000);
+
+  it("reads the send failed, with Retry delivery, when Send review reads the kept review", async () => {
+    const directory = await storage();
+    const mend = new Unanswered();
+    mend.serverComments = [comment({ id: "c1" })];
+    const following = await window(
+      new KeptReviews(directory, NODE_FILES, () => Date.now() + DRIVE_STALE_MS),
+      mend,
+    );
+    const closing = await window(keptIn(directory), mend);
+    const fromClosing = closing.store.compose();
+    if (fromClosing === null) throw new Error("nothing composed");
+    await sendComposed(closing.store, fromClosing, fromClosing.text);
+    await mend.asked;
+
+    await following.store.comment(onLine(3, "Use the shared limiter"));
+    const composed = following.store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect((await sendComposed(following.store, composed, composed.text)).sent).toBe(false);
+    await vi.waitFor(
+      () =>
+        expect(following.store.review().sends.map(({ phase }) => phase.kind)).toEqual(["failed"]),
+      { timeout: 3_000 },
+    );
+    expect(following.store.retryTarget()).not.toBeNull();
+  });
 
   it("reads its own send failed, with Retry delivery, when it could not keep the failure", async () => {
     const mend = new FakeMend();
