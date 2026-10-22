@@ -1,7 +1,10 @@
+import { join } from "node:path";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MendApiError } from "../mend-http.js";
 import { fake, window as vscodeWindow } from "../test-vscode.js";
+import { ToastClaims } from "../toast-claims.js";
 import type { SessionDetail, SessionProcess } from "../types.js";
 import type { Pasted } from "./agent-paste.js";
 import { DRAFT_GONE } from "./delivery.js";
@@ -559,6 +562,72 @@ describe("Retry from the toast when nothing was pasted", () => {
       "Retry delivery sent nothing: this review already reads sent",
       expect.any(Number),
     );
+  });
+});
+
+describe("a delivery that fails while she looks at another window", () => {
+  /** Two windows on one machine: one kept-review store and one set of toast claims between them. */
+  const twoWindows = async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.deliver = async () => {
+      throw new MendApiError("Mend is restarting.", 503);
+    };
+    const driving = await window(keptIn(directory), mend);
+    const looking = await window(keptIn(directory), mend);
+    const claims = new ToastClaims(join(directory, "toasts"));
+    return { driving, looking, claims };
+  };
+
+  it("toasts nowhere unfocused, and once in the window she then focuses, with Retry delivery", async () => {
+    const { driving, looking, claims } = await twoWindows();
+    const drove = failures(driving.store);
+    const seen = failures(looking.store);
+    await driving.store.comment(onLine(3, "Use the shared limiter"));
+    const composed = driving.store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    fake.focus(false);
+    await sendComposed(driving.store, composed, composed.text);
+    await vi.waitFor(() => expect(drove).toHaveLength(1), SETTLE);
+    const [failure] = drove;
+    if (failure === undefined) throw new Error("no failure");
+    await reviewToast(driving.store, claims, () => undefined)(failure);
+    expect(vscodeWindow.showErrorMessage).not.toHaveBeenCalled();
+    // She focuses the other window: it reads what the first kept, and says it there.
+    fake.focus(true);
+    await looking.store.reloadReview();
+    await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0), SETTLE);
+    for (const told of seen) await reviewToast(looking.store, claims, () => undefined)(told);
+    await looking.store.reloadReview();
+    for (const told of seen) await reviewToast(looking.store, claims, () => undefined)(told);
+    expect(vscodeWindow.showErrorMessage).toHaveBeenCalledTimes(1);
+    expect(vscodeWindow.showErrorMessage).toHaveBeenCalledWith(
+      expect.stringMatching(/could not deliver the review: Mend is restarting/),
+      "Retry delivery",
+    );
+  });
+
+  it("shows nothing when she looks away while the toast is claimed, and leaves it to be claimed again", async () => {
+    const { driving, claims } = await twoWindows();
+    const drove = failures(driving.store);
+    await driving.store.comment(onLine(3, "Use the shared limiter"));
+    const composed = driving.store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    await sendComposed(driving.store, composed, composed.text);
+    await vi.waitFor(() => expect(drove).toHaveLength(1), SETTLE);
+    const [failure] = drove;
+    if (failure === undefined) throw new Error("no failure");
+    const lookingAway = {
+      claim: async (key: string, at: string) => {
+        const claimed = await claims.claim(key, at);
+        fake.focus(false);
+        return claimed;
+      },
+      release: (key: string, at: string) => claims.release(key, at),
+    };
+    await reviewToast(driving.store, lookingAway, () => undefined)(failure);
+    expect(vscodeWindow.showErrorMessage).not.toHaveBeenCalled();
+    expect(await claims.claim(failure.key, failure.at)).toBe(true);
   });
 });
 
