@@ -77,10 +77,9 @@ export const rowCapability = (facts: {
 };
 
 /**
- * Whether Answer (rule 8) lets `viewer` at the session's agent, by how it asks. A terminal agent
- * asks in its terminal, which only its owner types in, even while control is shared
- * (`canTypeInTerminal`). Answer attaches it over Mend's terminal socket, not Remote-SSH, so who
- * launched the workspace does not matter. A conversation is anyone's who may steer the session.
+ * Answer attaches the agent over Mend's own sockets, not Remote-SSH, so who launched the workspace
+ * does not matter: a terminal agent is its owner's to type in, a conversation anyone's who may
+ * steer the session.
  */
 export const answerAdmits = (
   session: SteeringFacts,
@@ -88,10 +87,6 @@ export const answerAdmits = (
   via: WaitFact["via"],
 ): boolean => (via === "terminal" ? canTypeInTerminal(session, viewer) : maySteer(session, viewer));
 
-/**
- * Why Answer attaches none of the session's agent for a viewer `answerAdmits` turns away;
- * `ownerName` is null for a session with no owner, which no one steers.
- */
 export const answerRefusedLine = (via: WaitFact["via"], ownerName: string | null): string => {
   if (ownerName === null) return "this session has no owner · no one steers it · no agent attached";
   return via === "terminal"
@@ -99,11 +94,6 @@ export const answerRefusedLine = (via: WaitFact["via"], ownerName: string | null
     : `${ownerName}'s session · only ${ownerName} steers it while shared control is off · no agent attached`;
 };
 
-/**
- * Whether Answer lets `viewer` answer the session's wait: as `answerAdmits` lets her at its agent,
- * and a conversation's request only by the person its asking process runs as when it runs as
- * someone, as the server allows. Mend not knowing who she is answers nothing.
- */
 export const mayAnswer = (
   session: SteeringFacts,
   viewer: string | null,

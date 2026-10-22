@@ -88,8 +88,6 @@ describe("a workspace window that starts as it gains focus", () => {
       [older.id, older],
       [newer.id, newer],
     ]);
-    // One intent file: whichever take renames it first gets the session, every later one nothing.
-    // The take at activation sweeps first, so it reaches the file a moment after the focus one.
     let intent: string | null = "older";
     let takes = 0;
     const intents = {
@@ -101,7 +99,6 @@ describe("a workspace window that starts as it gains focus", () => {
         return taken;
       },
     };
-    // The first read of the projects is the slow one.
     let reads = 0;
     const offline = {
       get: async () => ({ url: "http://mend.test", token: null }),

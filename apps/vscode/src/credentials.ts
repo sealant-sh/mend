@@ -5,7 +5,6 @@
  * the CLI's sign-in, which may be another account.
  */
 
-/** What the editor keeps for one server URL, as the rest of the extension reads it. */
 export type StoredCredential =
   | {
       readonly kind: "token";
@@ -49,8 +48,7 @@ export const canonicalServerUrl = (url: string): string => normalizeServerUrl(ur
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** One entry of the blob before 0.37; entries written before "none" existed are tokens. */
-const credentialOf = (value: unknown): StoredCredential | null => {
+const legacyCredentialOf = (value: unknown): StoredCredential | null => {
   if (!isRecord(value) || typeof value["url"] !== "string") return null;
   const url = canonicalServerUrl(value["url"]);
   const token = value["token"];
@@ -72,18 +70,9 @@ const credentialOf = (value: unknown): StoredCredential | null => {
     : { kind: "none", url };
 };
 
-/**
- * Every server's entry in one JSON blob: where an editor before 0.37 kept them, and where a window
- * still running one keeps them until it reloads. Read for a server with no key of its own; never
- * written.
- */
+/** Where an editor before 0.37 kept every server in one blob. Read as a fallback, never written. */
 const LEGACY_KEY = "mend.serverToken";
 
-/**
- * The blob's entries, each under its canonical URL. An editor that signed in before there was one
- * entry per server kept a single entry; it reads as a blob of one. Entries saved under spellings of
- * one server collapse into one: a signed-out entry wins over any token; among tokens, the last.
- */
 const legacyEntries = (value: string | undefined): ReadonlyMap<string, StoredCredential> => {
   const store = new Map<string, StoredCredential>();
   if (value === undefined) return store;
@@ -96,7 +85,7 @@ const legacyEntries = (value: string | undefined): ReadonlyMap<string, StoredCre
   const entries =
     isRecord(parsed) && Array.isArray(parsed["entries"]) ? parsed["entries"] : [parsed];
   for (const entry of entries) {
-    const credential = credentialOf(entry);
+    const credential = legacyCredentialOf(entry);
     if (credential === null) continue;
     if (store.get(credential.url)?.kind === "none") continue;
     store.set(credential.url, credential);
@@ -104,10 +93,6 @@ const legacyEntries = (value: string | undefined): ReadonlyMap<string, StoredCre
   return store;
 };
 
-/**
- * What the editor keeps for one server under that server's own key: a sign-in's token, a sign-out
- * ("no token", and no falling back to the CLI's), or Use it (the CLI's sign-in applies).
- */
 type ServerEntry =
   | {
       readonly kind: "token";
@@ -123,7 +108,6 @@ const serverKey = (url: string): string => `mend.server:${canonicalServerUrl(url
 const refusalKey = (url: string, token: string): string =>
   `mend.refused:${canonicalServerUrl(url)}#${fingerprint(token)}`;
 
-/** A value under a server's key. One this editor cannot read sends no token: it fails closed. */
 const serverEntryOf = (value: string): ServerEntry => {
   let parsed: unknown;
   try {
@@ -143,7 +127,6 @@ const serverEntryOf = (value: string): ServerEntry => {
   };
 };
 
-/** What happened to the editor's sign-in at one server. */
 export type CredentialChange =
   | {
       readonly kind: "signedIn";
@@ -153,20 +136,13 @@ export type CredentialChange =
       readonly email?: string;
     }
   | { readonly kind: "signedOut"; readonly url: string }
-  /** Use it: the editor keeps nothing of its own there, and the CLI's sign-in applies. */
   | { readonly kind: "useCli"; readonly url: string }
-  /** Mend at `url` answered 401 to `token`. */
   | { readonly kind: "refused"; readonly url: string; readonly token: string };
 
 /**
- * The one secret a change writes. Every VS Code window writes the same secret storage, and a window
- * can read another's write late, so no write carries anything a window read: the value comes from
- * the change alone. A sign-in, a sign-out and Use it write their server's own key, so a change at
- * one server never rewrites another's. A refusal writes a key of its own token, so it never ends a
- * newer sign-in at the same server. A server's value carries `write`, fresh for each write:
- * VS Code sends no write of the value a window already holds, so an identical Use it or sign-out
- * would be dropped while another window's earlier write is still on its way. A refusal carries
- * none: nothing else is written under its key, so a dropped repeat leaves the same refusal there.
+ * A server's value carries `write`, fresh for each write: VS Code sends no write of the value a
+ * window already holds, so an identical Use it or sign-out would be dropped while another window's
+ * earlier write is still on its way.
  */
 export const secretWriteOf = (
   change: CredentialChange,
@@ -198,7 +174,6 @@ export const secretWriteOf = (
 
 type ReadSecret = (key: string) => Promise<string | undefined>;
 
-/** Whether Mend at `url` refused `token`, as this window reads it. */
 export const isRefused = async (read: ReadSecret, url: string, token: string): Promise<boolean> =>
   (await read(refusalKey(url, token))) !== undefined;
 
@@ -216,12 +191,6 @@ const ownEntry = async (read: ReadSecret, server: string): Promise<StoredCredent
   }
 };
 
-/**
- * The editor's own entry for `url`, under any spelling of it: its server's key, else what the blob
- * before 0.37 kept for it. When Mend refused the token that entry would send, the entry reads as
- * the refusal: its own token as "no token" (the CLI's sign-in does not quietly take over), the
- * CLI's as `cliRefused` (the CLI's next token is sent).
- */
 export const keptCredential = async (
   read: ReadSecret,
   url: string,

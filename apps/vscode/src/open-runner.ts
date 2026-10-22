@@ -162,7 +162,6 @@ export class OpenRunner {
       if (first.kind === "denied") return deny(first);
       // Setting up can take a while; the session is read again after it.
       let prepared = false;
-      // A no to the one question must leave nothing installed, so it is asked first.
       const needsSetup = (await effects.workspaceSsh()) === "needsSetup";
       if (needsSetup && (await effects.sshConsent()) === "never") {
         fire({ kind: "consent" });

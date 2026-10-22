@@ -56,8 +56,9 @@ export interface AgentTabEffects {
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
   readonly onError: (cause: unknown) => void;
-  /** Says why the window attaches no agent for the session; null once a focus shows a tab. */
-  readonly refused: (line: string | null) => void;
+  readonly refused: (line: string) => void;
+  /** A focus showed a tab: the line `refused` set goes. */
+  readonly cleared: () => void;
 }
 
 type Attached =
@@ -108,9 +109,8 @@ export class AgentTabs {
    */
   focus(sessionId: string, workspaceId: string | null): Promise<void> {
     const running = this.#focusing.get(sessionId);
+    // Answer and a workspace window admit by different rules, so one waits for the other.
     if (running?.workspaceId === workspaceId) return running.run;
-    // A focus under the other admission rule (Answer's or a workspace window's) waits for the
-    // running one instead of joining it.
     const run = (
       running === undefined
         ? this.#reconcile(sessionId, workspaceId)
@@ -172,10 +172,6 @@ export class AgentTabs {
         return;
       }
       const want = agentTab(detail.session, detail.processes);
-      // In a workspace window only the workspace's launcher types into its agent, since
-      // Remote-SSH admits only them. Answer attaches over Mend's own sockets, wherever the
-      // workspace runs, as `answerAdmits` says. Anyone Mend cannot name gets nothing (Watch
-      // terminal is the read-only way in).
       const capability = rowCapability({ session: detail.session, viewer, members: [] });
       if (
         capability.kind === "unknown" ||
@@ -204,7 +200,7 @@ export class AgentTabs {
         want.processId === have.processId
       ) {
         have.tab.show();
-        effects.refused(null);
+        effects.cleared();
         return;
       }
       if (have !== undefined) {
@@ -222,7 +218,7 @@ export class AgentTabs {
   #showContinuing(sessionId: string): boolean {
     if (!this.#continuing.has(sessionId)) return false;
     this.#attached.get(sessionId)?.tab.show();
-    this.effects.refused(null);
+    this.effects.cleared();
     return true;
   }
 
@@ -241,7 +237,7 @@ export class AgentTabs {
         viewer,
       });
       this.#attached.set(sessionId, { kind: "pty", processId: want.processId, tab });
-      effects.refused(null);
+      effects.cleared();
     } else if (want.kind === "conversation") {
       const lines = ownsSession(detail.session, viewer)
         ? [want.line]
@@ -256,7 +252,7 @@ export class AgentTabs {
           detail.session.harness,
         viewer,
       });
-      effects.refused(null);
+      effects.cleared();
     }
   }
 

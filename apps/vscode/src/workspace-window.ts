@@ -88,10 +88,7 @@ class ContinueLink extends vscode.TerminalLink {
 export class WorkspaceWindow implements vscode.Disposable {
   #located: { readonly project: Project; readonly session: Session } | null = null;
   #notice: vscode.Disposable | null = null;
-  /**
-   * Every focus in this window, one at a time: activation and a focus event can both reach for the
-   * Open's intent, and only one may take it and attach before the other reads `#located`.
-   */
+  /** Activation and a focus event can both reach for the Open's intent: only one takes it. */
   #focuses: Promise<void> = Promise.resolve();
   readonly #located$ = new vscode.EventEmitter<void>();
   /** The window found (or changed) the session it is the workspace of. */
@@ -139,6 +136,7 @@ export class WorkspaceWindow implements vscode.Disposable {
       sleep: (ms) => wait(ms),
       onError,
       refused: (line) => this.#say(line),
+      cleared: () => this.#say(null),
     };
     this.#tabs = new AgentTabs(effects);
     // Any window attaches an agent's tab when she answers it (rule 8), so every window tracks them.

@@ -126,7 +126,6 @@ const signedIn = (
   settings.set("mend.serverUrl", devices[0]?.url);
 };
 
-/** What every window now reads for `url`, refusals applied; the CLI holds nothing. */
 const kept = (url: string) => keptCredential(async (key) => secrets.get(key), url, null);
 
 /**
@@ -360,10 +359,6 @@ describe("a refusal and a sign-in at once (SLNT-170)", () => {
   }, 10_000);
 });
 
-/**
- * A window whose first read of the shared secret waits until `release`: a 401 it handles reads the
- * credentials, then another window writes, then this one goes on.
- */
 const pausedWindow = () => {
   const held = Promise.withResolvers<void>();
   const read = Promise.withResolvers<void>();

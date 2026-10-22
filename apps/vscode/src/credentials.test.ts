@@ -14,7 +14,6 @@ const MINI = "http://mend-mini.local:3105";
 const EDGE = "https://mend.example.com";
 const cli = { url: MINI, token: "mdt_cli" };
 
-/** Secret storage after `changes`, written in order, over what an editor before 0.37 kept. */
 const secretsAfter = (
   changes: ReadonlyArray<CredentialChange>,
   legacy?: unknown,

@@ -160,12 +160,7 @@ const approvePage = async (web, page) => {
   return web.text();
 };
 
-/**
- * Mend's server behind a loopback port that holds every `POST /api/cli/auth` until `release()`
- * before passing it on: a sign-in request still out while she cancels. `boundMs` caps the hold, so
- * a run that never releases cannot hang.
- */
-const slowSignInServer = (origin, boundMs) =>
+const signInHoldingProxy = (origin, maxHoldMs) =>
   new Promise((resolve) => {
     let held = 0;
     let answered = 0;
@@ -176,7 +171,7 @@ const slowSignInServer = (origin, boundMs) =>
       const holding = request.method === "POST" && request.url === "/api/cli/auth";
       if (holding) {
         held += 1;
-        const bound = setTimeout(released.resolve, boundMs);
+        const bound = setTimeout(released.resolve, maxHoldMs);
         await released.promise;
         clearTimeout(bound);
       }
@@ -802,7 +797,7 @@ async function cliSignedIn(h) {
   await step(
     "edge: Connect cancelled while its sign-in request is out opens no approve page and keeps the connection",
     async () => {
-      const slow = await slowSignInServer(origin, 300_000);
+      const slow = await signInHoldingProxy(origin, 300_000);
       try {
         const opened = browserOpened().length;
         const watching = await watch();

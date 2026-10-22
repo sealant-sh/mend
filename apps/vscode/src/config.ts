@@ -94,7 +94,6 @@ export class ConnectionStore {
   #connecting: Promise<boolean> | null = null;
   /** The device a sign-in just replaced, revoked once the editor reads with the new token. */
   #replaced: Device | null = null;
-  /** Refusals this window is writing now, by server and token: another 401 on one joins it. */
   readonly #refusing = new Map<string, Promise<void>>();
 
   constructor(
@@ -132,7 +131,6 @@ export class ConnectionStore {
     return keptCredential(this.#read, url, cli);
   }
 
-  /** Every write of the editor's credentials: one secret, from the change alone. */
   async #write(change: CredentialChange): Promise<void> {
     const { key, value } = secretWriteOf(change, randomUUID());
     await this.context.secrets.store(key, value);
@@ -212,7 +210,6 @@ export class ConnectionStore {
    * secret's change) drop it. A token the editor no longer sends is left alone.
    */
   refused(connection: { readonly url: string; readonly token: string }): Promise<void> {
-    // Requests out on one token come back refused together; one write is enough for every window.
     const key = JSON.stringify([canonicalServerUrl(connection.url), connection.token]);
     const running = this.#refusing.get(key);
     if (running !== undefined) return running;
@@ -299,12 +296,6 @@ export class ConnectionStore {
     }
   }
 
-  /**
-   * Sign this editor out of `url` (by default the server it is connected to now), and only that
-   * one: its own entry there is replaced by "no token", so the editor does not fall back to the
-   * CLI's sign-in there, and then revoked (a browser sign-in's device). Other servers' entries stay
-   * as they were.
-   */
   async signOut(url?: string): Promise<string> {
     const server = url === undefined ? (await this.get()).url : canonicalServerUrl(url);
     const cli = cliConfig();
@@ -313,8 +304,8 @@ export class ConnectionStore {
     const holdsNone = tokenFor(server, kept, cli) === null;
     if (kept === null && holdsNone) return `This editor holds no Mend sign-in for ${server}.`;
     // Written before the revoke, so a sign-in another window makes while Mend answers lands after
-    // it and stays; and over a sign-out this window already holds, since another window's sign-in
-    // may not have reached it yet.
+    // it; and over a sign-out this window already holds, since another window's sign-in may not
+    // have reached this one yet.
     await this.#write({ kind: "signedOut", url: server });
     if (holdsNone) return `This editor holds no Mend sign-in for ${server}.`;
     if (own === null) return signOutMessage(server, { kind: "cliFallback" });

@@ -108,7 +108,13 @@ const world = (
   const queue = [...reads];
   let clock = 0;
   const tabs: Array<FakeTab> = [];
-  const refused = vi.fn((_line: string | null) => undefined);
+  let shown: string | null = null;
+  const refused = vi.fn((line: string) => {
+    shown = line;
+  });
+  const cleared = vi.fn(() => {
+    shown = null;
+  });
   const effects = {
     detail: vi.fn(async (_id: string) => {
       const next = queue.length > 1 ? queue.shift() : queue[0];
@@ -137,13 +143,13 @@ const world = (
     },
     onError: vi.fn(),
     refused,
+    cleared,
     ...overrides,
   } satisfies AgentTabEffects;
   return {
     effects,
     tabs,
-    /** The refusal the window shows now, as the status bar keeps the last one said. */
-    line: () => refused.mock.calls.at(-1)?.[0] ?? null,
+    line: () => shown,
     agents: new AgentTabs(effects, { switchWaitMs: 5000, pollMs: 1000 }),
   };
 };
