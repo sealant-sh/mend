@@ -1532,8 +1532,15 @@ describe("a send on its way when VS Code connects to another Mend server", () =>
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(server.asked).toHaveLength(1);
     expect(server.delivered).toEqual([]);
+    // The window that stopped keeps why: the review reads failed, with Retry, at once.
     const kept = await keptIn(directory).read(place);
-    expect(kept.review.sends.map(({ phase }) => phase.kind)).toEqual(["sending"]);
+    expect(kept.review.sends.map(({ phase }) => phase)).toEqual([
+      {
+        kind: "failed",
+        words: "VS Code connected to another Mend server or account before Mend answered",
+        at: expect.any(String),
+      },
+    ]);
     expect(await keptIn(directory).drivenFor(place, record.key)).toBeNull();
 
     url = "http://mend";

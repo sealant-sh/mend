@@ -10,6 +10,7 @@ import type {
   SendPhase,
   SendRecord,
   SendSlice,
+  StopReason,
   TerminalInput,
 } from "./delivery.js";
 import { withEarlierText } from "./instruction.js";
@@ -314,9 +315,29 @@ const parseInput = (value: unknown): TerminalInput | null => {
   return input === null || ids === null ? null : { text: input, ids };
 };
 
+const parseStop = (value: unknown): StopReason | null => {
+  if (!isRecord(value)) return null;
+  switch (value["kind"]) {
+    case "closed":
+      return { kind: "closed" };
+    case "switched":
+      return { kind: "switched" };
+    case "error": {
+      const words = text(value, "words");
+      return words === null ? null : { kind: "error", words };
+    }
+    default:
+      return null;
+  }
+};
+
 const parsePasteStep = (value: unknown): PasteStep => {
   if (isRecord(value) && value["kind"] === "failed")
-    return { kind: "failed", mayHaveLanded: value["mayHaveLanded"] === true };
+    return {
+      kind: "failed",
+      mayHaveLanded: value["mayHaveLanded"] === true,
+      stopped: parseStop(value["stopped"]),
+    };
   if (isRecord(value) && value["kind"] === "pasting") return { kind: "pasting" };
   const input = isRecord(value) && value["kind"] === "done" ? parseInput(value["input"]) : null;
   return input === null ? { kind: "due" } : { kind: "done", input };

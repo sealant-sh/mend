@@ -17,8 +17,11 @@ import {
   posts,
   step,
   stepReview,
+  cutShortWords,
+  stoppedPasteWords,
   type FollowUpRead,
   type LiveAgent,
+  type StopReason,
   type SendEvent,
   type SendRecord,
 } from "./delivery.js";
@@ -105,30 +108,25 @@ const driveId = (context: SendContext, key: string): string =>
 
 class DriveLost extends Error {}
 
-class Suspended extends Error {}
+/** The drive stops, for `why`; the send keeps why as it moves on. */
+class Stopped extends Error {
+  constructor(
+    readonly why: StopReason,
+    words = why.kind === "error"
+      ? why.words
+      : "VS Code connected to another Mend server or account",
+  ) {
+    super(words);
+  }
+}
 
-const SWITCHED = "VS Code connected to another Mend server or account before Mend answered";
+const SWITCHED: StopReason = { kind: "switched" };
+const CLOSED: StopReason = { kind: "closed" };
 
 const pasteWords = (pasted: Exclude<Pasted, "pasted">, agent: string): string =>
   pasted === "agent-gone"
     ? `${agent} exited before the review was pasted, so nothing was pasted. Mend holds the follow-up pending: Retry delivery sends it to the stopped session.`
     : `VS Code could not attach ${agent}'s terminal here, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it again.`;
-
-const cutShortWords = (why: string, agent: string): string =>
-  `${why}, so some or all of it may be in ${agent}'s input. Mend holds the follow-up pending: check ${agent}'s input before Retry delivery pastes it again.`;
-
-const abandonedPasteWords = (record: SendRecord): string | null => {
-  const { phase } = record;
-  if (phase.kind !== "in-terminal" || phase.paste.kind !== "failed") return null;
-  return phase.paste.mayHaveLanded
-    ? cutShortWords(
-        `VS Code closed while it pasted the review into ${phase.agent}'s terminal`,
-        phase.agent,
-      )
-    : `VS Code closed before it pasted the review into ${phase.agent}'s terminal, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it.`;
-};
-
-const CLOSED = "VS Code closed before Mend answered";
 
 const LOOK_AGAIN_MS = 1_000;
 /** How long a look that failed waits at most before the next: it doubles until then. */
@@ -175,7 +173,6 @@ export class SendDriver {
   readonly #driving = new Map<string, Promise<void>>();
   readonly #leased = new Set<string>();
   readonly #lookAgain = new Map<string, NodeJS.Timeout>();
-  readonly #stopped = new Map<string, string>();
   #disposed = false;
 
   constructor(
@@ -322,10 +319,15 @@ export class SendDriver {
   }
 
   /**
-   * Picks up every send at `context.place` the driver needs and no window drives. Throws when it
-   * could not look, so the look that asked looks again.
+   * Picks up every send at `context.place` the driver needs and no window drives, as stopped for
+   * `stopped`: why this window's drive of that send stopped, when it could not keep why. Any
+   * other was left by a window that closed. Throws when it could not look, so the look that asked
+   * looks again.
    */
-  async #load(context: SendContext): Promise<void> {
+  async #load(
+    context: SendContext,
+    stopped: { readonly key: string; readonly why: StopReason } | null = null,
+  ): Promise<void> {
     if ((await this.#bind(context.place)) === null)
       throw new Error("VS Code is connected to another Mend server or account than this review's");
     const { place } = context;
@@ -351,8 +353,8 @@ export class SendDriver {
           ...review,
           sends: review.sends.map((record) => {
             if (!undriven.has(record.key)) return record;
-            const words = this.#stopped.get(driveId(context, record.key)) ?? CLOSED;
-            return step(record, { kind: "abandoned", words }, now);
+            const why = stopped?.key === record.key ? stopped.why : CLOSED;
+            return step(record, { kind: "abandoned", why }, now);
           }),
         };
       });
@@ -360,16 +362,11 @@ export class SendDriver {
       for (const key of undriven) await this.kept.releaseDrive(place, key).catch(() => undefined);
       throw cause;
     }
-    for (const key of undriven) this.#stopped.delete(driveId(context, key));
     for (const record of loaded.sends) {
       if (!undriven.has(record.key)) continue;
       if (nextAction(record).kind !== "idle") void this.#drive(context, record.key);
       else await this.kept.releaseDrive(place, record.key);
-      const words = abandonedPasteWords(record);
-      if (words !== null)
-        this.host.fail(`paste:${record.key}`, words, {
-          retry: { place: context.place, key: record.key },
-        });
+      this.#sayStopped(place, record);
     }
     for (const [key, ms] of drivenFor) this.#lookAgainIn(context, key, ms);
   }
@@ -379,15 +376,21 @@ export class SendDriver {
    * last up to `LOOK_AGAIN_MAX_MS`: only a look that ran drops it, having left the send done,
    * waiting on her, or driven by a live window, which looks again itself.
    */
-  #lookAgainIn(context: SendContext, key: string, ms: number, failures = 0): void {
+  #lookAgainIn(
+    context: SendContext,
+    key: string,
+    ms: number,
+    failures = 0,
+    why: StopReason | null = null,
+  ): void {
     if (this.#disposed) return;
     const id = driveId(context, key);
     const armed = this.#lookAgain.get(id);
     if (armed !== undefined) clearTimeout(armed);
     const timer = setTimeout(() => {
       this.#lookAgain.delete(id);
-      void this.#load(context).catch(() =>
-        this.#lookAgainIn(context, key, backoff(failures + 1), failures + 1),
+      void this.#load(context, why === null ? null : { key, why }).catch(() =>
+        this.#lookAgainIn(context, key, backoff(failures + 1), failures + 1, why),
       );
     }, ms);
     timer.unref();
@@ -412,9 +415,11 @@ export class SendDriver {
     const before = this.#driving.get(id) ?? Promise.resolve();
     const run: Promise<void> = before
       .then(() => this.#driveOnce(context, key))
+      // The drive stopped and could not keep why: it is looked at again soon, as stopped then.
       .catch((cause: unknown) => {
-        this.host.fail("error", errorWords(cause), { cause });
-        this.#lookAgainIn(context, key, LOOK_AGAIN_MS);
+        const why = cause instanceof Stopped ? cause.why : stopsFor(cause);
+        if (why.kind !== "switched") this.host.fail("error", errorWords(cause), { cause });
+        this.#lookAgainIn(context, key, LOOK_AGAIN_MS, 0, why);
       })
       .finally(() => {
         if (this.#driving.get(id) === run) this.#driving.delete(id);
@@ -432,7 +437,7 @@ export class SendDriver {
 
   async #still(bound: MendConnection): Promise<void> {
     const now = await this.sessions.connection();
-    if (now.url !== bound.url || now.token !== bound.token) throw new Suspended();
+    if (now.url !== bound.url || now.token !== bound.token) throw new Stopped(SWITCHED);
   }
 
   async #driveOnce(context: SendContext, key: string): Promise<void> {
@@ -441,11 +446,11 @@ export class SendDriver {
     this.#leased.add(id);
     try {
       const bound = await this.#bind(context.place);
-      if (bound === null) throw new Suspended();
+      if (bound === null) throw new Stopped(SWITCHED);
       await this.#run(context, key, bound);
     } catch (cause) {
-      if (cause instanceof Suspended) this.#stopped.set(id, SWITCHED);
-      else if (!(cause instanceof DriveLost)) throw cause;
+      if (cause instanceof DriveLost) return;
+      await this.#stop(context, key, cause instanceof Stopped ? cause.why : stopsFor(cause));
     } finally {
       this.#leased.delete(id);
       await this.kept.releaseDrive(context.place, key).catch(() => undefined);
@@ -621,17 +626,20 @@ export class SendDriver {
           }
         }
       } catch (thrown) {
-        if (thrown instanceof DriveLost || thrown instanceof Suspended) throw thrown;
+        if (thrown instanceof DriveLost || thrown instanceof Stopped) throw thrown;
         const retryable = !refuses(thrown);
         const cause = thrown instanceof WriteFailed ? thrown.failure : thrown;
-        const id = driveId(context, key);
-        this.#stopped.set(id, errorWords(cause));
-        const failed = await this.#step(context, key, {
-          kind: "failed",
-          words: errorWords(cause),
-          retryable,
-        });
-        this.#stopped.delete(id);
+        let failed: SendRecord | null;
+        try {
+          failed = await this.#step(context, key, {
+            kind: "failed",
+            words: errorWords(cause),
+            retryable,
+          });
+        } catch (keeping) {
+          if (keeping instanceof DriveLost) throw keeping;
+          throw new Stopped(stopsFor(cause));
+        }
         if (!this.#sayFailed(context.place, failed, cause))
           this.host.fail(
             `delivery:${key}`,
@@ -651,6 +659,32 @@ export class SendDriver {
       await this.#step(context, key, { kind: "failed", words, retryable: true }),
     );
     this.host.settled(sessionId);
+  }
+
+  /**
+   * Keeps why the drive stopped in the send, under its lease, and says what the send reads then.
+   * A send still needing a drive (a launch being watched) is looked at again soon, unless VS Code
+   * connected elsewhere: a read of its own server picks it up then.
+   */
+  async #stop(context: SendContext, key: string, why: StopReason): Promise<void> {
+    let left: SendRecord | null;
+    try {
+      left = await this.#step(context, key, { kind: "abandoned", why });
+    } catch (cause) {
+      if (cause instanceof DriveLost) return;
+      throw new Stopped(why, errorWords(cause));
+    }
+    if (left === null) return;
+    if (needs(left) !== "driver") this.#sayStopped(context.place, left);
+    else if (why.kind !== "switched") throw new Stopped(why);
+  }
+
+  /** Says what a send a drive stopped reads: its failed delivery, or its paste. */
+  #sayStopped(place: ReviewPlace, record: SendRecord): void {
+    if (this.#sayFailed(place, record)) return;
+    const words = stoppedPasteWords(record);
+    if (words !== null)
+      this.host.fail(`paste:${record.key}`, words, { retry: { place, key: record.key } });
   }
 
   /** What Mend reads now about the record's key and its comments. */
@@ -685,6 +719,8 @@ export class SendDriver {
     return true;
   }
 }
+
+const stopsFor = (cause: unknown): StopReason => ({ kind: "error", words: errorWords(cause) });
 
 export const liveAgent = (detail: SessionDetail, viewer: string | null): LiveAgent | null => {
   const agent = detail.currentAgent;

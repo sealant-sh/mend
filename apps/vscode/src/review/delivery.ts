@@ -135,7 +135,49 @@ export type PasteStep =
   | { readonly kind: "pasting" }
   /** Pasted, or nothing to paste and she was told why: what VS Code pasted into the agent's input. */
   | { readonly kind: "done"; readonly input: TerminalInput }
-  | { readonly kind: "failed"; readonly mayHaveLanded: boolean };
+  /** Not pasted, or cut short; `stopped` is why the drive stopped, when it did, as it stopped. */
+  | {
+      readonly kind: "failed";
+      readonly mayHaveLanded: boolean;
+      readonly stopped: StopReason | null;
+    };
+
+/**
+ * Why a drive stopped before the send moved on: VS Code closed (as a window that finds it left
+ * reads it), VS Code connected to another server or account, or a failure in its own words.
+ */
+export type StopReason =
+  | { readonly kind: "closed" }
+  | { readonly kind: "switched" }
+  | { readonly kind: "error"; readonly words: string };
+
+/** What VS Code did when a drive stopped, before `when`. */
+const stopClause = (why: StopReason, when: string): string => {
+  switch (why.kind) {
+    case "closed":
+      return `VS Code closed ${when}`;
+    case "switched":
+      return `VS Code connected to another Mend server or account ${when}`;
+    case "error":
+      return why.words;
+  }
+};
+
+/** A paste that may have reached the agent's input, in part or whole, and why it stopped. */
+export const cutShortWords = (why: string, agent: string): string =>
+  `${why}, so some or all of it may be in ${agent}'s input. Mend holds the follow-up pending: check ${agent}'s input before Retry delivery pastes it again.`;
+
+/** What a review whose drive stopped before or during its paste reads, from why it stopped. */
+export const stoppedPasteWords = (record: SendRecord): string | null => {
+  const { phase } = record;
+  if (phase.kind !== "in-terminal" || phase.paste.kind !== "failed") return null;
+  const { stopped, mayHaveLanded } = phase.paste;
+  if (stopped === null) return null;
+  const terminal = `the review into ${phase.agent}'s terminal`;
+  return mayHaveLanded
+    ? cutShortWords(stopClause(stopped, `while it pasted ${terminal}`), phase.agent)
+    : `${stopClause(stopped, `before it pasted ${terminal}`)}, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it.`;
+};
 
 export interface SendSlice {
   readonly id: string;
@@ -229,7 +271,8 @@ export type SendEvent =
       readonly agent: LiveAgent | null;
       readonly mend: FollowUpRead | null;
     }
-  | { readonly kind: "abandoned"; readonly words: string }
+  /** The drive stopped, or a window found it left: it moves on by why. */
+  | { readonly kind: "abandoned"; readonly why: StopReason }
   /** A watch of a launch. */
   | ({ readonly kind: "follow-up"; readonly agent: LiveAgent | null } & FollowUpRead);
 
@@ -498,7 +541,7 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
             ...record,
             phase: {
               ...phase,
-              paste: { kind: "failed", mayHaveLanded: event.why === "interrupted" },
+              paste: { kind: "failed", mayHaveLanded: event.why === "interrupted", stopped: null },
             },
           };
     }
@@ -542,13 +585,24 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
       return { ...record, phase: { kind: "sending", since: event.at } };
     case "abandoned":
       if (record.phase.kind === "sending")
-        return { ...record, phase: { kind: "failed", words: event.words, at: now } };
+        return {
+          ...record,
+          phase: { kind: "failed", words: stopClause(event.why, "before Mend answered"), at: now },
+        };
       if (record.phase.kind !== "in-terminal") return record;
       switch (record.phase.paste.kind) {
         case "due":
-          return withPaste(record, "due", { kind: "failed", mayHaveLanded: false });
+          return withPaste(record, "due", {
+            kind: "failed",
+            mayHaveLanded: false,
+            stopped: event.why,
+          });
         case "pasting":
-          return withPaste(record, "pasting", { kind: "failed", mayHaveLanded: true });
+          return withPaste(record, "pasting", {
+            kind: "failed",
+            mayHaveLanded: true,
+            stopped: event.why,
+          });
         default:
           return record;
       }

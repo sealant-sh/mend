@@ -169,11 +169,12 @@ describe("sending a review (story d, step 6)", () => {
 
   it("reconciles a post a reload cut short before posting it again", () => {
     const cut = apply(sent(), { kind: "post-started", pendingId: "p1", attempt: ATTEMPT });
-    const reloaded = apply(cut, {
-      kind: "abandoned",
+    const reloaded = apply(cut, { kind: "abandoned", why: { kind: "closed" } });
+    expect(only(reloaded).phase).toEqual({
+      kind: "failed",
       words: "VS Code closed before Mend answered",
+      at: NOW,
     });
-    expect(only(reloaded).phase.kind).toBe("failed");
     expect(
       nextAction(only(apply(reloaded, { kind: "retry", at: NOW, agent: null, mend: null }))),
     ).toEqual({
@@ -201,7 +202,7 @@ describe("sending a review (story d, step 6)", () => {
     const pasted = apply(inTerminal, { kind: "paste-started" }, { kind: "pasted" });
     for (const later of [
       pasted,
-      apply(pasted, { kind: "abandoned", words: "VS Code closed before Mend answered" }),
+      apply(pasted, { kind: "abandoned", why: { kind: "closed" } }),
       apply(pasted, { kind: "retry", at: NOW, agent: HERS, mend: null }),
       watched(pasted, { status: "pending" }),
     ])
@@ -347,8 +348,16 @@ describe("every phase a review is kept in", () => {
     ["delivering", { kind: "delivering" }, "driver"],
     ["in-terminal, paste due", terminal({ kind: "due" }), "driver"],
     ["in-terminal, pasting", terminal({ kind: "pasting" }), "driver"],
-    ["in-terminal, not pasted", terminal({ kind: "failed", mayHaveLanded: false }), "her"],
-    ["in-terminal, paste cut short", terminal({ kind: "failed", mayHaveLanded: true }), "her"],
+    [
+      "in-terminal, not pasted",
+      terminal({ kind: "failed", mayHaveLanded: false, stopped: null }),
+      "her",
+    ],
+    [
+      "in-terminal, paste cut short",
+      terminal({ kind: "failed", mayHaveLanded: true, stopped: { kind: "closed" } }),
+      "her",
+    ],
     [
       "in-terminal, pasted",
       terminal({ kind: "done", input: { text: "the review", ids: ["c1", "c2"] } }),
@@ -380,7 +389,7 @@ describe("every phase a review is kept in", () => {
     expect(needs(record)).toBe(who);
     switch (who) {
       case "driver": {
-        const abandoned = step(record, { kind: "abandoned", words: "VS Code closed" }, NOW);
+        const abandoned = step(record, { kind: "abandoned", why: { kind: "closed" } }, NOW);
         expect(nextAction(record).kind !== "idle" || abandoned.phase !== record.phase).toBe(true);
         expect(needs(abandoned) !== "driver" || nextAction(abandoned).kind !== "idle").toBe(true);
         break;
