@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { startSend, stepReview } from "./delivery.js";
-import type { LiveAgent, PastePlan } from "./delivery.js";
+import type { LiveAgent, PastePlan, SendEvent } from "./delivery.js";
 import { EMPTY_REVIEW } from "./pending.js";
 import {
   checkpoint,
@@ -281,17 +281,12 @@ describe("the Comments row's count", () => {
       hers: true,
       processId: "agent-1",
     };
-    const held = stepReview(
-      stepReview(
-        started,
-        "k1",
-        { kind: "answered", status: "pending", error: null, agent: claude },
-        NOW,
-      ),
-      "k1",
+    const events: ReadonlyArray<SendEvent> = [
+      { kind: "answered", status: "pending", error: null, agent: claude },
+      { kind: "paste-started" },
       { kind: "pasted" },
-      NOW,
-    );
+    ];
+    const held = events.reduce((review, event) => stepReview(review, "k1", event, NOW), started);
     const gone = readOf({ kind: "pinned" }, { comments: [open] });
     const live = readOf(
       { kind: "pinned" },

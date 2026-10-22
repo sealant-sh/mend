@@ -9,7 +9,7 @@ import {
   DRAFT_GONE,
   draftsLeft,
   handedOver,
-  holdsComments,
+  needs,
   mayRetry,
   nextAction,
   postedComment,
@@ -100,6 +100,24 @@ const pasteWords = (pasted: Exclude<Pasted, "pasted">, agent: string): string =>
   pasted === "agent-gone"
     ? `${agent} exited before the review was pasted, so nothing was pasted. Mend holds the follow-up pending: Retry delivery sends it to the stopped session.`
     : `VS Code could not attach ${agent}'s terminal here, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it again.`;
+
+/** Mend holds the follow-up pending, and the paste may be in the agent's input, in part or whole. */
+const cutShortWords = (why: string, agent: string): string =>
+  `${why}, so some or all of it may be in ${agent}'s input. Mend holds the follow-up pending: check ${agent}'s input before Retry delivery pastes it again.`;
+
+/** What a record a window left mid-paste reads, said once by the window that finds it. */
+const abandonedPasteWords = (record: SendRecord): string | null => {
+  const { phase } = record;
+  if (phase.kind !== "in-terminal" || phase.paste.kind !== "failed") return null;
+  return phase.paste.mayHaveLanded
+    ? cutShortWords(
+        `VS Code closed while it pasted the review into ${phase.agent}'s terminal`,
+        phase.agent,
+      )
+    : `VS Code closed before it pasted the review into ${phase.agent}'s terminal, so nothing was pasted. Mend holds the follow-up pending: Retry delivery pastes it.`;
+};
+
+const CLOSED = "VS Code closed before Mend answered";
 
 /** How often a launch is watched, and for how many steps before it reads failed. */
 const WATCH_MS = 3_000;
@@ -278,7 +296,7 @@ export class SendDriver {
       undriven.clear();
       drivenFor.length = 0;
       for (const record of review.sends) {
-        if (!holdsComments(record) || this.#driving.has(driveId(context, record.key))) continue;
+        if (needs(record) !== "driver" || this.#driving.has(driveId(context, record.key))) continue;
         const left = await this.kept.drivenFor(context.place, record.key);
         if (left === null) undriven.add(record.key);
         else drivenFor.push(left);
@@ -286,13 +304,21 @@ export class SendDriver {
       return {
         ...review,
         sends: review.sends.map((record) =>
-          undriven.has(record.key) ? step(record, { kind: "loaded" }, now) : record,
+          undriven.has(record.key)
+            ? step(record, { kind: "abandoned", words: CLOSED }, now)
+            : record,
         ),
       };
     });
-    for (const record of loaded.sends)
-      if (record.phase.kind === "delivering" && undriven.has(record.key))
-        void this.#drive(context, record.key);
+    for (const record of loaded.sends) {
+      if (!undriven.has(record.key)) continue;
+      if (nextAction(record).kind !== "idle") void this.#drive(context, record.key);
+      const words = abandonedPasteWords(record);
+      if (words !== null)
+        this.host.fail(`paste:${record.key}`, words, {
+          retry: { place: context.place, key: record.key },
+        });
+    }
     // A window reloaded during a send left its lease behind: once that lease goes stale, nobody
     // drives the send, so this window loads it again then.
     if (drivenFor.length > 0) this.#loadAgainIn(context.place, Math.min(...drivenFor));
@@ -459,8 +485,9 @@ export class SendDriver {
             break;
           }
           case "deliver": {
-            const detail = await this.sessions.sessionDetail(sessionId);
             const answered = await writing(this.client.deliver(sessionId, action.request));
+            // Read once Mend answered: an agent that started meanwhile is where Mend holds it.
+            const detail = await this.sessions.sessionDetail(sessionId);
             const next = await this.#step(context, key, {
               kind: "answered",
               status: answered.status,
@@ -477,13 +504,28 @@ export class SendDriver {
             break;
           }
           case "paste": {
-            const pasted = await this.paste(sessionId, action.processId, action.text);
+            const agent = record.phase.kind === "in-terminal" ? record.phase.agent : "the agent";
+            await this.#step(context, key, { kind: "paste-started" });
+            let pasted: Pasted;
+            try {
+              pasted = await this.paste(sessionId, action.processId, action.text);
+            } catch (cause) {
+              await this.#step(context, key, { kind: "paste-failed", why: "interrupted" });
+              this.host.fail(
+                `paste:${key}`,
+                cutShortWords(
+                  `VS Code could not finish pasting the review into ${agent}'s terminal: ${errorWords(cause)}`,
+                  agent,
+                ),
+                { cause, retry },
+              );
+              break;
+            }
             if (pasted === "pasted") {
               await this.#step(context, key, { kind: "pasted" });
               break;
             }
-            await this.#step(context, key, { kind: "paste-failed", gone: pasted === "agent-gone" });
-            const agent = record.phase.kind === "in-terminal" ? record.phase.agent : "the agent";
+            await this.#step(context, key, { kind: "paste-failed", why: pasted });
             this.host.fail(`paste:${key}`, pasteWords(pasted, agent), { retry });
             break;
           }
@@ -498,6 +540,10 @@ export class SendDriver {
               this.client.comments(changeId),
             ]);
             const ours = followUp !== null && followUp.key === key ? followUp : null;
+            const agent =
+              ours?.status === "pending"
+                ? liveAgent(await this.sessions.sessionDetail(sessionId), context.viewer)
+                : null;
             const ids = commentIds(record) ?? [];
             const sent =
               ids.length > 0 &&
@@ -511,6 +557,7 @@ export class SendDriver {
               error: ours?.error ?? null,
               others: followUp !== null && ours === null,
               sent,
+              agent,
             });
             break;
           }

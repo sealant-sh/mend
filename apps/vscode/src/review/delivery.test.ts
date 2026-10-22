@@ -6,14 +6,19 @@ import {
   commentTarget,
   commentsOnTheirWay,
   mayRetry,
+  needs,
   nextAction,
+  openRecord,
   postedComment,
   retryRecord,
   startSend,
+  step,
   stepReview,
   type LiveAgent,
   type PostAttempt,
+  type Needs,
   type SendEvent,
+  type SendPhase,
   type SendRecord,
 } from "./delivery.js";
 import type { PastePlan } from "./delivery.js";
@@ -108,6 +113,7 @@ const watched = (
     error: null,
     others: false,
     sent: false,
+    agent: null,
     ...seen,
   });
 
@@ -162,7 +168,10 @@ describe("sending a review (story d, step 6)", () => {
 
   it("reconciles a post a reload cut short before posting it again", () => {
     const cut = apply(sent(), { kind: "post-started", pendingId: "p1", attempt: ATTEMPT });
-    const reloaded = apply(cut, { kind: "loaded" });
+    const reloaded = apply(cut, {
+      kind: "abandoned",
+      words: "VS Code closed before Mend answered",
+    });
     expect(only(reloaded).phase.kind).toBe("failed");
     expect(nextAction(only(apply(reloaded, { kind: "retry", at: NOW, agent: null })))).toEqual({
       kind: "reconcile",
@@ -186,10 +195,10 @@ describe("sending a review (story d, step 6)", () => {
       text: "the review",
       processId: "agent-1",
     });
-    const pasted = apply(inTerminal, { kind: "pasted" });
+    const pasted = apply(inTerminal, { kind: "paste-started" }, { kind: "pasted" });
     for (const later of [
       pasted,
-      apply(pasted, { kind: "loaded" }),
+      apply(pasted, { kind: "abandoned", words: "VS Code closed before Mend answered" }),
       apply(pasted, { kind: "retry", at: NOW, agent: HERS }),
       watched(pasted, { status: "pending" }),
     ])
@@ -206,7 +215,7 @@ describe("sending a review (story d, step 6)", () => {
     );
     expect(retryRecord(pasted.sends, HERS)).toBeNull();
     expect(retryRecord(pasted.sends, null)).toBeNull();
-    const unpasted = apply(inTerminal, { kind: "paste-failed", gone: false });
+    const unpasted = apply(inTerminal, { kind: "paste-failed", why: "not-attached" });
     expect(retryRecord(unpasted.sends, null)?.key).toBe("key-1");
     const relaunch = apply(unpasted, { kind: "retry", at: NOW, agent: null });
     expect(nextAction(only(relaunch))).toMatchObject({
@@ -270,6 +279,72 @@ describe("sending a review (story d, step 6)", () => {
     const kept = parseSessionReview(JSON.parse(JSON.stringify(posted(sent()))));
     expect(only(kept).key).toBe("key-1");
     expect(nextAction(only(kept))).toMatchObject({ kind: "deliver" });
+  });
+});
+
+const terminal = (paste: Extract<SendPhase, { kind: "in-terminal" }>["paste"]): SendPhase => ({
+  kind: "in-terminal",
+  agent: "claude",
+  processId: "agent-1",
+  paste,
+});
+
+describe("every phase a review is kept in", () => {
+  const PHASES: ReadonlyArray<readonly [string, SendPhase, Needs]> = [
+    ["sending", { kind: "sending", since: NOW }, "driver"],
+    ["delivering", { kind: "delivering" }, "driver"],
+    ["in-terminal, paste due", terminal({ kind: "due" }), "driver"],
+    ["in-terminal, pasting", terminal({ kind: "pasting" }), "driver"],
+    ["in-terminal, not pasted", terminal({ kind: "failed", mayHaveLanded: false }), "her"],
+    ["in-terminal, paste cut short", terminal({ kind: "failed", mayHaveLanded: true }), "her"],
+    [
+      "in-terminal, pasted",
+      terminal({ kind: "done", input: { text: "the review", ids: ["c1", "c2"] } }),
+      "nothing",
+    ],
+    ["pending", { kind: "pending" }, "her"],
+    ["failed", { kind: "failed", words: "Mend is restarting", at: NOW }, "her"],
+    ["delivered", { kind: "delivered", at: NOW }, "nothing"],
+    ["refused", { kind: "refused", words: "Mend refused it" }, "nothing"],
+  ];
+  const AGENTS: ReadonlyArray<readonly [string, LiveAgent | null]> = [
+    ["while claude lives", HERS],
+    ["once claude exited", null],
+  ];
+
+  const CASES: ReadonlyArray<readonly [string, string, SendPhase, Needs, LiveAgent | null]> =
+    PHASES.flatMap(([name, phase, who]) =>
+      AGENTS.map(([when, agent]): readonly [string, string, SendPhase, Needs, LiveAgent | null] => [
+        name,
+        when,
+        phase,
+        who,
+        agent,
+      ]),
+    );
+
+  it.each(CASES)("%s has a way out %s", (_name, _when, phase, who, agent) => {
+    const record: SendRecord = { ...only(posted(sent())), phase };
+    expect(needs(record)).toBe(who);
+    switch (who) {
+      case "driver": {
+        // A window driving it moves it on; one that finds it undriven ends what it cannot vouch for.
+        const abandoned = step(record, { kind: "abandoned", words: "VS Code closed" }, NOW);
+        expect(nextAction(record).kind !== "idle" || abandoned.phase !== record.phase).toBe(true);
+        expect(needs(abandoned) !== "driver" || nextAction(abandoned).kind !== "idle").toBe(true);
+        break;
+      }
+      case "her":
+        expect(mayRetry(record, agent)).toBe(true);
+        expect(retryRecord([record], agent)?.key).toBe(record.key);
+        break;
+      case "nothing":
+        // Never retried, and never in the way of her next Send.
+        expect(mayRetry(record, agent)).toBe(false);
+        expect(retryRecord([record], agent)).toBeNull();
+        expect(openRecord([record])).toBeNull();
+        break;
+    }
   });
 });
 

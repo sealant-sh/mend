@@ -133,10 +133,15 @@ export type PastePlan =
 /** The paste step of a review Mend holds pending in her agent's terminal. */
 export type PasteStep =
   | { readonly kind: "due" }
+  /** Kept before the paste is made: a window that closes now leaves a paste it cannot vouch for. */
+  | { readonly kind: "pasting" }
   /** Pasted, or nothing to paste and she was told why: what VS Code pasted into the agent's input. */
   | { readonly kind: "done"; readonly input: TerminalInput }
-  /** VS Code could not attach the live agent's terminal here: Retry delivery pastes it again. */
-  | { readonly kind: "failed" };
+  /**
+   * Not pasted, as far as VS Code knows: Retry delivery pastes it again. `mayHaveLanded` when the
+   * paste was cut short, so some or all of it may be in the agent's input.
+   */
+  | { readonly kind: "failed"; readonly mayHaveLanded: boolean };
 
 export interface SendSlice {
   readonly id: string;
@@ -199,23 +204,28 @@ export type SendEvent =
       readonly error: string | null;
       readonly agent: LiveAgent;
     }
+  /** The paste is about to be made. */
+  | { readonly kind: "paste-started" }
   /** The paste reached the agent's input. */
   | { readonly kind: "pasted" }
   /** Nothing was pasted, and she was told why: the input holds what it held. */
   | { readonly kind: "skipped" }
   /**
-   * Nothing was pasted, and Mend still holds the follow-up pending: the agent process is gone
-   * (`gone`), or her terminal could not be attached here.
+   * Mend still holds the follow-up pending, and the paste did not reach the agent's input: its
+   * process is gone, its terminal could not be attached here, or the paste was cut short.
    */
-  | { readonly kind: "paste-failed"; readonly gone: boolean }
+  | { readonly kind: "paste-failed"; readonly why: "agent-gone" | "not-attached" | "interrupted" }
   | { readonly kind: "failed"; readonly words: string; readonly retryable: boolean }
   /**
    * Retry delivery, with everything kept: from a failure, or from a follow-up Mend holds pending
    * once the session has no live agent. `agent` is the session's live agent as read just now.
    */
   | { readonly kind: "retry"; readonly at: string; readonly agent: LiveAgent | null }
-  /** A window loaded with this record in it: a send it did not see end is not known to be sent. */
-  | { readonly kind: "loaded" }
+  /**
+   * No window drives this record any more: a send it did not see end is not known to be sent, and
+   * a paste it did not see end is not known to be in the agent's input.
+   */
+  | { readonly kind: "abandoned"; readonly words: string }
   /**
    * A watch of a launch: `GET …/follow-up` lists only the newest follow-up not yet delivered, so
    * `status` is ours when it is listed, and `sent` is whether Mend reads every comment of the
@@ -228,6 +238,8 @@ export type SendEvent =
       /** Another follow-up of the session is listed: ours may still be on its way. */
       readonly others: boolean;
       readonly sent: boolean;
+      /** The session's live agent, read when Mend lists ours pending; null otherwise. */
+      readonly agent: LiveAgent | null;
     };
 
 /** What the extension does next for a record. */
@@ -301,6 +313,7 @@ export const deliverRequest = (record: SendRecord, ids: ReadonlyArray<string>): 
  */
 export const nextAction = (record: SendRecord): SendAction => {
   if (record.phase.kind === "in-terminal") {
+    // A paste in flight is its own window's: once no window drives it, it is abandoned.
     if (record.phase.paste.kind !== "due") return { kind: "idle" };
     const { processId } = record.phase;
     const plan = planFor(record.paste, processId);
@@ -363,7 +376,7 @@ const recordedInput = (records: ReadonlyArray<SendRecord>): HeldInput | null => 
   if (latest?.phase.kind !== "in-terminal") return null;
   const { agent, processId, paste } = latest.phase;
   if (paste.kind === "done") return { input: paste.input, agent, processId };
-  // Nothing was pasted: the input holds what this review was composed onto.
+  // Nothing was pasted, as far as VS Code knows: the input holds what it was composed onto.
   return paste.kind === "failed" && latest.paste.kind !== "all"
     ? { input: latest.paste.onto, agent, processId: latest.paste.processId }
     : null;
@@ -464,25 +477,39 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
       return record.phase.kind === "sending"
         ? { ...record, phase: answeredPhase(event.status, event.error, event.agent, now) }
         : record;
+    case "paste-started":
+      return withPaste(record, "due", { kind: "pasting" });
     case "pasted":
+      return record.phase.kind === "in-terminal"
+        ? withPaste(record, "pasting", {
+            kind: "done",
+            input: inputAfter(record, record.phase.processId, true),
+          })
+        : record;
     case "skipped":
-      return record.phase.kind === "in-terminal" && record.phase.paste.kind === "due"
-        ? {
+      return record.phase.kind === "in-terminal"
+        ? withPaste(record, "due", {
+            kind: "done",
+            input: inputAfter(record, record.phase.processId, false),
+          })
+        : record;
+    case "paste-failed": {
+      const { phase } = record;
+      if (
+        phase.kind !== "in-terminal" ||
+        (phase.paste.kind !== "due" && phase.paste.kind !== "pasting")
+      )
+        return record;
+      return event.why === "agent-gone"
+        ? { ...record, phase: { kind: "pending" } }
+        : {
             ...record,
             phase: {
-              ...record.phase,
-              paste: {
-                kind: "done",
-                input: inputAfter(record, record.phase.processId, event.kind === "pasted"),
-              },
+              ...phase,
+              paste: { kind: "failed", mayHaveLanded: event.why === "interrupted" },
             },
-          }
-        : record;
-    case "paste-failed":
-      if (record.phase.kind !== "in-terminal") return record;
-      return event.gone
-        ? { ...record, phase: { kind: "pending" } }
-        : { ...record, phase: { ...record.phase, paste: { kind: "failed" } } };
+          };
+    }
     case "failed":
       return record.phase.kind === "sending" || record.phase.kind === "delivering"
         ? {
@@ -512,7 +539,8 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
     case "retry":
       if (!mayRetry(record, event.agent)) return record;
       // Mend holds it pending for her live agent: only the paste is done again.
-      return record.phase.kind === "in-terminal" && event.agent?.kind === "terminal"
+      return (record.phase.kind === "in-terminal" || record.phase.kind === "pending") &&
+        event.agent?.kind === "terminal"
         ? {
             ...record,
             phase: {
@@ -523,13 +551,18 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
             },
           }
         : { ...record, phase: { kind: "sending", since: event.at } };
-    case "loaded":
-      return record.phase.kind === "sending"
-        ? {
-            ...record,
-            phase: { kind: "failed", words: "VS Code closed before Mend answered", at: now },
-          }
-        : record;
+    case "abandoned":
+      if (record.phase.kind === "sending")
+        return { ...record, phase: { kind: "failed", words: event.words, at: now } };
+      if (record.phase.kind !== "in-terminal") return record;
+      switch (record.phase.paste.kind) {
+        case "due":
+          return withPaste(record, "due", { kind: "failed", mayHaveLanded: false });
+        case "pasting":
+          return withPaste(record, "pasting", { kind: "failed", mayHaveLanded: true });
+        default:
+          return record;
+      }
     case "follow-up":
       if (record.phase.kind !== "delivering") return record;
       if (event.sent) return { ...record, phase: { kind: "delivered", at: now } };
@@ -542,9 +575,13 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
             at: now,
           },
         };
-      // Mend holds it pending (the session went live, or a reload never heard the answer): it waits
-      // there until she retries it.
-      if (event.status === "pending") return { ...record, phase: { kind: "pending" } };
+      // Mend holds it pending (the session went live, or a reload never heard the answer): into her
+      // own live terminal agent it is pasted, as when Mend answers so; otherwise it waits for her.
+      if (event.status === "pending")
+        return {
+          ...record,
+          phase: answeredPhase("pending", null, event.agent ?? { kind: "other" }, now),
+        };
       if (event.status !== null || event.others) return record;
       return {
         ...record,
@@ -558,28 +595,63 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
   }
 };
 
+/** A record in its paste step `from`, moved to `to`; any other record as it was. */
+const withPaste = (record: SendRecord, from: PasteStep["kind"], to: PasteStep): SendRecord =>
+  record.phase.kind === "in-terminal" && record.phase.paste.kind === from
+    ? { ...record, phase: { ...record.phase, paste: to } }
+    : record;
+
 export const DRAFT_GONE =
   "A Mend draft in this review was dismissed before it was sent, and the review's text still asks for it, so nothing was sent";
 
 /**
- * Retry delivery is offered on a failed record; on a follow-up Mend holds pending once the session
- * has no live agent, when the same key launches the stopped session on the review; and on one whose
- * paste did not happen, pasted again while her agent lives, else launched. Never on one VS Code
- * pasted: she may have entered it, and the same key would hand the agent that review again.
+ * Retry delivery is offered on a failed record, and on a follow-up Mend holds pending that VS Code
+ * did not paste: pasted into her own live terminal agent, or, once the session has no live agent,
+ * delivered with the same key, which launches the stopped session on the review. Never on one VS
+ * Code pasted: she may have entered it, and the same key would hand the agent that review again.
  */
 export const mayRetry = (record: SendRecord, agent: LiveAgent | null): boolean => {
+  const hers = agent === null || (agent.kind === "terminal" && agent.hers);
   switch (record.phase.kind) {
     case "failed":
       return true;
     case "pending":
-      return agent === null;
+      return hers;
     case "in-terminal":
-      return (
-        record.phase.paste.kind === "failed" &&
-        (agent === null || (agent.kind === "terminal" && agent.hers))
-      );
+      return record.phase.paste.kind === "failed" && hers;
     default:
       return false;
+  }
+};
+
+/**
+ * Who moves a record on from where it is: a window's driver, which posts, delivers, pastes and
+ * watches; her, with Retry delivery or a new Send; or nobody, as it ended, or its words are in her
+ * agent's input. A record a driver needs and no window drives is abandoned.
+ */
+export type Needs = "driver" | "her" | "nothing";
+
+export const needs = (record: SendRecord): Needs => {
+  switch (record.phase.kind) {
+    case "sending":
+    case "delivering":
+      return "driver";
+    case "in-terminal":
+      switch (record.phase.paste.kind) {
+        case "due":
+        case "pasting":
+          return "driver";
+        case "failed":
+          return "her";
+        case "done":
+          return "nothing";
+      }
+    case "pending":
+    case "failed":
+      return "her";
+    case "delivered":
+    case "refused":
+      return "nothing";
   }
 };
 
@@ -665,7 +737,11 @@ export const recordLabel = (phase: SendPhase): string => {
         case "done":
           return `follow-up pending · pasted into ${phase.agent}'s terminal`;
         case "failed":
-          return `follow-up pending · not pasted into ${phase.agent}'s terminal`;
+          return phase.paste.mayHaveLanded
+            ? `follow-up pending · paste into ${phase.agent}'s terminal cut short`
+            : `follow-up pending · not pasted into ${phase.agent}'s terminal`;
+        case "pasting":
+          return `follow-up pending · pasting into ${phase.agent}'s terminal`;
         case "due":
           return "follow-up pending";
       }
