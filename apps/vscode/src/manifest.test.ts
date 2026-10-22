@@ -285,3 +285,84 @@ describe("bring my editor", () => {
     });
   });
 });
+
+const handoffClause = (
+  when: string,
+  local: boolean,
+  offline: boolean,
+  support: string,
+  scm = "git",
+  view = "mend.sessions",
+): boolean =>
+  when.split("&&").every((part) => {
+    const clause = part.trim();
+    if (clause === "false") return false;
+    if (clause === "mend.handoff.localGit") return local;
+    if (clause === "mend.offline") return offline;
+    if (clause === "!mend.offline") return !offline;
+    if (clause.startsWith("mend.handoff.support == "))
+      return support === clause.slice("mend.handoff.support == ".length);
+    if (clause.startsWith("scmProvider == ")) return scm === clause.slice("scmProvider == ".length);
+    if (clause.startsWith("view == ")) return view === clause.slice("view == ".length);
+    throw new Error(`Unknown handoff clause: ${clause}`);
+  });
+
+describe("Hand off to Mend entrypoint matrix", () => {
+  for (const local of [false, true])
+    for (const offline of [false, true])
+      for (const support of ["checking", "supported", "unsupported", "unavailable"])
+        for (const surface of ["scm/title", "view/title", "commandPalette"]) {
+          it(`${surface}: ${local ? "local Git" : "remote/non-Git"}, ${offline ? "offline" : "online"}, ${support}`, () => {
+            const visible = menu(surface).filter(
+              (entry) =>
+                entry.command.startsWith("mend.handoff") &&
+                handoffClause(entry.when ?? "", local, offline, support),
+            );
+            const expected = !local
+              ? []
+              : offline
+                ? surface === "commandPalette"
+                  ? []
+                  : ["mend.handoffOffline"]
+                : support === "supported"
+                  ? ["mend.handoffBranch"]
+                  : support === "unsupported" && surface !== "commandPalette"
+                    ? ["mend.handoffUnsupported"]
+                    : [];
+            expect(visible.map((entry) => entry.command)).toEqual(expected);
+            for (const entry of visible) {
+              const command = commandEntries().find((one) => one.command === entry.command);
+              const enablement = command?.enablement;
+              expect(
+                typeof enablement === "string" &&
+                  handoffClause(enablement, local, offline, support),
+              ).toBe(entry.command === "mend.handoffBranch");
+            }
+          });
+        }
+  it("uses the one release constant and packages the second CJS entry and maps", async () => {
+    const { HANDOFF_UNSUPPORTED } = await import("./handoff.js");
+    expect(
+      commandEntries().find((command) => command.command === "mend.handoffUnsupported")?.title,
+    ).toBe(HANDOFF_UNSUPPORTED);
+    expect(
+      commandEntries().find((command) => command.command === "mend.handoffBranch"),
+    ).toMatchObject({ title: "Hand off to Mend…", category: "Mend", icon: "$(cloud-upload)" });
+    expect(isMenuEntry(manifest)).toBe(false);
+    expect(
+      typeof manifest === "object" && manifest !== null ? Reflect.get(manifest, "files") : [],
+    ).toEqual(
+      expect.arrayContaining([
+        "dist/handoff-worker.js",
+        "dist/handoff-worker.js.map",
+        "dist/extension.js.map",
+      ]),
+    );
+    expect(menu("scm/title").find((entry) => entry.command === "mend.handoffBranch")?.group).toBe(
+      "mend@1",
+    );
+    expect(menu("view/title").find((entry) => entry.command === "mend.handoffBranch")?.group).toBe(
+      "navigation@2",
+    );
+  });
+});

@@ -857,6 +857,9 @@ importers:
       '@mend/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@mend/local-git':
+        specifier: workspace:*
+        version: link:../../packages/local-git
       '@mend/workspace-ssh':
         specifier: workspace:*
         version: link:../../packages/workspace-ssh

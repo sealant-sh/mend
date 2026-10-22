@@ -20,6 +20,7 @@ import {
   type StreamSignal,
 } from "./client-data.js";
 import type { ConnectionStore, HeldConnection, MendConnection } from "./config.js";
+import { BoundClient } from "./handoff-client.js";
 import { MendApiError, requestMend } from "./mend-http.js";
 import type { CreateRequest } from "./new-session.js";
 import {
@@ -71,6 +72,14 @@ export class MendClient {
       refused: (connection) => this.connections.refused(connection),
       held: () => this.connections.held(),
     });
+  }
+
+  async bindHandoff(): Promise<BoundClient> {
+    return new BoundClient(
+      await this.connection(),
+      () => this.connection(),
+      (connection) => this.refused(connection),
+    );
   }
 
   /** A refused token is dropped wherever it was met, before its caller says so. */
