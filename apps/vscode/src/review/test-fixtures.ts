@@ -2,8 +2,13 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { ReviewCommentTarget } from "@mend/domain/workbench";
+import {
+  reviewTargetExists,
+  reviewTargetFile,
+  type ReviewCommentTarget,
+} from "@mend/domain/workbench";
 
+import { MendApiError } from "../mend-http.js";
 import type { Project, ProjectDetail, Session, SessionDetail } from "../types.js";
 import type { Pasted } from "./agent-paste.js";
 import type { ChangeRead } from "./change-rows.js";
@@ -312,10 +317,16 @@ export class FakeMend extends ReviewClient {
     target: ReviewCommentTarget,
     body: string,
   ): Promise<ServerComment> {
+    if (!reviewTargetExists(FILES, target))
+      throw new MendApiError(
+        "The comment anchor is not present in this Review slice.",
+        422,
+        "StoreFailure",
+      );
     this.writes.push(`post ${body}`);
     const posted = comment({
       id: `posted-${this.serverComments.length}`,
-      file: target.newPath,
+      file: reviewTargetFile(target),
       line: target.startLine,
       endLine: target.endLine,
       anchor: { sliceId, baseId: PINNED.base.id, headId: PINNED.head.id, side: target.side },

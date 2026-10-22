@@ -59,6 +59,13 @@ export const lineAnchorExists = (
   });
 };
 
+/**
+ * The file Mend files a review comment under: the old path for a line on the old side, else the
+ * new path, or the old path of a deleted file; none for the change as a whole.
+ */
+export const reviewTargetFile = (target: ReviewCommentTarget): string | null =>
+  target.side === "old" ? target.oldPath : (target.newPath ?? target.oldPath);
+
 export const reviewTargetExists = (
   files: ReadonlyArray<ReviewTargetFile>,
   target: ReviewCommentTarget,

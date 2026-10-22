@@ -118,6 +118,7 @@ import {
   DiffDigest,
   ReviewCommentAnchor,
   reviewTargetExists,
+  reviewTargetFile,
   currentAgentProcess,
   isAgentProcessKind,
   type ReviewSlice,
@@ -3821,7 +3822,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
         });
         return yield* comments.create({
           changeId: params.id,
-          file: target.side === "old" ? target.oldPath : (target.newPath ?? target.oldPath),
+          file: reviewTargetFile(target),
           line: target.startLine,
           endLine: target.endLine,
           anchor,

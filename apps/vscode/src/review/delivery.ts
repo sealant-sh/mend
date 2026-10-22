@@ -1,4 +1,4 @@
-import type { ReviewCommentTarget } from "@mend/domain/workbench";
+import { reviewTargetFile, type ReviewCommentTarget } from "@mend/domain/workbench";
 
 import { KEPT_SENDS, type PendingComment, type SessionReview } from "./pending.js";
 import type { ChangeFile, ServerComment } from "./review-wire.js";
@@ -735,8 +735,7 @@ export const postedComment = (
         (attempt.author === null || comment.author.name === attempt.author) &&
         comment.body === attempt.body.trim() &&
         comment.anchor?.sliceId === sliceId &&
-        comment.file ===
-          (target.side === "old" ? target.oldPath : (target.newPath ?? target.oldPath)) &&
+        comment.file === reviewTargetFile(target) &&
         comment.line === target.startLine &&
         comment.endLine === target.endLine,
     )?.id ?? null
