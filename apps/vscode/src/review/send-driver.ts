@@ -150,6 +150,13 @@ class WriteFailed extends Error {
   }
 }
 
+/** VS Code could not keep a step of the send: its own failure, never Mend's. */
+class KeepFailed extends Error {
+  constructor(cause: unknown) {
+    super(`VS Code could not keep the review: ${errorWords(cause)}`);
+  }
+}
+
 const writing = async <T>(call: Promise<T>): Promise<T> => {
   try {
     return await call;
@@ -404,10 +411,14 @@ export class SendDriver {
     )
       throw new DriveLost();
     const now = new Date().toISOString();
-    const next = await this.host.keepAt(context.place, (review) =>
-      stepReview(review, key, event, now),
-    );
-    return sendOf(next, key) ?? null;
+    try {
+      const next = await this.host.keepAt(context.place, (review) =>
+        stepReview(review, key, event, now),
+      );
+      return sendOf(next, key) ?? null;
+    } catch (cause) {
+      throw new KeepFailed(cause);
+    }
   }
 
   async #drive(context: SendContext, key: string): Promise<void> {
@@ -627,6 +638,8 @@ export class SendDriver {
         }
       } catch (thrown) {
         if (thrown instanceof DriveLost || thrown instanceof Stopped) throw thrown;
+        // Mend holds the follow-up: what failed is VS Code's, and the paste step stops on it.
+        if (record.phase.kind === "in-terminal") throw new Stopped(stopsFor(thrown));
         const retryable = !refuses(thrown);
         const cause = thrown instanceof WriteFailed ? thrown.failure : thrown;
         let failed: SendRecord | null;
