@@ -515,6 +515,24 @@ describe("two windows writing the credentials before either sees the other's wri
     }
   }, 10_000);
 
+  it("keeps a second sign-out made after another window's sign-in, though this window already read the first", async () => {
+    const { key, value } = secretWriteOf({ kind: "signedOut", url: MINI }, randomUUID());
+    secrets.set(key, value);
+    vi.stubGlobal(
+      "fetch",
+      devicesServer(() => new Response(null, { status: 204 })),
+    );
+    ui.showInputBox.mockResolvedValueOnce(MINI);
+    const storage = laggySecrets();
+    const [here, there] = [storage.window(), storage.window()];
+    expect(await here.connect()).toBe(true);
+    await there.signOut(MINI);
+    storage.deliver();
+    for (const window of [here, there]) {
+      expect(await window.state()).toMatchObject({ kind: "notConnected" });
+    }
+  }, 10_000);
+
   it("keeps Use it made after another window's sign-in, though this window already read Use it", async () => {
     const cliDir = path.join(home, ".config", "mend");
     fs.mkdirSync(cliDir, { recursive: true });
