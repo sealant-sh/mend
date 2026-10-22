@@ -19,11 +19,8 @@ import {
   openRecord,
   admits,
   retryRecord,
-  sendGeneration,
   startSend,
-  type PastePlan,
   type SendSlice,
-  terminalInput,
 } from "./delivery.js";
 import {
   addedText,
@@ -36,6 +33,7 @@ import {
   type SendOffer,
 } from "./instruction.js";
 import { samePlace, type KeptReview, type KeptReviews, type ReviewPlace } from "./kept-reviews.js";
+import { sendGeneration, terminalInput, type PastePlan } from "./paste-plan.js";
 import {
   acceptedDrafts,
   keepComposed,

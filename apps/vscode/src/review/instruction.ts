@@ -3,7 +3,8 @@ import { FOLLOW_UP_INSTRUCTION_MAX } from "@mend/domain/workbench";
 import { lfOnly } from "../line-endings.js";
 import { maySteer, ownsSession } from "../session-capability.js";
 import type { Session } from "../types.js";
-import type { HeldInput, LiveAgent, PastePlan } from "./delivery.js";
+import type { LiveAgent } from "./delivery.js";
+import type { HeldInput, PastePlan } from "./paste-plan.js";
 import type { ChangeFile, RecordLink } from "./review-wire.js";
 import { filesLine } from "./slices.js";
 

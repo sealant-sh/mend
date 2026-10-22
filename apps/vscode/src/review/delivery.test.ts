@@ -24,7 +24,7 @@ import {
   type SendPhase,
   type SendRecord,
 } from "./delivery.js";
-import type { PastePlan } from "./delivery.js";
+import type { PastePlan } from "./paste-plan.js";
 import {
   acceptedDrafts,
   EMPTY_REVIEW,

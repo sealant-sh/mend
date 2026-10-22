@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { startSend, stepReview } from "./delivery.js";
-import type { LiveAgent, PastePlan, SendEvent } from "./delivery.js";
+import type { LiveAgent, SendEvent } from "./delivery.js";
+import type { PastePlan } from "./paste-plan.js";
 import { EMPTY_REVIEW } from "./pending.js";
 import {
   checkpoint,

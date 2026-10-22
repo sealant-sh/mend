@@ -2,8 +2,6 @@ import type { ReviewCommentTarget } from "@mend/domain/workbench";
 
 import type {
   DraftDismissal,
-  HeldInput,
-  PastePlan,
   PasteStep,
   PostState,
   SendItem,
@@ -12,9 +10,9 @@ import type {
   SendRecord,
   SendSlice,
   StopReason,
-  TerminalInput,
 } from "./delivery.js";
 import { withEarlierText } from "./instruction.js";
+import type { HeldInput, PastePlan, TerminalInput } from "./paste-plan.js";
 import type { CommentAnchor, RecordLink } from "./review-wire.js";
 
 /**
