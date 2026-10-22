@@ -1,4 +1,5 @@
 import type { MendClient } from "../client.js";
+import type { MendConnection } from "../config.js";
 import { MendApiError } from "../mend-http.js";
 import type { SessionDetail } from "../types.js";
 import type { Pasted } from "./agent-paste.js";
@@ -94,6 +95,14 @@ const driveId = (context: SendContext, key: string): string =>
 /** Another window took over a send this window was driving: this one does nothing more for it. */
 class DriveLost extends Error {}
 
+/**
+ * VS Code is connected to another server or account than the send's: this window sends nothing
+ * more of it, and leaves it as kept for a window connected to its own to pick up.
+ */
+class Suspended extends Error {}
+
+const SWITCHED = "VS Code connected to another Mend server or account before Mend answered";
+
 const pasteWords = (pasted: Exclude<Pasted, "pasted">, agent: string): string =>
   pasted === "agent-gone"
     ? `${agent} exited before the review was pasted, so nothing was pasted. Mend holds the follow-up pending: Retry delivery sends it to the stopped session.`
@@ -178,7 +187,7 @@ export class SendDriver {
   constructor(
     private readonly kept: KeptReviews,
     private readonly client: ReviewClient,
-    private readonly sessions: Pick<MendClient, "sessionDetail" | "viewerId">,
+    private readonly sessions: Pick<MendClient, "sessionDetail" | "viewerId" | "connection">,
     /** G12 fallback: the agent's terminal attached here, the text pasted into that process, no Enter. */
     private readonly paste: (sessionId: string, processId: string, text: string) => Promise<Pasted>,
     private readonly host: DriverHost,
@@ -221,6 +230,12 @@ export class SendDriver {
    * agent (the route then launches the stopped session on the review).
    */
   async retry(target: RetryTarget, author: string | null): Promise<Retried> {
+    if ((await this.#bind(target.place)) === null)
+      return {
+        retried: false,
+        words:
+          "Retry delivery sent nothing: VS Code is connected to another Mend server or account than this review's",
+      };
     const record = (await this.kept.read(target.place)).review.sends.find(
       (candidate) => candidate.key === target.key,
     );
@@ -305,6 +320,7 @@ export class SendDriver {
    * it keeps. One Mend was launching goes on being watched, by reads only.
    */
   async #load(context: SendContext): Promise<void> {
+    if ((await this.#bind(context.place)) === null) return;
     const now = new Date().toISOString();
     // A send another window drives now is that window's: this one neither ends it nor drives it.
     // Its leases are read under the lock: a window claims a send's drive before it keeps the send,
@@ -394,22 +410,43 @@ export class SendDriver {
     return run;
   }
 
+  /**
+   * The connection a drive of a send kept at `place` talks to Mend through, whatever VS Code connects
+   * to later; null when VS Code is connected to another server or account now.
+   */
+  async #bind(place: ReviewPlace): Promise<MendConnection | null> {
+    const connection = await this.sessions.connection();
+    if (connection.url !== place.url) return null;
+    const viewer = await this.sessions.viewerId();
+    return viewer === null || viewer === place.viewer ? connection : null;
+  }
+
+  /** Throws `Suspended` once VS Code no longer connects through `bound`. */
+  async #still(bound: MendConnection): Promise<void> {
+    const now = await this.sessions.connection();
+    if (now.url !== bound.url || now.token !== bound.token) throw new Suspended();
+  }
+
   /** One window drives a send, so one key is posted and delivered once. */
   async #driveOnce(context: SendContext, key: string): Promise<void> {
     if (!(await this.kept.claimDrive(context.place, key))) return;
     const id = driveId(context, key);
     this.#leased.add(id);
     try {
-      await this.#run(context, key);
+      const bound = await this.#bind(context.place);
+      if (bound === null) throw new Suspended();
+      await this.#run(context, key, bound);
     } catch (cause) {
-      if (!(cause instanceof DriveLost)) throw cause;
+      if (cause instanceof Suspended) this.#stopped.set(id, SWITCHED);
+      else if (!(cause instanceof DriveLost)) throw cause;
     } finally {
       this.#leased.delete(id);
       await this.kept.releaseDrive(context.place, key).catch(() => undefined);
     }
   }
 
-  async #run(context: SendContext, key: string): Promise<void> {
+  async #run(context: SendContext, key: string, bound: MendConnection): Promise<void> {
+    const client = this.client.pinned(bound);
     const { changeId } = context;
     const { sessionId } = context.place;
     const retry: RetryTarget = { place: context.place, key };
@@ -417,12 +454,13 @@ export class SendDriver {
     const sliceFiles = async (sliceId: string): Promise<ReadonlyArray<ChangeFile>> => {
       const known = files.get(sliceId);
       if (known !== undefined) return known;
-      const read = (await this.client.sliceDiff(changeId, sliceId)).files;
+      const read = (await client.sliceDiff(changeId, sliceId)).files;
       files.set(sliceId, read);
       return read;
     };
     for (let turns = 0; turns < MAX_TURNS; turns += 1) {
       if (!(await this.kept.renewDrive(context.place, key))) return;
+      await this.#still(bound);
       const record = (await this.kept.read(context.place)).review.sends.find(
         (candidate) => candidate.key === key,
       );
@@ -436,7 +474,7 @@ export class SendDriver {
             this.host.settled(sessionId);
             return;
           case "reconcile": {
-            const comments = await this.client.comments(changeId);
+            const comments = await client.comments(changeId);
             const claimed = new Set(
               record.items.flatMap((item) =>
                 posts(item) && item.post.kind === "posted" ? [item.post.commentId] : [],
@@ -459,14 +497,14 @@ export class SendDriver {
           case "post": {
             const { pending } = action;
             const { target, body } = commentTarget(await sliceFiles(pending.sliceId), pending);
-            const before = (await this.client.comments(changeId)).map((comment) => comment.id);
+            const before = (await client.comments(changeId)).map((comment) => comment.id);
             await this.#step(context, key, {
               kind: "post-started",
               pendingId: pending.id,
               attempt: { body, target, author: context.author, before },
             });
             const posted = await writing(
-              this.client.postComment(changeId, pending.sliceId, target, body),
+              client.postComment(changeId, pending.sliceId, target, body),
             );
             await this.#step(context, key, {
               kind: "posted",
@@ -477,7 +515,7 @@ export class SendDriver {
           }
           case "open": {
             // A draft dismissed since she accepted it, here or anywhere, is never opened again.
-            const draft = (await this.client.comments(changeId)).find(
+            const draft = (await client.comments(changeId)).find(
               (comment) => comment.id === action.draftId,
             );
             if (draft === undefined || draft.state === "dismissed") {
@@ -491,18 +529,18 @@ export class SendDriver {
               return;
             }
             if (draft.state === "draft")
-              await writing(this.client.setCommentState(changeId, action.draftId, "open"));
+              await writing(client.setCommentState(changeId, action.draftId, "open"));
             await this.#step(context, key, { kind: "opened", draftId: action.draftId });
             break;
           }
           case "dismiss-draft": {
             // Her words are on Mend: a draft left beside them never holds the review back.
             try {
-              const draft = (await this.client.comments(changeId)).find(
+              const draft = (await client.comments(changeId)).find(
                 (comment) => comment.id === action.draftId,
               );
               if (draft?.state === "draft")
-                await this.client.setCommentState(changeId, action.draftId, "dismissed");
+                await client.setCommentState(changeId, action.draftId, "dismissed");
             } catch (cause) {
               await this.#step(context, key, {
                 kind: "draft-left",
@@ -515,8 +553,9 @@ export class SendDriver {
             break;
           }
           case "deliver": {
-            const answered = await writing(this.client.deliver(sessionId, action.request));
+            const answered = await writing(client.deliver(sessionId, action.request));
             // Read once Mend answered: an agent that started meanwhile is where Mend holds it.
+            await this.#still(bound);
             const detail = await this.sessions.sessionDetail(sessionId);
             const next = await this.#step(context, key, {
               kind: "answered",
@@ -566,10 +605,11 @@ export class SendDriver {
           case "watch": {
             await new Promise((resolve) => setTimeout(resolve, WATCH_MS));
             const [followUp, comments] = await Promise.all([
-              this.client.followUp(sessionId),
-              this.client.comments(changeId),
+              client.followUp(sessionId),
+              client.comments(changeId),
             ]);
             const ours = followUp !== null && followUp.key === key ? followUp : null;
+            if (ours?.status === "pending") await this.#still(bound);
             const agent =
               ours?.status === "pending"
                 ? liveAgent(await this.sessions.sessionDetail(sessionId), context.viewer)
@@ -593,7 +633,7 @@ export class SendDriver {
           }
         }
       } catch (thrown) {
-        if (thrown instanceof DriveLost) throw thrown;
+        if (thrown instanceof DriveLost || thrown instanceof Suspended) throw thrown;
         const retryable = !refuses(thrown);
         const cause = thrown instanceof WriteFailed ? thrown.failure : thrown;
         const id = driveId(context, key);

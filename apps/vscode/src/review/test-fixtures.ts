@@ -282,6 +282,11 @@ export class FakeMend extends ReviewClient {
     );
   }
 
+  /** One fake answers whichever connection a send is pinned to. */
+  override pinned(): ReviewClient {
+    return this;
+  }
+
   override async openReview(): Promise<PinnedSlice> {
     return PINNED;
   }
