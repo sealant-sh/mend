@@ -663,4 +663,27 @@ describe("sending a review from the store", () => {
     expect(mend.writes).not.toContain("state d1 open");
     expect(await phaseOf(kept, key)).toBe("refused");
   });
+
+  it("puts her words on Mend when she edited a draft she accepted, and dismisses the draft once they are there", async () => {
+    const mend = new FakeMend();
+    mend.serverComments = [DRAFT];
+    const store = await readyStore(inMemory(), mend);
+    await store.accept("d1", "");
+    const [accepted] = store.review().pending;
+    if (accepted === undefined) throw new Error("the draft was not accepted");
+    const words = "Keep the limiter, and add a test for the burst case.";
+    expect(await store.edit(accepted.id, words)).toEqual({ kept: true });
+    const key = await sendAll(store);
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1));
+    const hers = mend.serverComments.find((one) => one.body === words);
+    expect(hers).toMatchObject({
+      state: "open",
+      author: { kind: "reviewer" },
+      file: DRAFT.file,
+      line: DRAFT.line,
+    });
+    expect(mend.delivered[0]?.commentIds).toEqual([hers?.id]);
+    expect(mend.serverComments.find((one) => one.id === "d1")?.state).toBe("dismissed");
+    expect(mend.writes).toEqual([`post ${words}`, "state d1 dismissed", `deliver s1 ${key}`]);
+  });
 });
