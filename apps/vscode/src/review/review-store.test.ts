@@ -691,6 +691,21 @@ describe("sending a review from the store", () => {
     expect(mend.writes).toEqual([`post ${words}`, "state d1 dismissed", `deliver s1 ${key}`]);
   });
 
+  it("opens the draft she accepted, not her words, when her edits leave its words as they were", async () => {
+    const mend = new FakeMend();
+    mend.serverComments = [{ ...DRAFT, body: `${DRAFT.body}\n` }];
+    const store = await readyStore(inMemory(), mend);
+    await store.accept("d1", "");
+    const [accepted] = store.review().pending;
+    if (accepted === undefined) throw new Error("the draft was not accepted");
+    await store.edit(accepted.id, DRAFT.body);
+    await store.edit(accepted.id, "Run the burst test too.");
+    await store.edit(accepted.id, DRAFT.body);
+    const key = await sendAll(store);
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    expect(mend.writes).toEqual(["state d1 open", `deliver s1 ${key}`]);
+  });
+
   const rewrite = async (mend: FakeMend, words: string): Promise<ReviewStore> => {
     const store = await readyStore(inMemory(), mend);
     await store.accept("d1", "");
