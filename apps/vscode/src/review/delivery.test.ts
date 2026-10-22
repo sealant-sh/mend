@@ -172,7 +172,7 @@ describe("sending a review (story d, step 6)", () => {
     expect(only(kept).items[0]).toMatchObject({ post: { kind: "posting", ...ATTEMPT } });
   });
 
-  it("pastes into her live terminal agent once, and delivers that key again only once the agent is gone", () => {
+  it("pastes into her live terminal agent once, and delivers that key again only when nothing was pasted and the agent is gone", () => {
     const inTerminal = answered(posted(sent()), "pending");
     expect(only(inTerminal).phase).toEqual({
       kind: "in-terminal",
@@ -194,8 +194,9 @@ describe("sending a review (story d, step 6)", () => {
       watched(pasted, { status: "pending" }),
     ])
       expect(nextAction(only(later))).toEqual({ kind: "idle" });
+    // She may have entered it: Retry never hands the agent that review again, live or exited.
     expect(mayRetry(only(pasted), HERS)).toBe(false);
-    expect(mayRetry(only(pasted), null)).toBe(true);
+    expect(mayRetry(only(pasted), null)).toBe(false);
     // While claude holds the paste, its comments are not new to Send review, and Retry waits.
     expect(commentsOnTheirWay(pasted.sends)).toEqual(
       new Map([
@@ -204,8 +205,10 @@ describe("sending a review (story d, step 6)", () => {
       ]),
     );
     expect(retryRecord(pasted.sends, HERS)).toBeNull();
-    expect(retryRecord(pasted.sends, null)?.key).toBe("key-1");
-    const relaunch = apply(pasted, { kind: "retry", at: NOW, agent: null });
+    expect(retryRecord(pasted.sends, null)).toBeNull();
+    const unpasted = apply(inTerminal, { kind: "paste-failed", gone: false });
+    expect(retryRecord(unpasted.sends, null)?.key).toBe("key-1");
+    const relaunch = apply(unpasted, { kind: "retry", at: NOW, agent: null });
     expect(nextAction(only(relaunch))).toMatchObject({
       kind: "deliver",
       request: { idempotencyKey: "key-1", instruction: "the review", commentIds: ["c1", "c2"] },

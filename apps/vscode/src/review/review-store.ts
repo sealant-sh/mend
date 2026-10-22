@@ -723,7 +723,14 @@ export class ReviewStore implements vscode.Disposable {
       count:
         this.#review.pending.length +
         this.#openOnMend(read).filter((comment) => onTheirWay.get(comment.id) !== "held").length,
-      open: open?.phase.kind === "sending" ? "sending" : retry === null ? null : "failed",
+      open:
+        open === null
+          ? retry === null
+            ? null
+            : "held"
+          : open.phase.kind === "sending"
+            ? "sending"
+            : "failed",
     });
   }
 

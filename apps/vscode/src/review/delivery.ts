@@ -564,15 +564,24 @@ export const DRAFT_GONE =
 /**
  * Retry delivery is offered on a failed record; on a follow-up Mend holds pending once the session
  * has no live agent, when the same key launches the stopped session on the review; and on one whose
- * paste did not happen while her agent lives, when it is pasted again.
+ * paste did not happen, pasted again while her agent lives, else launched. Never on one VS Code
+ * pasted: she may have entered it, and the same key would hand the agent that review again.
  */
-export const mayRetry = (record: SendRecord, agent: LiveAgent | null): boolean =>
-  record.phase.kind === "failed" ||
-  ((record.phase.kind === "pending" || record.phase.kind === "in-terminal") && agent === null) ||
-  (record.phase.kind === "in-terminal" &&
-    record.phase.paste.kind === "failed" &&
-    agent?.kind === "terminal" &&
-    agent.hers);
+export const mayRetry = (record: SendRecord, agent: LiveAgent | null): boolean => {
+  switch (record.phase.kind) {
+    case "failed":
+      return true;
+    case "pending":
+      return agent === null;
+    case "in-terminal":
+      return (
+        record.phase.paste.kind === "failed" &&
+        (agent === null || (agent.kind === "terminal" && agent.hers))
+      );
+    default:
+      return false;
+  }
+};
 
 /**
  * A record a toast of hers offered Retry delivery on, and that still waits for it: failed, or held

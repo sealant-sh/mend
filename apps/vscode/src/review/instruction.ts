@@ -214,7 +214,11 @@ export const sendOffer = (input: {
   readonly startsTerminal: boolean;
   readonly offline: boolean;
   readonly count: number;
-  readonly open: "sending" | "failed" | null;
+  /**
+   * The review before this one: on its way, failed (Retry delivery first), or held by Mend with
+   * Retry delivery offered, which a review with new comments goes ahead of.
+   */
+  readonly open: "sending" | "failed" | "held" | null;
 }): SendOffer => {
   const { session, viewer, ownerName, agent, startsTerminal, offline, count, open } = input;
   if (viewer === null) return { kind: "hidden", why: "Mend could not read who you are" };
@@ -236,5 +240,6 @@ export const sendOffer = (input: {
   if (offline) return { kind: "disabled", why: OFFLINE_WORDS };
   if (open === "sending") return { kind: "busy" };
   if (open === "failed") return { kind: "retry" };
-  return count === 0 ? { kind: "nothing" } : { kind: "ready", count };
+  if (count > 0) return { kind: "ready", count };
+  return open === "held" ? { kind: "retry" } : { kind: "nothing" };
 };
