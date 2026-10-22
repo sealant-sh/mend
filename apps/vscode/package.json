@@ -33,9 +33,7 @@
   "publisher": "sealant-sh",
   "files": [
     "dist/extension.js",
-    "dist/extension.js.map",
     "dist/handoff-worker.js",
-    "dist/handoff-worker.js.map",
     "resources",
     "README.md",
     "CHANGELOG.md",

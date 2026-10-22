@@ -349,15 +349,10 @@ describe("Hand off to Mend entrypoint matrix", () => {
       commandEntries().find((command) => command.command === "mend.handoffBranch"),
     ).toMatchObject({ title: "Hand off to Mend…", category: "Mend", icon: "$(cloud-upload)" });
     expect(isMenuEntry(manifest)).toBe(false);
-    expect(
-      typeof manifest === "object" && manifest !== null ? Reflect.get(manifest, "files") : [],
-    ).toEqual(
-      expect.arrayContaining([
-        "dist/handoff-worker.js",
-        "dist/handoff-worker.js.map",
-        "dist/extension.js.map",
-      ]),
-    );
+    const files =
+      typeof manifest === "object" && manifest !== null ? Reflect.get(manifest, "files") : [];
+    expect(files).toEqual(expect.arrayContaining(["dist/extension.js", "dist/handoff-worker.js"]));
+    expect(files).not.toEqual(expect.arrayContaining([expect.stringMatching(/\.map$/)]));
     expect(menu("scm/title").find((entry) => entry.command === "mend.handoffBranch")?.group).toBe(
       "mend@1",
     );
