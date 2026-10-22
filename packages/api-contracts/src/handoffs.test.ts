@@ -13,6 +13,7 @@ describe("handoffs contract", () => {
         statuses.set(endpoint.identifier, new Set(errors.keys()));
       },
     });
+    expect(statuses.get("instanceTerms")).toEqual(new Set([401, 422]));
     expect(statuses.get("terms")).toEqual(new Set([401, 404, 422]));
     expect(statuses.get("receive")).toEqual(new Set([401, 404, 422, 429]));
   });

@@ -171,6 +171,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   // A landing's id resolves to its change first; landing.test.ts covers who may refresh it.
   "landings.refresh",
   "handoffs.receive",
+  "handoffs.instanceTerms",
 ]);
 
 const project =

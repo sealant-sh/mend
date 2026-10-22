@@ -64,6 +64,7 @@ export class HandoffStart extends Context.Service<
       userId: string,
       projectId: ProjectId,
     ) => Effect.Effect<HandoffTerms, NotFound | HandoffRefused>;
+    readonly instanceTerms: Effect.Effect<HandoffTerms, HandoffRefused>;
     readonly receiveAs: (
       userId: string,
       projectId: ProjectId,
@@ -114,13 +115,23 @@ export const makeHandoffStart = Effect.gen(function* () {
   const agentBridge = yield* AgentBridge;
   const inFlight = new Map<string, Deferred.Deferred<HandoffReceived, HandoffError>>();
 
+  const terms = new HandoffTerms({
+    bundleBytes: termOf(budgets.limits.bundleBytes),
+    fileBytes: termOf(budgets.limits.handoffFileBytes),
+  });
+
+  const capturedStore: Effect.Effect<void, HandoffRefused> =
+    deployment.sessionStore === "captured"
+      ? Effect.void
+      : Effect.fail(
+          refused(
+            "store-co-located",
+            "this server keeps worktrees in the co-located store, which takes no handoffs · the operator can unset MEND_SESSION_STORE to run the capture store",
+          ),
+        );
+
   const admissible = Effect.fn("HandoffStart.admissible")(function* (project: Project) {
-    if (deployment.sessionStore !== "captured") {
-      return yield* refused(
-        "store-co-located",
-        "this server keeps worktrees in the co-located store, which takes no handoffs · the operator can unset MEND_SESSION_STORE to run the capture store",
-      );
-    }
+    yield* capturedStore;
     const reason = yield* unsupportedRepositoryReason(project.storePath).pipe(
       Effect.catchTag("GitError", () => Effect.succeed(null)),
     );
@@ -133,11 +144,13 @@ export const makeHandoffStart = Effect.gen(function* () {
   ) {
     const project = yield* access.projectAs(userId, projectId);
     yield* admissible(project);
-    return new HandoffTerms({
-      bundleBytes: termOf(budgets.limits.bundleBytes),
-      fileBytes: termOf(budgets.limits.handoffFileBytes),
-    });
+    return terms;
   });
+
+  const instanceTerms = capturedStore.pipe(
+    Effect.as(terms),
+    Effect.withSpan("HandoffStart.instanceTerms"),
+  );
 
   const remoteEnvFor = (project: Project, userId: string) =>
     Effect.gen(function* () {
@@ -448,7 +461,7 @@ export const makeHandoffStart = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
-  return { termsAs, receiveAs };
+  return { termsAs, instanceTerms, receiveAs };
 });
 
 export const HandoffStartLive: Layer.Layer<
