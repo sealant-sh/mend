@@ -1,6 +1,10 @@
-import { canTypeInTerminal } from "@mend/domain/workbench";
-
-import { maySteer, ownsSession, rowCapability } from "./session-capability.js";
+import {
+  answerAdmits,
+  answerRefusedLine,
+  maySteer,
+  ownsSession,
+  rowCapability,
+} from "./session-capability.js";
 import type { Session, SessionDetail } from "./types.js";
 import {
   agentTab,
@@ -169,8 +173,8 @@ export class AgentTabs {
       }
       const want = agentTab(detail.session, detail.processes);
       // In a workspace window only the workspace's launcher types into its agent, since
-      // Remote-SSH admits only them. Answer attaches over Mend's terminal socket, which admits the
-      // session's owner wherever the workspace runs. Anyone Mend cannot name gets nothing (Watch
+      // Remote-SSH admits only them. Answer attaches over Mend's own sockets, wherever the
+      // workspace runs, as `answerAdmits` says. Anyone Mend cannot name gets nothing (Watch
       // terminal is the read-only way in).
       const capability = rowCapability({ session: detail.session, viewer, members: [] });
       if (
@@ -180,12 +184,17 @@ export class AgentTabs {
         effects.refused(`${capability.why} · no agent attached`);
         return;
       }
-      const admitted =
-        viewer !== null &&
-        (workspaceId === null
-          ? canTypeInTerminal(detail.session, viewer)
-          : maySteer(detail.session, viewer));
-      if (!admitted) return;
+      if (viewer === null) return;
+      if (workspaceId !== null) {
+        if (!maySteer(detail.session, viewer)) return;
+      } else if (want.kind !== "none") {
+        const via = want.kind === "pty" ? "terminal" : "conversation";
+        if (!answerAdmits(detail.session, viewer, via)) {
+          const owner = await effects.ownerName(detail.session.ownerUserId);
+          effects.refused(answerRefusedLine(via, owner));
+          return;
+        }
+      }
       const have = this.#attached.get(sessionId);
       if (
         have !== undefined &&

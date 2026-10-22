@@ -236,18 +236,48 @@ describe("focusing a session's agent", () => {
     );
   });
 
-  it("answers nothing of Ana's from a workspace she launched, shared control on or not", async () => {
-    const anas = session({
-      ownerUserId: "ana",
-      workspaceLauncherUserId: "ana",
-      sharedControlEnabledAt: "2026-10-19T09:00:00.000Z",
-    });
-    const asked = world([detail([conversation], anas)]);
-    await asked.agents.focus("older", null);
-    expect(asked.tabs).toEqual([]);
-    const terminal = world([detail([terminalAgent], anas)]);
-    await terminal.agents.focus("older", null);
-    expect(terminal.effects.attachPty).not.toHaveBeenCalled();
+  it("answers with Ana's conversation read-only while she shares control, whoever launched the workspace", async () => {
+    for (const launcher of ["dana", "ana"]) {
+      const anas = session({
+        ownerUserId: "ana",
+        workspaceLauncherUserId: launcher,
+        sharedControlEnabledAt: "2026-10-19T09:00:00.000Z",
+      });
+      const { effects, agents, tabs } = world([detail([conversation], anas)]);
+      await agents.focus("older", null);
+      expect(tabs.map((tab) => tab.lines)).toEqual([["read-only · Ana's session"]]);
+      expect(effects.refused).not.toHaveBeenCalled();
+    }
+  });
+
+  it("answers with none of Ana's terminal agent, shared control on or not, and says why", async () => {
+    for (const sharedControlEnabledAt of [null, "2026-10-19T09:00:00.000Z"]) {
+      for (const launcher of ["dana", "ana"]) {
+        const anas = session({
+          ownerUserId: "ana",
+          workspaceLauncherUserId: launcher,
+          sharedControlEnabledAt,
+        });
+        const { effects, agents } = world([detail([terminalAgent], anas)]);
+        await agents.focus("older", null);
+        expect(effects.attachPty).not.toHaveBeenCalled();
+        expect(effects.refused).toHaveBeenCalledTimes(1);
+        expect(effects.refused).toHaveBeenCalledWith(
+          "This session runs in a terminal. Only Ana types here; they can continue it as a conversation.",
+        );
+      }
+    }
+  });
+
+  it("answers with none of Ana's conversation while she shares no control, and says why", async () => {
+    const anas = session({ ownerUserId: "ana" });
+    const { effects, agents, tabs } = world([detail([conversation], anas)]);
+    await agents.focus("older", null);
+    expect(tabs).toEqual([]);
+    expect(effects.refused).toHaveBeenCalledTimes(1);
+    expect(effects.refused).toHaveBeenCalledWith(
+      "Ana's session · only Ana steers it while shared control is off · no agent attached",
+    );
   });
 
   it("answers her own terminal agent in a workspace Ana launched: the terminal attaches over Mend", async () => {

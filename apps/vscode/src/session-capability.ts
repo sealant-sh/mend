@@ -1,4 +1,4 @@
-import { canSteerSession, canTypeInTerminal } from "@mend/domain/workbench";
+import { canSteerSession, canTypeInTerminal, terminalReadOnlyLine } from "@mend/domain/workbench";
 
 import { displaySession, type MemberName } from "./session-lines.js";
 import type { WaitFact } from "./session-model.js";
@@ -77,22 +77,35 @@ export const rowCapability = (facts: {
 };
 
 /**
- * Whether Answer lets `viewer` answer the session's wait (rule 8), by how its agent asks. A
- * terminal agent asks in its terminal, which only its owner types in, even while control is shared
+ * Whether Answer (rule 8) lets `viewer` at the session's agent, by how it asks. A terminal agent
+ * asks in its terminal, which only its owner types in, even while control is shared
  * (`canTypeInTerminal`). Answer attaches it over Mend's terminal socket, not Remote-SSH, so who
- * launched the workspace does not matter. A conversation's request is answered as the server
- * allows: by anyone who may steer the session, and only by the person its asking process runs as
- * when it runs as someone. Mend not knowing who she is answers nothing.
+ * launched the workspace does not matter. A conversation is anyone's who may steer the session.
+ */
+export const answerAdmits = (
+  session: SteeringFacts,
+  viewer: string,
+  via: WaitFact["via"],
+): boolean => (via === "terminal" ? canTypeInTerminal(session, viewer) : maySteer(session, viewer));
+
+/** Why Answer attaches none of the session's agent for a viewer `answerAdmits` turns away. */
+export const answerRefusedLine = (via: WaitFact["via"], ownerName: string): string =>
+  via === "terminal"
+    ? terminalReadOnlyLine(ownerName)
+    : `${ownerName}'s session · only ${ownerName} steers it while shared control is off · no agent attached`;
+
+/**
+ * Whether Answer lets `viewer` answer the session's wait: as `answerAdmits` lets her at its agent,
+ * and a conversation's request only by the person its asking process runs as when it runs as
+ * someone, as the server allows. Mend not knowing who she is answers nothing.
  */
 export const mayAnswer = (
   session: SteeringFacts,
   viewer: string | null,
   wait: WaitFact,
 ): boolean => {
-  if (viewer === null) return false;
-  if (wait.via === "conversation")
-    return maySteer(session, viewer) && (wait.answerer === null || wait.answerer === viewer);
-  return canTypeInTerminal(session, viewer);
+  if (viewer === null || !answerAdmits(session, viewer, wait.via)) return false;
+  return wait.via === "terminal" || wait.answerer === null || wait.answerer === viewer;
 };
 
 /**
