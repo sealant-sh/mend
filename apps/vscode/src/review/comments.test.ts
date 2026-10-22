@@ -352,7 +352,7 @@ describe("saving an edit to a pending comment", () => {
     full = true;
     await ui.commands.get("mend.review.save")?.(editing);
     await editor.reloadReview();
-    expect(editor.held().map(({ body }) => body)).toEqual(["Use guard.ts instead"]);
+    expect(editor.held().map((words) => words.comment.body)).toEqual(["Use guard.ts instead"]);
     expect(shownWords()).toContain("Use guard.ts instead");
     comments.dispose();
     sender.dispose();
@@ -589,7 +589,7 @@ describe("her words under a Mend draft", () => {
     const { store, reply, done } = await underDraft(new FakeMend(), fullUntilFreed);
     await Promise.resolve(ui.commands.get("mend.review.accept")?.(reply)).catch(() => undefined);
     expect(ui.warn).toHaveBeenCalledWith(expect.stringMatching(/in this window/));
-    expect(store.held().map(({ body }) => body)).toEqual([WORDS]);
+    expect(store.held().map((words) => words.comment.body)).toEqual([WORDS]);
     full = false;
     await store.reloadReview();
     expect(store.held()).toEqual([]);

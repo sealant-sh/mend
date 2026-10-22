@@ -541,7 +541,7 @@ describe("a comment VS Code could not keep", () => {
     }));
     await store.edit("p0", "edited while the review is full");
     expect(store.review().pending).toHaveLength(MAX_PENDING);
-    expect(store.held().map(({ body }) => body)).toEqual(["I ran them by hand"]);
+    expect(store.held().map((words) => words.comment.body)).toEqual(["I ran them by hand"]);
   });
 });
 

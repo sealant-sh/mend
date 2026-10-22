@@ -515,32 +515,46 @@ export const editPending = (review: SessionReview, id: string, body: string): Se
 });
 
 /**
- * Her words VS Code held, kept as far as the review takes them: an edit of a pending comment edits
- * it, one of a comment a review already took is a new pending comment of hers at that place, and
- * any other is added as it is while the review holds fewer than `MAX_PENDING`. `kept` lists those
- * it took; the rest stay held.
+ * Her words VS Code could not write yet. `comment` is what they are kept as when there is nothing
+ * to edit, under an id minted when they were held, so recovering them twice keeps them once.
+ * `edits` is the pending comment she edited and the words it held when she edited it; null for
+ * her words under a Mend draft.
+ */
+export interface HeldWords {
+  readonly comment: PendingComment;
+  readonly edits: { readonly id: string; readonly body: string } | null;
+}
+
+/**
+ * Her held words, kept as far as the review takes them: words already kept are edited, an edit of
+ * a pending comment whose words are still those she edited edits it, and anything else is added
+ * as `comment` while the review holds fewer than `MAX_PENDING`, so an edit of a comment another
+ * window sent, deleted or changed since keeps both. `kept` lists those it took; the rest stay held.
  */
 export const keepHeld = (
   review: SessionReview,
-  held: ReadonlyArray<PendingComment>,
-  freshId: () => string,
-): { readonly review: SessionReview; readonly kept: ReadonlyArray<PendingComment> } =>
-  held.reduce<{ review: SessionReview; kept: ReadonlyArray<PendingComment> }>(
-    (done, comment) => {
+  held: ReadonlyArray<HeldWords>,
+): { readonly review: SessionReview; readonly kept: ReadonlyArray<HeldWords> } =>
+  held.reduce<{ review: SessionReview; kept: ReadonlyArray<HeldWords> }>(
+    (done, words) => {
+      const { comment, edits } = words;
       const next = done.review;
-      if (next.pending.some((candidate) => candidate.id === comment.id))
+      const find = (id: string): PendingComment | undefined =>
+        next.pending.find((candidate) => candidate.id === id);
+      const edited = edits === null ? undefined : find(edits.id);
+      const into =
+        find(comment.id) !== undefined
+          ? comment.id
+          : edited !== undefined && (edited.body === edits?.body || edited.body === comment.body)
+            ? edited.id
+            : null;
+      if (into !== null)
         return {
-          review: editPending(next, comment.id, comment.body),
-          kept: [...done.kept, comment],
+          review: editPending(next, into, comment.body),
+          kept: [...done.kept, words],
         };
       if (next.pending.length >= MAX_PENDING) return done;
-      const taken = next.sends.some((record) =>
-        record.items.some((item) => item.kind !== "open" && item.pending.id === comment.id),
-      );
-      const added: PendingComment = taken
-        ? { ...comment, id: freshId(), origin: { kind: "own" } }
-        : comment;
-      return { review: addPending(next, added), kept: [...done.kept, comment] };
+      return { review: addPending(next, comment), kept: [...done.kept, words] };
     },
     { review, kept: [] },
   );
