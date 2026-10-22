@@ -2038,6 +2038,49 @@ describe("VS Code connects to another Mend server while claude's terminal opens 
   }, 15_000);
 });
 
+describe("a session read that fails after Mend answered the follow-up", () => {
+  /** Dana's session with claude live, read until Mend got the follow-up, then not at all. */
+  const unreadAfter = (mend: FakeMend) => ({
+    ...withAgent(CLAUDE),
+    sessionDetail: async (sessionId: string): Promise<SessionDetail> => {
+      if (mend.delivered.length > 0) throw new Error("Mend did not answer the session read");
+      return withAgent(CLAUDE).sessionDetail(sessionId);
+    },
+  });
+
+  const answered = async (status: "delivering" | "pending") => {
+    const mend = new FakeMend();
+    mend.answer = status;
+    mend.serverComments = [comment({ id: "c1" })];
+    const { store, pastes } = await window(keptIn(await storage()), mend, unreadAfter(mend));
+    const told = failures(store);
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return { store, pastes, told };
+  };
+
+  it("goes on watching a launch Mend took, and never says Mend could not deliver it", async () => {
+    const { store, told } = await answered("delivering");
+    expect(store.review().sends.map(({ phase }) => phase.kind)).toEqual(["delivering"]);
+    expect(told.map(({ words }) => words)).not.toContainEqual(
+      expect.stringMatching(/Mend could not deliver/),
+    );
+  });
+
+  it("keeps a follow-up Mend holds pending, with Retry delivery, and never says Mend could not deliver it", async () => {
+    const { store, pastes, told } = await answered("pending");
+    expect(store.review().sends.map(({ phase }) => phase.kind)).toEqual(["pending"]);
+    expect(store.retryTarget()).not.toBeNull();
+    expect(pastes).toEqual([]);
+    expect(told.map(({ words }) => words)).not.toContainEqual(
+      expect.stringMatching(/Mend could not deliver/),
+    );
+  });
+});
+
 describe("a send whose drive fails the moment it begins", () => {
   it("reads failed, with Retry delivery, and no lease outlives the drive", async () => {
     const mend = new FakeMend();
