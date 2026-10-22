@@ -32,6 +32,28 @@ describe("the key that pins a change's slice", () => {
     expect(await memory.pinKey("http://mend", "change-1")).toBe(repinned);
   });
 
+  it("is one key when two windows first read the change at the same moment", async () => {
+    // VS Code's globalState as each window holds it: its own copy, written back whole.
+    const stored = new Map<string, unknown>();
+    const window = (): ReviewMemento => {
+      const copy = new Map(stored);
+      return {
+        get: (key) => copy.get(key),
+        update: async (key, value) => {
+          copy.set(key, value);
+          stored.set(key, value);
+        },
+      };
+    };
+    const [first, second] = [new ReviewMemory(window()), new ReviewMemory(window())];
+    const keys = await Promise.all([
+      first.pinKey("http://mend", "change-1"),
+      second.pinKey("http://mend", "change-1"),
+    ]);
+    expect(keys[1]).toBe(keys[0]);
+    expect(await first.pinKey("http://mend", "change-1")).toBe(keys[0]);
+  });
+
   it("reads anything unreadable as nothing kept", () => {
     expect(parseServerMemory("garbage")).toEqual({ pins: {} });
     expect(parseServerMemory({ pins: { a: "k", b: 3 } })).toEqual({ pins: { a: "k" } });
