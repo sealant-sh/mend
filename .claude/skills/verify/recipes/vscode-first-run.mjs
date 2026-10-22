@@ -11,9 +11,11 @@
 //   drops the account and one toast says sign in again, whose Connect to server signs in again;
 //   Connect again while connected, which leaves one device; then Sign Out from the Accounts menu,
 //   which revokes the editor's device and toasts only what Mend answered.
-// - From `up --cli-only --no-ssh-setup` (the Mend CLI signed in, the editor not connected): the h1
-//   variant `Use it`, one click with no URL and no browser; then Set up skipped, and Open shows the
-//   one deferred consent once and opens after it.
+// - From `up --cli-only --no-ssh-setup --no-remote-ssh` (the Mend CLI signed in, the editor not
+//   connected): the h1 variant `Use it`, one click with no URL and no browser; then Set up skipped;
+//   Connect cancelled while its sign-in request is still out (held by a loopback proxy), which opens
+//   no approve page; Open's one deferred consent cancelled, which installs nothing; then Open shows
+//   it once more and opens after Set up.
 //
 //   node .claude/skills/verify/scripts/drive-vscode.mjs run \
 //     .claude/skills/verify/recipes/vscode-first-run.mjs --out <dir>
@@ -23,6 +25,7 @@
 // is read from it, and the browser signs in on the web's sign-in page as the run's account first.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 
 const CONNECT = "Connect VS Code to your Mend server.";
@@ -156,6 +159,40 @@ const approvePage = async (web, page) => {
   }
   return web.text();
 };
+
+/**
+ * Mend's server behind a loopback port that holds every `POST /api/cli/auth` for `holdMs` before
+ * passing it on: a sign-in request still out while she cancels.
+ */
+const slowSignInServer = (origin, holdMs) =>
+  new Promise((resolve) => {
+    let answered = 0;
+    const server = createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const holding = request.method === "POST" && request.url === "/api/cli/auth";
+      if (holding) await new Promise((done) => setTimeout(done, holdMs));
+      const upstream = await fetch(new URL(request.url ?? "/", origin), {
+        method: request.method,
+        headers: { "content-type": request.headers["content-type"] ?? "application/json" },
+        body: chunks.length === 0 ? undefined : Buffer.concat(chunks),
+      });
+      response.writeHead(upstream.status, {
+        "content-type": upstream.headers.get("content-type") ?? "application/json",
+      });
+      response.end(Buffer.from(await upstream.arrayBuffer()));
+      if (holding) answered += 1;
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address !== null ? address.port : 0;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        answered: () => answered,
+        close: () => new Promise((done) => server.close(done)),
+      });
+    });
+  });
 
 async function signedOut(h) {
   const {
@@ -658,6 +695,12 @@ async function cliSignedIn(h) {
     state,
     step,
     shot,
+    palette,
+    quickInput,
+    notification,
+    notifications,
+    dialogs,
+    sleep,
     welcome,
     welcomeAction,
     viewRows,
@@ -742,6 +785,78 @@ async function cliSignedIn(h) {
     );
     return `rows ${JSON.stringify(rows)} · Running drawn empty, expanded ${running.expanded} · Host blocks 0`;
   });
+
+  await step(
+    "edge: Connect cancelled while its sign-in request is out opens no approve page and keeps the connection",
+    async () => {
+      const slow = await slowSignInServer(origin, 8_000);
+      try {
+        const opened = browserOpened().length;
+        const watching = await watch();
+        await palette("Mend: Connect to server");
+        await quickInput.waitFor();
+        await quickInput.type(slow.url);
+        await quickInput.accept();
+        const asking = notification(`Asking ${new URL(slow.url).host} for a sign-in code`);
+        await asking.waitFor(30_000);
+        await shot("edge-sign-in-asking");
+        await asking.click("Cancel");
+        await waitUntil(
+          "the held sign-in request answered",
+          async () => (slow.answered() === 1 ? true : null),
+          30_000,
+        );
+        await sleep(5_000);
+        const seen = await watching.stop();
+        await shot("edge-sign-in-cancelled");
+        const reminders = (seen?.statusBar ?? []).filter((text) => text.includes("Mend sign-in"));
+        const asks = (seen?.dialogs ?? []).filter((text) => text.includes("external website"));
+        if ((await dialogs()).some((text) => text.includes("external website")))
+          await dialog("external website").click("Cancel");
+        const progressLeft = (await notifications()).some((text) =>
+          text.includes("Approve in the browser"),
+        );
+        expect(asks.length === 0, `VS Code asked to open the approve page: ${shown(seen)}`);
+        expect(
+          reminders.length === 0,
+          `the status bar showed a code: ${JSON.stringify(reminders)}`,
+        );
+        expect(browserOpened().length === opened, "a browser page was opened");
+        expect(!progressLeft, "the progress notification still asks her to approve");
+        expect(
+          userSettings(state)["mend.serverUrl"] === origin,
+          `mend.serverUrl is ${userSettings(state)["mend.serverUrl"]}`,
+        );
+        return `held sign-in requests answered ${slow.answered()} · external-website dialogs ${asks.length} · sign-in status items ${reminders.length} · browser pages ${browserOpened().length - opened} · mend.serverUrl still ${origin} · ${shown(seen)}`;
+      } finally {
+        await slow.close();
+      }
+    },
+  );
+
+  await step(
+    "edge: Open, then Cancel on the deferred consent: nothing installs, nothing opens",
+    async () => {
+      const known = await windows();
+      const before = remoteSshInstalled(state);
+      const watching = await watch();
+      await treeItem(WARM).contextMenu("Mend: Open in New Window");
+      const ask = dialog(CONSENT);
+      await ask.waitFor(600_000);
+      await shot("edge-deferred-consent-cancel");
+      const whileAsking = remoteSshInstalled(state);
+      await ask.click("Cancel");
+      const opened = await newWindows(known, { settle: 10_000, limit: 30_000 });
+      const seen = await watching.stop();
+      const after = remoteSshInstalled(state);
+      expect(!before, "Remote-SSH was installed before the open: up --no-remote-ssh");
+      expect(!whileAsking, "Remote-SSH was installed before she answered the question");
+      expect(!after, "Remote-SSH is installed after she cancelled");
+      expect(opened.length === 0, `${opened.length} window(s) opened`);
+      expect(mendHostBlocks(state).length === 0, "a Host block was written");
+      return `Remote-SSH installed before ${before} · while asking ${whileAsking} · after Cancel ${after} · windows opened ${opened.length} · Host blocks 0 · ${shown(seen)}`;
+    },
+  );
 
   await step(
     "edge: Open then shows the deferred consent once; Set up opens the workspace",
