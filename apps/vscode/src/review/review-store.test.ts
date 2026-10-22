@@ -514,6 +514,33 @@ describe("a comment VS Code could not keep", () => {
     });
     expect(store.review().pending).toHaveLength(MAX_PENDING);
   });
+
+  it("waits, held, past the cap rather than going over it", async () => {
+    const directory = await storage();
+    let full = true;
+    const mend = new FakeMend();
+    mend.serverComments = [DRAFT];
+    const store = await readyStore(
+      keptIn(directory, {
+        ...NODE_FILES,
+        writeFile: async (path, text) => {
+          if (full) throw new Error("the disk is full.");
+          await NODE_FILES.writeFile(path, text);
+        },
+      }),
+      mend,
+    );
+    await store.accept("d1", "I ran them by hand");
+    full = false;
+    await keptIn(directory).update(DANA_S1, () => ({
+      pending: Array.from({ length: MAX_PENDING }, (_, index) => pending({ id: `p${index}` })),
+      sends: [],
+      document: null,
+    }));
+    await store.edit("p0", "edited while the review is full");
+    expect(store.review().pending).toHaveLength(MAX_PENDING);
+    expect(store.held().map(({ body }) => body)).toEqual(["I ran them by hand"]);
+  });
 });
 
 /** Mend with one comment open on the change and not sent: what Send review sends. */

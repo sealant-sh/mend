@@ -467,6 +467,26 @@ describe("her words under a Mend draft", () => {
     },
   );
 
+  it("are held in this window, and kept the next time this window reads the review", async () => {
+    let full = true;
+    const fullUntilFreed: KeptFiles = {
+      ...NODE_FILES,
+      writeFile: async (path, text) => {
+        if (full) throw new Error("the disk is full.");
+        await NODE_FILES.writeFile(path, text);
+      },
+    };
+    const { store, reply, done } = await underDraft(new FakeMend(), fullUntilFreed);
+    await Promise.resolve(ui.commands.get("mend.review.accept")?.(reply)).catch(() => undefined);
+    expect(ui.warn).toHaveBeenCalledWith(expect.stringMatching(/in this window/));
+    expect(store.held().map(({ body }) => body)).toEqual([WORDS]);
+    full = false;
+    await store.reloadReview();
+    expect(store.held()).toEqual([]);
+    expect(store.review().pending.map(({ body }) => body)).toContain(WORDS);
+    done();
+  });
+
   it("are not dropped by a newer reply, held or kept", async () => {
     let full = true;
     const fullUntilFreed: KeptFiles = {

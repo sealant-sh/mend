@@ -341,6 +341,34 @@ describe("Send review, chosen again", () => {
   });
 });
 
+describe("Send review, with words VS Code held", () => {
+  it("composes them in, so Send to session sends at once", async () => {
+    let full = false;
+    const base = memoryFiles();
+    const files: KeptFiles = {
+      ...base,
+      writeFile: async (path, text) => {
+        if (full) throw new Error("the disk is full.");
+        await base.writeFile(path, text);
+      },
+    };
+    const mend = mendWithOpen();
+    mend.serverComments = [
+      ...mend.serverComments,
+      comment({ id: "d1", state: "draft", line: 13, author: { kind: "mend", name: "Mend" } }),
+    ];
+    const window = await windowOn(files, mend);
+    full = true;
+    await window.store.accept("d1", "I ran them by hand");
+    full = false;
+    const opened = await sendReview();
+    await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
+    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+    expect(window.store.review().sends.at(-1)?.instruction).toContain("I ran them by hand");
+    window.close();
+  });
+});
+
 describe("a review composed anew over one she saved", () => {
   it("holds the text she saved, kept before any editor shows it", async () => {
     const files = memoryFiles();
