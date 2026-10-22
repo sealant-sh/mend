@@ -250,6 +250,14 @@ describe("focusing a session's agent", () => {
     expect(terminal.effects.attachPty).not.toHaveBeenCalled();
   });
 
+  it("answers her own terminal agent in a workspace Ana launched: the terminal attaches over Mend", async () => {
+    const mineInAnas = session({ ownerUserId: "dana", workspaceLauncherUserId: "ana" });
+    const { effects, agents } = world([detail([terminalAgent], mineInAnas)]);
+    await agents.focus("older", null);
+    expect(effects.attachPty).toHaveBeenCalledTimes(1);
+    expect(effects.refused).not.toHaveBeenCalled();
+  });
+
   it("names the session a tab shows, and none for a tab it did not attach", async () => {
     const { agents, tabs } = world([detail([terminalAgent])]);
     await agents.focus("older", null);
