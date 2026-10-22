@@ -143,7 +143,7 @@ describe("the session's lock, between windows", () => {
       addPending(review, pending({ id: "a", body: "first" })),
     );
     const kept = await Promise.all([fromFirst, fromSecond]);
-    expect(kept.map(({ rev }) => rev).toSorted()).toEqual([1, 2]);
+    expect(new Set(kept.map(({ rev }) => rev)).size).toBe(2);
     expect((await bodies(keptIn(directory))).toSorted()).toEqual(["first", "second"]);
   });
 
@@ -170,7 +170,8 @@ describe("the session's lock, between windows", () => {
       await pause(50);
       slow.go();
       const kept = await Promise.all([held, waiting]);
-      expect(kept.map(({ rev }) => rev)).toEqual([1, 2]);
+      const [slowRev, otherRev] = kept.map(({ rev }) => rev);
+      expect(otherRev).toBeGreaterThan(slowRev ?? Number.POSITIVE_INFINITY);
       expect((await bodies(keptIn(directory))).toSorted()).toEqual(["other", "slow"]);
     } finally {
       vi.useRealTimers();
@@ -202,7 +203,8 @@ describe("the session's lock, between windows", () => {
       await expect(held).rejects.toThrow(/another window/);
       expect(await NODE_FILES.modified(lock)).not.toBeNull();
       next.go();
-      expect((await taken).rev).toBe(1);
+      const { rev } = await taken;
+      expect((await keptIn(directory).read(DANA)).rev).toBe(rev);
       expect(await bodies(keptIn(directory))).toEqual(["next"]);
     } finally {
       vi.useRealTimers();
@@ -227,7 +229,6 @@ describe("her pending comments, kept for every window of one VS Code", () => {
       second.update(DANA, (review) => addPending(review, pending({ id: "b", body: "second" }))),
     ]);
     expect((await bodies(keptIn(directory))).toSorted()).toEqual(["first", "second"]);
-    expect((await keptIn(directory).read(DANA)).rev).toBe(2);
   });
 
   it("are kept per person: another account on the same server reads none of them", async () => {

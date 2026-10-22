@@ -80,7 +80,7 @@ const DRIVE_BEAT_MS = DRIVE_STALE_MS / 4;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A session's review as kept, with the revision each write counts up. */
+/** A session's review as kept, with the revision each write counts up from the last. */
 export interface KeptReview {
   readonly rev: number;
   readonly review: SessionReview;
@@ -330,7 +330,9 @@ export class KeptReviews {
     const next = await update(current.review);
     if (JSON.stringify(next) === JSON.stringify(current.review)) return current;
     if (opened.unwritable !== null) throw new Error(opened.unwritable);
-    const kept: KeptReview = { rev: current.rev + 1, review: next };
+    // Never below the clock: a file swept or removed and written anew stays newer than any
+    // revision a window read before.
+    const kept: KeptReview = { rev: Math.max(current.rev + 1, this.now()), review: next };
     const stored = {
       ...opened.stored,
       format: KEPT_FORMAT,
