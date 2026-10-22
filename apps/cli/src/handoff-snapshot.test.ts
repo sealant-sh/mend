@@ -413,13 +413,15 @@ describe("snapshotCheckout", () => {
     );
   });
 
-  it("carries a same-size edit made in the tick its commit wrote the index", () => {
+  it.each([
+    ["now", new Date("2026-10-18T07:00:00.000Z")],
+    ["before 1970", new Date(-500)],
+  ])("carries a same-size edit made in the tick its commit wrote the index (%s)", (_, tick) => {
     const w = world();
     const dana = w.clone("same-tick");
     const file = path.join(dana, "a.txt");
     // ctime cannot be set, so a test can only line up mtime and size; CI lined up all three.
     w.git(dana, ["config", "core.trustctime", "false"]);
-    const tick = new Date("2026-10-18T07:00:00.000Z");
     w.write(file, "v1\n");
     fs.utimesSync(file, tick, tick);
     w.git(dana, ["commit", "-q", "-am", "v1"]);
