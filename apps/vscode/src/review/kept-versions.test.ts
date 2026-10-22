@@ -3,10 +3,9 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { startSend } from "./delivery.js";
 import type { ReviewPlace } from "./kept-reviews.js";
-import { addPending, EMPTY_REVIEW, type SessionReview } from "./pending.js";
-import { instructionOf, keptIn, pending, PINNED, storage } from "./test-fixtures.js";
+import { addPending, type SessionReview } from "./pending.js";
+import { keptIn, pending, sentReview, storage } from "./test-fixtures.js";
 
 const DANA: ReviewPlace = { url: "http://mend", viewer: "dana", sessionId: "s1" };
 
@@ -19,29 +18,6 @@ const fileIn = async (directory: string): Promise<string> => {
 
 const addOne = (review: SessionReview): SessionReview =>
   addPending(review, pending({ id: "new", body: "kept?" }));
-
-/** A review she sent: its record holds the comment it took. */
-const sentReview = (): SessionReview => {
-  const review = startSend(
-    { ...EMPTY_REVIEW, pending: [pending({ id: "sent" })] },
-    {
-      key: "key-1",
-      slice: {
-        id: PINNED.id,
-        baseId: PINNED.base.id,
-        headId: PINNED.head.id,
-        diffDigest: PINNED.diffDigest,
-      },
-      instruction: instructionOf("the review"),
-      paste: { kind: "all" },
-      pending: ["sent"],
-      open: [],
-      now: "2026-10-19T10:50:00.000Z",
-    },
-  );
-  if (review === null) throw new Error("the review did not start");
-  return review;
-};
 
 const stored = async (file: string): Promise<Record<string, unknown>> => {
   const value: unknown = JSON.parse(await readFile(file, "utf8"));

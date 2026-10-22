@@ -15,10 +15,10 @@ import type { Project, ProjectDetail, Session, SessionDetail } from "../types.js
 import type { Pasted } from "./agent-paste.js";
 import type { Bound } from "./binding.js";
 import type { ChangeRead } from "./change-rows.js";
-import type { DeliverRequest } from "./delivery.js";
+import { startSend, type DeliverRequest } from "./delivery.js";
 import { Instruction } from "./instruction.js";
 import { KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
-import type { PendingComment } from "./pending.js";
+import { EMPTY_REVIEW, type PendingComment, type SessionReview } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
 import type { Composition, ReviewStore, Sent } from "./review-store.js";
 import type {
@@ -433,6 +433,29 @@ export const instructionOf = (text: string): Instruction => {
   const parsed = Instruction.parse(text, "add-rate-limit");
   if (!parsed.ok) throw new Error(parsed.words);
   return parsed.instruction;
+};
+
+/** A review she sent with one comment, `sent`: its record holds the comment, sending still. */
+export const sentReview = (key = "key-1"): SessionReview => {
+  const review = startSend(
+    { ...EMPTY_REVIEW, pending: [pending({ id: "sent" })] },
+    {
+      key,
+      slice: {
+        id: PINNED.id,
+        baseId: PINNED.base.id,
+        headId: PINNED.head.id,
+        diffDigest: PINNED.diffDigest,
+      },
+      instruction: instructionOf("the review"),
+      paste: { kind: "all" },
+      pending: ["sent"],
+      open: [],
+      now: "2026-10-19T10:50:00.000Z",
+    },
+  );
+  if (review === null) throw new Error("the review did not start");
+  return review;
 };
 
 /** Long enough for a store's read of the fakes to land. */
