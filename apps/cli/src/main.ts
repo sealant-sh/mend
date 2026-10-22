@@ -18,6 +18,7 @@ import {
   sameGrant,
   validatePiProfile,
 } from "@mend/domain/workbench";
+import { type AgentShareHandle, shareAgent, startAgentShare } from "@mend/local-git/agent-share";
 
 import { agentLoginsLine, parseAgentLoginsArgs, type AgentLoginsDto } from "./agent-logins.ts";
 import {
@@ -29,7 +30,6 @@ import {
   scanClaudeMemory,
   scanCodexMemory,
 } from "./agent-memory.ts";
-import { type AgentShareHandle, shareAgent, startAgentShare } from "./agent-share.ts";
 import { type FirstOutputGate, firstOutputGate, startingLabelOf } from "./attach-starting.ts";
 import {
   ownerNameOf,
@@ -3866,10 +3866,6 @@ const keysInit = async (config: CliConfig) => {
   printGitKey(key);
 };
 
-/**
- * `mend keys share`: the ssh-agent bridge in the foreground (agent-share.ts
- * holds the relay). Prints every connect, drop, and signature; Ctrl-C stops.
- */
 const keysShare = async (config: CliConfig) => {
   const agentSock = process.env["SSH_AUTH_SOCK"];
   if (agentSock === undefined || agentSock === "") {
@@ -5981,7 +5977,7 @@ const dashboard = async (
     });
   } finally {
     tunnels?.close();
-    agentShare?.stop();
+    void agentShare?.close();
   }
 };
 
@@ -6024,7 +6020,7 @@ const withAgentShare = async <T>(config: CliConfig, work: () => Promise<T>): Pro
   try {
     return await work();
   } finally {
-    share?.stop();
+    await share?.close();
   }
 };
 

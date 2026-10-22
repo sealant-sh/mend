@@ -47,7 +47,8 @@
     "@tanstack/react-query": "catalog:",
     "qrcode": "catalog:",
     "react": "catalog:",
-    "undici": "catalog:"
+    "undici": "catalog:",
+    "ws": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

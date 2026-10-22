@@ -1,4 +1,5 @@
 import { type GitAuthMode, withoutLaunchPhase } from "@mend/domain/workbench";
+import type { AgentShareHandle, ShareEvent } from "@mend/local-git/agent-share";
 import { CliRenderEvents, createCliRenderer, type ScrollBoxRenderable } from "@opentui/core";
 import { createRoot, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import {
@@ -10,7 +11,6 @@ import {
 } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
-import type { AgentShareHandle, ShareEvent } from "./agent-share.ts";
 import {
   ADOPT_MODE_ORDER,
   deriveAdoptOffer,
