@@ -1,3 +1,5 @@
+import type { ReviewCommentTarget } from "@mend/domain/workbench";
+
 import { KEPT_SENDS, type PendingComment, type SessionReview } from "./pending.js";
 import type { ChangeFile, ServerComment } from "./review-wire.js";
 
@@ -16,7 +18,7 @@ import type { ChangeFile, ServerComment } from "./review-wire.js";
 export interface PostAttempt {
   /** The words and the target posted, exactly. */
   readonly body: string;
-  readonly target: CommentTarget;
+  readonly target: ReviewCommentTarget;
   /** Her name as Mend writes it on her comments; null when Mend could not say who she is. */
   readonly author: string | null;
   /** Every comment id on the change before the post: the one it made is not among them. */
@@ -650,16 +652,6 @@ export const openRecord = (records: ReadonlyArray<SendRecord>): SendRecord | nul
   records.findLast((record) => record.phase.kind === "sending" || record.phase.kind === "failed") ??
   null;
 
-/** Where a comment goes on Mend: on a line inside one of the slice's hunks, else on its file. */
-export type CommentTarget = {
-  readonly oldPath: string | null;
-  readonly newPath: string | null;
-  readonly side: "old" | "new" | null;
-  readonly startLine: number | null;
-  readonly endLine: number | null;
-  readonly hunkContextHash: string | null;
-};
-
 /**
  * The target for a pending comment in the slice it was written on: its lines when one hunk holds
  * them, else its file (the words then say which line), else the change as a whole.
@@ -667,7 +659,7 @@ export type CommentTarget = {
 export const commentTarget = (
   files: ReadonlyArray<ChangeFile>,
   comment: Pick<PendingComment, "path" | "line" | "endLine" | "body" | "anchor">,
-): { readonly target: CommentTarget; readonly body: string } => {
+): { readonly target: ReviewCommentTarget; readonly body: string } => {
   // Her reply under a Mend draft on the old side goes where the draft is: the base's lines.
   const old = comment.anchor?.side === "old";
   const file =

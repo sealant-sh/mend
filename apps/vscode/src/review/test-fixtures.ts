@@ -2,10 +2,12 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { ReviewCommentTarget } from "@mend/domain/workbench";
+
 import type { Project, ProjectDetail, Session, SessionDetail } from "../types.js";
 import type { Pasted } from "./agent-paste.js";
 import type { ChangeRead } from "./change-rows.js";
-import type { CommentTarget, DeliverRequest } from "./delivery.js";
+import type { DeliverRequest } from "./delivery.js";
 import { KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
 import type { PendingComment } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
@@ -310,7 +312,7 @@ export class FakeMend extends ReviewClient {
   override async postComment(
     _changeId: string,
     sliceId: string,
-    target: CommentTarget,
+    target: ReviewCommentTarget,
     body: string,
   ): Promise<ServerComment> {
     this.writes.push(`post ${body}`);

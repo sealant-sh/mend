@@ -1,5 +1,6 @@
+import type { ReviewCommentTarget } from "@mend/domain/workbench";
+
 import type {
-  CommentTarget,
   HeldInput,
   PastePlan,
   PasteStep,
@@ -192,7 +193,7 @@ const nullableWhole = (
   return found === null ? null : (whole(value, field) ?? undefined);
 };
 
-const parseTarget = (value: unknown): CommentTarget | null => {
+const parseTarget = (value: unknown): ReviewCommentTarget | null => {
   if (!isRecord(value)) return null;
   const oldPath = nullableText(value, "oldPath");
   const newPath = nullableText(value, "newPath");
@@ -285,10 +286,10 @@ const parsePhase = (value: unknown): SendPhase | null => {
 };
 
 const parseInput = (value: unknown): TerminalInput | null => {
-  if (!isRecord(value) || !Array.isArray(value["ids"])) return null;
+  if (!isRecord(value)) return null;
   const input = text(value, "text");
-  const ids = value["ids"].flatMap((id) => (typeof id === "string" ? [id] : []));
-  return input === null || ids.length !== value["ids"].length ? null : { text: input, ids };
+  const ids = parseIds(value["ids"]);
+  return input === null || ids === null ? null : { text: input, ids };
 };
 
 const parsePasteStep = (value: unknown): PasteStep => {

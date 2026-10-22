@@ -183,55 +183,6 @@ export default async (h) => {
       side: one.anchor?.side ?? null,
       state: one.state,
     }));
-  /**
-   * What Mend answered the extension's comment posts for a session's change: each post's status
-   * from the server's request log (it logs no reason), and for a refused one Mend's words, read by
-   * posting again the target the extension builds today (`oldPath` null), which Mend refuses as
-   * well and so keeps nothing of. Read only when a comment is missing.
-   */
-  const refusals = async (session, path, line, words) => {
-    const change = await changeOf(session);
-    const logs = (await h.serverLogs()).split("\n");
-    const posts = logs.flatMap((text, index) => {
-      const url = text.match(
-        /'http\.url': '\/api\/changes\/([0-9a-f-]+)\/reviews\/([0-9a-f-]+)\/comments'/,
-      );
-      if (url === null || url[1] !== change || !logs[index - 1]?.includes("'POST'")) return [];
-      const status = logs[index + 1]?.match(/'http\.status': (\d+)/)?.[1] ?? "?";
-      return [{ at: logs[index - 2]?.split(" ")[0] ?? "", slice: url[2], status }];
-    });
-    const refused = posts.find((post) => post.status === "422");
-    if (refused === undefined) return { posts, answer: null };
-    const diff = await api(`/changes/${change}/reviews/${refused.slice}/diff`);
-    const file = diff.files.find((one) => one.newPath === path);
-    const hunk = file?.hunks.find(
-      (one) => line >= one.newStart && line <= one.newStart + one.newLines - 1,
-    );
-    const target = {
-      oldPath: null,
-      newPath: path,
-      side: "new",
-      startLine: line,
-      endLine: line,
-      hunkContextHash: hunk?.contextHash ?? null,
-    };
-    const answer = await api(`/changes/${change}/reviews/${refused.slice}/comments`, {
-      method: "POST",
-      body: JSON.stringify({ target, body: words }),
-    }).then(
-      (made) => `accepted as ${made.id}`,
-      (error) => String(error.message).slice(0, 400),
-    );
-    return {
-      posts,
-      mendFile:
-        file === undefined
-          ? null
-          : { oldPath: file.oldPath, newPath: file.newPath, status: file.status },
-      target,
-      answer,
-    };
-  };
 
   /**
    * Send review, then Send to session, on the session in view, and what the threads and the
@@ -277,7 +228,7 @@ export default async (h) => {
       },
       90_000,
     ).catch(async (cause) => {
-      note(`${cause.message.split("\n")[0]}`);
+      note(cause.message.split("\n")[0]);
       return section();
     });
     const shown = await watch.stop();
@@ -461,16 +412,10 @@ export default async (h) => {
       ]
         .filter(([, reads, count]) => reads !== `${count} ${PASTED}`)
         .map(([name, reads]) => `${name} reads "${reads}"`);
-      if (missing.length > 0 || unpasted.length > 0) {
-        const answers = {
-          README: await refusals(modified, "README", 2, MODIFIED_WORDS),
-          "GREETING.md": await refusals(renamed, "GREETING.md", 2, RENAMED_WORDS),
-        };
-        note(`Mend's answers to the extension's comment posts: ${JSON.stringify(answers)}`);
+      if (missing.length > 0 || unpasted.length > 0)
         throw new Error(
-          `Mend holds no comment for ${JSON.stringify(missing)} · sections ${JSON.stringify(unpasted)} · on Mend ${JSON.stringify(held)} · threads ${modifiedThread} ${renamedThread} · shown ${JSON.stringify([modifiedSend.shown, renamedSend.shown])} · Mend's answers ${JSON.stringify(answers)}`,
+          `Mend holds no comment for ${JSON.stringify(missing)} · sections ${JSON.stringify(unpasted)} · on Mend ${JSON.stringify(held)} · threads ${modifiedThread} ${renamedThread} · shown ${JSON.stringify([modifiedSend.shown, renamedSend.shown])}`,
         );
-      }
       return JSON.stringify(held);
     },
     { via: "api" },
@@ -573,8 +518,7 @@ export default async (h) => {
   await checked(
     "d6 · Send to session from her saved review, with nothing saying it was not sent",
     async () => {
-      const section = (await changeRows(h)).title;
-      if (!section.endsWith(SAVED)) await select(SAVED, { closeEditors: false });
+      if (!(await section()).title.endsWith(SAVED)) await select(SAVED, { closeEditors: false });
       expect((await reviewTab()) !== null, "no review editor to send from");
       await showReviewTab();
       const lines = await editorLines(h);
