@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MendApiError } from "../mend-http.js";
 import type { Session, SessionDetail } from "../types.js";
+import { mendNote } from "./instruction.js";
 import { NODE_FILES } from "./kept-reviews.js";
 import type { KeptReviews } from "./kept-reviews.js";
 import { addPending, MAX_PENDING } from "./pending.js";
@@ -595,6 +596,40 @@ describe("sending a review from the store", () => {
     if (target === null) throw new Error("no retry target");
     await store.retry(target);
     expect(mend.writes.filter((write) => write === `deliver s1 ${key}`)).toHaveLength(2);
+  });
+
+  it("sends nothing when only Mend's note is left, though the session was renamed since she composed it", async () => {
+    let label = "add-rate-limit";
+    const reads = {
+      ...sessionReads("change-1"),
+      sessionDetail: async (sessionId: string): Promise<SessionDetail> => ({
+        session: { ...session(sessionId), ownerUserId: "dana", label },
+        processes: [],
+        currentAgent: null,
+        changeId: "change-1",
+      }),
+    };
+    const mend = new FakeMend();
+    const store = new ReviewStore(reads, mend, new ReviewMemory(memento()), inMemory(), noPaste);
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    const { ref, document } = await store.keepDocument(composed);
+    const saved = await store.saveDocument(ref, document.revision, mendNote("add-rate-limit"));
+    if (saved.kind !== "saved") throw new Error(`not saved: ${saved.kind}`);
+
+    label = "rate-limit-v2";
+    store.reread();
+    await vi.waitFor(() => expect(store.ready()?.sessionName).toBe("rate-limit-v2"), SETTLE);
+    expect(await store.send(ref, saved.revision)).toEqual({
+      sent: false,
+      words: expect.stringMatching(/empty/),
+    });
+    await settle();
+    expect(mend.writes).toEqual([]);
+    expect(store.review().sends).toEqual([]);
   });
 
   it("sends exactly what it composed, and keeps her text when her comments changed", async () => {
