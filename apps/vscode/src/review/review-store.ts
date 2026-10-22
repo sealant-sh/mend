@@ -761,10 +761,11 @@ export class ReviewStore implements vscode.Disposable {
     const document = ofRef(await this.#readKept(place));
     if (document === undefined) return { sent: false, words: NOT_KEPT };
     if (document.revision !== revision) return { sent: false, words: SAVED_SINCE };
-    const parsed = Instruction.parse(document.text, read.sessionName);
+    const { composed } = document;
+    // Mend's note names the session as it was named when she composed the review.
+    const parsed = Instruction.parse(document.text, composed.sessionName);
     if (!parsed.ok) return { sent: false, words: `${parsed.words} ${TEXT_STAYS}` };
     const { instruction } = parsed;
-    const { composed } = document;
     const offer = this.offer();
     if (offer.kind !== "ready")
       return { sent: false, words: `${offerWords(offer)}. ${TEXT_STAYS}` };
