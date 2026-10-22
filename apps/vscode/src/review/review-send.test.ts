@@ -295,6 +295,63 @@ describe("the agent exits after Mend holds the review", () => {
   });
 });
 
+/** Dana's session `s1`, claude live in its terminal until the test says it exited. */
+const exitable = () => {
+  let agent: SessionProcess = CLAUDE;
+  return {
+    exit: () => {
+      agent = { ...CLAUDE, status: "exited", exitedAt: "2026-10-20T10:00:00.000Z" };
+    },
+    reads: {
+      ...withAgent(CLAUDE),
+      sessionDetail: async (sessionId: string): Promise<SessionDetail> => ({
+        session: { ...session(sessionId), ownerUserId: "dana" },
+        processes: [agent],
+        currentAgent: agent,
+        changeId: "change-1",
+      }),
+    },
+  };
+};
+
+describe("claude exits after VS Code pasted the review into its input", () => {
+  it("offers no Retry delivery of it, and her next Send carries its comments", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    const world = exitable();
+    const { store, pastes } = await window(keptIn(await storage()), mend, world.reads);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const first = store.compose();
+    if (first === null) throw new Error("nothing composed");
+    await sendComposed(store, first, first.text);
+    await pastedInto(store, pastes, 1);
+    const [entered] = mend.delivered;
+    const pasted = entered?.commentIds ?? [];
+
+    world.exit();
+    store.reread();
+    await vi.waitFor(() => expect(store.ready()?.facts.agent).toBeNull(), SETTLE);
+    // She may have pressed Enter: the same key would hand the agent the review a second time.
+    expect(store.retryTarget()).toBeNull();
+    const read = store.ready();
+    if (read === null) throw new Error("not read");
+    const limiter = threadsOf(read, store.review(), "Dana").find(({ body }) =>
+      body.includes("Use the shared limiter"),
+    );
+    expect(limiter?.kind).toBe("waiting");
+
+    await store.comment(onLine(5, "Name the constant"));
+    expect(store.offer()).toEqual({ kind: "ready", count: 1 });
+    const next = store.compose();
+    if (next === null) throw new Error("nothing composed");
+    expect(next.open).toEqual(pasted);
+    expect(await sendComposed(store, next, next.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(2), SETTLE);
+    expect(mend.delivered[1]?.idempotencyKey).not.toBe(entered?.idempotencyKey);
+    expect(mend.delivered[1]?.commentIds).toEqual(expect.arrayContaining([...pasted]));
+  });
+});
+
 describe("a review with a draft dismissed while it is on its way", () => {
   it("stops before it is delivered, and Send review composes it again without that draft", async () => {
     const mend = new FakeMend();
