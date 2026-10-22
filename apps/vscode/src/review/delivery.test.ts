@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { changeRows } from "./change-rows.js";
 import {
   commentTarget,
-  heldIds,
+  commentsOnTheirWay,
   mayRetry,
   nextAction,
   postedComment,
@@ -197,7 +197,12 @@ describe("sending a review (story d, step 6)", () => {
     expect(mayRetry(only(pasted), HERS)).toBe(false);
     expect(mayRetry(only(pasted), null)).toBe(true);
     // While claude holds the paste, its comments are not new to Send review, and Retry waits.
-    expect(heldIds(pasted.sends)).toEqual(new Set(["c1", "c2"]));
+    expect(commentsOnTheirWay(pasted.sends)).toEqual(
+      new Map([
+        ["c1", "held"],
+        ["c2", "held"],
+      ]),
+    );
     expect(retryRecord(pasted.sends, HERS)).toBeNull();
     expect(retryRecord(pasted.sends, null)?.key).toBe("key-1");
     const relaunch = apply(pasted, { kind: "retry", at: NOW, agent: null });

@@ -14,8 +14,7 @@ import type { ChangeRead } from "./change-rows.js";
 import {
   awaitsRetry,
   handedOver,
-  heldIds,
-  holdsComments,
+  commentsOnTheirWay,
   openRecord,
   retryRecord,
   sendGeneration,
@@ -691,24 +690,12 @@ export class ReviewStore implements vscode.Disposable {
    * being sent or delivered holds them. One Mend holds pending goes too: a new key supersedes it.
    */
   #openOnMend(read: ChangeRead): ReadonlyArray<ServerComment> {
-    const inRecords = new Set(
-      this.#review.sends.flatMap((record) =>
-        !holdsComments(record)
-          ? []
-          : record.items.flatMap((item) =>
-              item.kind === "open"
-                ? [item.commentId]
-                : item.kind === "accepted"
-                  ? [item.draftId]
-                  : item.post.kind === "posted"
-                    ? [item.post.commentId]
-                    : [],
-            ),
-      ),
-    );
+    const onTheirWay = commentsOnTheirWay(this.#review.sends);
     return read.comments.filter(
       (comment) =>
-        comment.state === "open" && comment.sentToSessionId === null && !inRecords.has(comment.id),
+        comment.state === "open" &&
+        comment.sentToSessionId === null &&
+        onTheirWay.get(comment.id) !== "sending",
     );
   }
 
@@ -717,7 +704,7 @@ export class ReviewStore implements vscode.Disposable {
     const read = this.ready();
     if (read === null) return { kind: "nothing" };
     const open = openRecord(this.#review.sends);
-    const held = heldIds(this.#review.sends);
+    const onTheirWay = commentsOnTheirWay(this.#review.sends);
     const retry = retryRecord(this.#review.sends, read.facts.agent);
     return sendOffer({
       session: read.facts.session,
@@ -728,7 +715,7 @@ export class ReviewStore implements vscode.Disposable {
       offline: this.#offline,
       count:
         this.#review.pending.length +
-        this.#openOnMend(read).filter((comment) => !held.has(comment.id)).length,
+        this.#openOnMend(read).filter((comment) => onTheirWay.get(comment.id) !== "held").length,
       open: open?.phase.kind === "sending" ? "sending" : retry === null ? null : "failed",
     });
   }

@@ -593,11 +593,21 @@ export const retryRecord = (
 };
 
 /**
- * The comments of reviews Mend holds pending. They are not counted as new for Send review: a held
- * review waits in her terminal, or for Retry. A newer key still carries them, as Mend supersedes it.
+ * Where each comment of her reviews stands, by the id Mend knows it by (an accepted draft not yet
+ * opened counts by its draft id). `sending`: a review being sent or delivered holds it, so no new
+ * Send lists it. `held`: Mend holds it pending, in her terminal or for Retry. It is not counted as
+ * new for Send review, and a newer key still carries it, as Mend supersedes the held one.
  */
-export const heldIds = (records: ReadonlyArray<SendRecord>): ReadonlySet<string> =>
-  new Set(records.filter(isHeld).flatMap((record) => commentIds(record) ?? []));
+export const commentsOnTheirWay = (
+  records: ReadonlyArray<SendRecord>,
+): ReadonlyMap<string, "sending" | "held"> => {
+  const where = new Map<string, "sending" | "held">();
+  for (const record of records)
+    if (isHeld(record)) for (const id of idsOf(record)) if (!where.has(id)) where.set(id, "held");
+  for (const record of records)
+    if (holdsComments(record)) for (const id of idsOf(record)) where.set(id, "sending");
+  return where;
+};
 
 /**
  * A review after an event on one of its records. Mend supersedes every follow-up it holds pending
@@ -805,8 +815,8 @@ export const startSend = (
   const moving = review.pending.filter((pending) => chosen.has(pending.id));
   if (moving.length !== chosen.size) return null;
   // Another window sent these comments a moment ago: one review takes them, under one key.
-  const onTheirWay = new Set(review.sends.filter(holdsComments).flatMap((record) => idsOf(record)));
-  if (input.open.some((id) => onTheirWay.has(id))) return null;
+  const onTheirWay = commentsOnTheirWay(review.sends);
+  if (input.open.some((id) => onTheirWay.get(id) === "sending")) return null;
   const items: ReadonlyArray<SendItem> = [
     ...moving.map((pending): SendItem => {
       if (rewritten(pending))
