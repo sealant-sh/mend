@@ -239,8 +239,9 @@ export class ReviewStore implements vscode.Disposable {
    */
   #held: ReadonlyArray<{ readonly place: ReviewPlace; readonly words: HeldWords }> = [];
   /**
-   * Every Mend draft a read showed, as last read, with the session it is in: her reply under one
-   * whose thread was redrawn away, or whose session she left, still has a place to go.
+   * Every Mend draft a read showed, as last read: Accept or Dismiss from a thread redrawn away, or
+   * from a session she left, still finds it. Sessions on one change share its drafts, so the
+   * session her words go to comes with the thread, never from here.
    */
   readonly #drafts = new Map<string, SeenDraft>();
   /** Where `#review` is kept: her account on the server, and the session. */
@@ -322,6 +323,11 @@ export class ReviewStore implements vscode.Disposable {
   /** Her pending comments on the followed session. */
   review(): SessionReview {
     return this.#review;
+  }
+
+  /** Where the followed session's review is kept; null until it is read. */
+  place(): ReviewPlace | null {
+    return this.#place;
   }
 
   /** Her words VS Code could not keep yet, for the followed session: see `#held`. */
@@ -524,11 +530,16 @@ export class ReviewStore implements vscode.Disposable {
   /**
    * Accept: the draft becomes hers, pending, and her reply under it a pending comment at its place.
    * A draft that is no longer one on Mend is not accepted, and her reply is kept all the same.
+   * `place` is the session whose thread showed the draft.
    */
-  async accept(draftId: string, reply: string): Promise<Keeping> {
+  async accept(
+    draftId: string,
+    reply: string,
+    place: ReviewPlace | null = this.#place,
+  ): Promise<Keeping> {
     const seen = this.#drafts.get(draftId);
-    if (seen === undefined) return draftGone(reply);
-    const { place, draft } = seen;
+    if (seen === undefined || place === null) return draftGone(reply);
+    const { draft } = seen;
     const own = onDraft(seen, reply.trim(), { kind: "own" });
     if (draft.state !== "draft") return this.#keepReply(place, own);
     const accepted = onDraft(seen, draft.body, {
@@ -551,11 +562,15 @@ export class ReviewStore implements vscode.Disposable {
     return { kept: true };
   }
 
-  async dismiss(draftId: string, reply: string): Promise<Keeping> {
-    // Her words go to the draft's session: she may follow another before Mend answers.
+  /** Dismiss, and her reply kept as `accept` keeps it. */
+  async dismiss(
+    draftId: string,
+    reply: string,
+    place: ReviewPlace | null = this.#place,
+  ): Promise<Keeping> {
     const seen = this.#drafts.get(draftId);
-    if (seen === undefined) return draftGone(reply);
-    const { place, draft } = seen;
+    if (seen === undefined || place === null) return draftGone(reply);
+    const { draft } = seen;
     const own = onDraft(seen, reply.trim(), { kind: "own" });
     if (draft.state !== "draft") return this.#keepReply(place, own);
     if (own.body !== "") {
@@ -1101,11 +1116,9 @@ export class ReviewStore implements vscode.Disposable {
   }
 
   #see(read: ChangeRead): void {
-    const place = this.#place;
-    if (place === null) return;
     for (const draft of read.comments)
       if (draft.state === "draft" || this.#drafts.has(draft.id))
-        this.#drafts.set(draft.id, { place, changeId: read.changeId, pinned: read.pinned, draft });
+        this.#drafts.set(draft.id, { changeId: read.changeId, pinned: read.pinned, draft });
   }
 
   /** The read she asked for that Mend could not finish says why, once, in Mend's own words. */
@@ -1266,9 +1279,8 @@ export class ReviewStore implements vscode.Disposable {
   }
 }
 
-/** A Mend draft as a read showed it, and where her words under it are kept. */
+/** A Mend draft as a read showed it. */
 interface SeenDraft {
-  readonly place: ReviewPlace;
   readonly changeId: string;
   readonly pinned: ChangeRead["pinned"];
   readonly draft: ServerComment;
