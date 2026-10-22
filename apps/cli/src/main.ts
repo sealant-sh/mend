@@ -5977,7 +5977,7 @@ const dashboard = async (
     });
   } finally {
     tunnels?.close();
-    agentShare?.stop();
+    void agentShare?.close();
   }
 };
 
@@ -6020,7 +6020,7 @@ const withAgentShare = async <T>(config: CliConfig, work: () => Promise<T>): Pro
   try {
     return await work();
   } finally {
-    share?.stop();
+    await share?.close();
   }
 };
 

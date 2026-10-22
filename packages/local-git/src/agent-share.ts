@@ -1,6 +1,8 @@
 import * as net from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { Option, Schema } from "effect";
+
 /**
  * The ssh-agent bridge, client half (docs/GIT-ACCESS.md decision 2): relay
  * the LOCAL ssh-agent to the Mend server over one standing WebSocket, so
@@ -8,10 +10,6 @@ import { setTimeout as delay } from "node:timers/promises";
  * hardware key blinks here, not on the server. Agent-protocol messages are
  * relayed verbatim (length-prefixed frames, base64 over JSON); the only
  * inspection is each message's type byte, to say what is being asked.
- *
- * `mend keys share` runs this in the foreground and prints; the dashboard
- * runs it in the background and shows the facts in its chrome. Both get the
- * same events.
  */
 export type ShareEvent =
   | { readonly kind: "connected" }
@@ -21,12 +19,14 @@ export type ShareEvent =
   | { readonly kind: "signed"; readonly context: string; readonly seconds: number }
   | { readonly kind: "not-signed"; readonly context: string; readonly message: string };
 
-export type ShareState = "connecting" | "connected";
+export type ShareState = "connecting" | "connected" | "closed";
+
+export type ReadyOutcome = "connected" | "timeout" | "closed";
 
 export interface ShareOptions {
   /**
    * The bridge websocket for the next connection. Asked before every connect and reconnect: the
-   * credential in it is a single-use upgrade ticket (`upgrade-url.ts`).
+   * credential in it is a single-use upgrade ticket.
    */
   readonly url: () => Promise<URL>;
   /** The local agent's socket (SSH_AUTH_SOCK). */
@@ -43,33 +43,172 @@ export const retryDelayMs = (attempt: number): number =>
 const SSH_AGENTC_REQUEST_IDENTITIES = 11;
 const SSH_AGENTC_SIGN_REQUEST = 13;
 
+const MAX_AGENT_MESSAGE_BYTES = 256 * 1024;
+
+const MAX_REQUEST_ENVELOPE_CHARS = 4096;
+
+const MAX_SERVER_FRAME_CHARS =
+  Math.ceil((4 + MAX_AGENT_MESSAGE_BYTES) / 3) * 4 + MAX_REQUEST_ENVELOPE_CHARS;
+
+const CLOSE_WITHIN_MS = 1000;
+
+const ServerRequest = Schema.Struct({
+  t: Schema.Literal("req"),
+  id: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  context: Schema.optional(Schema.String),
+  payload: Schema.String.check(Schema.isBase64()),
+});
+
+const decodeServerRequest = Schema.decodeUnknownOption(Schema.fromJsonString(ServerRequest));
+
+/** Effect's base64 check can overflow the stack on a huge payload and throws a defect for it. */
+const decodeServerFrame = (text: string): Option.Option<typeof ServerRequest.Type> => {
+  try {
+    return decodeServerRequest(text);
+  } catch {
+    return Option.none();
+  }
+};
+
+interface AgentRequest {
+  readonly id: number;
+  readonly context: string;
+  readonly framed: Buffer;
+}
+
+const parseServerFrame = (data: unknown): AgentRequest | null => {
+  if (typeof data !== "string" || data.length > MAX_SERVER_FRAME_CHARS) return null;
+  const frame = decodeServerFrame(data);
+  if (Option.isNone(frame)) return null;
+  const framed = Buffer.from(frame.value.payload, "base64");
+  if (framed.length < 5 || framed.readUInt32BE(0) !== framed.length - 4) return null;
+  return { id: frame.value.id, context: frame.value.context ?? "mend", framed };
+};
+
+type AgentAnswer =
+  | { readonly kind: "partial" }
+  | { readonly kind: "complete"; readonly framed: Buffer }
+  | { readonly kind: "invalid"; readonly declared: number };
+
+const readAgentAnswer = (pending: Buffer): AgentAnswer => {
+  if (pending.length < 4) return { kind: "partial" };
+  const declared = pending.readUInt32BE(0);
+  if (declared === 0 || declared > MAX_AGENT_MESSAGE_BYTES) return { kind: "invalid", declared };
+  if (pending.length < 4 + declared) return { kind: "partial" };
+  return { kind: "complete", framed: pending.subarray(0, 4 + declared) };
+};
+
 /**
  * One complete agent exchange against the local agent: fresh connection,
  * write the framed request verbatim, read one framed response. A hardware
  * key blocks here until the touch — hence the generous timeout.
  */
-const askLocalAgent = (agentSock: string, payload: Buffer): Promise<Buffer> =>
+const askLocalAgent = (agentSock: string, framed: Buffer, signal: AbortSignal): Promise<Buffer> =>
   new Promise((resolve, reject) => {
+    let pending = Buffer.alloc(0);
     const connection = net.connect(agentSock, () => {
-      connection.write(payload);
+      connection.write(framed);
     });
-    const timer = setTimeout(() => {
+    const settle = (outcome: () => void) => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
       connection.destroy();
-      reject(new Error("the agent did not answer within 60s — touch missed?"));
+      outcome();
+    };
+    const onAbort = () => {
+      settle(() => reject(new Error("the connection to mend closed")));
+    };
+    const timer = setTimeout(() => {
+      settle(() => reject(new Error("the agent did not answer within 60s — touch missed?")));
     }, 60_000);
-    let pending: Buffer = Buffer.alloc(0);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
     connection.on("data", (chunk: Buffer) => {
       pending = Buffer.concat([pending, chunk]);
-      if (pending.length >= 4 && pending.length >= 4 + pending.readUInt32BE(0)) {
-        clearTimeout(timer);
-        connection.end();
-        resolve(pending.subarray(0, 4 + pending.readUInt32BE(0)));
+      const answer = readAgentAnswer(pending);
+      if (answer.kind === "complete") settle(() => resolve(answer.framed));
+      else if (answer.kind === "invalid") {
+        settle(() =>
+          reject(
+            new Error(
+              `the agent's answer declared ${answer.declared} bytes, not 1 to ${MAX_AGENT_MESSAGE_BYTES}`,
+            ),
+          ),
+        );
       }
     });
-    connection.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
+    connection.on("end", () => {
+      settle(() => reject(new Error("the agent closed the connection without answering")));
     });
+    connection.on("error", (error) => {
+      settle(() => reject(error));
+    });
+  });
+
+const answerRequest = async (
+  request: AgentRequest,
+  ws: WebSocket,
+  live: AbortSignal,
+  agentSock: string,
+  onEvent: (event: ShareEvent) => void,
+): Promise<void> => {
+  if (live.aborted) return;
+  const { id, context, framed } = request;
+  const signs = framed[4] === SSH_AGENTC_SIGN_REQUEST;
+  const started = Date.now();
+  if (signs) onEvent({ kind: "sign-requested", context });
+  else if (framed[4] === SSH_AGENTC_REQUEST_IDENTITIES) {
+    onEvent({ kind: "identities-requested", context });
+  }
+  try {
+    const response = await askLocalAgent(agentSock, framed, live);
+    if (ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ t: "res", id, payload: response.toString("base64") }));
+    if (signs) onEvent({ kind: "signed", context, seconds: (Date.now() - started) / 1000 });
+  } catch (error) {
+    if (live.aborted) return;
+    const reason = error instanceof Error ? error.message : String(error);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ t: "err", id, message: reason }));
+    }
+    if (signs) onEvent({ kind: "not-signed", context, message: reason });
+  }
+};
+
+const relayOnce = (
+  target: URL,
+  options: ShareOptions,
+  oneAtATime: (task: () => Promise<void>) => void,
+): Promise<"opened" | "never-opened"> =>
+  new Promise((resolve) => {
+    const { agentSock, signal, onEvent } = options;
+    const ws = new WebSocket(target);
+    const live = new AbortController();
+    let opened = false;
+    const onAbort = () => {
+      live.abort();
+      ws.close();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    ws.addEventListener("open", () => {
+      opened = true;
+      onEvent({ kind: "connected" });
+    });
+    ws.addEventListener("message", (event) => {
+      const request = parseServerFrame(event.data);
+      if (request !== null) {
+        oneAtATime(() => answerRequest(request, ws, live.signal, agentSock, onEvent));
+      }
+    });
+    ws.addEventListener(
+      "close",
+      () => {
+        live.abort();
+        signal.removeEventListener("abort", onAbort);
+        resolve(opened ? "opened" : "never-opened");
+      },
+      { once: true },
+    );
   });
 
 /** An abortable wait; an abort simply ends it early. */
@@ -81,114 +220,71 @@ const sleep = (ms: number, signal: AbortSignal): Promise<void> =>
 
 /** Share until the signal aborts; every connect, drop, and signature is an event. */
 export const shareAgent = async (options: ShareOptions): Promise<void> => {
-  const { url, agentSock, signal, onEvent } = options;
-  // Requests are answered one at a time: the agent protocol has one in flight.
-  let chain: Promise<unknown> = Promise.resolve();
+  const { url, signal, onEvent } = options;
+  let tail: Promise<void> = Promise.resolve();
+  const oneAtATime = (task: () => Promise<void>) => {
+    tail = tail.then(task).catch(() => undefined);
+  };
   let attempt = 0;
-  while (!signal.aborted) {
-    let target: URL;
+  const nextUrl = async (): Promise<URL | null> => {
     try {
-      target = await url();
+      return await url();
     } catch {
-      // The server is unreachable or refused the ticket; the backoff below applies either way.
-      attempt += 1;
-      const retryMs = retryDelayMs(attempt);
-      onEvent({ kind: "disconnected", retryMs });
-      await sleep(retryMs, signal);
-      continue;
+      return null;
     }
-    const ws = new WebSocket(target);
-    const onAbort = () => ws.close();
-    signal.addEventListener("abort", onAbort, { once: true });
-    const closed = new Promise<void>((resolve) => {
-      ws.addEventListener("close", () => resolve(), { once: true });
-    });
-    const opened = await new Promise<boolean>((resolve) => {
-      ws.addEventListener("open", () => resolve(true), { once: true });
-      ws.addEventListener("error", () => resolve(false), { once: true });
-    });
-    if (opened) {
-      attempt = 0;
-      onEvent({ kind: "connected" });
-      ws.addEventListener("message", (event) => {
-        const text =
-          typeof event.data === "string"
-            ? event.data
-            : Buffer.from(event.data as ArrayBuffer).toString("utf8");
-        let frame: { t?: string; id?: number; context?: string; payload?: string };
-        try {
-          frame = JSON.parse(text) as typeof frame;
-        } catch {
-          return;
-        }
-        if (
-          frame.t !== "req" ||
-          typeof frame.id !== "number" ||
-          typeof frame.payload !== "string"
-        ) {
-          return;
-        }
-        const id = frame.id;
-        const payload = Buffer.from(frame.payload, "base64");
-        const type = payload[4];
-        const context = typeof frame.context === "string" ? frame.context : "mend";
-        chain = chain.then(async () => {
-          const started = Date.now();
-          if (type === SSH_AGENTC_SIGN_REQUEST) onEvent({ kind: "sign-requested", context });
-          else if (type === SSH_AGENTC_REQUEST_IDENTITIES) {
-            onEvent({ kind: "identities-requested", context });
-          }
-          try {
-            const response = await askLocalAgent(agentSock, payload);
-            if (ws.readyState !== WebSocket.OPEN) return null;
-            ws.send(JSON.stringify({ t: "res", id, payload: response.toString("base64") }));
-            if (type === SSH_AGENTC_SIGN_REQUEST) {
-              onEvent({ kind: "signed", context, seconds: (Date.now() - started) / 1000 });
-            }
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ t: "err", id, message }));
-            }
-            if (type === SSH_AGENTC_SIGN_REQUEST) onEvent({ kind: "not-signed", context, message });
-          }
-          return null;
-        });
-      });
-    }
-    await closed;
-    signal.removeEventListener("abort", onAbort);
+  };
+  while (!signal.aborted) {
+    const target = await nextUrl();
     if (signal.aborted) return;
-    attempt += 1;
+    const outcome =
+      target === null
+        ? "never-opened"
+        : await relayOnce(target, options, oneAtATime).catch((): "never-opened" => "never-opened");
+    if (signal.aborted) return;
+    attempt = outcome === "opened" ? 1 : attempt + 1;
     const retryMs = retryDelayMs(attempt);
     onEvent({ kind: "disconnected", retryMs });
     await sleep(retryMs, signal);
   }
 };
 
-/**
- * A running share the dashboard can watch: the current state for the chrome,
- * every event for the status line.
- */
 export interface AgentShareHandle {
   readonly snapshot: () => ShareState;
   readonly subscribe: (listener: (event: ShareEvent | null) => void) => () => void;
-  readonly stop: () => void;
+  /** Connected now or within the bound; never rejects. */
+  readonly ready: (withinMs: number) => Promise<ReadyOutcome>;
+  /** Stop reconnecting and close the socket; resolves once it closed or the bound passed. */
+  readonly close: (withinMs?: number) => Promise<void>;
 }
 
-/** Start sharing in the background; `stop` ends it. */
+const within = <A>(withinMs: number, late: A, work: Promise<A>): Promise<A> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<A>((resolve) => {
+    timer = setTimeout(() => resolve(late), withinMs);
+  });
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
+};
+
 export const startAgentShare = (
   options: Omit<ShareOptions, "signal" | "onEvent">,
 ): AgentShareHandle => {
   const controller = new AbortController();
   const listeners = new Set<(event: ShareEvent | null) => void>();
+  const waiters = new Set<(outcome: ReadyOutcome) => void>();
   let state: ShareState = "connecting";
-  void shareAgent({
+  const moveTo = (next: ShareState) => {
+    if (state === "closed" || state === next) return;
+    state = next;
+    if (next === "connecting") return;
+    for (const wake of waiters) wake(next);
+    if (next === "closed") for (const listener of listeners) listener(null);
+  };
+  const ended = shareAgent({
     ...options,
     signal: controller.signal,
     onEvent: (event) => {
-      if (event.kind === "connected") state = "connected";
-      else if (event.kind === "disconnected") state = "connecting";
+      if (event.kind === "connected") moveTo("connected");
+      else if (event.kind === "disconnected") moveTo("connecting");
       for (const listener of listeners) listener(event);
     },
   });
@@ -200,6 +296,22 @@ export const startAgentShare = (
         listeners.delete(listener);
       };
     },
-    stop: () => controller.abort(),
+    ready: (withinMs) => {
+      if (state !== "connecting") return Promise.resolve(state);
+      const woken = Promise.withResolvers<ReadyOutcome>();
+      waiters.add(woken.resolve);
+      return within(withinMs, "timeout", woken.promise).finally(() =>
+        waiters.delete(woken.resolve),
+      );
+    },
+    close: (withinMs = CLOSE_WITHIN_MS) => {
+      controller.abort();
+      moveTo("closed");
+      return within(
+        withinMs,
+        undefined,
+        ended.catch(() => undefined),
+      );
+    },
   };
 };
