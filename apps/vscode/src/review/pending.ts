@@ -500,6 +500,23 @@ export const editPending = (review: SessionReview, id: string, body: string): Se
   ),
 });
 
+/**
+ * Her words VS Code held, kept: an edit of a pending comment edits it, one of a comment a review
+ * already took is a new pending comment of hers at that place, and any other is added as it is.
+ */
+export const keepHeld = (
+  review: SessionReview,
+  comment: PendingComment,
+  freshId: string,
+): SessionReview => {
+  if (review.pending.some((candidate) => candidate.id === comment.id))
+    return editPending(review, comment.id, comment.body);
+  const taken = review.sends.some((record) =>
+    record.items.some((item) => item.kind !== "open" && item.pending.id === comment.id),
+  );
+  return addPending(review, taken ? { ...comment, id: freshId, origin: { kind: "own" } } : comment);
+};
+
 export const removePending = (review: SessionReview, id: string): SessionReview => ({
   ...review,
   pending: review.pending.filter((comment) => comment.id !== id),

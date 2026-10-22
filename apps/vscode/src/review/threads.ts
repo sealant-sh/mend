@@ -178,9 +178,17 @@ export const threadsOf = (
   // A comment in a review she sent reads where that follow-up is; a refused one, as Mend holds it.
   const sentIn = new Map<string, SendRecord>();
   const acceptedIn = new Set<string>();
+  // A held edit of a pending comment shows in its place: her newest words, not yet kept.
+  const heldIds = new Set(held.map(({ id }) => id));
   const threads: Array<ThreadView> = [
-    ...review.pending.map((comment) => pendingThread(read, comment, you)),
-    ...held.map((comment) => ({ ...pendingThread(read, comment, you), label: "not kept" })),
+    ...review.pending
+      .filter(({ id }) => !heldIds.has(id))
+      .map((comment) => pendingThread(read, comment, you)),
+    ...held.map((comment) => ({
+      ...pendingThread(read, comment, you),
+      key: `held:${comment.id}`,
+      label: "not kept",
+    })),
   ];
   for (const record of review.sends) {
     if (record.phase.kind === "refused") continue;
