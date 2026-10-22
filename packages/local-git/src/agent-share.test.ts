@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -162,6 +163,59 @@ const share = (options: { url: () => Promise<URL>; agentSock: string }) => {
   });
   cleanups.push(() => handle.close());
   return { handle, events };
+};
+
+const CHILD_SHARE = `
+const [moduleUrl, target, runtime] = process.argv.slice(1);
+if (runtime === "without-global-websocket") delete globalThis.WebSocket;
+const { startAgentShare } = await import(moduleUrl);
+const handle = startAgentShare({ url: async () => new URL(target), agentSock: "/nowhere" });
+console.log(await handle.ready(2000));
+await handle.close(300);
+console.log("closed");
+`;
+
+/** A share in its own Node process: what it said, and how long the process lived past close. */
+const shareInAChild = async (
+  target: URL,
+  runtime: "global-websocket" | "without-global-websocket" = "global-websocket",
+): Promise<{ said: Array<string>; exitedAfterCloseMs: number | null }> => {
+  const child = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      CHILD_SHARE,
+      new URL("./agent-share.ts", import.meta.url).href,
+      target.href,
+      runtime,
+    ],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  const said: Array<string> = [];
+  let closedAt: number | null = null;
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (text: string) => {
+    for (const line of text.split("\n").filter(Boolean)) {
+      said.push(line);
+      if (line === "closed") closedAt = performance.now();
+    }
+  });
+  const exited = new Promise<number>((resolve) =>
+    child.once("exit", () => resolve(performance.now())),
+  );
+  const exitedAt = await Promise.race([
+    exited,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+  ]);
+  if (exitedAt === null) {
+    child.kill("SIGKILL");
+    await exited;
+  }
+  return {
+    said,
+    exitedAfterCloseMs: exitedAt === null || closedAt === null ? null : exitedAt - closedAt,
+  };
 };
 
 const connected = async (handle: AgentShareHandle) => {
@@ -434,6 +488,17 @@ describe("ready", () => {
     expect(handle.snapshot()).toBe("connecting");
   });
 
+  it("is connected where the runtime has no global WebSocket", async () => {
+    const server = await bridgeServer();
+    const { said, exitedAfterCloseMs } = await shareInAChild(
+      await server.url(),
+      "without-global-websocket",
+    );
+
+    expect(said).toEqual(["connected", "closed"]);
+    expect(exitedAfterCloseMs).toBeLessThan(1000);
+  }, 15_000);
+
   it("is closed when the share closes first, and after", async () => {
     const server = await misbehavingServer("never-upgrades");
     const { handle } = share({ url: server.url, agentSock: "/nowhere" });
@@ -445,6 +510,15 @@ describe("ready", () => {
 });
 
 describe("close", () => {
+  it("lets the process exit though the server never answers the close handshake", async () => {
+    const server = await misbehavingServer("ignores-frames");
+    const { said, exitedAfterCloseMs } = await shareInAChild(await server.url());
+
+    expect(said).toEqual(["connected", "closed"]);
+    expect(exitedAfterCloseMs).not.toBeNull();
+    expect(exitedAfterCloseMs).toBeLessThan(1000);
+  }, 15_000);
+
   it("resolves within its bound against a server that never answers the close handshake", async () => {
     const server = await misbehavingServer("ignores-frames");
     const { handle } = share({ url: server.url, agentSock: "/nowhere" });
