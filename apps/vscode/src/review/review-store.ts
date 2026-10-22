@@ -48,6 +48,7 @@ import {
 } from "./instruction.js";
 import { samePlace, type KeptReviews, type ReviewPlace } from "./kept-reviews.js";
 import {
+  acceptedDrafts,
   addPending,
   editPending,
   EMPTY_REVIEW,
@@ -510,10 +511,7 @@ export class ReviewStore implements vscode.Disposable {
     });
     const own = onDraft(read, draft, reply.trim(), { kind: "own" });
     await this.#keepAt(place, (review) => {
-      const already = review.pending.some(
-        (comment) => comment.origin.kind === "accepted" && comment.origin.draftId === draftId,
-      );
-      if (already) return review;
+      if (acceptedDrafts(review).has(draftId)) return review;
       const next = addPending(review, accepted);
       return own.body === "" ? next : addPending(next, own);
     });
