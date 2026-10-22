@@ -577,6 +577,22 @@ describe("her words under a Mend draft", () => {
     },
   );
 
+  it.each(["accept", "dismiss"])(
+    "are kept under the session whose thread showed the draft when %s arrives after another session on the change showed it",
+    async (gesture) => {
+      const { store, thread, done } = await underDraft(new FakeMend());
+      store.follow(PROJECT, session("s2"));
+      await vi.waitFor(() => expect(store.ready()?.sessionId).toBe("s2"), SETTLE);
+      expect(thread.disposed).toBe(true);
+      await ui.commands.get(`mend.review.${gesture}`)?.({ thread, text: WORDS });
+      expect(store.review().pending).toEqual([]);
+      store.follow(PROJECT, session("s1"));
+      await vi.waitFor(() => expect(store.ready()?.sessionId).toBe("s1"), SETTLE);
+      expect(store.review().pending.map(({ body }) => body)).toContain(WORDS);
+      done();
+    },
+  );
+
   it("are held in this window, and kept the next time this window reads the review", async () => {
     let full = true;
     const fullUntilFreed: KeptFiles = {
