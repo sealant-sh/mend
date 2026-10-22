@@ -836,6 +836,12 @@ async function cliSignedIn(h) {
           text.includes("Approve in the browser"),
         );
         expect(asks.length === 0, `VS Code asked to open the approve page: ${shown(seen)}`);
+        expect(seen !== null, "the window navigated while she cancelled");
+        const saidAfter = seen.toasts.filter((text) => !text.includes("for a sign-in code"));
+        expect(
+          saidAfter.length === 0 && seen.dialogs.length === 0,
+          `it said something after the cancel: ${shown(seen)}`,
+        );
         expect(
           reminders.length === 0,
           `the status bar showed a code: ${JSON.stringify(reminders)}`,

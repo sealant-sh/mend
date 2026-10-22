@@ -817,9 +817,9 @@ the row takes the job's name.
     - Edge, Connect cancelled while its request is out: a loopback proxy in the recipe holds
       `POST /api/cli/auth` until the recipe releases it. `palette("Mend: Connect to server")` with
       the proxy's URL, then `Cancel` on `Asking <proxy host> for a sign-in code` while the request
-      is held; then the proxy answers. No `external website` dialog, no `Mend sign-in` status item,
-      no browser page, no `Approve in the browser` progress, and `mend.serverUrl` still the
-      server's.
+      is held; then the proxy answers. No toast but that `Asking` one and no dialog from the Connect
+      on, no `Mend sign-in` status item, no browser page, no `Approve in the browser` progress, and
+      `mend.serverUrl` still the server's.
     - Edge, Open's consent cancelled: Open in New Window on `fresh worktree`, then `Cancel` on the
       modal `Set up workspace SSH to open sessions (one Host block in ~/.ssh/config)`. Remote-SSH is
       not in the extensions directory before the open, while it asks, or after Cancel; no window
