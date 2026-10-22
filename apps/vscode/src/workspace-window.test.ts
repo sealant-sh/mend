@@ -2,7 +2,10 @@ import { setTimeout as wait } from "node:timers/promises";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { MendClient } from "./client.js";
+import { fake } from "./test-vscode.js";
 import type { Project, Session, SessionDetail, SessionProcess } from "./types.js";
+import { WorkspaceWindow } from "./workspace-window.js";
 
 const attached = vi.hoisted(() => [] as Array<string>);
 
@@ -34,10 +37,6 @@ vi.mock("./agent-terminal.js", () => ({
     return { show: () => undefined, dispose: () => undefined, exitStatus: undefined };
   },
 }));
-
-const { fake } = await import("./test-vscode.js");
-const { WorkspaceWindow } = await import("./workspace-window.js");
-const { MendClient } = await import("./client.js");
 
 const WORKSPACE = "61aaf28f-f715-4ce1-89be-8626d33acbb6";
 

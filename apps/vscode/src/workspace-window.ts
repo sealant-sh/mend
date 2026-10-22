@@ -88,6 +88,11 @@ class ContinueLink extends vscode.TerminalLink {
 export class WorkspaceWindow implements vscode.Disposable {
   #located: { readonly project: Project; readonly session: Session } | null = null;
   #notice: vscode.Disposable | null = null;
+  /**
+   * Every focus in this window, one at a time: activation and a focus event can both reach for the
+   * Open's intent, and only one may take it and attach before the other reads `#located`.
+   */
+  #focuses: Promise<void> = Promise.resolve();
   readonly #located$ = new vscode.EventEmitter<void>();
   /** The window found (or changed) the session it is the workspace of. */
   readonly onDidLocate = this.#located$.event;
@@ -199,42 +204,50 @@ export class WorkspaceWindow implements vscode.Disposable {
    * Show the session's agent, attaching it when this window has no live tab for it. With no
    * session named, the one an Open meant, else the one this window already shows.
    */
-  async focusAgentTerminal(sessionId: string | null): Promise<void> {
-    if (this.role.kind !== "workspace") return;
-    try {
-      const { requested, check } = requestOfWindow({
-        explicit: sessionId ?? (await this.intents.take(this.role.workspaceId)),
-        shown: this.#located?.session.id ?? null,
-      });
-      if (check) {
-        const { details } = await readProjects(this.client);
-        const found = sessionOfWorkspace(details, this.role.workspaceId, requested);
-        if (found.kind === "missing") {
-          this.#say(found.line);
-          return;
-        }
-        // Not a session this person can see: the window stays a plain Remote-SSH window.
-        if (found.kind === "none") return;
-        this.#located = { project: found.project, session: found.session };
-        this.#located$.fire();
-      }
-      this.#say(null);
-      const shown = this.#located;
-      if (shown !== null) await this.#tabs.focus(shown.session.id, this.role.workspaceId);
-    } catch (cause) {
-      this.onError(cause);
-    }
+  focusAgentTerminal(sessionId: string | null): Promise<void> {
+    if (this.role.kind !== "workspace") return Promise.resolve();
+    const { workspaceId } = this.role;
+    return this.#inTurn(async () => {
+      await this.#show(workspaceId, sessionId ?? (await this.intents.take(workspaceId)));
+    });
   }
 
   /** An Open from another window meant a session here: show it. */
-  async #takeIntent(): Promise<void> {
-    if (this.role.kind !== "workspace") return;
-    try {
-      const requested = await this.intents.take(this.role.workspaceId);
-      if (requested !== null) await this.focusAgentTerminal(requested);
-    } catch (cause) {
-      this.onError(cause);
+  #takeIntent(): Promise<void> {
+    if (this.role.kind !== "workspace") return Promise.resolve();
+    const { workspaceId } = this.role;
+    return this.#inTurn(async () => {
+      const requested = await this.intents.take(workspaceId);
+      if (requested !== null) await this.#show(workspaceId, requested);
+    });
+  }
+
+  #inTurn(step: () => Promise<void>): Promise<void> {
+    const turn = this.#focuses.then(step).catch((cause: unknown) => this.onError(cause));
+    this.#focuses = turn;
+    return turn;
+  }
+
+  async #show(workspaceId: string, explicit: string | null): Promise<void> {
+    const { requested, check } = requestOfWindow({
+      explicit,
+      shown: this.#located?.session.id ?? null,
+    });
+    if (check) {
+      const { details } = await readProjects(this.client);
+      const found = sessionOfWorkspace(details, workspaceId, requested);
+      if (found.kind === "missing") {
+        this.#say(found.line);
+        return;
+      }
+      // Not a session this person can see: the window stays a plain Remote-SSH window.
+      if (found.kind === "none") return;
+      this.#located = { project: found.project, session: found.session };
+      this.#located$.fire();
     }
+    this.#say(null);
+    const shown = this.#located;
+    if (shown !== null) await this.#tabs.focus(shown.session.id, workspaceId);
   }
 
   /** Why the window shows no agent, until it shows one. */
