@@ -707,7 +707,8 @@ export const postedComment = (
         (attempt.author === null || comment.author.name === attempt.author) &&
         comment.body === attempt.body.trim() &&
         comment.anchor?.sliceId === sliceId &&
-        comment.file === (target.newPath ?? target.oldPath) &&
+        comment.file ===
+          (target.side === "old" ? target.oldPath : (target.newPath ?? target.oldPath)) &&
         comment.line === target.startLine &&
         comment.endLine === target.endLine,
     )?.id ?? null
