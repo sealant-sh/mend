@@ -14,6 +14,7 @@ import {
   PROJECT,
   session,
   sessionReads,
+  SETTLE,
 } from "./test-fixtures.js";
 
 interface OpenDocument {
@@ -139,7 +140,7 @@ const windowOn = async (files: KeptFiles, mend: FakeMend) => {
   const provider = ui.providers.at(-1);
   if (provider === undefined) throw new Error("Send review registered no files");
   store.follow(PROJECT, session("s1"));
-  await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+  await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
   return {
     store,
     provider,
@@ -186,7 +187,7 @@ describe("a review she saved, when VS Code reloads", () => {
     expect(restored).toBe(words);
     ui.documents.push({ ...opened, text: restored });
     await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
-    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1));
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
     expect(mend.delivered[0]?.instruction).toBe(words);
     expect(after.store.review().sends.at(-1)?.instruction).toBe(words);
     // Sent, the review is no longer kept as one she is editing.

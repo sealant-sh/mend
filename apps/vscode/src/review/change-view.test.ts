@@ -16,6 +16,7 @@ import {
   sessionReads,
   storage,
   noPaste,
+  SETTLE,
 } from "./test-fixtures.js";
 
 const ui = vi.hoisted(() => ({
@@ -77,7 +78,7 @@ describe("opening a pending comment's row", () => {
       noPaste,
     );
     store.follow(PROJECT, session("s1"));
-    await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     const view = new ChangeView(
       store,
       new RecordContent(),

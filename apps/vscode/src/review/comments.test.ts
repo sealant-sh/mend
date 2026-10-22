@@ -17,6 +17,7 @@ import {
   slowFiles,
   storage,
   noPaste,
+  SETTLE,
 } from "./test-fixtures.js";
 
 interface Thread {
@@ -175,7 +176,7 @@ describe("a double click", () => {
       noPaste,
     );
     store.follow(PROJECT, session("s1"));
-    await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     const comments = new ReviewComments(store);
     const reply = replyOnLine3("Use the shared limiter");
     await Promise.all([submit(reply), submit(reply)]);
@@ -200,8 +201,9 @@ describe("the reply box", () => {
     );
     store.follow(PROJECT, session("s1"));
     const comments = new ReviewComments(store);
-    await vi.waitFor(() =>
-      expect(ui.controllers.flatMap((controller) => controller.threads)).toHaveLength(2),
+    await vi.waitFor(
+      () => expect(ui.controllers.flatMap((controller) => controller.threads)).toHaveLength(2),
+      SETTLE,
     );
     const promptFor = (scheme: string): ReadonlyArray<string | undefined> =>
       ui.controllers
@@ -227,7 +229,7 @@ describe("saving an edit to a pending comment", () => {
         noPaste,
       );
       store.follow(PROJECT, session("s1"));
-      await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+      await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
       return store;
     };
     const sender = await window();
@@ -293,8 +295,9 @@ describe("her words under a Mend draft", () => {
     );
     store.follow(PROJECT, session("s1"));
     const comments = new ReviewComments(store);
-    await vi.waitFor(() =>
-      expect(ui.controllers.flatMap((controller) => controller.threads)).toHaveLength(1),
+    await vi.waitFor(
+      () => expect(ui.controllers.flatMap((controller) => controller.threads)).toHaveLength(1),
+      SETTLE,
     );
     const thread = ui.controllers.flatMap((controller) => controller.threads).at(0);
     if (thread === undefined) throw new Error("no draft drawn");

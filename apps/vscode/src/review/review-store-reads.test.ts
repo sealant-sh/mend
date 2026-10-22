@@ -14,7 +14,7 @@ import type {
   SliceDiff,
   WorktreeChain,
 } from "./review-wire.js";
-import { keptIn, memoryFiles, noPaste } from "./test-fixtures.js";
+import { keptIn, memoryFiles, noPaste, SETTLE } from "./test-fixtures.js";
 
 vi.mock("vscode", () => import("../test-vscode.js"));
 
@@ -215,7 +215,7 @@ const storeOver = (
 };
 
 const readyRead = async (store: ReviewStore) => {
-  await vi.waitFor(() => expect(store.state().kind).toBe("ready"));
+  await vi.waitFor(() => expect(store.state().kind).toBe("ready"), SETTLE);
   const read = store.ready();
   if (read === null) throw new Error("the store read nothing");
   return read;
@@ -223,7 +223,7 @@ const readyRead = async (store: ReviewStore) => {
 
 /** Waits for the store's next read to land. */
 const nextRead = async (store: ReviewStore, before: ChangeRead) => {
-  await vi.waitFor(() => expect(store.ready()).not.toBe(before));
+  await vi.waitFor(() => expect(store.ready()).not.toBe(before), SETTLE);
   return readyRead(store);
 };
 
@@ -235,7 +235,7 @@ describe("ReviewStore.forget", () => {
   it("drops what the section showed", async () => {
     const { store } = storeOver(new World(), { detail: async () => noChange });
     store.follow(project, session);
-    await vi.waitFor(() => expect(store.state().kind).toBe("empty"));
+    await vi.waitFor(() => expect(store.state().kind).toBe("empty"), SETTLE);
     store.forget();
     expect(store.state()).toEqual({ kind: "idle" });
   });
@@ -254,7 +254,7 @@ describe("ReviewStore.forget", () => {
   it("lets the same session be followed again afterwards", async () => {
     const { store } = storeOver(new World(), { detail: async () => noChange });
     store.follow(project, session);
-    await vi.waitFor(() => expect(store.state().kind).toBe("empty"));
+    await vi.waitFor(() => expect(store.state().kind).toBe("empty"), SETTLE);
     store.forget();
     store.follow(project, session);
     expect(store.state().kind).toBe("reading");
@@ -330,9 +330,9 @@ describe("reads in flight (as flow 2)", () => {
     expect(reads.most).toBe(1);
     expect(reads.started).toBe(1);
     gates[0]?.resolve(withChange);
-    await vi.waitFor(() => expect(reads.started).toBe(2));
+    await vi.waitFor(() => expect(reads.started).toBe(2), SETTLE);
     gates[1]?.resolve(withChange);
-    await vi.waitFor(() => expect(store.state().kind).toBe("ready"));
+    await vi.waitFor(() => expect(store.state().kind).toBe("ready"), SETTLE);
     await vi.advanceTimersByTimeAsync(2_000);
     expect(reads.most).toBe(1);
     expect(reads.started).toBe(2);
@@ -344,7 +344,7 @@ describe("a reconnect", () => {
     vi.useFakeTimers();
     const { store, reads } = storeOver(new World());
     store.follow(project, session);
-    await vi.waitFor(() => expect(store.state().kind).toBe("ready"));
+    await vi.waitFor(() => expect(store.state().kind).toBe("ready"), SETTLE);
     expect(reads.started).toBe(1);
     store.heard({
       type: "resync",

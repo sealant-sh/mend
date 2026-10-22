@@ -23,6 +23,7 @@ import {
   slowFiles,
   storage,
   noPaste,
+  SETTLE,
 } from "./test-fixtures.js";
 import { threadsOf } from "./threads.js";
 
@@ -53,7 +54,7 @@ const readyStore = async (
     noPaste,
   );
   store.follow(PROJECT, session("s1"));
-  await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+  await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
   return store;
 };
 
@@ -675,7 +676,7 @@ describe("sending a review from the store", () => {
     const words = "Keep the limiter, and add a test for the burst case.";
     expect(await store.edit(accepted.id, words)).toEqual({ kept: true });
     const key = await sendAll(store);
-    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1));
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
     const hers = mend.serverComments.find((one) => one.body === words);
     expect(hers).toMatchObject({
       state: "open",

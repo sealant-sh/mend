@@ -21,6 +21,12 @@ import type {
 } from "./review-wire.js";
 import { resolveSlice, type SliceChoice } from "./slices.js";
 
+/**
+ * How long a review test waits for the store to settle. The store reads and writes real files under
+ * a lock, and a machine running every package's tests at once can take longer than vitest's 1 s.
+ */
+export const SETTLE = { timeout: 10_000 } as const;
+
 /** One change for the review's unit tests: base, a mark, and the checkpoint review opened. */
 
 export const checkpoint = (
