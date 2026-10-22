@@ -17,10 +17,15 @@ import {
   noPaste,
 } from "./test-fixtures.js";
 
+interface Thread {
+  readonly uri: { readonly scheme: string };
+  comments: ReadonlyArray<{ readonly body: unknown; readonly mode?: number }>;
+}
+
 interface Controller {
   readonly id: string;
   options: { readonly prompt?: string };
-  readonly threads: Array<{ readonly uri: { readonly scheme: string } }>;
+  readonly threads: Array<Thread>;
 }
 
 const ui = vi.hoisted(() => ({
@@ -73,8 +78,9 @@ vi.mock("vscode", async () => {
         ui.controllers.push(controller);
         return Object.assign(controller, {
           createCommentThread: (uri: { readonly scheme: string }) => {
-            controller.threads.push({ uri });
-            return { dispose: () => undefined, comments: [] };
+            const thread = { uri, comments: [], dispose: () => undefined };
+            controller.threads.push(thread);
+            return thread;
           },
           dispose: () => undefined,
         });
@@ -203,5 +209,56 @@ describe("the reply box", () => {
     expect(promptFor("mend-change")).toEqual(["Comment on this line"]);
     comments.dispose();
     store.dispose();
+  });
+});
+
+describe("saving an edit to a pending comment", () => {
+  it("keeps her edited words, and says why, when another window already sent the comment", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    const window = async () => {
+      const store = new ReviewStore(
+        sessionReads("change-1"),
+        mend,
+        new ReviewMemory(memento()),
+        keptIn(directory),
+        noPaste,
+      );
+      store.follow(PROJECT, session("s1"));
+      await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+      return store;
+    };
+    const sender = await window();
+    const editor = await window();
+    const comments = new ReviewComments(editor);
+    await sender.comment({
+      at: {
+        worktreeId: "w1",
+        path: "src/auth/limit.ts",
+        at: PINNED.head.id,
+        absent: false,
+        slice: PINNED.id,
+      },
+      line: 3,
+      endLine: 3,
+      lineText: "",
+      body: "Use the shared limiter",
+    });
+    await editor.reloadReview();
+    const thread = ui.controllers.flatMap((controller) => controller.threads).at(0);
+    if (thread === undefined) throw new Error("no thread drawn");
+    await ui.commands.get("mend.review.edit")?.(thread.comments[0]);
+    const [editing] = thread.comments;
+    if (editing === undefined) throw new Error("not editing");
+    Object.assign(editing, { body: "Use guard.ts instead" });
+    const composed = sender.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sender.send(composed, composed.text)).toEqual({ sent: true });
+    await ui.commands.get("mend.review.save")?.(editing);
+    expect(thread.comments.map(({ body }) => body)).toEqual(["Use guard.ts instead"]);
+    expect(ui.warn).toHaveBeenCalledWith(expect.stringMatching(/already sent/));
+    comments.dispose();
+    sender.dispose();
+    editor.dispose();
   });
 });
