@@ -457,8 +457,11 @@ const scratchFor = (git: Git, base: Env, checkout: Checkout, dir: string): Scrat
       const from = path.join(checkout.gitDir, file);
       // Git rereads a file whose stat matches its entry only when the index is not older than it,
       // so a copy dated now would trust a same-size edit made in the index's own tick. Stat before
-      // copying and floor to the second: an older date only makes git reread more.
-      const written = Number(fs.statSync(from, { bigint: true }).mtimeNs / 1_000_000_000n);
+      // copying and floor to the second (BigInt division truncates toward zero): an older date only
+      // makes git reread more.
+      const ns = fs.statSync(from, { bigint: true }).mtimeNs;
+      const second = 1_000_000_000n;
+      const written = Number(ns / second - (ns % second < 0n ? 1n : 0n));
       fs.copyFileSync(from, path.join(shadow, file));
       fs.utimesSync(path.join(shadow, file), written, written);
     }
