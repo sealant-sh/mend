@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 
 import { changeAddress, changeUri } from "./change-content.js";
 import { noteUri } from "./change-note.js";
-import type { ReviewStore } from "./review-store.js";
+import { DRAFT_NOT_SHOWN, type Keeping, type ReviewStore } from "./review-store.js";
 import { retryDelivery } from "./review-toast.js";
 import { commentableLines, evidenceLine, threadsOf, type ThreadView } from "./threads.js";
 
@@ -220,20 +220,37 @@ export class ReviewComments implements vscode.Disposable {
     else this.#hold(thread, body, kept.words);
   }
 
-  /** Words the store did not keep stay in their thread, with why, until she tries again. */
+  /**
+   * Words the store did not keep stay in their thread, with why, until she tries again: under a
+   * Mend draft, below the draft.
+   */
   #hold(thread: vscode.CommentThread, body: string, words: string): void {
-    if (body.trim() !== "") thread.comments = [new UnkeptComment(body, this.store.you())];
+    if (body.trim() !== "")
+      thread.comments = [
+        ...thread.comments.filter((comment) => !(comment instanceof UnkeptComment)),
+        new UnkeptComment(body, this.store.you()),
+      ];
     thread.canReply = true;
     void vscode.window.showWarningMessage(words);
   }
 
   async #onDraft(
     reply: vscode.CommentReply,
-    act: (draftId: string, text: string) => Promise<void>,
+    act: (draftId: string, text: string) => Promise<Keeping>,
   ): Promise<void> {
-    const drawn = [...this.#threads.values()].find(({ thread }) => thread === reply.thread);
+    const { thread } = reply;
+    const held = thread.comments.find((comment) => comment instanceof UnkeptComment);
+    const text = reply.text.trim() === "" && held !== undefined ? held.body : reply.text;
+    const drawn = [...this.#threads.values()].find((candidate) => candidate.thread === thread);
     const draftId = drawn?.view.commentId ?? null;
-    if (draftId !== null) await this.#once(reply.thread, () => act(draftId, reply.text));
+    if (draftId === null) {
+      this.#hold(thread, text, DRAFT_NOT_SHOWN);
+      return;
+    }
+    await this.#once(thread, async () => {
+      const kept = await act(draftId, text);
+      if (!kept.kept) this.#hold(thread, text, kept.words);
+    });
   }
 
   /** One gesture per thread at a time: a double click keeps one comment, not two. */

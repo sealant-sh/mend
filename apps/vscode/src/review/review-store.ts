@@ -233,6 +233,17 @@ export type ShownRecord =
     }
   | { readonly kind: "not-found"; readonly words: string };
 
+const wordsStay = (reply: string): string =>
+  reply.trim() === "" ? "" : " Your words are still in the thread.";
+
+export const DRAFT_NOT_SHOWN =
+  "The Change section no longer shows this Mend draft, so nothing was done.";
+
+const draftGone = (reply: string): Keeping => ({
+  kept: false,
+  words: `${DRAFT_NOT_SHOWN}${wordsStay(reply)}`,
+});
+
 const TOO_MANY = `This session's review already holds ${MAX_PENDING} pending comments, so this one is not kept. Its words are still in the thread: send the review, or delete a comment, first.`;
 
 /** Frames come in bursts while an agent works: the change is read again at most this often. */
@@ -516,44 +527,63 @@ export class ReviewStore implements vscode.Disposable {
   /**
    * Accept makes a Mend draft hers: pending like her own comments, with its evidence, until Send
    * review opens it on Mend. Words she typed under it are a comment of her own on the same lines.
-   * A draft she already accepted, in this window or another, is accepted once.
+   * A draft she already accepted, in this window or another, is accepted once; her words are kept
+   * all the same. Says whether they were kept, and why not, so they are never dropped unseen.
    */
-  async accept(draftId: string, reply: string): Promise<void> {
+  async accept(draftId: string, reply: string): Promise<Keeping> {
     const read = this.ready();
     const place = this.#place;
     const draft = read?.comments.find((comment) => comment.id === draftId);
-    if (read === null || draft === undefined) return;
+    if (read === null || draft === undefined) return draftGone(reply);
     const accepted = onDraft(read, draft, draft.body, {
       kind: "accepted",
       draftId,
       evidence: draft.evidence,
     });
     const own = onDraft(read, draft, reply.trim(), { kind: "own" });
-    await this.#keepAt(place, (review) => {
-      if (acceptedDrafts(review).has(draftId)) return review;
-      const next = addPending(review, accepted);
-      return own.body === "" ? next : addPending(next, own);
-    });
+    try {
+      await this.#keepAt(place, (review) => {
+        const next = acceptedDrafts(review).has(draftId) ? review : addPending(review, accepted);
+        return own.body === "" ? next : addPending(next, own);
+      });
+    } catch (cause) {
+      return {
+        kept: false,
+        words: `VS Code could not keep the accepted draft: ${errorWords(cause)}${wordsStay(reply)}`,
+      };
+    }
+    return { kept: true };
   }
 
-  /** Dismiss removes a Mend draft, on Mend for everyone; words she typed stay as her own comment. */
-  async dismiss(draftId: string, reply: string): Promise<void> {
+  /**
+   * Dismiss removes a Mend draft, on Mend for everyone; words she typed stay as her own comment.
+   * They are kept before Mend is asked, so a refused or cut-short Dismiss never takes them along.
+   */
+  async dismiss(draftId: string, reply: string): Promise<Keeping> {
     const read = this.ready();
     // Where her words go is decided now: she may follow another session before Mend answers.
     const place = this.#place;
     const draft = read?.comments.find((comment) => comment.id === draftId);
-    if (read === null || draft === undefined) return;
+    if (read === null || draft === undefined) return draftGone(reply);
+    if (reply.trim() !== "")
+      try {
+        await this.#keepAt(place, (review) =>
+          addPending(review, onDraft(read, draft, reply.trim(), { kind: "own" })),
+        );
+      } catch (cause) {
+        return {
+          kept: false,
+          words: `VS Code could not keep your words, so the draft is not dismissed: ${errorWords(cause)}${wordsStay(reply)}`,
+        };
+      }
     try {
       await this.client.setCommentState(read.changeId, draftId, "dismissed");
     } catch (cause) {
       this.#fail("error", errorWords(cause), { cause });
-      return;
+      return { kept: true };
     }
-    if (reply.trim() !== "")
-      await this.#keepAt(place, (review) =>
-        addPending(review, onDraft(read, draft, reply.trim(), { kind: "own" })),
-      );
     this.#rereadIfFollowed(read.sessionId);
+    return { kept: true };
   }
 
   /** Read this change: Mend reads it and writes drafts with their evidence, never a verdict. */
