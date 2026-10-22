@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -1163,6 +1164,32 @@ describe("a delivery that fails while she looks at another window", () => {
     await reviewToast(driving.store, lookingAway, () => undefined)(failure);
     expect(vscodeWindow.showErrorMessage).not.toHaveBeenCalled();
     expect(await claims.claim(failure.key, failure.at)).toBe(true);
+  });
+});
+
+describe("a failed delivery's toast when VS Code cannot keep toast claims", () => {
+  it("shows once, rather than again each time it checks the delivery still fails", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.deliver = async () => {
+      throw new MendApiError("Mend is restarting.", 503);
+    };
+    const { store } = await window(keptIn(directory), mend);
+    // Claims under a file: no claim can be written, and each one claims, as storage that fails does.
+    await writeFile(join(directory, "a-file"), "");
+    const toast = reviewToast(
+      store,
+      new ToastClaims(join(directory, "a-file", "toasts")),
+      () => undefined,
+    );
+    store.onDidFail((failure) => void toast(failure));
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    await sendComposed(store, composed, composed.text);
+    await vi.waitFor(() => expect(vscodeWindow.showErrorMessage).toHaveBeenCalled(), SETTLE);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(vscodeWindow.showErrorMessage).toHaveBeenCalledTimes(1);
   });
 });
 
