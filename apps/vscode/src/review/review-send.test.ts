@@ -1595,6 +1595,99 @@ describe("a send on its way when VS Code connects to another Mend server", () =>
   });
 });
 
+describe("VS Code connects to another Mend server while a send waits on a read", () => {
+  it("posts nothing once the read before the post lands, and the review reads failed with Retry", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    let url = "http://mend";
+    const reads = { ...withAgent(CLAUDE), connection: async () => ({ url, token: null }) };
+    const { store } = await window(keptIn(directory), mend, reads);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const read = mend.comments.bind(mend);
+    const held = Promise.withResolvers<void>();
+    let holding = false;
+    mend.comments = async (changeId) => {
+      if (holding) {
+        await held.promise;
+        holding = false;
+      }
+      return read(changeId);
+    };
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    holding = true;
+    expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
+    const record = store.review().sends.at(-1);
+    if (record === undefined) throw new Error("no review kept");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    url = "http://other";
+    held.resolve();
+    const place = { url: "http://mend", viewer: "dana", sessionId: "s1" };
+    await vi.waitFor(async () => {
+      const kept = await keptIn(directory).read(place);
+      expect(kept.review.sends.map(({ phase }) => phase)).toEqual([
+        {
+          kind: "failed",
+          words: "VS Code connected to another Mend server or account before Mend answered",
+          at: expect.any(String),
+        },
+      ]);
+    }, SETTLE);
+    expect(mend.writes).toEqual([]);
+  });
+
+  it("pastes nothing once its paste is kept as started, and says so", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    mend.serverComments = [comment({ id: "c1" })];
+    let url = "http://mend";
+    const files = memoryFiles();
+    const watched: KeptFiles = {
+      ...files,
+      writeFile: async (path, text) => {
+        // VS Code connects elsewhere the moment the paste is kept as started.
+        if (text.includes('"pasting"')) url = "http://other";
+        await files.writeFile(path, text);
+      },
+    };
+    const pastes: Array<string> = [];
+    const store = new ReviewStore(
+      { ...withAgent(CLAUDE), connection: async () => ({ url, token: null }) },
+      mend,
+      new ReviewMemory(memento()),
+      keptIn("/global-storage/reviews", watched),
+      async (
+        sessionId,
+        _processId,
+        text,
+        reads?: { sessionDetail(id: string): Promise<unknown> },
+      ) => {
+        // As the paste does: Mend's read of the agent's process right before the paste.
+        await reads?.sessionDetail(sessionId);
+        pastes.push(text);
+        return "pasted";
+      },
+    );
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
+    const place = { url: "http://mend", viewer: "dana", sessionId: "s1" };
+    await vi.waitFor(async () => {
+      const kept = await keptIn("/global-storage/reviews", watched).read(place);
+      expect(kept.review.sends.map(({ phase }) => phase)).toEqual([
+        expect.objectContaining({
+          kind: "in-terminal",
+          paste: { kind: "failed", mayHaveLanded: false, stopped: { kind: "switched" } },
+        }),
+      ]);
+    }, SETTLE);
+    expect(pastes).toEqual([]);
+  });
+});
+
 describe("a paste VS Code could not keep as pasted", () => {
   it("says VS Code could not keep it, never that Mend could not deliver, and offers Retry delivery", async () => {
     const mend = new FakeMend();
