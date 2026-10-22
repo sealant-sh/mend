@@ -471,6 +471,26 @@ describe("the agent share reconnects", () => {
     expect(await handle.ready(retryDelayMs(1) + 2000)).toBe("connected");
     expect(asked).toBe(2);
   });
+
+  it("after the server refused the connection", async () => {
+    const server = await bridgeServer();
+    const refusing = net.createServer();
+    await new Promise<void>((resolve) => refusing.listen(0, "127.0.0.1", resolve));
+    const address = refusing.address();
+    if (address === null || typeof address === "string") throw new Error("no port");
+    await new Promise((resolve) => refusing.close(resolve));
+    let asked = 0;
+    const url = (): Promise<URL> => {
+      asked += 1;
+      return asked === 1
+        ? Promise.resolve(new URL(`ws://127.0.0.1:${address.port}/`))
+        : server.url();
+    };
+    const { handle, events } = share({ url, agentSock: "/nowhere" });
+
+    expect(await handle.ready(retryDelayMs(1) + 2000)).toBe("connected");
+    expect(events.map((event) => event.kind)).toEqual(["disconnected", "connected"]);
+  });
 });
 
 describe("ready", () => {

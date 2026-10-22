@@ -2,6 +2,7 @@ import * as net from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { Option, Schema } from "effect";
+import { WebSocket } from "ws";
 
 /**
  * The ssh-agent bridge, client half (docs/GIT-ACCESS.md decision 2): relay
@@ -33,6 +34,8 @@ export interface ShareOptions {
   readonly agentSock: string;
   /** Aborting closes the socket and ends the loop. */
   readonly signal: AbortSignal;
+  /** Aborting drops the socket at once: a server that never answers the close would hold it open. */
+  readonly terminate?: AbortSignal;
   readonly onEvent: (event: ShareEvent) => void;
 }
 
@@ -181,7 +184,7 @@ const relayOnce = (
   oneAtATime: (task: () => Promise<void>) => void,
 ): Promise<"opened" | "never-opened"> =>
   new Promise((resolve) => {
-    const { agentSock, signal, onEvent } = options;
+    const { agentSock, signal, terminate, onEvent } = options;
     const ws = new WebSocket(target);
     const live = new AbortController();
     let opened = false;
@@ -189,7 +192,13 @@ const relayOnce = (
       live.abort();
       ws.close();
     };
+    const onTerminate = () => {
+      ws.terminate();
+    };
     signal.addEventListener("abort", onAbort, { once: true });
+    terminate?.addEventListener("abort", onTerminate, { once: true });
+    // ws throws an error nobody listens for; the close event that follows ends this connection.
+    ws.addEventListener("error", () => undefined);
     ws.addEventListener("open", () => {
       opened = true;
       onEvent({ kind: "connected" });
@@ -205,6 +214,7 @@ const relayOnce = (
       () => {
         live.abort();
         signal.removeEventListener("abort", onAbort);
+        terminate?.removeEventListener("abort", onTerminate);
         resolve(opened ? "opened" : "never-opened");
       },
       { once: true },
@@ -253,7 +263,10 @@ export interface AgentShareHandle {
   readonly subscribe: (listener: (event: ShareEvent | null) => void) => () => void;
   /** Connected now or within the bound; never rejects. */
   readonly ready: (withinMs: number) => Promise<ReadyOutcome>;
-  /** Stop reconnecting and close the socket; resolves once it closed or the bound passed. */
+  /**
+   * Stop reconnecting and close the socket; resolves once it closed or the bound passed. A socket
+   * still open at the bound is dropped, so it never keeps the process alive.
+   */
   readonly close: (withinMs?: number) => Promise<void>;
 }
 
@@ -266,9 +279,10 @@ const within = <A>(withinMs: number, late: A, work: Promise<A>): Promise<A> => {
 };
 
 export const startAgentShare = (
-  options: Omit<ShareOptions, "signal" | "onEvent">,
+  options: Omit<ShareOptions, "signal" | "terminate" | "onEvent">,
 ): AgentShareHandle => {
   const controller = new AbortController();
+  const terminate = new AbortController();
   const listeners = new Set<(event: ShareEvent | null) => void>();
   const waiters = new Set<(outcome: ReadyOutcome) => void>();
   let state: ShareState = "connecting";
@@ -282,6 +296,7 @@ export const startAgentShare = (
   const ended = shareAgent({
     ...options,
     signal: controller.signal,
+    terminate: terminate.signal,
     onEvent: (event) => {
       if (event.kind === "connected") moveTo("connected");
       else if (event.kind === "disconnected") moveTo("connecting");
@@ -304,14 +319,18 @@ export const startAgentShare = (
         waiters.delete(woken.resolve),
       );
     },
-    close: (withinMs = CLOSE_WITHIN_MS) => {
+    close: async (withinMs = CLOSE_WITHIN_MS) => {
       controller.abort();
       moveTo("closed");
-      return within(
+      const outcome = await within(
         withinMs,
-        undefined,
-        ended.catch(() => undefined),
+        "late",
+        ended.then(
+          () => "ended",
+          () => "ended",
+        ),
       );
+      if (outcome === "late") terminate.abort();
     },
   };
 };

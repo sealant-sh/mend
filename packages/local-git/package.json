@@ -17,7 +17,8 @@
   },
   "dependencies": {
     "@mend/domain": "workspace:*",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "ws": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
@@ -26,7 +27,6 @@
     "@types/node": "catalog:",
     "@types/ws": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:",
-    "ws": "catalog:"
+    "vitest": "catalog:"
   }
 }
