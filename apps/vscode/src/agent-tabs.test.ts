@@ -265,7 +265,7 @@ describe("focusing a session's agent", () => {
         expect(effects.attachPty).not.toHaveBeenCalled();
         expect(effects.refused).toHaveBeenCalledTimes(1);
         expect(effects.refused).toHaveBeenCalledWith(
-          "This session runs in a terminal. Only Ana types here; they can continue it as a conversation.",
+          "Ana's session runs in a terminal · only Ana types in it; they can continue it as a conversation · no agent attached",
         );
       }
     }
@@ -280,6 +280,16 @@ describe("focusing a session's agent", () => {
     expect(effects.refused).toHaveBeenCalledWith(
       "Ana's session · only Ana steers it while shared control is off · no agent attached",
     );
+  });
+
+  it("answers with none of an ownerless session's agent, and names no owner", async () => {
+    for (const agent of [terminalAgent, conversation]) {
+      const ownerless = session({ ownerUserId: null });
+      const { agents, tabs, line } = world([detail([agent], ownerless)]);
+      await agents.focus("older", null);
+      expect(tabs).toEqual([]);
+      expect(line()).toBe("this session has no owner · no one steers it · no agent attached");
+    }
   });
 
   it("clears the refusal an earlier Answer showed once Answer attaches the agent", async () => {

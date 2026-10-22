@@ -190,7 +190,8 @@ export class AgentTabs {
       } else if (want.kind !== "none") {
         const via = want.kind === "pty" ? "terminal" : "conversation";
         if (!answerAdmits(detail.session, viewer, via)) {
-          const owner = await effects.ownerName(detail.session.ownerUserId);
+          const { ownerUserId } = detail.session;
+          const owner = ownerUserId === null ? null : await effects.ownerName(ownerUserId);
           effects.refused(answerRefusedLine(via, owner));
           return;
         }

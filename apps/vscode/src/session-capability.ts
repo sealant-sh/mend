@@ -1,4 +1,4 @@
-import { canSteerSession, canTypeInTerminal, terminalReadOnlyLine } from "@mend/domain/workbench";
+import { canSteerSession, canTypeInTerminal } from "@mend/domain/workbench";
 
 import { displaySession, type MemberName } from "./session-lines.js";
 import type { WaitFact } from "./session-model.js";
@@ -88,11 +88,16 @@ export const answerAdmits = (
   via: WaitFact["via"],
 ): boolean => (via === "terminal" ? canTypeInTerminal(session, viewer) : maySteer(session, viewer));
 
-/** Why Answer attaches none of the session's agent for a viewer `answerAdmits` turns away. */
-export const answerRefusedLine = (via: WaitFact["via"], ownerName: string): string =>
-  via === "terminal"
-    ? terminalReadOnlyLine(ownerName)
+/**
+ * Why Answer attaches none of the session's agent for a viewer `answerAdmits` turns away;
+ * `ownerName` is null for a session with no owner, which no one steers.
+ */
+export const answerRefusedLine = (via: WaitFact["via"], ownerName: string | null): string => {
+  if (ownerName === null) return "this session has no owner · no one steers it · no agent attached";
+  return via === "terminal"
+    ? `${ownerName}'s session runs in a terminal · only ${ownerName} types in it; they can continue it as a conversation · no agent attached`
     : `${ownerName}'s session · only ${ownerName} steers it while shared control is off · no agent attached`;
+};
 
 /**
  * Whether Answer lets `viewer` answer the session's wait: as `answerAdmits` lets her at its agent,
