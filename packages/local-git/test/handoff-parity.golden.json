@@ -1,0 +1,660 @@
+{
+  "mixed": {
+    "head": "64652973405868c0f96947599677a1bf81bd0010",
+    "index": "36357ba17fd18bd6bfc25c9ed219d7548eea4752",
+    "worktree": "27883c3fcfbe3259645e28297f5854b33b4ba7ee",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "fix/login",
+    "facts": {
+      "commitsAhead": 2,
+      "uncommitted": 6,
+      "untracked": 2
+    },
+    "leftOut": [
+      {
+        "path": ".env.defaults",
+        "reason": "env"
+      },
+      {
+        "path": ".env.example",
+        "reason": "env"
+      },
+      {
+        "path": "assets/two.dat",
+        "reason": "filter",
+        "filter": "marker"
+      },
+      {
+        "path": "config/.env.shared",
+        "reason": "env"
+      },
+      {
+        "path": "huge-staged.bin",
+        "reason": "over-limit",
+        "bytes": 65537
+      },
+      {
+        "path": ".env.local",
+        "reason": "env"
+      },
+      {
+        "path": "big.bin",
+        "reason": "over-limit",
+        "bytes": 65537
+      }
+    ],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["27883c3fcfbe3259645e28297f5854b33b4ba7ee refs/mend/handoff/snapshot"],
+      "objects": 16
+    }
+  },
+  "counted": {
+    "head": "d017207a99c17f454cf11ea13e8555199e3363fe",
+    "index": "6b06931764cc613455d0dc6ec5b0bf1b75c47b78",
+    "worktree": "9e481c677f0bd7f567cdc853f18ac20022a8ef59",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "fix/facts",
+    "facts": {
+      "commitsAhead": 2,
+      "uncommitted": 3,
+      "untracked": 1
+    },
+    "leftOut": [],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["9e481c677f0bd7f567cdc853f18ac20022a8ef59 refs/mend/handoff/snapshot"],
+      "objects": 15
+    }
+  },
+  "committed-env": {
+    "head": "52e374e18512cd95ffb79d2690b654bcff042aa9",
+    "index": "dfb9c76f0cae98db31eaceeba09804ad69d6efd8",
+    "worktree": "e03abc876270b5542e58dab2877321e8783afddb",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "fix/env",
+    "facts": {
+      "commitsAhead": 3,
+      "uncommitted": 0,
+      "untracked": 0
+    },
+    "leftOut": [],
+    "committedEnv": [
+      {
+        "path": "deploy/.env.staging",
+        "commit": "52e374e"
+      },
+      {
+        "path": ".env.prod",
+        "commit": "ff52f69"
+      }
+    ],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["e03abc876270b5542e58dab2877321e8783afddb refs/mend/handoff/snapshot"],
+      "objects": 11
+    }
+  },
+  "detached": {
+    "head": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "index": "fd8303ab8533c0ccac1b6082d991cde1f6adf29e",
+    "worktree": "546dbe4643f4b5483575ff9c6e751553b00fd87c",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": null,
+    "facts": {
+      "commitsAhead": 0,
+      "uncommitted": 1,
+      "untracked": 0
+    },
+    "leftOut": [],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["546dbe4643f4b5483575ff9c6e751553b00fd87c refs/mend/handoff/snapshot"],
+      "objects": 4
+    }
+  },
+  "linked-worktree": {
+    "head": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "index": "f049f7d9fd74c72aa5dc556724350ebb67e31174",
+    "worktree": "edf8c79022a438d3c609f208ec6903838ac14bd8",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "feature",
+    "facts": {
+      "commitsAhead": 0,
+      "uncommitted": 1,
+      "untracked": 1
+    },
+    "leftOut": [],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["edf8c79022a438d3c609f208ec6903838ac14bd8 refs/mend/handoff/snapshot"],
+      "objects": 6
+    }
+  },
+  "no-origin-main": {
+    "refused": "this checkout has no origin/main · run git fetch origin, then hand off again · nothing was created"
+  },
+  "unmerged": {
+    "refused": "1 unmerged path · finish or abort the merge, then hand off · nothing was created"
+  },
+  "non-utf8": {
+    "head": "c17540cd8670dd47d325a464d86747d488c7b731",
+    "index": "c5d88f36e56adaee6ad2cabf998dc4540efb0d8f",
+    "worktree": "4d5faf7c4c9a2196756cdbb6db9d3d3d9e023028",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "main",
+    "facts": {
+      "commitsAhead": 1,
+      "uncommitted": 1,
+      "untracked": 1
+    },
+    "leftOut": [],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["4d5faf7c4c9a2196756cdbb6db9d3d3d9e023028 refs/mend/handoff/snapshot"],
+      "objects": 8
+    }
+  },
+  "same-tick now": {
+    "head": "555ff5aca0dcc33456b4cf728cba6b22eba6bb9f",
+    "index": "80fdf95c65801c776526d6490c709fd81f8f9690",
+    "worktree": "effe231660a23a5b19f5ef3b5a856199732e7e3f",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "main",
+    "facts": {
+      "commitsAhead": 1,
+      "uncommitted": 1,
+      "untracked": 0
+    },
+    "leftOut": [],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["effe231660a23a5b19f5ef3b5a856199732e7e3f refs/mend/handoff/snapshot"],
+      "objects": 7
+    }
+  },
+  "same-tick before 1970": {
+    "head": "555ff5aca0dcc33456b4cf728cba6b22eba6bb9f",
+    "index": "80fdf95c65801c776526d6490c709fd81f8f9690",
+    "worktree": "effe231660a23a5b19f5ef3b5a856199732e7e3f",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "main",
+    "facts": {
+      "commitsAhead": 1,
+      "uncommitted": 1,
+      "untracked": 0
+    },
+    "leftOut": [],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["effe231660a23a5b19f5ef3b5a856199732e7e3f refs/mend/handoff/snapshot"],
+      "objects": 7
+    }
+  },
+  "same-tick before 1834": {
+    "head": "555ff5aca0dcc33456b4cf728cba6b22eba6bb9f",
+    "index": "80fdf95c65801c776526d6490c709fd81f8f9690",
+    "worktree": "effe231660a23a5b19f5ef3b5a856199732e7e3f",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "main",
+    "facts": {
+      "commitsAhead": 1,
+      "uncommitted": 1,
+      "untracked": 0
+    },
+    "leftOut": [],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["effe231660a23a5b19f5ef3b5a856199732e7e3f refs/mend/handoff/snapshot"],
+      "objects": 7
+    }
+  },
+  "dir-to-file": {
+    "head": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "index": "fd8303ab8533c0ccac1b6082d991cde1f6adf29e",
+    "worktree": "fef03aca6022e7fd78897e4a0a09c15a2e89025b",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "main",
+    "facts": {
+      "commitsAhead": 0,
+      "uncommitted": 1,
+      "untracked": 1
+    },
+    "leftOut": [],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["fef03aca6022e7fd78897e4a0a09c15a2e89025b refs/mend/handoff/snapshot"],
+      "objects": 4
+    }
+  },
+  "hidden-edits": {
+    "head": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "index": "fd8303ab8533c0ccac1b6082d991cde1f6adf29e",
+    "worktree": "64f6c50c432659639d8541cae55917a8fef81f7e",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "main",
+    "facts": {
+      "commitsAhead": 0,
+      "uncommitted": 3,
+      "untracked": 0
+    },
+    "leftOut": [
+      {
+        "path": "config/.env.shared",
+        "reason": "env"
+      }
+    ],
+    "committedEnv": [],
+    "hidden": [
+      {
+        "path": "a.txt",
+        "bit": "assume-unchanged"
+      },
+      {
+        "path": "b.txt",
+        "bit": "skip-worktree"
+      },
+      {
+        "path": "d.txt",
+        "bit": "assume-unchanged and skip-worktree"
+      }
+    ],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["64f6c50c432659639d8541cae55917a8fef81f7e refs/mend/handoff/snapshot"],
+      "objects": 6
+    }
+  },
+  "partial-clone": {
+    "refused": "this partial clone lacks objects a handoff reads, and mend handoff never fetches · git log -p 6622af7..HEAD fetches them, then hand off again · git said: … · nothing was created"
+  },
+  "fetched-partial-clone": {
+    "head": "24added8d108a8440822f86223b5e63319ec3e98",
+    "index": "bb4110eb60d0b97ab61f1e168b21b389672da394",
+    "worktree": "66ffbfd6d9398f0821214c0760d465b78ff5ecc7",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "feature",
+    "facts": {
+      "commitsAhead": 2,
+      "uncommitted": 1,
+      "untracked": 0
+    },
+    "leftOut": [],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["66ffbfd6d9398f0821214c0760d465b78ff5ecc7 refs/mend/handoff/snapshot"],
+      "objects": 10
+    }
+  },
+  "replaced": {
+    "head": "615c400057b164baf349db907f4fe3928621414c",
+    "index": "46c7a92962d5d20cd7d79be8ce23cfa548385c37",
+    "worktree": "afe6743bed1689cdccef7d0a9d2757ee6c2e6cb7",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "fix/real",
+    "facts": {
+      "commitsAhead": 1,
+      "uncommitted": 0,
+      "untracked": 0
+    },
+    "leftOut": [],
+    "committedEnv": [
+      {
+        "path": ".env.prod",
+        "commit": "615c400"
+      }
+    ],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["afe6743bed1689cdccef7d0a9d2757ee6c2e6cb7 refs/mend/handoff/snapshot"],
+      "objects": 5
+    }
+  },
+  "signed": {
+    "head": "3bbe8d23574fd9242b2e937abb2456140d8d5887",
+    "index": "8859b9ac59660b30be55b3d19aa85fa9e42ae82a",
+    "worktree": "4499924c1bb1fbaa2123c37905ef27e880e2cf51",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "fix/signed",
+    "facts": {
+      "commitsAhead": 1,
+      "uncommitted": 0,
+      "untracked": 0
+    },
+    "leftOut": [],
+    "committedEnv": [
+      {
+        "path": ".env.prod",
+        "commit": "3bbe8d2"
+      }
+    ],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["4499924c1bb1fbaa2123c37905ef27e880e2cf51 refs/mend/handoff/snapshot"],
+      "objects": 5
+    }
+  },
+  "sparse-index": {
+    "head": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "index": "fd8303ab8533c0ccac1b6082d991cde1f6adf29e",
+    "worktree": "6483470b66d15262b161b18d8b2e2dd3cb107baa",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "main",
+    "facts": {
+      "commitsAhead": 0,
+      "uncommitted": 1,
+      "untracked": 1
+    },
+    "leftOut": [],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["6483470b66d15262b161b18d8b2e2dd3cb107baa refs/mend/handoff/snapshot"],
+      "objects": 6
+    }
+  },
+  "evil-merge": {
+    "head": "1c4622bccbba5d74951843d8588be8d00db9e375",
+    "index": "e2d5b1a61ea50eb03a365b880a32e967abc7217d",
+    "worktree": "720b44a081376e2d063c4e94d8f33a512d3b7dbf",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "fix/merge",
+    "facts": {
+      "commitsAhead": 3,
+      "uncommitted": 0,
+      "untracked": 0
+    },
+    "leftOut": [],
+    "committedEnv": [
+      {
+        "path": ".env.prod",
+        "commit": "1c4622b"
+      }
+    ],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["720b44a081376e2d063c4e94d8f33a512d3b7dbf refs/mend/handoff/snapshot"],
+      "objects": 11
+    }
+  },
+  "ignored-env": {
+    "head": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "index": "fd8303ab8533c0ccac1b6082d991cde1f6adf29e",
+    "worktree": "df87d8290f98d11284ea9ef7995dd92381be3707",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "main",
+    "facts": {
+      "commitsAhead": 0,
+      "uncommitted": 0,
+      "untracked": 0
+    },
+    "leftOut": [
+      {
+        "path": ".env.production",
+        "reason": "env"
+      }
+    ],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["df87d8290f98d11284ea9ef7995dd92381be3707 refs/mend/handoff/snapshot"],
+      "objects": 2
+    }
+  },
+  "merged-main": {
+    "head": "474934bca130eae77cf7389cb7980f5527095a9b",
+    "index": "6d61fec5cc18fd514925ceae349db5217e082624",
+    "worktree": "2887724e5f7ae42b0b711d903b6b23ac9d75da6c",
+    "mergeBase": "22025e4fd9c33d03ffa799eab2bd3dc15fb3fd73",
+    "defaultTip": "22025e4fd9c33d03ffa799eab2bd3dc15fb3fd73",
+    "localBranch": "fix/catch-up",
+    "facts": {
+      "commitsAhead": 3,
+      "uncommitted": 0,
+      "untracked": 0
+    },
+    "leftOut": [],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": [
+        "-22025e4fd9c33d03ffa799eab2bd3dc15fb3fd73 main moves",
+        "-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"
+      ],
+      "refs": ["2887724e5f7ae42b0b711d903b6b23ac9d75da6c refs/mend/handoff/snapshot"],
+      "objects": 10
+    }
+  },
+  "newsroom": {
+    "head": "518ac1cec471dcc6bf1081bcb92568aa5b75d5fb",
+    "index": "8146689c787684c3abe18dd80fa61df1c97efab0",
+    "worktree": "37cf7d0db9a54a4abfa80034472e9d6cf9da8fad",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "fix/login",
+    "facts": {
+      "commitsAhead": 2,
+      "uncommitted": 3,
+      "untracked": 1
+    },
+    "leftOut": [
+      {
+        "path": ".env.local",
+        "reason": "env"
+      },
+      {
+        "path": "assets/demo.mov",
+        "reason": "over-limit",
+        "bytes": 102400
+      }
+    ],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["37cf7d0db9a54a4abfa80034472e9d6cf9da8fad refs/mend/handoff/snapshot"],
+      "objects": 14
+    }
+  },
+  "hidden-newsroom": {
+    "head": "518ac1cec471dcc6bf1081bcb92568aa5b75d5fb",
+    "index": "8146689c787684c3abe18dd80fa61df1c97efab0",
+    "worktree": "635c8f0560f78e4cd441ebffffb748ac107709a4",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "fix/login",
+    "facts": {
+      "commitsAhead": 2,
+      "uncommitted": 4,
+      "untracked": 1
+    },
+    "leftOut": [
+      {
+        "path": ".env.local",
+        "reason": "env"
+      },
+      {
+        "path": "assets/demo.mov",
+        "reason": "over-limit",
+        "bytes": 102400
+      }
+    ],
+    "committedEnv": [],
+    "hidden": [
+      {
+        "path": "b.txt",
+        "bit": "skip-worktree"
+      },
+      {
+        "path": "docs/guide.md",
+        "bit": "assume-unchanged"
+      }
+    ],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["635c8f0560f78e4cd441ebffffb748ac107709a4 refs/mend/handoff/snapshot"],
+      "objects": 16
+    }
+  },
+  "detached-newsroom": {
+    "head": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "index": "fd8303ab8533c0ccac1b6082d991cde1f6adf29e",
+    "worktree": "546dbe4643f4b5483575ff9c6e751553b00fd87c",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": null,
+    "facts": {
+      "commitsAhead": 0,
+      "uncommitted": 1,
+      "untracked": 0
+    },
+    "leftOut": [],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["546dbe4643f4b5483575ff9c6e751553b00fd87c refs/mend/handoff/snapshot"],
+      "objects": 4
+    }
+  },
+  "unborn": {
+    "refused": "this branch has no commit yet · commit once, then hand off · nothing was created"
+  },
+  "conflicted-newsroom": {
+    "refused": "1 unmerged path · finish or abort the merge, then hand off · nothing was created"
+  },
+  "nothing-fetched": {
+    "refused": "this checkout has no origin/main · run git fetch origin, then hand off again · nothing was created"
+  },
+  "other-default": {
+    "refused": "this checkout has no origin/main · run git fetch origin, then hand off again · nothing was created"
+  },
+  "renamed-default": {
+    "head": "205a5dd8b78af948386766ee4bc9ecab40c90731",
+    "index": "00e68269acb9f69588b9c46f2eadd29fee217877",
+    "worktree": "9bc1739270960298bea8ca456c24313ecd98b0d7",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "fix/login",
+    "facts": {
+      "commitsAhead": 2,
+      "uncommitted": 3,
+      "untracked": 1
+    },
+    "leftOut": [
+      {
+        "path": ".env.local",
+        "reason": "env"
+      },
+      {
+        "path": "assets/demo.mov",
+        "reason": "over-limit",
+        "bytes": 102400
+      }
+    ],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["9bc1739270960298bea8ca456c24313ecd98b0d7 refs/mend/handoff/snapshot"],
+      "objects": 14
+    }
+  },
+  "unset-default": {
+    "head": "518ac1cec471dcc6bf1081bcb92568aa5b75d5fb",
+    "index": "8146689c787684c3abe18dd80fa61df1c97efab0",
+    "worktree": "37cf7d0db9a54a4abfa80034472e9d6cf9da8fad",
+    "mergeBase": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "defaultTip": "6622af7d08e0c3524539ce75ebeec561f2d7d8c4",
+    "localBranch": "fix/login",
+    "facts": {
+      "commitsAhead": 2,
+      "uncommitted": 3,
+      "untracked": 1
+    },
+    "leftOut": [
+      {
+        "path": ".env.local",
+        "reason": "env"
+      },
+      {
+        "path": "assets/demo.mov",
+        "reason": "over-limit",
+        "bytes": 102400
+      }
+    ],
+    "committedEnv": [],
+    "hidden": [],
+    "cutAt": "2026-10-18T07:42:05.000Z",
+    "bundle": {
+      "prerequisites": ["-6622af7d08e0c3524539ce75ebeec561f2d7d8c4 init"],
+      "refs": ["37cf7d0db9a54a4abfa80034472e9d6cf9da8fad refs/mend/handoff/snapshot"],
+      "objects": 14
+    }
+  }
+}

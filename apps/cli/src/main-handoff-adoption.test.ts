@@ -1,6 +1,15 @@
 import * as path from "node:path";
 
-import { fingerprint } from "@mend/local-git/testing";
+import {
+  conflictedNewsroomCheckout,
+  danglingOriginHeadCheckout,
+  fingerprint,
+  nothingFetchedCheckout,
+  otherDefaultCheckout,
+  sparseIndexCheckout,
+  unbornCheckout,
+  unsetDefaultCheckout,
+} from "@mend/local-git/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { handoffCommand, type HandoffDeps } from "./handoff.ts";
@@ -28,43 +37,24 @@ const capture = () => {
 describe("mend handoff", spawning, () => {
   it("refuses what the checkout or the server would refuse before it offers to adopt", async () => {
     const w = world();
-    const unborn = path.join(w.root, "unborn");
-    w.git(w.root, ["init", "-q", "-b", "main", unborn]);
-    w.git(unborn, ["remote", "add", "origin", ORIGIN]);
-
-    const conflicted = newsroom(w, "conflicted");
-    w.git(conflicted, ["stash", "-q", "-u"]);
-    w.git(conflicted, ["switch", "-q", "-c", "theirs", "origin/main"]);
-    w.write(path.join(conflicted, "a.txt"), "theirs\n");
-    w.git(conflicted, ["commit", "-q", "-am", "theirs"]);
-    expect(() => w.git(conflicted, ["merge", "-q", "fix/login"])).toThrow();
-
-    const nothingFetched = newsroom(w, "nothing-fetched");
-    w.git(nothingFetched, ["update-ref", "-d", "refs/remotes/origin/main"]);
-
-    const otherDefault = newsroom(w, "other-default");
-    w.git(otherDefault, ["update-ref", "refs/remotes/origin/trunk", "refs/remotes/origin/main"]);
-    w.git(otherDefault, ["update-ref", "-d", "refs/remotes/origin/main"]);
-    w.git(otherDefault, ["remote", "set-head", "origin", "-d"]);
-
     const cases: ReadonlyArray<readonly [string, string, "bind" | "sources"]> = [
       [
-        unborn,
+        unbornCheckout(w, ORIGIN),
         "this branch has no commit yet · commit once, then hand off · nothing was created",
         "sources",
       ],
       [
-        conflicted,
+        conflictedNewsroomCheckout(w, ORIGIN),
         "1 unmerged path · finish or abort the merge, then hand off · nothing was created",
         "sources",
       ],
       [
-        nothingFetched,
+        nothingFetchedCheckout(w, ORIGIN),
         "this checkout has fetched no branch from origin · run git fetch origin, then hand off again · nothing was created",
         "sources",
       ],
       [
-        otherDefault,
+        otherDefaultCheckout(w, ORIGIN),
         "this checkout does not know origin's default branch · run git fetch origin && git remote set-head origin -a, then hand off again · nothing was created",
         "sources",
       ],
@@ -88,23 +78,13 @@ describe("mend handoff", spawning, () => {
 
   it("reads origin's default branch from its branches when origin/HEAD dangles or was never set", async () => {
     const w = world();
-    w.git(w.origin, ["branch", "-m", "main", "master"]);
-    w.git(w.origin, ["symbolic-ref", "HEAD", "refs/heads/master"]);
-    const renamed = newsroom(w, "renamed");
-    w.git(w.origin, ["branch", "-m", "master", "main"]);
-    w.git(w.origin, ["symbolic-ref", "HEAD", "refs/heads/main"]);
-    w.git(renamed, ["remote", "set-url", "origin", w.origin]);
-    w.git(renamed, ["fetch", "-q", "--prune", "origin"]);
-    w.git(renamed, ["remote", "set-url", "origin", ORIGIN]);
+    const renamed = danglingOriginHeadCheckout(w, ORIGIN);
     expect(w.git(renamed, ["symbolic-ref", "refs/remotes/origin/HEAD"])).toBe(
       "refs/remotes/origin/master",
     );
     expect(w.git(renamed, ["for-each-ref", "refs/remotes/origin/master"])).toBe("");
 
-    const unset = newsroom(w, "unset");
-    w.git(unset, ["remote", "set-head", "origin", "-d"]);
-
-    for (const checkout of [renamed, unset]) {
+    for (const checkout of [renamed, unsetDefaultCheckout(w, ORIGIN)]) {
       const before = fingerprint(checkout);
       const server = await handoffServer({ projects: [] });
       const result = await run(server, ["--yes"], checkout);
@@ -119,12 +99,8 @@ describe("mend handoff", spawning, () => {
 
   it("leaves an unadopted sparse-index checkout byte-identical through the checks before adoption", async () => {
     const w = world();
-    const dana = w.clone("sparse-api");
+    const dana = sparseIndexCheckout(w, "sparse-api");
     w.git(dana, ["remote", "set-url", "origin", ORIGIN]);
-    w.git(dana, ["sparse-checkout", "set", "--cone", "docs"]);
-    w.git(dana, ["config", "index.sparse", "true"]);
-    w.git(dana, ["sparse-checkout", "reapply"]);
-    w.write(path.join(dana, "docs/guide.md"), "guide, edited\n");
     const before = fingerprint(dana);
     const refusing = await handoffServer({ projects: [] });
     const refused = await run(refusing, [], dana);

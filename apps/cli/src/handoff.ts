@@ -16,14 +16,16 @@ import {
   type WireAnswer,
 } from "@mend/domain/workbench";
 import {
+  type Cancelled,
+  captureCheckout,
+  type CaptureRequest,
+  type CaptureSummary,
   checkoutOf,
-  type HandoffSnapshot,
   type LeftOut,
   machineName,
   preflightIssue,
+  type Refused,
   scratchParentIssue,
-  snapshotCheckout,
-  type SnapshotRequest,
 } from "@mend/local-git/handoff";
 import { originMatches } from "@mend/local-git/origin";
 import { Schema } from "effect";
@@ -159,7 +161,11 @@ const sizeOf = (bytes: number): string => formatBytes(bytes).replace(/\.0 /u, " 
 const count = (n: number, one: string, many: string): string =>
   n === 0 ? `no ${many}` : `${n} ${n === 1 ? one : many}`;
 
-type NamedLeftOut = Exclude<LeftOut, { readonly reason: "env" }>;
+type EnvLeftOut = Extract<LeftOut, { readonly reason: "env" | "ignored-env" }>;
+type NamedLeftOut = Exclude<LeftOut, EnvLeftOut>;
+
+const staysHere = (out: LeftOut): out is EnvLeftOut =>
+  out.reason === "env" || out.reason === "ignored-env";
 
 const leftOutLine = (out: NamedLeftOut, fileBytes: number): string =>
   out.reason === "over-limit"
@@ -167,47 +173,45 @@ const leftOutLine = (out: NamedLeftOut, fileBytes: number): string =>
     : `filter ${out.filter}, which a handoff does not run`;
 
 export const snapshotLines = (
-  snapshot: HandoffSnapshot,
-  defaultBranch: string,
+  summary: CaptureSummary,
   fileBytes: number,
 ): ReadonlyArray<string> => {
-  const where = snapshot.localBranch ?? `detached at ${snapshot.head.slice(0, 7)}`;
-  const env = snapshot.leftOut.filter((out) => out.reason === "env").map((out) => out.path);
+  const where = summary.localBranch ?? `detached at ${summary.head.slice(0, 7)}`;
+  const env = summary.leftOut.filter(staysHere).map((out) => out.path);
   return [
-    `${green("✓")} ${where} · ${formatFactLine({ ...snapshot.facts, defaultBranch })}`,
+    `${green("✓")} ${where} · ${formatFactLine({ ...summary.facts, defaultBranch: summary.defaultBranch })}`,
     `${dim("  stays here")} · gitignored files and .env files${env.length === 0 ? "" : `: ${env.join(", ")}`}`,
-    ...snapshot.committedEnv.map(
+    ...summary.committedEnv.map(
       (committed) => `${amber("  travels in a commit")} · ${committed.path} (${committed.commit})`,
     ),
-    ...snapshot.hidden.map(
+    ...summary.hidden.map(
       (file) => `${amber("  travels though hidden from git")} · ${file.path} (${file.bit})`,
     ),
-    ...snapshot.leftOut
-      .filter((out): out is NamedLeftOut => out.reason !== "env")
+    ...summary.leftOut
+      .filter((out): out is NamedLeftOut => !staysHere(out))
       .map((out) => `${dim("  left out")} · ${out.path} · ${leftOutLine(out, fileBytes)}`),
   ];
 };
 
-export const progressLine = (snapshot: HandoffSnapshot): string =>
+export const progressLine = (summary: CaptureSummary, bundleBytes: number): string =>
   dim(
-    `  bundling ${count(snapshot.facts.commitsAhead, "commit", "commits")} · ${count(
-      snapshot.facts.uncommitted + snapshot.facts.untracked,
+    `  bundling ${count(summary.facts.commitsAhead, "commit", "commits")} · ${count(
+      summary.facts.uncommitted + summary.facts.untracked,
       "file",
       "files",
-    )} → uploading ${sizeOf(snapshot.bundleBytes)} → creating worktree`,
+    )} → uploading ${sizeOf(bundleBytes)} → creating worktree`,
   );
 
 const clockOf = (iso: string): string => new Date(iso).toTimeString().slice(0, 8);
 
 export const receivedLines = (
   received: HandoffReceived,
-  snapshot: HandoffSnapshot,
-  defaultBranch: string,
+  summary: CaptureSummary,
 ): ReadonlyArray<string> => {
   const name = received.worktree.name;
   const first = handoffWorktreeName(
-    snapshot.localBranch,
-    Schema.decodeUnknownSync(HexSha)(snapshot.head),
+    summary.localBranch,
+    Schema.decodeUnknownSync(HexSha)(summary.head),
     () => false,
   );
   const handed = received.replayed ? `already handed off as ${name}` : `handed off as ${name}`;
@@ -222,9 +226,9 @@ export const receivedLines = (
       `${green("✓")} ${handed}`,
       ...why,
       "your checkout is unchanged",
-      `as of ${clockOf(snapshot.cutAt)}`,
+      `as of ${clockOf(summary.cutAt)}`,
     ].join(" · "),
-    `${dim("  base")} ${defaultBranch} ${snapshot.mergeBase.slice(0, 7)} · session ${received.session.id.slice(0, 8)}`,
+    `${dim("  base")} ${summary.defaultBranch} ${summary.mergeBase.slice(0, 7)} · session ${received.session.id.slice(0, 8)}`,
   ];
 };
 
@@ -384,8 +388,10 @@ const projectFor = async (
   }
   const issue = repositoryCloneUrlIssue(origin);
   if (issue !== null) return refuse(`${issue} · nothing was created`);
-  const local = await inScratch((scratch) => preflightIssue({ checkout: checkout.top, scratch }));
-  if (local !== null) return refuse(local);
+  const local = await withSignalsHeld(() =>
+    preflightIssue({ checkout: checkout.top, scratchParent: os.tmpdir() }),
+  );
+  if (local._tag !== "clear") return refuse(wordsOf(local));
   if (!(await serverTakesHandoffs(deps))) return oldServer(deps);
   // The terms answer for a project; before one is adopted the organization says the same store.
   const organization = await deps.api<{ readonly mountDelivery?: string }>("GET", "/organization");
@@ -416,12 +422,17 @@ const SIGNALS: ReadonlyArray<readonly [NodeJS.Signals, number]> = [
 
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+const INTERRUPTED = "interrupted · nothing was created";
+
+const wordsOf = (outcome: Refused | Cancelled): string =>
+  outcome._tag === "refused" ? outcome.message : INTERRUPTED;
+
 /**
- * `work` with a scratch directory under TMPDIR. The directory holds copies of the checkout's index
- * and uncommitted work, so it lives only inside this synchronous block. A signal meanwhile is held
- * until the block has removed it, then refuses the handoff, whatever the block did.
+ * A capture or preflight copies the checkout's index and uncommitted work into TMPDIR and removes
+ * the copy before it returns; a signal waits for that, then refuses the handoff whatever the work
+ * did.
  */
-const inScratch = async <T>(work: (scratch: string) => T): Promise<T> => {
+const withSignalsHeld = async <T>(work: () => T): Promise<T> => {
   const caught: { code: number | null } = { code: null };
   const holds = SIGNALS.map(([signal, code]) => {
     const hold = () => {
@@ -432,12 +443,7 @@ const inScratch = async <T>(work: (scratch: string) => T): Promise<T> => {
   });
   let ended: { readonly value: T } | { readonly error: unknown };
   try {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-handoff-"));
-    try {
-      ended = { value: work(scratch) };
-    } finally {
-      fs.rmSync(scratch, { recursive: true, force: true });
-    }
+    ended = { value: work() };
   } catch (error) {
     ended = { error };
   }
@@ -446,32 +452,39 @@ const inScratch = async <T>(work: (scratch: string) => T): Promise<T> => {
   await nextTurn();
   await nextTurn();
   for (const release of holds) release();
-  if (caught.code !== null) throw new Refusal("interrupted · nothing was created", caught.code);
+  if (caught.code !== null) throw new Refusal(INTERRUPTED, caught.code);
   if ("error" in ended) throw ended.error;
   return ended.value;
 };
 
 interface Cut {
-  readonly snapshot: HandoffSnapshot;
+  readonly summary: CaptureSummary;
   readonly bundle: Uint8Array<ArrayBuffer>;
 }
 
-/** The snapshot and its bundle's bytes. */
-const cutBundle = async (request: Omit<SnapshotRequest, "scratch">): Promise<Cut> => {
-  const outcome = await inScratch(
-    (scratch): { readonly cut: Cut } | { readonly refused: string } => {
-      const cut = snapshotCheckout({ ...request, scratch });
-      return cut._tag === "refused"
-        ? { refused: cut.message }
-        : {
-            cut: {
-              snapshot: cut.snapshot,
-              bundle: new Uint8Array(fs.readFileSync(cut.snapshot.bundlePath)),
-            },
-          };
-    },
-  );
-  return "refused" in outcome ? refuse(outcome.refused) : outcome.cut;
+const cutBundle = async (
+  request: Omit<CaptureRequest, "envFiles" | "scratchParent">,
+): Promise<Cut> => {
+  const outcome = await withSignalsHeld((): Cut | { readonly refused: string } => {
+    const captured = captureCheckout({
+      ...request,
+      envFiles: "exclude",
+      scratchParent: os.tmpdir(),
+    });
+    if (captured._tag !== "captured") return { refused: wordsOf(captured) };
+    try {
+      const packed = captured.capture.pack();
+      return packed._tag === "packed"
+        ? {
+            summary: captured.capture.summary,
+            bundle: new Uint8Array(fs.readFileSync(packed.bundlePath)),
+          }
+        : { refused: wordsOf(packed) };
+    } finally {
+      captured.capture.dispose();
+    }
+  });
+  return "refused" in outcome ? refuse(outcome.refused) : outcome;
 };
 
 const sendFrom = async (
@@ -483,18 +496,18 @@ const sendFrom = async (
   const { prompt, harness } = args;
   say(`${green("✓")} project ${project.name} ${dim(`· ${project.defaultBranch} · from origin`)}`);
   const terms = await termsFor(deps, project.id);
-  const { snapshot, bundle } = await cutBundle({
+  const { summary, bundle } = await cutBundle({
     checkout: checkout.top,
     defaultBranch: project.defaultBranch,
     machine: machineName(),
     maxFileBytes: terms.fileBytes,
     cutAt: new Date(),
   });
-  for (const line of snapshotLines(snapshot, project.defaultBranch, terms.fileBytes)) say(line);
-  if (snapshot.bundleBytes > terms.bundleBytes) {
-    return refuse(tooLarge(snapshot.bundleBytes, terms.bundleBytes));
+  for (const line of snapshotLines(summary, terms.fileBytes)) say(line);
+  if (bundle.byteLength > terms.bundleBytes) {
+    return refuse(tooLarge(bundle.byteLength, terms.bundleBytes));
   }
-  say(progressLine(snapshot));
+  say(progressLine(summary, bundle.byteLength));
 
   const route = `/projects/${project.id}/handoffs?harness=${encodeURIComponent(harness)}&hold=${prompt === null}`;
   const answer = await send(deps, route, bundle);
@@ -502,10 +515,10 @@ const sendFrom = async (
     case "oldServer":
       return oldServer(deps);
     case "tooLarge":
-      return refuse(tooLarge(snapshot.bundleBytes, answer.limit));
+      return refuse(tooLarge(bundle.byteLength, answer.limit));
     case "proxyRefused":
       return refuse(
-        `handoff not sent · something in front of the Mend server refused the ${sizeOf(snapshot.bundleBytes)} bundle (${snapshot.bundleBytes} bytes) with HTTP 413 · its body limit is below the bundle · nothing was created`,
+        `handoff not sent · something in front of the Mend server refused the ${sizeOf(bundle.byteLength)} bundle (${bundle.byteLength} bytes) with HTTP 413 · its body limit is below the bundle · nothing was created`,
       );
     case "refused":
       return refusal(`POST /projects/${project.id}/handoffs`, answer.answer);
@@ -516,7 +529,7 @@ const sendFrom = async (
       "the server's answer to the handoff is in a shape this CLI cannot read · update mend",
     );
   }
-  for (const line of receivedLines(received, snapshot, project.defaultBranch)) say(line);
+  for (const line of receivedLines(received, summary)) say(line);
   const sessionId = received.session.id;
   const id8 = sessionId.slice(0, 8);
   const watch = `${dim("  watch")} · ${deps.serverUrl}/sessions/${sessionId}`;
@@ -565,12 +578,9 @@ const handOff = async (
 ): Promise<void> => {
   const parsed = parseHandoffArgs(args);
   if ("error" in parsed) return refuse(parsed.error);
-  const checkout = checkoutOf(cwd);
-  if (checkout === null) {
-    return refuse(
-      `${cwd} is not inside a git checkout · run mend handoff in one · nothing was created`,
-    );
-  }
+  const found = checkoutOf(cwd);
+  if (found._tag !== "checkout") return refuse(wordsOf(found));
+  const { checkout } = found;
   const scratchIssue = scratchParentIssue(os.tmpdir(), checkout);
   if (scratchIssue !== null) return refuse(scratchIssue);
   const resolved = await projectFor(deps, args, parsed.args.project, checkout, io);

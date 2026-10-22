@@ -1,8 +1,6 @@
-import * as fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import * as path from "node:path";
 
-import { type HandoffWorld, handoffWorlds } from "@mend/local-git/testing";
+import { type HandoffWorld, handoffWorlds, newsroomCheckout } from "@mend/local-git/testing";
 
 import { mainTestFixtures } from "../main-test-fixtures.ts";
 
@@ -21,25 +19,8 @@ export const project = {
 export const OLD_SERVER =
   "mend: this Mend server (0.35.1) does not take handoffs · upgrade it, then hand off again · nothing was created\n";
 
-export const newsroom = (w: HandoffWorld, name = "newsroom-api", origin = ORIGIN) => {
-  const dana = w.clone(name);
-  const at = (file: string) => path.join(dana, file);
-  w.git(dana, ["remote", "set-url", "origin", origin]);
-  w.git(dana, ["switch", "-q", "-c", "fix/login"]);
-  w.write(at("login.ts"), "export const login = 1;\n");
-  w.git(dana, ["add", "login.ts"]);
-  w.git(dana, ["commit", "-q", "-m", "login"]);
-  w.write(at("a.txt"), "one\ntwo\n");
-  w.git(dana, ["commit", "-q", "-am", "two"]);
-  w.write(at("a.txt"), "one\ntwo\nstaged\n");
-  w.git(dana, ["add", "a.txt"]);
-  w.write(at("b.txt"), "unstaged\n");
-  fs.rmSync(at("d.txt"));
-  w.write(at("tests/login.test.ts"), "test\n");
-  w.write(at(".env.local"), "secret=1\n");
-  w.write(at("assets/demo.mov"), Buffer.alloc(100 * 1024, 1));
-  return dana;
-};
+export const newsroom = (w: HandoffWorld, name?: string, origin = ORIGIN) =>
+  newsroomCheckout(w, origin, name);
 
 export const received = (
   overrides: {
