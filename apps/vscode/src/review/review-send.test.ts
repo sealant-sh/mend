@@ -1751,6 +1751,82 @@ class FailsThenHolds extends FakeMend {
   }
 }
 
+describe("a send another window left behind, which this window cannot pick up at once", () => {
+  /** A window that left its send on its way to Mend, and one that finds its lease stale. */
+  const left = async (files: KeptFiles, connection: () => Promise<MendConnection>) => {
+    const directory = await storage();
+    const mend = new Unanswered();
+    mend.serverComments = [comment({ id: "c1" })];
+    const following = await window(
+      new KeptReviews(directory, files, () => Date.now() + DRIVE_STALE_MS),
+      mend,
+      { ...withAgent(CLAUDE), connection },
+    );
+    const closing = await window(keptIn(directory), mend);
+    const composed = closing.store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    await sendComposed(closing.store, composed, composed.text);
+    await mend.asked;
+    return following.store;
+  };
+
+  it("looks again 2 s after a look it could not keep, then 4 s after the next", async () => {
+    let failWrites = 0;
+    const files: KeptFiles = {
+      ...NODE_FILES,
+      rename: async (from, to) => {
+        if (failWrites > 0 && to.endsWith(".json")) {
+          failWrites -= 1;
+          throw new Error("EIO: the disk did not take the write");
+        }
+        await NODE_FILES.rename(from, to);
+      },
+    };
+    const store = await left(files, async () => ({ url: "http://mend", token: null }));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      failWrites = 2;
+      store.reread();
+      await vi.waitFor(() => expect(failWrites).toBe(1), SETTLE);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.waitFor(() => expect(failWrites).toBe(0), SETTLE);
+      await vi.advanceTimersByTimeAsync(4_000);
+      vi.useRealTimers();
+      await vi.waitFor(
+        () => expect(store.review().sends.map(({ phase }) => phase.kind)).toEqual(["failed"]),
+        { timeout: 3_000 },
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 15_000);
+
+  it("never looks again while VS Code is connected to another server, and picks it up once a read of its own server does", async () => {
+    let url = "http://mend";
+    let connections = 0;
+    const store = await left(NODE_FILES, async () => {
+      connections += 1;
+      return { url, token: null };
+    });
+    url = "http://other";
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await store.reloadReview();
+      const looked = connections;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(connections).toBe(looked);
+    } finally {
+      vi.useRealTimers();
+    }
+    url = "http://mend";
+    store.reread();
+    await vi.waitFor(
+      () => expect(store.review().sends.map(({ phase }) => phase.kind)).toEqual(["failed"]),
+      SETTLE,
+    );
+  }, 15_000);
+});
+
 describe("a second window sends a review composed before the first window's went out", () => {
   it("sends nothing once the first was pasted into claude's terminal, and a new review with more still goes", async () => {
     const directory = await storage();
