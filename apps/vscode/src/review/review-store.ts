@@ -247,8 +247,6 @@ export class ReviewStore implements vscode.Disposable {
   #you = "You";
   /** Her name as Mend writes it on her comments; null when it is not known. */
   #author: string | null = null;
-  /** A session whose kept reviews were read but not yet loaded: see `#load`. */
-  #unloaded: ReviewPlace | null = null;
   /**
    * The read of a change she asked for, until it ends: its failure toasts once. `before` is when
    * the pass Mend held before she asked started, by Mend's clock: a pass that started at another
@@ -281,11 +279,6 @@ export class ReviewStore implements vscode.Disposable {
       keepAt: (place, update) => this.#keepAt(place, update),
       fail: (what, words, options) => this.#fail(what, words, options),
       settled: (sessionId) => this.#rereadIfFollowed(sessionId),
-      loadAgain: (place) => {
-        if (this.#place === null || !samePlace(this.#place, place)) return;
-        this.#unloaded = this.#place;
-        this.#request();
-      },
     });
   }
 
@@ -392,6 +385,7 @@ export class ReviewStore implements vscode.Disposable {
       this.#review = review;
       this.#changed.fire();
     }
+    await this.#recover(place);
     // A delivery another window drove may have failed while she looked elsewhere.
     for (const record of this.#review.sends) {
       const failed = failedDelivery(place, record);
@@ -940,6 +934,14 @@ export class ReviewStore implements vscode.Disposable {
     };
   }
 
+  /** Picks up any send of the followed session no window drives: see `SendDriver.recover`. */
+  async #recover(place: ReviewPlace): Promise<void> {
+    const read = this.ready();
+    if (read === null || !samePlace(this.#place, place)) return;
+    // A recovery that cannot take the lock now runs again with the next read of the review.
+    await this.#driver.recover(this.#context(read, place), this.#review).catch(() => undefined);
+  }
+
   #rereadIfFollowed(sessionId: string): void {
     if (this.followed()?.session.id === sessionId) this.reread();
   }
@@ -1066,11 +1068,7 @@ export class ReviewStore implements vscode.Disposable {
         this.#see(next.read);
         if (this.#place !== null) await this.#keepHeld(this.#place);
         this.#tellFailure(next.read);
-        const unloaded = this.#unloaded;
-        if (unloaded !== null && unloaded === this.#place) {
-          this.#unloaded = null;
-          await this.#driver.load(this.#context(next.read, unloaded));
-        }
+        if (this.#place !== null) await this.#recover(this.#place);
       }
     } catch (cause) {
       if (generation !== this.#generation) return;
@@ -1128,7 +1126,6 @@ export class ReviewStore implements vscode.Disposable {
       const { review } = await this.kept.read(place);
       if (this.followed()?.session.id === session.id && !samePlace(this.#place, place)) {
         this.#place = place;
-        this.#unloaded = place;
         this.#review = review;
       }
     }

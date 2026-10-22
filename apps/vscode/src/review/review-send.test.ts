@@ -902,18 +902,7 @@ describe("a window that loads its kept reviews while another window sends one", 
     if (fromA === null) throw new Error("nothing composed");
     const sent = sendComposed(a.store, fromA, fromA.text);
     await claiming;
-    const { promise: loaded, resolve: load } = Promise.withResolvers<void>();
-    const b = await window(
-      keptIn(directory, {
-        ...NODE_FILES,
-        rm: async (path) => {
-          await NODE_FILES.rm(path);
-          if (path.endsWith(".lock")) load();
-        },
-      }),
-      mend,
-    );
-    await loaded;
+    const b = await window(keptIn(directory), mend);
     allow();
     expect(await sent).toEqual({ sent: true });
     await vi.waitFor(() => expect(a.pastes).toHaveLength(1), SETTLE);
@@ -922,7 +911,7 @@ describe("a window that loads its kept reviews while another window sends one", 
     expect(b.store.review().sends.map(({ phase }) => phase.kind)).toEqual(["in-terminal"]);
   });
 
-  it("leaves a failed send that window's Retry claims while this one waits to load it", async () => {
+  it("leaves a send that window's Retry claims while this one waits to pick it up", async () => {
     const directory = await storage();
     const mend = new FailsThenHolds();
     mend.answer = "pending";
@@ -932,11 +921,9 @@ describe("a window that loads its kept reviews while another window sends one", 
     const fromA = a.store.compose();
     if (fromA === null) throw new Error("nothing composed");
     await sendComposed(a.store, fromA, fromA.text);
-    await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
-    const target = a.store.retryTarget();
-    if (target === null) throw new Error("no Retry delivery offered");
+    await mend.asked;
 
-    // The second window reads the failed send undriven, then waits on the lock to load it.
+    // The second window reads the send sending, then waits on the lock to pick it up.
     const { promise: locking, resolve: lock } = Promise.withResolvers<void>();
     const { promise: allowed, resolve: allow } = Promise.withResolvers<void>();
     const { promise: loaded, resolve: load } = Promise.withResolvers<void>();
@@ -960,7 +947,12 @@ describe("a window that loads its kept reviews while another window sends one", 
       mend,
     );
     await locking;
-    // Meanwhile Retry delivery claims the send here, keeps it sending, and asks Mend again.
+    // Meanwhile the first delivery fails, and Retry delivery claims the send here, keeps it
+    // sending, and asks Mend again.
+    mend.fails();
+    await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
+    const target = a.store.retryTarget();
+    if (target === null) throw new Error("no Retry delivery offered");
     const retried = a.store.retry(target);
     await mend.reached;
     allow();
@@ -1147,13 +1139,24 @@ describe("a window already following the session when another window's send is l
   });
 });
 
-/** Mend whose first follow-up fails on its side, and whose next waits until the test answers it. */
+/**
+ * Mend whose first follow-up waits until the test fails it on Mend's side, and whose next waits
+ * until the test answers it.
+ */
 class FailsThenHolds extends FakeMend {
   #failing = true;
+  readonly #asked = Promise.withResolvers<void>();
+  readonly #failed = Promise.withResolvers<void>();
   readonly #reached = Promise.withResolvers<void>();
   readonly #answered = Promise.withResolvers<void>();
+  /** Settles once the first follow-up reaches Mend. */
+  readonly asked = this.#asked.promise;
   /** Settles once a follow-up after the failed one reaches Mend. */
   readonly reached = this.#reached.promise;
+
+  fails(): void {
+    this.#failed.resolve();
+  }
 
   answers(): void {
     this.#answered.resolve();
@@ -1164,6 +1167,8 @@ class FailsThenHolds extends FakeMend {
   ): ReturnType<FakeMend["deliver"]> {
     if (this.#failing) {
       this.#failing = false;
+      this.#asked.resolve();
+      await this.#failed.promise;
       throw new MendApiError("Mend is restarting", 503);
     }
     this.#reached.resolve();

@@ -64,8 +64,6 @@ export interface DriverHost {
   fail(what: string, words: string, options?: FailOptions): void;
   /** A drive of this session ended: the section reads it again when it follows that session. */
   settled(sessionId: string): void;
-  /** A lease another window held may have gone stale: load this place's kept reviews again. */
-  loadAgain(place: ReviewPlace): void;
 }
 
 /**
@@ -119,6 +117,9 @@ const abandonedPasteWords = (record: SendRecord): string | null => {
 
 const CLOSED = "VS Code closed before Mend answered";
 
+/** How soon a window looks again at a send its own drive left, when the drive failed. */
+const LOOK_AGAIN_MS = 1_000;
+
 /** How often a launch is watched, and for how many steps before it reads failed. */
 const WATCH_MS = 3_000;
 const MAX_TURNS = 400;
@@ -166,8 +167,13 @@ export class SendDriver {
   readonly #driving = new Map<string, Promise<void>>();
   /** The records this window holds the lease to drive, by drive. */
   readonly #leased = new Set<string>();
-  /** When this window loads its kept reviews again, for a send another window's lease holds. */
-  #loadAgain: NodeJS.Timeout | null = null;
+  /**
+   * When this window looks again at a send no drive here moves on: when another window's lease on
+   * it goes stale, or soon after this window's own drive of it failed. By drive.
+   */
+  readonly #lookAgain = new Map<string, NodeJS.Timeout>();
+  /** What a send this window stopped driving reads once a window finds it left, by drive. */
+  readonly #stopped = new Map<string, string>();
 
   constructor(
     private readonly kept: KeptReviews,
@@ -179,7 +185,8 @@ export class SendDriver {
   ) {}
 
   dispose(): void {
-    if (this.#loadAgain !== null) clearTimeout(this.#loadAgain);
+    for (const timer of this.#lookAgain.values()) clearTimeout(timer);
+    this.#lookAgain.clear();
   }
 
   /**
@@ -281,35 +288,50 @@ export class SendDriver {
   }
 
   /**
-   * A window that loads a send it did not see end does not know it was sent: it says so, in what
+   * Run on every read of the kept review at `context.place`: a send the driver needs that no window
+   * drives is picked up here, whichever window left it and whenever this window started following
+   * the session. Only a send no drive here moves on and no look again is due for costs the lock.
+   */
+  async recover(context: SendContext, review: SessionReview): Promise<void> {
+    const left = review.sends.some((record) => {
+      const id = driveId(context, record.key);
+      return needs(record) === "driver" && !this.#driving.has(id) && !this.#lookAgain.has(id);
+    });
+    if (left) await this.#load(context);
+  }
+
+  /**
+   * A window that finds a send it did not see end does not know it was sent: it says so, in what
    * it keeps. One Mend was launching goes on being watched, by reads only.
    */
-  async load(context: SendContext): Promise<void> {
+  async #load(context: SendContext): Promise<void> {
     const now = new Date().toISOString();
     // A send another window drives now is that window's: this one neither ends it nor drives it.
     // Its leases are read under the lock: a window claims a send's drive before it keeps the send,
     // so a send kept sending since, by a new Send or a Retry, reads driven here.
     const undriven = new Set<string>();
-    /** How long each other window drives a send for, unless it renews its lease. */
-    const drivenFor: Array<number> = [];
+    /** How long another window drives each send for, unless it renews its lease. */
+    const drivenFor = new Map<string, number>();
     const loaded = await this.host.keepAt(context.place, async (review) => {
       undriven.clear();
-      drivenFor.length = 0;
+      drivenFor.clear();
       for (const record of review.sends) {
         if (needs(record) !== "driver" || this.#driving.has(driveId(context, record.key))) continue;
+        if (this.kept.drives(context.place, record.key)) continue;
         const left = await this.kept.drivenFor(context.place, record.key);
         if (left === null) undriven.add(record.key);
-        else drivenFor.push(left);
+        else drivenFor.set(record.key, left);
       }
       return {
         ...review,
-        sends: review.sends.map((record) =>
-          undriven.has(record.key)
-            ? step(record, { kind: "abandoned", words: CLOSED }, now)
-            : record,
-        ),
+        sends: review.sends.map((record) => {
+          if (!undriven.has(record.key)) return record;
+          const words = this.#stopped.get(driveId(context, record.key)) ?? CLOSED;
+          return step(record, { kind: "abandoned", words }, now);
+        }),
       };
     });
+    for (const key of undriven) this.#stopped.delete(driveId(context, key));
     for (const record of loaded.sends) {
       if (!undriven.has(record.key)) continue;
       if (nextAction(record).kind !== "idle") void this.#drive(context, record.key);
@@ -320,17 +342,21 @@ export class SendDriver {
         });
     }
     // A window reloaded during a send left its lease behind: once that lease goes stale, nobody
-    // drives the send, so this window loads it again then.
-    if (drivenFor.length > 0) this.#loadAgainIn(context.place, Math.min(...drivenFor));
+    // drives the send, so this window looks again then.
+    for (const [key, ms] of drivenFor) this.#lookAgainIn(context, key, ms);
   }
 
-  #loadAgainIn(place: ReviewPlace, ms: number): void {
-    if (this.#loadAgain !== null) clearTimeout(this.#loadAgain);
-    this.#loadAgain = setTimeout(() => {
-      this.#loadAgain = null;
-      this.host.loadAgain(place);
+  #lookAgainIn(context: SendContext, key: string, ms: number): void {
+    const id = driveId(context, key);
+    const armed = this.#lookAgain.get(id);
+    if (armed !== undefined) clearTimeout(armed);
+    const timer = setTimeout(() => {
+      this.#lookAgain.delete(id);
+      // A look that fails waits for the next read of the kept review, which looks again.
+      void this.#load(context).catch(() => undefined);
     }, ms);
-    this.#loadAgain.unref();
+    timer.unref();
+    this.#lookAgain.set(id, timer);
   }
 
   /** A record's next step, kept for its own session whichever session the section follows. */
@@ -356,7 +382,11 @@ export class SendDriver {
     const before = this.#driving.get(id) ?? Promise.resolve();
     const run: Promise<void> = before
       .then(() => this.#driveOnce(context, key))
-      .catch((cause: unknown) => this.host.fail("error", errorWords(cause), { cause }))
+      .catch((cause: unknown) => {
+        this.host.fail("error", errorWords(cause), { cause });
+        // The drive could not keep where the send is: it is left, and looked at again soon.
+        this.#lookAgainIn(context, key, LOOK_AGAIN_MS);
+      })
       .finally(() => {
         if (this.#driving.get(id) === run) this.#driving.delete(id);
       });
@@ -566,11 +596,15 @@ export class SendDriver {
         if (thrown instanceof DriveLost) throw thrown;
         const retryable = !refuses(thrown);
         const cause = thrown instanceof WriteFailed ? thrown.failure : thrown;
+        const id = driveId(context, key);
+        // Should this step not be kept either, the window that finds the send left says why.
+        this.#stopped.set(id, errorWords(cause));
         const failed = await this.#step(context, key, {
           kind: "failed",
           words: errorWords(cause),
           retryable,
         });
+        this.#stopped.delete(id);
         if (!this.#sayFailed(context.place, failed, cause))
           this.host.fail(
             `delivery:${key}`,

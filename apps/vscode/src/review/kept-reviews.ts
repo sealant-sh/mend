@@ -195,6 +195,11 @@ export class KeptReviews {
     await this.#release(lease, this.#window);
   }
 
+  /** Whether this window holds the lease to drive this send. */
+  drives(place: ReviewPlace, key: string): boolean {
+    return this.#drives.has(this.#lease(place, key));
+  }
+
   /**
    * How long another window drives this send for, in ms, unless it renews its lease: after that the
    * lease is stale. Null when no other window drives it now.
