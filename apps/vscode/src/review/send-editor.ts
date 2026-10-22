@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 
+import { samePlace } from "./kept-reviews.js";
 import type { ReviewDocument } from "./pending.js";
 import type { DocumentRef, ReviewStore } from "./review-store.js";
 import { retryDelivery } from "./review-toast.js";
@@ -159,6 +160,13 @@ export class SendEditor implements vscode.Disposable {
   async #open(): Promise<void> {
     // Words this window holds are kept first, so the review lists them and is current when sent.
     await this.store.reloadReview();
+    // What she typed in the session's review is saved first, so a review composed anew carries it.
+    if (!(await this.#saveOpen())) {
+      void vscode.window.showWarningMessage(
+        "VS Code did not save the review you are writing, so Send review did not compose it again. Your text stays in its editor.",
+      );
+      return;
+    }
     const composition = this.store.compose();
     if (composition === null) return;
     const kept = await this.store.keepDocument(composition);
@@ -170,6 +178,25 @@ export class SendEditor implements vscode.Disposable {
       documentUri(kept.ref, kept.document.composed.sessionName),
     );
     await vscode.window.showTextDocument(document, { preview: false });
+  }
+
+  /** Saves the editors of the session's kept review that hold unsaved words: whether all saved. */
+  async #saveOpen(): Promise<boolean> {
+    const place = this.store.place();
+    const kept = this.store.review().document;
+    if (place === null || kept === null) return true;
+    for (const document of vscode.workspace.textDocuments) {
+      const ref = refOf(document.uri);
+      if (
+        document.isDirty &&
+        ref !== null &&
+        samePlace(ref.place, place) &&
+        ref.id === kept.composed.documentId &&
+        !(await document.save())
+      )
+        return false;
+    }
+    return true;
   }
 
   async #send(uri: vscode.Uri | undefined): Promise<void> {
