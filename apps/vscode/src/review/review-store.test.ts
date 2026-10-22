@@ -797,7 +797,7 @@ describe("sending a review from the store", () => {
     const [accepted] = store.review().pending;
     if (accepted === undefined) throw new Error("the draft was not accepted");
     const words = "Keep the limiter, and add a test for the burst case.";
-    expect(await store.edit(accepted.id, words)).toEqual({ kept: true });
+    const edited = await store.edit(accepted.id, words);
     const key = await sendAll(store);
     await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
     const hers = mend.serverComments.find((one) => one.body === words);
@@ -810,6 +810,7 @@ describe("sending a review from the store", () => {
     expect(mend.delivered[0]?.commentIds).toEqual([hers?.id]);
     expect(mend.serverComments.find((one) => one.id === "d1")?.state).toBe("dismissed");
     expect(mend.writes).toEqual([`post ${words}`, "state d1 dismissed", `deliver s1 ${key}`]);
+    expect(edited).toEqual({ kept: true });
   });
 
   it("posts her comments on modified, renamed and deleted files where Mend's own check takes them", async () => {
