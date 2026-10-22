@@ -123,8 +123,36 @@ type Claimed =
   | { readonly kind: "unmoved"; readonly record: SendRecord | undefined }
   | { readonly kind: "elsewhere" };
 
-const driveId = (context: SendContext, key: string): string =>
-  JSON.stringify([context.place.url, context.place.viewer, context.place.sessionId, key]);
+const driveId = (place: ReviewPlace, key: string): string =>
+  JSON.stringify([place.url, place.viewer, place.sessionId, key]);
+
+/** Runs `op` once every op queued before it under `id` has settled, so no two interleave. */
+const queued = <T>(
+  queue: Map<string, Promise<unknown>>,
+  id: string,
+  op: () => Promise<T>,
+): Promise<T> => {
+  const run = (queue.get(id) ?? Promise.resolve()).then(op);
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  queue.set(id, settled);
+  void settled.finally(() => {
+    if (queue.get(id) === settled) queue.delete(id);
+  });
+  return run;
+};
+
+/** What Retry's admission found: a drive to start, under the claim it kept, or its answer. */
+type Admitted =
+  | { readonly kind: "drive"; readonly context: SendContext }
+  | { readonly kind: "answer"; readonly answer: Retried };
+
+const answer = (words: string): Admitted => ({
+  kind: "answer",
+  answer: { retried: false, words: `Retry delivery sent nothing: ${words}` },
+});
 
 class DriveLost extends Error {}
 
@@ -196,6 +224,16 @@ export class SendDriver {
   readonly #driving = new Map<string, Promise<void>>();
   readonly #leased = new Set<string>();
   readonly #lookAgain = new Map<string, NodeJS.Timeout>();
+  /**
+   * How many claims this window holds on each send's lease: a new send's, a Retry's, a recovery's.
+   * Each claim is given back once by whoever made it, or by the drive it was handed to, and the
+   * lease goes only with the last: a Retry that loses never takes the lease from the drive that won.
+   */
+  readonly #claims = new Map<string, number>();
+  /** Claims and releases of each lease, one at a time. */
+  readonly #leasing = new Map<string, Promise<unknown>>();
+  /** Retries of each send, one at a time: the second reads what the first kept. */
+  readonly #retrying = new Map<string, Promise<unknown>>();
   #disposed = false;
 
   constructor(
@@ -229,27 +267,29 @@ export class SendDriver {
   }
 
   async retry(target: RetryTarget, author: string | null): Promise<Retried> {
+    const admitted = await queued(this.#retrying, driveId(target.place, target.key), () =>
+      this.#admitRetry(target, author),
+    );
+    if (admitted.kind === "answer") return admitted.answer;
+    await this.#drive(admitted.context, target.key);
+    return { retried: true };
+  }
+
+  async #admitRetry(target: RetryTarget, author: string | null): Promise<Admitted> {
     const record = sendOf((await this.kept.read(target.place)).review, target.key);
-    if (record === undefined)
-      return {
-        retried: false,
-        words: "Retry delivery sent nothing: VS Code no longer keeps this review",
-      };
+    if (record === undefined) return answer("VS Code no longer keeps this review");
     const bind = () => boundConnection(this.sessions, target.place);
     let detail: SessionDetail;
     try {
       detail = await this.sessions.pinned(bind).sessionDetail(target.place.sessionId);
     } catch (cause) {
       if (!(cause instanceof Unbound)) throw cause;
-      return { retried: false, words: `Retry delivery sent nothing: ${cause.message}` };
+      return answer(cause.message);
     }
     const viewer = target.place.viewer;
     const agent = liveAgent(detail, viewer);
     if (detail.changeId === null || !mayRetry(record, agent))
-      return {
-        retried: false,
-        words: `Retry delivery sent nothing: this review already reads ${commentLabel(record, null, agent)}`,
-      };
+      return answer(`this review already reads ${commentLabel(record, null, agent)}`);
     const context: SendContext = {
       place: target.place,
       changeId: detail.changeId,
@@ -263,10 +303,9 @@ export class SendDriver {
       try {
         mend = await this.#readFollowUp(this.client.pinned(bind), context, record);
       } catch (cause) {
-        return {
-          retried: false,
-          words: `Retry delivery sent nothing: Mend could not say whether it still holds this review: ${errorWords(cause)}`,
-        };
+        return answer(
+          `Mend could not say whether it still holds this review: ${errorWords(cause)}`,
+        );
       }
     const at = new Date().toISOString();
     let busy = false;
@@ -276,29 +315,20 @@ export class SendDriver {
         startsDrive(sendOf(review, target.key), sendOf(next, target.key)) && !admits(review.sends);
       return busy ? review : next;
     });
-    if (busy)
-      return {
-        retried: false,
-        words: "Retry delivery sent nothing: Mend is still sending your last review",
-      };
+    if (busy) return answer("Mend is still sending your last review");
     switch (claimed.kind) {
       case "elsewhere":
-        return {
-          retried: false,
-          words: "Retry delivery sent nothing: another window of VS Code is delivering this review",
-        };
+        return answer("another window of VS Code is delivering this review");
       case "unmoved":
-        return {
-          retried: false,
-          words:
-            claimed.record === undefined
-              ? "Retry delivery sent nothing: VS Code no longer keeps this review"
-              : `Retry delivery sent nothing: this review already reads ${commentLabel(claimed.record, null, agent)}`,
-        };
+        return answer(
+          claimed.record === undefined
+            ? "VS Code no longer keeps this review"
+            : `this review already reads ${commentLabel(claimed.record, null, agent)}`,
+        );
       case "kept":
-        if (nextAction(claimed.record).kind !== "idle") await this.#drive(context, target.key);
-        else await this.kept.releaseDrive(target.place, target.key);
-        return { retried: true };
+        if (nextAction(claimed.record).kind !== "idle") return { kind: "drive", context };
+        await this.#release(target.place, target.key);
+        return { kind: "answer", answer: { retried: true } };
     }
   }
 
@@ -313,7 +343,7 @@ export class SendDriver {
     key: string,
     update: (review: SessionReview) => SessionReview,
   ): Promise<Claimed> {
-    if (!(await this.kept.claimDrive(place, key))) return { kind: "elsewhere" };
+    if (!(await this.#claim(place, key))) return { kind: "elsewhere" };
     let moved = false;
     let review: SessionReview;
     try {
@@ -323,18 +353,41 @@ export class SendDriver {
         return next;
       });
     } catch (cause) {
-      await this.kept.releaseDrive(place, key).catch(() => undefined);
+      await this.#release(place, key).catch(() => undefined);
       throw cause;
     }
     const record = sendOf(review, key);
     if (moved && record !== undefined) return { kind: "kept", record };
-    await this.kept.releaseDrive(place, key);
+    await this.#release(place, key);
     return { kind: "unmoved", record };
+  }
+
+  /** A claim of the send's lease, counted, so this window gives the lease back only with its last. */
+  async #claim(place: ReviewPlace, key: string): Promise<boolean> {
+    const id = driveId(place, key);
+    return queued(this.#leasing, id, async () => {
+      if (!(await this.kept.claimDrive(place, key))) return false;
+      this.#claims.set(id, (this.#claims.get(id) ?? 0) + 1);
+      return true;
+    });
+  }
+
+  async #release(place: ReviewPlace, key: string): Promise<void> {
+    const id = driveId(place, key);
+    await queued(this.#leasing, id, async () => {
+      const left = (this.#claims.get(id) ?? 1) - 1;
+      if (left > 0) {
+        this.#claims.set(id, left);
+        return;
+      }
+      this.#claims.delete(id);
+      await this.kept.releaseDrive(place, key);
+    });
   }
 
   async recover(context: SendContext, review: SessionReview): Promise<void> {
     const left = review.sends.flatMap((record) => {
-      const id = driveId(context, record.key);
+      const id = driveId(context.place, record.key);
       return needs(record) === "driver" &&
         !this.#driving.has(id) &&
         !this.#lookAgain.has(id) &&
@@ -367,7 +420,7 @@ export class SendDriver {
     try {
       loaded = await this.host.keepAt(place, async (review) => {
         for (const record of review.sends) {
-          const id = driveId(context, record.key);
+          const id = driveId(context.place, record.key);
           if (needs(record) !== "driver" || this.#driving.has(id) || undriven.has(record.key))
             continue;
           if (this.kept.drives(place, record.key)) continue;
@@ -375,7 +428,7 @@ export class SendDriver {
           if (left !== null) drivenFor.set(record.key, left);
           // A stale lease is taken over before the send is stepped: the window that held it, if
           // it only slept, finds its next renewal refused and stops.
-          else if (await this.kept.claimDrive(place, record.key)) undriven.add(record.key);
+          else if (await this.#claim(place, record.key)) undriven.add(record.key);
           else drivenFor.set(record.key, LOOK_AGAIN_MS);
         }
         return {
@@ -388,13 +441,13 @@ export class SendDriver {
         };
       });
     } catch (cause) {
-      for (const key of undriven) await this.kept.releaseDrive(place, key).catch(() => undefined);
+      for (const key of undriven) await this.#release(place, key).catch(() => undefined);
       throw cause;
     }
     for (const record of loaded.sends) {
       if (!undriven.has(record.key)) continue;
       if (nextAction(record).kind !== "idle") void this.#drive(context, record.key);
-      else await this.kept.releaseDrive(place, record.key);
+      else await this.#release(place, record.key);
     }
     for (const [key, ms] of drivenFor) this.#lookAgainIn(context, key, ms);
   }
@@ -412,7 +465,7 @@ export class SendDriver {
     why: StopReason | null = null,
   ): void {
     if (this.#disposed) return;
-    const id = driveId(context, key);
+    const id = driveId(context.place, key);
     const armed = this.#lookAgain.get(id);
     if (armed !== undefined) clearTimeout(armed);
     const timer = setTimeout(() => {
@@ -427,7 +480,7 @@ export class SendDriver {
 
   async #step(context: SendContext, key: string, event: SendEvent): Promise<SendRecord | null> {
     if (
-      this.#leased.has(driveId(context, key)) &&
+      this.#leased.has(driveId(context.place, key)) &&
       !(await this.kept.renewDrive(context.place, key))
     )
       throw new DriveLost();
@@ -442,8 +495,9 @@ export class SendDriver {
     }
   }
 
+  /** Drives the send under the claim its caller hands it, given back when the drive ends. */
   async #drive(context: SendContext, key: string): Promise<void> {
-    const id = driveId(context, key);
+    const id = driveId(context.place, key);
     const before = this.#driving.get(id) ?? Promise.resolve();
     const run: Promise<void> = before
       .then(() => this.#driveOnce(context, key))
@@ -461,17 +515,16 @@ export class SendDriver {
   }
 
   async #driveOnce(context: SendContext, key: string): Promise<void> {
-    const id = driveId(context, key);
+    const id = driveId(context.place, key);
+    this.#leased.add(id);
     try {
-      if (!(await this.kept.claimDrive(context.place, key))) return;
-      this.#leased.add(id);
       await this.#run(context, key);
     } catch (cause) {
       if (cause instanceof DriveLost) return;
       await this.#stop(context, key, cause instanceof Stopped ? cause.why : stopsFor(cause));
     } finally {
       this.#leased.delete(id);
-      await this.kept.releaseDrive(context.place, key).catch(() => undefined);
+      await this.#release(context.place, key).catch(() => undefined);
     }
   }
 
