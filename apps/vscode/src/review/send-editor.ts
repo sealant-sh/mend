@@ -34,10 +34,18 @@ const NEWER =
 const GONE =
   "This review was sent, or VS Code no longer keeps it, so your text is not saved. Your text stays in this editor.";
 
+const UNREAD =
+  "This window has not read this review, so your text is not saved over it. Your text stays in this editor.";
+
 class ReviewFiles implements vscode.FileSystemProvider {
   readonly #changed = new vscode.EventEmitter<Array<vscode.FileChangeEvent>>();
   readonly onDidChangeFile = this.#changed.event;
-  readonly #read = new Map<string, number>();
+  /**
+   * The revision each editor's text is based on: the first this window looked at, or the one it
+   * read or saved since. VS Code restores unsaved words over what it last looked at, and checks
+   * only by `mtime` before a save, so a save is checked here against this revision.
+   */
+  readonly #based = new Map<string, number>();
 
   constructor(private readonly store: ReviewStore) {}
 
@@ -47,6 +55,7 @@ class ReviewFiles implements vscode.FileSystemProvider {
 
   async stat(uri: vscode.Uri): Promise<vscode.FileStat> {
     const document = await this.#document(uri);
+    if (!this.#based.has(uri.toString())) this.#based.set(uri.toString(), document.revision);
     return {
       type: vscode.FileType.File,
       ctime: 0,
@@ -63,22 +72,19 @@ class ReviewFiles implements vscode.FileSystemProvider {
 
   async readFile(uri: vscode.Uri): Promise<Uint8Array> {
     const document = await this.#document(uri);
-    this.#read.set(uri.toString(), document.revision);
+    this.#based.set(uri.toString(), document.revision);
     return new TextEncoder().encode(document.text);
   }
 
   async writeFile(uri: vscode.Uri, content: Uint8Array): Promise<void> {
     const ref = refOf(uri);
     if (ref === null) throw vscode.FileSystemError.FileNotFound(uri);
-    const revision = this.#read.get(uri.toString());
-    const saved = await this.store.saveDocument(
-      ref,
-      revision === undefined ? { kind: "restored" } : { kind: "read", revision },
-      new TextDecoder().decode(content),
-    );
+    const revision = this.#based.get(uri.toString());
+    if (revision === undefined) throw new vscode.FileSystemError(UNREAD);
+    const saved = await this.store.saveDocument(ref, revision, new TextDecoder().decode(content));
     if (saved.kind === "gone") throw vscode.FileSystemError.FileNotFound(GONE);
     if (saved.kind === "newer") throw new vscode.FileSystemError(NEWER);
-    this.#read.set(uri.toString(), saved.revision);
+    this.#based.set(uri.toString(), saved.revision);
   }
 
   delete(): void {}

@@ -425,19 +425,16 @@ export type DocumentSave =
   | { readonly kind: "gone" }
   | { readonly kind: "newer" };
 
-export type DocumentRead =
-  | { readonly kind: "read"; readonly revision: number }
-  | { readonly kind: "restored" };
-
+/** Her words saved over `revision`, the one her editor's text is based on; never over a newer one. */
 export const saveDocument = (
   review: SessionReview,
   documentId: string,
-  read: DocumentRead,
+  revision: number,
   words: string,
 ): DocumentSave => {
   const found = review.documents.find((document) => document.composed.documentId === documentId);
   if (found === undefined) return { kind: "gone" };
-  if (read.kind === "read" && found.revision !== read.revision) return { kind: "newer" };
+  if (found.revision !== revision) return { kind: "newer" };
   if (found.text === words) return { kind: "saved", review, revision: found.revision };
   const saved: ReviewDocument = { ...found, text: words, revision: found.revision + 1 };
   return {

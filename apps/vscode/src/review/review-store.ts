@@ -59,7 +59,6 @@ import {
   removePending,
   saveDocument,
   type Composed,
-  type DocumentRead,
   type DocumentSave,
   type PendingComment,
   type ReviewDocument,
@@ -858,10 +857,10 @@ export class ReviewStore implements vscode.Disposable {
     return review.documents.find((document) => document.composed.documentId === ref.id) ?? null;
   }
 
-  async saveDocument(ref: DocumentRef, read: DocumentRead, text: string): Promise<DocumentSave> {
+  async saveDocument(ref: DocumentRef, revision: number, text: string): Promise<DocumentSave> {
     let saved: DocumentSave | null = null;
     await this.#keepAt(ref.place, (review) => {
-      saved = saveDocument(review, ref.id, read, text);
+      saved = saveDocument(review, ref.id, revision, text);
       return saved.kind === "saved" ? saved.review : review;
     });
     return saved ?? { kind: "gone" };
