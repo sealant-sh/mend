@@ -81,7 +81,10 @@ const reasonOf = (cause: unknown): string =>
  */
 export class AgentTabs {
   readonly #attached = new Map<string, Attached>();
-  readonly #focusing = new Map<string, Promise<void>>();
+  readonly #focusing = new Map<
+    string,
+    { readonly workspaceId: string | null; readonly run: Promise<void> }
+  >();
   readonly #continuing = new Map<string, Promise<void>>();
   readonly #switchWaitMs: number;
   readonly #pollMs: number;
@@ -101,11 +104,17 @@ export class AgentTabs {
    */
   focus(sessionId: string, workspaceId: string | null): Promise<void> {
     const running = this.#focusing.get(sessionId);
-    if (running !== undefined) return running;
-    const run = this.#reconcile(sessionId, workspaceId).finally(() =>
-      this.#focusing.delete(sessionId),
-    );
-    this.#focusing.set(sessionId, run);
+    if (running?.workspaceId === workspaceId) return running.run;
+    // A focus under the other admission rule (Answer's or a workspace window's) waits for the
+    // running one instead of joining it.
+    const run = (
+      running === undefined
+        ? this.#reconcile(sessionId, workspaceId)
+        : running.run.then(() => this.#reconcile(sessionId, workspaceId))
+    ).finally(() => {
+      if (this.#focusing.get(sessionId)?.run === run) this.#focusing.delete(sessionId);
+    });
+    this.#focusing.set(sessionId, { workspaceId, run });
     return run;
   }
 

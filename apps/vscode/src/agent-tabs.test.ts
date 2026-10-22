@@ -258,6 +258,18 @@ describe("focusing a session's agent", () => {
     expect(effects.refused).not.toHaveBeenCalled();
   });
 
+  it("answers her own terminal agent while the workspace window's focus of it is still reading", async () => {
+    const mineInAnas = session({ ownerUserId: "dana", workspaceLauncherUserId: "ana" });
+    const read = Promise.withResolvers<SessionDetail>();
+    const { effects, agents } = world([], { detail: vi.fn(() => read.promise) });
+    const windowFocus = agents.focus("older", WORKSPACE);
+    const answer = agents.focus("older", null);
+    read.resolve(detail([terminalAgent], mineInAnas));
+    await Promise.all([windowFocus, answer]);
+    expect(effects.refused).toHaveBeenCalledTimes(1);
+    expect(effects.attachPty).toHaveBeenCalledTimes(1);
+  });
+
   it("names the session a tab shows, and none for a tab it did not attach", async () => {
     const { agents, tabs } = world([detail([terminalAgent])]);
     await agents.focus("older", null);
