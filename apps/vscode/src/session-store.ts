@@ -24,7 +24,7 @@ import {
   terminalWait,
   type ReadPlan,
 } from "./session-reads.js";
-import type { Project, ProjectDetail, Session, SessionDetail } from "./types.js";
+import type { Project, ProjectDetail, ReceivedHandoff, Session, SessionDetail } from "./types.js";
 import { sessionOfWorkspace, type WindowRole } from "./window-role.js";
 
 /** `globalState` key: `LastSeen` per server URL, on this machine only. */
@@ -83,6 +83,7 @@ interface Snapshot {
   readonly members: ReadonlyArray<MemberName>;
   readonly waits: ReadonlyMap<string, WaitFact>;
   readonly landings: ReadonlyMap<string, LandingFact>;
+  readonly readNumbers: ReadonlyMap<string, number>;
 }
 
 const EMPTY: Snapshot = {
@@ -92,6 +93,49 @@ const EMPTY: Snapshot = {
   members: [],
   waits: new Map(),
   landings: new Map(),
+  readNumbers: new Map(),
+};
+
+interface ReadProjects {
+  readonly projects: ReadonlyArray<Project>;
+  readonly details: ReadonlyMap<string, ProjectDetail>;
+}
+
+interface Received {
+  readonly project: Project;
+  readonly receipt: ReceivedHandoff;
+  readonly readsBegun: number;
+}
+
+const begunAfter = (received: Received, began: number): boolean => received.readsBegun < began;
+
+const withReceived = (
+  read: Pick<Snapshot, "projects" | "details" | "readNumbers">,
+  received: Iterable<Received>,
+): ReadProjects => {
+  const projects = [...read.projects];
+  const details = new Map(read.details);
+  for (const entry of received) {
+    const { project, receipt } = entry;
+    const { session, worktree } = receipt;
+    if (!projects.some((known) => known.id === project.id)) projects.push(project);
+    const detail = details.get(project.id) ?? { project, sessions: [] };
+    const worktrees = detail.worktrees ?? [];
+    const readHasIt = detail.sessions.some((known) => known.id === session.id);
+    const readIsNewer = begunAfter(entry, read.readNumbers.get(session.id) ?? 0);
+    details.set(project.id, {
+      ...detail,
+      sessions: !readHasIt
+        ? [...detail.sessions, session]
+        : readIsNewer
+          ? detail.sessions
+          : detail.sessions.map((known) => (known.id === session.id ? session : known)),
+      worktrees: worktrees.some((known) => known.id === worktree.id)
+        ? worktrees
+        : [...worktrees, worktree],
+    });
+  }
+  return { projects, details };
 };
 
 type Facts = {
@@ -150,6 +194,8 @@ export class SessionStore implements vscode.Disposable {
   #visible = false;
   /** Bumped by `start()`: a read begun for an earlier sign-in or server is dropped when it lands. */
   #generation = 0;
+  #readsBegun = 0;
+  readonly #unconfirmed = new Map<string, Received>();
   #retry: NodeJS.Timeout | null = null;
   #windowProject: { readonly project: Project; readonly folder: vscode.WorkspaceFolder } | null =
     null;
@@ -248,9 +294,8 @@ export class SessionStore implements vscode.Disposable {
     this.#want({ all: true, projects: new Set(), sessions: new Set() });
   }
 
-  /** Whether a read has landed: before it, the view says nothing rather than guess. */
   hasRead(): boolean {
-    return this.#read;
+    return this.#read || this.#unconfirmed.size > 0;
   }
 
   model(): WindowModel | null {
@@ -267,11 +312,11 @@ export class SessionStore implements vscode.Disposable {
   }
 
   details(): ReadonlyArray<ProjectDetail> {
-    return [...this.#snapshot.details.values()];
+    return [...this.#seen().details.values()];
   }
 
   find(sessionId: string): { readonly project: Project; readonly session: Session } | null {
-    for (const detail of this.#snapshot.details.values()) {
+    for (const detail of this.#seen().details.values()) {
       const session = detail.sessions.find((candidate) => candidate.id === sessionId);
       if (session !== undefined) return { project: detail.project, session };
     }
@@ -325,6 +370,29 @@ export class SessionStore implements vscode.Disposable {
     }
     this.#want({ all: false, projects: new Set(), sessions: new Set([session.id]) });
     this.#emit();
+  }
+
+  recordHandoff(project: Project, receipt: ReceivedHandoff): void {
+    this.#unconfirmed.set(receipt.session.id, { project, receipt, readsBegun: this.#readsBegun });
+    const known = this.#snapshot.details.has(project.id);
+    this.#want({
+      all: !known,
+      projects: new Set(known ? [project.id] : []),
+      sessions: new Set(),
+    });
+    this.#emit();
+  }
+
+  #seen(): ReadProjects {
+    return this.#unconfirmed.size === 0
+      ? this.#snapshot
+      : withReceived(this.#snapshot, this.#unconfirmed.values());
+  }
+
+  #confirm(began: number, projectId: string | null): void {
+    for (const [sessionId, received] of this.#unconfirmed)
+      if (begunAfter(received, began) && (projectId === null || received.project.id === projectId))
+        this.#unconfirmed.delete(sessionId);
   }
 
   /**
@@ -570,6 +638,7 @@ export class SessionStore implements vscode.Disposable {
   /** Forgets what was read: nothing shows until a read lands, and no change of it toasts. */
   #invalidate(): void {
     this.#snapshot = EMPTY;
+    this.#unconfirmed.clear();
     this.#read = false;
     this.#modelRead = false;
   }
@@ -583,6 +652,8 @@ export class SessionStore implements vscode.Disposable {
 
   /** Everything again; `targets` are sessions a frame named, read as their own frame reads them. */
   async #readAll(generation: number, targets: ReadonlySet<string>): Promise<void> {
+    this.#readsBegun += 1;
+    const began = this.#readsBegun;
     const connection = await this.client.connection();
     if (connection.url !== this.#serverUrl) {
       this.#serverUrl = connection.url;
@@ -618,13 +689,19 @@ export class SessionStore implements vscode.Disposable {
       members,
       waits,
       landings,
+      readNumbers: new Map(
+        details.flatMap((detail) => detail.sessions.map(({ id }) => [id, began])),
+      ),
     };
     this.#read = true;
+    this.#confirm(began, null);
     await this.#matchWindow();
     this.#prune();
   }
 
   async #readProject(projectId: string, generation: number): Promise<void> {
+    this.#readsBegun += 1;
+    const began = this.#readsBegun;
     const known = this.#snapshot.details.get(projectId);
     if (known === undefined) {
       this.refresh();
@@ -647,17 +724,22 @@ export class SessionStore implements vscode.Disposable {
     if (generation !== this.#generation) return;
     const details = new Map(this.#snapshot.details);
     details.set(projectId, detail);
-    this.#snapshot = { ...this.#withFacts(facts), details };
+    const readNumbers = new Map(this.#snapshot.readNumbers);
+    for (const { id } of detail.sessions) readNumbers.set(id, began);
+    this.#snapshot = { ...this.#withFacts(facts), details, readNumbers };
+    this.#confirm(began, projectId);
   }
 
   async #readSession(sessionId: string, generation: number): Promise<void> {
+    this.#readsBegun += 1;
+    const began = this.#readsBegun;
     let detail: SessionDetail;
     try {
       detail = await this.client.sessionDetail(sessionId);
     } catch (cause) {
       // A session removed, or one this person no longer sees: it leaves the view.
       if (cause instanceof MendApiError && (cause.status === 404 || cause.status === 403)) {
-        if (generation === this.#generation) this.#drop(sessionId);
+        if (generation === this.#generation) this.#drop(sessionId, began);
         return;
       }
       throw cause;
@@ -678,10 +760,13 @@ export class SessionStore implements vscode.Disposable {
       : [...project.sessions, session];
     const details = new Map(this.#snapshot.details);
     details.set(project.project.id, { ...project, sessions });
-    this.#snapshot = { ...this.#withFacts([facts]), details };
+    const readNumbers = new Map(this.#snapshot.readNumbers).set(session.id, began);
+    this.#snapshot = { ...this.#withFacts([facts]), details, readNumbers };
   }
 
-  #drop(sessionId: string): void {
+  #drop(sessionId: string, began: number): void {
+    const received = this.#unconfirmed.get(sessionId);
+    if (received !== undefined && begunAfter(received, began)) this.#unconfirmed.delete(sessionId);
     const details = new Map(
       [...this.#snapshot.details].map(([id, detail]) => [
         id,
@@ -690,9 +775,11 @@ export class SessionStore implements vscode.Disposable {
     );
     const waits = new Map(this.#snapshot.waits);
     const landings = new Map(this.#snapshot.landings);
+    const readNumbers = new Map(this.#snapshot.readNumbers);
     waits.delete(sessionId);
     landings.delete(sessionId);
-    this.#snapshot = { ...this.#snapshot, details, waits, landings };
+    readNumbers.delete(sessionId);
+    this.#snapshot = { ...this.#snapshot, details, waits, landings, readNumbers };
   }
 
   #withFacts(facts: ReadonlyArray<Facts>): Snapshot {
@@ -822,9 +909,10 @@ export class SessionStore implements vscode.Disposable {
     }
     if (this.#serverUrl !== null) this.#lastSeen = this.#syncLastSeen(this.#serverUrl, now);
     const prev = this.#modelRead ? this.#model : null;
+    const shown = this.#seen();
     const next = sessionModel({
-      projects: this.#snapshot.projects,
-      details: this.details(),
+      projects: shown.projects,
+      details: [...shown.details.values()],
       viewer: this.#snapshot.viewer,
       members: this.#snapshot.members,
       waits: this.#snapshot.waits,

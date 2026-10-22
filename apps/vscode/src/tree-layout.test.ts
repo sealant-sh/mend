@@ -1,8 +1,9 @@
+import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { sessionModel, type WaitFact } from "./session-model.js";
 import { layoutOf, redraws, ROOT, type Layout } from "./tree-layout.js";
-import type { Project, Session } from "./types.js";
+import { HandoffProvenance, type Project, type Session, type Worktree } from "./types.js";
 
 const NOW = new Date("2026-10-19T09:00:00.000Z");
 
@@ -39,12 +40,13 @@ const layout = (
   options: {
     readonly window?: { readonly kind: "workspace"; readonly sessionId: string };
     readonly waits?: ReadonlyMap<string, WaitFact>;
+    readonly worktrees?: ReadonlyArray<Worktree>;
   } = {},
 ): Layout =>
   layoutOf({
     model: sessionModel({
       projects: [newsroom],
-      details: [{ project: newsroom, sessions }],
+      details: [{ project: newsroom, sessions, worktrees: options.worktrees ?? [] }],
       viewer: "dana",
       members: [],
       waits: options.waits ?? new Map(),
@@ -69,6 +71,37 @@ describe("what the view redraws (SLNT-143)", () => {
   it("redraws only the row whose words changed, never the whole tree", () => {
     const before = layout([{ ...fresh, status: "stopping" }, other]);
     const after = layout([{ ...fresh, status: "stopping", summary: "saving" }, other]);
+    expect(redraws(before, after)).toEqual([
+      "running:fresh-worktree",
+      "projects:p1:fresh-worktree",
+    ]);
+  });
+
+  it("redraws a row whose tooltip learns where its worktree came from", () => {
+    const worktree: Worktree = {
+      id: "w1",
+      name: "fix-login",
+      directory: "/store/newsroom-api/worktrees/fix-login",
+      branch: "fix-login",
+      baseSha: "a".repeat(40),
+      baseRef: "refs/heads/main",
+      createdAt: NOW.toISOString(),
+      handoff: null,
+    };
+    const running = { ...fresh, worktreeId: worktree.id };
+    const before = layout([running, other], { worktrees: [worktree] });
+    const after = layout([running, other], {
+      worktrees: [
+        {
+          ...worktree,
+          handoff: Schema.decodeUnknownSync(HandoffProvenance)({
+            machine: "dana-mbp",
+            cutAt: NOW.toISOString(),
+            checkpoint: "b".repeat(40),
+          }),
+        },
+      ],
+    });
     expect(redraws(before, after)).toEqual([
       "running:fresh-worktree",
       "projects:p1:fresh-worktree",

@@ -168,6 +168,16 @@ module whose default export is `async (helpers) => {}`. The recipes:
   (2026-10-19, `1a7196046`): the start's window `opens 0 → 1`; the double-click `opens 1 → 1`, 0
   windows, the pick `<session> is running` shown once and left open, while the server's `ssh-target`
   lines read `4 → 5` from the start window's teardown; its answer `opens 1 → 2`.
+- `recipes/vscode-handoff-row.mjs` drives a session `mend handoff` made (story g's row): a commit on
+  a new branch and one uncommitted edit, `mend handoff --yes` in the checkout (`via: "setup"`), then
+  the row named after the received worktree reads `idle · handed off from <machine>`, its tooltip
+  says it, and the worktree's `handoff.machine` in `GET /projects/<id>` is the machine the row
+  names. It reloads the window first, so an extension rebuilt after `up` is the one under test. The
+  branch is named per run (`verify-handoff-<base36 time>`), and a last setup step puts the checkout
+  back on the branch it started on, the edit discarded and the branch deleted, so a second run and
+  the recipes after it start clean. Run `v6prov` (2026-10-22, server `0.0.0-dev.shac1ddcd1da5c2`):
+  the row read `starting · booting`, then `verify-handoff` `idle · handed off from nix-pc`, all 8
+  steps passed.
 
 Preconditions:
 

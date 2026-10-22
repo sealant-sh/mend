@@ -1,7 +1,7 @@
 import type { RequestView } from "./request-answer.js";
 import { mayAnswer, rowCapability, type RowCapability } from "./session-capability.js";
 import { displaySession, type MemberName } from "./session-lines.js";
-import type { Project, ProjectDetail, Session, SessionStatus } from "./types.js";
+import type { Project, ProjectDetail, Session, SessionStatus, Worktree } from "./types.js";
 
 /**
  * The Mend view's one model (stories a, b and f; rules 9, 10 and 12-16): what every session reads
@@ -119,6 +119,7 @@ export interface SessionView {
   readonly fact: string | null;
   /** `<word> · <fact>`, then `since` for a wait and `last seen` while Mend is unreachable. */
   readonly line: string;
+  readonly provenance: string | null;
   readonly wait: WaitFact | null;
   /** Waiting for a reason Mend observed, and Answer lets her answer it (`mayAnswer`). */
   readonly needsYou: boolean;
@@ -277,6 +278,7 @@ const sessionView = (
   input: ModelInput,
   project: Project,
   read: Session,
+  worktree: Worktree | null,
   offline: boolean,
 ): SessionView => {
   const { viewer, members } = input;
@@ -304,14 +306,19 @@ const sessionView = (
       : null;
   const summary = firstLine(session.summary);
   const someoneElses = viewer !== null && session.ownerUserId !== viewer;
+  const handoff = worktree?.handoff ?? null;
+  const heldHandoff =
+    handoff !== null && session.status === "idle" && wait === null && summary === null;
   const fact =
     landing !== null
       ? landedFact(landing)
       : waiting && !canAnswer && someoneElses
         ? `${nameOf(session.ownerUserId, members)}'s session`
-        : reported
-          ? (wait?.words ?? summary)
-          : ownFact(session);
+        : heldHandoff
+          ? `handed off from ${handoff.machine}`
+          : reported
+            ? (wait?.words ?? summary)
+            : ownFact(session);
   const settledAt =
     landing !== null ? landing.createdAt : live ? null : (session.settledAt ?? null);
   const seen = input.lastSeen.sessions[session.id] ?? input.lastSeen.baseline;
@@ -325,11 +332,18 @@ const sessionView = (
   return {
     project,
     session,
-    name: displaySession(session),
+    name:
+      session.label === null && worktree !== null && handoff !== null
+        ? worktree.name
+        : displaySession(session),
     word,
     by,
     fact,
     line,
+    provenance:
+      handoff === null || heldHandoff
+        ? null
+        : `handed off from ${handoff.machine} at ${clockTime(handoff.cutAt)}`,
     wait,
     needsYou: waiting && canAnswer,
     sinceYouLastLooked:
@@ -364,9 +378,18 @@ const plural = (count: number, one: string, many: string): string =>
 /** The model for this window, from what the store last read. */
 export const sessionModel = (input: ModelInput): WindowModel => {
   const offline = input.connection.state === "offline";
-  const views = input.details.flatMap((detail) =>
-    detail.sessions.map((session) => sessionView(input, detail.project, session, offline)),
-  );
+  const views = input.details.flatMap((detail) => {
+    const worktrees = new Map((detail.worktrees ?? []).map((worktree) => [worktree.id, worktree]));
+    return detail.sessions.map((session) =>
+      sessionView(
+        input,
+        detail.project,
+        session,
+        session.worktreeId === undefined ? null : (worktrees.get(session.worktreeId) ?? null),
+        offline,
+      ),
+    );
+  });
   const sessions = new Map(views.map((view) => [view.session.id, view]));
   const needs = views
     .filter((view) => view.needsYou)

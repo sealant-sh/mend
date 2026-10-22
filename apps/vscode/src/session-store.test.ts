@@ -1,3 +1,4 @@
+import { Schema } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as vscode from "vscode";
 
@@ -16,7 +17,16 @@ import {
 import { Notifier } from "./session-surfaces.js";
 import { pendingRequest } from "./test-requests.js";
 import { EventEmitter, fake, window } from "./test-vscode.js";
-import type { Project, ProjectDetail, Session, SessionDetail, SessionProcess } from "./types.js";
+import { layoutOf } from "./tree-layout.js";
+import {
+  HandoffProvenance,
+  type Project,
+  type ProjectDetail,
+  type Session,
+  type SessionDetail,
+  type SessionProcess,
+  type Worktree,
+} from "./types.js";
 
 vi.mock("vscode", () => import("./test-vscode.js"));
 
@@ -64,10 +74,12 @@ class FakeMend implements StoreClient {
   readonly requests = new Map<string, ReadonlyArray<PendingRequest>>();
   readonly landings = new Map<string, LandingFact>();
   readonly processes = new Map<string, ReadonlyArray<SessionProcess>>();
+  readonly worktrees = new Map<string, ReadonlyArray<Worktree>>();
   /** Every read refuses this sign-in. */
   refusing = false;
   /** Pending-request reads fail. */
   requestsFail = false;
+  readonly failing = new Set<string>();
   readonly calls: Array<string> = [];
   /** When each call was made, on the test's clock. */
   readonly made: Array<{ readonly call: string; readonly at: number }> = [];
@@ -111,6 +123,7 @@ class FakeMend implements StoreClient {
       const takes = this.latency.get(kind);
       if (takes !== undefined) await new Promise((resume) => setTimeout(resume, takes));
       if (this.refusing) throw new MendApiError("Signed out — sign in again.", 401);
+      if (this.failing.has(call)) throw new MendApiError("Mend failed.", 500);
       return answer();
     } finally {
       this.#running.set(kind, (this.#running.get(kind) ?? 1) - 1);
@@ -132,6 +145,7 @@ class FakeMend implements StoreClient {
       return {
         project,
         sessions: [...this.sessions.values()].filter((one) => one.projectId === id),
+        worktrees: this.worktrees.get(id) ?? [],
       };
     });
   }
@@ -218,6 +232,14 @@ const world = () => {
 const tick = (ms: number) => vi.advanceTimersByTimeAsync(ms);
 
 const wordOf = (store: SessionStore, id: string) => store.model()?.sessions.get(id)?.word;
+
+const lineOf = (store: SessionStore, id: string) => store.model()?.sessions.get(id)?.line;
+
+const emissions = (store: SessionStore) => {
+  const seen: Array<unknown> = [];
+  store.onDidChange((change) => seen.push(change));
+  return seen;
+};
 
 const toasts = () => window.showInformationMessage.mock.calls.map(([text]) => text);
 
@@ -653,5 +675,192 @@ describe("access lost (S9)", () => {
     await tick(200);
     mend.signal({ kind: "opened" });
     expect(heard).toEqual(["resync"]);
+  });
+});
+
+describe("a handoff this window received (story g)", () => {
+  const CUT_AT = "2026-10-19T08:42:05.000Z";
+  const fixLogin: Worktree = {
+    id: "w1",
+    name: "fix-login",
+    directory: "/store/newsroom-api/worktrees/fix-login",
+    branch: "fix-login",
+    baseSha: "a".repeat(40),
+    baseRef: "refs/heads/main",
+    createdAt: CUT_AT,
+    handoff: Schema.decodeUnknownSync(HandoffProvenance)({
+      machine: "dana-mbp",
+      cutAt: CUT_AT,
+      checkpoint: "b".repeat(40),
+    }),
+  };
+  const received = session({ id: "1a2b3c4d", label: null, worktreeId: "w1", status: "idle" });
+  const receipt = { session: received, worktree: fixLogin };
+  const HANDED_OFF = "idle · handed off from dana-mbp";
+
+  const serverHolds = (mend: FakeMend, one: Session = received) => {
+    mend.add(one);
+    mend.worktrees.set(one.projectId, [fixLogin]);
+  };
+
+  it("shows the row in one emission for a project already read, and reads that project", async () => {
+    const { mend, store } = world();
+    store.start();
+    await tick(300);
+    const emitted = emissions(store);
+    const before = mend.count(`project:${newsroom.id}`);
+    serverHolds(mend);
+    store.recordHandoff(newsroom, receipt);
+    expect(emitted).toHaveLength(1);
+    expect(store.model()?.sessions.get(received.id)?.name).toBe("fix-login");
+    expect(lineOf(store, received.id)).toBe(HANDED_OFF);
+    expect(store.find(received.id)?.project.id).toBe(newsroom.id);
+    await tick(300);
+    expect(mend.count(`project:${newsroom.id}`)).toBe(before + 1);
+    expect(mend.count("projects")).toBe(1);
+  });
+
+  it("shows the row and its project in one emission for a project not read yet", async () => {
+    const { mend, store } = world();
+    store.start();
+    await tick(300);
+    const billing: Project = { ...newsroom, id: "p2", name: "billing" };
+    const elsewhere = { ...received, projectId: billing.id };
+    const emitted = emissions(store);
+    mend.projects = [newsroom, billing];
+    serverHolds(mend, elsewhere);
+    store.recordHandoff(billing, { session: elsewhere, worktree: fixLogin });
+    expect(emitted).toHaveLength(1);
+    expect(lineOf(store, received.id)).toBe(HANDED_OFF);
+    expect(store.find(received.id)?.project.id).toBe(billing.id);
+    await tick(300);
+    expect(mend.count("projects")).toBe(2);
+    expect(lineOf(store, received.id)).toBe(HANDED_OFF);
+  });
+
+  it("keeps the row through a read that began before it, and a read begun after confirms it", async () => {
+    const { mend, store } = world();
+    store.start();
+    await tick(300);
+    mend.hold(`project:${newsroom.id}`);
+    store.refresh();
+    await tick(300);
+    store.recordHandoff(newsroom, receipt);
+    mend.release(`project:${newsroom.id}`);
+    mend.hold(`project:${newsroom.id}`);
+    await tick(300);
+    expect(mend.count("projects")).toBe(2);
+    expect(lineOf(store, received.id)).toBe(HANDED_OFF);
+    serverHolds(mend);
+    mend.release(`project:${newsroom.id}`);
+    await tick(300);
+    expect(lineOf(store, received.id)).toBe(HANDED_OFF);
+    mend.sessions.delete(received.id);
+    store.refresh();
+    await tick(300);
+    expect(store.find(received.id)).toBeNull();
+  });
+
+  it("keeps the receipt's session over a read of everything begun before it that lands after", async () => {
+    const { mend, store } = world();
+    store.start();
+    await tick(300);
+    serverHolds(mend, { ...received, status: "starting" });
+    mend.hold(`project:${newsroom.id}`);
+    store.refresh();
+    await tick(300);
+    store.recordHandoff(newsroom, receipt);
+    mend.release(`project:${newsroom.id}`);
+    mend.hold(`project:${newsroom.id}`);
+    await tick(300);
+    expect(mend.count("projects")).toBe(2);
+    expect(lineOf(store, received.id)).toBe(HANDED_OFF);
+  });
+
+  it("keeps the receipt's session over a read of it alone begun before it that lands after", async () => {
+    const { mend, store } = world();
+    store.start();
+    await tick(300);
+    serverHolds(mend, { ...received, status: "starting" });
+    mend.hold(`detail:${received.id}`);
+    mend.signal({ kind: "event", event: event("session", received.id) });
+    await tick(300);
+    mend.hold(`project:${newsroom.id}`);
+    store.recordHandoff(newsroom, receipt);
+    mend.release(`detail:${received.id}`);
+    await tick(300);
+    expect(mend.count(`detail:${received.id}`)).toBe(1);
+    expect(lineOf(store, received.id)).toBe(HANDED_OFF);
+  });
+
+  it("keeps the receipt when a read of the session begun before it finds it gone", async () => {
+    const { mend, store } = world();
+    store.start();
+    await tick(300);
+    mend.hold(`detail:${received.id}`);
+    mend.signal({ kind: "event", event: event("session", received.id) });
+    await tick(300);
+    mend.hold(`project:${newsroom.id}`);
+    store.recordHandoff(newsroom, receipt);
+    mend.release(`detail:${received.id}`);
+    await tick(300);
+    expect(mend.count(`detail:${received.id}`)).toBe(1);
+    expect(store.find(received.id)?.session).toEqual(received);
+    expect(lineOf(store, received.id)).toBe(HANDED_OFF);
+  });
+
+  it("draws the row before the first read of everything lands", async () => {
+    const { mend, store } = world();
+    mend.hold("projects");
+    store.start();
+    await tick(300);
+    store.recordHandoff(newsroom, receipt);
+    const tree = layoutOf({
+      model: store.model(),
+      hasRead: store.hasRead(),
+      error: null,
+      viewer: store.viewer(),
+    });
+    const rows = [...tree.values()]
+      .flat()
+      .flatMap(({ node }) =>
+        node.kind === "session" ? [[node.place, node.view.name, node.view.line]] : [],
+      );
+    expect(rows).toEqual([
+      ["running", "fix-login", HANDED_OFF],
+      ["projects:p1", "fix-login", HANDED_OFF],
+    ]);
+  });
+
+  it("takes the session from a read of it begun after the receipt, and keeps where it came from", async () => {
+    const { mend, store } = world();
+    store.start();
+    await tick(300);
+    serverHolds(mend, { ...received, status: "running" });
+    mend.failing.add(`project:${newsroom.id}`);
+    store.recordHandoff(newsroom, receipt);
+    await tick(300);
+    expect(mend.count(`project:${newsroom.id}`)).toBe(2);
+    expect(lineOf(store, received.id)).toBe(HANDED_OFF);
+    mend.signal({ kind: "event", event: event("session", received.id) });
+    await tick(300);
+    expect(mend.count(`detail:${received.id}`)).toBe(1);
+    const row = store.model()?.sessions.get(received.id);
+    expect(row?.line).toBe("running");
+    expect(row?.name).toBe("fix-login");
+    expect(row?.provenance).toMatch(/^handed off from dana-mbp at \d\d:\d\d$/u);
+  });
+
+  it("forgets it on a new connection: the receipt was the last server's", async () => {
+    const { mend, store } = world();
+    store.start();
+    await tick(300);
+    store.recordHandoff(newsroom, receipt);
+    expect(store.find(received.id)).not.toBeNull();
+    store.stop();
+    mend.hold("projects");
+    store.start();
+    await tick(300);
+    expect(store.find(received.id)).toBeNull();
   });
 });

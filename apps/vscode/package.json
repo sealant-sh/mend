@@ -50,7 +50,8 @@
   "dependencies": {
     "@mend/agent-conversation": "workspace:*",
     "@mend/domain": "workspace:*",
-    "@mend/workspace-ssh": "workspace:*"
+    "@mend/workspace-ssh": "workspace:*",
+    "effect": "catalog:"
   },
   "devDependencies": {
     "@mend/test-ci": "workspace:*",

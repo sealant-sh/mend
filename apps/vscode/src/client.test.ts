@@ -100,3 +100,95 @@ describe("a session's processes", () => {
     expect(detail.processes.map((one) => one.runsAs)).toEqual(["ana", null]);
   });
 });
+
+const CHECKPOINT = "0123456789abcdef0123456789abcdef01234567";
+
+const worktreeRow = (handoff?: unknown) => ({
+  id: "w1",
+  name: "fix-login",
+  directory: "/store/newsroom-api/worktrees/fix-login",
+  branch: "fix-login",
+  baseSha: "a".repeat(40),
+  baseRef: "refs/heads/main",
+  createdAt: "2026-10-22T07:42:09.000Z",
+  ...(handoff === undefined ? {} : { handoff }),
+});
+
+const projectRead = (worktree: unknown) =>
+  vi.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          project: {
+            id: "p1",
+            name: "newsroom-api",
+            originUrl: null,
+            storePath: "/store/newsroom-api",
+            defaultBranch: "main",
+          },
+          sessions: [],
+          worktrees: [worktree],
+        }),
+      ),
+  );
+
+describe("a worktree's handoff", () => {
+  it("reads none when the server sends no handoff, or null", async () => {
+    for (const worktree of [worktreeRow(), worktreeRow(null)]) {
+      vi.stubGlobal("fetch", projectRead(worktree));
+      const detail = await client().projectDetail("p1");
+      expect(detail.worktrees?.map((one) => one.handoff)).toEqual([null]);
+    }
+  });
+
+  it("reads where a handed-off worktree came from", async () => {
+    vi.stubGlobal(
+      "fetch",
+      projectRead(
+        worktreeRow({
+          machine: "dana-mbp",
+          localBranch: "fix-login",
+          cutAt: "2026-10-22T07:42:05.000Z",
+          head: "c".repeat(40),
+          checkpoint: CHECKPOINT,
+        }),
+      ),
+    );
+    const detail = await client().projectDetail("p1");
+    expect(detail.worktrees?.map((one) => one.handoff)).toEqual([
+      { machine: "dana-mbp", cutAt: "2026-10-22T07:42:05.000Z", checkpoint: CHECKPOINT },
+    ]);
+  });
+
+  const valid = {
+    machine: "dana-mbp",
+    cutAt: "2026-10-22T07:42:05.000Z",
+    checkpoint: CHECKPOINT,
+  };
+
+  it.each([
+    ["not an object", "dana-mbp"],
+    ["a machine that is not a string", { ...valid, machine: 7 }],
+    ["an empty machine", { ...valid, machine: "" }],
+    ["a blank machine", { ...valid, machine: "   " }],
+    ["a machine with a newline", { ...valid, machine: "dana\nmbp" }],
+    ["a 65-character machine", { ...valid, machine: "m".repeat(65) }],
+    ["a cutAt that is no instant", { ...valid, cutAt: "yesterday" }],
+    ["a cutAt not in canonical ISO form", { ...valid, cutAt: "2026-10-22T07:42:05Z" }],
+    ["a checkpoint that is no SHA", { ...valid, checkpoint: "HEAD" }],
+  ])(
+    "fails the read on a handoff with %s, rather than show the row without it",
+    async (_, handoff) => {
+      vi.stubGlobal("fetch", projectRead(worktreeRow(handoff)));
+      await expect(client().projectDetail("p1")).rejects.toThrow(
+        "Mend returned an invalid handoff.",
+      );
+    },
+  );
+
+  it("reads a 64-character machine", async () => {
+    vi.stubGlobal("fetch", projectRead(worktreeRow({ ...valid, machine: "m".repeat(64) })));
+    const detail = await client().projectDetail("p1");
+    expect(detail.worktrees?.map((one) => one.handoff?.machine)).toEqual(["m".repeat(64)]);
+  });
+});
