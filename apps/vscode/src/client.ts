@@ -21,7 +21,6 @@ import {
 import type { ConnectionStore, HeldConnection, MendConnection } from "./config.js";
 import { BoundClient } from "./handoff-client.js";
 import { MendApiError, requestMend } from "./mend-http.js";
-import type { CreateRequest } from "./new-session.js";
 import {
   parseMembers,
   parseRetirement,
@@ -114,17 +113,6 @@ export class MendClient {
 
   async projectDetail(id: string): Promise<ProjectDetail> {
     return parseProjectDetail(await this.request(`/projects/${encodeURIComponent(id)}`));
-  }
-
-  /**
-   * Create a session. `name` joins the worktree of that name when it exists (a new
-   * conversation inside it; the server refuses a conflicting base) and otherwise creates it;
-   * null derives an anonymous worktree.
-   */
-  async createSession(projectId: string, request: CreateRequest): Promise<Session> {
-    return parseSession(
-      await this.post(`/projects/${encodeURIComponent(projectId)}/sessions`, request),
-    );
   }
 
   /** The signed-in account's id; null from a server before organizations. */

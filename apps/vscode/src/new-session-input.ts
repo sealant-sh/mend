@@ -83,7 +83,7 @@ export class NewSessionInput implements vscode.Disposable {
         update(key: string, value: unknown): Thenable<void>;
       };
     },
-    private readonly client: MendClient,
+    private readonly client: Pick<MendClient, "bind" | "harnessModels" | "viewerId">,
     private readonly store: Pick<
       SessionStore,
       | "details"
@@ -279,7 +279,7 @@ export class NewSessionInput implements vscode.Disposable {
         return { ...facts, remembered: all[bound.url] ?? {} };
       }
       case "adopt":
-        void this.#adopt(effect, here.dispatch);
+        void this.#adopt(effect, bound, here.dispatch);
         return facts;
       case "start":
         void this.#start(effect, bound, here);
@@ -290,10 +290,11 @@ export class NewSessionInput implements vscode.Disposable {
   /** `POST /projects` clones while the input is busy, then New session goes on in the project. */
   async #adopt(
     effect: Extract<FlowEffect, { readonly kind: "adopt" }>,
+    bound: BoundClient,
     dispatch: (event: FlowEvent) => void,
   ): Promise<void> {
     try {
-      const project = await this.client.adoptProject(effect.name, effect.origin);
+      const project = await bound.adoptProject(effect.name, effect.origin);
       this.store.refresh();
       dispatch({ kind: "adopted", project });
     } catch (cause) {
