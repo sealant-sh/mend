@@ -538,7 +538,8 @@ It runs confined, as nothing else in the container does (`scripts/bundle-supervi
 - with only its own environment: Mend's API on loopback, where it listens, its state and its label.
   No database URL, secret or key of the bundle's reaches it; it reaches Mend over HTTP with each
   paired person's device token;
-- bounded: a 256 MiB heap, 768 MiB of data, 1,024 descriptors, 256 processes, and nice 10.
+- bounded: a 256 MiB heap, 2 GiB of data, 1,024 descriptors, 256 processes, and nice 10. The data
+  limit also counts V8's virtual address reservations for find and regex-highlight workers.
 
 From a checkout, run it beside a Mend server:
 

@@ -187,6 +187,12 @@ Publicly its port stays on loopback and the edge serves it on its own subdomain
 The first supported client is t3code desktop (a `v0.0.46` nightly) against a loopback or private
 gateway. The hosted `app.t3.codes` follows once the edge serves the gateway over HTTPS.
 
+The packaged gateway runs through `prlimit`, nice 10, `chroot`, and `setpriv` as its own uid, with a
+256 MiB heap, 2 GiB of data, 1,024 file descriptors, and 256 processes. The data limit counts V8's
+virtual address reservations as well as allocations. It leaves room for concurrent find and
+regex-highlight workers beside the loaded gateway. The Linux packaging regression starts the real
+gateway server and both worker paths through this chain with 256 MiB of parent buffers.
+
 Pairing needs no Mend UI change. A pairing code comes from Mend's existing
 `POST /api/me/devices/pairings`; `mend pair` creates one with the person's CLI login and prints the
 gateway's address and a t3code-shaped `<gateway>/pair#token=<code>` link (built as `mend pair`, not

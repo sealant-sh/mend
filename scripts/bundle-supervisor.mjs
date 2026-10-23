@@ -145,12 +145,13 @@ export const T3_GATEWAY_ROOT = "/opt/mend-t3-gateway";
 /** The gateway's own uid and gid: no other process of the bundle runs as it. */
 export const T3_GATEWAY_UID = 10120;
 /**
- * Its bounds, so it can never starve Mend beside it: a 256 MiB heap and 768 MiB of data, 1,024
- * descriptors, 256 processes of its uid, and a lower CPU priority (nice 10).
+ * Its bounds: a 256 MiB heap and 2 GiB of data, 1,024 descriptors, 256 processes of its uid,
+ * and a lower CPU priority (nice 10). RLIMIT_DATA also counts V8's worker address reservations;
+ * the data allowance leaves room for find and regex-highlight isolates beside the loaded parent.
  */
 export const T3_GATEWAY_LIMITS = {
   heapMiB: 256,
-  dataBytes: 768 * 1024 * 1024,
+  dataBytes: 2 * 1024 * 1024 * 1024,
   openFiles: 1024,
   processes: 256,
   nice: 10,
