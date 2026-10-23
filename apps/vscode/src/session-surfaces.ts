@@ -161,10 +161,6 @@ export class Notifier {
     await vscode.commands.executeCommand(command, notification.sessionId);
   }
 
-  /**
-   * A Retry Mend refused says how the session reads now; an agent already running, or one that ran
-   * the prompt already, offers Open.
-   */
   async #sayRetry(sessionId: string, answer: RetryAnswer): Promise<void> {
     if (answer.kind === "sent" || answer.kind === "held") return;
     const name =

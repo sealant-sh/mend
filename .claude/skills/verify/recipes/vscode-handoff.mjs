@@ -920,8 +920,6 @@ export default async (h) => {
         await useWindow(opened);
         await command();
         await quickInput.waitFor();
-        // The question opens on its general title and turns into the repository pick once the
-        // extension has read the roots and the server's support.
         await waitUntil(
           "the repository pick's title",
           async () => (await quickInput.title()).includes("choose a repository"),

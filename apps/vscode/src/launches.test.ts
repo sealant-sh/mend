@@ -129,12 +129,6 @@ const EXITED_AGENT: SessionProcess = {
   waiting: null,
 };
 
-/**
- * A launch an edge answered 504 while the server still held it, the session reading idle with no
- * agent. The original then arrives and its agent runs and exits while a shell keeps the session
- * idle: before a Retry reads the session, or between that read and the Retry reaching the server,
- * which refuses it as Mend does (`SessionMovedOn`, reason `agentRan`).
- */
 const lateOriginal = () => {
   const launched: Array<LaunchBody> = [];
   let agent: SessionProcess | null = null;

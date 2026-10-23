@@ -89,10 +89,6 @@ export const underWayRefusal = (over: LaunchOver, settledAt: Date | null): Launc
 const sameInstant = (a: Date | null, b: Date | null) =>
   a === null || b === null ? a === b : a.getTime() === b.getTime();
 
-/**
- * Why the session no longer reads as the caller saw it, or null when it does. A caller that saw no
- * agent did not see one that ran since; one that saw a failed attempt saw that attempt's agent.
- */
 const movedOnFrom = (
   seenSettledAt: Date | null,
   observed: LaunchObserved,

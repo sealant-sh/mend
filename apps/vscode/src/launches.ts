@@ -24,6 +24,10 @@ export const agentStarted = (detail: LaunchRead): boolean =>
     (process) => process.kind === "agent-pty" || process.kind === "agent-protocol",
   );
 
+/** No agent ran and nothing settled since `after`: a launch Mend never answered was not taken. */
+const untakenSince = (detail: LaunchRead, after: string | null): boolean =>
+  detail.session.settledAt === after && !agentStarted(detail);
+
 /** Where each attempt is said: the store, whose model reads it. */
 export interface AttemptSink {
   attempted(sessionId: string, attempt: LaunchAttempt): void;
@@ -54,10 +58,6 @@ type Precondition = {
 
 const MovedOnBody = Schema.Struct({ reason: LaunchMovedOnReason });
 
-/**
- * A `SessionMovedOn` over a live or starting agent offers Open as `SessionAgentLive` does: a Retry
- * names what it saw, so Mend answers it in those terms. A server before `reason` names none.
- */
 const preconditionOf = (cause: MendApiError): Precondition["kind"] | null => {
   if (cause.status !== 409) return null;
   if (cause.tag === "SessionAgentLive") return "agentLive";
@@ -154,7 +154,7 @@ export class Launches {
    * Retry: the same launch on the same session, once a read just now says it may be sent. It names
    * `settledAt`, the failure its toast saw, as `expected`, so Mend launches it only over that
    * failure. Null, for a refusal the server never settled, names the session as never launched:
-   * Mend refuses it once any agent ran there, which closes the gap between the read and its arrival.
+   * Mend refuses it once any agent ran there.
    */
   async relaunch(sessionId: string, settledAt: string | null): Promise<RetryAnswer> {
     const start = this.#sent.get(sessionId);
@@ -201,14 +201,11 @@ export class Launches {
     const attempt = this.#attempts.get(sessionId);
     const refusal = attempt?.refusal ?? null;
     if (read.status === "failed") return { kind: "retry", read };
-    // A launch with no answer may arrive late, run its agent and exit while a shell keeps the
-    // session idle: an agent, or a settle since the attempt, means it was taken.
     if (
       (read.status === "starting" || read.status === "idle") &&
       refusal !== null &&
       !UNDER_WAY.test(refusal.line) &&
-      read.settledAt === attempt?.after &&
-      !agentStarted(detail)
+      untakenSince(detail, attempt?.after ?? null)
     )
       return { kind: "retry", read };
     return { kind: "moved", read };
