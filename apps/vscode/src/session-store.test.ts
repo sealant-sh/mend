@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as vscode from "vscode";
 
 import type { EventPointer, PendingRequest, StreamSignal } from "./client.js";
+import { LastSeenFile } from "./last-seen.js";
 import { MendApiError } from "./mend-http.js";
+import type { KeptFiles } from "./review/kept-reviews.js";
+import { keptIn, memoryFiles } from "./review/test-fixtures.js";
 import type { MemberName } from "./session-lines.js";
 import type { LandingFact } from "./session-model.js";
 import {
@@ -205,20 +208,29 @@ class FakeWindow implements WindowSessions {
   }
 }
 
-const memento = () => {
-  const values = new Map<string, unknown>();
+/** The machine's disk, and how many times a window wrote what this VS Code last looked at. */
+const disk = (): { readonly files: KeptFiles; readonly writes: () => number } => {
+  const files = memoryFiles();
+  let writes = 0;
   return {
-    get: (key: string): unknown => values.get(key),
-    update: async (key: string, value: unknown): Promise<void> => {
-      values.set(key, value);
+    files: {
+      ...files,
+      writeFile: async (path, text) => {
+        if (path.includes("/last-seen/") && !path.includes(".lock")) writes += 1;
+        await files.writeFile(path, text);
+      },
     },
+    writes: () => writes,
   };
 };
+
+const lastSeenOn = (files: KeptFiles): LastSeenFile =>
+  new LastSeenFile(keptIn("/global-storage/reviews", files));
 
 const world = () => {
   const mend = new FakeMend();
   const here = new FakeWindow();
-  const store = new SessionStore({ globalState: memento() }, mend, { kind: "local" }, here);
+  const store = new SessionStore(lastSeenOn(memoryFiles()), mend, { kind: "local" }, here);
   const notifier = new Notifier(
     store,
     { claim: async () => true, release: async () => undefined },
@@ -254,34 +266,73 @@ afterEach(() => {
 
 describe("what this VS Code last looked at (Decided 3)", () => {
   it("is written only when a session she looks at holds news she has not seen", async () => {
-    const saved = memento();
-    let writes = 0;
-    const counted = {
-      get: saved.get,
-      update: async (key: string, value: unknown) => {
-        if (key === "mend.lastSeen") writes += 1;
-        await saved.update(key, value);
-      },
-    };
+    const { files, writes } = disk();
     const mend = new FakeMend();
-    const store = new SessionStore(
-      { globalState: counted },
-      mend,
-      { kind: "local" },
-      new FakeWindow(),
-    );
+    const store = new SessionStore(lastSeenOn(files), mend, { kind: "local" }, new FakeWindow());
     mend.add(session({ id: "done", status: "completed", settledAt: "2026-10-19T08:00:00.000Z" }));
     store.start();
     await tick(200);
     store.setVisible(true);
     store.select(["done"]);
-    const before = writes;
+    const before = writes();
     for (let emit = 0; emit < 5; emit += 1) {
       await tick(1_000);
       store.setVisible(true);
     }
-    expect(writes).toBe(before);
+    expect(writes()).toBe(before);
     expect(store.model()?.sessions.get("done")?.sinceYouLastLooked).toBe(false);
+  });
+});
+
+describe("what this VS Code last looked at, between windows (Decided 3)", () => {
+  /** `done` settles now, and the store reads it. */
+  const settles = async (mend: FakeMend): Promise<void> => {
+    mend.add(
+      session({ id: "done", status: "completed", settledAt: new Date(Date.now()).toISOString() }),
+    );
+    mend.signal({ kind: "event", event: event("session", "done") });
+    await tick(MAX_WAIT_MS + 100);
+  };
+
+  it("is written once she looks at news, and the next window shows it as seen", async () => {
+    const { files, writes } = disk();
+    const mend = new FakeMend();
+    const first = new SessionStore(lastSeenOn(files), mend, { kind: "local" }, new FakeWindow());
+    first.start();
+    await tick(200);
+    await settles(mend);
+    expect(first.model()?.sessions.get("done")?.sinceYouLastLooked).toBe(true);
+    const before = writes();
+    first.setVisible(true);
+    first.select(["done"]);
+    await tick(200);
+    expect(first.model()?.sessions.get("done")?.sinceYouLastLooked).toBe(false);
+    expect(writes()).toBe(before + 1);
+    const next = new SessionStore(lastSeenOn(files), mend, { kind: "local" }, new FakeWindow());
+    next.start();
+    await tick(200);
+    expect(next.model()?.sessions.get("done")?.sinceYouLastLooked).toBe(false);
+  });
+
+  it("reaches a window already open when she brings it to the front", async () => {
+    const files = memoryFiles();
+    // One server, as each window's own stream hears it.
+    const [hers, other] = [new FakeMend(), new FakeMend()];
+    const behind = new SessionStore(lastSeenOn(files), hers, { kind: "local" }, new FakeWindow());
+    const front = new SessionStore(lastSeenOn(files), other, { kind: "local" }, new FakeWindow());
+    behind.start();
+    front.start();
+    await tick(200);
+    await settles(hers);
+    await settles(other);
+    front.setVisible(true);
+    front.select(["done"]);
+    await tick(200);
+    expect(behind.model()?.sessions.get("done")?.sinceYouLastLooked).toBe(true);
+    fake.focus(false);
+    fake.focus(true);
+    await tick(200);
+    expect(behind.model()?.sessions.get("done")?.sinceYouLastLooked).toBe(false);
   });
 });
 

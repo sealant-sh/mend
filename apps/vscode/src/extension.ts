@@ -13,6 +13,7 @@ import { showErrorToast } from "./error-toast.js";
 import { FirstRunTree, FirstRunView, isOfferRow } from "./first-run-view.js";
 import { offerOf } from "./first-run.js";
 import { worktreePath } from "./git.js";
+import { LastSeenFile } from "./last-seen.js";
 import { Launches } from "./launches.js";
 import { NewSessionInput } from "./new-session-input.js";
 import { OFFER_COMMANDS, openRunner } from "./open-command.js";
@@ -620,7 +621,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     intents,
     (cause) => void showError(cause),
   );
-  const store = new SessionStore(context, client, role, workspaceWindow);
+  const store = new SessionStore(new LastSeenFile(kept), client, role, workspaceWindow);
   const tree = new MendTreeProvider(store, client);
   const statusBar = new MendStatusBar();
   const launches = new Launches(client, store);
