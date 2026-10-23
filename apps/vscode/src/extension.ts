@@ -13,6 +13,7 @@ import { showErrorToast } from "./error-toast.js";
 import { FirstRunTree, FirstRunView, isOfferRow } from "./first-run-view.js";
 import { offerOf } from "./first-run.js";
 import { worktreePath } from "./git.js";
+import { LastSeenFile } from "./last-seen.js";
 import { Launches } from "./launches.js";
 import { NewSessionInput } from "./new-session-input.js";
 import { OFFER_COMMANDS, openRunner } from "./open-command.js";
@@ -22,6 +23,7 @@ import type { OpenRunner } from "./open-runner.js";
 import { originProjectName } from "./project-match.js";
 import { Answers } from "./request-answer.js";
 import { pasteIntoAgent } from "./review/agent-paste.js";
+import { KeptReviews } from "./review/kept-reviews.js";
 import { startReview, type Review } from "./review/review.js";
 import {
   maySteer,
@@ -612,13 +614,14 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.authority),
   );
   const intents = new OpenIntents(path.join(context.globalStorageUri.fsPath, "open-intents"));
+  const kept = new KeptReviews(path.join(context.globalStorageUri.fsPath, "reviews"));
   const workspaceWindow = new WorkspaceWindow(
     client,
     role,
     intents,
     (cause) => void showError(cause),
   );
-  const store = new SessionStore(context, client, role, workspaceWindow);
+  const store = new SessionStore(new LastSeenFile(kept), client, role, workspaceWindow);
   const tree = new MendTreeProvider(store, client);
   const statusBar = new MendStatusBar();
   const launches = new Launches(client, store);
@@ -648,8 +651,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const newSessionInput = new NewSessionInput(context, client, store, launches);
   const review = startReview({
     client,
-    memento: context.globalState,
-    keptDirectory: path.join(context.globalStorageUri.fsPath, "reviews"),
+    kept,
     onError: (cause) => void showError(cause),
     claims,
     // G12 fallback: her agent's terminal attached here, as Answer attaches it, and the review

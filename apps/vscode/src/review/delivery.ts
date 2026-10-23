@@ -2,6 +2,7 @@ import type { PostAttempt } from "./comment-target.js";
 import type { Instruction } from "./instruction.js";
 import { inputAfter, planFor, type PastePlan, type TerminalInput } from "./paste-plan.js";
 import {
+  KEPT_REPLACED,
   KEPT_SENDS,
   rewritten,
   type AcceptedComment,
@@ -759,7 +760,11 @@ export const stepReview = (
   event: SendEvent,
   now: string,
 ): SessionReview => {
-  const next = withSend(review, key, (record) => step(record, event, now));
+  const next = withReplaced(
+    withSend(review, key, (record) => step(record, event, now)),
+    key,
+    event,
+  );
   if (event.kind !== "answered" || event.status === "superseded") return next;
   const at = next.sends.findIndex((record) => record.key === key);
   return next.sends
@@ -769,6 +774,23 @@ export const stepReview = (
         withSend(kept, older.key, (record) => step(record, { kind: "superseded" }, now)),
       next,
     );
+};
+
+const withReplaced = (review: SessionReview, key: string, event: SendEvent): SessionReview => {
+  if (event.kind === "draft-dismissed")
+    return review.replacedDrafts.includes(event.draftId)
+      ? { ...review, replacedDrafts: review.replacedDrafts.filter((id) => id !== event.draftId) }
+      : review;
+  if (event.kind !== "posted") return review;
+  const item = review.sends
+    .find((record) => record.key === key)
+    ?.items.find((one) => one.kind === "rewrite" && one.pending.id === event.pendingId);
+  if (item?.kind !== "rewrite" || review.replacedDrafts.includes(item.pending.origin.draftId))
+    return review;
+  return {
+    ...review,
+    replacedDrafts: [...review.replacedDrafts, item.pending.origin.draftId].slice(-KEPT_REPLACED),
+  };
 };
 
 /** A record that still holds its comments: a drive sends, delivers or pastes it. */

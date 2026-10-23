@@ -4,6 +4,7 @@ import {
   addPending,
   editPending,
   EMPTY_REVIEW,
+  NOTHING_UNREAD,
   parseSessionReview,
   removePending,
 } from "./pending.js";
@@ -25,7 +26,10 @@ describe("her pending comments (story d, step 4)", () => {
     });
     const whole = pending({ id: "w1", path: null, line: 1, endLine: 1 });
     const review = addPending(addPending(addPending(EMPTY_REVIEW, own), accepted), whole);
-    expect(parseSessionReview(JSON.parse(JSON.stringify(review)))).toEqual(review);
+    expect(parseSessionReview(JSON.parse(JSON.stringify(review)))).toEqual({
+      review,
+      unread: NOTHING_UNREAD,
+    });
   });
 
   it("are edited and removed until sent (G1)", () => {
@@ -34,11 +38,18 @@ describe("her pending comments (story d, step 4)", () => {
     expect(removePending(review, "p1").pending).toEqual([]);
   });
 
-  it("drop only a comment that does not read back", () => {
-    expect(parseSessionReview({ pending: [pending({}), { id: "broken" }] }).pending).toEqual([
-      pending({}),
-    ]);
-    expect(parseSessionReview({ pending: [{ ...pending({}), path: 3 }] }).pending).toEqual([]);
-    expect(parseSessionReview("garbage")).toEqual(EMPTY_REVIEW);
+  it("read a comment kept without the text of its line: nothing reads that text", () => {
+    const { lineText: _unread, ...without } = { ...pending({}), lineText: "the line" };
+    expect(parseSessionReview({ pending: [without] }).review.pending).toEqual([without]);
+  });
+
+  it("read only a comment that reads back, and keep any other as it was", () => {
+    expect(parseSessionReview({ pending: [pending({}), { id: "broken" }] })).toEqual({
+      review: { ...EMPTY_REVIEW, pending: [pending({})] },
+      unread: { ...NOTHING_UNREAD, pending: [{ id: "broken" }] },
+    });
+    const pathless = { ...pending({}), path: 3 };
+    expect(parseSessionReview({ pending: [pathless] }).unread.pending).toEqual([pathless]);
+    expect(parseSessionReview("garbage").review).toEqual(EMPTY_REVIEW);
   });
 });

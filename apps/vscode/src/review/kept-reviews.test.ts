@@ -1,8 +1,9 @@
-import { readdir, utimes, writeFile } from "node:fs/promises";
+import { readdir, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { startSend, stepReview, type SendEvent, type SendPhase } from "./delivery.js";
 import {
   DRIVE_STALE_MS,
   KEPT_REVIEW_TTL_MS,
@@ -10,8 +11,25 @@ import {
   NODE_FILES,
   type ReviewPlace,
 } from "./kept-reviews.js";
-import { addPending, type SessionReview } from "./pending.js";
-import { keptIn, pending, slowFiles, storage, SETTLE } from "./test-fixtures.js";
+import {
+  acceptedDrafts,
+  addPending,
+  EMPTY_REVIEW,
+  keepComposed,
+  saveDocument,
+  type Composed,
+  type SessionReview,
+} from "./pending.js";
+import {
+  instructionOf,
+  keptIn,
+  pending,
+  PINNED,
+  sentReview,
+  slowFiles,
+  storage,
+  SETTLE,
+} from "./test-fixtures.js";
 
 const DANA: ReviewPlace = { url: "http://mend", viewer: "dana", sessionId: "s1" };
 
@@ -128,7 +146,7 @@ describe("the session's lock, between windows", () => {
       addPending(review, pending({ id: "a", body: "first" })),
     );
     const kept = await Promise.all([fromFirst, fromSecond]);
-    expect(kept.map(({ rev }) => rev).toSorted()).toEqual([1, 2]);
+    expect(new Set(kept.map(({ rev }) => rev)).size).toBe(2);
     expect((await bodies(keptIn(directory))).toSorted()).toEqual(["first", "second"]);
   });
 
@@ -155,7 +173,8 @@ describe("the session's lock, between windows", () => {
       await pause(50);
       slow.go();
       const kept = await Promise.all([held, waiting]);
-      expect(kept.map(({ rev }) => rev)).toEqual([1, 2]);
+      const [slowRev, otherRev] = kept.map(({ rev }) => rev);
+      expect(otherRev).toBeGreaterThan(slowRev ?? Number.POSITIVE_INFINITY);
       expect((await bodies(keptIn(directory))).toSorted()).toEqual(["other", "slow"]);
     } finally {
       vi.useRealTimers();
@@ -187,7 +206,8 @@ describe("the session's lock, between windows", () => {
       await expect(held).rejects.toThrow(/another window/);
       expect(await NODE_FILES.modified(lock)).not.toBeNull();
       next.go();
-      expect((await taken).rev).toBe(1);
+      const { rev } = await taken;
+      expect((await keptIn(directory).read(DANA)).rev).toBe(rev);
       expect(await bodies(keptIn(directory))).toEqual(["next"]);
     } finally {
       vi.useRealTimers();
@@ -212,7 +232,6 @@ describe("her pending comments, kept for every window of one VS Code", () => {
       second.update(DANA, (review) => addPending(review, pending({ id: "b", body: "second" }))),
     ]);
     expect((await bodies(keptIn(directory))).toSorted()).toEqual(["first", "second"]);
-    expect((await keptIn(directory).read(DANA)).rev).toBe(2);
   });
 
   it("are kept per person: another account on the same server reads none of them", async () => {
@@ -253,21 +272,195 @@ describe("her pending comments, kept for every window of one VS Code", () => {
     await kept.update(DANA, (review) => addPending(review, pending({})));
     expect(await bodies(kept)).toEqual(["Use the shared limiter from guard.ts"]);
   });
+});
 
-  it("go once untouched past the expiry", async () => {
+const keptPastExpiry = async (
+  review: SessionReview | string,
+): Promise<{ readonly kept: boolean; readonly read: SessionReview }> => {
+  const directory = await storage();
+  let now = Date.now();
+  const kept = new KeptReviews(directory, NODE_FILES, () => now);
+  await kept.update({ ...DANA, sessionId: "s0" }, addOne);
+  const [folder] = await readdir(directory);
+  if (folder === undefined) throw new Error("no folder was made for her reviews");
+  const file = join(directory, folder, "s1.json");
+  if (typeof review === "string") await writeFile(file, review);
+  else await kept.update(DANA, () => review);
+  const old = new Date(Date.now() - KEPT_REVIEW_TTL_MS - 1_000);
+  await utimes(file, old, old);
+  now += 2 * 60 * 60 * 1000;
+  await kept.update({ ...DANA, sessionId: "s2" }, addOne);
+  return {
+    kept: (await readdir(join(directory, folder))).includes("s1.json"),
+    read: (await kept.read(DANA)).review,
+  };
+};
+
+const withDocument = (review: SessionReview, text: string | null): SessionReview => {
+  const composed: Composed = {
+    documentId: "doc-1",
+    sessionId: "s1",
+    sessionName: "add-rate-limit",
+    slice: { id: PINNED.id, baseId: PINNED.base.id, headId: PINNED.head.id, diffDigest: "d" },
+    pending: [],
+    open: [],
+    digest: "digest",
+    generation: "generation",
+    base: null,
+  };
+  const written = keepComposed(review, composed, "The review, as composed.").review;
+  if (text === null) return written;
+  const saved = saveDocument(written, "doc-1", 1, text);
+  if (saved.kind !== "saved") throw new Error("the review was not saved");
+  return saved.review;
+};
+
+const withPhase = (phase: SendPhase): SessionReview => {
+  const review = sentReview();
+  return { ...review, sends: review.sends.map((record) => ({ ...record, phase })) };
+};
+
+const delivered = (): SessionReview =>
+  withPhase({ kind: "delivered", at: "2026-10-19T11:00:00.000Z" });
+
+describe("a review untouched past the expiry", () => {
+  it("goes once it holds only reviews Mend took", async () => {
+    expect((await keptPastExpiry(delivered())).kept).toBe(false);
+  });
+
+  it("stays while it holds a comment she has not sent", async () => {
+    const { read } = await keptPastExpiry(addPending(delivered(), pending({ body: "unsent" })));
+    expect(read.pending.map(({ body }) => body)).toEqual(["unsent"]);
+  });
+
+  it("stays while a send is unfinished: Mend has not answered, or it failed and waits for Retry", async () => {
+    expect((await keptPastExpiry(sentReview())).read.sends).toHaveLength(1);
+    const failed = withPhase({
+      kind: "failed",
+      words: "Mend did not answer.",
+      at: "2026-10-19T11:00:00.000Z",
+    });
+    expect((await keptPastExpiry(failed)).read.sends).toHaveLength(1);
+  });
+
+  it("stays while it holds the words of a review she is writing", async () => {
+    const review = withDocument(delivered(), "Her review, as she edited it.");
+    expect((await keptPastExpiry(review)).read.document?.text).toBe(
+      "Her review, as she edited it.",
+    );
+  });
+
+  it("stays while it keeps a Mend draft her posted words replace from Accept", async () => {
+    expect(
+      (await keptPastExpiry({ ...delivered(), replacedDrafts: ["d1"] })).read.replacedDrafts,
+    ).toEqual(["d1"]);
+  });
+
+  it("stays while a Mend draft her posted words replace is still a draft there", async () => {
+    const rewrite = pending({
+      id: "a1",
+      body: "Run the burst test too.",
+      origin: { kind: "accepted", draftId: "d1", evidence: [], draftBody: "Run the tests." },
+    });
+    const sent = startSend(
+      { ...EMPTY_REVIEW, pending: [rewrite] },
+      {
+        key: "key-1",
+        slice: { id: PINNED.id, baseId: PINNED.base.id, headId: PINNED.head.id, diffDigest: "d" },
+        instruction: instructionOf("the review"),
+        paste: { kind: "all" },
+        pending: ["a1"],
+        open: [],
+        now: "2026-10-19T10:50:00.000Z",
+      },
+    );
+    if (sent === null) throw new Error("the review did not start");
+    const now = "2026-10-19T11:00:00.000Z";
+    const left: ReadonlyArray<SendEvent> = [
+      { kind: "posted", pendingId: "a1", commentId: "c9" },
+      { kind: "draft-left", draftId: "d1", words: "Mend refused the dismissal." },
+    ];
+    const stepped = left.reduce((next, event) => stepReview(next, "key-1", event, now), sent);
+    const done: SendPhase = { kind: "delivered", at: now };
+    const review = {
+      ...stepped,
+      sends: stepped.sends.map((record) => ({ ...record, phase: done })),
+    };
+    expect(acceptedDrafts(review).has("d1")).toBe(true);
+    const { read } = await keptPastExpiry(review);
+    expect(acceptedDrafts(read).has("d1")).toBe(true);
+  });
+
+  it("goes when the review she is writing reads as Send review composed it", async () => {
+    expect((await keptPastExpiry(withDocument(delivered(), null))).kept).toBe(false);
+  });
+
+  it("is not swept by the write that saves her words into it", async () => {
     const directory = await storage();
     let now = Date.now();
     const kept = new KeptReviews(directory, NODE_FILES, () => now);
-    await kept.update(DANA, (review) => addPending(review, pending({})));
+    await kept.update(DANA, () => withDocument(delivered(), null));
+    const [folder] = await readdir(directory);
+    if (folder === undefined) throw new Error("no folder was made for her reviews");
+    const old = new Date(Date.now() - KEPT_REVIEW_TTL_MS - 1_000);
+    await utimes(join(directory, folder, "s1.json"), old, old);
+    now += 2 * 60 * 60 * 1000;
+    let saved: string | null = null;
+    await kept.update(DANA, (review) => {
+      const save = saveDocument(review, "doc-1", 1, "Her words, typed a month on.");
+      saved = save.kind;
+      return save.kind === "saved" ? save.review : review;
+    });
+    expect(saved).toBe("saved");
+    expect((await kept.read(DANA)).review.document?.text).toBe("Her words, typed a month on.");
+  });
+
+  it("stays while she works in it, through another session's sweep, at the same rev", async () => {
+    const directory = await storage();
+    const hers = new KeptReviews(directory);
+    const { rev } = await hers.update(DANA, () => withDocument(delivered(), null));
     const [folder] = await readdir(directory);
     if (folder === undefined) throw new Error("no folder was made for her reviews");
     const file = join(directory, folder, "s1.json");
     const old = new Date(Date.now() - KEPT_REVIEW_TTL_MS - 1_000);
     await utimes(file, old, old);
-    now += 2 * 60 * 60 * 1000;
-    await kept.update({ ...DANA, sessionId: "s2" }, (review) => addPending(review, pending({})));
-    expect(await bodies(kept)).toEqual([]);
-    expect(await bodies(kept, { ...DANA, sessionId: "s2" })).toHaveLength(1);
+    await hers.touch(DANA);
+    await new KeptReviews(directory).update({ ...DANA, sessionId: "s2" }, addOne);
+    expect(await readdir(join(directory, folder))).toContain("s1.json");
+    expect((await hers.read(DANA)).rev).toBe(rev);
+  });
+
+  it("is touched at most once an hour by one window", async () => {
+    const directory = await storage();
+    let now = Date.now();
+    const hers = new KeptReviews(directory, NODE_FILES, () => now);
+    await hers.update(DANA, addOne);
+    const [folder] = await readdir(directory);
+    if (folder === undefined) throw new Error("no folder was made for her reviews");
+    const file = join(directory, folder, "s1.json");
+    const old = new Date(now - KEPT_REVIEW_TTL_MS);
+    await hers.touch(DANA);
+    await utimes(file, old, old);
+    now += 59 * 60 * 1000;
+    await hers.touch(DANA);
+    expect((await stat(file)).mtimeMs).toBe(old.getTime());
+    now += 60 * 1000;
+    await hers.touch(DANA);
+    expect((await stat(file)).mtimeMs).toBe(now);
+  });
+
+  it("is never written by a touch when it is not kept", async () => {
+    const directory = await storage();
+    await new KeptReviews(directory).touch(DANA);
+    expect(await readdir(directory, { recursive: true })).not.toContainEqual(
+      expect.stringMatching(/s1\.json$/),
+    );
+  });
+
+  it("stays when this window cannot read it", async () => {
+    expect((await keptPastExpiry('{"rev":3,"review":{"pending":[')).kept).toBe(true);
+    const newer = JSON.stringify({ format: 99, rev: 3, review: { pending: [], sends: [] } });
+    expect((await keptPastExpiry(newer)).kept).toBe(true);
   });
 });
 

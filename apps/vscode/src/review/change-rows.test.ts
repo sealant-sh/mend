@@ -153,7 +153,7 @@ describe("the Change section's rows (story d, step 1)", () => {
           ],
         },
       ),
-      { pending: [pending({})], sends: [], document: null },
+      { pending: [pending({})], sends: [], document: null, replacedDrafts: [] },
       "Dana",
       NOW,
     );

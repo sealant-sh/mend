@@ -3,11 +3,12 @@ import * as vscode from "vscode";
 import { MendApiError, type EventPointer, type MendClient, type StreamSignal } from "./client.js";
 import { refusedSignIn } from "./error-toast.js";
 import { canonicalPaths, realPathFor, repositoryFacts } from "./git.js";
+import type { LastSeenStore } from "./last-seen.js";
 import { comparedPaths, matchProject } from "./project-match.js";
+import { Unwritable } from "./review/kept-reviews.js";
 import type { MemberName } from "./session-lines.js";
 import {
   mergeLastSeen,
-  seen,
   sessionModel,
   type Connection,
   type LandingFact,
@@ -27,8 +28,6 @@ import {
 import type { Project, ProjectDetail, ReceivedHandoff, Session, SessionDetail } from "./types.js";
 import { sessionOfWorkspace, type WindowRole } from "./window-role.js";
 
-/** `globalState` key: `LastSeen` per server URL, on this machine only. */
-const LAST_SEEN_KEY = "mend.lastSeen";
 const DEBOUNCE_MS = 150;
 /** However busy the stream, what it announced is read within this long of its first frame. */
 export const MAX_WAIT_MS = 1_000;
@@ -61,12 +60,6 @@ export type StoreClient = Pick<
   | "landing"
   | "subscribe"
 >;
-
-/** Where the store keeps what this VS Code last looked at: the extension's `globalState`. */
-export interface LastSeenMemento {
-  get(key: string): unknown;
-  update(key: string, value: unknown): Thenable<void>;
-}
 
 /** The window's own session, and the session whose agent terminal is in front here. */
 export interface WindowSessions {
@@ -157,17 +150,6 @@ export interface StoreChange {
   readonly next: WindowModel;
 }
 
-const isLastSeen = (value: unknown): value is LastSeen => {
-  if (typeof value !== "object" || value === null) return false;
-  const sessions: unknown = Reflect.get(value, "sessions");
-  return (
-    typeof Reflect.get(value, "baseline") === "string" &&
-    typeof sessions === "object" &&
-    sessions !== null &&
-    Object.values(sessions).every((at) => typeof at === "string")
-  );
-};
-
 /**
  * Every read the Mend view, status bar, badge and notifier rest on: one snapshot, kept current by
  * the event stream with a targeted re-read per frame, and what this VS Code last looked at. It
@@ -186,6 +168,7 @@ export class SessionStore implements vscode.Disposable {
   #lastHeardAt: string | null = null;
   #serverUrl: string | null = null;
   #lastSeen: LastSeen = { baseline: new Date().toISOString(), sessions: {} };
+  #unsavedFor: string | null = null;
   #model: WindowModel | null = null;
   /** Whether `#model` came from a read: the first read's change then raises no toast. */
   #modelRead = false;
@@ -227,7 +210,7 @@ export class SessionStore implements vscode.Disposable {
   readonly #disposables: ReadonlyArray<vscode.Disposable>;
 
   constructor(
-    private readonly context: { readonly globalState: LastSeenMemento },
+    private readonly lastSeen: LastSeenStore,
     private readonly client: StoreClient,
     private readonly role: WindowRole,
     private readonly workspace: WindowSessions,
@@ -236,7 +219,9 @@ export class SessionStore implements vscode.Disposable {
       this.#changed,
       this.#heardEvent,
       vscode.window.onDidChangeWindowState((state) => {
-        if (state.focused) this.#emit();
+        if (!state.focused) return;
+        this.#emit();
+        void this.#readLastSeen();
       }),
       vscode.window.onDidChangeActiveTerminal(() => this.#emit()),
       workspace.onDidLocate(() => this.#emit()),
@@ -657,7 +642,7 @@ export class SessionStore implements vscode.Disposable {
     const connection = await this.client.connection();
     if (connection.url !== this.#serverUrl) {
       this.#serverUrl = connection.url;
-      this.#lastSeen = this.#loadLastSeen(connection.url);
+      this.#lastSeen = await this.#loadLastSeen(connection.url);
     }
     const projects = await this.client.listProjects();
     const details = await limited(projects, FAN_OUT, (project) =>
@@ -855,49 +840,68 @@ export class SessionStore implements vscode.Disposable {
     this.#unmatched = unmatched;
   }
 
-  /**
-   * Every window of this VS Code writes the same record (Decided 3: per machine), so each emit
-   * merges what the others saved, adds what this window shows while it is focused, and saves only
-   * when that moved something.
-   */
-  #syncLastSeen(url: string, now: Date): LastSeen {
-    const stored = this.context.globalState.get(LAST_SEEN_KEY);
-    const entry = typeof stored === "object" && stored !== null ? Reflect.get(stored, url) : null;
-    const merged = isLastSeen(entry) ? mergeLastSeen(entry, this.#lastSeen) : this.#lastSeen;
-    const showing =
-      vscode.window.state.focused && this.#read
-        ? [...this.showing()].filter((id) => this.find(id) !== null)
-        : [];
-    const next = seen(merged, showing, now);
-    if (!isLastSeen(entry) || JSON.stringify(entry) !== JSON.stringify(next))
-      this.#saveLastSeen(url, next);
-    return next;
-  }
-
-  #loadLastSeen(url: string): LastSeen {
-    const stored = this.context.globalState.get(LAST_SEEN_KEY);
-    const entry = typeof stored === "object" && stored !== null ? Reflect.get(stored, url) : null;
-    if (isLastSeen(entry)) return entry;
+  async #loadLastSeen(url: string): Promise<LastSeen> {
     const fresh: LastSeen = { baseline: new Date().toISOString(), sessions: {} };
-    this.#saveLastSeen(url, fresh);
-    return fresh;
+    return this.lastSeen.merge(url, fresh, []).catch((cause: unknown) => {
+      this.#unsaved(url, cause);
+      return fresh;
+    });
   }
 
-  #saveLastSeen(url: string, lastSeen: LastSeen): void {
-    const stored = this.context.globalState.get(LAST_SEEN_KEY);
-    const all = typeof stored === "object" && stored !== null ? { ...stored } : {};
-    void this.context.globalState.update(LAST_SEEN_KEY, { ...all, [url]: lastSeen });
+  async #readLastSeen(): Promise<void> {
+    const url = this.#serverUrl;
+    if (url === null) return;
+    const kept = await this.lastSeen.read(url).catch(() => null);
+    if (kept !== null) this.#adoptLastSeen(url, kept);
+  }
+
+  #adoptLastSeen(url: string, kept: LastSeen): void {
+    if (this.#serverUrl !== url) return;
+    const merged = mergeLastSeen(kept, this.#lastSeen);
+    if (JSON.stringify(merged) === JSON.stringify(this.#lastSeen)) return;
+    this.#lastSeen = merged;
+    this.#emit();
+  }
+
+  #saveLastSeen(forget: ReadonlyArray<string> = []): void {
+    const url = this.#serverUrl;
+    if (url === null) return;
+    this.#unsavedFor = null;
+    void this.lastSeen.merge(url, this.#lastSeen, forget).then(
+      (kept) => this.#adoptLastSeen(url, kept),
+      (cause: unknown) => this.#unsaved(url, cause),
+    );
+  }
+
+  #unsaved(url: string, cause: unknown): void {
+    if (!(cause instanceof Unwritable)) this.#unsavedFor = url;
+  }
+
+  #settledNewsLookedAt(model: WindowModel): ReadonlyMap<string, string> {
+    if (!vscode.window.state.focused || !this.#read) return new Map();
+    return new Map(
+      [...this.showing()].flatMap((id): ReadonlyArray<[string, string]> => {
+        const settledAt = model.sessions.get(id)?.settledAt ?? null;
+        const last = this.#lastSeen.sessions[id] ?? this.#lastSeen.baseline;
+        return settledAt !== null && Date.parse(settledAt) > Date.parse(last)
+          ? [[id, settledAt]]
+          : [];
+      }),
+    );
   }
 
   /** Sessions no longer on the server are forgotten, so the record stays the size of the view. */
   #prune(): void {
     const known = new Set(this.details().flatMap((detail) => detail.sessions.map((s) => s.id)));
-    const kept = Object.fromEntries(
-      Object.entries(this.#lastSeen.sessions).filter(([id]) => known.has(id)),
-    );
-    if (Object.keys(kept).length === Object.keys(this.#lastSeen.sessions).length) return;
-    this.#lastSeen = { ...this.#lastSeen, sessions: kept };
-    if (this.#serverUrl !== null) this.#saveLastSeen(this.#serverUrl, this.#lastSeen);
+    const gone = Object.keys(this.#lastSeen.sessions).filter((id) => !known.has(id));
+    if (gone.length === 0) return;
+    this.#lastSeen = {
+      ...this.#lastSeen,
+      sessions: Object.fromEntries(
+        Object.entries(this.#lastSeen.sessions).filter(([id]) => known.has(id)),
+      ),
+    };
+    this.#saveLastSeen(gone);
   }
 
   #emit(): void {
@@ -907,10 +911,27 @@ export class SessionStore implements vscode.Disposable {
       const status = this.find(sessionId)?.session.status ?? "starting";
       if (status !== "starting" && status !== "failed") this.#launches.delete(sessionId);
     }
-    if (this.#serverUrl !== null) this.#lastSeen = this.#syncLastSeen(this.#serverUrl, now);
     const prev = this.#modelRead ? this.#model : null;
+    let next = this.#modelAt(now);
+    const looked = this.#settledNewsLookedAt(next);
+    if (looked.size > 0) {
+      this.#lastSeen = {
+        ...this.#lastSeen,
+        sessions: { ...this.#lastSeen.sessions, ...Object.fromEntries(looked) },
+      };
+      next = this.#modelAt(now);
+    }
+    if (looked.size > 0 || (this.#unsavedFor !== null && this.#unsavedFor === this.#serverUrl))
+      this.#saveLastSeen();
+    this.#model = next;
+    this.#modelRead = this.#read;
+    void vscode.commands.executeCommand("setContext", "mend.offline", next.offline);
+    this.#changed.fire({ prev, next });
+  }
+
+  #modelAt(now: Date): WindowModel {
     const shown = this.#seen();
-    const next = sessionModel({
+    return sessionModel({
       projects: shown.projects,
       details: [...shown.details.values()],
       viewer: this.#snapshot.viewer,
@@ -926,9 +947,5 @@ export class SessionStore implements vscode.Disposable {
           : { kind: "local" },
       now,
     });
-    this.#model = next;
-    this.#modelRead = this.#read;
-    void vscode.commands.executeCommand("setContext", "mend.offline", next.offline);
-    this.#changed.fire({ prev, next });
   }
 }

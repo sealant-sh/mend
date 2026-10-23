@@ -15,11 +15,12 @@ import type { Project, ProjectDetail, Session, SessionDetail } from "../types.js
 import type { Pasted } from "./agent-paste.js";
 import type { Bound } from "./binding.js";
 import type { ChangeRead } from "./change-rows.js";
-import type { DeliverRequest } from "./delivery.js";
+import { startSend, type DeliverRequest } from "./delivery.js";
 import { Instruction } from "./instruction.js";
 import { KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
-import type { PendingComment } from "./pending.js";
+import { EMPTY_REVIEW, type PendingComment, type SessionReview } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
+import { ReviewMemory } from "./review-memory.js";
 import type { Composition, ReviewStore, Sent } from "./review-store.js";
 import type {
   ChangeFile,
@@ -147,7 +148,6 @@ export const pending = (overrides: Partial<PendingComment>): PendingComment => (
   path: "src/auth/limit.ts",
   line: 12,
   endLine: 12,
-  lineText: "  const recent = (hits.get(key) ?? []).filter(fresh);",
   body: "Use the shared limiter from guard.ts",
   createdAt: "2026-10-19T10:00:00.000Z",
   origin: { kind: "own" },
@@ -435,6 +435,28 @@ export const instructionOf = (text: string): Instruction => {
   return parsed.instruction;
 };
 
+export const sentReview = (key = "key-1"): SessionReview => {
+  const review = startSend(
+    { ...EMPTY_REVIEW, pending: [pending({ id: "sent" })] },
+    {
+      key,
+      slice: {
+        id: PINNED.id,
+        baseId: PINNED.base.id,
+        headId: PINNED.head.id,
+        diffDigest: PINNED.diffDigest,
+      },
+      instruction: instructionOf("the review"),
+      paste: { kind: "all" },
+      pending: ["sent"],
+      open: [],
+      now: "2026-10-19T10:50:00.000Z",
+    },
+  );
+  if (review === null) throw new Error("the review did not start");
+  return review;
+};
+
 /** Long enough for a store's read of the fakes to land. */
 export const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
 
@@ -475,8 +497,16 @@ export const memoryFiles = (): KeptFiles => {
         name.startsWith(`${path}/`) ? [name.slice(path.length + 1)] : [],
       ),
     modified: async (path) => files.get(path)?.at ?? null,
+    touch: async (path, at) => {
+      const found = files.get(path);
+      if (found === undefined) throw missing(path);
+      files.set(path, { ...found, at });
+    },
   };
 };
+
+export const pinsInMemory = (): ReviewMemory =>
+  new ReviewMemory(keptIn("/global-storage/reviews", memoryFiles()));
 
 /** A window with no terminal of hers to paste into. */
 export const noPaste = async (): Promise<Pasted> => "not-attached";

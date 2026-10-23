@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { EMPTY_REVIEW, parseSessionReview, type SessionReview } from "./pending.js";
+import { needs } from "./delivery.js";
+import { asComposed, parseSessionReview, type SessionReview, type Unread } from "./pending.js";
 
 /** Whose review it is: one person, signed in to one server, on one session. */
 export interface ReviewPlace {
@@ -31,6 +32,7 @@ export interface KeptFiles {
   readonly readdir: (path: string) => Promise<ReadonlyArray<string>>;
   /** When the file was last written, in ms; null when it is gone. */
   readonly modified: (path: string) => Promise<number | null>;
+  readonly touch: (path: string, at: number) => Promise<void>;
 }
 
 const codeOf = (cause: unknown): unknown =>
@@ -49,9 +51,9 @@ export const NODE_FILES: KeptFiles = {
       (found) => found.mtimeMs,
       () => null,
     ),
+  touch: (path, at) => fs.utimes(path, new Date(at), new Date(at)),
 };
 
-/** A session's review untouched this long goes: nobody reviews a session a month on. */
 export const KEPT_REVIEW_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** A lock its holder has not renewed this long was left by a window that died holding it. */
@@ -62,6 +64,7 @@ const LOCK_BEAT_MS = LOCK_STALE_MS / 4;
 const LOCK_WAIT_MS = 5_000;
 const LOCK_POLL_MS = 15;
 const SWEEP_EVERY_MS = 60 * 60 * 1000;
+const TOUCH_EVERY_MS = 60 * 60 * 1000;
 /** A lease its window has not renewed this long belongs to no window. */
 export const DRIVE_STALE_MS = 2 * 60 * 1000;
 const DRIVE_BEAT_MS = DRIVE_STALE_MS / 4;
@@ -69,20 +72,154 @@ const DRIVE_BEAT_MS = DRIVE_STALE_MS / 4;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A session's review as kept, with the revision each write counts up. */
 export interface KeptReview {
   readonly rev: number;
   readonly review: SessionReview;
 }
 
-const parseKept = (text: string): KeptReview => {
-  const value: unknown = JSON.parse(text);
-  if (!isRecord(value)) return { rev: 0, review: EMPTY_REVIEW };
+/**
+ * Builds already installed read this, and cannot be changed: raise it only for a change they would
+ * write back wrongly, so they leave the file as it is. They write back an entry they cannot read
+ * where it was, and send no review after a send they cannot read, so a new kind of entry needs no
+ * raise.
+ */
+export const KEPT_FORMAT = 1;
+
+export class Unwritable extends Error {}
+
+interface FileKind {
+  readonly what: string;
+  readonly format: number;
+  readonly onUnreadable: "keep" | "overwrite";
+}
+
+const REVIEW: FileKind = {
+  what: "this session's review",
+  format: KEPT_FORMAT,
+  onUnreadable: "keep",
+};
+
+interface Stored {
+  readonly rev: number;
+  readonly fields: Readonly<Record<string, unknown>>;
+  readonly unwritable: string | null;
+}
+
+/** Never below the clock, so a file swept and written anew reads newer than any a window read. */
+const revisionAfter = (rev: number, now: number): number => Math.max(rev + 1, now);
+
+const NOTHING_STORED: Stored = { rev: 0, fields: {}, unwritable: null };
+
+const FROM_NEWER =
+  "Change it from a window that runs the newer version: reload this window if VS Code updated the extension.";
+
+const parseStored = (
+  file: string,
+  text: string,
+  { what, format: mine, onUnreadable }: FileKind,
+): Stored => {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    value = undefined;
+  }
+  const unreadable = (why: string): Stored =>
+    onUnreadable === "overwrite"
+      ? NOTHING_STORED
+      : {
+          rev: 0,
+          fields: {},
+          unwritable: `The file VS Code keeps ${what} in ${why}, so VS Code leaves it as it is: ${file}.`,
+        };
+  if (!isRecord(value)) return unreadable("is not JSON");
+  const format = value["format"] ?? 1;
+  if (typeof format !== "number" || !Number.isInteger(format) || format < 1)
+    return unreadable("names no format this version of the Mend extension reads");
   const rev = value["rev"];
   return {
     rev: typeof rev === "number" && Number.isInteger(rev) ? rev : 0,
-    review: parseSessionReview(value["review"]),
+    fields: value,
+    unwritable:
+      format > mine
+        ? `A newer version of the Mend extension wrote ${what}, so this version leaves it as that version wrote it. ${FROM_NEWER}`
+        : null,
   };
+};
+
+interface Opened {
+  readonly stored: Stored;
+  readonly kept: KeptReview;
+  readonly unread: Unread;
+}
+
+const openReview = (stored: Stored): Opened => {
+  const { review, unread } = parseSessionReview(stored.fields["review"]);
+  return { stored, kept: { rev: stored.rev, review }, unread };
+};
+
+/**
+ * Builds already installed write back only what their `parse` reads, and cannot be changed: any
+ * change to a record's shape raises its `format`.
+ */
+export interface SharedRecord<T> extends FileKind {
+  readonly name: string;
+  readonly parse: (stored: unknown) => T;
+}
+
+const holdsNothing = ({ stored, kept: { review }, unread }: Opened): boolean =>
+  stored.unwritable === null &&
+  unread.pending.length === 0 &&
+  unread.sends.length === 0 &&
+  unread.document === null &&
+  review.pending.length === 0 &&
+  review.replacedDrafts.length === 0 &&
+  (review.document === null || asComposed(review.document)) &&
+  review.sends.every((record) => needs(record) === "nothing");
+
+const storedReview = (
+  stored: unknown,
+  review: SessionReview,
+  unread: Unread,
+): Record<string, unknown> => {
+  if (review.document !== null && unread.document !== null)
+    throw new Error(
+      `A newer version of the Mend extension keeps the review you are writing for this session, so this version does not compose another. ${FROM_NEWER}`,
+    );
+  const fields = isRecord(stored) ? stored : {};
+  const sent = Array.isArray(fields["sends"]) ? fields["sends"] : [];
+  const keys = new Set(sent.map((entry) => (isRecord(entry) ? entry["key"] : undefined)));
+  if (unread.sends.length > 0 && review.sends.some(({ key }) => !keys.has(key)))
+    throw new Error(
+      `A newer version of the Mend extension sent a review of this session that this version cannot read, so this version sends no other: it cannot tell what that review pasted. ${FROM_NEWER}`,
+    );
+  return {
+    ...fields,
+    ...review,
+    pending: inPlace(fields["pending"], review.pending, unread.pending, "id", ({ id }) => id),
+    sends: inPlace(fields["sends"], review.sends, unread.sends, "key", ({ key }) => key),
+    document: review.document ?? unread.document,
+  };
+};
+
+const inPlace = <T>(
+  stored: unknown,
+  next: ReadonlyArray<T>,
+  unread: ReadonlyArray<unknown>,
+  field: "id" | "key",
+  idOf: (entry: T) => string,
+): ReadonlyArray<unknown> => {
+  const left = new Map(next.map((entry) => [idOf(entry), entry]));
+  const kept = new Set(unread);
+  const placed = (Array.isArray(stored) ? stored : []).flatMap((entry): ReadonlyArray<unknown> => {
+    if (kept.has(entry)) return [entry];
+    const id = isRecord(entry) ? entry[field] : undefined;
+    const found = typeof id === "string" ? left.get(id) : undefined;
+    if (typeof id !== "string" || found === undefined) return [];
+    left.delete(id);
+    return [found];
+  });
+  return [...placed, ...left.values()];
 };
 
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -119,6 +256,7 @@ export class KeptReviews {
   readonly #window = randomUUID();
   /** When each person's directory was last swept. */
   readonly #swept = new Map<string, number>();
+  readonly #touched = new Map<string, number>();
   /** The leases this window drives sends under, by file, each renewed while it lasts. */
   readonly #drives = new Map<string, Renewed>();
 
@@ -128,37 +266,111 @@ export class KeptReviews {
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** The session's review as kept now; nothing kept reads as no comment. */
   async read(place: ReviewPlace): Promise<KeptReview> {
-    try {
-      return parseKept(await this.files.readFile(this.#file(place)));
-    } catch (cause) {
-      if (codeOf(cause) === "ENOENT" || cause instanceof SyntaxError)
-        return { rev: 0, review: EMPTY_REVIEW };
-      throw cause;
-    }
+    return openReview(await this.#stored(this.#file(place), REVIEW)).kept;
   }
 
-  /**
-   * Applies `update` to the review as kept now, never to a copy this window read earlier, and
-   * answers what was kept. Nothing is written when nothing changed. A write that fails throws, and
-   * what is kept stays as it was.
-   */
   async update(
     place: ReviewPlace,
     update: (kept: SessionReview) => SessionReview | Promise<SessionReview>,
   ): Promise<KeptReview> {
     const file = this.#file(place);
+    return this.#serial(file, async () => {
+      await this.#sweep(file);
+      return this.#locked(file, REVIEW, async (held) => {
+        const opened = openReview(await this.#stored(file, REVIEW));
+        const current = opened.kept;
+        const next = await update(current.review);
+        if (JSON.stringify(next) === JSON.stringify(current.review)) return current;
+        const review = storedReview(opened.stored.fields["review"], next, opened.unread);
+        return {
+          rev: await this.#replace(file, REVIEW, opened.stored, { review }, held),
+          review: next,
+        };
+      });
+    });
+  }
+
+  async touch(place: ReviewPlace): Promise<void> {
+    const file = this.#file(place);
+    if (this.now() - (this.#touched.get(file) ?? Number.NEGATIVE_INFINITY) < TOUCH_EVERY_MS) return;
+    this.#touched.set(file, this.now());
+    try {
+      await this.#serial(file, () =>
+        this.#locked(file, REVIEW, async () => {
+          if ((await this.files.modified(file)) !== null) await this.files.touch(file, this.now());
+        }),
+      );
+    } catch (cause) {
+      this.#touched.delete(file);
+      throw cause;
+    }
+  }
+
+  async readRecord<T>(record: SharedRecord<T>): Promise<T> {
+    const file = join(this.directory, record.name);
+    return record.parse((await this.#stored(file, record)).fields["record"]);
+  }
+
+  async updateRecord<T>(record: SharedRecord<T>, update: (kept: T) => T): Promise<T> {
+    const file = join(this.directory, record.name);
+    return this.#serial(file, () =>
+      this.#locked(file, record, async (held) => {
+        const stored = await this.#stored(file, record);
+        const current = record.parse(stored.fields["record"]);
+        const next = update(current);
+        if (JSON.stringify(next) === JSON.stringify(current)) return current;
+        await this.#replace(file, record, stored, { record: next }, held);
+        return next;
+      }),
+    );
+  }
+
+  async #serial<T>(file: string, work: () => Promise<T>): Promise<T> {
     const before = this.#queued.get(file) ?? Promise.resolve();
-    const run = before
-      .catch(() => undefined)
-      .then(() => this.#locked(file, (held) => this.#write(place, file, update, held)));
+    const run = before.catch(() => undefined).then(work);
     this.#queued.set(file, run);
     try {
       return await run;
     } finally {
       if (this.#queued.get(file) === run) this.#queued.delete(file);
     }
+  }
+
+  async #stored(file: string, kind: FileKind): Promise<Stored> {
+    try {
+      return parseStored(file, await this.files.readFile(file), kind);
+    } catch (cause) {
+      if (codeOf(cause) === "ENOENT") return NOTHING_STORED;
+      throw cause;
+    }
+  }
+
+  async #replace(
+    file: string,
+    kind: FileKind,
+    stored: Stored,
+    fields: Readonly<Record<string, unknown>>,
+    held: () => Promise<boolean>,
+  ): Promise<number> {
+    if (stored.unwritable !== null) throw new Unwritable(stored.unwritable);
+    const rev = revisionAfter(stored.rev, this.now());
+    const written = `${file}.${randomUUID()}.tmp`;
+    try {
+      await this.files.writeFile(
+        written,
+        JSON.stringify({ ...stored.fields, ...fields, format: kind.format, rev }),
+      );
+      if (!(await held()))
+        throw new Error(
+          `another window of VS Code took over writing ${kind.what}; this change was not kept.`,
+        );
+      await this.files.rename(written, file);
+    } catch (cause) {
+      await this.files.rm(written).catch(() => undefined);
+      throw cause;
+    }
+    return rev;
   }
 
   /**
@@ -216,41 +428,19 @@ export class KeptReviews {
     return `${this.#file(place)}.${encodeURIComponent(key)}.drive`;
   }
 
-  async #write(
-    place: ReviewPlace,
+  async #locked<T>(
     file: string,
-    update: (kept: SessionReview) => SessionReview | Promise<SessionReview>,
-    held: () => Promise<boolean>,
-  ): Promise<KeptReview> {
-    const current = await this.read(place);
-    const next = await update(current.review);
-    if (JSON.stringify(next) === JSON.stringify(current.review)) return current;
-    const kept: KeptReview = { rev: current.rev + 1, review: next };
-    const written = `${file}.${randomUUID()}.tmp`;
-    try {
-      await this.files.writeFile(written, JSON.stringify(kept));
-      if (!(await held()))
-        throw new Error(
-          "another window of VS Code took over writing this review; this change was not kept.",
-        );
-      await this.files.rename(written, file);
-    } catch (cause) {
-      await this.files.rm(written).catch(() => undefined);
-      throw cause;
-    }
-    return kept;
-  }
-
-  async #locked<T>(file: string, body: (held: () => Promise<boolean>) => Promise<T>): Promise<T> {
+    kind: FileKind,
+    body: (held: () => Promise<boolean>) => Promise<T>,
+  ): Promise<T> {
     await this.files.mkdir(dirname(file));
-    await this.#sweep(dirname(file));
     const lock = `${file}.lock`;
     const owner = randomUUID();
     const began = this.now();
     while (!(await this.#take(lock, owner))) {
       if (await this.#breakStale(lock, LOCK_STALE_MS)) continue;
       if (this.now() - began >= LOCK_WAIT_MS)
-        throw new Error("another window of VS Code is still writing this review.");
+        throw new Error(`another window of VS Code is still writing ${kind.what}.`);
       await pause(LOCK_POLL_MS);
     }
     const renewed = this.#renew(lock, owner, LOCK_BEAT_MS);
@@ -358,11 +548,8 @@ export class KeptReviews {
     };
   }
 
-  /**
-   * Reviews untouched past the expiry, and what a crash left, go; at most hourly. An expired
-   * review goes only under its own lock, so a window writing it at that moment keeps its write.
-   */
-  async #sweep(directory: string): Promise<void> {
+  async #sweep(writing: string): Promise<void> {
+    const directory = dirname(writing);
     if (this.now() - (this.#swept.get(directory) ?? Number.NEGATIVE_INFINITY) < SWEEP_EVERY_MS)
       return;
     this.#swept.set(directory, this.now());
@@ -374,6 +561,7 @@ export class KeptReviews {
     await Promise.all(
       names.map(async (name) => {
         const path = join(directory, name);
+        if (path === writing) return;
         if (/\.(tmp|stale|break)$/.test(name)) {
           if (await expired(path, LOCK_STALE_MS * 6)) await this.files.rm(path);
           return;
@@ -387,7 +575,14 @@ export class KeptReviews {
         const owner = randomUUID();
         if (!(await this.#take(lock, owner).catch(() => false))) return;
         try {
-          if (await expired(path, KEPT_REVIEW_TTL_MS)) await this.files.rm(path);
+          if (
+            (await expired(path, KEPT_REVIEW_TTL_MS)) &&
+            (await this.#stored(path, REVIEW).then(
+              (stored) => holdsNothing(openReview(stored)),
+              () => false,
+            ))
+          )
+            await this.files.rm(path);
         } finally {
           await this.#release(lock, owner).catch(() => undefined);
         }

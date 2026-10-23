@@ -648,8 +648,10 @@ the row takes the job's name.
     `+`. A comment Mend holds, marked addressed over the API, shows `addressed` with no Edit or
     Delete. **Show record** (the `...` menu) opens `record · <label>.md`, read-only. Pending
     comments are files under the extension's global storage,
-    `reviews/<server account>/<session>.json`, one per person and session, written under a `.lock`
-    file; a draft about the whole change hangs on `mend-change-note://<change>/the whole change`.
+    `reviews/<server account>/<session>.json` (`{ format, rev, review }`), one per person and
+    session, written under a `.lock` file; the pins and what this VS Code last looked at are
+    `reviews/pins/<server>.json` and `reviews/last-seen/<server>.json` (`{ format, rev, record }`);
+    a draft about the whole change hangs on `mend-change-note://<change>/the whole change`.
   - **Read this change** asks Mend to read; the section reads `Mend is reading · <time>`, then one
     toast:
     `Mend could not read this change: The connected account was rejected by the provider — reconnect it. (Inference failed: authentication_failed)`.
@@ -716,6 +718,20 @@ the row takes the job's name.
       `The editor could not be opened because the file was not found.`, **Send review** composes the
       review again without her line, and that is what Mend holds. Fixed: the restored tab reads her
       line, and the follow-up's instruction ends with it.
+  - Her kept review across the sweep, VS Code starting again and a newer version of the extension:
+    `recipes/vscode-review-kept.mjs`. A pending comment on line 12, unsent; then, as setup, her
+    review's file, a review that holds nothing (`an-old-session.json`) and another session's unsent
+    comment (`another-session.json`) aged 40 days with `touch -d`; `Developer: Reload Window` stands
+    in for VS Code starting (a new extension host sweeps on its first write); a second comment on
+    line 13 runs the sweep. Then her file is rewritten as a newer version would write it
+    (`format: 2`, an entry this version cannot read) and the window reloads. Observed in run `pr3k`,
+    2026-10-23, on `7a234b55f` (`kept-1`): after the reload `Comments · 1 pending` and her thread;
+    after the sweep `Comments · 2 pending`, the folder holds her file and `another-session.json`
+    (still 40 days old) and not `an-old-session.json`; her file holds both comments; `pins/` and
+    `last-seen/` each hold one file in format 1; on the newer file the section reads `2 pending`,
+    her third comment stays in its thread `not kept` with the toast
+    `VS Code could not keep your comment: A newer version of the Mend extension wrote this session's review, …`,
+    and the file's sha256 is unchanged.
   - Delivery that goes out wrong: `recipes/vscode-review-delivery.mjs`, three claude sessions
     (`<prefix>-empty`, `-repin`, `-exited`; `MEND_REVIEW_SESSION` names the prefix). Steps under
     test are kept failed and the last step fails the run, as above. It reads what Mend holds through

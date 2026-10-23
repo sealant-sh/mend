@@ -50,8 +50,6 @@ export interface PendingComment {
   /** Lines from 1; null for a comment about its whole file, or the change as a whole. */
   readonly line: number | null;
   readonly endLine: number | null;
-  /** The first commented line as it read: what carries the comment to a newer slice. */
-  readonly lineText: string;
   readonly body: string;
   readonly createdAt: string;
   readonly origin: PendingOrigin;
@@ -96,9 +94,17 @@ export interface SessionReview {
   readonly sends: ReadonlyArray<SendRecord>;
   /** The review Send review opened for the session, until it is sent: one per session. */
   readonly document: ReviewDocument | null;
+  readonly replacedDrafts: ReadonlyArray<string>;
 }
 
-export const EMPTY_REVIEW: SessionReview = { pending: [], sends: [], document: null };
+export const EMPTY_REVIEW: SessionReview = {
+  pending: [],
+  sends: [],
+  document: null,
+  replacedDrafts: [],
+};
+
+export const KEPT_REPLACED = MAX_PENDING;
 
 /** The reviews kept: the newest few, enough for since my last review and a retry. */
 export const KEPT_SENDS = 5;
@@ -162,7 +168,6 @@ const parsePending = (value: unknown): ReadonlyArray<PendingComment> => {
   const path = value["path"] === null ? null : text(value, "path");
   const line = nullableWhole(value, "line");
   const endLine = nullableWhole(value, "endLine");
-  const lineText = text(value, "lineText");
   const body = text(value, "body");
   const createdAt = text(value, "createdAt");
   const origin = body === null ? null : parseOrigin(value["origin"], body);
@@ -175,13 +180,12 @@ const parsePending = (value: unknown): ReadonlyArray<PendingComment> => {
     line === undefined ||
     endLine === undefined ||
     (line === null) !== (endLine === null) ||
-    lineText === null ||
     body === null ||
     createdAt === null ||
     origin === null
   )
     return [];
-  return [{ id, sliceId, headId, path, line, endLine, lineText, body, createdAt, origin, anchor }];
+  return [{ id, sliceId, headId, path, line, endLine, body, createdAt, origin, anchor }];
 };
 
 const nullableText = (value: Record<string, unknown>, field: string): string | null | undefined => {
@@ -282,14 +286,11 @@ const parsePhase = (value: unknown, failedAtFallback: string): SendPhase | null 
     case "in-terminal": {
       // A review pasted without the agent's process named goes nowhere: it waits for Retry.
       const processId = text(value, "processId");
-      return processId === null
-        ? { kind: "pending" }
-        : {
-            kind: "in-terminal",
-            agent: text(value, "agent") ?? "the agent",
-            processId,
-            paste: parsePasteStep(value["paste"]),
-          };
+      const paste = parsePasteStep(value["paste"]);
+      if (processId === null) return { kind: "pending" };
+      return paste === null
+        ? null
+        : { kind: "in-terminal", agent: text(value, "agent") ?? "the agent", processId, paste };
     }
     case "pending":
       return { kind: "pending" };
@@ -333,16 +334,27 @@ const parseStop = (value: unknown): StopReason | null => {
   }
 };
 
-const parsePasteStep = (value: unknown): PasteStep => {
-  if (isRecord(value) && value["kind"] === "failed")
-    return {
-      kind: "failed",
-      mayHaveLanded: value["mayHaveLanded"] === true,
-      stopped: parseStop(value["stopped"]),
-    };
-  if (isRecord(value) && value["kind"] === "pasting") return { kind: "pasting" };
-  const input = isRecord(value) && value["kind"] === "done" ? parseInput(value["input"]) : null;
-  return input === null ? { kind: "due" } : { kind: "done", input };
+const parsePasteStep = (value: unknown): PasteStep | null => {
+  if (!isRecord(value)) return null;
+  switch (value["kind"]) {
+    case "due":
+      return { kind: "due" };
+    case "pasting":
+      return { kind: "pasting" };
+    case "failed": {
+      const said = value["stopped"] ?? null;
+      const stopped = said === null ? null : parseStop(said);
+      return stopped === null && said !== null
+        ? null
+        : { kind: "failed", mayHaveLanded: value["mayHaveLanded"] === true, stopped };
+    }
+    case "done": {
+      const input = parseInput(value["input"]);
+      return input === null ? null : { kind: "done", input };
+    }
+    default:
+      return null;
+  }
 };
 
 /** What a review pastes; null for a plan that does not read back, so it is never pasted whole. */
@@ -384,6 +396,13 @@ const parseNotice = (value: unknown): ReadonlyArray<SendNotice> => {
   ];
 };
 
+const parseNotices = (value: unknown): ReadonlyArray<SendNotice> | null => {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return null;
+  const notices = value.flatMap(parseNotice);
+  return notices.length === value.length ? notices : null;
+};
+
 const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
   if (!isRecord(value) || !Array.isArray(value["items"])) return [];
   const key = text(value, "key");
@@ -396,6 +415,7 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
   const phase = createdAt === null ? null : parsePhase(value["phase"], createdAt);
   const paste = parsePaste(value["paste"]);
   const items = value["items"].flatMap(parseItem);
+  const notices = parseNotices(value["notices"]);
   if (
     key === null ||
     sliceId === null ||
@@ -406,7 +426,8 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
     createdAt === null ||
     phase === null ||
     paste === null ||
-    items.length !== value["items"].length
+    items.length !== value["items"].length ||
+    notices === null
   )
     return [];
   return [
@@ -420,8 +441,7 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
       paste,
       items,
       phase,
-      // A send kept before notices were kept says nothing more.
-      notices: Array.isArray(value["notices"]) ? value["notices"].flatMap(parseNotice) : [],
+      notices,
       createdAt,
     },
   ];
@@ -496,15 +516,50 @@ const parseDocument = (value: unknown): ReviewDocument | null => {
   };
 };
 
-/** A session's review as stored; a comment or a review that does not read back is dropped alone. */
-export const parseSessionReview = (value: unknown): SessionReview =>
-  isRecord(value)
-    ? {
-        pending: Array.isArray(value["pending"]) ? value["pending"].flatMap(parsePending) : [],
-        sends: Array.isArray(value["sends"]) ? value["sends"].flatMap(parseSend) : [],
-        document: parseDocument(value["document"]),
-      }
-    : EMPTY_REVIEW;
+export interface Unread {
+  readonly pending: ReadonlyArray<unknown>;
+  readonly sends: ReadonlyArray<unknown>;
+  readonly document: unknown;
+}
+
+export const NOTHING_UNREAD: Unread = { pending: [], sends: [], document: null };
+
+const partition = <T>(
+  values: unknown,
+  parse: (value: unknown) => ReadonlyArray<T>,
+): { readonly read: ReadonlyArray<T>; readonly unread: ReadonlyArray<unknown> } => {
+  const read: Array<T> = [];
+  const unread: Array<unknown> = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const [parsed] = parse(value);
+    if (parsed === undefined) unread.push(value);
+    else read.push(parsed);
+  }
+  return { read, unread };
+};
+
+export const parseSessionReview = (
+  value: unknown,
+): { readonly review: SessionReview; readonly unread: Unread } => {
+  if (!isRecord(value)) return { review: EMPTY_REVIEW, unread: NOTHING_UNREAD };
+  const pending = partition(value["pending"], parsePending);
+  const sends = partition(value["sends"], parseSend);
+  const stored = value["document"] ?? null;
+  const document = parseDocument(stored);
+  return {
+    review: {
+      pending: pending.read,
+      sends: sends.read,
+      document,
+      replacedDrafts: parseIds(value["replacedDrafts"]) ?? [],
+    },
+    unread: {
+      pending: pending.unread,
+      sends: sends.unread,
+      document: document === null ? stored : null,
+    },
+  };
+};
 
 /** A review document's revision before she saves it: the text as Send review composed it. */
 const AS_COMPOSED = 1;
@@ -537,6 +592,9 @@ export const keepComposed = (
   };
   return { review: { ...review, document }, carried };
 };
+
+export const asComposed = (document: ReviewDocument): boolean =>
+  document.revision === AS_COMPOSED && document.earlier === null;
 
 export type DocumentSave =
   | { readonly kind: "saved"; readonly review: SessionReview; readonly revision: number }
@@ -627,6 +685,7 @@ export const removePending = (review: SessionReview, id: string): SessionReview 
  */
 export const acceptedDrafts = (review: SessionReview): ReadonlySet<string> =>
   new Set([
+    ...review.replacedDrafts,
     ...review.pending.flatMap((comment) =>
       comment.origin.kind === "accepted" ? [comment.origin.draftId] : [],
     ),

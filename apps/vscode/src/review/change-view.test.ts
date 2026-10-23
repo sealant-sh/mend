@@ -4,7 +4,6 @@ import { changeUri } from "./change-content.js";
 import { fileRow, type ChangeRow } from "./change-rows.js";
 import { ChangeView } from "./change-view.js";
 import { RecordContent } from "./record.js";
-import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore } from "./review-store.js";
 import {
   FakeMend,
@@ -17,6 +16,7 @@ import {
   storage,
   noPaste,
   SETTLE,
+  pinsInMemory,
 } from "./test-fixtures.js";
 
 const ui = vi.hoisted(() => ({
@@ -57,23 +57,13 @@ vi.mock("vscode", async () => {
   };
 });
 
-const memento = (): ReviewMemento => {
-  const saved = new Map<string, unknown>();
-  return {
-    get: (key) => saved.get(key),
-    update: async (key, value) => {
-      saved.set(key, JSON.parse(JSON.stringify(value)));
-    },
-  };
-};
-
 describe("opening a pending comment's row", () => {
   it("opens the diff its file's row opens, with no base side for an added file", async () => {
     const vscode = await import("vscode");
     const store = new ReviewStore(
       sessionReads("change-1"),
       new FakeMend(),
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(await storage()),
       noPaste,
     );
@@ -97,7 +87,6 @@ describe("opening a pending comment's row", () => {
       },
       line: 3,
       endLine: 3,
-      lineText: "",
       body: "Use the shared limiter",
     });
     const comments = view

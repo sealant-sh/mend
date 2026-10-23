@@ -1,20 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 
-import type { KeptFiles } from "./kept-reviews.js";
-import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
+import type { SessionProcess } from "../types.js";
+import type { PasteReview } from "./agent-paste.js";
+import { KEPT_REVIEW_TTL_MS, KeptReviews, type KeptFiles } from "./kept-reviews.js";
+import { addPending } from "./pending.js";
 import { ReviewStore } from "./review-store.js";
 import { SendEditor } from "./send-editor.js";
 import {
   comment,
   FakeMend,
-  keptIn,
   memoryFiles,
   noPaste,
+  pending,
   PROJECT,
   session,
   sessionReads,
+  settle,
   SETTLE,
+  pinsInMemory,
 } from "./test-fixtures.js";
 
 interface BaseStat {
@@ -42,10 +46,22 @@ const etag = ({ mtime, size }: BaseStat): string => `${mtime.toString(29)}${size
 const modifiedSince = (base: BaseStat, stat: BaseStat): boolean =>
   base.mtime < stat.mtime && etag(base) !== etag({ mtime: base.mtime, size: stat.size });
 
+interface Untitled {
+  readonly content: string;
+  readonly language: string;
+}
+
+interface UntitledDocument extends Untitled {
+  isClosed: boolean;
+  getText(): string;
+}
+
 const ui = vi.hoisted(() => ({
   commands: new Map<string, (...args: ReadonlyArray<unknown>) => unknown>(),
   providers: new Array<vscode.FileSystemProvider>(),
   documents: new Array<OpenDocument>(),
+  untitled: new Array<UntitledDocument>(),
+  edits: new Array<(event: { readonly document: OpenDocument }) => void>(),
   providerOfThisWindow(): vscode.FileSystemProvider | undefined {
     return this.providers.at(-1);
   },
@@ -67,7 +83,11 @@ const ui = vi.hoisted(() => ({
       },
       async save() {
         if (!this.isDirty) return true;
-        if (modifiedSince(this.base, await provider.stat(uri))) return false;
+        // VS Code reads a file whose stat fails as one that does not exist yet, and writes it.
+        const stat = await Promise.resolve()
+          .then(() => provider.stat(uri))
+          .catch(() => null);
+        if (stat !== null && modifiedSince(this.base, stat)) return false;
         try {
           await provider.writeFile(uri, new TextEncoder().encode(this.text), {
             create: false,
@@ -125,6 +145,7 @@ vi.mock("vscode", async () => {
     FileSystemError,
     Disposable,
     TabInputText,
+    ViewColumn: { Beside: -2 },
     FileType: { File: 1 },
     FileChangeType: { Changed: 1 },
     window: {
@@ -149,7 +170,21 @@ vi.mock("vscode", async () => {
         ui.providers.push(provider);
         return { dispose: () => undefined };
       },
-      openTextDocument: async (uri: vscode.Uri) => {
+      onDidChangeTextDocument: (listener: (event: { readonly document: OpenDocument }) => void) => {
+        ui.edits.push(listener);
+        return { dispose: () => ui.edits.splice(ui.edits.indexOf(listener), 1) };
+      },
+      openTextDocument: async (target: vscode.Uri | Untitled) => {
+        if ("content" in target) {
+          const untitled: UntitledDocument = {
+            ...target,
+            isClosed: false,
+            getText: () => target.content,
+          };
+          ui.untitled.push(untitled);
+          return untitled;
+        }
+        const uri = target;
         // VS Code hands back the document it has for a URI, loaded or not.
         const loaded = ui.documents.find((open) => open.uri.toString() === uri.toString());
         if (loaded !== undefined) return loaded;
@@ -171,16 +206,6 @@ vi.mock("vscode", async () => {
   };
 });
 
-const memento = (): ReviewMemento => {
-  const saved = new Map<string, unknown>();
-  return {
-    get: (key) => saved.get(key),
-    update: async (key, value) => {
-      saved.set(key, JSON.parse(JSON.stringify(value)));
-    },
-  };
-};
-
 const encoded = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decoded = (data: Uint8Array): string => new TextDecoder().decode(data);
 const SAVE: { readonly create: boolean; readonly overwrite: boolean } = {
@@ -188,13 +213,19 @@ const SAVE: { readonly create: boolean; readonly overwrite: boolean } = {
   overwrite: true,
 };
 
-const windowOn = async (files: KeptFiles, mend: FakeMend) => {
+interface WindowOptions {
+  readonly now?: () => number;
+  readonly reads?: ReturnType<typeof sessionReads>;
+  readonly paste?: PasteReview;
+}
+
+const windowOn = async (files: KeptFiles, mend: FakeMend, options: WindowOptions = {}) => {
   const store = new ReviewStore(
-    sessionReads("change-1"),
+    options.reads ?? sessionReads("change-1"),
     mend,
-    new ReviewMemory(memento()),
-    keptIn("/global-storage/reviews", files),
-    noPaste,
+    pinsInMemory(),
+    new KeptReviews("/global-storage/reviews", files, options.now),
+    options.paste ?? noPaste,
   );
   const editor = new SendEditor(store, (cause) => {
     throw cause;
@@ -232,9 +263,12 @@ beforeEach(() => {
   vi.mocked(vscode.window.showWarningMessage).mockClear();
   vi.mocked(vscode.commands.executeCommand).mockClear();
   vi.mocked(vscode.window.tabGroups.close).mockClear();
+  vi.mocked(vscode.window.showTextDocument).mockClear();
   ui.commands.clear();
   ui.providers.length = 0;
   ui.documents.length = 0;
+  ui.untitled.length = 0;
+  ui.edits.length = 0;
 });
 
 describe("Send to session", () => {
@@ -668,5 +702,156 @@ describe("a review open in two windows", () => {
     );
     first.close();
     second.close();
+  });
+});
+
+const sweepAMonthOn = async (files: KeptFiles, store: ReviewStore): Promise<void> => {
+  const place = store.place();
+  if (place === null) throw new Error("the window follows no session");
+  const aMonthOn = Date.now() + KEPT_REVIEW_TTL_MS + 1_000;
+  await new KeptReviews("/global-storage/reviews", files, () => aMonthOn).update(
+    { ...place, sessionId: "s2" },
+    (review) => addPending(review, pending({ id: "in-another-session" })),
+  );
+};
+
+const typeInto = (document: OpenDocument, text: string): void => {
+  document.text = text;
+  document.version += 1;
+  document.isDirty = true;
+  for (const edit of ui.edits) edit({ document });
+};
+
+const CLAUDE: SessionProcess = {
+  id: "agent-1",
+  kind: "agent-pty",
+  harness: "claude",
+  status: "running",
+  exitedAt: null,
+  providerSessionId: null,
+  label: "claude",
+  waiting: null,
+  runsAs: null,
+};
+
+const occurrences = (text: string | undefined, words: string): number =>
+  (text ?? "").split(words).length - 1;
+
+describe("a review she is working in", () => {
+  it("survives another session's sweep when she types in it a month on, and sends her words once", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    let now = Date.now();
+    const window = await windowOn(files, mend, { now: () => now });
+    const opened = await sendReview();
+    now += KEPT_REVIEW_TTL_MS + 2 * 60 * 60 * 1000;
+    typeInto(opened, "MY UNSAVED REVIEW WORDS");
+    await settle();
+    await sweepAMonthOn(files, window.store);
+    expect(await opened.save()).toBe(true);
+    await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    expect(mend.delivered[0]?.instruction).toBe("MY UNSAVED REVIEW WORDS");
+    expect(ui.untitled).toEqual([]);
+    window.close();
+  });
+});
+
+describe("a save of a review Mend no longer keeps", () => {
+  it("never adds her words to the review another window composed since, however often she saves", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    const first = await windowOn(files, mend);
+    const older = await sendReview();
+    typeInto(older, "HER EARLIER UNSAVED WORDS");
+    mend.serverComments = [...mend.serverComments, comment({ id: "c2", line: 13 })];
+    const second = await windowOn(files, mend);
+    const composition = second.store.compose();
+    if (composition === null) throw new Error("the second window composed nothing");
+    await second.store.keepDocument(composition);
+    expect(await older.save()).toBe(false);
+    const newer = await sendReview();
+    typeInto(newer, `${newer.text}\nHER NEWER WINDOW WORDS\n`);
+    expect(await newer.save()).toBe(true);
+    expect(await older.save()).toBe(false);
+    const kept = decoded(await second.provider.readFile(newer.uri));
+    expect(occurrences(kept, "HER EARLIER UNSAVED WORDS")).toBe(0);
+    await ui.commands.get("mend.change.sendToSession")?.(newer.uri);
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    const sent = mend.delivered[0]?.instruction;
+    expect(occurrences(sent, "HER EARLIER UNSAVED WORDS")).toBe(0);
+    expect(sent).toContain("HER NEWER WINDOW WORDS");
+    expect(ui.untitled).toEqual([
+      expect.objectContaining({ content: "HER EARLIER UNSAVED WORDS", language: "markdown" }),
+    ]);
+    await expect(
+      Promise.resolve().then(() => first.provider.writeFile(older.uri, encoded(older.text), SAVE)),
+    ).rejects.toThrow(/no longer keeps this review[^]*new editor/);
+    first.close();
+    second.close();
+  });
+
+  it("opens her words in a new editor again once she closed the one they opened in", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    const window = await windowOn(files, mend);
+    const opened = await sendReview();
+    typeInto(opened, "HER WORDS");
+    await sweepAMonthOn(files, window.store);
+    expect(await opened.save()).toBe(false);
+    for (const untitled of ui.untitled) untitled.isClosed = true;
+    expect(await opened.save()).toBe(false);
+    expect(ui.untitled.map(({ content }) => content)).toEqual(["HER WORDS", "HER WORDS"]);
+    window.close();
+  });
+
+  it("never pastes a review she sent again, though its editor stayed open through a sweep", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    mend.answer = "pending";
+    const pastes = new Array<string>();
+    const reads = sessionReads("change-1");
+    const window = await windowOn(files, mend, {
+      reads: {
+        ...reads,
+        sessionDetail: async (sessionId) => ({
+          ...(await reads.sessionDetail(sessionId)),
+          processes: [CLAUDE],
+          currentAgent: CLAUDE,
+        }),
+      },
+      paste: async (_session, _process, text) => {
+        pastes.push(text);
+        return "pasted";
+      },
+    });
+    const opened = await sendReview();
+    vi.mocked(vscode.window.tabGroups.close).mockImplementationOnce(async () => {
+      typeInto(opened, `${opened.text}\nADDED WHILE SENDING\n`);
+      return false;
+    });
+    await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
+    await vi.waitFor(() => expect(pastes).toHaveLength(1), SETTLE);
+    await vi.waitFor(
+      () =>
+        expect(window.store.review().sends.at(-1)?.phase).toMatchObject({
+          kind: "in-terminal",
+          paste: { kind: "done" },
+        }),
+      SETTLE,
+    );
+    await sweepAMonthOn(files, window.store);
+    expect(await files.readdir("/global-storage/reviews")).not.toContainEqual(
+      expect.stringMatching(/\/s1\.json$/),
+    );
+    await opened.save();
+    await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(pastes).toHaveLength(1);
+    expect(mend.delivered).toHaveLength(1);
+    expect(ui.untitled).toEqual([
+      expect.objectContaining({ content: opened.text, language: "markdown" }),
+    ]);
+    window.close();
   });
 });
