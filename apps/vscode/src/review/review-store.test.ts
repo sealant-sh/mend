@@ -654,13 +654,13 @@ describe("sending a review from the store", () => {
     const composed = store.compose();
     if (composed === null) throw new Error("nothing composed");
     const { ref, document } = await store.keepDocument(composed);
-    const saved = await store.saveDocument(ref, document.revision, mendNote("add-rate-limit"));
+    const saved = await store.saveDocument(ref, document, mendNote("add-rate-limit"));
     if (saved.kind !== "saved") throw new Error(`not saved: ${saved.kind}`);
 
     label = "rate-limit-v2";
     store.reread();
     await vi.waitFor(() => expect(store.ready()?.sessionName).toBe("rate-limit-v2"), SETTLE);
-    expect(await store.send(ref, saved.revision)).toEqual({
+    expect(await store.send(ref, saved.document.revision)).toEqual({
       sent: false,
       words: expect.stringMatching(/empty/),
     });

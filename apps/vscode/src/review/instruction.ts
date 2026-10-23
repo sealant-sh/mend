@@ -177,10 +177,15 @@ export class Instruction {
 
 export const EARLIER_TEXT = "## Your earlier text, kept for you to edit or delete";
 
+export const earlierTextBlock = (earlier: string, sessionName: string): string => {
+  const saved = textToSend(earlier, sessionName);
+  return saved === "" ? "" : `\n\n${EARLIER_TEXT}\n\n${saved}\n`;
+};
+
 /** A review composed anew over one she saved: her saved text follows it, as she would send it. */
 export const withEarlierText = (text: string, earlier: string, sessionName: string): string => {
-  const saved = textToSend(earlier, sessionName);
-  return saved === "" ? text : `${text.trimEnd()}\n\n${EARLIER_TEXT}\n\n${saved}\n`;
+  const block = earlierTextBlock(earlier, sessionName);
+  return block === "" ? text : `${text.trimEnd()}${block}`;
 };
 
 /** Whether Send review is offered here, and if not, why. */

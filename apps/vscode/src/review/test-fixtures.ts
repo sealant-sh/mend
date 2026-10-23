@@ -423,9 +423,9 @@ export const sendComposed = async (
   text: string,
 ): Promise<Sent> => {
   const { ref, document } = await store.keepDocument(composition);
-  const saved = await store.saveDocument(ref, document.revision, text);
+  const saved = await store.saveDocument(ref, document, text);
   return saved.kind === "saved"
-    ? store.send(ref, saved.revision)
+    ? store.send(ref, saved.document.revision)
     : { sent: false, words: `VS Code did not save the review: ${saved.kind}` };
 };
 

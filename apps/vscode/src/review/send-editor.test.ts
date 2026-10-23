@@ -376,7 +376,9 @@ describe("Send review, chosen again", () => {
     const id = new URLSearchParams(opened.uri.query).get("id");
     const place = window.store.place();
     if (id === null || place === null) throw new Error("no review kept");
-    await window.store.saveDocument({ place, id }, 1, "words saved in another window");
+    const kept = await window.store.document({ place, id });
+    if (kept === null) throw new Error("no review kept");
+    await window.store.saveDocument({ place, id }, kept, "words saved in another window");
     opened.text = "her unsaved typing";
     opened.version += 1;
     opened.isDirty = true;
@@ -669,7 +671,6 @@ describe("a review open in two windows", () => {
   });
 });
 
-/** Another window, a month on: its first write of any session sweeps every review untouched since. */
 const sweepAMonthOn = async (files: KeptFiles, store: ReviewStore): Promise<void> => {
   const place = store.place();
   if (place === null) throw new Error("the window follows no session");

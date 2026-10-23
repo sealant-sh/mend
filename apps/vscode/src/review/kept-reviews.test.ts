@@ -18,6 +18,7 @@ import {
   keepComposed,
   saveDocument,
   type Composed,
+  type ReviewDocument,
   type SessionReview,
 } from "./pending.js";
 import {
@@ -296,23 +297,30 @@ const keptPastExpiry = async (
   };
 };
 
+const COMPOSED: Composed = {
+  documentId: "doc-1",
+  sessionId: "s1",
+  sessionName: "add-rate-limit",
+  slice: { id: PINNED.id, baseId: PINNED.base.id, headId: PINNED.head.id, diffDigest: "d" },
+  pending: [],
+  open: [],
+  digest: "digest",
+  generation: "generation",
+  base: null,
+};
+
 const withDocument = (review: SessionReview, text: string | null): SessionReview => {
-  const composed: Composed = {
-    documentId: "doc-1",
-    sessionId: "s1",
-    sessionName: "add-rate-limit",
-    slice: { id: PINNED.id, baseId: PINNED.base.id, headId: PINNED.head.id, diffDigest: "d" },
-    pending: [],
-    open: [],
-    digest: "digest",
-    generation: "generation",
-    base: null,
-  };
-  const written = keepComposed(review, composed, "The review, as composed.").review;
+  const written = keepComposed(review, COMPOSED, "The review, as composed.").review;
   if (text === null) return written;
-  const saved = saveDocument(written, "doc-1", 1, text);
+  const saved = saveDocument(written, composedDocument(), text);
   if (saved.kind !== "saved") throw new Error("the review was not saved");
   return saved.review;
+};
+
+const composedDocument = (): ReviewDocument => {
+  const { document } = keepComposed(EMPTY_REVIEW, COMPOSED, "The review, as composed.").review;
+  if (document === null) throw new Error("Send review composed nothing");
+  return document;
 };
 
 const withPhase = (phase: SendPhase): SessionReview => {
@@ -407,7 +415,7 @@ describe("a review untouched past the expiry", () => {
     now += 2 * 60 * 60 * 1000;
     let saved: string | null = null;
     await kept.update(DANA, (review) => {
-      const save = saveDocument(review, "doc-1", 1, "Her words, typed a month on.");
+      const save = saveDocument(review, composedDocument(), "Her words, typed a month on.");
       saved = save.kind;
       return save.kind === "saved" ? save.review : review;
     });
@@ -429,7 +437,7 @@ describe("a review untouched past the expiry", () => {
     expect(await readdir(join(directory, folder))).not.toContain("s1.json");
     let saved: string | null = null;
     await hers.update(DANA, (review) => {
-      const save = saveDocument(review, "doc-1", 1, "Her words, typed before the sweep.");
+      const save = saveDocument(review, composedDocument(), "Her words, typed before the sweep.");
       saved = save.kind;
       return save.kind === "saved" ? save.review : review;
     });

@@ -850,13 +850,15 @@ export class ReviewStore implements vscode.Disposable {
     return document?.composed.documentId === ref.id ? document : null;
   }
 
-  async saveDocument(ref: DocumentRef, revision: number, text: string): Promise<DocumentSave> {
-    let saved: DocumentSave | null = null;
+  async saveDocument(ref: DocumentRef, based: ReviewDocument, text: string): Promise<DocumentSave> {
+    const outcome: { save: DocumentSave | null } = { save: null };
     await this.#keepAt(ref.place, (review) => {
-      saved = saveDocument(review, ref.id, revision, text);
-      return saved.kind === "saved" ? saved.review : review;
+      const save = saveDocument(review, based, text);
+      outcome.save = save;
+      return save.kind === "newer" ? review : save.review;
     });
-    return saved ?? { kind: "gone" };
+    if (outcome.save === null) throw new Error("VS Code did not save the review.");
+    return outcome.save;
   }
 
   /** The review of the followed session that offers Retry delivery from the title, if any. */

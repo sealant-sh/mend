@@ -32,8 +32,8 @@ const refOf = (uri: vscode.Uri): DocumentRef | null => {
 const NEWER =
   "Another window saved this review since this editor read it, so your text is not saved over it. Your text stays in this editor.";
 
-const GONE =
-  "This review was sent, or VS Code no longer keeps it, so your text is not saved. Your text stays in this editor.";
+const CARRIED =
+  'Another window composed this session\'s review again since this editor read it, so VS Code kept your text in that review, under "Your earlier text". Choose Send review to open it. Your text stays in this editor.';
 
 const ELSEWHERE =
   "You typed in an earlier review of this session that another window composed anew or sent since, so this review does not hold that text. Your text stays in its editor: copy what you need into this review.";
@@ -45,11 +45,10 @@ class ReviewFiles implements vscode.FileSystemProvider {
   readonly #changed = new vscode.EventEmitter<Array<vscode.FileChangeEvent>>();
   readonly onDidChangeFile = this.#changed.event;
   /**
-   * The revision each editor's text is based on: the first this window looked at, or the one it
-   * read or saved since. VS Code restores unsaved words over what it last looked at, and checks
-   * only by `mtime` and size before a save, so a save is checked here against this revision.
+   * VS Code restores unsaved words over what it last looked at, and checks only by `mtime` and size
+   * before a save, so a save is checked here against its revision.
    */
-  readonly #based = new Map<string, number>();
+  readonly #based = new Map<string, ReviewDocument>();
 
   constructor(private readonly store: ReviewStore) {}
 
@@ -59,7 +58,7 @@ class ReviewFiles implements vscode.FileSystemProvider {
 
   async stat(uri: vscode.Uri): Promise<vscode.FileStat> {
     const document = await this.#document(uri);
-    if (!this.#based.has(uri.toString())) this.#based.set(uri.toString(), document.revision);
+    if (!this.#based.has(uri.toString())) this.#based.set(uri.toString(), document);
     // VS Code's check before a save sees a newer file only when its size differs from the size
     // the editor's text is based on, so a newer save of the same length would pass: the size is
     // the revision, never the same twice.
@@ -79,19 +78,20 @@ class ReviewFiles implements vscode.FileSystemProvider {
 
   async readFile(uri: vscode.Uri): Promise<Uint8Array> {
     const document = await this.#document(uri);
-    this.#based.set(uri.toString(), document.revision);
+    this.#based.set(uri.toString(), document);
     return new TextEncoder().encode(document.text);
   }
 
   async writeFile(uri: vscode.Uri, content: Uint8Array): Promise<void> {
     const ref = refOf(uri);
     if (ref === null) throw vscode.FileSystemError.FileNotFound(uri);
-    const revision = this.#based.get(uri.toString());
-    if (revision === undefined) throw new vscode.FileSystemError(UNREAD);
-    const saved = await this.store.saveDocument(ref, revision, new TextDecoder().decode(content));
-    if (saved.kind === "gone") throw vscode.FileSystemError.FileNotFound(GONE);
+    const based = this.#based.get(uri.toString());
+    if (based === undefined) throw new vscode.FileSystemError(UNREAD);
+    const saved = await this.store.saveDocument(ref, based, new TextDecoder().decode(content));
     if (saved.kind === "newer") throw new vscode.FileSystemError(NEWER);
-    this.#based.set(uri.toString(), saved.revision);
+    // Thrown, not resolved: VS Code stats the file after a write, and this one no longer exists.
+    if (saved.kind === "carried") throw new vscode.FileSystemError(CARRIED);
+    this.#based.set(uri.toString(), saved.document);
   }
 
   delete(): void {}
@@ -104,7 +104,7 @@ class ReviewFiles implements vscode.FileSystemProvider {
 
   /** The revision the text of this review's editor is based on; undefined before it was read. */
   basedOn(uri: vscode.Uri): number | undefined {
-    return this.#based.get(uri.toString());
+    return this.#based.get(uri.toString())?.revision;
   }
 
   async #document(uri: vscode.Uri): Promise<ReviewDocument> {
