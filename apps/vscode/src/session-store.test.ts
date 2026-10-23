@@ -314,6 +314,35 @@ describe("what this VS Code last looked at, between windows (Decided 3)", () => 
     expect(next.model()?.sessions.get("done")?.sinceYouLastLooked).toBe(false);
   });
 
+  it("is written on a later emit when the write of her look failed", async () => {
+    const files = memoryFiles();
+    let failing = false;
+    const flaky: KeptFiles = {
+      ...files,
+      writeFile: async (path, text) => {
+        if (failing && path.includes("/last-seen/") && !path.includes(".lock"))
+          throw new Error("the disk is full.");
+        await files.writeFile(path, text);
+      },
+    };
+    const mend = new FakeMend();
+    const first = new SessionStore(lastSeenOn(flaky), mend, { kind: "local" }, new FakeWindow());
+    first.start();
+    await tick(200);
+    await settles(mend);
+    failing = true;
+    first.setVisible(true);
+    first.select(["done"]);
+    await tick(200);
+    failing = false;
+    first.setVisible(true);
+    await tick(200);
+    const next = new SessionStore(lastSeenOn(files), mend, { kind: "local" }, new FakeWindow());
+    next.start();
+    await tick(200);
+    expect(next.model()?.sessions.get("done")?.sinceYouLastLooked).toBe(false);
+  });
+
   it("reaches a window already open when she brings it to the front", async () => {
     const files = memoryFiles();
     // One server, as each window's own stream hears it.
