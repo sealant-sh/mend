@@ -279,7 +279,7 @@ export class KeptReviews {
   ): Promise<KeptReview> {
     const file = this.#file(place);
     return this.#serial(file, async () => {
-      await this.#sweep(dirname(file));
+      await this.#sweep(file);
       return this.#locked(file, REVIEW, async (held) => {
         const opened = openReview(await this.#stored(file, REVIEW));
         const current = opened.kept;
@@ -550,9 +550,10 @@ export class KeptReviews {
   /**
    * Reviews untouched past the expiry that hold nothing she could still need, and what a crash
    * left, go; at most hourly. An expired review is read and goes only under its own lock, so a
-   * window writing it at that moment keeps its write.
+   * window writing it at that moment keeps its write; the one `writing` is about to change stays.
    */
-  async #sweep(directory: string): Promise<void> {
+  async #sweep(writing: string): Promise<void> {
+    const directory = dirname(writing);
     if (this.now() - (this.#swept.get(directory) ?? Number.NEGATIVE_INFINITY) < SWEEP_EVERY_MS)
       return;
     this.#swept.set(directory, this.now());
@@ -564,6 +565,7 @@ export class KeptReviews {
     await Promise.all(
       names.map(async (name) => {
         const path = join(directory, name);
+        if (path === writing) return;
         if (/\.(tmp|stale|break)$/.test(name)) {
           if (await expired(path, LOCK_STALE_MS * 6)) await this.files.rm(path);
           return;
