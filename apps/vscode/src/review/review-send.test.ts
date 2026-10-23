@@ -2171,7 +2171,7 @@ describe("Dana signs out while VS Code reads claude's process right before the p
         },
       },
       mend,
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(directory),
       (sessionId, processId, text, reads, bound) =>
         pasteIntoAgent<string>(
