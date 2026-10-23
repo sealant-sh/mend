@@ -76,9 +76,24 @@ export class NewSessionInput implements vscode.Disposable {
   #open: vscode.Disposable | null = null;
 
   constructor(
-    private readonly context: vscode.ExtensionContext,
+    private readonly context: {
+      readonly globalState: {
+        get(key: string): unknown;
+        update(key: string, value: unknown): Thenable<void>;
+      };
+    },
     private readonly client: MendClient,
-    private readonly store: SessionStore,
+    private readonly store: Pick<
+      SessionStore,
+      | "details"
+      | "model"
+      | "onDidChange"
+      | "refresh"
+      | "showCreated"
+      | "unmatchedRepository"
+      | "viewer"
+      | "windowProject"
+    >,
     private readonly launches: Launches,
   ) {}
 
@@ -87,7 +102,7 @@ export class NewSessionInput implements vscode.Disposable {
   }
 
   #remembered(): RememberedOptions {
-    const stored = this.context.globalState.get<unknown>(REMEMBERED_OPTIONS_KEY);
+    const stored = this.context.globalState.get(REMEMBERED_OPTIONS_KEY);
     return isRememberedOptions(stored) ? stored : {};
   }
 
