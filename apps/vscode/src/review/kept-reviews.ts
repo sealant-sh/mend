@@ -3,14 +3,7 @@ import * as fs from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { needs } from "./delivery.js";
-import {
-  asComposed,
-  EMPTY_REVIEW,
-  NOTHING_UNREAD,
-  parseSessionReview,
-  type SessionReview,
-  type Unread,
-} from "./pending.js";
+import { asComposed, parseSessionReview, type SessionReview, type Unread } from "./pending.js";
 
 /** Whose review it is: one person, signed in to one server, on one session. */
 export interface ReviewPlace {
@@ -80,18 +73,27 @@ const DRIVE_BEAT_MS = DRIVE_STALE_MS / 4;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A session's review as kept, with the revision each write counts up from the last. */
+/** A session's review as kept, with its revision: a later write's is higher. */
 export interface KeptReview {
   readonly rev: number;
   readonly review: SessionReview;
 }
 
 /**
- * The format this build writes the kept file in. Raise it only for a change an older build would
- * write back wrongly: it then leaves the file as it is. An entry an older build cannot read (a new
- * kind of send, phase or origin) needs no raise, since that build writes it back as it was.
+ * The format this build writes a session's review in. Raise it only for a change an older build
+ * would write back wrongly: it then leaves the file as it is. An entry an older build cannot read
+ * (a new kind of send, phase or origin) needs no raise, since that build writes it back where it
+ * was.
  */
 export const KEPT_FORMAT = 1;
+
+/** A kind of file every window shares: what it keeps, in her words, and the format it is in. */
+interface FileKind {
+  readonly what: string;
+  readonly format: number;
+}
+
+const REVIEW: FileKind = { what: "this session's review", format: KEPT_FORMAT };
 
 /** A file every window shares, as stored: its fields, and whether this build may write it. */
 interface Stored {
@@ -104,36 +106,33 @@ interface Stored {
 
 const NOTHING_STORED: Stored = { rev: 0, fields: {}, unwritable: null };
 
-/**
- * A shared file's text as stored; one a build before formats were kept wrote reads as the first
- * format. `what` names what it keeps, for the words that say why this build leaves it.
- */
-const parseStored = (file: string, text: string, what: string): Stored => {
+/** A shared file's text as stored; one a build before formats were kept wrote is format 1. */
+const parseStored = (file: string, text: string, { what, format: mine }: FileKind): Stored => {
   let value: unknown;
   try {
     value = JSON.parse(text);
   } catch {
     value = undefined;
   }
-  const format = isRecord(value) ? (value["format"] ?? KEPT_FORMAT) : null;
-  if (!isRecord(value) || typeof format !== "number" || !Number.isInteger(format) || format < 1)
-    return {
-      rev: 0,
-      fields: {},
-      unwritable: `The file VS Code keeps ${what} in is not JSON, so VS Code leaves it as it is: ${file}.`,
-    };
+  const unreadable = (why: string): Stored => ({
+    rev: 0,
+    fields: {},
+    unwritable: `The file VS Code keeps ${what} in ${why}, so VS Code leaves it as it is: ${file}.`,
+  });
+  if (!isRecord(value)) return unreadable("is not JSON");
+  const format = value["format"] ?? 1;
+  if (typeof format !== "number" || !Number.isInteger(format) || format < 1)
+    return unreadable("names no format this version of the Mend extension reads");
   const rev = value["rev"];
   return {
     rev: typeof rev === "number" && Number.isInteger(rev) ? rev : 0,
     fields: value,
     unwritable:
-      format > KEPT_FORMAT
-        ? `A newer version of the Mend extension keeps ${what}, so this window leaves it as that version wrote it. Reload this window to use the newer version.`
+      format > mine
+        ? `A newer version of the Mend extension wrote ${what}, so this version leaves it as that version wrote it. Change it from a window that runs the newer version: reload this window if VS Code updated the extension.`
         : null,
   };
 };
-
-const REVIEW = "this session's review";
 
 /** A kept review as this build reads it, and the entries it cannot, to write back as they were. */
 interface Opened {
@@ -147,22 +146,14 @@ const openReview = (stored: Stored): Opened => {
   return { stored, kept: { rev: stored.rev, review }, unread };
 };
 
-/** A file the sweep could not read: it stays. */
-const NOT_READ: Opened = {
-  stored: { ...NOTHING_STORED, unwritable: "VS Code could not read it." },
-  kept: { rev: 0, review: EMPTY_REVIEW },
-  unread: NOTHING_UNREAD,
-};
-
 /**
  * A record of this machine every window reads and writes, in its own file beside the reviews:
- * the keys pinning each change's slice, what this VS Code last looked at.
+ * the keys pinning each change's slice, what this VS Code last looked at. A write keeps only what
+ * `parse` reads, so any change to the record's shape raises its `format`.
  */
-export interface SharedRecord<T> {
+export interface SharedRecord<T> extends FileKind {
   /** Its file, under the directory the reviews are kept in. */
   readonly name: string;
-  /** What it keeps, as the words that say why this build leaves it name it. */
-  readonly what: string;
   /** The record as stored; nothing stored reads as `undefined`. */
   readonly parse: (stored: unknown) => T;
 }
@@ -289,13 +280,16 @@ export class KeptReviews {
     const file = this.#file(place);
     return this.#serial(file, async () => {
       await this.#sweep(dirname(file));
-      return this.#locked(file, async (held) => {
+      return this.#locked(file, REVIEW, async (held) => {
         const opened = openReview(await this.#stored(file, REVIEW));
         const current = opened.kept;
         const next = await update(current.review);
         if (JSON.stringify(next) === JSON.stringify(current.review)) return current;
         const review = storedReview(opened.stored.fields["review"], next, opened.unread);
-        return { rev: await this.#replace(file, opened.stored, { review }, held), review: next };
+        return {
+          rev: await this.#replace(file, REVIEW, opened.stored, { review }, held),
+          review: next,
+        };
       });
     });
   }
@@ -303,7 +297,7 @@ export class KeptReviews {
   /** The record as kept now, as far as this build reads it. */
   async readRecord<T>(record: SharedRecord<T>): Promise<T> {
     const file = join(this.directory, record.name);
-    return record.parse((await this.#stored(file, record.what)).fields["record"]);
+    return record.parse((await this.#stored(file, record)).fields["record"]);
   }
 
   /**
@@ -313,12 +307,12 @@ export class KeptReviews {
   async updateRecord<T>(record: SharedRecord<T>, update: (kept: T) => T): Promise<T> {
     const file = join(this.directory, record.name);
     return this.#serial(file, () =>
-      this.#locked(file, async (held) => {
-        const stored = await this.#stored(file, record.what);
+      this.#locked(file, record, async (held) => {
+        const stored = await this.#stored(file, record);
         const current = record.parse(stored.fields["record"]);
         const next = update(current);
         if (JSON.stringify(next) === JSON.stringify(current)) return current;
-        await this.#replace(file, stored, { record: next }, held);
+        await this.#replace(file, record, stored, { record: next }, held);
         return next;
       }),
     );
@@ -336,9 +330,9 @@ export class KeptReviews {
     }
   }
 
-  async #stored(file: string, what: string): Promise<Stored> {
+  async #stored(file: string, kind: FileKind): Promise<Stored> {
     try {
-      return parseStored(file, await this.files.readFile(file), what);
+      return parseStored(file, await this.files.readFile(file), kind);
     } catch (cause) {
       if (codeOf(cause) === "ENOENT") return NOTHING_STORED;
       throw cause;
@@ -351,6 +345,7 @@ export class KeptReviews {
    */
   async #replace(
     file: string,
+    kind: FileKind,
     stored: Stored,
     fields: Readonly<Record<string, unknown>>,
     held: () => Promise<boolean>,
@@ -363,11 +358,11 @@ export class KeptReviews {
     try {
       await this.files.writeFile(
         written,
-        JSON.stringify({ ...stored.fields, ...fields, format: KEPT_FORMAT, rev }),
+        JSON.stringify({ ...stored.fields, ...fields, format: kind.format, rev }),
       );
       if (!(await held()))
         throw new Error(
-          "another window of VS Code took over writing this review; this change was not kept.",
+          `another window of VS Code took over writing ${kind.what}; this change was not kept.`,
         );
       await this.files.rename(written, file);
     } catch (cause) {
@@ -432,7 +427,11 @@ export class KeptReviews {
     return `${this.#file(place)}.${encodeURIComponent(key)}.drive`;
   }
 
-  async #locked<T>(file: string, body: (held: () => Promise<boolean>) => Promise<T>): Promise<T> {
+  async #locked<T>(
+    file: string,
+    kind: FileKind,
+    body: (held: () => Promise<boolean>) => Promise<T>,
+  ): Promise<T> {
     await this.files.mkdir(dirname(file));
     const lock = `${file}.lock`;
     const owner = randomUUID();
@@ -440,7 +439,7 @@ export class KeptReviews {
     while (!(await this.#take(lock, owner))) {
       if (await this.#breakStale(lock, LOCK_STALE_MS)) continue;
       if (this.now() - began >= LOCK_WAIT_MS)
-        throw new Error("another window of VS Code is still writing this review.");
+        throw new Error(`another window of VS Code is still writing ${kind.what}.`);
       await pause(LOCK_POLL_MS);
     }
     const renewed = this.#renew(lock, owner, LOCK_BEAT_MS);
@@ -580,7 +579,10 @@ export class KeptReviews {
         try {
           if (
             (await expired(path, KEPT_REVIEW_TTL_MS)) &&
-            holdsNothing(await this.#stored(path, REVIEW).then(openReview, () => NOT_READ))
+            (await this.#stored(path, REVIEW).then(
+              (stored) => holdsNothing(openReview(stored)),
+              () => false,
+            ))
           )
             await this.files.rm(path);
         } finally {

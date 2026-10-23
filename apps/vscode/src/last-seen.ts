@@ -31,6 +31,7 @@ export const parseLastSeen = (value: unknown): LastSeen | null => {
 const recordOf = (url: string): SharedRecord<LastSeen | null> => ({
   name: `last-seen/${encodeURIComponent(url)}.json`,
   what: "what this VS Code last looked at",
+  format: 1,
   parse: parseLastSeen,
 });
 

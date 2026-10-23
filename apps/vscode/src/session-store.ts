@@ -921,7 +921,10 @@ export class SessionStore implements vscode.Disposable {
     let next = this.#modelAt(now);
     const looked = this.#lookedAt(next);
     if (looked.length > 0) {
-      this.#lastSeen = seen(this.#lastSeen, looked, now);
+      // Mend's clock may run ahead of this one: a look is never before what it looked at.
+      const settled = looked.map((id) => Date.parse(next.sessions.get(id)?.settledAt ?? ""));
+      const at = new Date(Math.max(now.getTime(), ...settled.filter(Number.isFinite)));
+      this.#lastSeen = seen(this.#lastSeen, looked, at);
       next = this.#modelAt(now);
     }
     if (looked.length > 0 || this.#lastSeenUnsaved) this.#saveLastSeen();

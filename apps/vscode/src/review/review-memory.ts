@@ -44,22 +44,40 @@ export const newOpenKey = (changeId: string): string => `vscode-review:${changeI
 const pinsOf = (serverUrl: string): SharedRecord<Pins> => ({
   name: `pins/${encodeURIComponent(serverUrl)}.json`,
   what: "the slices this VS Code pinned for review",
+  format: 1,
   parse: parsePins,
 });
 
 export class ReviewMemory {
+  /** Keys this window could not keep, by server and change: it reads with the same one. */
+  readonly #unkept = new Map<string, string>();
+
   constructor(
-    private readonly kept: Pick<KeptReviews, "updateRecord">,
+    private readonly kept: Pick<KeptReviews, "readRecord" | "updateRecord">,
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** The key pinning this change's slice, made and kept the first time it is asked for. */
+  /**
+   * The key pinning this change's slice, made and kept the first time it is asked for. A read
+   * takes the pins' lock only to make a pin or mark it used; a pin it cannot keep is used as read.
+   */
   async pinKey(serverUrl: string, changeId: string): Promise<string> {
-    return this.#pin(serverUrl, changeId, (found, now) =>
-      found !== undefined && now - found.usedAt < PIN_USED_EVERY_MS
-        ? found
-        : { key: found?.key ?? newOpenKey(changeId), usedAt: now },
-    );
+    const read = await this.kept.readRecord(pinsOf(serverUrl)).catch((): Pins => ({}));
+    const found = read[changeId];
+    if (found !== undefined && this.now() - found.usedAt < PIN_USED_EVERY_MS) return found.key;
+    const unkept = `${serverUrl} ${changeId}`;
+    try {
+      return await this.#pin(serverUrl, changeId, (kept, now) =>
+        kept !== undefined && now - kept.usedAt < PIN_USED_EVERY_MS
+          ? kept
+          : { key: kept?.key ?? this.#unkept.get(unkept) ?? newOpenKey(changeId), usedAt: now },
+      );
+    } catch {
+      if (found !== undefined) return found.key;
+      const key = this.#unkept.get(unkept) ?? newOpenKey(changeId);
+      this.#unkept.set(unkept, key);
+      return key;
+    }
   }
 
   /** A new key for this change: the next `reviews/open` pins a slice of the worktree as it is now. */
