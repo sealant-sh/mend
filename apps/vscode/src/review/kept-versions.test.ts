@@ -90,6 +90,31 @@ describe("the kept review, across versions of the extension", () => {
     expect(JSON.stringify((await stored(file))["review"])).toContain(JSON.stringify(later));
   });
 
+  it("writes back every entry it cannot read where it was, among the ones it reads", async () => {
+    const directory = await storage();
+    const file = await fileIn(directory);
+    const [older] = sentReview("key-1").sends;
+    const [newer] = sentReview("key-2").sends;
+    const unread = { ...older, notices: [{ kind: "later", at: "2026-10-19T11:00:00.000Z" }] };
+    const laterOrigin = { ...pending({ id: "later" }), origin: { kind: "suggested" } };
+    await writeFile(
+      file,
+      JSON.stringify({
+        format: 1,
+        rev: 3,
+        review: { pending: [laterOrigin, pending({ id: "hers" })], sends: [unread, newer] },
+      }),
+    );
+    await keptIn(directory).update(DANA, addOne);
+    const review = (await stored(file))["review"];
+    const ids = (field: string, key: string): ReadonlyArray<unknown> => {
+      const entries: unknown = Reflect.get(Object(review), field);
+      return Array.isArray(entries) ? entries.map((entry) => Reflect.get(Object(entry), key)) : [];
+    };
+    expect(ids("sends", "key")).toEqual(["key-1", "key-2"]);
+    expect(ids("pending", "id")).toEqual(["later", "hers", "new"]);
+  });
+
   it("is never written over when its bytes do not read as JSON", async () => {
     const directory = await storage();
     const file = await fileIn(directory);
