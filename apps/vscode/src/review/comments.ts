@@ -149,11 +149,9 @@ export class ReviewComments implements vscode.Disposable {
       vscode.commands.registerCommand("mend.review.save", (comment: unknown) =>
         this.#save(comment),
       ),
-      vscode.commands.registerCommand("mend.review.delete", (comment: unknown) => {
-        if (!(comment instanceof ShownComment) || comment.thread.pendingId === null) return;
-        this.#endEdit(comment);
-        return store.remove(comment.thread.pendingId);
-      }),
+      vscode.commands.registerCommand("mend.review.delete", (comment: unknown) =>
+        this.#delete(comment),
+      ),
       vscode.commands.registerCommand("mend.review.addressed", (comment: unknown) =>
         comment instanceof ShownComment && comment.thread.commentId !== null
           ? store.mark(comment.thread.commentId, "addressed")
@@ -326,6 +324,15 @@ export class ReviewComments implements vscode.Disposable {
     const kept = await this.store.edit(editing.startedFrom, body, editing.place);
     if (!kept.kept) void vscode.window.showWarningMessage(kept.words);
     this.#endEdit(comment);
+  }
+
+  async #delete(comment: unknown): Promise<void> {
+    if (!(comment instanceof ShownComment) || comment.thread.pendingId === null) return;
+    const editing = this.#editing.get(comment);
+    const place = editing === undefined ? this.store.place() : editing.place;
+    this.#endEdit(comment);
+    const removal = await this.store.remove(comment.thread.pendingId, place);
+    if (!removal.removed) void vscode.window.showWarningMessage(removal.words);
   }
 
   #endEdit(comment: ShownComment): void {

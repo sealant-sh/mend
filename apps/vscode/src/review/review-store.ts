@@ -106,6 +106,10 @@ export interface NewComment {
 /** Whether a new comment was kept; when not, why, in Mend's words. */
 export type Keeping = { readonly kept: true } | { readonly kept: false; readonly words: string };
 
+export type Removal =
+  | { readonly removed: true }
+  | { readonly removed: false; readonly words: string };
+
 /** A failure worth one toast: claimed across windows by `key` and `at`, as the notifier's are. */
 export interface ReviewFailure {
   readonly key: string;
@@ -503,12 +507,31 @@ export class ReviewStore implements vscode.Disposable {
     );
   }
 
-  async remove(pendingId: string): Promise<void> {
-    if (this.#held.some((held) => held.words.comment.id === pendingId)) {
-      this.#held = this.#held.filter((held) => held.words.comment.id !== pendingId);
+  async remove(pendingId: string, place: ReviewPlace | null = this.#place): Promise<Removal> {
+    const held = this.#held.some(
+      (entry) => entry.words.comment.id === pendingId && samePlace(entry.place, place),
+    );
+    if (held) {
+      this.#held = this.#held.filter(
+        (entry) => entry.words.comment.id !== pendingId || !samePlace(entry.place, place),
+      );
       this.#changed.fire();
     }
-    await this.#keepAt(this.#place, (review) => removePending(review, pendingId));
+    let removal: Removal = { removed: true };
+    await this.#keepAt(place, (review) => {
+      removal =
+        held || review.pending.some(({ id }) => id === pendingId)
+          ? { removed: true }
+          : {
+              removed: false,
+              words:
+                takenBy(review, pendingId) === undefined
+                  ? "This comment was already deleted in another window."
+                  : "This comment was already sent in a review, so nothing was deleted.",
+            };
+      return removePending(review, pendingId);
+    });
+    return removal;
   }
 
   async accept(
