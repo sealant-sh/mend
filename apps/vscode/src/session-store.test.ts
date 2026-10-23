@@ -252,6 +252,39 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("what this VS Code last looked at (Decided 3)", () => {
+  it("is written only when a session she looks at holds news she has not seen", async () => {
+    const saved = memento();
+    let writes = 0;
+    const counted = {
+      get: saved.get,
+      update: async (key: string, value: unknown) => {
+        if (key === "mend.lastSeen") writes += 1;
+        await saved.update(key, value);
+      },
+    };
+    const mend = new FakeMend();
+    const store = new SessionStore(
+      { globalState: counted },
+      mend,
+      { kind: "local" },
+      new FakeWindow(),
+    );
+    mend.add(session({ id: "done", status: "completed", settledAt: "2026-10-19T08:00:00.000Z" }));
+    store.start();
+    await tick(200);
+    store.setVisible(true);
+    store.select(["done"]);
+    const before = writes;
+    for (let emit = 0; emit < 5; emit += 1) {
+      await tick(1_000);
+      store.setVisible(true);
+    }
+    expect(writes).toBe(before);
+    expect(store.model()?.sessions.get("done")?.sinceYouLastLooked).toBe(false);
+  });
+});
+
 describe("frames the view reads (B3)", () => {
   it("reads another session's change within the max wait while one session streams frames", async () => {
     const { mend, store } = world();
