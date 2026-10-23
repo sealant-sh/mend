@@ -168,6 +168,8 @@ export class SessionStore implements vscode.Disposable {
   #lastHeardAt: string | null = null;
   #serverUrl: string | null = null;
   #lastSeen: LastSeen = { baseline: new Date().toISOString(), sessions: {} };
+  /** A look whose write failed: the next emit writes it again. */
+  #lastSeenUnsaved = false;
   #model: WindowModel | null = null;
   /** Whether `#model` came from a read: the first read's change then raises no toast. */
   #modelRead = false;
@@ -872,10 +874,13 @@ export class SessionStore implements vscode.Disposable {
   #saveLastSeen(forget: ReadonlyArray<string> = []): void {
     const url = this.#serverUrl;
     if (url === null) return;
-    void this.lastSeen
-      .merge(url, this.#lastSeen, forget)
-      .then((kept) => this.#adoptLastSeen(url, kept))
-      .catch(() => undefined);
+    this.#lastSeenUnsaved = false;
+    void this.lastSeen.merge(url, this.#lastSeen, forget).then(
+      (kept) => this.#adoptLastSeen(url, kept),
+      () => {
+        this.#lastSeenUnsaved = true;
+      },
+    );
   }
 
   /**
@@ -917,9 +922,9 @@ export class SessionStore implements vscode.Disposable {
     const looked = this.#lookedAt(next);
     if (looked.length > 0) {
       this.#lastSeen = seen(this.#lastSeen, looked, now);
-      this.#saveLastSeen();
       next = this.#modelAt(now);
     }
+    if (looked.length > 0 || this.#lastSeenUnsaved) this.#saveLastSeen();
     this.#model = next;
     this.#modelRead = this.#read;
     void vscode.commands.executeCommand("setContext", "mend.offline", next.offline);
