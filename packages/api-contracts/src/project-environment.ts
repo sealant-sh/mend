@@ -32,7 +32,7 @@ import {
   WorktreeName,
 } from "@mend/domain/workbench";
 import { Change as SessionChange } from "@mend/domain/workbench";
-import { Effect, Schema } from "effect";
+import { Effect, Schema, SchemaTransformation } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
@@ -383,6 +383,19 @@ export class SessionRepositoryView extends Schema.Class<SessionRepositoryView>(
   checkpointsBeyondStart: Schema.Int,
 }) {}
 
+const isLaunchAdmissionRule = Schema.is(LaunchAdmissionRule);
+
+/** A rule this client does not know reads as no rule, as an older server's omitted key does. */
+const LaunchAdmission = Schema.NullOr(Schema.String).pipe(
+  Schema.decodeTo(
+    Schema.NullOr(LaunchAdmissionRule),
+    SchemaTransformation.transform({
+      decode: (rule): LaunchAdmissionRule | null => (isLaunchAdmissionRule(rule) ? rule : null),
+      encode: (rule): string | null => rule,
+    }),
+  ),
+);
+
 export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")({
   session: Session,
   control: SessionControlView,
@@ -420,9 +433,7 @@ export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")(
    * How this server admits a Retry of a launch it never answered. Older servers omit it, and they
    * admit such a launch while no agent is live, so a client must not send one to them.
    */
-  launchAdmission: Schema.NullOr(LaunchAdmissionRule).pipe(
-    Schema.withDecodingDefaultKey(Effect.succeed(null)),
-  ),
+  launchAdmission: LaunchAdmission.pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 }) {}
 
 /** What Stop services did: the session as it reads after, and how many Services it stopped. */
