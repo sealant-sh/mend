@@ -17,9 +17,25 @@ describe("POST /sessions/:id/launch refusals", () => {
         status: "running",
         settledAt: null,
         message: "the session moved on · it reads running · nothing launched",
+        reason: "agentLive",
       }),
       tag: "SessionMovedOn",
       body: { expected: { settledAt: settledAt.toISOString() } },
+      over: { _tag: "Expected", settledAt },
+      reason: { reason: "agentLive" },
+    },
+    {
+      refusal: new SessionMovedOnError({
+        sessionId: shared.session,
+        status: "idle",
+        settledAt: null,
+        message: "an agent already ran in this session · it reads idle · nothing launched again",
+        reason: "agentRan",
+      }),
+      tag: "SessionMovedOn",
+      body: { expected: { settledAt: null } },
+      over: { _tag: "Expected", settledAt: null },
+      reason: { reason: "agentRan" },
     },
     {
       refusal: new SessionAgentLiveError({
@@ -31,8 +47,10 @@ describe("POST /sessions/:id/launch refusals", () => {
       }),
       tag: "SessionAgentLive",
       body: {},
+      over: { _tag: "NoLiveAgent" },
+      reason: {},
     },
-  ])("answers $tag with 409", async ({ refusal, tag, body }) => {
+  ])("answers $tag with 409 ($refusal.message)", async ({ refusal, tag, body, over, reason }) => {
     const asked: Array<unknown> = [];
     const api = await createTenancyApi(
       {},
@@ -63,10 +81,9 @@ describe("POST /sessions/:id/launch refusals", () => {
         status: refusal.status,
         settledAt: refusal.settledAt === null ? null : refusal.settledAt.toISOString(),
         message: refusal.message,
+        ...reason,
       });
-      expect(asked).toEqual([
-        "expected" in body ? { _tag: "Expected", settledAt } : { _tag: "NoLiveAgent" },
-      ]);
+      expect(asked).toEqual([over]);
     } finally {
       await api.dispose();
     }

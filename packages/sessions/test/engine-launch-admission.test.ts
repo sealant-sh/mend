@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import type { SessionId } from "@mend/domain";
+import { Session, SessionProcess } from "@mend/domain/workbench";
 import { Expected, NoLiveAgent, SessionEngine } from "@mend/sessions";
 import { sessionStatePathOf } from "@mend/store";
 import type { CreateOptions } from "@sealant/sdk";
@@ -279,6 +280,92 @@ describe("SessionEngine launch admission (SLNT-167)", () => {
 
           expect(refused).toMatchObject({ _tag: "SessionMovedOnError", status: "running" });
           expect(footprint(world, session.id, seen)).toEqual(before);
+        }),
+      { sealantLayer: seen.layer },
+    );
+  });
+
+  it("refuses a never-launched attempt once a late launch's agent ran and exited while a shell holds the session idle", async () => {
+    const seen = platform();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const engine = yield* SessionEngine;
+          const { session, harvested } = yield* provisioned(tmp, world);
+          yield* engine.launch(session.id, ["codex"], { over: NoLiveAgent });
+          yield* engine.openShell(session.id);
+          for (const [id, process] of world.processes) {
+            if (process.kind !== "agent-pty") continue;
+            world.processes.set(
+              id,
+              new SessionProcess({
+                ...process,
+                status: "exited",
+                exitCode: 0,
+                exitedAt: new Date(),
+              }),
+            );
+          }
+          const row = world.sessions.get(session.id);
+          if (row !== undefined)
+            world.sessions.set(session.id, new Session({ ...row, status: "idle" }));
+          harvested();
+          const before = footprint(world, session.id, seen);
+
+          const refused = yield* engine
+            .launch(session.id, ["codex"], { over: Expected(null), onAdmitted: neverAdmitted })
+            .pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => "admitted" }));
+
+          expect(refused).toMatchObject({
+            _tag: "SessionMovedOnError",
+            status: "idle",
+            settledAt: null,
+            reason: "agentRan",
+            message:
+              "an agent already ran in this session · it reads idle · nothing launched again",
+          });
+          expect(footprint(world, session.id, seen)).toEqual(before);
+        }),
+      { sealantLayer: seen.layer },
+    );
+  });
+
+  it("refuses a never-launched attempt once a late launch's agent ran and the session settled", async () => {
+    const seen = platform();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const engine = yield* SessionEngine;
+          const { session, harvested } = yield* provisioned(tmp, world);
+          yield* engine.launch(session.id, ["codex"], { over: NoLiveAgent });
+          yield* engine.stop(session.id);
+          expect(world.sessions.get(session.id)?.settledAt).not.toBeNull();
+          harvested();
+
+          const refused = yield* engine
+            .launch(session.id, ["codex"], { over: Expected(null), onAdmitted: neverAdmitted })
+            .pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => "admitted" }));
+
+          expect(refused).toMatchObject({ _tag: "SessionMovedOnError", reason: "agentRan" });
+        }),
+      { sealantLayer: seen.layer },
+    );
+  });
+
+  it("launches a never-launched attempt over the open workbench shell", async () => {
+    const seen = platform();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const engine = yield* SessionEngine;
+          const { session, harvested } = yield* provisioned(tmp, world);
+          yield* engine.resumeSession(session.id, "shell");
+          harvested();
+
+          yield* engine.launch(session.id, ["codex"], { over: Expected(null) });
+
+          const [agent] = liveAgents(world, session.id);
+          expect(agent?.harness).toBe("codex");
         }),
       { sealantLayer: seen.layer },
     );
