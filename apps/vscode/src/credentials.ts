@@ -103,10 +103,21 @@ type ServerEntry =
   | { readonly kind: "none" }
   | { readonly kind: "cli" };
 
-const serverKey = (url: string): string => `mend.server:${canonicalServerUrl(url)}`;
+const SERVER_KEY = "mend.server:";
+const REFUSAL_KEY = "mend.refused:";
+
+const serverKey = (url: string): string => `${SERVER_KEY}${canonicalServerUrl(url)}`;
 
 const refusalKey = (url: string, token: string): string =>
-  `mend.refused:${canonicalServerUrl(url)}#${fingerprint(token)}`;
+  `${REFUSAL_KEY}${canonicalServerUrl(url)}#${fingerprint(token)}`;
+
+export const serverOfKey = (key: string): string | null => {
+  if (key.startsWith(SERVER_KEY)) return key.slice(SERVER_KEY.length);
+  if (!key.startsWith(REFUSAL_KEY)) return null;
+  const refused = key.slice(REFUSAL_KEY.length);
+  const hash = refused.lastIndexOf("#");
+  return hash === -1 ? null : refused.slice(0, hash);
+};
 
 const serverEntryOf = (value: string): ServerEntry => {
   let parsed: unknown;

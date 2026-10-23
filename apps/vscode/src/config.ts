@@ -12,6 +12,7 @@ import {
   replacedDeviceWarning,
   revokeOutcomeOf,
   secretWriteOf,
+  serverOfKey,
   signOutMessage,
   tokenFor,
   type CliCredential,
@@ -39,6 +40,8 @@ export interface HeldConnection {
   readonly connection: MendConnection;
   readonly current: () => boolean;
 }
+
+const DEFAULT_URL = "http://localhost:3105";
 
 const mendHome = (): string => {
   const xdg = process.env["XDG_CONFIG_HOME"];
@@ -135,9 +138,7 @@ export class ConnectionStore implements vscode.Disposable {
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (event.affectsConfiguration("mend.serverUrl")) this.#generation += 1;
       }),
-      context.secrets.onDidChange(() => {
-        this.#generation += 1;
-      }),
+      context.secrets.onDidChange(({ key }) => this.#changed(key)),
     ];
   }
 
@@ -171,7 +172,7 @@ export class ConnectionStore implements vscode.Disposable {
     const configured = configuredUrl();
     // Every spelling of a server is one server: the setting, the CLI's URL and the stored entries
     // all compare in the canonical form Connect writes.
-    const url = configured ?? cli?.url ?? "http://localhost:3105";
+    const url = configured ?? cli?.url ?? DEFAULT_URL;
     const own = await this.#own(url, cli);
     const ownDecides = configured !== null && (own?.kind === "token" || own?.kind === "none");
     return { connection: { url, token: tokenFor(url, own, cli) }, fromCli: !ownDecides };
@@ -200,11 +201,17 @@ export class ConnectionStore implements vscode.Disposable {
     return keptCredential(this.#read, url, cli);
   }
 
+  #changed(key: string): void {
+    const server = serverOfKey(key);
+    if (server === null || server === (configuredUrl() ?? cliConfig()?.url ?? DEFAULT_URL))
+      this.#generation += 1;
+  }
+
   #write(change: CredentialChange): Promise<void> {
     const { key, value } = secretWriteOf(change, randomUUID());
     // The generation moves as the write begins, since SecretStorage can answer it after a send
     // bound before it resumes. `held` waits for the write, so a send that binds again reads it.
-    this.#generation += 1;
+    this.#changed(key);
     const write = Promise.resolve(this.context.secrets.store(key, value)).finally(() =>
       this.#writing.delete(write),
     );
