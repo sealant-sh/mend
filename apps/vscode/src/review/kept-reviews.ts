@@ -94,9 +94,14 @@ export class Unwritable extends Error {}
 interface FileKind {
   readonly what: string;
   readonly format: number;
+  /**
+   * What becomes of bytes this build cannot read: her words are left as they are; state this VS
+   * Code can make again (a pin, a look) is written over, so a file a crash cut short mends.
+   */
+  readonly damaged: "left" | "replaced";
 }
 
-const REVIEW: FileKind = { what: "this session's review", format: KEPT_FORMAT };
+const REVIEW: FileKind = { what: "this session's review", format: KEPT_FORMAT, damaged: "left" };
 
 /** A file every window shares, as stored: its fields, and whether this build may write it. */
 interface Stored {
@@ -113,18 +118,25 @@ const FROM_NEWER =
   "Change it from a window that runs the newer version: reload this window if VS Code updated the extension.";
 
 /** A shared file's text as stored; one a build before formats were kept wrote is format 1. */
-const parseStored = (file: string, text: string, { what, format: mine }: FileKind): Stored => {
+const parseStored = (
+  file: string,
+  text: string,
+  { what, format: mine, damaged }: FileKind,
+): Stored => {
   let value: unknown;
   try {
     value = JSON.parse(text);
   } catch {
     value = undefined;
   }
-  const unreadable = (why: string): Stored => ({
-    rev: 0,
-    fields: {},
-    unwritable: `The file VS Code keeps ${what} in ${why}, so VS Code leaves it as it is: ${file}.`,
-  });
+  const unreadable = (why: string): Stored =>
+    damaged === "replaced"
+      ? NOTHING_STORED
+      : {
+          rev: 0,
+          fields: {},
+          unwritable: `The file VS Code keeps ${what} in ${why}, so VS Code leaves it as it is: ${file}.`,
+        };
   if (!isRecord(value)) return unreadable("is not JSON");
   const format = value["format"] ?? 1;
   if (typeof format !== "number" || !Number.isInteger(format) || format < 1)
