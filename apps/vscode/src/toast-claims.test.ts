@@ -114,6 +114,9 @@ const waiting: Session = {
 const read = (
   session: Session,
   launches: ReadonlyMap<string, LaunchAttempt> = new Map(),
+  waits: Parameters<typeof sessionModel>[0]["waits"] = new Map([
+    ["s", requestWait(pendingRequest({ createdAt: new Date().toISOString() }))],
+  ]),
 ): WindowModel =>
   sessionModel({
     projects: [],
@@ -131,7 +134,7 @@ const read = (
     ],
     viewer: "dana",
     members: [],
-    waits: new Map([["s", requestWait(pendingRequest({ createdAt: new Date().toISOString() }))]]),
+    waits,
     landings: new Map(),
     launches,
     lastSeen: { baseline: waiting.createdAt, sessions: {} },
@@ -450,6 +453,47 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     );
     expect(window.showErrorMessage).toHaveBeenCalledTimes(1);
     expect(alreadyRan.relaunch).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a launch Mend never answered with no Retry, from a server that does not say it refuses one once an agent ran", async () => {
+    fake.reset();
+    const idle: Session = { ...waiting, status: "idle" };
+    const attempts = new Map<string, LaunchAttempt>();
+    const sender = new Launches(
+      {
+        launchSession: async () => {
+          throw new MendApiError(
+            "Mend could not do that. Try again; the server log has the detail.",
+            504,
+          );
+        },
+        sessionDetail: async () => ({
+          session: idle,
+          processes: [],
+          currentAgent: null,
+          launchAdmission: null,
+        }),
+      },
+      {
+        attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
+        forget: (sessionId) => attempts.delete(sessionId),
+      },
+    );
+    await sender.launch("s", { mode: "pty", prompt: "add rate limiting" });
+    const change = {
+      prev: read(idle, new Map([["s", { n: 1, after: null, refusal: null }]]), new Map()),
+      next: read(idle, attempts, new Map()),
+    };
+    new Notifier(
+      { showing: () => new Set<string>(), model: () => change.next, error: () => null },
+      new ToastClaims(await directory()),
+      sender,
+      prompts,
+    ).changed(change);
+    await vi.waitFor(() => expect(window.showErrorMessage).toHaveBeenCalledTimes(1));
+    expect(window.showErrorMessage).toHaveBeenCalledWith(
+      "add-rate-limit · launch not confirmed · Mend did not answer · check the session",
+    );
   });
 
   it("gives its claim back and shows nothing when the read before Retry says it moved", async () => {

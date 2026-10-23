@@ -1,3 +1,4 @@
+import type { LaunchAdmissionRule } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import { Launches } from "./launches.js";
@@ -7,6 +8,8 @@ import type { LaunchAttempt } from "./session-model.js";
 import type { LaunchExpected, Session, SessionProcess, SessionStatus } from "./types.js";
 
 type LaunchBody = LaunchRequest & { readonly expected?: LaunchExpected };
+
+const AGENT_RAN: LaunchAdmissionRule = "agentRan";
 
 const START: LaunchRequest = { mode: "pty", prompt: "add rate limiting", model: "opus" };
 const S1 = "2026-10-19T09:00:06.000Z";
@@ -73,7 +76,7 @@ const fakeServer = (
     sessionDetail: async () => {
       const at = reads[Math.min(read++, reads.length - 1)];
       if (at === undefined) throw new Error("no read");
-      return { session: at, processes: [], currentAgent: null };
+      return { session: at, processes: [], currentAgent: null, launchAdmission: AGENT_RAN };
     },
   };
 };
@@ -111,7 +114,12 @@ const admittingServer = (initial: Session) => {
       now = { ...now, status: "running", settledAt: null, summary: "reading src/auth" };
       return {};
     },
-    sessionDetail: async () => ({ session: now, processes: [], currentAgent: null }),
+    sessionDetail: async () => ({
+      session: now,
+      processes: [],
+      currentAgent: null,
+      launchAdmission: AGENT_RAN,
+    }),
   };
 };
 
@@ -160,7 +168,12 @@ const lateOriginal = () => {
         });
       return {};
     },
-    sessionDetail: async () => ({ session: session("idle"), processes: [], currentAgent: agent }),
+    sessionDetail: async () => ({
+      session: session("idle"),
+      processes: [],
+      currentAgent: agent,
+      launchAdmission: AGENT_RAN,
+    }),
   };
 };
 
@@ -414,6 +427,7 @@ describe("a held handoff's launch", () => {
           runsAs: null,
           waiting: null,
         },
+        launchAdmission: AGENT_RAN,
       }),
     };
     const store = sink();
@@ -469,4 +483,143 @@ describe("a held handoff's launch", () => {
     expect(switched.launched).toEqual([]);
     expect(attempts.some((attempt) => attempt.refusal?.line.includes("budget"))).toBe(true);
   });
+});
+
+const SHELL: SessionProcess = {
+  id: "shell-1",
+  kind: "shell",
+  harness: null,
+  status: "running",
+  exitedAt: null,
+  providerSessionId: null,
+  label: "shell",
+  runsAs: null,
+  waiting: null,
+};
+
+const unansweredServer = (
+  admission: "older" | "agentRan",
+  original: "deliveredLate" | "neverArrived",
+) => {
+  const launched: Array<LaunchBody> = [];
+  const executions: Array<string> = [];
+  let agent: SessionProcess | null = null;
+  let held: (() => void) | null = null;
+  const admit = (body: LaunchBody) => {
+    if (admission === "agentRan" && body.expected?.settledAt === null && agent !== null)
+      throw new MendApiError(ALREADY_RAN, 409, "SessionMovedOn", null, {
+        _tag: "SessionMovedOn",
+        sessionId: "s1",
+        status: "idle",
+        settledAt: null,
+        reason: "agentRan",
+        message: ALREADY_RAN,
+      });
+    executions.push(body.prompt ?? "");
+    agent = EXITED_AGENT;
+  };
+  const deliver = () => {
+    const late = held;
+    held = null;
+    late?.();
+  };
+  return {
+    launched,
+    executions,
+    deliver,
+    launchSession: async (_: string, body: LaunchBody) => {
+      launched.push(body);
+      if (launched.length === 1) {
+        if (original === "deliveredLate") held = () => admit(body);
+        throw new MendApiError(
+          "Mend could not do that. Try again; the server log has the detail.",
+          504,
+        );
+      }
+      deliver();
+      admit(body);
+      return {};
+    },
+    sessionDetail: async () => ({
+      session: session("idle"),
+      processes: agent === null ? [] : [SHELL, agent],
+      currentAgent: agent,
+      launchAdmission: admission === "agentRan" ? AGENT_RAN : null,
+    }),
+  };
+};
+
+describe("a launch Mend never answered, by what the server says of its Retry", () => {
+  it("offers no Retry from a server that does not say it refuses one once an agent ran: her prompt runs once", async () => {
+    const server = unansweredServer("older", "deliveredLate");
+    const store = sink();
+    const launches = new Launches(server, store);
+    await launches.launch("s1", START);
+    const refusal = store.said.at(-1)?.attempt.refusal;
+    const offer = await launches.offer("s1");
+    const retry = await launches.relaunch("s1", null);
+    server.deliver();
+    expect({
+      refusal,
+      offer,
+      retry,
+      launched: server.launched,
+      executions: server.executions,
+    }).toMatchObject({
+      refusal: {
+        line: "launch not confirmed · Mend did not answer · check the session",
+        confirmed: true,
+        unanswered: true,
+      },
+      offer: { kind: "none" },
+      retry: { kind: "held" },
+      launched: [START],
+      executions: [START.prompt],
+    });
+  });
+
+  it("offers Retry from a server that refuses it once an agent ran, which says the late launch ran it", async () => {
+    const server = unansweredServer("agentRan", "deliveredLate");
+    const store = sink();
+    const launches = new Launches(server, store);
+    await launches.launch("s1", START);
+    expect(store.said.at(-1)?.attempt.refusal).toMatchObject({
+      line: "launch not answered · Mend could not do that. Try again; the server log has the detail.",
+      confirmed: true,
+      unanswered: true,
+    });
+    expect((await launches.offer("s1")).kind).toBe("retry");
+    expect(await launches.relaunch("s1", null)).toMatchObject({
+      kind: "alreadyRan",
+      said: ALREADY_RAN,
+    });
+    expect(server.launched).toEqual([START, { ...START, expected: { settledAt: null } }]);
+    expect(server.executions).toEqual([START.prompt]);
+  });
+
+  it("sends one Retry for a launch that never arrived, on a server that refuses one once an agent ran", async () => {
+    const server = unansweredServer("agentRan", "neverArrived");
+    const launches = new Launches(server, sink());
+    await launches.launch("s1", START);
+    expect((await launches.offer("s1")).kind).toBe("retry");
+    expect(await launches.relaunch("s1", null)).toEqual({ kind: "sent" });
+    expect(server.launched).toEqual([START, { ...START, expected: { settledAt: null } }]);
+    expect(server.executions).toEqual([START.prompt]);
+  });
+
+  it.each([
+    { admission: "older", offer: "none", launched: 1 },
+    { admission: "agentRan", offer: "retry", launched: 2 },
+  ] as const)(
+    "a new session's first launch, as New session sends it, offers $offer from a server with $admission admission",
+    async ({ admission, offer, launched }) => {
+      const server = unansweredServer(admission, "neverArrived");
+      const launches = new Launches(server, sink());
+      const created = { id: "s1" };
+      await launches.launch(created.id, START);
+      expect((await launches.offer(created.id)).kind).toBe(offer);
+      await launches.relaunch(created.id, null);
+      expect(server.launched).toHaveLength(launched);
+    },
+  );
 });

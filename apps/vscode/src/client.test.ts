@@ -105,6 +105,39 @@ describe("a session's processes", () => {
   });
 });
 
+const detailWith = (extra: Record<string, unknown>) =>
+  vi.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          session: {
+            id: "s",
+            projectId: "p1",
+            harness: "claude",
+            label: null,
+            worktree: "w",
+            branch: "b",
+            status: "idle",
+            createdAt: "2026-10-20T08:00:00.000Z",
+          },
+          processes: [],
+          currentAgent: null,
+          ...extra,
+        }),
+      ),
+  );
+
+describe("how a server admits a Retry of a launch it never answered", () => {
+  it.each([
+    { said: "agentRan", read: "agentRan" },
+    { said: "somethingLater", read: null },
+    { said: undefined, read: null },
+  ])("reads $said as $read", async ({ said, read }) => {
+    vi.stubGlobal("fetch", detailWith(said === undefined ? {} : { launchAdmission: said }));
+    expect((await client().sessionDetail("s")).launchAdmission).toBe(read);
+  });
+});
+
 const CHECKPOINT = "0123456789abcdef0123456789abcdef01234567";
 
 const worktreeRow = (handoff?: unknown) => ({
