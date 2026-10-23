@@ -2101,10 +2101,11 @@ describe("VS Code connects to another Mend server while claude's terminal opens 
       mend,
       new ReviewMemory(memento()),
       keptIn(directory),
-      (sessionId, processId, text, bound) =>
+      (sessionId, processId, text, reads, bound) =>
         pasteIntoAgent<string>(
           {
-            detail: (id) => bound.sessionDetail(id),
+            detail: (id) => reads.sessionDetail(id),
+            bound,
             answer: async () => undefined,
             activeTab: () => "claude's tab",
             processOf: () => "agent-1",
@@ -2160,7 +2161,6 @@ describe("Dana signs out while VS Code reads claude's process right before the p
           return "dana";
         },
         sessionDetail: async (sessionId: string): Promise<SessionDetail> => {
-          // The read once the socket is open passed its sign-in check; Mend answers it after she signs out.
           if (socketOpen) {
             lastRead.resolve();
             await answered.promise;
@@ -2176,10 +2176,11 @@ describe("Dana signs out while VS Code reads claude's process right before the p
       mend,
       new ReviewMemory(memento()),
       keptIn(directory),
-      (sessionId, processId, text, bound) =>
+      (sessionId, processId, text, reads, bound) =>
         pasteIntoAgent<string>(
           {
-            detail: (id) => bound.sessionDetail(id),
+            detail: (id) => reads.sessionDetail(id),
+            bound,
             answer: async () => undefined,
             activeTab: () => "claude's tab",
             processOf: () => "agent-1",

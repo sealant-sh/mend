@@ -37,6 +37,7 @@ const world = (
   return {
     pasted,
     detail: async () => detail(answers[Math.min(read++, answers.length - 1)] ?? []),
+    bound: async () => ({ url: "http://mend", token: null }),
     answer: async () => undefined,
     activeTab: () => `tab of ${attached}`,
     processOf: (tab) => tab.replace("tab of ", ""),

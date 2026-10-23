@@ -680,7 +680,7 @@ export class SendDriver {
               break;
             let pasted: Pasted;
             try {
-              pasted = await this.paste(sessionId, action.processId, action.text, reads);
+              pasted = await this.paste(sessionId, action.processId, action.text, reads, bind);
             } catch (cause) {
               if (cause instanceof Unbound) {
                 await this.#step(context, key, { kind: "paste-unstarted" });
