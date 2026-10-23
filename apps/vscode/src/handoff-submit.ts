@@ -8,7 +8,7 @@ import type { HandoffIssue, HandoffReceipt, HandoffTerms } from "./handoff-clien
 import type { AcceptedHandoff } from "./handoff-draft.js";
 import type { HandoffBundle } from "./handoff-worker.js";
 import { issueWords, localIssueWords, sizeWords } from "./handoff.js";
-import { agentStarted, type Launches } from "./launches.js";
+import { agentStarted, ConnectionChanged, type Launches } from "./launches.js";
 import { MendApiError } from "./mend-http.js";
 import type { Project, SessionDetail } from "./types.js";
 
@@ -188,6 +188,12 @@ export class HandoffSubmission {
           try {
             this.#project = await client.adoptProject(target.name, target.origin);
           } catch (cause) {
+            if (cause instanceof ConnectionChanged) {
+              this.#adoptionSent = false;
+              return this.#refused(issueWords({ kind: "server-changed" }), {
+                kind: "server-changed",
+              });
+            }
             if (
               cause instanceof MendApiError &&
               cause.status !== null &&

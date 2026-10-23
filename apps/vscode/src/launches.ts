@@ -30,6 +30,13 @@ const untakenSince = (detail: LaunchRead, after: string | null): boolean =>
 
 const refusesLateRetry = (detail: LaunchRead): boolean => detail.launchAdmission === "agentRan";
 
+/** VS Code's connection is no longer the one the launch's client was bound to: nothing was sent. */
+export class ConnectionChanged extends Error {
+  constructor() {
+    super("VS Code is connected to another Mend server or account than this launch's");
+  }
+}
+
 /** Where each attempt is said: the store, whose model reads it. */
 export interface AttemptSink {
   attempted(sessionId: string, attempt: LaunchAttempt): void;
@@ -170,6 +177,7 @@ export class Launches {
         await this.#say(sessionId, sent.attempt);
         return { kind: "sent" };
       }
+      if (sent.kind === "unsent") return { kind: "held" };
       return { kind: sent.kind, read: await this.#read(sessionId), said: sent.said };
     });
   }
@@ -224,7 +232,11 @@ export class Launches {
     start: LaunchRequest,
     after: string | null,
     expected: LaunchExpected | null,
-  ): Promise<{ readonly kind: "answered"; readonly attempt: LaunchAttempt } | Precondition> {
+  ): Promise<
+    | { readonly kind: "answered"; readonly attempt: LaunchAttempt }
+    | { readonly kind: "unsent" }
+    | Precondition
+  > {
     const before = this.#attempts.get(sessionId);
     const attempt: LaunchAttempt = { n: (before?.n ?? 0) + 1, after, refusal: null };
     this.#sent.set(sessionId, start);
@@ -237,6 +249,10 @@ export class Launches {
       this.#confirmed.get(sessionId)?.();
       return { kind: "answered", attempt };
     } catch (cause) {
+      if (cause instanceof ConnectionChanged) {
+        this.#restore(sessionId, before);
+        return { kind: "unsent" };
+      }
       // No answer, or a 5xx (an edge in front of the server answers 502/504 while the server
       // still runs the launch): it may be running. Saying it again reads the session, and the
       // reads say.
@@ -261,8 +277,7 @@ export class Launches {
       }
       const precondition = preconditionOf(cause);
       if (precondition !== null) {
-        if (before === undefined) this.#attempts.delete(sessionId);
-        else this.#attempts.set(sessionId, before);
+        this.#restore(sessionId, before);
         if (await this.#current(sessionId)) this.sink.forget(sessionId);
         return { kind: precondition, said: cause.message };
       }
@@ -283,6 +298,11 @@ export class Launches {
         },
       };
     }
+  }
+
+  #restore(sessionId: string, before: LaunchAttempt | undefined): void {
+    if (before === undefined) this.#attempts.delete(sessionId);
+    else this.#attempts.set(sessionId, before);
   }
 
   /**

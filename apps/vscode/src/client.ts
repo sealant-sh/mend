@@ -76,7 +76,7 @@ export class MendClient {
 
   async bindHandoff(): Promise<BoundClient> {
     return new BoundClient(
-      await this.connection(),
+      await this.held(),
       () => this.connection(),
       (connection) => this.refused(connection),
     );

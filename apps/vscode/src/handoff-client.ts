@@ -20,9 +20,10 @@ import {
   parseSessionDetail,
   parseWorktree,
 } from "./client-data.js";
-import type { MendConnection } from "./config.js";
+import type { HeldConnection, MendConnection } from "./config.js";
 import { failureWords } from "./failure-words.js";
 import type { HandoffBundle } from "./handoff-worker.js";
+import { ConnectionChanged } from "./launches.js";
 import { MendApiError, requestMend, uploadMendBundle } from "./mend-http.js";
 import type { LaunchRequest } from "./new-session.js";
 import type { LaunchExpected, Project, ReceivedHandoff, Session, SessionDetail } from "./types.js";
@@ -115,12 +116,16 @@ export interface HandoffClient {
 export class BoundClient implements HandoffClient {
   readonly label: string;
   readonly account: string;
+  private readonly connection: MendConnection;
   #signedOut = false;
+  /** Each write checks `held.current()` as it is sent: nothing is posted after a switch or sign-out. */
   constructor(
-    private readonly connection: MendConnection,
+    private readonly held: HeldConnection,
     private readonly current: () => Promise<MendConnection>,
     private readonly refused: (connection: MendConnection) => void,
   ) {
+    const { connection } = held;
+    this.connection = connection;
     this.label = new URL(connection.url).host;
     this.account = createHash("sha256")
       .update(`${connection.url}\n${connection.token ?? ""}`)
@@ -128,6 +133,7 @@ export class BoundClient implements HandoffClient {
   }
 
   async isCurrent(): Promise<boolean> {
+    if (!this.held.current()) return false;
     const current = await this.current();
     return current.url === this.connection.url && current.token === this.connection.token;
   }
@@ -143,6 +149,7 @@ export class BoundClient implements HandoffClient {
   }
   async #request(route: string, payload?: unknown): Promise<unknown> {
     if (!(await this.#available())) throw new MendApiError("Signed out — sign in again.", 401);
+    if (payload !== undefined && !this.held.current()) throw new ConnectionChanged();
     try {
       return await requestMend(
         this.connection,
@@ -216,6 +223,7 @@ export class BoundClient implements HandoffClient {
     finished: () => void,
   ): Promise<ReceiveOutcome> {
     if (!(await this.#available())) return { kind: "refused", issue: { kind: "signed-out" } };
+    if (!this.held.current()) return { kind: "refused", issue: { kind: "server-changed" } };
     const raw = await uploadMendBundle(
       this.connection,
       `/projects/${encodeURIComponent(projectId)}/handoffs?harness=claude&hold=true`,
