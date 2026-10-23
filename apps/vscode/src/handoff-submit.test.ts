@@ -13,7 +13,7 @@ const setup = () => {
   const fake = fakeHandoff();
   const progress: string[] = [];
   const dependencies = {
-    launches: new Launches(fake.client, {
+    launches: new Launches({
       attempted: () => {
         fake.calls.push("attempt");
       },

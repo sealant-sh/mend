@@ -52,7 +52,7 @@ const world = async () => {
   );
   const connection = switchable(a);
   const client = new MendClient(connection.connections);
-  const launches = new Launches(client, { attempted: () => undefined, forget: () => undefined });
+  const launches = new Launches({ attempted: () => undefined, forget: () => undefined });
   const stored = new Map<string, unknown>();
   const input = new NewSessionInput(
     {

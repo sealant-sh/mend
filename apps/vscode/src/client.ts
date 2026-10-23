@@ -1,6 +1,5 @@
 import { setTimeout as wait } from "node:timers/promises";
 
-import type { AgentRequestResponse } from "@mend/agent-conversation";
 import * as vscode from "vscode";
 
 import {
@@ -12,7 +11,7 @@ import {
   parseHarnessModelCatalog,
   parseProjectDetail,
   parseSessionProcess,
-  parsePendingRequest,
+  parsePendingRequests,
   parseLanding,
   parseEventPointer,
   parseSessionDetail,
@@ -38,8 +37,6 @@ import type {
   SessionDetail,
   SessionProcess,
   HarnessModelCatalog,
-  LaunchStart,
-  LaunchExpected,
   WorkspaceSshView,
 } from "./types.js";
 export type { PendingRequest, StreamSignal, EventPointer } from "./client-data.js";
@@ -74,7 +71,7 @@ export class MendClient {
     });
   }
 
-  async bindHandoff(): Promise<BoundClient> {
+  async bind(): Promise<BoundClient> {
     return new BoundClient(
       await this.held(),
       () => this.connection(),
@@ -207,15 +204,6 @@ export class MendClient {
     );
   }
 
-  async launchSession(
-    sessionId: string,
-    start: LaunchStart & { readonly expected?: LaunchExpected },
-  ): Promise<Session> {
-    return parseSession(
-      await this.post(`/sessions/${encodeURIComponent(sessionId)}/launch`, start),
-    );
-  }
-
   async stopSession(sessionId: string): Promise<Session> {
     return parseSession(await this.post(`/sessions/${encodeURIComponent(sessionId)}/stop`, {}));
   }
@@ -291,16 +279,9 @@ export class MendClient {
   /** A conversation's requests still waiting for an answer. */
   async pendingRequests(sessionId: string): Promise<ReadonlyArray<PendingRequest>> {
     // The server filters only on `pending=1`: any other value lists answered requests too.
-    return parseArray(
+    return parsePendingRequests(
       await this.request(`/sessions/${encodeURIComponent(sessionId)}/requests?pending=1`),
-      parsePendingRequest,
-      "requests",
-    ).filter((request) => request !== null);
-  }
-
-  /** Answers a conversation's request: a decision, or answers to its questions. */
-  async respond(requestId: string, response: AgentRequestResponse): Promise<void> {
-    await this.post(`/requests/${encodeURIComponent(requestId)}/respond`, response);
+    );
   }
 
   /** The session's newest landing that reached origin; null when none did. */

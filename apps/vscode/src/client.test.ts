@@ -57,7 +57,7 @@ describe("a conversation's pending requests", () => {
   it("answers one with POST /requests/:id/respond and the response as its body", async () => {
     const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response("{}"));
     vi.stubGlobal("fetch", fetch);
-    await client().respond("r 1", { answers: { q1: ["Postgres"] } });
+    await (await client().bind()).respond("r 1", { answers: { q1: ["Postgres"] } });
     const [url, init] = fetch.mock.calls[0] ?? [];
     expect(url).toBe("http://mend-mini:3105/api/requests/r%201/respond");
     expect(init?.method).toBe("POST");

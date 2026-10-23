@@ -222,7 +222,7 @@ const parseQuestion = (value: unknown): AgentInputQuestionDto => {
 };
 
 /** A request row; null for one no longer pending, which nothing here may answer. */
-export const parsePendingRequest = (value: unknown): PendingRequest | null => {
+const parsePendingRequest = (value: unknown): PendingRequest | null => {
   if (!isRecord(value)) throw new Error("Mend returned an invalid request.");
   if (value["status"] !== "pending") return null;
   const questions = value["questions"];
@@ -244,6 +244,9 @@ export const parsePendingRequest = (value: unknown): PendingRequest | null => {
     createdAt: stringField(value, "createdAt"),
   };
 };
+
+export const parsePendingRequests = (value: unknown): ReadonlyArray<PendingRequest> =>
+  parseArray(value, parsePendingRequest, "requests").filter((request) => request !== null);
 
 const LANDED_OUTCOMES: ReadonlySet<unknown> = new Set(["pushed", "pull-request", "adopted"]);
 const PULL_REQUEST_STATES: ReadonlyArray<"open" | "closed" | "merged"> = [

@@ -201,6 +201,12 @@ with what you typed, and the line reads your choices.
   another launch, or runs, is never sent again: a launch whose answer was lost, or that an edge
   answered with a 5xx, may be running. Retry shows only in the window that launched it. A failure
   the server settled shows one notification across your VS Code windows, the launching one included.
+- **VS Code connects to another server or account.** New session belongs to the server and account
+  it opened on. Once `mend.serverUrl` or the sign-in changes, its create, its launch and every Retry
+  of that launch send nothing, to either server. A create says
+  `Mend could not create the session · VS Code is now connected to another Mend server or account, so nothing was sent`,
+  and what you typed is kept for the next **New session** on the first server. An answer to an
+  agent's question is held to the connection it started on in the same way.
 
 **Mend: New session in this worktree…** on a session opens the same input for a second session in
 the same worktree: the same files and branch, with a new conversation. Its title ends

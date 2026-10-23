@@ -625,15 +625,9 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const store = new SessionStore(new LastSeenFile(kept), client, role, workspaceWindow);
   const tree = new MendTreeProvider(store, client);
   const statusBar = new MendStatusBar();
-  const launches = new Launches(client, store);
+  const launches = new Launches(store);
   const claims = new ToastClaims(path.join(context.globalStorageUri.fsPath, "toasts"));
-  const prompts = new RequestPrompts(
-    new Answers({
-      pending: (sessionId) => client.pendingRequests(sessionId),
-      respond: (requestId, response) => client.respond(requestId, response),
-    }),
-    store,
-  );
+  const prompts = new RequestPrompts(new Answers(() => client.bind()), store);
   const notifier = new Notifier(store, claims, launches, prompts);
   const opens = openRunner({
     context,

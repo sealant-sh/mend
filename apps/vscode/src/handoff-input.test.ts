@@ -39,13 +39,13 @@ const world = (
 ) => {
   const f = fakeHandoff();
   const bound: HandoffClient = { ...f.client, ...client(f.client, f.calls) };
-  const launches = new Launches(bound, { attempted: () => undefined, forget: () => undefined });
+  const launches = new Launches({ attempted: () => undefined, forget: () => undefined });
   const input = new HandoffInput(
     {
       extensionUri: vscode.Uri.file("/extension"),
       secrets: { onDidChange: new vscode.EventEmitter<vscode.SecretStorageChangeEvent>().event },
     },
-    { bindHandoff: async () => bound },
+    { bind: async () => bound },
     {
       onDidHearEvent: new vscode.EventEmitter<EventPointer>().event,
       onDidChange: new vscode.EventEmitter<StoreChange>().event,

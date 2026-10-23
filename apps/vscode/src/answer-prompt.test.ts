@@ -33,10 +33,13 @@ const mend = (
   );
   const reread = vi.fn(async (_sessionId: string) => {});
   const view = { name: NAME, line: options.line ?? "running · pnpm db:migrate" };
-  const prompts = new RequestPrompts(new Answers({ pending, respond }), {
-    reread,
-    model: () => ({ sessions: new Map([["s", view]]) }),
-  });
+  const prompts = new RequestPrompts(
+    new Answers(async () => ({ pendingRequests: pending, respond })),
+    {
+      reread,
+      model: () => ({ sessions: new Map([["s", view]]) }),
+    },
+  );
   return { prompts, respond, pending, reread };
 };
 

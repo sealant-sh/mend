@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { hostname } from "node:os";
 
+import type { AgentRequestResponse } from "@mend/agent-conversation";
 import {
   GitAuthMode,
   HANDOFF_PROBE_PROJECT,
@@ -15,17 +16,19 @@ import { Schema } from "effect";
 import {
   isRecord,
   parseArray,
+  parsePendingRequests,
   parseProject,
   parseSession,
   parseSessionDetail,
   parseWorktree,
+  type PendingRequest,
 } from "./client-data.js";
 import type { HeldConnection, MendConnection } from "./config.js";
 import { failureWords } from "./failure-words.js";
 import type { HandoffBundle } from "./handoff-worker.js";
 import { ConnectionChanged } from "./launches.js";
 import { MendApiError, requestMend, uploadMendBundle } from "./mend-http.js";
-import type { LaunchRequest } from "./new-session.js";
+import type { CreateRequest, LaunchRequest } from "./new-session.js";
 import type { LaunchExpected, Project, ReceivedHandoff, Session, SessionDetail } from "./types.js";
 
 export type HandoffProject = Project & { readonly gitAuthMode: GitAuthMode };
@@ -114,6 +117,7 @@ export interface HandoffClient {
 }
 
 export class BoundClient implements HandoffClient {
+  readonly url: string;
   readonly label: string;
   readonly account: string;
   private readonly connection: MendConnection;
@@ -126,6 +130,7 @@ export class BoundClient implements HandoffClient {
   ) {
     const { connection } = held;
     this.connection = connection;
+    this.url = connection.url;
     this.label = new URL(connection.url).host;
     this.account = createHash("sha256")
       .update(`${connection.url}\n${connection.token ?? ""}`)
@@ -306,5 +311,18 @@ export class BoundClient implements HandoffClient {
     request: LaunchRequest & { readonly expected?: LaunchExpected },
   ): Promise<Session> {
     return parseSession(await this.#request(`/sessions/${encodeURIComponent(id)}/launch`, request));
+  }
+  async createSession(projectId: string, request: CreateRequest): Promise<Session> {
+    return parseSession(
+      await this.#request(`/projects/${encodeURIComponent(projectId)}/sessions`, request),
+    );
+  }
+  async pendingRequests(sessionId: string): Promise<ReadonlyArray<PendingRequest>> {
+    return parsePendingRequests(
+      await this.#request(`/sessions/${encodeURIComponent(sessionId)}/requests?pending=1`),
+    );
+  }
+  async respond(requestId: string, response: AgentRequestResponse): Promise<void> {
+    await this.#request(`/requests/${encodeURIComponent(requestId)}/respond`, response);
   }
 }

@@ -85,7 +85,7 @@ export class HandoffInput implements vscode.Disposable {
       readonly extensionUri: vscode.Uri;
       readonly secrets: Pick<vscode.SecretStorage, "onDidChange">;
     },
-    private readonly client: { bindHandoff(): Promise<HandoffClient> },
+    private readonly client: { bind(): Promise<HandoffClient> },
     private readonly store: Pick<
       SessionStore,
       "onDidHearEvent" | "onDidChange" | "model" | "windowProject" | "recordHandoff"
@@ -142,7 +142,7 @@ export class HandoffInput implements vscode.Disposable {
     const generation = ++this.#generation;
     void vscode.commands.executeCommand("setContext", "mend.handoff.support", "checking");
     try {
-      const [roots, bound] = await Promise.all([this.#localRoots(), this.client.bindHandoff()]);
+      const [roots, bound] = await Promise.all([this.#localRoots(), this.client.bind()]);
       const support = await bound.support();
       if (this.#disposed || generation !== this.#generation || !(await bound.isCurrent())) return;
       if (process.platform !== "win32")
@@ -358,7 +358,7 @@ export class HandoffInput implements vscode.Disposable {
     );
     show();
     try {
-      const [roots, client] = await Promise.all([this.#localRoots(), this.client.bindHandoff()]);
+      const [roots, client] = await Promise.all([this.#localRoots(), this.client.bind()]);
       if (closed) return;
       bound = client;
       dispatch({

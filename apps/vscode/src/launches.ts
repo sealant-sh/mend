@@ -30,10 +30,9 @@ const untakenSince = (detail: LaunchRead, after: string | null): boolean =>
 
 const refusesLateRetry = (detail: LaunchRead): boolean => detail.launchAdmission === "agentRan";
 
-/** VS Code's connection is no longer the one the launch's client was bound to: nothing was sent. */
 export class ConnectionChanged extends Error {
   constructor() {
-    super("VS Code is connected to another Mend server or account than this launch's");
+    super("VS Code is now connected to another Mend server or account, so nothing was sent");
   }
 }
 
@@ -108,27 +107,28 @@ export type RetryAnswer =
  */
 const UNDER_WAY = /already under way/;
 
+interface Launched {
+  readonly start: LaunchRequest;
+  readonly client: LaunchClient;
+}
+
 /**
  * The launches this window sent, by session: what Retry sends again, and each attempt's number. The
  * server holds a launch up to 30 s and runs it detached (`LAUNCH_ANSWER_WINDOW`), and keeps running
  * it when the caller goes away, so a launch with no answer may be running: only a read decides.
  */
 export class Launches {
-  readonly #sent = new Map<string, LaunchRequest>();
-  readonly #clients = new Map<string, LaunchClient>();
+  readonly #launched = new Map<string, Launched>();
   readonly #confirmed = new Map<string, () => void>();
   readonly #attempts = new Map<string, LaunchAttempt>();
   /** Sessions with a launch or a Retry on its way, until it is answered: a second click sends nothing. */
   readonly #busy = new Map<string, Promise<void>>();
 
-  constructor(
-    private readonly client: LaunchClient,
-    private readonly sink: AttemptSink,
-  ) {}
+  constructor(private readonly sink: AttemptSink) {}
 
   /** Whether this window launched the session. */
   has(sessionId: string): boolean {
-    return this.#sent.has(sessionId);
+    return this.#launched.has(sessionId);
   }
 
   /**
@@ -138,12 +138,13 @@ export class Launches {
   async launch(
     sessionId: string,
     start: LaunchRequest,
-    options: { readonly client?: LaunchClient; readonly confirmed?: () => void } = {},
+    options: { readonly client: LaunchClient; readonly confirmed?: () => void },
   ): Promise<void> {
     if (this.#busy.has(sessionId)) return;
-    this.#clients.set(sessionId, options.client ?? this.client);
+    const launched = { start, client: options.client };
+    this.#launched.set(sessionId, launched);
     if (options.confirmed !== undefined) this.#confirmed.set(sessionId, options.confirmed);
-    const sent = await this.#hold(sessionId, () => this.#send(sessionId, start, null, null));
+    const sent = await this.#hold(sessionId, () => this.#send(sessionId, launched, null, null));
     // Said once nothing is on its way, so the toast it raises may offer Retry.
     if (sent.kind === "answered") await this.#say(sessionId, sent.attempt);
   }
@@ -166,13 +167,13 @@ export class Launches {
    * Mend refuses it once any agent ran there.
    */
   async relaunch(sessionId: string, settledAt: string | null): Promise<RetryAnswer> {
-    const start = this.#sent.get(sessionId);
-    if (start === undefined || this.#busy.has(sessionId)) return { kind: "held" };
+    const launched = this.#launched.get(sessionId);
+    if (launched === undefined || this.#busy.has(sessionId)) return { kind: "held" };
     return this.#hold(sessionId, async (): Promise<RetryAnswer> => {
       const offer = await this.#check(sessionId);
       if (offer.kind === "none") return { kind: "held" };
       if (offer.kind === "moved") return { kind: "movedOn", read: offer.read, said: null };
-      const sent = await this.#send(sessionId, start, offer.read.settledAt, { settledAt });
+      const sent = await this.#send(sessionId, launched, offer.read.settledAt, { settledAt });
       if (sent.kind === "answered") {
         await this.#say(sessionId, sent.attempt);
         return { kind: "sent" };
@@ -198,11 +199,13 @@ export class Launches {
   }
 
   async #detail(sessionId: string): Promise<LaunchRead | null> {
-    return (this.#clients.get(sessionId) ?? this.client).sessionDetail(sessionId).catch(() => null);
+    const launched = this.#launched.get(sessionId);
+    if (launched === undefined) return null;
+    return launched.client.sessionDetail(sessionId).catch(() => null);
   }
 
   async #check(sessionId: string): Promise<RetryOffer> {
-    const start = this.#sent.get(sessionId);
+    const start = this.#launched.get(sessionId)?.start;
     if (start === undefined || promptIssue(start.prompt ?? "", "the agent") !== null)
       return { kind: "none" };
     const detail = await this.#detail(sessionId);
@@ -229,7 +232,7 @@ export class Launches {
    */
   async #send(
     sessionId: string,
-    start: LaunchRequest,
+    { start, client }: Launched,
     after: string | null,
     expected: LaunchExpected | null,
   ): Promise<
@@ -239,13 +242,9 @@ export class Launches {
   > {
     const before = this.#attempts.get(sessionId);
     const attempt: LaunchAttempt = { n: (before?.n ?? 0) + 1, after, refusal: null };
-    this.#sent.set(sessionId, start);
     await this.#say(sessionId, attempt);
     try {
-      await (this.#clients.get(sessionId) ?? this.client).launchSession(
-        sessionId,
-        expected === null ? start : { ...start, expected },
-      );
+      await client.launchSession(sessionId, expected === null ? start : { ...start, expected });
       this.#confirmed.get(sessionId)?.();
       return { kind: "answered", attempt };
     } catch (cause) {
@@ -326,7 +325,7 @@ export class Launches {
   }
 
   async #current(sessionId: string): Promise<boolean> {
-    return (this.#clients.get(sessionId) ?? this.client).isCurrent?.() ?? true;
+    return (await this.#launched.get(sessionId)?.client.isCurrent?.()) ?? true;
   }
 
   async #say(sessionId: string, attempt: LaunchAttempt): Promise<void> {
