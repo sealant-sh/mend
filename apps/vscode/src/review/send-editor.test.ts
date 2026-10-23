@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 
-import type { KeptFiles } from "./kept-reviews.js";
+import type { SendPhase } from "./delivery.js";
+import { KEPT_REVIEW_TTL_MS, KeptReviews, type KeptFiles } from "./kept-reviews.js";
+import { addPending } from "./pending.js";
 import { ReviewStore } from "./review-store.js";
 import { SendEditor } from "./send-editor.js";
 import {
@@ -10,7 +12,9 @@ import {
   keptIn,
   memoryFiles,
   noPaste,
+  pending,
   PROJECT,
+  sentReview,
   session,
   sessionReads,
   SETTLE,
@@ -67,7 +71,11 @@ const ui = vi.hoisted(() => ({
       },
       async save() {
         if (!this.isDirty) return true;
-        if (modifiedSince(this.base, await provider.stat(uri))) return false;
+        // VS Code reads a file whose stat fails as one that does not exist yet, and writes it.
+        const stat = await Promise.resolve()
+          .then(() => provider.stat(uri))
+          .catch(() => null);
+        if (stat !== null && modifiedSince(this.base, stat)) return false;
         try {
           await provider.writeFile(uri, new TextEncoder().encode(this.text), {
             create: false,
@@ -656,6 +664,91 @@ describe("a review open in two windows", () => {
     expect(decoded(await second.provider.readFile(opened.uri))).toBe(
       "words saved in the second window",
     );
+    first.close();
+    second.close();
+  });
+});
+
+/** Another window, a month on: its first write of any session sweeps every review untouched since. */
+const sweepAMonthOn = async (files: KeptFiles, store: ReviewStore): Promise<void> => {
+  const place = store.place();
+  if (place === null) throw new Error("the window follows no session");
+  const aMonthOn = Date.now() + KEPT_REVIEW_TTL_MS + 1_000;
+  await new KeptReviews("/global-storage/reviews", files, () => aMonthOn).update(
+    { ...place, sessionId: "s2" },
+    (review) => addPending(review, pending({ id: "in-another-session" })),
+  );
+};
+
+const typeInto = (document: OpenDocument, text: string): void => {
+  document.text = text;
+  document.version += 1;
+  document.isDirty = true;
+};
+
+describe("a review another session's write swept while she typed in it", () => {
+  it("keeps her words when she saves, and Send to session sends them", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    const window = await windowOn(files, mend);
+    const opened = await sendReview();
+    typeInto(opened, "MY UNSAVED REVIEW WORDS");
+    await sweepAMonthOn(files, window.store);
+    await expect(Promise.resolve().then(() => window.provider.stat(opened.uri))).rejects.toThrow();
+    expect(await opened.save()).toBe(true);
+    expect(decoded(await window.provider.readFile(opened.uri))).toBe("MY UNSAVED REVIEW WORDS");
+    await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    expect(mend.delivered[0]?.instruction).toBe("MY UNSAVED REVIEW WORDS");
+    window.close();
+  });
+
+  it("sends her words though the sweep took the review she sent before them", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    const window = await windowOn(files, mend);
+    const place = window.store.place();
+    if (place === null) throw new Error("the window follows no session");
+    const before = sentReview();
+    const done: SendPhase = { kind: "delivered", at: new Date().toISOString() };
+    await keptIn("/global-storage/reviews", files).update(place, () => ({
+      ...before,
+      pending: [],
+      sends: before.sends.map((record) => ({ ...record, phase: done })),
+    }));
+    await window.store.reloadReview();
+    const opened = await sendReview();
+    typeInto(opened, "MY UNSAVED REVIEW WORDS");
+    await sweepAMonthOn(files, window.store);
+    await expect(Promise.resolve().then(() => window.provider.stat(opened.uri))).rejects.toThrow();
+    expect(await opened.save()).toBe(true);
+    await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    expect(mend.delivered[0]?.instruction).toBe("MY UNSAVED REVIEW WORDS");
+    window.close();
+  });
+
+  it("keeps her words in the review another window composed since, and never over its text", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    const first = await windowOn(files, mend);
+    const opened = await sendReview();
+    await sweepAMonthOn(files, first.store);
+    mend.serverComments = [...mend.serverComments, comment({ id: "c2", line: 13 })];
+    const second = await windowOn(files, mend);
+    const composition = second.store.compose();
+    if (composition === null) throw new Error("the second window composed nothing");
+    const newer = await second.store.keepDocument(composition);
+    const save = () =>
+      Promise.resolve().then(() =>
+        first.provider.writeFile(opened.uri, encoded("MY UNSAVED REVIEW WORDS"), SAVE),
+      );
+    await expect(save()).rejects.toThrow(/Your earlier text[^]*Send review/);
+    await expect(save()).rejects.toThrow(/Your earlier text[^]*Send review/);
+    const kept = await second.store.document(newer.ref);
+    expect(kept?.text.startsWith(newer.document.text.trimEnd())).toBe(true);
+    expect(kept?.text).toMatch(/Your earlier text[^]*MY UNSAVED REVIEW WORDS/);
+    expect(kept?.text.split("MY UNSAVED REVIEW WORDS")).toHaveLength(2);
     first.close();
     second.close();
   });

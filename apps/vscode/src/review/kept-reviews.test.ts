@@ -415,6 +415,30 @@ describe("a review untouched past the expiry", () => {
     expect((await kept.read(DANA)).review.document?.text).toBe("Her words, typed a month on.");
   });
 
+  it("keeps her words when she saves the review another session's write swept", async () => {
+    const directory = await storage();
+    const hers = new KeptReviews(directory);
+    await hers.update(DANA, () => withDocument(delivered(), null));
+    const [folder] = await readdir(directory);
+    if (folder === undefined) throw new Error("no folder was made for her reviews");
+    const aMonthOn = Date.now() + KEPT_REVIEW_TTL_MS + 1_000;
+    await new KeptReviews(directory, NODE_FILES, () => aMonthOn).update(
+      { ...DANA, sessionId: "s2" },
+      addOne,
+    );
+    expect(await readdir(join(directory, folder))).not.toContain("s1.json");
+    let saved: string | null = null;
+    await hers.update(DANA, (review) => {
+      const save = saveDocument(review, "doc-1", 1, "Her words, typed before the sweep.");
+      saved = save.kind;
+      return save.kind === "saved" ? save.review : review;
+    });
+    expect(saved).toBe("saved");
+    expect((await hers.read(DANA)).review.document?.text).toBe(
+      "Her words, typed before the sweep.",
+    );
+  });
+
   it("stays when this window cannot read it", async () => {
     expect((await keptPastExpiry('{"rev":3,"review":{"pending":[')).kept).toBe(true);
     const newer = JSON.stringify({ format: 99, rev: 3, review: { pending: [], sends: [] } });
