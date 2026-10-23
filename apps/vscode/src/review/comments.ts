@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { changeAddress, changeUri } from "./change-content.js";
 import { noteUri } from "./change-note.js";
 import type { ReviewPlace } from "./kept-reviews.js";
+import type { PendingComment } from "./pending.js";
 import { DRAFT_NOT_SHOWN, type Keeping, type ReviewStore } from "./review-store.js";
 import { retryDelivery } from "./review-toast.js";
 import { commentableLines, evidenceLine, threadsOf, type ThreadView } from "./threads.js";
@@ -42,6 +43,9 @@ class UnkeptComment implements vscode.Comment {
   }
 }
 
+const unkeptIn = (thread: vscode.CommentThread): ReadonlyArray<UnkeptComment> =>
+  thread.comments.filter((comment) => comment instanceof UnkeptComment);
+
 const RECORD_COMMAND = "mend.change.showRecord";
 
 /** The comment's words, its evidence beside them, and Show record when it carries any. */
@@ -74,6 +78,16 @@ const shown = (thread: ThreadView, mode = vscode.CommentMode.Preview): ShownComm
 const sameThread = (left: ThreadView, right: ThreadView): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
 
+/**
+ * VS Code keeps her editor, and the words she types in it, only while this comment object stays in
+ * edit mode in a live thread: no redraw replaces or disposes it.
+ */
+interface Editing {
+  readonly thread: vscode.CommentThread;
+  readonly startedFrom: PendingComment;
+  readonly place: ReviewPlace | null;
+}
+
 export class ReviewComments implements vscode.Disposable {
   readonly #controller: vscode.CommentController;
   /**
@@ -88,6 +102,8 @@ export class ReviewComments implements vscode.Disposable {
   >();
   /** Threads whose Add, Accept or Dismiss is still being kept: a second click waits it out. */
   readonly #busy = new Set<vscode.CommentThread>();
+  readonly #editing = new Map<ShownComment, Editing>();
+  readonly #unkeptLeft = new Set<vscode.CommentThread>();
   readonly #disposables: ReadonlyArray<vscode.Disposable>;
 
   constructor(private readonly store: ReviewStore) {
@@ -125,18 +141,16 @@ export class ReviewComments implements vscode.Disposable {
         this.#onDraft(reply, (draft, text) => store.dismiss(draft.draftId, text, draft.place)),
       ),
       vscode.commands.registerCommand("mend.review.edit", (comment: unknown) =>
-        this.#mode(comment, vscode.CommentMode.Editing),
+        this.#edit(comment),
       ),
       vscode.commands.registerCommand("mend.review.cancel", (comment: unknown) =>
-        this.#mode(comment, vscode.CommentMode.Preview),
+        comment instanceof ShownComment ? this.#endEdit(comment) : undefined,
       ),
       vscode.commands.registerCommand("mend.review.save", (comment: unknown) =>
         this.#save(comment),
       ),
       vscode.commands.registerCommand("mend.review.delete", (comment: unknown) =>
-        comment instanceof ShownComment && comment.thread.pendingId !== null
-          ? store.remove(comment.thread.pendingId)
-          : undefined,
+        this.#delete(comment),
       ),
       vscode.commands.registerCommand("mend.review.addressed", (comment: unknown) =>
         comment instanceof ShownComment && comment.thread.commentId !== null
@@ -160,7 +174,10 @@ export class ReviewComments implements vscode.Disposable {
   }
 
   dispose(): void {
-    for (const { thread } of this.#threads.values()) thread.dispose();
+    const threads = new Set([...this.#threads.values()].map(({ thread }) => thread));
+    for (const { thread } of this.#editing.values()) threads.add(thread);
+    for (const thread of this.#unkeptLeft) threads.add(thread);
+    for (const thread of threads) thread.dispose();
     for (const disposable of this.#disposables) disposable.dispose();
   }
 
@@ -172,17 +189,30 @@ export class ReviewComments implements vscode.Disposable {
         ? []
         : threadsOf(read, this.store.review(), this.store.you(), this.store.held());
     const wanted = new Map(views.map((view) => [view.key, view]));
+    const editing = new Set([...this.#editing.values()].map(({ thread }) => thread));
     for (const [key, drawn] of this.#threads) {
       const next = wanted.get(key);
-      if (next === undefined || JSON.stringify(next.at) !== JSON.stringify(drawn.view.at)) {
-        drawn.thread.dispose();
+      const moved = next === undefined || JSON.stringify(next.at) !== JSON.stringify(drawn.view.at);
+      if (editing.has(drawn.thread)) {
+        if (moved || (next.kind !== "pending" && next.kind !== "accepted"))
+          this.#threads.delete(key);
+      } else if (moved) {
+        const words = unkeptIn(drawn.thread);
+        if (words.length === 0) drawn.thread.dispose();
+        else {
+          drawn.thread.comments = [...words];
+          drawn.thread.contextValue = "mend.thread.unkept";
+          drawn.thread.canReply = false;
+          this.#unkeptLeft.add(drawn.thread);
+        }
         this.#threads.delete(key);
       }
     }
     for (const view of views) {
       if (read === null) break;
       const drawn = this.#threads.get(view.key);
-      if (drawn !== undefined && sameThread(drawn.view, view)) continue;
+      if (drawn !== undefined && (editing.has(drawn.thread) || sameThread(drawn.view, view)))
+        continue;
       const range = new vscode.Range(view.line - 1, 0, view.endLine - 1, 0);
       const thread =
         drawn?.thread ??
@@ -194,7 +224,7 @@ export class ReviewComments implements vscode.Disposable {
       thread.contextValue = `mend.thread.${view.kind}`;
       thread.canReply = view.kind === "draft";
       thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
-      thread.comments = [shown(view)];
+      thread.comments = [shown(view), ...unkeptIn(thread)];
       const place = this.store.place();
       if (view.kind === "draft" && view.commentId !== null)
         this.#drafts.set(thread, { draftId: view.commentId, place });
@@ -268,20 +298,51 @@ export class ReviewComments implements vscode.Disposable {
     }
   }
 
-  #mode(comment: unknown, mode: vscode.CommentMode): void {
-    if (!(comment instanceof ShownComment)) return;
+  #edit(comment: unknown): void {
+    if (!(comment instanceof ShownComment) || this.#editing.has(comment)) return;
     const drawn = this.#threads.get(comment.thread.key);
-    if (drawn === undefined) return;
-    drawn.thread.comments = [shown(drawn.view, mode)];
+    const { pendingId } = comment.thread;
+    if (drawn === undefined || pendingId === null) return;
+    const startedFrom =
+      this.store.review().pending.find(({ id }) => id === pendingId) ??
+      this.store
+        .held()
+        .map((held) => held.comment)
+        .find(({ id }) => id === pendingId);
+    if (startedFrom === undefined) return;
+    const editor = shown(drawn.view, vscode.CommentMode.Editing);
+    drawn.thread.comments = [editor];
+    this.#editing.set(editor, { thread: drawn.thread, startedFrom, place: this.store.place() });
   }
 
   async #save(comment: unknown): Promise<void> {
-    if (!(comment instanceof ShownComment) || comment.thread.pendingId === null) return;
+    if (!(comment instanceof ShownComment)) return;
+    const editing = this.#editing.get(comment);
+    if (editing === undefined) return;
     const body = typeof comment.body === "string" ? comment.body : comment.body.value;
     // The store keeps her edit, or holds it and draws it as not kept: either way it is redrawn.
-    const kept = await this.store.edit(comment.thread.pendingId, body);
+    const kept = await this.store.edit(editing.startedFrom, body, editing.place);
     if (!kept.kept) void vscode.window.showWarningMessage(kept.words);
+    this.#endEdit(comment);
+  }
+
+  async #delete(comment: unknown): Promise<void> {
+    if (!(comment instanceof ShownComment) || comment.thread.pendingId === null) return;
+    const editing = this.#editing.get(comment);
+    const place = editing === undefined ? this.store.place() : editing.place;
+    this.#endEdit(comment);
+    const removal = await this.store.remove(comment.thread.pendingId, place);
+    if (!removal.removed) void vscode.window.showWarningMessage(removal.words);
+  }
+
+  #endEdit(comment: ShownComment): void {
+    const editing = this.#editing.get(comment);
+    if (editing === undefined) return;
+    this.#editing.delete(comment);
     const drawn = this.#threads.get(comment.thread.key);
-    if (drawn !== undefined) drawn.thread.comments = [shown(drawn.view)];
+    if (drawn !== undefined && drawn.thread === editing.thread)
+      editing.thread.comments = [shown(drawn.view)];
+    else editing.thread.dispose();
+    this.#draw();
   }
 }
