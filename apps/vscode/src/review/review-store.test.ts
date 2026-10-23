@@ -147,7 +147,7 @@ describe("ReviewStore.forget", () => {
     const store = await readyStore(keptIn(await storage()));
     store.forget();
     store.follow(PROJECT, session("s1"));
-    await settle();
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     expect(store.ready()).not.toBeNull();
   });
 });
@@ -325,7 +325,7 @@ describe("a call Mend refuses", () => {
       noPaste,
     );
     store.follow(PROJECT, session("s1"));
-    await settle();
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     const failures: Array<ReviewFailure> = [];
     store.onDidFail((failure) => failures.push(failure));
     await store.readChange();
@@ -447,7 +447,7 @@ describe("Show record", () => {
       noPaste,
     );
     store.follow(PROJECT, session("s1"));
-    await settle();
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     expect(await store.record({ runId: "run-2" })).toMatchObject({
       kind: "found",
       sessionId: "s2",
@@ -467,7 +467,7 @@ describe("Show record", () => {
       noPaste,
     );
     store.follow(PROJECT, session("s1"));
-    await settle();
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     expect(await store.record({ runId: "run-0" })).toMatchObject({
       kind: "not-found",
       words: expect.stringMatching(/run-0/),

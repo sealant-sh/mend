@@ -12,7 +12,6 @@ import {
   PROJECT,
   session,
   sessionReads,
-  settle,
   slowFiles,
   storage,
   noPaste,
@@ -172,7 +171,7 @@ describe("submitting a comment from its thread", () => {
       noPaste,
     );
     store.follow(PROJECT, session("s1"));
-    await settle();
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     const comments = new ReviewComments(store);
     const reply = replyOnLine3("Use the shared limiter");
     await submit(reply);
