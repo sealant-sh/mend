@@ -44,7 +44,15 @@ export class Uri {
   }
 }
 
+export class Disposable {
+  constructor(private readonly callOnDispose: () => void) {}
+  dispose(): void {
+    this.callOnDispose();
+  }
+}
+
 export const QuickInputButtons = { Back: { iconPath: new ThemeIcon("arrow-left") } };
+export const InputBoxValidationSeverity = { Info: 1, Warning: 2, Error: 3 };
 export const ProgressLocation = { Notification: 15 };
 
 class FakeQuickInput {
