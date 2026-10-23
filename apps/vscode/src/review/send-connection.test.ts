@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MendClient } from "../client.js";
 import { ConnectionStore } from "../config.js";
-import { secretWriteOf } from "../credentials.js";
+import { secretWriteOf, type CredentialChange } from "../credentials.js";
 import { EventEmitter } from "../test-vscode.js";
 import { MendTtyTerminal } from "../tty-terminal.js";
 import type { SessionProcess } from "../types.js";
@@ -89,36 +89,65 @@ const connectElsewhere = (): void => {
     listener({ affectsConfiguration: (section) => "mend.serverUrl".startsWith(section) });
 };
 
-const secretStorage = () => {
+const DANA_SIGNED_IN: CredentialChange = {
+  kind: "signedIn",
+  url: MEND,
+  token: "dana-token",
+  deviceId: null,
+  email: "dana@mend",
+};
+
+const holding = () => {
+  const out = Promise.withResolvers<void>();
+  const released = Promise.withResolvers<void>();
+  return {
+    held: { entered: out.resolve, released: released.promise },
+    out: out.promise,
+    release: released.resolve,
+  };
+};
+
+const secretStorage = (signedIn: CredentialChange | null = DANA_SIGNED_IN) => {
   const kept = new Map<string, string>();
   const changed = new EventEmitter<{ readonly key: string }>();
-  const signedIn = secretWriteOf(
-    { kind: "signedIn", url: MEND, token: "dana-token", deviceId: null, email: "dana@mend" },
-    "write-1",
-  );
-  kept.set(signedIn.key, signedIn.value);
+  if (signedIn !== null) {
+    const entry = secretWriteOf(signedIn, "write-1");
+    kept.set(entry.key, entry.value);
+  }
   let held: { readonly entered: () => void; readonly released: Promise<void> } | null = null;
+  let storing: { readonly entered: () => void; readonly released: Promise<void> } | null = null;
   return {
     get: async (key: string): Promise<string | undefined> => {
       const value = kept.get(key);
-      const hold = held;
+      const reading = held;
       held = null;
-      if (hold !== null) {
-        hold.entered();
-        await hold.released;
+      if (reading !== null) {
+        reading.entered();
+        await reading.released;
       }
       return value;
     },
     store: async (key: string, value: string): Promise<void> => {
       kept.set(key, value);
+      const writing = storing;
+      storing = null;
+      if (writing !== null) {
+        writing.entered();
+        await writing.released;
+      }
       changed.fire({ key });
     },
     onDidChange: changed.event,
     holdNext(): { readonly out: Promise<void>; readonly release: () => void } {
-      const out = Promise.withResolvers<void>();
-      const released = Promise.withResolvers<void>();
-      held = { entered: out.resolve, released: released.promise };
-      return { out: out.promise, release: released.resolve };
+      const next = holding();
+      held = next.held;
+      return next;
+    },
+    /** The next write is kept at once, and answers and says it changed only on `release`. */
+    holdNextStore(): { readonly out: Promise<void>; readonly release: () => void } {
+      const next = holding();
+      storing = next.held;
+      return next;
     },
   };
 };
@@ -155,6 +184,9 @@ const mendServers = vi.fn<typeof fetch>(async (input, init) => {
 let home = "";
 const xdg = process.env["XDG_CONFIG_HOME"];
 
+const cliSignsIn = (url: string): Promise<void> =>
+  writeFile(join(home, "mend", "cli.json"), JSON.stringify({ url, token: "dana-token" }));
+
 const withoutCliSignIn = async (): Promise<void> => {
   home = await mkdtemp(join(tmpdir(), "mend-send-connection-"));
   await mkdir(join(home, "mend"));
@@ -186,8 +218,12 @@ const memento = () => {
   };
 };
 
-const sendToClaude = async (meanwhile: (connections: ConnectionStore) => Promise<void>) => {
-  const secrets = secretStorage();
+type Secrets = ReturnType<typeof secretStorage>;
+
+const sendToClaude = async (
+  meanwhile: (connections: ConnectionStore, secrets: Secrets) => Promise<void>,
+  secrets: Secrets = secretStorage(),
+) => {
   const connections = new ConnectionStore({ secrets });
   const client = new MendClient(connections);
   const terminal = new MendTtyTerminal({
@@ -218,7 +254,7 @@ const sendToClaude = async (meanwhile: (connections: ConnectionStore) => Promise
               pasted,
               async () => {
                 const answered = await ready();
-                await meanwhile(connections);
+                await meanwhile(connections, secrets);
                 return answered;
               },
               current,
@@ -278,6 +314,119 @@ describe("Dana signs out while the paste asks Mend whether claude still runs", (
     expect(typed).toEqual([]);
     store.dispose();
   }, 15_000);
+});
+
+const CLI_POSTURES: ReadonlyArray<{
+  readonly posture: string;
+  readonly serverUrl: string;
+  readonly kept: CredentialChange | null;
+  readonly stopped: "switched" | "signed-out";
+}> = [
+  {
+    posture: "the CLI's sign-in to the default server",
+    serverUrl: "",
+    kept: null,
+    stopped: "switched",
+  },
+  {
+    posture: "Use CLI sign-in",
+    serverUrl: MEND,
+    kept: { kind: "useCli", url: MEND },
+    stopped: "signed-out",
+  },
+];
+
+const pasteSettled = (phases: () => Promise<ReadonlyArray<unknown>>) =>
+  vi.waitFor(
+    async () =>
+      expect(await phases()).toEqual([
+        expect.objectContaining({
+          paste: expect.objectContaining({ kind: expect.stringMatching(/^(done|failed)$/) }),
+        }),
+      ]),
+    SETTLE,
+  );
+
+describe("Dana runs mend login to another server while the paste asks Mend whether claude still runs", () => {
+  it.each(CLI_POSTURES)(
+    "on $posture, types nothing into the old server's claude, and the review reads stopped ($stopped)",
+    async ({ serverUrl, kept, stopped }) => {
+      setting.url = serverUrl;
+      await cliSignsIn(MEND);
+      const { store, phases } = await sendToClaude(() => cliSignsIn(OTHER), secretStorage(kept));
+      await pasteSettled(phases);
+      expect(typed).toEqual([]);
+      expect(await phases()).toEqual([
+        expect.objectContaining({
+          kind: "in-terminal",
+          paste: { kind: "failed", mayHaveLanded: false, stopped: { kind: stopped } },
+        }),
+      ]);
+      store.dispose();
+    },
+    15_000,
+  );
+});
+
+describe("Dana signs out, and the paste's last read answers while VS Code is still storing the sign-out", () => {
+  it("types nothing into claude's terminal, and the review reads stopped because VS Code signed out", async () => {
+    const { store, phases } = await sendToClaude(async (connections, secrets) => {
+      const storing = secrets.holdNextStore();
+      void connections.signOut(MEND);
+      await storing.out;
+      setTimeout(storing.release, 0);
+    });
+    await pasteSettled(phases);
+    expect(typed).toEqual([]);
+    expect(await phases()).toEqual([
+      expect.objectContaining({
+        kind: "in-terminal",
+        paste: { kind: "failed", mayHaveLanded: false, stopped: { kind: "signed-out" } },
+      }),
+    ]);
+    store.dispose();
+  }, 15_000);
+});
+
+describe("Dana runs mend login to another server while a send's comment reads her sign-in", () => {
+  it.each(CLI_POSTURES)(
+    "on $posture, sends the comment to neither server, and refuses it ($stopped)",
+    async ({ serverUrl, kept, stopped }) => {
+      setting.url = serverUrl;
+      await cliSignsIn(MEND);
+      const secrets = secretStorage(kept);
+      const sessions = new MendClient(new ConnectionStore({ secrets }));
+      const client = new ReviewClient(
+        async () => {
+          throw new Error("every write here is bound to the send");
+        },
+        () => undefined,
+      ).pinned(() => boundConnection(sessions, { url: MEND, viewer: "dana" }));
+      const hold = secrets.holdNext();
+      const writing = client.postComment(
+        "change-1",
+        PINNED.id,
+        {
+          oldPath: null,
+          newPath: "src/auth/limit.ts",
+          side: "new",
+          startLine: 12,
+          endLine: 12,
+          hunkContextHash: null,
+        },
+        "Use the shared limiter",
+      );
+      await hold.out;
+      await cliSignsIn(OTHER);
+      hold.release();
+      const outcome = await writing.then(
+        () => "sent",
+        (cause: unknown) => cause,
+      );
+      expect(asked.filter((request) => request.startsWith("POST"))).toEqual([]);
+      expect(outcome).toMatchObject({ why: stopped });
+    },
+  );
 });
 
 describe("Dana changes mend.serverUrl while a send's write reads her sign-in", () => {
