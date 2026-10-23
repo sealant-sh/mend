@@ -400,6 +400,26 @@ describe("a review untouched past the expiry", () => {
     expect((await keptPastExpiry(withDocument(delivered(), null))).kept).toBe(false);
   });
 
+  it("is not swept by the write that saves her words into it", async () => {
+    const directory = await storage();
+    let now = Date.now();
+    const kept = new KeptReviews(directory, NODE_FILES, () => now);
+    await kept.update(DANA, () => withDocument(delivered(), null));
+    const [folder] = await readdir(directory);
+    if (folder === undefined) throw new Error("no folder was made for her reviews");
+    const old = new Date(Date.now() - KEPT_REVIEW_TTL_MS - 1_000);
+    await utimes(join(directory, folder, "s1.json"), old, old);
+    now += 2 * 60 * 60 * 1000;
+    let saved: string | null = null;
+    await kept.update(DANA, (review) => {
+      const save = saveDocument(review, "doc-1", 1, "Her words, typed a month on.");
+      saved = save.kind;
+      return save.kind === "saved" ? save.review : review;
+    });
+    expect(saved).toBe("saved");
+    expect((await kept.read(DANA)).review.document?.text).toBe("Her words, typed a month on.");
+  });
+
   it("stays when this window cannot read it", async () => {
     expect((await keptPastExpiry('{"rev":3,"review":{"pending":[')).kept).toBe(true);
     const newer = JSON.stringify({ format: 99, rev: 3, review: { pending: [], sends: [] } });
