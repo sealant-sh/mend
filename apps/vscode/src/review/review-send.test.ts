@@ -2212,18 +2212,15 @@ describe("Dana signs out while VS Code reads claude's process right before the p
       (await keptIn(directory).read(place)).review.sends.map(({ phase }) => phase);
     await vi.waitFor(
       async () =>
-        expect(await phases()).not.toEqual([
-          expect.objectContaining({ paste: { kind: "pasting" } }),
+        expect(await phases()).toEqual([
+          expect.objectContaining({
+            kind: "in-terminal",
+            paste: { kind: "failed", mayHaveLanded: false, stopped: { kind: "signed-out" } },
+          }),
         ]),
       SETTLE,
     );
     expect(written).toEqual([]);
-    expect(await phases()).toEqual([
-      expect.objectContaining({
-        kind: "in-terminal",
-        paste: { kind: "failed", mayHaveLanded: false, stopped: { kind: "signed-out" } },
-      }),
-    ]);
   }, 15_000);
 });
 
