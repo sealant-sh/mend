@@ -755,7 +755,7 @@ describe("a comment edited after the review was composed", () => {
     const composed = store.compose();
     const [mine] = store.review().pending;
     if (composed === null || mine === undefined) throw new Error("nothing composed");
-    await store.edit(mine.id, "Use guard.ts instead");
+    await store.edit(mine, "Use guard.ts instead");
     expect(await sendComposed(store, composed, composed.text)).toEqual({
       sent: false,
       words: expect.stringMatching(/Your comments changed since this review was composed/),
@@ -797,7 +797,7 @@ describe("a comment edited in another window after this one composed the review"
     const composed = a.store.compose();
     const [theirs] = b.store.review().pending;
     if (composed === null || theirs === undefined) throw new Error("nothing composed");
-    await b.store.edit(theirs.id, "Use guard.ts instead");
+    await b.store.edit(theirs, "Use guard.ts instead");
     expect(await sendComposed(a.store, composed, composed.text)).toMatchObject({ sent: false });
     expect(mend.delivered).toEqual([]);
   });

@@ -475,24 +475,25 @@ export class ReviewStore implements vscode.Disposable {
     return full ? { kept: false, words: TOO_MANY } : { kept: true };
   }
 
-  async edit(pendingId: string, body: string): Promise<Keeping> {
+  async edit(
+    startedFrom: PendingComment,
+    body: string,
+    place: ReviewPlace | null = this.#place,
+  ): Promise<Keeping> {
     const words = body.trim();
     if (words === "")
       return { kept: false, words: "Your comment is empty: there is nothing to keep." };
-    const place = this.#place;
-    let held: HeldWords | null = null;
+    if (place === null)
+      return { kept: false, words: `VS Code could not keep your edit: ${this.#unkept()}` };
+    const held = this.#holdEdit(place, startedFrom, words);
     let review: SessionReview;
     try {
-      review = await this.#keepAt(place, (kept) => {
-        held = this.#holdEdit(place, pendingId, words, [this.#review, kept]);
-        return kept;
-      });
+      review = await this.#keepAt(place, (kept) => kept);
     } catch (cause) {
-      held ??= this.#holdEdit(place, pendingId, words, [this.#review]);
       this.#changed.fire();
       return {
         kept: false,
-        words: `VS Code could not keep your edit: ${errorWords(cause)}${held === null ? "" : HELD}`,
+        words: `VS Code could not keep your edit: ${errorWords(cause)}${HELD}`,
       };
     }
     return editKept(
@@ -1064,38 +1065,26 @@ export class ReviewStore implements vscode.Disposable {
     return HELD;
   }
 
-  #holdEdit(
-    place: ReviewPlace | null,
-    pendingId: string,
-    body: string,
-    reviews: ReadonlyArray<SessionReview>,
-  ): HeldWords | null {
-    if (place === null) return null;
+  #holdEdit(place: ReviewPlace, startedFrom: PendingComment, body: string): HeldWords {
     const again = this.#held.find(
       ({ place: at, words }) =>
-        samePlace(at, place) && (words.comment.id === pendingId || words.edits?.id === pendingId),
+        samePlace(at, place) &&
+        (words.comment.id === startedFrom.id || words.edits?.id === startedFrom.id),
     );
     if (again !== undefined) {
       const words: HeldWords = { ...again.words, comment: { ...again.words.comment, body } };
       this.#held = this.#held.map((entry) => (entry === again ? { place, words } : entry));
       return words;
     }
-    const edited = reviews
-      .map(
-        (review) =>
-          review.pending.find((comment) => comment.id === pendingId) ?? takenBy(review, pendingId),
-      )
-      .find((comment) => comment !== undefined);
-    if (edited === undefined) return null;
     const words: HeldWords = {
       comment: {
-        ...edited,
+        ...startedFrom,
         id: randomUUID(),
         body,
         createdAt: new Date().toISOString(),
         origin: { kind: "own" },
       },
-      edits: { id: pendingId, body: edited.body },
+      edits: { id: startedFrom.id, body: startedFrom.body },
     };
     this.#held = [...this.#held, { place, words }];
     return words;
@@ -1330,12 +1319,7 @@ interface SeenDraft {
   readonly draft: ServerComment;
 }
 
-const editKept = (review: SessionReview, held: HeldWords | null, stillHeld: boolean): Keeping => {
-  if (held === null)
-    return {
-      kept: false,
-      words: "This comment was deleted in another window, so your edit is not kept.",
-    };
+const editKept = (review: SessionReview, held: HeldWords, stillHeld: boolean): Keeping => {
   if (stillHeld)
     return {
       kept: false,

@@ -141,6 +141,12 @@ export const comment = (overrides: Partial<ServerComment>): ServerComment => ({
   ...overrides,
 });
 
+export const shownPending = (store: ReviewStore, pendingId: string): PendingComment => {
+  const shown = store.review().pending.find(({ id }) => id === pendingId);
+  if (shown === undefined) throw new Error(`the window shows no pending comment ${pendingId}`);
+  return shown;
+};
+
 export const pending = (overrides: Partial<PendingComment>): PendingComment => ({
   id: "p1",
   sliceId: PINNED.id,

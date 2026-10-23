@@ -18,6 +18,7 @@ import {
   SETTLE,
   sendComposed,
   pinsInMemory,
+  shownPending,
 } from "./test-fixtures.js";
 
 interface Thread {
@@ -433,7 +434,7 @@ describe("an edit VS Code could not write", () => {
     const { editor, disk, pendingId, sendIt, bodies, done } = await twoWindows();
     await sendIt();
     disk.full = true;
-    await editor.edit(pendingId, "Use guard.ts instead");
+    await editor.edit(shownPending(editor, pendingId), "Use guard.ts instead");
     disk.full = false;
     await Promise.all([editor.reloadReview(), editor.reloadReview()]);
     expect(bodies()).toEqual(["Use guard.ts instead"]);
@@ -443,9 +444,11 @@ describe("an edit VS Code could not write", () => {
   it("never overwrites words another window saved to the comment since, and keeps both", async () => {
     const { sender, editor, disk, pendingId, bodies, done } = await twoWindows();
     disk.full = true;
-    await editor.edit(pendingId, "Older failed edit");
+    await editor.edit(shownPending(editor, pendingId), "Older failed edit");
     disk.full = false;
-    expect(await sender.edit(pendingId, "Newer successful edit")).toEqual({ kept: true });
+    expect(await sender.edit(shownPending(sender, pendingId), "Newer successful edit")).toEqual({
+      kept: true,
+    });
     await editor.reloadReview();
     expect(bodies()).toEqual(
       expect.arrayContaining(["Newer successful edit", "Older failed edit"]),
@@ -544,7 +547,9 @@ describe("her words in an open edit, when another window changes the review", ()
     if (thread === undefined) throw new Error("no thread drawn");
     const editing = await startEditing(thread);
     typed.set(editing, WORDS);
-    expect(await sender.edit(pendingId, "Count the burst per key")).toEqual({ kept: true });
+    expect(await sender.edit(shownPending(sender, pendingId), "Count the burst per key")).toEqual({
+      kept: true,
+    });
     await editor.reloadReview();
     expect(openEdits()).toEqual([WORDS]);
     await saveEdit(editing);

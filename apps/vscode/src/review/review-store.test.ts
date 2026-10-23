@@ -32,6 +32,7 @@ import {
   SETTLE,
   sendComposed,
   pinsInMemory,
+  shownPending,
 } from "./test-fixtures.js";
 import { threadsOf } from "./threads.js";
 
@@ -175,7 +176,7 @@ describe("two windows on one session", () => {
     // The first window's next write keeps the second's delete: nothing it read earlier comes back.
     const [mine] = first.review().pending;
     if (mine === undefined) throw new Error("the first window lost its own comment");
-    await first.edit(mine.id, "edited in the first window");
+    await first.edit(mine, "edited in the first window");
     expect(await bodies()).toEqual(["edited in the first window"]);
   });
 
@@ -583,7 +584,8 @@ describe("a comment VS Code could not keep", () => {
       document: null,
       replacedDrafts: [],
     }));
-    await store.edit("p0", "edited while the review is full");
+    const writtenElsewhere = pending({ id: "p0" });
+    await store.edit(writtenElsewhere, "edited while the review is full");
     expect(store.review().pending).toHaveLength(MAX_PENDING);
     expect(store.held().map((words) => words.comment.body)).toEqual(["I ran them by hand"]);
   });
@@ -839,7 +841,7 @@ describe("sending a review from the store", () => {
     const [accepted] = store.review().pending;
     if (accepted === undefined) throw new Error("the draft was not accepted");
     const words = "Keep the limiter, and add a test for the burst case.";
-    const edited = await store.edit(accepted.id, words);
+    const edited = await store.edit(accepted, words);
     const key = await sendAll(store);
     await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
     const hers = mend.serverComments.find((one) => one.body === words);
@@ -899,7 +901,7 @@ describe("sending a review from the store", () => {
     expect(await store.accept("d2", "")).toEqual({ kept: true });
     const readme = store.review().pending.find((one) => one.origin.kind === "accepted");
     if (readme === undefined) throw new Error("the draft was not accepted");
-    expect(await store.edit(readme.id, "Keep the install notes.")).toEqual({ kept: true });
+    expect(await store.edit(readme, "Keep the install notes.")).toEqual({ kept: true });
     await sendAll(store);
     await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
     expect(
@@ -921,9 +923,9 @@ describe("sending a review from the store", () => {
     await store.accept("d1", "");
     const [accepted] = store.review().pending;
     if (accepted === undefined) throw new Error("the draft was not accepted");
-    await store.edit(accepted.id, DRAFT.body);
-    await store.edit(accepted.id, "Run the burst test too.");
-    await store.edit(accepted.id, DRAFT.body);
+    await store.edit(shownPending(store, accepted.id), DRAFT.body);
+    await store.edit(shownPending(store, accepted.id), "Run the burst test too.");
+    await store.edit(shownPending(store, accepted.id), DRAFT.body);
     const key = await sendAll(store);
     await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
     expect(mend.writes).toEqual(["state d1 open", `deliver s1 ${key}`]);
@@ -934,7 +936,7 @@ describe("sending a review from the store", () => {
     await store.accept("d1", "");
     const [accepted] = store.review().pending;
     if (accepted === undefined) throw new Error("the draft was not accepted");
-    expect(await store.edit(accepted.id, words)).toEqual({ kept: true });
+    expect(await store.edit(accepted, words)).toEqual({ kept: true });
     return store;
   };
 
