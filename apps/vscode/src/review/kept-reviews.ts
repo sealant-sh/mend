@@ -82,8 +82,8 @@ export interface KeptReview {
 /**
  * The format this build writes a session's review in. Raise it only for a change an older build
  * would write back wrongly: it then leaves the file as it is. An entry an older build cannot read
- * (a new kind of send, phase or origin) needs no raise, since that build writes it back where it
- * was.
+ * (a new kind of send, phase or origin) needs no raise: that build writes it back where it was,
+ * and sends no review after a send it cannot read.
  */
 export const KEPT_FORMAT = 1;
 
@@ -105,6 +105,9 @@ interface Stored {
 }
 
 const NOTHING_STORED: Stored = { rev: 0, fields: {}, unwritable: null };
+
+const FROM_NEWER =
+  "Change it from a window that runs the newer version: reload this window if VS Code updated the extension.";
 
 /** A shared file's text as stored; one a build before formats were kept wrote is format 1. */
 const parseStored = (file: string, text: string, { what, format: mine }: FileKind): Stored => {
@@ -129,7 +132,7 @@ const parseStored = (file: string, text: string, { what, format: mine }: FileKin
     fields: value,
     unwritable:
       format > mine
-        ? `A newer version of the Mend extension wrote ${what}, so this version leaves it as that version wrote it. Change it from a window that runs the newer version: reload this window if VS Code updated the extension.`
+        ? `A newer version of the Mend extension wrote ${what}, so this version leaves it as that version wrote it. ${FROM_NEWER}`
         : null,
   };
 };
@@ -180,9 +183,15 @@ const storedReview = (
 ): Record<string, unknown> => {
   if (review.document !== null && unread.document !== null)
     throw new Error(
-      "A newer version of the Mend extension keeps the review you are writing for this session, so this window does not compose another. Reload this window to use the newer version.",
+      `A newer version of the Mend extension keeps the review you are writing for this session, so this version does not compose another. ${FROM_NEWER}`,
     );
   const fields = isRecord(stored) ? stored : {};
+  const sent = Array.isArray(fields["sends"]) ? fields["sends"] : [];
+  const keys = new Set(sent.map((entry) => (isRecord(entry) ? entry["key"] : undefined)));
+  if (unread.sends.length > 0 && review.sends.some(({ key }) => !keys.has(key)))
+    throw new Error(
+      `A newer version of the Mend extension sent a review of this session that this version cannot read, so this version sends no other: it cannot tell what that review pasted. ${FROM_NEWER}`,
+    );
   return {
     ...fields,
     ...review,
