@@ -51,12 +51,16 @@ interface Untitled {
   readonly language: string;
 }
 
+interface UntitledDocument extends Untitled {
+  isClosed: boolean;
+  getText(): string;
+}
+
 const ui = vi.hoisted(() => ({
   commands: new Map<string, (...args: ReadonlyArray<unknown>) => unknown>(),
   providers: new Array<vscode.FileSystemProvider>(),
   documents: new Array<OpenDocument>(),
-  /** Every untitled editor opened, with the text it opened with. */
-  untitled: new Array<Untitled>(),
+  untitled: new Array<UntitledDocument>(),
   edits: new Array<(event: { readonly document: OpenDocument }) => void>(),
   providerOfThisWindow(): vscode.FileSystemProvider | undefined {
     return this.providers.at(-1);
@@ -172,8 +176,13 @@ vi.mock("vscode", async () => {
       },
       openTextDocument: async (target: vscode.Uri | Untitled) => {
         if ("content" in target) {
-          ui.untitled.push(target);
-          return target;
+          const untitled: UntitledDocument = {
+            ...target,
+            isClosed: false,
+            getText: () => target.content,
+          };
+          ui.untitled.push(untitled);
+          return untitled;
         }
         const uri = target;
         // VS Code hands back the document it has for a URI, loaded or not.
@@ -205,7 +214,6 @@ const SAVE: { readonly create: boolean; readonly overwrite: boolean } = {
 };
 
 interface WindowOptions {
-  /** This window's clock, which the sweep reads too. */
   readonly now?: () => number;
   readonly reads?: ReturnType<typeof sessionReads>;
   readonly paste?: PasteReview;
@@ -404,9 +412,7 @@ describe("Send review, chosen again", () => {
     const id = new URLSearchParams(opened.uri.query).get("id");
     const place = window.store.place();
     if (id === null || place === null) throw new Error("no review kept");
-    const kept = await window.store.document({ place, id });
-    if (kept === null) throw new Error("no review kept");
-    await window.store.saveDocument({ place, id }, kept, "words saved in another window");
+    await window.store.saveDocument({ place, id }, 1, "words saved in another window");
     opened.text = "her unsaved typing";
     opened.version += 1;
     opened.isDirty = true;
@@ -776,14 +782,27 @@ describe("a save of a review Mend no longer keeps", () => {
     expect(occurrences(sent, "HER EARLIER UNSAVED WORDS")).toBe(0);
     expect(sent).toContain("HER NEWER WINDOW WORDS");
     expect(ui.untitled).toEqual([
-      { content: "HER EARLIER UNSAVED WORDS", language: "markdown" },
-      { content: "HER EARLIER UNSAVED WORDS", language: "markdown" },
+      expect.objectContaining({ content: "HER EARLIER UNSAVED WORDS", language: "markdown" }),
     ]);
     await expect(
       Promise.resolve().then(() => first.provider.writeFile(older.uri, encoded(older.text), SAVE)),
     ).rejects.toThrow(/no longer keeps this review[^]*new editor/);
     first.close();
     second.close();
+  });
+
+  it("opens her words in a new editor again once she closed the one they opened in", async () => {
+    const files = memoryFiles();
+    const mend = mendWithOpen();
+    const window = await windowOn(files, mend);
+    const opened = await sendReview();
+    typeInto(opened, "HER WORDS");
+    await sweepAMonthOn(files, window.store);
+    expect(await opened.save()).toBe(false);
+    for (const untitled of ui.untitled) untitled.isClosed = true;
+    expect(await opened.save()).toBe(false);
+    expect(ui.untitled.map(({ content }) => content)).toEqual(["HER WORDS", "HER WORDS"]);
+    window.close();
   });
 
   it("never pastes a review she sent again, though its editor stayed open through a sweep", async () => {
@@ -807,7 +826,6 @@ describe("a save of a review Mend no longer keeps", () => {
       },
     });
     const opened = await sendReview();
-    // She types as Send to session closes the editor, so VS Code keeps it open.
     vi.mocked(vscode.window.tabGroups.close).mockImplementationOnce(async () => {
       typeInto(opened, `${opened.text}\nADDED WHILE SENDING\n`);
       return false;
@@ -831,7 +849,9 @@ describe("a save of a review Mend no longer keeps", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(pastes).toHaveLength(1);
     expect(mend.delivered).toHaveLength(1);
-    expect(ui.untitled).toContainEqual({ content: opened.text, language: "markdown" });
+    expect(ui.untitled).toEqual([
+      expect.objectContaining({ content: opened.text, language: "markdown" }),
+    ]);
     window.close();
   });
 });

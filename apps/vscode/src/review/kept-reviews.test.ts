@@ -1,4 +1,4 @@
-import { readdir, utimes, writeFile } from "node:fs/promises";
+import { readdir, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
@@ -18,7 +18,6 @@ import {
   keepComposed,
   saveDocument,
   type Composed,
-  type ReviewDocument,
   type SessionReview,
 } from "./pending.js";
 import {
@@ -297,30 +296,23 @@ const keptPastExpiry = async (
   };
 };
 
-const COMPOSED: Composed = {
-  documentId: "doc-1",
-  sessionId: "s1",
-  sessionName: "add-rate-limit",
-  slice: { id: PINNED.id, baseId: PINNED.base.id, headId: PINNED.head.id, diffDigest: "d" },
-  pending: [],
-  open: [],
-  digest: "digest",
-  generation: "generation",
-  base: null,
-};
-
 const withDocument = (review: SessionReview, text: string | null): SessionReview => {
-  const written = keepComposed(review, COMPOSED, "The review, as composed.").review;
+  const composed: Composed = {
+    documentId: "doc-1",
+    sessionId: "s1",
+    sessionName: "add-rate-limit",
+    slice: { id: PINNED.id, baseId: PINNED.base.id, headId: PINNED.head.id, diffDigest: "d" },
+    pending: [],
+    open: [],
+    digest: "digest",
+    generation: "generation",
+    base: null,
+  };
+  const written = keepComposed(review, composed, "The review, as composed.").review;
   if (text === null) return written;
-  const saved = saveDocument(written, composedDocument(), text);
+  const saved = saveDocument(written, "doc-1", 1, text);
   if (saved.kind !== "saved") throw new Error("the review was not saved");
   return saved.review;
-};
-
-const composedDocument = (): ReviewDocument => {
-  const { document } = keepComposed(EMPTY_REVIEW, COMPOSED, "The review, as composed.").review;
-  if (document === null) throw new Error("Send review composed nothing");
-  return document;
 };
 
 const withPhase = (phase: SendPhase): SessionReview => {
@@ -415,7 +407,7 @@ describe("a review untouched past the expiry", () => {
     now += 2 * 60 * 60 * 1000;
     let saved: string | null = null;
     await kept.update(DANA, (review) => {
-      const save = saveDocument(review, composedDocument(), "Her words, typed a month on.");
+      const save = saveDocument(review, "doc-1", 1, "Her words, typed a month on.");
       saved = save.kind;
       return save.kind === "saved" ? save.review : review;
     });
@@ -423,27 +415,45 @@ describe("a review untouched past the expiry", () => {
     expect((await kept.read(DANA)).review.document?.text).toBe("Her words, typed a month on.");
   });
 
-  it("keeps her words when she saves the review another session's write swept", async () => {
+  it("stays while she works in it, through another session's sweep, at the same rev", async () => {
     const directory = await storage();
     const hers = new KeptReviews(directory);
-    await hers.update(DANA, () => withDocument(delivered(), null));
+    const { rev } = await hers.update(DANA, () => withDocument(delivered(), null));
     const [folder] = await readdir(directory);
     if (folder === undefined) throw new Error("no folder was made for her reviews");
-    const aMonthOn = Date.now() + KEPT_REVIEW_TTL_MS + 1_000;
-    await new KeptReviews(directory, NODE_FILES, () => aMonthOn).update(
-      { ...DANA, sessionId: "s2" },
-      addOne,
-    );
-    expect(await readdir(join(directory, folder))).not.toContain("s1.json");
-    let saved: string | null = null;
-    await hers.update(DANA, (review) => {
-      const save = saveDocument(review, composedDocument(), "Her words, typed before the sweep.");
-      saved = save.kind;
-      return save.kind === "saved" ? save.review : review;
-    });
-    expect(saved).toBe("saved");
-    expect((await hers.read(DANA)).review.document?.text).toBe(
-      "Her words, typed before the sweep.",
+    const file = join(directory, folder, "s1.json");
+    const old = new Date(Date.now() - KEPT_REVIEW_TTL_MS - 1_000);
+    await utimes(file, old, old);
+    await hers.touch(DANA);
+    await new KeptReviews(directory).update({ ...DANA, sessionId: "s2" }, addOne);
+    expect(await readdir(join(directory, folder))).toContain("s1.json");
+    expect((await hers.read(DANA)).rev).toBe(rev);
+  });
+
+  it("is touched at most once an hour by one window", async () => {
+    const directory = await storage();
+    let now = Date.now();
+    const hers = new KeptReviews(directory, NODE_FILES, () => now);
+    await hers.update(DANA, addOne);
+    const [folder] = await readdir(directory);
+    if (folder === undefined) throw new Error("no folder was made for her reviews");
+    const file = join(directory, folder, "s1.json");
+    const old = new Date(now - KEPT_REVIEW_TTL_MS);
+    await hers.touch(DANA);
+    await utimes(file, old, old);
+    now += 59 * 60 * 1000;
+    await hers.touch(DANA);
+    expect((await stat(file)).mtimeMs).toBe(old.getTime());
+    now += 60 * 1000;
+    await hers.touch(DANA);
+    expect((await stat(file)).mtimeMs).toBe(now);
+  });
+
+  it("is never written by a touch when it is not kept", async () => {
+    const directory = await storage();
+    await new KeptReviews(directory).touch(DANA);
+    expect(await readdir(directory, { recursive: true })).not.toContainEqual(
+      expect.stringMatching(/s1\.json$/),
     );
   });
 

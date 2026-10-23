@@ -32,6 +32,7 @@ export interface KeptFiles {
   readonly readdir: (path: string) => Promise<ReadonlyArray<string>>;
   /** When the file was last written, in ms; null when it is gone. */
   readonly modified: (path: string) => Promise<number | null>;
+  readonly touch: (path: string, at: number) => Promise<void>;
 }
 
 const codeOf = (cause: unknown): unknown =>
@@ -50,6 +51,7 @@ export const NODE_FILES: KeptFiles = {
       (found) => found.mtimeMs,
       () => null,
     ),
+  touch: (path, at) => fs.utimes(path, new Date(at), new Date(at)),
 };
 
 export const KEPT_REVIEW_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -62,6 +64,7 @@ const LOCK_BEAT_MS = LOCK_STALE_MS / 4;
 const LOCK_WAIT_MS = 5_000;
 const LOCK_POLL_MS = 15;
 const SWEEP_EVERY_MS = 60 * 60 * 1000;
+const TOUCH_EVERY_MS = 60 * 60 * 1000;
 /** A lease its window has not renewed this long belongs to no window. */
 export const DRIVE_STALE_MS = 2 * 60 * 1000;
 const DRIVE_BEAT_MS = DRIVE_STALE_MS / 4;
@@ -253,6 +256,7 @@ export class KeptReviews {
   readonly #window = randomUUID();
   /** When each person's directory was last swept. */
   readonly #swept = new Map<string, number>();
+  readonly #touched = new Map<string, number>();
   /** The leases this window drives sends under, by file, each renewed while it lasts. */
   readonly #drives = new Map<string, Renewed>();
 
@@ -285,6 +289,22 @@ export class KeptReviews {
         };
       });
     });
+  }
+
+  async touch(place: ReviewPlace): Promise<void> {
+    const file = this.#file(place);
+    if (this.now() - (this.#touched.get(file) ?? Number.NEGATIVE_INFINITY) < TOUCH_EVERY_MS) return;
+    this.#touched.set(file, this.now());
+    try {
+      await this.#serial(file, () =>
+        this.#locked(file, REVIEW, async () => {
+          if ((await this.files.modified(file)) !== null) await this.files.touch(file, this.now());
+        }),
+      );
+    } catch (cause) {
+      this.#touched.delete(file);
+      throw cause;
+    }
   }
 
   async readRecord<T>(record: SharedRecord<T>): Promise<T> {

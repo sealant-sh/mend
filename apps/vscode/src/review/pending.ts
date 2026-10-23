@@ -11,13 +11,8 @@ import type {
   SendSlice,
   StopReason,
 } from "./delivery.js";
-import { earlierTextBlock, withEarlierText } from "./instruction.js";
-import {
-  sendGeneration,
-  type HeldInput,
-  type PastePlan,
-  type TerminalInput,
-} from "./paste-plan.js";
+import { withEarlierText } from "./instruction.js";
+import type { HeldInput, PastePlan, TerminalInput } from "./paste-plan.js";
 import type { CommentAnchor, RecordLink } from "./review-wire.js";
 
 /**
@@ -602,44 +597,25 @@ export const asComposed = (document: ReviewDocument): boolean =>
   document.revision === AS_COMPOSED && document.earlier === null;
 
 export type DocumentSave =
-  | { readonly kind: "saved"; readonly review: SessionReview; readonly document: ReviewDocument }
-  | { readonly kind: "carried"; readonly review: SessionReview }
+  | { readonly kind: "saved"; readonly review: SessionReview; readonly revision: number }
+  | { readonly kind: "gone" }
   | { readonly kind: "newer" };
 
+/**
+ * Her words saved over `revision`, the one her editor's text is based on; never over a newer one.
+ */
 export const saveDocument = (
   review: SessionReview,
-  based: ReviewDocument,
+  documentId: string,
+  revision: number,
   words: string,
 ): DocumentSave => {
   const found = review.document;
-  if (found === null) {
-    const sweptWithTheSendsBeforeIt = review.sends.length === 0;
-    const composed = sweptWithTheSendsBeforeIt
-      ? { ...based.composed, generation: sendGeneration([]) }
-      : based.composed;
-    const document: ReviewDocument = {
-      ...based,
-      composed,
-      text: words,
-      revision: based.revision + 1,
-    };
-    return { kind: "saved", review: { ...review, document }, document };
-  }
-  if (found.composed.documentId !== based.composed.documentId) {
-    const { sessionName } = based.composed;
-    const block = earlierTextBlock(words, sessionName);
-    if (block === "" || found.text.endsWith(block)) return { kind: "carried", review };
-    const document: ReviewDocument = {
-      ...found,
-      text: withEarlierText(found.text, words, sessionName),
-      revision: found.revision + 1,
-    };
-    return { kind: "carried", review: { ...review, document } };
-  }
-  if (found.revision !== based.revision) return { kind: "newer" };
-  if (found.text === words) return { kind: "saved", review, document: found };
-  const document: ReviewDocument = { ...found, text: words, revision: found.revision + 1 };
-  return { kind: "saved", review: { ...review, document }, document };
+  if (found?.composed.documentId !== documentId) return { kind: "gone" };
+  if (found.revision !== revision) return { kind: "newer" };
+  if (found.text === words) return { kind: "saved", review, revision: found.revision };
+  const saved: ReviewDocument = { ...found, text: words, revision: found.revision + 1 };
+  return { kind: "saved", review: { ...review, document: saved }, revision: saved.revision };
 };
 
 export const removeDocument = (review: SessionReview, documentId: string): SessionReview =>

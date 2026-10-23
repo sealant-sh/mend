@@ -32,14 +32,19 @@ const refOf = (uri: vscode.Uri): DocumentRef | null => {
 const NEWER =
   "Another window saved this review since this editor read it, so your text is not saved over it. Your text stays in this editor.";
 
-const CARRIED =
-  'Another window composed this session\'s review again since this editor read it, so VS Code kept your text in that review, under "Your earlier text". Choose Send review to open it. Your text stays in this editor.';
+const GONE =
+  "Mend no longer keeps this review, so your words are open in a new editor beside it. The review was sent, composed again or left unused for 30 days. Copy your words where you need them.";
 
 const ELSEWHERE =
   "You typed in an earlier review of this session that another window composed anew or sent since, so this review does not hold that text. Your text stays in its editor: copy what you need into this review.";
 
 const UNREAD =
   "This window has not read this review, so your text is not saved over it. Your text stays in this editor.";
+
+const touch = (store: ReviewStore, uri: vscode.Uri): void => {
+  const ref = refOf(uri);
+  if (ref !== null) void store.touchDocument(ref).catch(() => undefined);
+};
 
 class ReviewFiles implements vscode.FileSystemProvider {
   readonly #changed = new vscode.EventEmitter<Array<vscode.FileChangeEvent>>();
@@ -48,7 +53,9 @@ class ReviewFiles implements vscode.FileSystemProvider {
    * VS Code restores unsaved words over what it last looked at, and checks only by `mtime` and size
    * before a save, so a save is checked here against its revision.
    */
-  readonly #based = new Map<string, ReviewDocument>();
+  readonly #based = new Map<string, number>();
+  /** The untitled editor her words last opened in, per review, so a repeated save shows it again. */
+  readonly #rescued = new Map<string, vscode.TextDocument>();
 
   constructor(private readonly store: ReviewStore) {}
 
@@ -58,7 +65,7 @@ class ReviewFiles implements vscode.FileSystemProvider {
 
   async stat(uri: vscode.Uri): Promise<vscode.FileStat> {
     const document = await this.#document(uri);
-    if (!this.#based.has(uri.toString())) this.#based.set(uri.toString(), document);
+    if (!this.#based.has(uri.toString())) this.#based.set(uri.toString(), document.revision);
     // VS Code's check before a save sees a newer file only when its size differs from the size
     // the editor's text is based on, so a newer save of the same length would pass: the size is
     // the revision, never the same twice.
@@ -78,20 +85,33 @@ class ReviewFiles implements vscode.FileSystemProvider {
 
   async readFile(uri: vscode.Uri): Promise<Uint8Array> {
     const document = await this.#document(uri);
-    this.#based.set(uri.toString(), document);
+    this.#based.set(uri.toString(), document.revision);
+    touch(this.store, uri);
     return new TextEncoder().encode(document.text);
   }
 
   async writeFile(uri: vscode.Uri, content: Uint8Array): Promise<void> {
     const ref = refOf(uri);
     if (ref === null) throw vscode.FileSystemError.FileNotFound(uri);
-    const based = this.#based.get(uri.toString());
-    if (based === undefined) throw new vscode.FileSystemError(UNREAD);
-    const saved = await this.store.saveDocument(ref, based, new TextDecoder().decode(content));
+    const revision = this.#based.get(uri.toString());
+    if (revision === undefined) throw new vscode.FileSystemError(UNREAD);
+    const text = new TextDecoder().decode(content);
+    const saved = await this.store.saveDocument(ref, revision, text);
+    if (saved.kind === "gone") {
+      const shown = this.#rescued.get(uri.toString());
+      const words =
+        shown !== undefined && !shown.isClosed && shown.getText() === text
+          ? shown
+          : await vscode.workspace.openTextDocument({ content: text, language: "markdown" });
+      this.#rescued.set(uri.toString(), words);
+      await vscode.window.showTextDocument(words, {
+        viewColumn: vscode.ViewColumn.Beside,
+        preview: false,
+      });
+      throw new vscode.FileSystemError(GONE);
+    }
     if (saved.kind === "newer") throw new vscode.FileSystemError(NEWER);
-    // Thrown, not resolved: VS Code stats the file after a write, and this one no longer exists.
-    if (saved.kind === "carried") throw new vscode.FileSystemError(CARRIED);
-    this.#based.set(uri.toString(), saved.document);
+    this.#based.set(uri.toString(), saved.revision);
   }
 
   delete(): void {}
@@ -104,7 +124,7 @@ class ReviewFiles implements vscode.FileSystemProvider {
 
   /** The revision the text of this review's editor is based on; undefined before it was read. */
   basedOn(uri: vscode.Uri): number | undefined {
-    return this.#based.get(uri.toString())?.revision;
+    return this.#based.get(uri.toString());
   }
 
   async #document(uri: vscode.Uri): Promise<ReviewDocument> {
@@ -143,6 +163,7 @@ export class SendEditor implements vscode.Disposable {
         isCaseSensitive: true,
       }),
       files,
+      vscode.workspace.onDidChangeTextDocument(({ document }) => touch(store, document.uri)),
       vscode.commands.registerCommand("mend.change.sendReview", () => this.#open()),
       vscode.commands.registerCommand("mend.change.sendToSession", (uri?: unknown) =>
         this.#send(uri instanceof vscode.Uri ? uri : vscode.window.activeTextEditor?.document.uri),

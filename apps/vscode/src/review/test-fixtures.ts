@@ -423,9 +423,9 @@ export const sendComposed = async (
   text: string,
 ): Promise<Sent> => {
   const { ref, document } = await store.keepDocument(composition);
-  const saved = await store.saveDocument(ref, document, text);
+  const saved = await store.saveDocument(ref, document.revision, text);
   return saved.kind === "saved"
-    ? store.send(ref, saved.document.revision)
+    ? store.send(ref, saved.revision)
     : { sent: false, words: `VS Code did not save the review: ${saved.kind}` };
 };
 
@@ -497,6 +497,11 @@ export const memoryFiles = (): KeptFiles => {
         name.startsWith(`${path}/`) ? [name.slice(path.length + 1)] : [],
       ),
     modified: async (path) => files.get(path)?.at ?? null,
+    touch: async (path, at) => {
+      const found = files.get(path);
+      if (found === undefined) throw missing(path);
+      files.set(path, { ...found, at });
+    },
   };
 };
 
