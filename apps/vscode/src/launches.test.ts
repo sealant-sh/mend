@@ -4,7 +4,7 @@ import { Launches } from "./launches.js";
 import { MendApiError } from "./mend-http.js";
 import type { LaunchRequest } from "./new-session.js";
 import type { LaunchAttempt } from "./session-model.js";
-import type { LaunchExpected, Session, SessionStatus } from "./types.js";
+import type { LaunchExpected, Session, SessionProcess, SessionStatus } from "./types.js";
 
 type LaunchBody = LaunchRequest & { readonly expected?: LaunchExpected };
 
@@ -115,6 +115,61 @@ const admittingServer = (initial: Session) => {
   };
 };
 
+const ALREADY_RAN = "an agent already ran in this session · it reads idle · nothing launched again";
+
+const EXITED_AGENT: SessionProcess = {
+  id: "agent-1",
+  kind: "agent-pty",
+  harness: "claude",
+  status: "exited",
+  exitedAt: S1,
+  providerSessionId: null,
+  label: "claude",
+  runsAs: null,
+  waiting: null,
+};
+
+/**
+ * A launch an edge answered 504 while the server still held it, the session reading idle with no
+ * agent. The original then arrives and its agent runs and exits while a shell keeps the session
+ * idle: before a Retry reads the session, or between that read and the Retry reaching the server,
+ * which refuses it as Mend does (`SessionMovedOn`, reason `agentRan`).
+ */
+const lateOriginal = () => {
+  const launched: Array<LaunchBody> = [];
+  let agent: SessionProcess | null = null;
+  let runsBeforeRetry = false;
+  return {
+    launched,
+    originalRan: () => {
+      agent = EXITED_AGENT;
+    },
+    originalRunsBeforeRetry: () => {
+      runsBeforeRetry = true;
+    },
+    launchSession: async (_: string, body: LaunchBody) => {
+      launched.push(body);
+      if (launched.length === 1)
+        throw new MendApiError(
+          "Mend could not do that. Try again; the server log has the detail.",
+          504,
+        );
+      if (runsBeforeRetry) agent = EXITED_AGENT;
+      if (agent !== null && body.expected?.settledAt === null)
+        throw new MendApiError(ALREADY_RAN, 409, "SessionMovedOn", null, {
+          _tag: "SessionMovedOn",
+          sessionId: "s1",
+          status: "idle",
+          settledAt: null,
+          reason: "agentRan",
+          message: ALREADY_RAN,
+        });
+      return {};
+    },
+    sessionDetail: async () => ({ session: session("idle"), processes: [], currentAgent: agent }),
+  };
+};
+
 const sink = () => {
   const said: Array<{ readonly sessionId: string; readonly attempt: LaunchAttempt }> = [];
   const forgot: Array<string> = [];
@@ -207,7 +262,7 @@ describe("Launches", () => {
     await launches.relaunch("s1", null);
     expect(server.launched).toEqual([
       { sessionId: "s1", body: START },
-      { sessionId: "s1", body: START },
+      { sessionId: "s1", body: { ...START, expected: { settledAt: null } } },
     ]);
   });
 
@@ -282,7 +337,7 @@ describe("Launches", () => {
     });
     expect(server.launched).toEqual([
       { sessionId: "s1", body: START },
-      { sessionId: "s1", body: START },
+      { sessionId: "s1", body: { ...START, expected: { settledAt: null } } },
     ]);
   });
 
@@ -318,7 +373,10 @@ describe("a held handoff's launch", () => {
     expect(confirmed).toEqual([]);
     expect((await launches.offer("s1")).kind).toBe("retry");
     expect(await launches.relaunch("s1", null)).toEqual({ kind: "sent" });
-    expect(server.launched.map((one) => one.body)).toEqual([START, START]);
+    expect(server.launched.map((one) => one.body)).toEqual([
+      START,
+      { ...START, expected: { settledAt: null } },
+    ]);
     expect(confirmed).toEqual(["s1"]);
   });
 
@@ -346,6 +404,35 @@ describe("a held handoff's launch", () => {
     await launches.launch("s1", START);
     expect(store.said.at(-1)?.attempt.refusal).toBeNull();
     expect((await launches.offer("s1")).kind).toBe("moved");
+  });
+
+  it("offers no Retry once the launch Mend never answered arrives late, runs and exits beside a shell", async () => {
+    const server = lateOriginal();
+    const launches = new Launches(server, sink());
+    await launches.launch("s1", START);
+    expect((await launches.offer("s1")).kind).toBe("retry");
+    server.originalRan();
+    expect(await launches.offer("s1")).toEqual({ kind: "moved", read: session("idle") });
+    expect(await launches.relaunch("s1", null)).toEqual({
+      kind: "movedOn",
+      read: session("idle"),
+      said: null,
+    });
+    expect(server.launched).toEqual([START]);
+  });
+
+  it("says Mend already ran the prompt when the late launch ran between Retry's read and its arrival", async () => {
+    const server = lateOriginal();
+    const launches = new Launches(server, sink());
+    await launches.launch("s1", START);
+    expect((await launches.offer("s1")).kind).toBe("retry");
+    server.originalRunsBeforeRetry();
+    expect(await launches.relaunch("s1", null)).toEqual({
+      kind: "alreadyRan",
+      read: session("idle"),
+      said: ALREADY_RAN,
+    });
+    expect(server.launched).toEqual([START, { ...START, expected: { settledAt: null } }]);
   });
 
   it("keeps the bound client for the first launch and its Retry after a connection switch", async () => {

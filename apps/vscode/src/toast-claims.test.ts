@@ -423,6 +423,35 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     expect(agentLive.relaunch).toHaveBeenCalledTimes(1);
   });
 
+  it("says Mend already ran the prompt, as information with Open, when Mend refuses Retry over an agent that ran", async () => {
+    fake.reset();
+    const change = refused();
+    const idle: Session = { ...waiting, status: "idle" };
+    const alreadyRan = offering(
+      { kind: "retry", read: starting },
+      {
+        kind: "alreadyRan",
+        read: idle,
+        said: "an agent already ran in this session · it reads idle · nothing launched again",
+      },
+    );
+    window.showErrorMessage.mockResolvedValueOnce("Retry");
+    window.showInformationMessage.mockResolvedValueOnce("Open");
+    new Notifier(
+      { showing: () => new Set<string>(), model: () => change.next, error: () => null },
+      new ToastClaims(await directory()),
+      alreadyRan,
+      prompts,
+    ).changed(change);
+    await vi.waitFor(() => expect(commands.executeCommand).toHaveBeenCalledWith("mend.open", "s"));
+    expect(window.showInformationMessage).toHaveBeenCalledWith(
+      "add-rate-limit · Mend already ran your prompt · nothing launched again",
+      "Open",
+    );
+    expect(window.showErrorMessage).toHaveBeenCalledTimes(1);
+    expect(alreadyRan.relaunch).toHaveBeenCalledTimes(1);
+  });
+
   it("gives its claim back and shows nothing when the read before Retry says it moved", async () => {
     fake.reset();
     const shared = await directory();
