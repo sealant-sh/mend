@@ -760,7 +760,11 @@ export const stepReview = (
   event: SendEvent,
   now: string,
 ): SessionReview => {
-  const next = withSend(review, key, (record) => step(record, event, now));
+  const next = withReplaced(
+    withSend(review, key, (record) => step(record, event, now)),
+    key,
+    event,
+  );
   if (event.kind !== "answered" || event.status === "superseded") return next;
   const at = next.sends.findIndex((record) => record.key === key);
   return next.sends
@@ -770,6 +774,28 @@ export const stepReview = (
         withSend(kept, older.key, (record) => step(record, { kind: "superseded" }, now)),
       next,
     );
+};
+
+/**
+ * The Mend drafts her posted words replace while Mend may still hold them as drafts: from the
+ * moment her words land until the draft reads dismissed. Kept apart from the record, so neither
+ * trimming the record, the sweep, nor a build that cannot read it offers Accept on them again.
+ */
+const withReplaced = (review: SessionReview, key: string, event: SendEvent): SessionReview => {
+  if (event.kind === "draft-dismissed")
+    return review.replaced.includes(event.draftId)
+      ? { ...review, replaced: review.replaced.filter((id) => id !== event.draftId) }
+      : review;
+  if (event.kind !== "posted") return review;
+  const item = review.sends
+    .find((record) => record.key === key)
+    ?.items.find((one) => one.kind === "rewrite" && one.pending.id === event.pendingId);
+  if (item?.kind !== "rewrite" || review.replaced.includes(item.pending.origin.draftId))
+    return review;
+  return {
+    ...review,
+    replaced: [...review.replaced, item.pending.origin.draftId].slice(-KEPT_REPLACED),
+  };
 };
 
 /** A record that still holds its comments: a drive sends, delivers or pastes it. */
@@ -867,25 +893,12 @@ export const startSend = (
     notices: [],
     createdAt: input.now,
   };
-  const sends = [...review.sends, record];
-  const trimmed = sends.slice(0, -KEPT_SENDS);
   return {
     ...review,
     pending: review.pending.filter((pending) => !chosen.has(pending.id)),
-    sends: sends.slice(-KEPT_SENDS),
-    replaced: [...new Set([...review.replaced, ...trimmed.flatMap(replacedDrafts)])].slice(
-      -KEPT_REPLACED,
-    ),
+    sends: [...review.sends, record].slice(-KEPT_SENDS),
   };
 };
-
-/** The Mend drafts a record's posted words replace that it did not see dismissed. */
-const replacedDrafts = (record: SendRecord): ReadonlyArray<string> =>
-  record.items.flatMap((item) =>
-    item.kind === "rewrite" && item.post.kind === "posted" && item.dismissal.kind !== "dismissed"
-      ? [item.pending.origin.draftId]
-      : [],
-  );
 
 /**
  * The record with this key, after `change`; a record that is refused gives back what Mend lacks.

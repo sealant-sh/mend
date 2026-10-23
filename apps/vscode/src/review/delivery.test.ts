@@ -682,6 +682,18 @@ describe("an accepted draft in a review she sent", () => {
     expect(acceptedDrafts(trimmed).has("d1")).toBe(true);
   });
 
+  it("is kept apart from its review from when her words land until the draft reads dismissed", () => {
+    const review = sent({
+      pending: [{ ...accepted, body: "Run the burst test too." }],
+      sends: [],
+      document: null,
+      replaced: [],
+    });
+    const posted = apply(review, { kind: "posted", pendingId: "a1", commentId: "c9" });
+    expect(posted.replaced).toEqual(["d1"]);
+    expect(apply(posted, { kind: "draft-dismissed", draftId: "d1" }).replaced).toEqual([]);
+  });
+
   it("leaves the review when it is dismissed on Mend, and is never opened", () => {
     const review = sent({
       pending: [accepted, pending({})],

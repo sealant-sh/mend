@@ -95,8 +95,8 @@ export interface SessionReview {
   /** The review Send review opened for the session, until it is sent: one per session. */
   readonly document: ReviewDocument | null;
   /**
-   * Mend drafts her posted words replace that Mend may still hold as drafts, by id, kept once the
-   * review that posted them is no longer kept: Accept is not offered on them again.
+   * Mend drafts her posted words replace that Mend may still hold as drafts, by id: Accept is not
+   * offered on them again, whatever becomes of the review that posted them.
    */
   readonly replaced: ReadonlyArray<string>;
 }
