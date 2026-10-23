@@ -84,4 +84,18 @@ describe("SessionDetail's launchAdmission across versions", () => {
     );
     expect(Schema.decodeUnknownSync(codec)(older).launchAdmission).toBeNull();
   });
+
+  it("decodes a later server's rule this client does not know as null, as it decodes an older one", () => {
+    expect(
+      Schema.decodeUnknownSync(codec)({ ...wire, launchAdmission: "agentRanOrSettled" })
+        .launchAdmission,
+    ).toBeNull();
+    expect(
+      Schema.decodeUnknownSync(codec)({ ...wire, launchAdmission: null }).launchAdmission,
+    ).toBeNull();
+  });
+
+  it("still refuses a launchAdmission that is not a string", () => {
+    expect(() => Schema.decodeUnknownSync(codec)({ ...wire, launchAdmission: 1 })).toThrow();
+  });
 });
