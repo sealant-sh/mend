@@ -159,12 +159,11 @@ export type SendOutcome = Settled | { readonly kind: "unreachable" };
 
 type Settled = Extract<AnswerState, { readonly kind: "answered" | "gone" | "failed" }>;
 
-/** What the machine does to the world. */
-export interface AnswerEffects {
+export interface AnswerClient {
   /** The session's requests still pending, read now. */
-  readonly pending: (sessionId: string) => Promise<ReadonlyArray<{ readonly id: string }>>;
+  pendingRequests(sessionId: string): Promise<ReadonlyArray<{ readonly id: string }>>;
   /** `POST /requests/:id/respond`. */
-  readonly respond: (requestId: string, response: AgentResponse) => Promise<void>;
+  respond(requestId: string, response: AgentResponse): Promise<void>;
 }
 
 /** An answer's 409 `ProtocolSessionNotLive`: Mend does not hold the agent's conversation yet. */
@@ -202,7 +201,7 @@ export class Answers {
   readonly #states = new Map<string, AnswerState>();
   readonly #running = new Map<string, Promise<SendOutcome>>();
 
-  constructor(private readonly effects: AnswerEffects) {}
+  constructor(private readonly bind: () => Promise<AnswerClient>) {}
 
   state(requestId: string): AnswerState {
     return this.#states.get(requestId) ?? { kind: "pending" };
@@ -225,9 +224,11 @@ export class Answers {
     request: Pick<RequestView, "id" | "sessionId">,
     response: AgentResponse,
   ): Promise<SendOutcome> {
+    let client: AnswerClient;
     let listed: boolean;
     try {
-      listed = (await this.effects.pending(request.sessionId)).some(
+      client = await this.bind();
+      listed = (await client.pendingRequests(request.sessionId)).some(
         (pending) => pending.id === request.id,
       );
     } catch (cause) {
@@ -239,7 +240,7 @@ export class Answers {
     if (!listed) return this.#set(request.id, { kind: "gone" });
     this.#states.set(request.id, { kind: "sending", response });
     try {
-      await this.effects.respond(request.id, response);
+      await client.respond(request.id, response);
     } catch (cause) {
       return this.#settle(request.id, response, failureOf(cause), cause);
     }

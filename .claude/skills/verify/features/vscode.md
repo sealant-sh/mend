@@ -837,8 +837,52 @@ the row takes the job's name.
     `recipes/vscode-open.mjs` uses the same name, so open can follow view in one world.
   - A landing (`landed · pull request #412 · open · observed`) is `not run`: the world's origin is a
     public GitHub repository nobody can push to. The model's unit tests cover the words.
-- **g. mend handoff: Dana's local branch becomes a session.** `not run · G6`. The command **Hand off
-  to Mend…** is not in today's manifest either.
+- **g. Hand off to Mend: Dana's local branch becomes a session.** `recipes/vscode-handoff.mjs`,
+  lanes 1 to 8, on a world from `up --build` (the server must have `GET /api/handoffs`). Driven live
+  2026-10-23 on `0.0.0-dev.shae6c133506cd6`, run `p8live`, in one world: lanes 1 to 7 and lane 8's
+  offline step in `handoff-final`, the rest of lane 8, lane 1's committed `.env` and Open in
+  `handoff-final-b`, the 401 in `handoff-final-c`. `MEND_VERIFY_HANDOFF_FROM=<step name>` resumes a
+  run in a world that already holds the earlier lanes' sessions (setup steps still run); a world
+  holds about two full runs before the 24 live sessions an account may have.
+  - The editor talks to the server through `vscode-handoff-http.mjs`, a forwarding proxy that
+    records each request and the digest of each upload. Only the named fault lanes change an answer:
+    a dropped receipt, a delayed upload, a refused launch, a server without the handoff routes, a
+    co-located store, an adoption answer with another default branch, offline, and a 401. Those are
+    wire fixtures, not an old release. The view offers SSH setup again for the proxy's address; the
+    recipe skips it, and Open runs against the server's own address.
+  - The setup connects Claude with the skill's fake token before each launch lane: the agent starts,
+    which is what a launch is checked for, and the provider then asks for it again.
+  - Lane 1: the SCM `⋯` item, the question's title, fact line, detail, `.env left out`, the
+    over-limit file and the buttons; a committed `.env.example` named beside the facts.
+  - Lane 2: Escape while preparing, when ready, from **Files left out…** and while the **Include
+    .env files** recapture still reads (forty 7 MiB `.env` files make it slow) leaves the checkout,
+    its Git directories and Mend unchanged (fingerprints and project reads). Two gestures keep one
+    question; **Refresh snapshot** changes only the time.
+  - Lane 3: an empty prompt gives one held, idle session and no window; the row reads
+    `idle · handed off from <machine>`; the change Mend observed holds exactly the captured files.
+    While its toast is still pending, the next handoff opens.
+  - Lane 4: **Review** shows the Change section and the diff; **Open** opens the held workspace over
+    Remote-SSH.
+  - Lane 5: a prompt from the title action and a 100,000-character one from the palette each launch
+    once; a refused launch's **Retry** sends only a launch; a 130,000-character prompt stays in the
+    input. A NUL or a lone surrogate cannot be typed, so `handoff.test.ts` covers them.
+  - Lane 6: an edit made during a delayed upload stays local; three dropped receipts then **Check
+    again** send the same bytes and Mend replays the receipt.
+  - Lane 7: an unadopted repository in a folder named like the adopted project is offered for
+    adoption under its origin's name; Escape adopts nothing; Enter adopts it and hands off. A server
+    without `GET /api/handoffs` refuses in the question. An adoption answer with another default
+    branch leaves the project adopted and uploads nothing.
+  - Lane 8: offline while typing keeps the prompt and Enter sends nothing until it reconnects; an
+    old server hides the command; a refused terms read words its reason; a changed origin refuses
+    before any upload; two roots ask which repository; a 401 removes the command.
+  - Added after `p8live` and not driven live yet: **prompt kept** (a session read forced to
+    `starting`, the warning dismissed, the next question opening with the prompt and launching it)
+    and **agent share** (a Mend-key project handing off with no SSH agent while the account default
+    reads `bridge`). `told()` now waits for an accepted question to close before it opens the
+    notification list, since the palette's Escape could cancel it.
+  - Not run: a custom per-file limit (needs a server started with `MEND_BUDGET_HANDOFF_FILE_BYTES`;
+    the over-limit file is proven at the default limit), and lane 9, a bridge-mode server with a
+    private origin reachable only through the local SSH agent.
 - **h. First run.** `recipes/vscode-first-run.mjs` with flow 4, on two worlds.
   - From `up --signed-out --no-ssh-setup --no-remote-ssh`:
     - h1: `welcome()` reads `["Connect VS Code to your Mend server."]` with the button `Connect`; no

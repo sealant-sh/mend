@@ -33,6 +33,7 @@
   "publisher": "sealant-sh",
   "files": [
     "dist/extension.js",
+    "dist/handoff-worker.js",
     "resources",
     "README.md",
     "CHANGELOG.md",
@@ -40,7 +41,7 @@
   ],
   "main": "./dist/extension.js",
   "scripts": {
-    "build": "tsgo -p tsconfig.json --noEmit && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap",
+    "build": "tsgo -p tsconfig.json --noEmit && node build.mjs",
     "lint": "oxlint . --no-error-on-unmatched-pattern",
     "package": "vsce package --no-dependencies",
     "test": "vitest run",
@@ -50,6 +51,7 @@
   "dependencies": {
     "@mend/agent-conversation": "workspace:*",
     "@mend/domain": "workspace:*",
+    "@mend/local-git": "workspace:*",
     "@mend/workspace-ssh": "workspace:*",
     "effect": "catalog:"
   },
@@ -367,6 +369,25 @@
         "title": "Retry delivery",
         "category": "Mend",
         "icon": "$(sync)"
+      },
+      {
+        "command": "mend.handoffBranch",
+        "title": "Hand off to Mend…",
+        "category": "Mend",
+        "icon": "$(cloud-upload)",
+        "enablement": "mend.handoff.localGit && mend.handoff.support == supported && !mend.offline"
+      },
+      {
+        "command": "mend.handoffOffline",
+        "title": "Mend is offline · retrying",
+        "icon": "$(cloud-upload)",
+        "enablement": "false"
+      },
+      {
+        "command": "mend.handoffUnsupported",
+        "title": "This Mend server doesn't take handoffs yet · added in Mend 0.36",
+        "icon": "$(cloud-upload)",
+        "enablement": "false"
       }
     ],
     "menus": {
@@ -490,6 +511,18 @@
         {
           "command": "mend.review.retry",
           "when": "false"
+        },
+        {
+          "command": "mend.handoffBranch",
+          "when": "mend.handoff.localGit && mend.handoff.support == supported && !mend.offline"
+        },
+        {
+          "command": "mend.handoffOffline",
+          "when": "false"
+        },
+        {
+          "command": "mend.handoffUnsupported",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -557,6 +590,21 @@
           "command": "mend.change.sendReviewNotHers",
           "when": "view == mend.change && mend.change.send == notHers",
           "group": "navigation@3"
+        },
+        {
+          "command": "mend.handoffBranch",
+          "when": "view == mend.sessions && mend.handoff.localGit && mend.handoff.support == supported && !mend.offline",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mend.handoffOffline",
+          "when": "view == mend.sessions && mend.handoff.localGit && mend.offline",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mend.handoffUnsupported",
+          "when": "view == mend.sessions && mend.handoff.localGit && !mend.offline && mend.handoff.support == unsupported",
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
@@ -707,6 +755,23 @@
           "command": "mend.change.sendToSession",
           "when": "resourceScheme == mend-review",
           "group": "navigation@1"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "mend.handoffBranch",
+          "when": "scmProvider == git && mend.handoff.localGit && mend.handoff.support == supported && !mend.offline",
+          "group": "mend@1"
+        },
+        {
+          "command": "mend.handoffOffline",
+          "when": "scmProvider == git && mend.handoff.localGit && mend.offline",
+          "group": "mend@1"
+        },
+        {
+          "command": "mend.handoffUnsupported",
+          "when": "scmProvider == git && mend.handoff.localGit && !mend.offline && mend.handoff.support == unsupported",
+          "group": "mend@1"
         }
       ]
     },

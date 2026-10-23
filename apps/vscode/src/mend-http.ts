@@ -1,3 +1,7 @@
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { finished as streamFinished } from "node:stream/promises";
+
 import type { MendConnection } from "./config.js";
 import { failureLogLine, failureWords } from "./failure-words.js";
 
@@ -20,6 +24,8 @@ export class MendApiError extends Error {
     readonly tag: string | null = null,
     /** The base a session create named that the store does not know (`StoreFailure.unknownBase`). */
     readonly unknownBase: string | null = null,
+    readonly body: unknown = null,
+    readonly retryAfterSeconds: number | null = null,
   ) {
     super(message);
     this.name = "MendApiError";
@@ -44,6 +50,7 @@ export const requestMend = async (
   connection: MendConnection,
   requestPath: string,
   init?: RequestInit,
+  options: { readonly logFailure?: boolean } = {},
 ): Promise<unknown> => {
   const headers = new Headers(init?.headers);
   headers.set("accept", "application/json");
@@ -80,7 +87,8 @@ export const requestMend = async (
     }
   }
   if (!response.ok) {
-    console.warn(failureLogLine(`${method} /api${requestPath}`, response.status, body));
+    if (options.logFailure !== false)
+      console.warn(failureLogLine(`${method} /api${requestPath}`, response.status, body));
     const failure = failureWords(response.status, body);
     const unknownBase: unknown =
       typeof body === "object" && body !== null ? Reflect.get(body, "unknownBase") : null;
@@ -89,7 +97,81 @@ export const requestMend = async (
       response.status,
       failure.tag,
       typeof unknownBase === "string" ? unknownBase : null,
+      body,
+      response.headers.has("retry-after") ? Number(response.headers.get("retry-after")) : null,
     );
   }
   return body;
+};
+
+export interface BundleAnswer {
+  readonly status: number | null;
+  readonly body: unknown;
+  readonly retryAfterSeconds: number | null;
+}
+
+export const uploadMendBundle = async (
+  connection: MendConnection,
+  requestPath: string,
+  bundle: import("./handoff-worker.js").HandoffBundle,
+  finished: () => void,
+  timeoutMs = MUTATION_TIMEOUT_MS,
+): Promise<BundleAnswer> => {
+  const url = new URL(`${connection.url}/api${requestPath}`);
+  const outcome = Promise.withResolvers<BundleAnswer>();
+  const input = bundle.open();
+  const released = streamFinished(input, { cleanup: true }).catch(() => undefined);
+  let settled = false;
+  const end = (answer: BundleAnswer) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    input.destroy();
+    request.destroy();
+    void released.then(() => outcome.resolve(answer));
+  };
+  const noAnswer = () => end({ status: null, body: null, retryAfterSeconds: null });
+  const request = (url.protocol === "https:" ? httpsRequest : httpRequest)(
+    url,
+    {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/x-git-bundle",
+        "content-length": bundle.bytes,
+        ...(connection.token === null ? {} : { authorization: `Bearer ${connection.token}` }),
+      },
+    },
+    (response) => {
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      response.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > 4 * 1024 * 1024) {
+          response.destroy();
+          noAnswer();
+        } else chunks.push(chunk);
+      });
+      response.on("error", noAnswer);
+      response.on("aborted", noAnswer);
+      response.on("end", () => {
+        let body: unknown = null;
+        try {
+          body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        } catch {}
+        const retry = Number(response.headers["retry-after"]);
+        end({
+          status: response.statusCode ?? null,
+          body,
+          retryAfterSeconds: Number.isFinite(retry) && retry >= 0 ? retry : null,
+        });
+      });
+    },
+  );
+  const timer = setTimeout(noAnswer, timeoutMs);
+  request.once("error", noAnswer);
+  request.once("finish", finished);
+  input.once("error", noAnswer);
+  input.pipe(request);
+  return outcome.promise;
 };

@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { Launches, type RetryAnswer, type RetryOffer } from "./launches.js";
+import { Launches, type LaunchClient, type RetryAnswer, type RetryOffer } from "./launches.js";
 import { MendApiError } from "./mend-http.js";
 import {
   sessionModel,
@@ -114,6 +114,9 @@ const waiting: Session = {
 const read = (
   session: Session,
   launches: ReadonlyMap<string, LaunchAttempt> = new Map(),
+  waits: Parameters<typeof sessionModel>[0]["waits"] = new Map([
+    ["s", requestWait(pendingRequest({ createdAt: new Date().toISOString() }))],
+  ]),
 ): WindowModel =>
   sessionModel({
     projects: [],
@@ -131,7 +134,7 @@ const read = (
     ],
     viewer: "dana",
     members: [],
-    waits: new Map([["s", requestWait(pendingRequest({ createdAt: new Date().toISOString() }))]]),
+    waits,
     landings: new Map(),
     launches,
     lastSeen: { baseline: waiting.createdAt, sessions: {} },
@@ -275,6 +278,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     line: "launch refused · Claude is not connected",
     at: refusedAt,
     confirmed: true,
+    unanswered: false,
   };
   const settledAt = iso(Date.now() - 2_000);
   const refused = () => ({
@@ -368,24 +372,27 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     };
     let now: Session = { ...waiting, status: "failed", settledAt };
     const attempts = new Map<string, LaunchAttempt>();
-    const sender = new Launches(
-      {
-        launchSession: async (_, body) => {
-          if (body.expected !== undefined)
-            throw new MendApiError(
-              "the session moved on · it reads failed · nothing launched",
-              409,
-              "SessionMovedOn",
-            );
-        },
-        sessionDetail: async () => ({ session: now }),
+    const client: LaunchClient = {
+      launchSession: async (_, body) => {
+        if (body.expected !== undefined)
+          throw new MendApiError(
+            "the session moved on · it reads failed · nothing launched",
+            409,
+            "SessionMovedOn",
+          );
       },
-      {
-        attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
-        forget: (sessionId) => attempts.delete(sessionId),
-      },
-    );
-    await sender.launch("s", { mode: "pty", prompt: "add rate limiting" });
+      sessionDetail: async () => ({
+        session: now,
+        processes: [],
+        currentAgent: null,
+        launchAdmission: null,
+      }),
+    };
+    const sender = new Launches({
+      attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
+      forget: (sessionId) => attempts.delete(sessionId),
+    });
+    await sender.launch("s", { mode: "pty", prompt: "add rate limiting" }, { client });
     // The store drops a launch once the session runs: another client launched it here.
     attempts.delete("s");
     const running = read({ ...waiting, status: "running" }, new Map(attempts));
@@ -423,6 +430,74 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     expect(agentLive.relaunch).toHaveBeenCalledTimes(1);
   });
 
+  it("says an agent already ran in the session, as information with Open, when Mend refuses Retry over an agent that ran", async () => {
+    fake.reset();
+    const change = refused();
+    const idle: Session = { ...waiting, status: "idle" };
+    const alreadyRan = offering(
+      { kind: "retry", read: starting },
+      {
+        kind: "alreadyRan",
+        read: idle,
+        said: "an agent already ran in this session · it reads idle · nothing launched again",
+      },
+    );
+    window.showErrorMessage.mockResolvedValueOnce("Retry");
+    window.showInformationMessage.mockResolvedValueOnce("Open");
+    new Notifier(
+      { showing: () => new Set<string>(), model: () => change.next, error: () => null },
+      new ToastClaims(await directory()),
+      alreadyRan,
+      prompts,
+    ).changed(change);
+    await vi.waitFor(() => expect(commands.executeCommand).toHaveBeenCalledWith("mend.open", "s"));
+    expect(window.showInformationMessage).toHaveBeenCalledWith(
+      "add-rate-limit · an agent already ran in this session · nothing launched again",
+      "Open",
+    );
+    expect(window.showErrorMessage).toHaveBeenCalledTimes(1);
+    expect(alreadyRan.relaunch).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a launch Mend never answered with no Retry, from a server that does not say it refuses one once an agent ran", async () => {
+    fake.reset();
+    const idle: Session = { ...waiting, status: "idle" };
+    const attempts = new Map<string, LaunchAttempt>();
+    const client: LaunchClient = {
+      launchSession: async () => {
+        throw new MendApiError(
+          "Mend could not do that. Try again; the server log has the detail.",
+          504,
+        );
+      },
+      sessionDetail: async () => ({
+        session: idle,
+        processes: [],
+        currentAgent: null,
+        launchAdmission: null,
+      }),
+    };
+    const sender = new Launches({
+      attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
+      forget: (sessionId) => attempts.delete(sessionId),
+    });
+    await sender.launch("s", { mode: "pty", prompt: "add rate limiting" }, { client });
+    const change = {
+      prev: read(idle, new Map([["s", { n: 1, after: null, refusal: null }]]), new Map()),
+      next: read(idle, attempts, new Map()),
+    };
+    new Notifier(
+      { showing: () => new Set<string>(), model: () => change.next, error: () => null },
+      new ToastClaims(await directory()),
+      sender,
+      prompts,
+    ).changed(change);
+    await vi.waitFor(() => expect(window.showErrorMessage).toHaveBeenCalledTimes(1));
+    expect(window.showErrorMessage).toHaveBeenCalledWith(
+      "add-rate-limit · launch not confirmed · Mend did not answer · check the session",
+    );
+  });
+
   it("gives its claim back and shows nothing when the read before Retry says it moved", async () => {
     fake.reset();
     const shared = await directory();
@@ -441,20 +516,23 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     const failed: Session = { ...waiting, status: "failed", settledAt };
     const answer = Promise.withResolvers<void>();
     const attempts = new Map<string, LaunchAttempt>();
-    const sender = new Launches(
-      {
-        launchSession: async () => {
-          await answer.promise;
-          throw new MendApiError("Connect Claude to start a session here.", 422, "StoreFailure");
-        },
-        sessionDetail: async () => ({ session: failed }),
+    const client: LaunchClient = {
+      launchSession: async () => {
+        await answer.promise;
+        throw new MendApiError("Connect Claude to start a session here.", 422, "StoreFailure");
       },
-      {
-        attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
-        forget: (sessionId) => attempts.delete(sessionId),
-      },
-    );
-    const sent = sender.launch("s", { mode: "pty", prompt: "add rate limiting" });
+      sessionDetail: async () => ({
+        session: failed,
+        processes: [],
+        currentAgent: null,
+        launchAdmission: null,
+      }),
+    };
+    const sender = new Launches({
+      attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
+      forget: (sessionId) => attempts.delete(sessionId),
+    });
+    const sent = sender.launch("s", { mode: "pty", prompt: "add rate limiting" }, { client });
     const early = {
       prev: read(starting, new Map(attempts)),
       next: read(failed, new Map(attempts)),
@@ -509,20 +587,23 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     const failed: Session = { ...waiting, status: "failed", settledAt };
     const answer = Promise.withResolvers<void>();
     const attempts = new Map<string, LaunchAttempt>();
-    const sender = new Launches(
-      {
-        launchSession: async () => {
-          await answer.promise;
-          throw new MendApiError("Connect Claude to start a session here.", 422, "StoreFailure");
-        },
-        sessionDetail: async () => ({ session: failed }),
+    const client: LaunchClient = {
+      launchSession: async () => {
+        await answer.promise;
+        throw new MendApiError("Connect Claude to start a session here.", 422, "StoreFailure");
       },
-      {
-        attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
-        forget: (sessionId) => attempts.delete(sessionId),
-      },
-    );
-    const sent = sender.launch("s", { mode: "pty", prompt: "add rate limiting" });
+      sessionDetail: async () => ({
+        session: failed,
+        processes: [],
+        currentAgent: null,
+        launchAdmission: null,
+      }),
+    };
+    const sender = new Launches({
+      attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
+      forget: (sessionId) => attempts.delete(sessionId),
+    });
+    const sent = sender.launch("s", { mode: "pty", prompt: "add rate limiting" }, { client });
     const early = {
       prev: read(starting, new Map(attempts)),
       next: read(failed, new Map(attempts)),
@@ -552,20 +633,23 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     const shared = await directory();
     const failed: Session = { ...waiting, status: "failed", settledAt };
     const attempts = new Map<string, LaunchAttempt>();
-    await new Launches(
+    await new Launches({
+      attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
+      forget: (sessionId) => attempts.delete(sessionId),
+    }).launch(
+      "s",
+      { mode: "pty", prompt: "add rate limiting" },
       {
-        launchSession: async () => {
-          throw new MendApiError("Connect Claude to start a session here.", 422, "StoreFailure");
-        },
-        sessionDetail: async () => {
-          throw new MendApiError("Cannot reach Mend at http://localhost:3100.", null);
+        client: {
+          launchSession: async () => {
+            throw new MendApiError("Connect Claude to start a session here.", 422, "StoreFailure");
+          },
+          sessionDetail: async () => {
+            throw new MendApiError("Cannot reach Mend at http://localhost:3100.", null);
+          },
         },
       },
-      {
-        attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
-        forget: (sessionId) => attempts.delete(sessionId),
-      },
-    ).launch("s", { mode: "pty", prompt: "add rate limiting" });
+    );
     const sent = new Map([["s", { n: 1, after: null, refusal: null }]]);
     const unconfirmed = { prev: read(starting, sent), next: read(starting, attempts) };
     const settled = { prev: unconfirmed.next, next: read(failed, attempts) };

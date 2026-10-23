@@ -18,6 +18,7 @@ import {
   Checkpoint,
   DiffDigest,
   HarnessLayout,
+  LaunchAdmissionRule,
   ProjectClusterBinding,
   ProjectEnvironmentSnapshot,
   ProjectSecret,
@@ -31,7 +32,7 @@ import {
   WorktreeName,
 } from "@mend/domain/workbench";
 import { Change as SessionChange } from "@mend/domain/workbench";
-import { Effect, Schema } from "effect";
+import { Effect, Schema, SchemaTransformation } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
@@ -382,6 +383,19 @@ export class SessionRepositoryView extends Schema.Class<SessionRepositoryView>(
   checkpointsBeyondStart: Schema.Int,
 }) {}
 
+const isLaunchAdmissionRule = Schema.is(LaunchAdmissionRule);
+
+/** A rule this client does not know reads as no rule, as an older server's omitted key does. */
+const LaunchAdmission = Schema.NullOr(Schema.String).pipe(
+  Schema.decodeTo(
+    Schema.NullOr(LaunchAdmissionRule),
+    SchemaTransformation.transform({
+      decode: (rule): LaunchAdmissionRule | null => (isLaunchAdmissionRule(rule) ? rule : null),
+      encode: (rule): string | null => rule,
+    }),
+  ),
+);
+
 export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")({
   session: Session,
   control: SessionControlView,
@@ -415,6 +429,11 @@ export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")(
   preReleaseMemory: Schema.NullOr(PreReleaseMemory).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
   ),
+  /**
+   * How this server admits a Retry of a launch it never answered. Older servers omit it, and they
+   * admit such a launch while no agent is live, so a client must not send one to them.
+   */
+  launchAdmission: LaunchAdmission.pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 }) {}
 
 /** What Stop services did: the session as it reads after, and how many Services it stopped. */
@@ -446,7 +465,8 @@ export class DeliverFollowUpRequest extends Schema.Class<DeliverFollowUpRequest>
 /**
  * The attempt a launching client saw (SLNT-167): the session's `settledAt` as it read it, null
  * when it read the session unsettled with no agent (never launched). The launch runs only while
- * the session still reads that way; one that moved on is refused (`SessionMovedOn`).
+ * the session still reads that way; one that moved on is refused (`SessionMovedOn`), as is a null
+ * once any agent ran in the session (`reason: "agentRan"`).
  */
 export const LaunchExpected = Schema.Struct({ settledAt: Schema.NullOr(Timestamp) });
 export type LaunchExpected = typeof LaunchExpected.Type;

@@ -10,6 +10,7 @@ import {
   HandoffCutAt,
   HandoffMachine,
   type HandoffTrailers,
+  handoffNeedsAgentShare,
   handoffWorktreeName,
   HexSha,
   isEnvPath,
@@ -379,6 +380,17 @@ const routerNotFound = answer(404, "Not Found");
 const projectNotFound = answer(404, { _tag: "NotFound", message: "no project handoff-probe" });
 
 describe("readTermsAnswer", () => {
+  it.each([0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    "refuses invalid byte limit %s",
+    (limit) => {
+      expect(readTermsAnswer(answer(200, { bundleBytes: limit, fileBytes: 8 }))).toEqual({
+        _tag: "unreadable",
+      });
+      expect(readTermsAnswer(answer(200, { bundleBytes: 64, fileBytes: limit }))).toEqual({
+        _tag: "unreadable",
+      });
+    },
+  );
   it("reads the two limits from a 200", () => {
     expect(readTermsAnswer(answer(200, { bundleBytes: 64, fileBytes: 8, extra: true }))).toEqual({
       _tag: "terms",
@@ -467,6 +479,12 @@ describe("readReceiveAnswer", () => {
 });
 
 describe("takesHandoffs", () => {
+  it("recognizes a typed store refusal, but no arbitrary tagged error", () => {
+    expect(takesHandoffs(answer(422, { _tag: "HandoffRefused" }))).toBe(true);
+    expect(takesHandoffs(answer(404, { _tag: "Unrelated" }))).toBeNull();
+    expect(takesHandoffs(answer(422, { _tag: "Unrelated" }))).toBeNull();
+    expect(takesHandoffs(answer(200, {}))).toBeNull();
+  });
   it("is false for the router's untagged 404", () => {
     expect(takesHandoffs(routerNotFound)).toBe(false);
   });
@@ -482,4 +500,16 @@ describe("takesHandoffs", () => {
       expect(takesHandoffs(neither)).toBeNull();
     },
   );
+});
+
+describe("handoffNeedsAgentShare", () => {
+  it("follows an existing project's mode, not the account default", () => {
+    expect(handoffNeedsAgentShare({ kind: "project", gitAuthMode: "bridge" })).toBe(true);
+    expect(handoffNeedsAgentShare({ kind: "project", gitAuthMode: "mend-key" })).toBe(false);
+  });
+  it("follows the account default for an adoption, and shares nothing when it is unknown", () => {
+    expect(handoffNeedsAgentShare({ kind: "adopt", accountMode: "bridge" })).toBe(true);
+    expect(handoffNeedsAgentShare({ kind: "adopt", accountMode: "mend-key" })).toBe(false);
+    expect(handoffNeedsAgentShare({ kind: "adopt", accountMode: null })).toBe(false);
+  });
 });

@@ -41,7 +41,13 @@ import {
   type TrackedEntry,
 } from "./paths.ts";
 
-export { type Cancelled, HANDOFF_GIT_TIMEOUT_MS, type GitRuntime, type Refused } from "./git.ts";
+export {
+  type Cancelled,
+  HANDOFF_GIT_TIMEOUT_MS,
+  type GitRuntime,
+  type RefusalReason,
+  type Refused,
+} from "./git.ts";
 
 /** Whether uncommitted `.env*` edits travel. Gitignored ones never do. */
 export type EnvFiles = "exclude" | "include";
@@ -166,7 +172,7 @@ export const checkoutOf = (cwd: string, runtime?: GitRuntime): CheckoutOutcome =
     const resolved = runtimeOf(runtime);
     const base = scrubbed(resolved.env);
     const paths = pathsOf(cwd, base, resolved);
-    if (paths === null) return refused(notACheckout(cwd));
+    if (paths === null) return notACheckout(cwd);
     const origin =
       gitIn(paths.top, SAFE_CONFIG, resolved)
         .attempt(base, ["remote", "get-url", "origin"], 2)
@@ -182,25 +188,32 @@ const realOrResolved = (dir: string): string => {
   }
 };
 
-export const scratchParentIssue = (parent: string, checkout: CheckoutPaths): string | null => {
+export const scratchParentRefusal = (parent: string, checkout: CheckoutPaths): Refused | null => {
   const scratch = realOrResolved(parent);
   const inside = [checkout.top, checkout.gitDir, checkout.commonDir].some((dir) => {
     const protectedDir = realOrResolved(dir);
     return scratch === protectedDir || scratch.startsWith(`${protectedDir}${path.sep}`);
   });
   return inside
-    ? `TMPDIR is ${parent}, inside this checkout, and a handoff writes nothing there · set TMPDIR elsewhere, then hand off again · nothing was created`
+    ? refused(
+        `TMPDIR is ${parent}, inside this checkout, and a handoff writes nothing there · set TMPDIR elsewhere, then hand off again · nothing was created`,
+        { reason: "scratch-inside-checkout", parent },
+      )
     : null;
 };
 
+export const scratchParentIssue = (parent: string, checkout: CheckoutPaths): string | null =>
+  scratchParentRefusal(parent, checkout)?.message ?? null;
+
 const scratchUnder = (parent: string, checkout: CheckoutPaths): string | Refused => {
-  const issue = scratchParentIssue(parent, checkout);
-  if (issue !== null) return refused(issue);
+  const issue = scratchParentRefusal(parent, checkout);
+  if (issue !== null) return issue;
   const dir = fs.mkdtempSync(path.join(parent, "mend-handoff-"));
   if ((fs.statSync(dir).mode & 0o077) !== 0) {
     removeScratch(dir);
     return refused(
       `the directory a handoff made under ${parent} was readable by others · nothing was created`,
+      { reason: "scratch-exposed", parent },
     );
   }
   return dir;
@@ -208,14 +221,24 @@ const scratchUnder = (parent: string, checkout: CheckoutPaths): string | Refused
 
 const removeScratch = (dir: string): void => fs.rmSync(dir, { recursive: true, force: true });
 
-const NO_COMMIT =
-  "this branch has no commit yet · commit once, then hand off · nothing was created";
+const NO_COMMIT = refused(
+  "this branch has no commit yet · commit once, then hand off · nothing was created",
+  { reason: "no-commit" },
+);
 
-const unmergedRefusal = (paths: number): string =>
-  `${paths} unmerged ${paths === 1 ? "path" : "paths"} · finish or abort the merge, then hand off · nothing was created`;
+const unmergedRefusal = (paths: number): Refused =>
+  refused(
+    `${paths} unmerged ${paths === 1 ? "path" : "paths"} · finish or abort the merge, then hand off · nothing was created`,
+    { reason: "unmerged", paths },
+  );
 
-const notACheckout = (dir: string): string =>
-  `${dir} is not inside a git checkout · run mend handoff in one · nothing was created`;
+const notACheckout = (dir: string): Refused =>
+  refused(`${dir} is not inside a git checkout · run mend handoff in one · nothing was created`, {
+    reason: "not-a-checkout",
+    dir,
+  });
+
+const isRefused = (value: object): value is Refused => "_tag" in value && value._tag === "refused";
 
 interface Opened {
   readonly base: Env;
@@ -246,7 +269,7 @@ const commitAt = (git: Git, base: Env, ref: string): boolean =>
  * origin and pruned here names a branch that is gone; adoption clones origin's own HEAD, so the
  * common names stand in for it, in this order.
  */
-const originDefaultOf = (git: Git, base: Env): string | { readonly refused: string } => {
+const originDefaultOf = (git: Git, base: Env): string | Refused => {
   const head = git.attempt(base, ["symbolic-ref", "-q", `${TRACKING}HEAD`], 1)?.trim() ?? "";
   if (head.startsWith(TRACKING) && commitAt(git, base, head)) return head.slice(TRACKING.length);
   const known = ["main", "master"].find((name) => commitAt(git, base, `${TRACKING}${name}`));
@@ -256,12 +279,15 @@ const originDefaultOf = (git: Git, base: Env): string | { readonly refused: stri
     .toString()
     .split("\n")
     .filter((ref) => ref !== "" && ref !== `${TRACKING}HEAD`);
-  return {
-    refused:
-      tracked.length === 0
-        ? "this checkout has fetched no branch from origin · run git fetch origin, then hand off again · nothing was created"
-        : "this checkout does not know origin's default branch · run git fetch origin && git remote set-head origin -a, then hand off again · nothing was created",
-  };
+  return tracked.length === 0
+    ? refused(
+        "this checkout has fetched no branch from origin · run git fetch origin, then hand off again · nothing was created",
+        { reason: "nothing-fetched" },
+      )
+    : refused(
+        "this checkout does not know origin's default branch · run git fetch origin && git remote set-head origin -a, then hand off again · nothing was created",
+        { reason: "unknown-default" },
+      );
 };
 
 const basesOf = (
@@ -269,18 +295,22 @@ const basesOf = (
   base: Env,
   head: string,
   defaultBranch: string,
-): { readonly defaultTip: string; readonly mergeBase: string } | { readonly refused: string } => {
+): { readonly defaultTip: string; readonly mergeBase: string } | Refused => {
   const tracking = `${TRACKING}${defaultBranch}`;
   const defaultTip =
     git.attempt(base, ["rev-parse", "--verify", "-q", `${tracking}^{commit}`], 1)?.trim() ?? null;
   if (defaultTip === null) {
-    return {
-      refused: `this checkout has no origin/${defaultBranch} · run git fetch origin, then hand off again · nothing was created`,
-    };
+    return refused(
+      `this checkout has no origin/${defaultBranch} · run git fetch origin, then hand off again · nothing was created`,
+      { reason: "no-tracking-branch", branch: defaultBranch },
+    );
   }
   const mergeBase = git.attempt(base, ["merge-base", head, defaultTip], 1)?.trim() ?? null;
   if (mergeBase === null) {
-    return { refused: `HEAD shares no history with origin/${defaultBranch} · nothing was created` };
+    return refused(`HEAD shares no history with origin/${defaultBranch} · nothing was created`, {
+      reason: "unrelated-history",
+      branch: defaultBranch,
+    });
   }
   return { defaultTip, mergeBase };
 };
@@ -304,14 +334,14 @@ const locate = (
   paths: CheckoutPaths,
   /** Null reads origin's from the checkout. */
   defaultBranch: string | null,
-): Checkout | { readonly refused: string } => {
+): Checkout | Refused => {
   const text = (args: ReadonlyArray<string>) => git.run(base, args).toString().trim();
   const head = headOf(git, base);
-  if (head === null) return { refused: NO_COMMIT };
+  if (head === null) return NO_COMMIT;
   const branch = defaultBranch ?? originDefaultOf(git, base);
   if (typeof branch !== "string") return branch;
   const bases = basesOf(git, base, head, branch);
-  if ("refused" in bases) return bases;
+  if (isRefused(bases)) return bases;
   const { defaultTip, mergeBase } = bases;
   const branchRef = git.attempt(base, ["symbolic-ref", "-q", "HEAD"], 1)?.trim() ?? "";
   return {
@@ -415,10 +445,10 @@ export type PreflightOutcome = { readonly _tag: "clear" } | Refused | Cancelled;
 
 const preflight = (request: PreflightRequest, runtime: Runtime): PreflightOutcome => {
   const opened = openCheckout(request.checkout, runtime);
-  if (opened === null) return refused(notACheckout(request.checkout));
+  if (opened === null) return notACheckout(request.checkout);
   const { base, git, paths } = opened;
   const checkout = locate(git, base, paths, null);
-  if ("refused" in checkout) return refused(checkout.refused);
+  if (isRefused(checkout)) return checkout;
   const dir = scratchUnder(request.scratchParent, checkout);
   if (typeof dir !== "string") return dir;
   try {
@@ -428,7 +458,7 @@ const preflight = (request: PreflightRequest, runtime: Runtime): PreflightOutcom
         (field) => pathOf(field.subarray(field.indexOf(TAB) + 1)),
       ),
     );
-    return unmerged.size === 0 ? { _tag: "clear" } : refused(unmergedRefusal(unmerged.size));
+    return unmerged.size === 0 ? { _tag: "clear" } : unmergedRefusal(unmerged.size);
   } finally {
     removeScratch(dir);
   }
@@ -547,7 +577,7 @@ const inspect = (
   reads: Env,
   maxFileBytes: number,
   envFiles: EnvFiles,
-): Inspection | { readonly refused: string } => {
+): Inspection | Refused => {
   const hiddenBits = revealHiddenEdits(git, checkout, reads);
   const status = parseStatus(
     nulFields(
@@ -563,7 +593,7 @@ const inspect = (
   );
   const unmerged = status.filter((entry) => entry.kind === "unmerged");
   if (unmerged.length > 0) {
-    return { refused: unmergedRefusal(unmerged.length) };
+    return unmergedRefusal(unmerged.length);
   }
   const tracked = status.flatMap((entry) => (entry.kind === "tracked" ? [entry] : []));
   const untracked = status.flatMap((entry) => (entry.kind === "untracked" ? [entry.path] : []));
@@ -765,6 +795,7 @@ const missingObjects = (checkout: Checkout, error: unknown): Refused | null =>
   error instanceof GitFailure && checkout.partial
     ? refused(
         `this partial clone lacks objects a handoff reads, and mend handoff never fetches · git log -p ${checkout.mergeBase.slice(0, 7)}..HEAD fetches them, then hand off again · git said: ${error.words} · nothing was created`,
+        { reason: "partial-clone", mergeBase: checkout.mergeBase, words: error.words },
       )
     : null;
 
@@ -835,10 +866,10 @@ const leftOutFor = (out: Excluded): LeftOut => ({ ...out, path: displayPath(out.
 
 const capture = (request: CaptureRequest, runtime: Runtime): CaptureOutcome => {
   const opened = openCheckout(request.checkout, runtime);
-  if (opened === null) return refused(notACheckout(request.checkout));
+  if (opened === null) return notACheckout(request.checkout);
   const { base, git, paths } = opened;
   const checkout = locate(git, base, paths, request.defaultBranch);
-  if ("refused" in checkout) return refused(checkout.refused);
+  if (isRefused(checkout)) return checkout;
   const dir = scratchUnder(request.scratchParent, checkout);
   if (typeof dir !== "string") return dir;
   let kept = false;
@@ -852,7 +883,7 @@ const capture = (request: CaptureRequest, runtime: Runtime): CaptureOutcome => {
       request.maxFileBytes,
       request.envFiles,
     );
-    if ("refused" in inspection) return refused(inspection.refused);
+    if (isRefused(inspection)) return inspection;
     const trees = buildTrees(git, checkout, inspection, scratch);
     const commits = commitsOf(git, checkout, trees, scratch, request);
     const travels = (file: GitPath) => !inspection.stays.has(file);

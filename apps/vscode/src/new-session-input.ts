@@ -4,6 +4,7 @@ import { MendApiError, type MendClient } from "./client.js";
 import { showErrorToast } from "./error-toast.js";
 import { TRY_AGAIN } from "./first-run.js";
 import { checkoutFact } from "./git.js";
+import type { BoundClient } from "./handoff-client.js";
 import type { Launches } from "./launches.js";
 import {
   isRememberedOptions,
@@ -76,9 +77,24 @@ export class NewSessionInput implements vscode.Disposable {
   #open: vscode.Disposable | null = null;
 
   constructor(
-    private readonly context: vscode.ExtensionContext,
-    private readonly client: MendClient,
-    private readonly store: SessionStore,
+    private readonly context: {
+      readonly globalState: {
+        get(key: string): unknown;
+        update(key: string, value: unknown): Thenable<void>;
+      };
+    },
+    private readonly client: Pick<MendClient, "bind" | "harnessModels" | "viewerId">,
+    private readonly store: Pick<
+      SessionStore,
+      | "details"
+      | "model"
+      | "onDidChange"
+      | "refresh"
+      | "showCreated"
+      | "unmatchedRepository"
+      | "viewer"
+      | "windowProject"
+    >,
     private readonly launches: Launches,
   ) {}
 
@@ -87,13 +103,14 @@ export class NewSessionInput implements vscode.Disposable {
   }
 
   #remembered(): RememberedOptions {
-    const stored = this.context.globalState.get<unknown>(REMEMBERED_OPTIONS_KEY);
+    const stored = this.context.globalState.get(REMEMBERED_OPTIONS_KEY);
     return isRememberedOptions(stored) ? stored : {};
   }
 
   async open(opening: NewSessionOpening): Promise<void> {
     this.#open?.dispose();
-    const server = (await this.client.connection()).url;
+    const bound = await this.client.bind();
+    const server = bound.url;
     const matched = this.store.windowProject();
     const unmatched = this.store.unmatchedRepository();
     const origin = unmatched?.originUrl ?? null;
@@ -194,7 +211,7 @@ export class NewSessionInput implements vscode.Disposable {
       const kept = keptAfter(facts.kept, state, next.effect);
       this.#kept.set(server, kept);
       facts = { ...facts, kept };
-      facts = this.#carryOut(next.effect, facts, server, here);
+      facts = this.#carryOut(next.effect, facts, bound, here);
       show(render(state, facts));
     };
     const here: OpenInput = {
@@ -252,20 +269,20 @@ export class NewSessionInput implements vscode.Disposable {
   }
 
   /** The effect's work; the facts it changed come back. */
-  #carryOut(effect: FlowEffect, facts: FlowFacts, server: string, here: OpenInput): FlowFacts {
+  #carryOut(effect: FlowEffect, facts: FlowFacts, bound: BoundClient, here: OpenInput): FlowFacts {
     switch (effect.kind) {
       case "none":
         return facts;
       case "remember": {
-        const all = remember(this.#remembered(), server, effect.projectId, effect.options);
+        const all = remember(this.#remembered(), bound.url, effect.projectId, effect.options);
         void this.context.globalState.update(REMEMBERED_OPTIONS_KEY, all);
-        return { ...facts, remembered: all[server] ?? {} };
+        return { ...facts, remembered: all[bound.url] ?? {} };
       }
       case "adopt":
-        void this.#adopt(effect, here.dispatch);
+        void this.#adopt(effect, bound, here.dispatch);
         return facts;
       case "start":
-        void this.#start(effect, server, here);
+        void this.#start(effect, bound, here);
         return facts;
     }
   }
@@ -273,10 +290,11 @@ export class NewSessionInput implements vscode.Disposable {
   /** `POST /projects` clones while the input is busy, then New session goes on in the project. */
   async #adopt(
     effect: Extract<FlowEffect, { readonly kind: "adopt" }>,
+    bound: BoundClient,
     dispatch: (event: FlowEvent) => void,
   ): Promise<void> {
     try {
-      const project = await this.client.adoptProject(effect.name, effect.origin);
+      const project = await bound.adoptProject(effect.name, effect.origin);
       this.store.refresh();
       dispatch({ kind: "adopted", project });
     } catch (cause) {
@@ -291,15 +309,15 @@ export class NewSessionInput implements vscode.Disposable {
    */
   async #start(
     effect: Extract<FlowEffect, { readonly kind: "start" }>,
-    server: string,
+    bound: BoundClient,
     here: OpenInput,
   ): Promise<void> {
     const { draft } = effect;
     try {
-      const created = await this.client.createSession(draft.project.id, effect.create);
+      const created = await bound.createSession(draft.project.id, effect.create);
       here.hide();
       this.store.showCreated(created);
-      void this.launches.launch(created.id, effect.launch);
+      void this.launches.launch(created.id, effect.launch, { client: bound });
     } catch (cause) {
       const unknownBase = cause instanceof MendApiError ? cause.unknownBase : null;
       if (unknownBase !== null && movesToDefault(draft, unknownBase) && here.isOpen()) {
@@ -308,9 +326,9 @@ export class NewSessionInput implements vscode.Disposable {
       }
       here.hide();
       // Nothing started: her prompt waits for the next New session.
-      const kept = new Map(this.#kept.get(server) ?? []);
+      const kept = new Map(this.#kept.get(bound.url) ?? []);
       kept.set(keptPromptKey(draft.project.id, draft.join), draft.prompt);
-      this.#kept.set(server, kept);
+      this.#kept.set(bound.url, kept);
       if (await sayCreateFailed(cause))
         await this.open({ project: draft.project, join: draft.join });
     }

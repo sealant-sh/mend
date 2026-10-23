@@ -173,6 +173,7 @@ class FakeMend implements StoreClient {
         processes: this.processes.get(id) ?? [],
         currentAgent: null,
         changeId: null,
+        launchAdmission: null,
       };
     });
   }
@@ -874,6 +875,26 @@ describe("a handoff this window received (story g)", () => {
     mend.add(one);
     mend.worktrees.set(one.projectId, [fixLogin]);
   };
+
+  it("retains a held session's refused launch through the next read, then clears it when the agent runs", async () => {
+    const { mend, store } = world();
+    serverHolds(mend);
+    store.start();
+    await tick(300);
+    const line = "launch refused · Connect Claude to start a session here.";
+    store.attempted(received.id, {
+      n: 1,
+      after: null,
+      refusal: { line, at: START.toISOString(), confirmed: true, unanswered: false },
+    });
+    expect(lineOf(store, received.id)).toBe(`idle · ${line}`);
+    await tick(300);
+    expect(lineOf(store, received.id)).toBe(`idle · ${line}`);
+    serverHolds(mend, { ...received, status: "running" });
+    store.refresh();
+    await tick(300);
+    expect(lineOf(store, received.id)).toBe("running");
+  });
 
   it("shows the row in one emission for a project already read, and reads that project", async () => {
     const { mend, store } = world();

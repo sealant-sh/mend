@@ -425,6 +425,7 @@ import {
   standbyWorktreeAlias,
 } from "./hot-pool.ts";
 import {
+  agentRanIn,
   Restart,
   refusalError,
   refusalOf,
@@ -24262,6 +24263,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 settledAt: session.settledAt,
                 agentLive: yield* agentIsLive(session, "replaceable"),
                 underWay: false,
+                agentRan: agentRanIn(yield* processes.listForSession(sessionId)),
               });
               if (refusal !== null) return yield* refusalError(sessionId, refusal);
               if (onAdmitted !== undefined) yield* onAdmitted;

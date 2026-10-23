@@ -1,4 +1,10 @@
-import { SessionStatus } from "@mend/domain/workbench";
+import {
+  agentProcessesOf,
+  type LaunchAdmissionRule,
+  LaunchMovedOnReason,
+  SessionStatus,
+  type SessionProcess,
+} from "@mend/domain/workbench";
 import { type Effect, Schema } from "effect";
 
 import { LAUNCH_UNDER_WAY_WORDS } from "./launch-gate.ts";
@@ -11,7 +17,7 @@ import { LAUNCH_UNDER_WAY_WORDS } from "./launch-gate.ts";
 export type LaunchOver =
   /**
    * The settled attempt the caller saw: `settledAt` as it read it (null: it read the session
-   * unsettled and not live, e.g. never launched).
+   * unsettled with no agent, never launched).
    */
   | { readonly _tag: "Expected"; readonly settledAt: Date | null }
   /** Nothing named: a live or starting agent refuses the launch. */
@@ -42,6 +48,13 @@ export const Restart: LaunchOver = { _tag: "Restart" };
 export const NoLiveAgent: LaunchOver = { _tag: "NoLiveAgent" };
 export const Expected = (settledAt: Date | null): LaunchOver => ({ _tag: "Expected", settledAt });
 
+/**
+ * Whether an agent ever ran in the session, by its process rows of any status. The workbench shell
+ * is not one: a launch may replace it.
+ */
+export const agentRanIn = (rows: ReadonlyArray<SessionProcess>): boolean =>
+  agentProcessesOf(rows).some((row) => !(row.kind === "agent-pty" && row.harness === "shell"));
+
 /** The session as the launch gate observed it. */
 export interface LaunchObserved {
   readonly status: SessionStatus;
@@ -50,6 +63,8 @@ export interface LaunchObserved {
   readonly agentLive: boolean;
   /** Another launch verb holds the gate. */
   readonly underWay: boolean;
+  /** `agentRanIn` its process rows. */
+  readonly agentRan: boolean;
 }
 
 export type LaunchRefusal =
@@ -57,6 +72,7 @@ export type LaunchRefusal =
       readonly _tag: "MovedOn";
       readonly status: SessionStatus;
       readonly settledAt: Date | null;
+      readonly reason: LaunchMovedOnReason;
     }
   | {
       readonly _tag: "AgentLive";
@@ -68,21 +84,32 @@ export type LaunchRefusal =
 /** The answer while another launch verb holds the gate: every launch is refused. */
 export const underWayRefusal = (over: LaunchOver, settledAt: Date | null): LaunchRefusal =>
   over._tag === "Expected"
-    ? { _tag: "MovedOn", status: "starting", settledAt }
+    ? { _tag: "MovedOn", status: "starting", settledAt, reason: "underWay" }
     : { _tag: "AgentLive", status: "starting", settledAt, underWay: true };
 
 const sameInstant = (a: Date | null, b: Date | null) =>
   a === null || b === null ? a === b : a.getTime() === b.getTime();
+
+const movedOnFrom = (
+  seenSettledAt: Date | null,
+  observed: LaunchObserved,
+): LaunchMovedOnReason | null => {
+  if (observed.agentLive) return "agentLive";
+  if (seenSettledAt === null && observed.agentRan) return "agentRan";
+  return sameInstant(seenSettledAt, observed.settledAt) ? null : "settled";
+};
+
+export const LAUNCH_ADMISSION: LaunchAdmissionRule = "agentRan";
 
 /** Null admits the launch; otherwise why it is refused. The whole policy. */
 export const refusalOf = (over: LaunchOver, observed: LaunchObserved): LaunchRefusal | null => {
   if (observed.underWay) return underWayRefusal(over, observed.settledAt);
   const { status, settledAt } = observed;
   switch (over._tag) {
-    case "Expected":
-      return observed.agentLive || !sameInstant(over.settledAt, settledAt)
-        ? { _tag: "MovedOn", status, settledAt }
-        : null;
+    case "Expected": {
+      const reason = movedOnFrom(over.settledAt, observed);
+      return reason === null ? null : { _tag: "MovedOn", status, settledAt, reason };
+    }
     case "NoLiveAgent":
       return observed.agentLive ? { _tag: "AgentLive", status, settledAt, underWay: false } : null;
     case "Restart":
@@ -100,7 +127,7 @@ const refusalFields = {
 /** A launch over an attempt the session has moved on from: nothing launched. */
 export class SessionMovedOnError extends Schema.TaggedError<SessionMovedOnError>()(
   "SessionMovedOnError",
-  refusalFields,
+  { ...refusalFields, reason: LaunchMovedOnReason },
 ) {}
 
 /** A launch over a live or starting agent that did not ask to restart it: nothing restarted. */
@@ -120,9 +147,13 @@ export const refusalError = (
         sessionId,
         status,
         settledAt,
-        message: `the session moved on · it reads ${status}${
-          settledAt === null ? "" : ` · settled ${settledAt.toISOString()}`
-        } · nothing launched`,
+        reason: refusal.reason,
+        message:
+          refusal.reason === "agentRan"
+            ? `an agent already ran in this session · it reads ${status} · nothing launched again`
+            : `the session moved on · it reads ${status}${
+                settledAt === null ? "" : ` · settled ${settledAt.toISOString()}`
+              } · nothing launched`,
       });
     case "AgentLive":
       return new SessionAgentLiveError({

@@ -1326,7 +1326,14 @@ export const workbenchHelpers = async (context, options) => {
       XDG_CONFIG_HOME: state.configHome,
       DISPLAY: state.display,
     };
-    for (const key of ["WAYLAND_DISPLAY", "NIXOS_OZONE_WL", "ELECTRON_RUN_AS_NODE"])
+    // On a Wayland desktop XDG_SESSION_TYPE alone starts the CLI as a Wayland instance of its own
+    // instead of reaching the editor on the run's X display.
+    for (const key of [
+      "WAYLAND_DISPLAY",
+      "NIXOS_OZONE_WL",
+      "ELECTRON_RUN_AS_NODE",
+      "XDG_SESSION_TYPE",
+    ])
       delete env[key];
     const { status, stderr } = await new Promise((done) => {
       const child = spawn(

@@ -55,6 +55,7 @@ export interface Refusal {
    * its own, and a settlement read later is its one toast in every window.
    */
   readonly confirmed: boolean;
+  readonly unanswered: boolean;
 }
 
 /**
@@ -68,8 +69,9 @@ export interface LaunchAttempt {
   /** The session's `settledAt` when this attempt was sent: a failure settled since is this one's. */
   readonly after: string | null;
   /**
-   * The server refused this attempt over HTTP. Until a read shows the server settled it, the
-   * session reads `failed · <line>`.
+   * The server refused this attempt over HTTP, or never answered it while the session still reads
+   * as not having taken it. Until a read shows the server settled it, the session reads
+   * `failed · <line>`.
    */
   readonly refusal: Refusal | null;
 }
@@ -249,6 +251,7 @@ export const ownLine = (session: Pick<Session, "status" | "summary">): string =>
 /** The read has not settled since the attempt was sent: the server has said nothing of it yet. */
 const unsettledSince = (session: Session, attempt: LaunchAttempt): boolean =>
   session.status === "starting" ||
+  session.status === "idle" ||
   (session.status === "failed" && session.settledAt === attempt.after);
 
 /**
@@ -262,7 +265,8 @@ const withRefusal = (session: Session, attempt: LaunchAttempt | undefined): Sess
 
 /** How this window's latest attempt ended, as far as the reads and its answer say. */
 const attemptOutcome = (read: Session, attempt: LaunchAttempt): LaunchOutcome =>
-  attempt.refusal?.confirmed === true && (read.status === "starting" || read.status === "failed")
+  attempt.refusal?.confirmed === true &&
+  (read.status === "starting" || read.status === "failed" || read.status === "idle")
     ? { kind: "refused", at: attempt.refusal.at }
     : read.status === "failed" && read.settledAt !== attempt.after
       ? { kind: "failed", at: settledFailureAt(read) }
@@ -605,7 +609,10 @@ export const transitions = (
     if (!view.mine) return [];
     // Each attempt this window sent ends once, whatever reads came between: failed to failed too.
     // A refusal the server never settled is this window's alone, so only it is keyed by attempt.
-    if (view.launch !== null && (view.word === "failed" || view.word === "starting")) {
+    if (
+      view.launch !== null &&
+      (view.word === "failed" || view.word === "starting" || view.word === "idle")
+    ) {
       const { attempt, outcome } = view.launch;
       if (outcome.kind === "pending") return [];
       return outcome.kind === "refused"

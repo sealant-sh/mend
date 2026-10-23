@@ -5995,14 +5995,24 @@ const startShareIfBridge = async (
   config: CliConfig,
   savedMode?: GitAccessDto["mode"] | null,
 ): Promise<AgentShareHandle | null> => {
-  const agentSock = process.env["SSH_AUTH_SOCK"];
-  if (agentSock === undefined || agentSock === "") return null;
+  if (agentSock() === null) return null;
   const mode = savedMode === undefined ? await readGitAccessMode(config) : savedMode;
-  if (mode !== "bridge") return null;
-  return startAgentShare({
-    url: () => socketUrl(config, "keys-bridge", { host: os.hostname() }),
-    agentSock,
-  });
+  return mode === "bridge" ? shareThisAgent(config) : null;
+};
+
+const agentSock = (): string | null => {
+  const sock = process.env["SSH_AUTH_SOCK"];
+  return sock === undefined || sock === "" ? null : sock;
+};
+
+const shareThisAgent = (config: CliConfig): AgentShareHandle | null => {
+  const sock = agentSock();
+  return sock === null
+    ? null
+    : startAgentShare({
+        url: () => socketUrl(config, "keys-bridge", { host: os.hostname() }),
+        agentSock: sock,
+      });
 };
 
 /** The caller's saved git access mode (`mend keys mode`), or null when the server could not say. */
@@ -6211,21 +6221,19 @@ const main = async () => {
     case "pull":
       return pullCommand(boundApi(config), download(config), rest);
     case "handoff":
-      // Bridge mode signs the admission's origin read and an adoption's clone with this machine's
-      // ssh-agent, so the share runs meanwhile.
-      return withAgentShare(config, () =>
-        handoffCommand(
-          {
-            api: boundApi(config),
-            download: download(config),
-            upload: upload(config),
-            serverVersion: async () => (await fetchServerVersion(config.url)).version,
-            launch: (sessionId, prompt) => launchHandoff(config, sessionId, prompt),
-            spin: (label, work) => withSpinner(label, work),
-            serverUrl: config.url,
-          },
-          rest,
-        ),
+      return handoffCommand(
+        {
+          api: boundApi(config),
+          download: download(config),
+          upload: upload(config),
+          serverVersion: async () => (await fetchServerVersion(config.url)).version,
+          launch: (sessionId, prompt) => launchHandoff(config, sessionId, prompt),
+          spin: (label, work) => withSpinner(label, work),
+          serverUrl: config.url,
+          accountGitAuthMode: () => readGitAccessMode(config),
+          shareAgent: () => shareThisAgent(config),
+        },
+        rest,
       );
     case "sessions":
     case "status":

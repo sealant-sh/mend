@@ -29,6 +29,13 @@ const lines = (text: string): ReadonlyArray<string> => text.split("\n").filter((
 
 const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 
+const sshAgentEnv = (w: ReturnType<typeof world>) => ({
+  SSH_AUTH_SOCK: path.join(w.root, "agent.sock"),
+});
+
+const agentShareSockets = (server: Awaited<ReturnType<typeof handoffServer>>) =>
+  server.server.upgradeUrls().filter((url) => url.startsWith("/api/keys/bridge/ws"));
+
 const JOINED_ID = "7c1d2e3f-0a1b-4c2d-8e3f-4a5b6c7d8e9f";
 
 /** Another project adopted from the same origin, with a worktree of the same name. */
@@ -331,13 +338,42 @@ describe("mend handoff", spawning, () => {
     expect(result.stdout).toContain("✓ handed off as fix-login");
   }, 30_000);
 
-  it("shares this machine's ssh-agent while it runs, for a server in bridge mode", async () => {
-    const w = world();
-    const dana = newsroom(w);
-    // The fake never answers a close handshake; a dropped socket lets the stopped share end.
-    const server = await handoffServer({ socket: "drop" });
-    const result = await run(server, [], dana, { SSH_AUTH_SOCK: path.join(w.root, "agent.sock") });
-    expect(result.code, result.stderr).toBe(0);
-    expect(server.routes[0]).toBe("GET /api/me/git-access");
-  }, 30_000);
+  describe("this machine's ssh-agent", () => {
+    it("is not shared for a Mend-key project, whatever the account default", async () => {
+      const w = world();
+      const dana = newsroom(w);
+      const server = await handoffServer({
+        projects: [{ ...project, gitAuthMode: "mend-key" }],
+        accountMode: "bridge",
+        socket: "drop",
+      });
+      const result = await run(server, [], dana, sshAgentEnv(w));
+      expect(result.code, result.stderr).toBe(0);
+      expect(agentShareSockets(server)).toEqual([]);
+    }, 30_000);
+
+    it("is shared while it runs for a bridge project, whatever the account default", async () => {
+      const w = world();
+      const dana = newsroom(w);
+      // The fake never answers a close handshake; a dropped socket lets the stopped share end.
+      const server = await handoffServer({
+        projects: [{ ...project, gitAuthMode: "bridge" }],
+        accountMode: "mend-key",
+        socket: "drop",
+      });
+      const result = await run(server, [], dana, sshAgentEnv(w));
+      expect(result.code, result.stderr).toBe(0);
+      expect(agentShareSockets(server)).toHaveLength(1);
+    }, 30_000);
+
+    it("is shared for an adoption when the account default, the mode it adopts with, is bridge", async () => {
+      const w = world();
+      const dana = newsroom(w);
+      const server = await handoffServer({ projects: [], accountMode: "bridge", socket: "drop" });
+      const result = await run(server, ["--yes"], dana, sshAgentEnv(w));
+      expect(result.code, result.stderr).toBe(0);
+      expect(server.adoptions).toHaveLength(1);
+      expect(agentShareSockets(server)).toHaveLength(1);
+    }, 30_000);
+  });
 });

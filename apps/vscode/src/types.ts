@@ -1,4 +1,9 @@
-import { HandoffCutAt, HandoffMachine, HexSha } from "@mend/domain/workbench";
+import {
+  HandoffCutAt,
+  HandoffMachine,
+  HexSha,
+  type LaunchAdmissionRule,
+} from "@mend/domain/workbench";
 import { Schema } from "effect";
 
 export const SESSION_STATUSES = [
@@ -182,6 +187,7 @@ export interface SessionDetail {
   readonly currentAgent: SessionProcess | null;
   /** The worktree's change once it has one: what review opens. Null before, and from older servers. */
   readonly changeId: string | null;
+  readonly launchAdmission: LaunchAdmissionRule | null;
 }
 
 export interface SessionLocation {

@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { MendClient } from "./client.js";
 import { MendApiError } from "./mend-http.js";
 import { Answers, requestView, type AgentResponse } from "./request-answer.js";
 import { pendingRequest, whichDatabase } from "./test-requests.js";
+import { json, serve, switchable, type Heard } from "./test-servers.js";
+
+vi.mock("vscode", () => import("./test-vscode.js"));
 
 describe("what a request asks", () => {
   it("says Claude's Bash permission as the command it would run", () => {
@@ -49,7 +53,11 @@ const server = (
   const respond = vi.fn(async (_id: string, _response: AgentResponse) => {
     await (answers.shift() ?? (async () => {}))();
   });
-  return { pending, respond, answers: new Answers({ pending, respond }) };
+  return {
+    pending,
+    respond,
+    answers: new Answers(async () => ({ pendingRequests: pending, respond })),
+  };
 };
 
 const request = { id: "r1", sessionId: "s" };
@@ -174,5 +182,34 @@ describe("an answer", () => {
     expect(await mend.answers.send(request, ALLOW)).toEqual({ kind: "unreachable" });
     expect(mend.answers.state("r1")).toEqual({ kind: "pending" });
     expect(mend.respond).not.toHaveBeenCalled();
+  });
+});
+
+describe("an answer after VS Code connects to another server", () => {
+  it("sends her words nowhere when the switch lands during the send's read", async () => {
+    const heard = { A: new Array<Heard>(), B: new Array<Heard>() };
+    const reached = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const a = await serve(heard.A, async (req, res) => {
+      if (req.method === "GET") {
+        reached.resolve();
+        await release.promise;
+        return json(res, 200, [pendingRequest({ id: "r1", sessionId: "s" })]);
+      }
+      json(res, 200, {});
+    });
+    const b = await serve(heard.B, (_req, res) => json(res, 404, { _tag: "NotFound" }));
+    const connection = switchable(a);
+    const client = new MendClient(connection.connections);
+    const answers = new Answers(() => client.bind());
+
+    const sent = answers.send(request, { answers: { q1: ["Postgres, as we agreed"] } });
+    await reached.promise;
+    connection.switchTo(b);
+    release.resolve();
+
+    expect(await sent).toMatchObject({ kind: "failed", retryable: true });
+    expect(heard.A.filter((one) => one.method === "POST")).toEqual([]);
+    expect(heard.B).toEqual([]);
   });
 });

@@ -54,6 +54,7 @@ const withAgent = (agent: SessionProcess) => ({
     processes: [agent],
     currentAgent: agent,
     changeId: "change-1",
+    launchAdmission: null,
   }),
 });
 
@@ -398,6 +399,7 @@ describe("a paste into claude's terminal that never finished", () => {
         processes: mend.delivered.length > 0 ? [CLAUDE] : [],
         currentAgent: mend.delivered.length > 0 ? CLAUDE : null,
         changeId: "change-1",
+        launchAdmission: null,
       }),
     };
     const { store, pastes } = await window(keptIn(await storage()), mend, reads);
@@ -607,6 +609,7 @@ const exitable = () => {
         processes: [agent],
         currentAgent: agent,
         changeId: "change-1",
+        launchAdmission: null,
       }),
     },
   };
@@ -703,6 +706,7 @@ describe("Ana's stopped terminal session, shared control on", () => {
         processes: [exited],
         currentAgent: exited,
         changeId: "change-1",
+        launchAdmission: null,
       }),
       memberNames: async () => [
         { userId: "dana", name: "Dana" },
@@ -816,6 +820,7 @@ describe("Retry from the toast when nothing was pasted", () => {
         processes: [agent],
         currentAgent: agent,
         changeId: "change-1",
+        launchAdmission: null,
       }),
     };
     const { store } = await window(keptIn(await storage()), mend, reads, "agent-gone");
@@ -1025,6 +1030,7 @@ describe("Retry delivery of a review Mend held pending, once claude runs in its 
           processes: agent === null ? [] : [agent],
           currentAgent: agent,
           changeId: "change-1",
+          launchAdmission: null,
         }),
       },
     };
@@ -1966,6 +1972,7 @@ describe("a send on its way when VS Code connects to another Mend server", () =>
           processes: [CLAUDE],
           currentAgent: CLAUDE,
           changeId: "change-1",
+          launchAdmission: null,
         };
       },
     };
@@ -2167,6 +2174,7 @@ describe("Dana signs out while VS Code reads claude's process right before the p
             processes: [CLAUDE],
             currentAgent: CLAUDE,
             changeId: "change-1",
+            launchAdmission: null,
           };
         },
       },
@@ -2409,6 +2417,7 @@ const replaceable = () => {
         processes: [agent],
         currentAgent: agent,
         changeId: "change-1",
+        launchAdmission: null,
       }),
     },
   };

@@ -119,7 +119,13 @@ describe("a workspace window that starts as it gains focus", () => {
       sessionDetail: async (id: string): Promise<SessionDetail> => {
         const of = sessions.get(id);
         if (of === undefined) throw new Error(`no session ${id}`);
-        return { session: of, processes: [terminal(id)], currentAgent: null, changeId: null };
+        return {
+          session: of,
+          processes: [terminal(id)],
+          currentAgent: null,
+          changeId: null,
+          launchAdmission: null,
+        };
       },
     });
     const onError = vi.fn();

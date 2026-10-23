@@ -60,6 +60,7 @@ const detail = (
   currentAgent: agent,
   liveServices: 0,
   preReleaseMemory: null,
+  launchAdmission: "agentRan",
 });
 
 describe("afterUnopenedClose", () => {

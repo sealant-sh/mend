@@ -13,6 +13,7 @@ import { showErrorToast } from "./error-toast.js";
 import { FirstRunTree, FirstRunView, isOfferRow } from "./first-run-view.js";
 import { offerOf } from "./first-run.js";
 import { worktreePath } from "./git.js";
+import { HandoffInput } from "./handoff-input.js";
 import { LastSeenFile } from "./last-seen.js";
 import { Launches } from "./launches.js";
 import { NewSessionInput } from "./new-session-input.js";
@@ -624,15 +625,9 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const store = new SessionStore(new LastSeenFile(kept), client, role, workspaceWindow);
   const tree = new MendTreeProvider(store, client);
   const statusBar = new MendStatusBar();
-  const launches = new Launches(client, store);
+  const launches = new Launches(store);
   const claims = new ToastClaims(path.join(context.globalStorageUri.fsPath, "toasts"));
-  const prompts = new RequestPrompts(
-    new Answers({
-      pending: (sessionId) => client.pendingRequests(sessionId),
-      respond: (requestId, response) => client.respond(requestId, response),
-    }),
-    store,
-  );
+  const prompts = new RequestPrompts(new Answers(() => client.bind()), store);
   const notifier = new Notifier(store, claims, launches, prompts);
   const opens = openRunner({
     context,
@@ -649,6 +644,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     },
   });
   const newSessionInput = new NewSessionInput(context, client, store, launches);
+  const handoffInput = new HandoffInput(context, client, store, launches, role);
   const review = startReview({
     client,
     kept,
@@ -756,6 +752,10 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     workspaceWindow,
     opens.disposable,
     newSessionInput,
+    handoffInput,
+    vscode.commands.registerCommand("mend.handoffBranch", (argument: unknown) =>
+      handoffInput.open(argument),
+    ),
     store.onDidChange((change) => {
       const { next } = change;
       firstRun.render();
@@ -787,7 +787,10 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
       if (firstRun.mode().kind === "tree" && next.kind === "workspace" && next.session !== null)
         review.follow(next.session.project, next.session.session);
     }),
-    vscode.commands.registerCommand("mend.refresh", () => store.refresh()),
+    vscode.commands.registerCommand("mend.refresh", () => {
+      store.refresh();
+      void handoffInput.refresh();
+    }),
     vscode.commands.registerCommand("mend.adoptProject", () => commands.adoptProject()),
     vscode.commands.registerCommand("mend.open", (argument?: unknown) =>
       commands.open(argument, "follow-setting"),

@@ -18,7 +18,8 @@ const observed = (
   settledAt: Date | null,
   agentLive: boolean,
   underWay = false,
-) => ({ status, settledAt, agentLive, underWay });
+  agentRan = agentLive,
+) => ({ status, settledAt, agentLive, underWay, agentRan });
 
 describe("refusalOf (SLNT-167)", () => {
   it.each<{
@@ -119,18 +120,75 @@ describe("refusalOf (SLNT-167)", () => {
     if (refusal !== null) expect(refusal.settledAt).toBe(seen.settledAt);
   });
 
+  it.each<{
+    readonly row: string;
+    readonly over: LaunchOver;
+    readonly seen: ReturnType<typeof observed>;
+    readonly reason: string | null;
+  }>([
+    {
+      row: "Expected never launched, an agent ran and exited while a shell holds the session idle",
+      over: Expected(null),
+      seen: observed("idle", null, false, false, true),
+      reason: "agentRan",
+    },
+    {
+      row: "Expected never launched, an agent ran and the session settled",
+      over: Expected(null),
+      seen: observed("failed", settled, false, false, true),
+      reason: "agentRan",
+    },
+    {
+      row: "Expected the failed attempt, which ran an agent",
+      over: Expected(settled),
+      seen: observed("failed", settled, false, false, true),
+      reason: null,
+    },
+    {
+      row: "NoLiveAgent, an agent ran and exited",
+      over: NoLiveAgent,
+      seen: observed("idle", null, false, false, true),
+      reason: null,
+    },
+  ])("$row → $reason", ({ over, seen, reason }) => {
+    const refusal = refusalOf(over, seen);
+    if (reason === null) expect(refusal).toBeNull();
+    else expect(refusal).toMatchObject({ _tag: "MovedOn", status: seen.status, reason });
+  });
+
+  it("says an agent ran that the caller did not see apart from a plain move", () => {
+    expect(
+      refusalError("s-1", {
+        _tag: "MovedOn",
+        status: "idle",
+        settledAt: null,
+        reason: "agentRan",
+      }),
+    ).toMatchObject({
+      _tag: "SessionMovedOnError",
+      reason: "agentRan",
+      message: "an agent already ran in this session · it reads idle · nothing launched again",
+    });
+  });
+
   it("says what the session reads now, and keeps the gate's words for a launch under way", () => {
     const movedOn = refusalError("s-1", {
       _tag: "MovedOn",
       status: "failed",
       settledAt: later,
+      reason: "settled",
     });
     expect(movedOn._tag).toBe("SessionMovedOnError");
     expect(movedOn.message).toBe(
       "the session moved on · it reads failed · settled 2026-10-19T08:05:00.456Z · nothing launched",
     );
     expect(
-      refusalError("s-1", { _tag: "MovedOn", status: "running", settledAt: null }).message,
+      refusalError("s-1", {
+        _tag: "MovedOn",
+        status: "running",
+        settledAt: null,
+        reason: "agentLive",
+      }).message,
     ).toBe("the session moved on · it reads running · nothing launched");
     const live = refusalError("s-1", {
       _tag: "AgentLive",

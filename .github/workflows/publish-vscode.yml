@@ -125,21 +125,21 @@ jobs:
           mkdir -p "$RUNNER_TEMP/vsix"
           (cd apps/vscode && pnpm exec vsce package --no-dependencies --out "$RUNNER_TEMP/vsix/mend-${{ steps.version.outputs.version }}.vsix")
 
-      # The .vsix carries the bundle, its resources, the README, CHANGELOG and LICENSE: no source,
-      # tests, source maps or node_modules.
+      # The .vsix carries the bundle, the handoff worker, the resources, the README, CHANGELOG and
+      # LICENSE: no source, tests, source maps or node_modules.
       - name: Check what the .vsix carries
         run: |
           set -euo pipefail
           vsix="$RUNNER_TEMP/vsix/mend-${{ steps.version.outputs.version }}.vsix"
           entries=$(unzip -Z1 "$vsix")
           echo "$entries"
-          allowed='^(extension\.vsixmanifest|\[Content_Types\]\.xml|extension/(package\.json|readme\.md|changelog\.md|LICENSE\.txt|dist/extension\.js|resources/[^/]+))$'
+          allowed='^(extension\.vsixmanifest|\[Content_Types\]\.xml|extension/(package\.json|readme\.md|changelog\.md|LICENSE\.txt|dist/extension\.js|dist/handoff-worker\.js|resources/[^/]+))$'
           extra=$(grep -vE "$allowed" <<<"$entries" || true)
           if [[ -n $extra ]]; then
             echo "::error::The .vsix carries files outside the allowlist: $(tr '\n' ' ' <<<"$extra")"
             exit 1
           fi
-          for required in extension/package.json extension/readme.md extension/changelog.md extension/LICENSE.txt extension/dist/extension.js extension/resources/icon.png; do
+          for required in extension/package.json extension/readme.md extension/changelog.md extension/LICENSE.txt extension/dist/extension.js extension/dist/handoff-worker.js extension/resources/icon.png; do
             grep -qxF "$required" <<<"$entries" || { echo "::error::The .vsix lacks $required."; exit 1; }
           done
           size=$(stat -c %s "$vsix")

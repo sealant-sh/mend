@@ -22,7 +22,25 @@ export interface GitRuntime {
   readonly env?: NodeJS.ProcessEnv;
 }
 
-export type Refused = { readonly _tag: "refused"; readonly message: string };
+export type RefusalReason =
+  | { readonly reason: "not-a-checkout"; readonly dir: string }
+  | { readonly reason: "no-commit" }
+  | { readonly reason: "nothing-fetched" }
+  | { readonly reason: "unknown-default" }
+  | { readonly reason: "no-tracking-branch"; readonly branch: string }
+  | { readonly reason: "unrelated-history"; readonly branch: string }
+  | { readonly reason: "unmerged"; readonly paths: number }
+  | { readonly reason: "scratch-inside-checkout"; readonly parent: string }
+  | { readonly reason: "scratch-exposed"; readonly parent: string }
+  | { readonly reason: "partial-clone"; readonly mergeBase: string; readonly words: string }
+  | { readonly reason: "timed-out"; readonly words: string }
+  | { readonly reason: "git"; readonly words: string };
+
+export type Refused = {
+  readonly _tag: "refused";
+  readonly message: string;
+  readonly why: RefusalReason;
+};
 export type Cancelled = { readonly _tag: "cancelled" };
 
 export const SAFE_CONFIG = [
@@ -42,7 +60,13 @@ export class GitFailure extends Error {
   }
 }
 
-class GitUnanswered extends Error {}
+class GitUnanswered extends Error {
+  readonly timedOut: boolean;
+  constructor(message: string, timedOut = false) {
+    super(message);
+    this.timedOut = timedOut;
+  }
+}
 
 class Cancellation extends Error {}
 
@@ -99,6 +123,7 @@ export const gitIn = (cwd: string, config: ReadonlyArray<string>, runtime: Runti
         timedOut
           ? `git ${command} timed out after ${durationOf(runtime.timeoutMs)}`
           : `git ${command} could not run · ${result.error.message}`,
+        timedOut,
       );
     }
     if (result.status === null) {
@@ -150,7 +175,11 @@ export const scrubbed = (inherited: NodeJS.ProcessEnv): Env => {
   };
 };
 
-export const refused = (message: string): Refused => ({ _tag: "refused", message });
+export const refused = (message: string, why: RefusalReason): Refused => ({
+  _tag: "refused",
+  message,
+  why,
+});
 
 export const settled = <A>(work: () => A | Refused): A | Refused | Cancelled => {
   try {
@@ -158,7 +187,10 @@ export const settled = <A>(work: () => A | Refused): A | Refused | Cancelled => 
   } catch (error) {
     if (error instanceof Cancellation) return { _tag: "cancelled" };
     if (error instanceof GitFailure || error instanceof GitUnanswered) {
-      return refused(`${error.message} · nothing was created`);
+      return refused(`${error.message} · nothing was created`, {
+        reason: error instanceof GitUnanswered && error.timedOut ? "timed-out" : "git",
+        words: error.message,
+      });
     }
     throw error;
   }

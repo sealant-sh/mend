@@ -231,6 +231,7 @@ export const sessionReads = (changeId: string | null) => ({
     processes: [],
     currentAgent: null,
     changeId,
+    launchAdmission: null,
   }),
   connection: async () => ({ url: "http://mend", token: null }),
   async held() {

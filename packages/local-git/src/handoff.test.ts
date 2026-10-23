@@ -325,6 +325,7 @@ describe("captureCheckout, then pack", () => {
       _tag: "refused",
       message:
         "this checkout has no origin/main · run git fetch origin, then hand off again · nothing was created",
+      why: { reason: "no-tracking-branch", branch: "main" },
     });
     expect(fingerprint(dana)).toEqual(before);
   });
@@ -334,6 +335,7 @@ describe("captureCheckout, then pack", () => {
     expect(outcomeOf(w, unmergedCheckout(w))).toEqual({
       _tag: "refused",
       message: "1 unmerged path · finish or abort the merge, then hand off · nothing was created",
+      why: { reason: "unmerged", paths: 1 },
     });
   });
 
@@ -404,6 +406,11 @@ describe("captureCheckout, then pack", () => {
       message: expect.stringMatching(
         /^this partial clone lacks objects a handoff reads, and mend handoff never fetches · git log -p [0-9a-f]{7}\.\.HEAD fetches them, then hand off again · git said: .+ · nothing was created$/u,
       ),
+      why: {
+        reason: "partial-clone",
+        mergeBase: expect.stringMatching(/^[0-9a-f]{40}$/u),
+        words: expect.any(String),
+      },
     });
     const mergeBase = w.git(dana, ["merge-base", "HEAD", "origin/main"]);
     w.git(dana, ["log", "-p", `${mergeBase}..HEAD`]);
@@ -692,6 +699,7 @@ describe("the git a capture runs", () => {
     expect(captureCheckout(request)).toEqual({
       _tag: "refused",
       message: "git status timed out after 2 s · nothing was created",
+      why: { reason: "timed-out", words: "git status timed out after 2 s" },
     });
     expect(fs.readdirSync(request.scratchParent)).toEqual([]);
   });
@@ -703,6 +711,7 @@ describe("the git a capture runs", () => {
     const refusal = {
       _tag: "refused",
       message: `git rev-parse could not run · spawnSync ${git} ENOENT · nothing was created`,
+      why: { reason: "git", words: `git rev-parse could not run · spawnSync ${git} ENOENT` },
     };
     const scratchParent = fs.mkdtempSync(path.join(w.root, "scratch-"));
     expect(checkoutOf(checkout, { git })).toEqual(refusal);
@@ -711,6 +720,7 @@ describe("the git a capture runs", () => {
     expect(checkoutOf(w.root, { env: w.hostileEnv })).toEqual({
       _tag: "refused",
       message: `${w.root} is not inside a git checkout · run mend handoff in one · nothing was created`,
+      why: { reason: "not-a-checkout", dir: w.root },
     });
   });
 
@@ -724,6 +734,7 @@ describe("the git a capture runs", () => {
     const notOwned = {
       _tag: "refused",
       message: `git rev-parse failed · ${doubted} · nothing was created`,
+      why: { reason: "git", words: `git rev-parse failed · ${doubted}` },
     };
     expect(checkoutOf(checkout, { git: doubting, env: w.hostileEnv })).toEqual(notOwned);
     expect(captureCheckout(requestFor(w, checkout, { runtime: { git: doubting } }))).toEqual(
@@ -733,6 +744,7 @@ describe("the git a capture runs", () => {
     const unread = {
       _tag: "refused",
       message: "git merge-base failed · fatal: unable to read tree 1234567 · nothing was created",
+      why: { reason: "git", words: "git merge-base failed · fatal: unable to read tree 1234567" },
     };
     const scratchParent = fs.mkdtempSync(path.join(w.root, "scratch-"));
     const runtime = { git: broken, env: w.hostileEnv };

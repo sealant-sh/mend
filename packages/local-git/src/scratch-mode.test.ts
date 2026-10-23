@@ -30,6 +30,7 @@ describe("a capture's directory, made readable by others where mkdtemp ignores i
     const refusal = {
       _tag: "refused",
       message: `the directory a handoff made under ${opened.parent} was readable by others · nothing was created`,
+      why: { reason: "scratch-exposed", parent: opened.parent },
     };
     const runtime = { env: w.hostileEnv };
     expect(

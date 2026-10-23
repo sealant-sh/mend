@@ -1013,9 +1013,11 @@ describe("what a launch may launch over (SLNT-167)", () => {
         sessionId: SESSION,
         status: "running",
         settledAt: null,
-        message: "the session moved on · it reads running · nothing launched",
+        message: "an agent already ran in this session · it reads running · nothing launched again",
+        reason: "agentRan",
       }),
       contract: "SessionMovedOn",
+      typed: { reason: "agentRan" },
     },
     {
       engine: new SessionAgentLiveError({
@@ -1025,10 +1027,11 @@ describe("what a launch may launch over (SLNT-167)", () => {
         message: "starting · a launch of this session is already under way · nothing new started",
       }),
       contract: "SessionAgentLive",
+      typed: {},
     },
   ])(
     "answers the engine's $engine._tag as $contract, and settles, records and names nothing",
-    async ({ engine, contract }) => {
+    async ({ engine, contract, typed }) => {
       for (const mode of [undefined, "protocol"] as const) {
         const row = unlaunched();
         const world = startWorld({ initial: row, launchFailure: engine });
@@ -1048,6 +1051,7 @@ describe("what a launch may launch over (SLNT-167)", () => {
             status: engine.status,
             settledAt: engine.settledAt,
             message: engine.message,
+            ...typed,
           }),
         );
         expect(world.settlements).toEqual([]);
