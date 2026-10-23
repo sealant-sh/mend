@@ -11,7 +11,6 @@ import { mendNote } from "./instruction.js";
 import { KEPT_REVIEW_TTL_MS, KeptReviews, NODE_FILES } from "./kept-reviews.js";
 import { addPending, MAX_PENDING } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
-import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore, type NewComment, type ReviewFailure } from "./review-store.js";
 import type { CommentAnchor, ReadPass, ServerComment, TranscriptEntry } from "./review-wire.js";
 import {
@@ -32,20 +31,11 @@ import {
   noPaste,
   SETTLE,
   sendComposed,
+  pinsInMemory,
 } from "./test-fixtures.js";
 import { threadsOf } from "./threads.js";
 
 vi.mock("vscode", () => import("../test-vscode.js"));
-
-const memento = (): ReviewMemento => {
-  const saved = new Map<string, unknown>();
-  return {
-    get: (key: string) => saved.get(key),
-    update: async (key: string, value: unknown) => {
-      saved.set(key, JSON.parse(JSON.stringify(value)));
-    },
-  };
-};
 
 const DANA_S1 = { url: "http://mend", viewer: "dana", sessionId: "s1" };
 
@@ -54,13 +44,7 @@ const readyStore = async (
   kept: KeptReviews,
   mend: FakeMend = new FakeMend(),
 ): Promise<ReviewStore> => {
-  const store = new ReviewStore(
-    sessionReads("change-1"),
-    mend,
-    new ReviewMemory(memento()),
-    kept,
-    noPaste,
-  );
+  const store = new ReviewStore(sessionReads("change-1"), mend, pinsInMemory(), kept, noPaste);
   store.follow(PROJECT, session("s1"));
   await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
   return store;
@@ -109,7 +93,7 @@ describe("the review store, as it follows one session after another", () => {
         },
         () => undefined,
       ),
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       kept,
       noPaste,
     );
@@ -148,7 +132,7 @@ describe("ReviewStore.forget", () => {
         },
       },
       new FakeMend(),
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(await storage()),
       noPaste,
     );
@@ -302,7 +286,7 @@ describe("a comment she submits", () => {
     const store = new ReviewStore(
       sessionReads("change-1"),
       new FakeMend(),
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(await storage()),
       noPaste,
     );
@@ -336,7 +320,7 @@ describe("a call Mend refuses", () => {
     const store = new ReviewStore(
       sessionReads("change-1"),
       new Refusing(),
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(await storage()),
       noPaste,
     );
@@ -458,7 +442,7 @@ describe("Show record", () => {
         { ...session("s2"), sealantRunId: "run-2" },
       ]),
       mend,
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(await storage()),
       noPaste,
     );
@@ -478,7 +462,7 @@ describe("Show record", () => {
     const store = new ReviewStore(
       reads([{ ...session("s1"), sealantRunId: "run-1" }]),
       mend,
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(await storage()),
       noPaste,
     );
@@ -663,7 +647,7 @@ describe("sending a review from the store", () => {
       }),
     };
     const mend = new FakeMend();
-    const store = new ReviewStore(renamed, mend, new ReviewMemory(memento()), inMemory(), noPaste);
+    const store = new ReviewStore(renamed, mend, pinsInMemory(), inMemory(), noPaste);
     store.follow(PROJECT, session("s1"));
     await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     await store.comment(onLine(3, "Use the shared limiter"));
@@ -1203,7 +1187,7 @@ describe("a review on its way while VS Code is signed out, or Mend cannot say wh
     const kept = inMemory();
     const mend = mendWithOpen();
     const { at, asked, sessions } = organization(() => new Response("{}", { status: 503 }));
-    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+    const store = new ReviewStore(sessions, mend, pinsInMemory(), kept, noPaste);
     store.follow(PROJECT, session("s1"));
     await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
 
@@ -1226,7 +1210,7 @@ describe("a review on its way while VS Code is signed out, or Mend cannot say wh
     const kept = inMemory();
     const mend = mendWithOpen();
     const { at, sessions } = organization(() => new Response("{}", { status: 503 }));
-    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+    const store = new ReviewStore(sessions, mend, pinsInMemory(), kept, noPaste);
     store.follow(PROJECT, session("s1"));
     await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
 
@@ -1255,7 +1239,7 @@ describe("a review on its way while VS Code's sign-in changes on the same server
       throw new MendApiError("Mend is restarting.", 503);
     };
     const { at, sessions } = signIns();
-    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+    const store = new ReviewStore(sessions, mend, pinsInMemory(), kept, noPaste);
     store.follow(PROJECT, session("s1"));
     await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     const key = await sendAll(store);
@@ -1286,7 +1270,7 @@ describe("a review on its way while VS Code's sign-in changes on the same server
       return deliver(sessionId, request);
     };
     const { at, sessions } = signIns();
-    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+    const store = new ReviewStore(sessions, mend, pinsInMemory(), kept, noPaste);
     store.follow(PROJECT, session("s1"));
     await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     const key = await sendAll(store);
@@ -1313,7 +1297,7 @@ describe("a review on its way while VS Code's sign-in changes on the same server
       return deliver(sessionId, request);
     };
     const { at, sessions } = signIns();
-    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+    const store = new ReviewStore(sessions, mend, pinsInMemory(), kept, noPaste);
     store.follow(PROJECT, session("s1"));
     await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     const key = await sendAll(store);
@@ -1335,13 +1319,7 @@ describe("a review on its way while VS Code's sign-in changes on the same server
 
   it("never shows Dana's pending comments once another sign-in Mend cannot name reads the session", async () => {
     const { at, sessions } = signIns();
-    const store = new ReviewStore(
-      sessions,
-      new FakeMend(),
-      new ReviewMemory(memento()),
-      inMemory(),
-      noPaste,
-    );
+    const store = new ReviewStore(sessions, new FakeMend(), pinsInMemory(), inMemory(), noPaste);
     store.follow(PROJECT, session("s1"));
     await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     await store.comment(onLine(3, "Dana's own words"));
@@ -1363,7 +1341,7 @@ describe("a review on its way while VS Code's sign-in changes on the same server
     const mend = new FakeMend();
     mend.serverComments = [DRAFT];
     const unnamed = async (): Promise<ReviewStore> => {
-      const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+      const store = new ReviewStore(sessions, mend, pinsInMemory(), kept, noPaste);
       store.follow(PROJECT, session("s1"));
       await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
       return store;
@@ -1401,7 +1379,7 @@ describe("Retry delivery of a review another window delivered meanwhile", () => 
         return sessionReads("change-1").sessionDetail(sessionId);
       },
     };
-    const store = new ReviewStore(delayed, mend, new ReviewMemory(memento()), kept, noPaste);
+    const store = new ReviewStore(delayed, mend, pinsInMemory(), kept, noPaste);
     store.follow(PROJECT, session("s1"));
     await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     const key = await sendAll(store);

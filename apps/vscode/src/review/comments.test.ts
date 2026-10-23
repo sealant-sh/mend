@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ReviewComments } from "./comments.js";
 import { NODE_FILES, type KeptFiles } from "./kept-reviews.js";
-import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore } from "./review-store.js";
 import type { ServerComment } from "./review-wire.js";
 import {
@@ -19,6 +18,7 @@ import {
   noPaste,
   SETTLE,
   sendComposed,
+  pinsInMemory,
 } from "./test-fixtures.js";
 
 interface Thread {
@@ -119,16 +119,6 @@ const shownWords = (): ReadonlyArray<string> =>
     ),
   );
 
-const memento = (): ReviewMemento => {
-  const saved = new Map<string, unknown>();
-  return {
-    get: (key) => saved.get(key),
-    update: async (key, value) => {
-      saved.set(key, JSON.parse(JSON.stringify(value)));
-    },
-  };
-};
-
 /** The thread VS Code opens under the `+` on line 3 of the pinned slice's new side. */
 const replyOnLine3 = (text: string) => {
   const thread = {
@@ -160,7 +150,7 @@ describe("submitting a comment from its thread", () => {
     const store = new ReviewStore(
       sessionReads("change-1"),
       new FakeMend(),
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(await storage()),
       noPaste,
     );
@@ -177,7 +167,7 @@ describe("submitting a comment from its thread", () => {
     const store = new ReviewStore(
       sessionReads("change-1"),
       new FakeMend(),
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(await storage()),
       noPaste,
     );
@@ -198,7 +188,7 @@ describe("a double click", () => {
     const store = new ReviewStore(
       sessionReads("change-1"),
       new FakeMend(),
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(await storage(), slowFiles(30)),
       noPaste,
     );
@@ -222,7 +212,7 @@ describe("the reply box", () => {
     const store = new ReviewStore(
       sessionReads("change-1"),
       mend,
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(await storage()),
       noPaste,
     );
@@ -251,7 +241,7 @@ describe("saving an edit to a pending comment", () => {
       const store = new ReviewStore(
         sessionReads("change-1"),
         mend,
-        new ReviewMemory(memento()),
+        pinsInMemory(),
         keptIn(directory),
         noPaste,
       );
@@ -314,7 +304,7 @@ describe("saving an edit to a pending comment", () => {
       const store = new ReviewStore(
         sessionReads("change-1"),
         mend,
-        new ReviewMemory(memento()),
+        pinsInMemory(),
         keptIn(directory, files),
         noPaste,
       );
@@ -358,66 +348,66 @@ describe("saving an edit to a pending comment", () => {
   });
 });
 
-describe("an edit VS Code could not write", () => {
-  const twoWindows = async () => {
-    const directory = await storage();
-    const mend = new FakeMend();
-    const disk = { full: false };
-    const fillable: KeptFiles = {
-      ...NODE_FILES,
-      writeFile: async (path, text) => {
-        if (disk.full) throw new Error("the disk is full.");
-        await NODE_FILES.writeFile(path, text);
-      },
-    };
-    const window = async (files: KeptFiles) => {
-      const store = new ReviewStore(
-        sessionReads("change-1"),
-        mend,
-        new ReviewMemory(memento()),
-        keptIn(directory, files),
-        noPaste,
-      );
-      store.follow(PROJECT, session("s1"));
-      await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
-      return store;
-    };
-    const sender = await window(NODE_FILES);
-    const editor = await window(fillable);
-    await sender.comment({
-      at: {
-        worktreeId: "w1",
-        path: "src/auth/limit.ts",
-        at: PINNED.head.id,
-        absent: false,
-        slice: PINNED.id,
-      },
-      line: 3,
-      endLine: 3,
-      body: "Use the shared limiter",
-    });
-    await editor.reloadReview();
-    const [shown] = editor.review().pending;
-    if (shown === undefined) throw new Error("no pending comment");
-    const sendIt = async () => {
-      const composed = sender.compose();
-      if (composed === null) throw new Error("nothing composed");
-      expect(await sendComposed(sender, composed, composed.text)).toEqual({ sent: true });
-    };
-    return {
-      sender,
-      editor,
-      disk,
-      pendingId: shown.id,
-      sendIt,
-      bodies: () => editor.review().pending.map(({ body }) => body),
-      done: () => {
-        sender.dispose();
-        editor.dispose();
-      },
-    };
+const twoWindows = async () => {
+  const directory = await storage();
+  const mend = new FakeMend();
+  const disk = { full: false };
+  const fillable: KeptFiles = {
+    ...NODE_FILES,
+    writeFile: async (path, text) => {
+      if (disk.full) throw new Error("the disk is full.");
+      await NODE_FILES.writeFile(path, text);
+    },
   };
+  const window = async (files: KeptFiles) => {
+    const store = new ReviewStore(
+      sessionReads("change-1"),
+      mend,
+      pinsInMemory(),
+      keptIn(directory, files),
+      noPaste,
+    );
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    return store;
+  };
+  const sender = await window(NODE_FILES);
+  const editor = await window(fillable);
+  await sender.comment({
+    at: {
+      worktreeId: "w1",
+      path: "src/auth/limit.ts",
+      at: PINNED.head.id,
+      absent: false,
+      slice: PINNED.id,
+    },
+    line: 3,
+    endLine: 3,
+    body: "Use the shared limiter",
+  });
+  await editor.reloadReview();
+  const [shown] = editor.review().pending;
+  if (shown === undefined) throw new Error("no pending comment");
+  const sendIt = async () => {
+    const composed = sender.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(sender, composed, composed.text)).toEqual({ sent: true });
+  };
+  return {
+    sender,
+    editor,
+    disk,
+    pendingId: shown.id,
+    sendIt,
+    bodies: () => editor.review().pending.map(({ body }) => body),
+    done: () => {
+      sender.dispose();
+      editor.dispose();
+    },
+  };
+};
 
+describe("an edit VS Code could not write", () => {
   it("is kept once when she saves it again from its not-kept thread, after another window sent the comment", async () => {
     const { editor, disk, sendIt, bodies, done } = await twoWindows();
     const comments = new ReviewComments(editor);
@@ -487,7 +477,7 @@ describe("her words under a Mend draft", () => {
     const store = new ReviewStore(
       sessionReads("change-1"),
       mend,
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(await storage(), files),
       noPaste,
     );

@@ -8,10 +8,10 @@ import { CHANGE_SCHEME, ChangeContent } from "./change-content.js";
 import { ChangeNote, NOTE_SCHEME } from "./change-note.js";
 import { ChangeView } from "./change-view.js";
 import { ReviewComments } from "./comments.js";
-import { KeptReviews } from "./kept-reviews.js";
+import type { KeptReviews } from "./kept-reviews.js";
 import { RECORD_SCHEME, RecordContent } from "./record.js";
 import { ReviewClient } from "./review-client.js";
-import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
+import { ReviewMemory } from "./review-memory.js";
 import { ReviewStore } from "./review-store.js";
 import { reviewToast } from "./review-toast.js";
 import { SendEditor } from "./send-editor.js";
@@ -31,9 +31,8 @@ export interface Review extends vscode.Disposable {
 
 export const startReview = (deps: {
   readonly client: MendClient;
-  readonly memento: ReviewMemento;
-  /** Where her pending comments are kept, in the global storage every window shares. */
-  readonly keptDirectory: string;
+  /** Her pending comments and the pins, kept in the global storage every window shares. */
+  readonly kept: KeptReviews;
   readonly onError: (cause: unknown) => void;
   /** The toast claims every window of this VS Code shares with the notifier. */
   readonly claims: Pick<ToastClaims, "claim" | "release">;
@@ -50,8 +49,8 @@ export const startReview = (deps: {
   const store = new ReviewStore(
     deps.client,
     client,
-    new ReviewMemory(deps.memento),
-    new KeptReviews(deps.keptDirectory),
+    new ReviewMemory(deps.kept),
+    deps.kept,
     deps.paste,
   );
   const note = new ChangeNote(() => store.ready());

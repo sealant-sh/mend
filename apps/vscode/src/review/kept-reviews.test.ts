@@ -317,14 +317,15 @@ const withDocument = (review: SessionReview, text: string | null): SessionReview
   return saved.review;
 };
 
-describe("a review untouched past the expiry", () => {
-  const withPhase = (phase: SendPhase): SessionReview => {
-    const review = sentReview();
-    return { ...review, sends: review.sends.map((record) => ({ ...record, phase })) };
-  };
-  const delivered = (): SessionReview =>
-    withPhase({ kind: "delivered", at: "2026-10-19T11:00:00.000Z" });
+const withPhase = (phase: SendPhase): SessionReview => {
+  const review = sentReview();
+  return { ...review, sends: review.sends.map((record) => ({ ...record, phase })) };
+};
 
+const delivered = (): SessionReview =>
+  withPhase({ kind: "delivered", at: "2026-10-19T11:00:00.000Z" });
+
+describe("a review untouched past the expiry", () => {
   it("goes once it holds only reviews Mend took", async () => {
     expect((await keptPastExpiry(delivered())).kept).toBe(false);
   });

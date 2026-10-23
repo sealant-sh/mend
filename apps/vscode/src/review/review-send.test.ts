@@ -11,7 +11,6 @@ import type { SessionDetail, SessionProcess } from "../types.js";
 import { pasteIntoAgent, type Pasted } from "./agent-paste.js";
 import { textToSend } from "./instruction.js";
 import { DRIVE_STALE_MS, KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
-import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore, type NewComment, type ReviewFailure } from "./review-store.js";
 import { reviewToast } from "./review-toast.js";
 import type { ReadPass } from "./review-wire.js";
@@ -29,20 +28,11 @@ import {
   storage,
   SETTLE,
   sendComposed,
+  pinsInMemory,
 } from "./test-fixtures.js";
 import { threadsOf } from "./threads.js";
 
 vi.mock("vscode", () => import("../test-vscode.js"));
-
-const memento = (): ReviewMemento => {
-  const saved = new Map<string, unknown>();
-  return {
-    get: (key: string) => saved.get(key),
-    update: async (key: string, value: unknown) => {
-      saved.set(key, JSON.parse(JSON.stringify(value)));
-    },
-  };
-};
 
 const CLAUDE: SessionProcess = {
   id: "agent-1",
@@ -78,7 +68,7 @@ const window = async (
   const store = new ReviewStore(
     reads,
     mend,
-    new ReviewMemory(memento()),
+    pinsInMemory(),
     kept,
     async (sessionId, processId, text, bound) => {
       expect(processId).toBe("agent-1");
@@ -307,7 +297,7 @@ describe("a paste into claude's terminal that never finished", () => {
     const store = new ReviewStore(
       withAgent(CLAUDE),
       mend,
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(await storage()),
       async (_sessionId, _processId, text) => {
         pastes.push(text);
@@ -344,7 +334,7 @@ describe("a paste into claude's terminal that never finished", () => {
     const closing = new ReviewStore(
       withAgent(CLAUDE),
       mend,
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       new KeptReviews(directory, NODE_FILES, clock),
       async () => {
         pasted();
@@ -428,7 +418,7 @@ const pastingWindow = async (kept: KeptReviews, mend: FakeMend) => {
   const store = new ReviewStore(
     withAgent(CLAUDE),
     mend,
-    new ReviewMemory(memento()),
+    pinsInMemory(),
     kept,
     async (_sessionId, _processId, text) => {
       pastes.push(text);
@@ -561,7 +551,7 @@ describe("Retry delivery of an older review while a newer one is on its way to M
     const store = new ReviewStore(
       withAgent(CLAUDE),
       mend,
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(await storage()),
       async (sessionId, _processId, text, bound) => {
         await bound.sessionDetail(sessionId);
@@ -857,7 +847,7 @@ describe("Retry from the toast when nothing was pasted", () => {
     const store = new ReviewStore(
       withAgent(CLAUDE),
       mend,
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(await storage()),
       async (_sessionId, _processId, text) => {
         pastes.push(text);
@@ -940,7 +930,7 @@ describe("two Retry deliveries of one review at once in one window", () => {
     const store = new ReviewStore(
       withAgent(CLAUDE),
       mend,
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       kept,
       async (sessionId, _processId, text, bound) => {
         await bound.sessionDetail(sessionId);
@@ -1295,7 +1285,7 @@ describe("a send that leaves her something to know while she looks at another wi
         const store = new ReviewStore(
           reads,
           mend,
-          new ReviewMemory(memento()),
+          pinsInMemory(),
           keptIn(directory),
           (_sessionId, _processId, text) => waits.paste(text),
         );
@@ -2059,7 +2049,7 @@ describe("VS Code connects to another Mend server while a send waits on a read",
     const store = new ReviewStore(
       { ...withAgent(CLAUDE), connection: async () => ({ url, token: null }) },
       mend,
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn("/global-storage/reviews", watched),
       async (sessionId, _processId, text, bound) => {
         // As the paste does: Mend's read of the agent's process right before the paste.
@@ -2098,7 +2088,7 @@ describe("VS Code connects to another Mend server while claude's terminal opens 
     const store = new ReviewStore(
       { ...withAgent(CLAUDE), connection: async () => ({ url, token: null }) },
       mend,
-      new ReviewMemory(memento()),
+      pinsInMemory(),
       keptIn(directory),
       (sessionId, processId, text, reads, bound) =>
         pasteIntoAgent<string>(
@@ -2406,49 +2396,49 @@ const sees = async (store: ReviewStore, processId: string): Promise<void> => {
   }, SETTLE);
 };
 
+/** Dana's session `s1`, its live claude the one last `replace`d in. */
+const replaceable = () => {
+  let agent = CLAUDE;
+  return {
+    replace: (next: SessionProcess) => {
+      agent = next;
+    },
+    reads: {
+      ...sessionReads("change-1"),
+      sessionDetail: async (sessionId: string): Promise<SessionDetail> => ({
+        session: { ...session(sessionId), ownerUserId: "dana" },
+        processes: [agent],
+        currentAgent: agent,
+        changeId: "change-1",
+      }),
+    },
+  };
+};
+
+/** A window with its own kept files over `directory`, each paste kept with its process. */
+const windowOver = async (
+  directory: string,
+  mend: FakeMend,
+  reads: ReturnType<typeof replaceable>["reads"],
+) => {
+  const pastes: Array<{ readonly processId: string; readonly text: string }> = [];
+  const store = new ReviewStore(
+    reads,
+    mend,
+    pinsInMemory(),
+    keptIn(directory),
+    async (_sessionId, processId, text) => {
+      pastes.push({ processId, text });
+      return "pasted";
+    },
+  );
+  store.follow(PROJECT, session("s1"));
+  await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+  return { store, pastes };
+};
+
 describe("claude is replaced between two Sends, before she pressed Enter", () => {
   const CLAUDE_2: SessionProcess = { ...CLAUDE, id: "agent-2" };
-
-  /** Dana's session `s1`, its live claude the one last `replace`d in. */
-  const replaceable = () => {
-    let agent = CLAUDE;
-    return {
-      replace: (next: SessionProcess) => {
-        agent = next;
-      },
-      reads: {
-        ...sessionReads("change-1"),
-        sessionDetail: async (sessionId: string): Promise<SessionDetail> => ({
-          session: { ...session(sessionId), ownerUserId: "dana" },
-          processes: [agent],
-          currentAgent: agent,
-          changeId: "change-1",
-        }),
-      },
-    };
-  };
-
-  /** A window with its own kept files over `directory`, each paste kept with its process. */
-  const windowOver = async (
-    directory: string,
-    mend: FakeMend,
-    reads: ReturnType<typeof replaceable>["reads"],
-  ) => {
-    const pastes: Array<{ readonly processId: string; readonly text: string }> = [];
-    const store = new ReviewStore(
-      reads,
-      mend,
-      new ReviewMemory(memento()),
-      keptIn(directory),
-      async (_sessionId, processId, text) => {
-        pastes.push({ processId, text });
-        return "pasted";
-      },
-    );
-    store.follow(PROJECT, session("s1"));
-    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
-    return { store, pastes };
-  };
 
   it("pastes the whole review into the new claude, and the first review reads pasted into an earlier claude", async () => {
     const mend = new FakeMend();

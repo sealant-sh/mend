@@ -1,73 +1,95 @@
 import { randomUUID } from "node:crypto";
 
+import type { KeptReviews, SharedRecord } from "./kept-reviews.js";
+
 /**
- * What the review keeps on this machine, in the extension's `globalState` under `mend.review`, per
- * server URL: the key that pins each change's slice, so a reload and every window show the same
- * slice. `reviews/open` answers the same slice for the same key.
+ * The key that pins each change's slice, per server URL, so a reload and every window show the
+ * same slice: `reviews/open` answers the same slice for the same key. Kept in a file every window
+ * shares (`kept-reviews.ts`), so two windows reading a change first agree on one key.
  */
 
-export const REVIEW_MEMORY_KEY = "mend.review";
+/** A pin unused this long goes: the next read of its change pins the worktree as it is then. */
+export const PIN_UNUSED_MS = 90 * 24 * 60 * 60 * 1000;
+/** How often a read of a change marks its pin used, so reading it writes at most once a day. */
+const PIN_USED_EVERY_MS = 24 * 60 * 60 * 1000;
 
-export interface ReviewMemento {
-  get(key: string): unknown;
-  update(key: string, value: unknown): Thenable<void>;
+export interface Pin {
+  readonly key: string;
+  /** When a read last used it, in ms. */
+  readonly usedAt: number;
 }
 
-/** One server's review memory. */
-export interface ServerMemory {
-  /** The open key pinning each change's slice, by change id. */
-  readonly pins: Readonly<Record<string, string>>;
-}
-
-const EMPTY: ServerMemory = { pins: {} };
+/** One server's pins, by change id. */
+export type Pins = Readonly<Record<string, Pin>>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const strings = (value: unknown): Readonly<Record<string, string>> =>
+/** A server's pins as stored; a pin that does not read back is not kept. */
+export const parsePins = (value: unknown): Pins =>
   isRecord(value)
     ? Object.fromEntries(
-        Object.entries(value).flatMap(([key, item]) =>
-          typeof item === "string" ? [[key, item]] : [],
-        ),
+        Object.entries(value).flatMap(([changeId, pin]) => {
+          if (!isRecord(pin)) return [];
+          const { key, usedAt } = pin;
+          return typeof key === "string" && typeof usedAt === "number"
+            ? [[changeId, { key, usedAt }]]
+            : [];
+        }),
       )
     : {};
 
-/** A server's memory as stored; anything unreadable reads as nothing kept. */
-export const parseServerMemory = (value: unknown): ServerMemory =>
-  isRecord(value) ? { pins: strings(value["pins"]) } : EMPTY;
-
 export const newOpenKey = (changeId: string): string => `vscode-review:${changeId}:${randomUUID()}`;
 
+const pinsOf = (serverUrl: string): SharedRecord<Pins> => ({
+  name: `pins/${encodeURIComponent(serverUrl)}.json`,
+  what: "the slices this VS Code pinned for review",
+  parse: parsePins,
+});
+
 export class ReviewMemory {
-  constructor(private readonly memento: ReviewMemento) {}
-
-  read(serverUrl: string): ServerMemory {
-    const all = this.memento.get(REVIEW_MEMORY_KEY);
-    return parseServerMemory(isRecord(all) ? all[serverUrl] : undefined);
-  }
-
-  async write(serverUrl: string, next: ServerMemory): Promise<void> {
-    const all = this.memento.get(REVIEW_MEMORY_KEY);
-    await this.memento.update(REVIEW_MEMORY_KEY, {
-      ...(isRecord(all) ? all : {}),
-      [serverUrl]: next,
-    });
-  }
+  constructor(
+    private readonly kept: Pick<KeptReviews, "updateRecord">,
+    private readonly now: () => number = Date.now,
+  ) {}
 
   /** The key pinning this change's slice, made and kept the first time it is asked for. */
   async pinKey(serverUrl: string, changeId: string): Promise<string> {
-    const memory = this.read(serverUrl);
-    const known = memory.pins[changeId];
-    if (known !== undefined) return known;
-    return this.repin(serverUrl, changeId);
+    return this.#pin(serverUrl, changeId, (found, now) =>
+      found !== undefined && now - found.usedAt < PIN_USED_EVERY_MS
+        ? found
+        : { key: found?.key ?? newOpenKey(changeId), usedAt: now },
+    );
   }
 
   /** A new key for this change: the next `reviews/open` pins a slice of the worktree as it is now. */
   async repin(serverUrl: string, changeId: string): Promise<string> {
-    const memory = this.read(serverUrl);
-    const key = newOpenKey(changeId);
-    await this.write(serverUrl, { ...memory, pins: { ...memory.pins, [changeId]: key } });
-    return key;
+    return this.#pin(serverUrl, changeId, (_found, now) => ({
+      key: newOpenKey(changeId),
+      usedAt: now,
+    }));
+  }
+
+  /** Sets the change's pin under the pins' lock, and drops each one unused past the expiry. */
+  async #pin(
+    serverUrl: string,
+    changeId: string,
+    choose: (found: Pin | undefined, now: number) => Pin,
+  ): Promise<string> {
+    const now = this.now();
+    const pins = await this.kept.updateRecord(pinsOf(serverUrl), (kept) => {
+      const found = kept[changeId];
+      const pin = choose(found, now);
+      if (pin === found) return kept;
+      return {
+        ...Object.fromEntries(
+          Object.entries(kept).filter(([, other]) => now - other.usedAt < PIN_UNUSED_MS),
+        ),
+        [changeId]: pin,
+      };
+    });
+    const pin = pins[changeId];
+    if (pin === undefined) throw new Error("VS Code did not keep the key pinning this change.");
+    return pin.key;
   }
 }

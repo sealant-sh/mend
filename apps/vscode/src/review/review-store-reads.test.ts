@@ -5,7 +5,7 @@ import { MendApiError } from "../mend-http.js";
 import type { Project, Session, SessionDetail } from "../types.js";
 import type { ChangeRead } from "./change-rows.js";
 import { ReviewClient } from "./review-client.js";
-import { ReviewMemory } from "./review-memory.js";
+import type { ReviewMemory } from "./review-memory.js";
 import { ReviewStore } from "./review-store.js";
 import type {
   Checkpoint,
@@ -14,7 +14,7 @@ import type {
   SliceDiff,
   WorktreeChain,
 } from "./review-wire.js";
-import { keptIn, memoryFiles, noPaste, SETTLE } from "./test-fixtures.js";
+import { keptIn, memoryFiles, noPaste, pinsInMemory, SETTLE } from "./test-fixtures.js";
 
 vi.mock("vscode", () => import("../test-vscode.js"));
 
@@ -166,22 +166,12 @@ class World extends ReviewClient {
   }
 }
 
-const memento = () => {
-  const kept = new Map<string, unknown>();
-  return {
-    get: (key: string): unknown => kept.get(key),
-    update: async (key: string, value: unknown): Promise<void> => {
-      kept.set(key, value);
-    },
-  };
-};
-
 /** A review store over `world`, its session reads gated by `detail` and counted. */
 const storeOver = (
   world: World,
   options: {
     readonly detail?: () => Promise<SessionDetail>;
-    readonly kept?: ReturnType<typeof memento>;
+    readonly memory?: ReviewMemory;
     readonly viewer?: string;
   } = {},
 ) => {
@@ -218,7 +208,7 @@ const storeOver = (
       ],
     },
     world,
-    new ReviewMemory(options.kept ?? memento()),
+    options.memory ?? pinsInMemory(),
     keptIn("/global-storage/reviews", memoryFiles()),
     noPaste,
   );
@@ -275,8 +265,8 @@ describe("ReviewStore.forget", () => {
 describe("the worktree moved on past the pinned slice (story d, edge case)", () => {
   it("keeps the pinned slice, says how many files changed since, and re-pins on Review the newer change", async () => {
     const world = new World();
-    const kept = memento();
-    const { store } = storeOver(world, { kept });
+    const memory = pinsInMemory();
+    const { store } = storeOver(world, { memory });
     store.follow(project, session);
     const first = await readyRead(store);
     expect(first.diff.files).toHaveLength(0);
@@ -295,7 +285,7 @@ describe("the worktree moved on past the pinned slice (story d, edge case)", () 
     expect(newer.diff.files).toHaveLength(3);
     expect(newer.drift).toBe(null);
 
-    const reloaded = storeOver(world, { kept }).store;
+    const reloaded = storeOver(world, { memory }).store;
     reloaded.follow(project, session);
     expect((await readyRead(reloaded)).pinned.id).toBe(newer.pinned.id);
     expect(new Set(world.opened).size).toBe(2);

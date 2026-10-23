@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 
 import type { KeptFiles } from "./kept-reviews.js";
-import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore } from "./review-store.js";
 import { SendEditor } from "./send-editor.js";
 import {
@@ -15,6 +14,7 @@ import {
   session,
   sessionReads,
   SETTLE,
+  pinsInMemory,
 } from "./test-fixtures.js";
 
 interface BaseStat {
@@ -171,16 +171,6 @@ vi.mock("vscode", async () => {
   };
 });
 
-const memento = (): ReviewMemento => {
-  const saved = new Map<string, unknown>();
-  return {
-    get: (key) => saved.get(key),
-    update: async (key, value) => {
-      saved.set(key, JSON.parse(JSON.stringify(value)));
-    },
-  };
-};
-
 const encoded = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decoded = (data: Uint8Array): string => new TextDecoder().decode(data);
 const SAVE: { readonly create: boolean; readonly overwrite: boolean } = {
@@ -192,7 +182,7 @@ const windowOn = async (files: KeptFiles, mend: FakeMend) => {
   const store = new ReviewStore(
     sessionReads("change-1"),
     mend,
-    new ReviewMemory(memento()),
+    pinsInMemory(),
     keptIn("/global-storage/reviews", files),
     noPaste,
   );

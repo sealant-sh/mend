@@ -20,6 +20,7 @@ import { Instruction } from "./instruction.js";
 import { KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
 import { EMPTY_REVIEW, type PendingComment, type SessionReview } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
+import { ReviewMemory } from "./review-memory.js";
 import type { Composition, ReviewStore, Sent } from "./review-store.js";
 import type {
   ChangeFile,
@@ -499,6 +500,10 @@ export const memoryFiles = (): KeptFiles => {
     modified: async (path) => files.get(path)?.at ?? null,
   };
 };
+
+/** A window's pins for review, over a disk of their own. */
+export const pinsInMemory = (): ReviewMemory =>
+  new ReviewMemory(keptIn("/global-storage/reviews", memoryFiles()));
 
 /** A window with no terminal of hers to paste into. */
 export const noPaste = async (): Promise<Pasted> => "not-attached";
