@@ -17,6 +17,7 @@ import {
   ConversationWait,
   ConversationWaitWork,
   FollowUp,
+  LaunchMovedOnReason,
   ReviewSlice,
   ServiceBrowserScheme,
   ServiceRecipe,
@@ -194,6 +195,8 @@ export class SessionMovedOn extends Schema.TaggedError<SessionMovedOn>()(
     sessionId: SessionId,
     status: SessionStatus,
     settledAt: Schema.NullOr(Timestamp),
+    /** Why it moved on; a server before this field named none. */
+    reason: Schema.optional(LaunchMovedOnReason),
     /** Why, in words a client can show as they are. */
     message: Schema.String,
   },

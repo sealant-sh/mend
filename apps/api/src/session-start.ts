@@ -390,6 +390,7 @@ export const makeSessionStart = Effect.gen(function* () {
                 sessionId: session.id,
                 status: error.status,
                 settledAt: error.settledAt,
+                reason: error.reason,
                 message: error.message,
               }),
             ),

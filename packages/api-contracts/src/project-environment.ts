@@ -446,7 +446,8 @@ export class DeliverFollowUpRequest extends Schema.Class<DeliverFollowUpRequest>
 /**
  * The attempt a launching client saw (SLNT-167): the session's `settledAt` as it read it, null
  * when it read the session unsettled with no agent (never launched). The launch runs only while
- * the session still reads that way; one that moved on is refused (`SessionMovedOn`).
+ * the session still reads that way; one that moved on is refused (`SessionMovedOn`), as is a null
+ * once any agent ran in the session (`reason: "agentRan"`).
  */
 export const LaunchExpected = Schema.Struct({ settledAt: Schema.NullOr(Timestamp) });
 export type LaunchExpected = typeof LaunchExpected.Type;

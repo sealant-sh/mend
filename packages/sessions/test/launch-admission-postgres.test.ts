@@ -10,7 +10,7 @@ import {
 import { postgresTestConfig } from "@mend/db/testing";
 import { ProjectId, SealantWorkspaceId, SessionId, Sha, WorktreeId } from "@mend/domain";
 import { Session, isLiveAgentProcess } from "@mend/domain/workbench";
-import { Expected, refusalOf } from "@mend/sessions";
+import { agentRanIn, Expected, refusalOf } from "@mend/sessions";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -56,6 +56,7 @@ const observedOf = (id: SessionId) =>
       settledAt: session.settledAt,
       agentLive: session.settledAt === null && rows.some(isLiveAgentProcess),
       underWay: false,
+      agentRan: agentRanIn(rows),
     };
   });
 const observed = observedOf(SESSION);
@@ -169,7 +170,12 @@ describe.skipIf(postgres.skip)("the attempt a client saw, through Postgres and t
       BigInt(result.micros ?? "0"),
     );
     expect(result.admitted).toBeNull();
-    expect(result.afterResume).toEqual({ _tag: "MovedOn", status: "running", settledAt: null });
+    expect(result.afterResume).toEqual({
+      _tag: "MovedOn",
+      status: "running",
+      settledAt: null,
+      reason: "agentLive",
+    });
     expect(result.afterSecondRefusal).toMatchObject({ _tag: "MovedOn", status: "failed" });
     expect(result.afterSecond.settledAt?.getTime()).not.toBe(result.seen.settledAt?.getTime());
     expect(result.secondSeen).toBeNull();

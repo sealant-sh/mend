@@ -71,6 +71,19 @@ export const SessionStatus = Schema.Literals([
 export type SessionStatus = typeof SessionStatus.Type;
 
 /**
+ * Why a launch over the attempt its client saw was refused `SessionMovedOn` (SLNT-167): another
+ * launch held the gate, the agent is live, an agent ran that the client did not see, or the
+ * session settled since.
+ */
+export const LaunchMovedOnReason = Schema.Literals([
+  "underWay",
+  "agentLive",
+  "agentRan",
+  "settled",
+]);
+export type LaunchMovedOnReason = typeof LaunchMovedOnReason.Type;
+
+/**
  * Where a session was started from (docs/adr/0006-slack.md, "Audit"). `mend` is Mend's own
  * surfaces: the web app, the CLI, the phone and Mend's own jobs. `slack` is a mention in Slack.
  * Stamped at provision and never rewritten.
