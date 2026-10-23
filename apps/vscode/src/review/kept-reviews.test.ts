@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { SendPhase } from "./delivery.js";
+import { startSend, stepReview, type SendEvent, type SendPhase } from "./delivery.js";
 import {
   DRIVE_STALE_MS,
   KEPT_REVIEW_TTL_MS,
@@ -12,13 +12,16 @@ import {
   type ReviewPlace,
 } from "./kept-reviews.js";
 import {
+  acceptedDrafts,
   addPending,
+  EMPTY_REVIEW,
   keepComposed,
   saveDocument,
   type Composed,
   type SessionReview,
 } from "./pending.js";
 import {
+  instructionOf,
   keptIn,
   pending,
   PINNED,
@@ -356,6 +359,41 @@ describe("a review untouched past the expiry", () => {
     expect((await keptPastExpiry({ ...delivered(), replaced: ["d1"] })).read.replaced).toEqual([
       "d1",
     ]);
+  });
+
+  it("stays while a Mend draft her posted words replace is still a draft there", async () => {
+    const rewrite = pending({
+      id: "a1",
+      body: "Run the burst test too.",
+      origin: { kind: "accepted", draftId: "d1", evidence: [], draftBody: "Run the tests." },
+    });
+    const sent = startSend(
+      { ...EMPTY_REVIEW, pending: [rewrite] },
+      {
+        key: "key-1",
+        slice: { id: PINNED.id, baseId: PINNED.base.id, headId: PINNED.head.id, diffDigest: "d" },
+        instruction: instructionOf("the review"),
+        paste: { kind: "all" },
+        pending: ["a1"],
+        open: [],
+        now: "2026-10-19T10:50:00.000Z",
+      },
+    );
+    if (sent === null) throw new Error("the review did not start");
+    const now = "2026-10-19T11:00:00.000Z";
+    const left: ReadonlyArray<SendEvent> = [
+      { kind: "posted", pendingId: "a1", commentId: "c9" },
+      { kind: "draft-left", draftId: "d1", words: "Mend refused the dismissal." },
+    ];
+    const stepped = left.reduce((next, event) => stepReview(next, "key-1", event, now), sent);
+    const done: SendPhase = { kind: "delivered", at: now };
+    const review = {
+      ...stepped,
+      sends: stepped.sends.map((record) => ({ ...record, phase: done })),
+    };
+    expect(acceptedDrafts(review).has("d1")).toBe(true);
+    const { read } = await keptPastExpiry(review);
+    expect(acceptedDrafts(read).has("d1")).toBe(true);
   });
 
   it("goes when the review she is writing reads as Send review composed it", async () => {
