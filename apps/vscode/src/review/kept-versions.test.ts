@@ -27,6 +27,21 @@ const stored = async (file: string): Promise<Record<string, unknown>> => {
   return Object.fromEntries(Object.entries(value));
 };
 
+/** Her next review, of the comment `new`. */
+const sendNew = (review: SessionReview): SessionReview => {
+  const next = startSend(review, {
+    key: "key-2",
+    slice: { id: "slice-1", baseId: "cp1", headId: "cp2", diffDigest: "d" },
+    instruction: instructionOf("the next review"),
+    paste: { kind: "all" },
+    pending: ["new"],
+    open: [],
+    now: "2026-10-19T12:00:00.000Z",
+  });
+  if (next === null) throw new Error("the review did not start");
+  return next;
+};
+
 describe("the kept review, across versions of the extension", () => {
   it("is left as it was when a newer version wrote it: this window refuses to change it", async () => {
     const directory = await storage();
@@ -127,20 +142,7 @@ describe("the kept review, across versions of the extension", () => {
     );
     const kept = keptIn(directory);
     await kept.update(DANA, addOne);
-    const send = (review: SessionReview): SessionReview => {
-      const next = startSend(review, {
-        key: "key-2",
-        slice: { id: "slice-1", baseId: "cp1", headId: "cp2", diffDigest: "d" },
-        instruction: instructionOf("the next review"),
-        paste: { kind: "all" },
-        pending: ["new"],
-        open: [],
-        now: "2026-10-19T12:00:00.000Z",
-      });
-      if (next === null) throw new Error("the review did not start");
-      return next;
-    };
-    await expect(kept.update(DANA, send)).rejects.toThrow(/newer version/);
+    await expect(kept.update(DANA, sendNew)).rejects.toThrow(/newer version/);
     expect((await kept.read(DANA)).review.pending.map(({ id }) => id)).toEqual(["new"]);
   });
 

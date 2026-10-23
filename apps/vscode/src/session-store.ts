@@ -5,10 +5,10 @@ import { refusedSignIn } from "./error-toast.js";
 import { canonicalPaths, realPathFor, repositoryFacts } from "./git.js";
 import type { LastSeenStore } from "./last-seen.js";
 import { comparedPaths, matchProject } from "./project-match.js";
+import { Unwritable } from "./review/kept-reviews.js";
 import type { MemberName } from "./session-lines.js";
 import {
   mergeLastSeen,
-  seen,
   sessionModel,
   type Connection,
   type LandingFact,
@@ -168,8 +168,8 @@ export class SessionStore implements vscode.Disposable {
   #lastHeardAt: string | null = null;
   #serverUrl: string | null = null;
   #lastSeen: LastSeen = { baseline: new Date().toISOString(), sessions: {} };
-  /** A look whose write failed: the next emit writes it again. */
-  #lastSeenUnsaved = false;
+  /** The server whose looks a write failed to keep: the next emit writes them again. */
+  #unsavedFor: string | null = null;
   #model: WindowModel | null = null;
   /** Whether `#model` came from a read: the first read's change then raises no toast. */
   #modelRead = false;
@@ -848,7 +848,10 @@ export class SessionStore implements vscode.Disposable {
    */
   async #loadLastSeen(url: string): Promise<LastSeen> {
     const fresh: LastSeen = { baseline: new Date().toISOString(), sessions: {} };
-    return this.lastSeen.merge(url, fresh, []).catch(() => fresh);
+    return this.lastSeen.merge(url, fresh, []).catch((cause: unknown) => {
+      this.#unsaved(url, cause);
+      return fresh;
+    });
   }
 
   /** What other windows looked at since: a look there is no news here. */
@@ -874,26 +877,34 @@ export class SessionStore implements vscode.Disposable {
   #saveLastSeen(forget: ReadonlyArray<string> = []): void {
     const url = this.#serverUrl;
     if (url === null) return;
-    this.#lastSeenUnsaved = false;
+    this.#unsavedFor = null;
     void this.lastSeen.merge(url, this.#lastSeen, forget).then(
       (kept) => this.#adoptLastSeen(url, kept),
-      () => {
-        this.#lastSeenUnsaved = true;
-      },
+      (cause: unknown) => this.#unsaved(url, cause),
     );
   }
 
+  /** A write that failed is tried again, unless the file is one this build never writes. */
+  #unsaved(url: string, cause: unknown): void {
+    if (!(cause instanceof Unwritable)) this.#unsavedFor = url;
+  }
+
   /**
-   * The sessions she looks at now that settled since she last looked at them: only those are
-   * written, so a window she keeps in front writes nothing while nothing new settles.
+   * The sessions she looks at now that settled since she last looked at them, each with when it
+   * settled by Mend's clock, the time its look is kept at: only those are written, so a window she
+   * keeps in front writes nothing while nothing new settles, whatever this machine's clock reads.
    */
-  #lookedAt(model: WindowModel): ReadonlyArray<string> {
-    if (!vscode.window.state.focused || !this.#read) return [];
-    return [...this.showing()].filter((id) => {
-      const settledAt = model.sessions.get(id)?.settledAt ?? null;
-      const last = this.#lastSeen.sessions[id] ?? this.#lastSeen.baseline;
-      return settledAt !== null && Date.parse(settledAt) > Date.parse(last);
-    });
+  #lookedAt(model: WindowModel): ReadonlyMap<string, string> {
+    if (!vscode.window.state.focused || !this.#read) return new Map();
+    return new Map(
+      [...this.showing()].flatMap((id): ReadonlyArray<[string, string]> => {
+        const settledAt = model.sessions.get(id)?.settledAt ?? null;
+        const last = this.#lastSeen.sessions[id] ?? this.#lastSeen.baseline;
+        return settledAt !== null && Date.parse(settledAt) > Date.parse(last)
+          ? [[id, settledAt]]
+          : [];
+      }),
+    );
   }
 
   /** Sessions no longer on the server are forgotten, so the record stays the size of the view. */
@@ -920,14 +931,15 @@ export class SessionStore implements vscode.Disposable {
     const prev = this.#modelRead ? this.#model : null;
     let next = this.#modelAt(now);
     const looked = this.#lookedAt(next);
-    if (looked.length > 0) {
-      // Mend's clock may run ahead of this one: a look is never before what it looked at.
-      const settled = looked.map((id) => Date.parse(next.sessions.get(id)?.settledAt ?? ""));
-      const at = new Date(Math.max(now.getTime(), ...settled.filter(Number.isFinite)));
-      this.#lastSeen = seen(this.#lastSeen, looked, at);
+    if (looked.size > 0) {
+      this.#lastSeen = {
+        ...this.#lastSeen,
+        sessions: { ...this.#lastSeen.sessions, ...Object.fromEntries(looked) },
+      };
       next = this.#modelAt(now);
     }
-    if (looked.length > 0 || this.#lastSeenUnsaved) this.#saveLastSeen();
+    if (looked.size > 0 || (this.#unsavedFor !== null && this.#unsavedFor === this.#serverUrl))
+      this.#saveLastSeen();
     this.#model = next;
     this.#modelRead = this.#read;
     void vscode.commands.executeCommand("setContext", "mend.offline", next.offline);

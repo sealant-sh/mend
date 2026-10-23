@@ -87,6 +87,9 @@ export interface KeptReview {
  */
 export const KEPT_FORMAT = 1;
 
+/** A write this build refuses for as long as the file stays as it is: retrying it changes nothing. */
+export class Unwritable extends Error {}
+
 /** A kind of file every window shares: what it keeps, in her words, and the format it is in. */
 interface FileKind {
   readonly what: string;
@@ -359,7 +362,7 @@ export class KeptReviews {
     fields: Readonly<Record<string, unknown>>,
     held: () => Promise<boolean>,
   ): Promise<number> {
-    if (stored.unwritable !== null) throw new Error(stored.unwritable);
+    if (stored.unwritable !== null) throw new Unwritable(stored.unwritable);
     // Never below the clock: a file swept or removed and written anew stays newer than any
     // revision a window read before.
     const rev = Math.max(stored.rev + 1, this.now());
