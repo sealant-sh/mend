@@ -82,7 +82,13 @@ describe("the review store, as it follows one session after another", () => {
     const held = { ana: Promise.withResolvers<void>(), dana: Promise.withResolvers<void>() };
     const detail = async (sessionId: string): Promise<SessionDetail> => {
       if (sessionId === "ana" || sessionId === "dana") await held[sessionId].promise;
-      return { session: session(sessionId), processes: [], currentAgent: null, changeId: null };
+      return {
+        session: session(sessionId),
+        processes: [],
+        currentAgent: null,
+        changeId: null,
+        launchAdmission: null,
+      };
     };
     // Neither session has a change: a read ends once it has loaded the session's comments.
     const store = new ReviewStore(
@@ -644,6 +650,7 @@ describe("sending a review from the store", () => {
         processes: [],
         currentAgent: null,
         changeId: "change-1",
+        launchAdmission: null,
       }),
     };
     const mend = new FakeMend();

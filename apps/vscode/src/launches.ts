@@ -6,7 +6,7 @@ import { promptIssue, type LaunchRequest } from "./new-session.js";
 import type { LaunchAttempt } from "./session-model.js";
 import type { LaunchExpected, Session, SessionDetail } from "./types.js";
 
-type LaunchRead = Pick<SessionDetail, "session" | "processes" | "currentAgent">;
+type LaunchRead = Pick<SessionDetail, "session" | "processes" | "currentAgent" | "launchAdmission">;
 
 /** What a launch needs of the client. */
 export interface LaunchClient {
@@ -27,6 +27,8 @@ export const agentStarted = (detail: LaunchRead): boolean =>
 /** No agent ran and nothing settled since `after`: a launch Mend never answered was not taken. */
 const untakenSince = (detail: LaunchRead, after: string | null): boolean =>
   detail.session.settledAt === after && !agentStarted(detail);
+
+const refusesLateRetry = (detail: LaunchRead): boolean => detail.launchAdmission === "agentRan";
 
 /** Where each attempt is said: the store, whose model reads it. */
 export interface AttemptSink {
@@ -207,7 +209,9 @@ export class Launches {
       !UNDER_WAY.test(refusal.line) &&
       untakenSince(detail, attempt?.after ?? null)
     )
-      return { kind: "retry", read };
+      return refusal.unanswered && !refusesLateRetry(detail)
+        ? { kind: "none" }
+        : { kind: "retry", read };
     return { kind: "moved", read };
   }
 
@@ -237,16 +241,20 @@ export class Launches {
       // still runs the launch): it may be running. Saying it again reads the session, and the
       // reads say.
       if (!(cause instanceof MendApiError) || cause.status === null || cause.status >= 500) {
-        if (!(await this.#untaken(sessionId))) return { kind: "answered", attempt };
+        const untaken = await this.#untakenRead(sessionId);
+        if (untaken === null) return { kind: "answered", attempt };
         const said = cause instanceof Error ? cause.message : "Mend did not answer";
         return {
           kind: "answered",
           attempt: {
             ...attempt,
             refusal: {
-              line: `launch not answered · ${said}`,
+              line: refusesLateRetry(untaken)
+                ? `launch not answered · ${said}`
+                : "launch not confirmed · Mend did not answer · check the session",
               at: new Date().toISOString(),
               confirmed: true,
+              unanswered: true,
             },
           },
         };
@@ -270,6 +278,7 @@ export class Launches {
             line: `launch refused · ${cause.message}`,
             at: new Date().toISOString(),
             confirmed: settled === "unsettled",
+            unanswered: false,
           },
         },
       };
@@ -281,9 +290,9 @@ export class Launches {
    * may send it again, and the server's launch gate refuses that if the launch is under way after
    * all.
    */
-  async #untaken(sessionId: string): Promise<boolean> {
+  async #untakenRead(sessionId: string): Promise<LaunchRead | null> {
     const read = await this.#detail(sessionId);
-    return read !== null && read.session.status === "idle" && !agentStarted(read);
+    return read !== null && read.session.status === "idle" && !agentStarted(read) ? read : null;
   }
 
   /** Whether the server settled the session failed since `after`; unknown when the read fails. */

@@ -540,7 +540,10 @@ describe("a launch that fails (story a)", () => {
         {
           n,
           after,
-          refusal: refusal === null ? null : { line: refusal, at: NOW.toISOString(), confirmed },
+          refusal:
+            refusal === null
+              ? null
+              : { line: refusal, at: NOW.toISOString(), confirmed, unanswered: false },
         },
       ],
     ]);
@@ -769,7 +772,7 @@ describe("a handed-off session (story g)", () => {
           {
             n: 1,
             after: null,
-            refusal: { line: refusal, at: NOW.toISOString(), confirmed: true },
+            refusal: { line: refusal, at: NOW.toISOString(), confirmed: true, unanswered: false },
           },
         ],
       ]),
@@ -792,7 +795,14 @@ describe("a handed-off session (story g)", () => {
       }),
       read([{ ...held, status: "starting" }], {
         launches: new Map([
-          [held.id, { n: 1, after: null, refusal: { line: refusal, at: since, confirmed: true } }],
+          [
+            held.id,
+            {
+              n: 1,
+              after: null,
+              refusal: { line: refusal, at: since, confirmed: true, unanswered: false },
+            },
+          ],
         ]),
       }),
       read([{ ...held, status: "failed", summary: "agent exited 1", settledAt: since }]),

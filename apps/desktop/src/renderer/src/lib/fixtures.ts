@@ -182,6 +182,7 @@ export const detailFixture = (patch: Partial<SessionDetailDto> = {}): SessionDet
   currentAgent: null,
   liveServices: 0,
   preReleaseMemory: null,
+  launchAdmission: "agentRan",
   ...patch,
 });
 

@@ -1,5 +1,6 @@
 import {
   agentProcessesOf,
+  type LaunchAdmissionRule,
   LaunchMovedOnReason,
   SessionStatus,
   type SessionProcess,
@@ -97,6 +98,8 @@ const movedOnFrom = (
   if (seenSettledAt === null && observed.agentRan) return "agentRan";
   return sameInstant(seenSettledAt, observed.settledAt) ? null : "settled";
 };
+
+export const LAUNCH_ADMISSION: LaunchAdmissionRule = "agentRan";
 
 /** Null admits the launch; otherwise why it is refused. The whole policy. */
 export const refusalOf = (over: LaunchOver, observed: LaunchObserved): LaunchRefusal | null => {

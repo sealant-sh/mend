@@ -92,6 +92,7 @@ export const detail = (status: SessionStatus = "idle"): SessionDetail => ({
   processes: [],
   currentAgent: null,
   changeId: "change1",
+  launchAdmission: "agentRan",
 });
 export const bundle = (body = "immutable git bundle"): HandoffBundle => ({
   bytes: Buffer.byteLength(body),

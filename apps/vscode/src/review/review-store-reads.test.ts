@@ -51,6 +51,7 @@ const noChange: SessionDetail = {
   processes: [],
   currentAgent: null,
   changeId: null,
+  launchAdmission: null,
 };
 
 const withChange: SessionDetail = {
@@ -58,6 +59,7 @@ const withChange: SessionDetail = {
   processes: [],
   currentAgent: null,
   changeId: "change-1",
+  launchAdmission: null,
 };
 
 const checkpoint = (ordinal: number, trigger: Checkpoint["trigger"]): Checkpoint => ({

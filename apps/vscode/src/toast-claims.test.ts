@@ -278,6 +278,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     line: "launch refused · Claude is not connected",
     at: refusedAt,
     confirmed: true,
+    unanswered: false,
   };
   const settledAt = iso(Date.now() - 2_000);
   const refused = () => ({
@@ -381,7 +382,12 @@ describe("a launch she sent that the server refused (flow 3)", () => {
               "SessionMovedOn",
             );
         },
-        sessionDetail: async () => ({ session: now, processes: [], currentAgent: null }),
+        sessionDetail: async () => ({
+          session: now,
+          processes: [],
+          currentAgent: null,
+          launchAdmission: null,
+        }),
       },
       {
         attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
@@ -520,7 +526,12 @@ describe("a launch she sent that the server refused (flow 3)", () => {
           await answer.promise;
           throw new MendApiError("Connect Claude to start a session here.", 422, "StoreFailure");
         },
-        sessionDetail: async () => ({ session: failed, processes: [], currentAgent: null }),
+        sessionDetail: async () => ({
+          session: failed,
+          processes: [],
+          currentAgent: null,
+          launchAdmission: null,
+        }),
       },
       {
         attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),
@@ -588,7 +599,12 @@ describe("a launch she sent that the server refused (flow 3)", () => {
           await answer.promise;
           throw new MendApiError("Connect Claude to start a session here.", 422, "StoreFailure");
         },
-        sessionDetail: async () => ({ session: failed, processes: [], currentAgent: null }),
+        sessionDetail: async () => ({
+          session: failed,
+          processes: [],
+          currentAgent: null,
+          launchAdmission: null,
+        }),
       },
       {
         attempted: (sessionId, attempt) => attempts.set(sessionId, attempt),

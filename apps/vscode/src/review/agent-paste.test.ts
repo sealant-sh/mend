@@ -22,6 +22,7 @@ const detail = (processes: ReadonlyArray<SessionProcess>): SessionDetail => ({
   processes,
   currentAgent: processes.find((one) => one.kind === "agent-pty") ?? null,
   changeId: "change-1",
+  launchAdmission: null,
 });
 
 /**

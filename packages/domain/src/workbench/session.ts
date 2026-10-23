@@ -83,6 +83,9 @@ export const LaunchMovedOnReason = Schema.Literals([
 ]);
 export type LaunchMovedOnReason = typeof LaunchMovedOnReason.Type;
 
+export const LaunchAdmissionRule = Schema.Literals(["agentRan"]);
+export type LaunchAdmissionRule = typeof LaunchAdmissionRule.Type;
+
 /**
  * Where a session was started from (docs/adr/0006-slack.md, "Audit"). `mend` is Mend's own
  * surfaces: the web app, the CLI, the phone and Mend's own jobs. `slack` is a mention in Slack.

@@ -1,4 +1,5 @@
 import type { AgentInputQuestionDto, AgentRequestDto } from "@mend/agent-conversation";
+import { LaunchAdmissionRule } from "@mend/domain/workbench";
 import { Option, Schema } from "effect";
 
 import { parseLivePeople, parseRetirementState } from "./session-lines.js";
@@ -326,5 +327,8 @@ export const parseSessionDetail = (value: unknown): SessionDetail => {
         ? null
         : parseSessionProcess(currentAgent),
     changeId: isRecord(change) && typeof change["id"] === "string" ? change["id"] : null,
+    launchAdmission: Option.getOrNull(
+      Schema.decodeUnknownOption(LaunchAdmissionRule)(value["launchAdmission"]),
+    ),
   };
 };

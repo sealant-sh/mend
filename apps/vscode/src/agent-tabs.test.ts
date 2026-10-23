@@ -69,6 +69,7 @@ const detail = (
   processes,
   currentAgent: null,
   changeId: null,
+  launchAdmission: null,
 });
 
 interface FakeTab extends ConversationTabHandle {

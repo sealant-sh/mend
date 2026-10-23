@@ -18,6 +18,7 @@ import {
   Checkpoint,
   DiffDigest,
   HarnessLayout,
+  LaunchAdmissionRule,
   ProjectClusterBinding,
   ProjectEnvironmentSnapshot,
   ProjectSecret,
@@ -413,6 +414,13 @@ export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")(
    * it.
    */
   preReleaseMemory: Schema.NullOr(PreReleaseMemory).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
+  /**
+   * How this server admits a Retry of a launch it never answered. Older servers omit it, and they
+   * admit such a launch while no agent is live, so a client must not send one to them.
+   */
+  launchAdmission: Schema.NullOr(LaunchAdmissionRule).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
   ),
 }) {}

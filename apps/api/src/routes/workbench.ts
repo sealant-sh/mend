@@ -156,6 +156,7 @@ import {
   DotfilesCloner,
   DotfilesResolveError,
   FollowUpDelivery,
+  LAUNCH_ADMISSION,
   RECIPE_NAME,
   type ReadStamp,
   SessionEngine,
@@ -2480,6 +2481,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           liveServices:
             (yield* (yield* ServicesRepo).liveCountsForSessions([session.id])).get(session.id) ?? 0,
           preReleaseMemory: yield* (yield* SessionEngine).preReleaseMemory(session.worktreeId),
+          launchAdmission: LAUNCH_ADMISSION,
         });
       }),
     )

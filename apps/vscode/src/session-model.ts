@@ -55,6 +55,7 @@ export interface Refusal {
    * its own, and a settlement read later is its one toast in every window.
    */
   readonly confirmed: boolean;
+  readonly unanswered: boolean;
 }
 
 /**

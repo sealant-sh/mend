@@ -173,6 +173,7 @@ class FakeMend implements StoreClient {
         processes: this.processes.get(id) ?? [],
         currentAgent: null,
         changeId: null,
+        launchAdmission: null,
       };
     });
   }
@@ -884,7 +885,7 @@ describe("a handoff this window received (story g)", () => {
     store.attempted(received.id, {
       n: 1,
       after: null,
-      refusal: { line, at: START.toISOString(), confirmed: true },
+      refusal: { line, at: START.toISOString(), confirmed: true, unanswered: false },
     });
     expect(lineOf(store, received.id)).toBe(`idle · ${line}`);
     await tick(300);
