@@ -1,7 +1,10 @@
+import { FOLLOW_UP_INSTRUCTION_MAX } from "@mend/domain/workbench";
+
 import { lfOnly } from "../line-endings.js";
 import { maySteer, ownsSession } from "../session-capability.js";
 import type { Session } from "../types.js";
-import type { HeldInput, LiveAgent, PastePlan } from "./delivery.js";
+import type { LiveAgent } from "./delivery.js";
+import type { HeldInput, PastePlan } from "./paste-plan.js";
 import type { ChangeFile, RecordLink } from "./review-wire.js";
 import { filesLine } from "./slices.js";
 
@@ -148,6 +151,30 @@ export const textToSend = (editorText: string, sessionName: string): string => {
   return [...lines.slice(0, at), ...lines.slice(at + after)].join("\n").trim();
 };
 
+export class Instruction {
+  private constructor(readonly text: string) {}
+
+  static parse(
+    editorText: string,
+    sessionName: string,
+  ):
+    | { readonly ok: true; readonly instruction: Instruction }
+    | { readonly ok: false; readonly words: string } {
+    const text = textToSend(editorText, sessionName);
+    if (text === "")
+      return {
+        ok: false,
+        words: "This review is empty, so nothing was sent. Write what the agent should do first.",
+      };
+    if (text.length > FOLLOW_UP_INSTRUCTION_MAX)
+      return {
+        ok: false,
+        words: `This review is ${text.length.toLocaleString("en-US")} characters long, and Mend takes at most ${FOLLOW_UP_INSTRUCTION_MAX.toLocaleString("en-US")}, so nothing was sent. Shorten it first.`,
+      };
+    return { ok: true, instruction: new Instruction(text) };
+  }
+}
+
 export const EARLIER_TEXT = "## Your earlier text, kept for you to edit or delete";
 
 /** A review composed anew over one she saved: her saved text follows it, as she would send it. */
@@ -185,7 +212,7 @@ export const sendOffer = (input: {
   readonly startsTerminal: boolean;
   readonly offline: boolean;
   readonly count: number;
-  readonly open: "sending" | "failed" | null;
+  readonly open: "sending" | "failed" | "held" | null;
 }): SendOffer => {
   const { session, viewer, ownerName, agent, startsTerminal, offline, count, open } = input;
   if (viewer === null) return { kind: "hidden", why: "Mend could not read who you are" };
@@ -207,5 +234,6 @@ export const sendOffer = (input: {
   if (offline) return { kind: "disabled", why: OFFLINE_WORDS };
   if (open === "sending") return { kind: "busy" };
   if (open === "failed") return { kind: "retry" };
-  return count === 0 ? { kind: "nothing" } : { kind: "ready", count };
+  if (count > 0) return { kind: "ready", count };
+  return open === "held" ? { kind: "retry" } : { kind: "nothing" };
 };

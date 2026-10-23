@@ -605,6 +605,7 @@ export interface MendExtensionApi {
 
 export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const connections = new ConnectionStore(context);
+  context.subscriptions.push(connections);
   const client = new MendClient(connections);
   const role = windowRole(
     vscode.env.remoteName,
@@ -653,10 +654,11 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     claims,
     // G12 fallback: her agent's terminal attached here, as Answer attaches it, and the review
     // pasted into that agent process for her to press Enter.
-    paste: (sessionId, processId, text) =>
+    paste: (sessionId, processId, text, reads, bound) =>
       pasteIntoAgent(
         {
-          detail: (id) => client.sessionDetail(id),
+          detail: (id) => reads.sessionDetail(id),
+          bound,
           answer: (id) => workspaceWindow.answer(id),
           // VS Code makes the attached tab the active terminal a moment after Answer shows it.
           activeTab: (id) => {
@@ -738,6 +740,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     firstRun.onDidChange(followFirstRun),
     vscode.authentication.registerAuthenticationProvider(AUTH_PROVIDER_ID, "Mend", accounts),
     context.secrets.onDidChange(() => void firstRun.refresh()),
+    connections.onDidChangeCli(() => void firstRun.refresh()),
     vscode.extensions.onDidChange(() => void firstRun.refresh()),
     vscode.commands.registerCommand("mend.connect", connect),
     vscode.commands.registerCommand("mend.useCli", () => firstRun.useCli()),

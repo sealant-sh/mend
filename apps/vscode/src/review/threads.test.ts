@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import { startSend, stepReview } from "./delivery.js";
-import type { LiveAgent, PastePlan } from "./delivery.js";
+import type { LiveAgent, SendEvent } from "./delivery.js";
+import type { PastePlan } from "./paste-plan.js";
 import { EMPTY_REVIEW } from "./pending.js";
-import { checkpoint, CHECKPOINTS, comment, pending, PINNED, readOf } from "./test-fixtures.js";
+import {
+  checkpoint,
+  CHECKPOINTS,
+  comment,
+  instructionOf,
+  pending,
+  PINNED,
+  readOf,
+} from "./test-fixtures.js";
 import { commentableLines, commentsLine, threadPlace, threadsOf } from "./threads.js";
 
 const ALL: PastePlan = { kind: "all" };
@@ -204,7 +213,7 @@ describe("the threads of a review she sent", () => {
       {
         key: "k1",
         slice: SLICE,
-        instruction: "the review",
+        instruction: instructionOf("the review"),
         paste: ALL,
         pending: ["a1"],
         open: [],
@@ -223,7 +232,7 @@ describe("the threads of a review she sent", () => {
     const started = startSend(EMPTY_REVIEW, {
       key: "k1",
       slice: SLICE,
-      instruction: "the review",
+      instruction: instructionOf("the review"),
       paste: ALL,
       pending: [],
       open: ["c1"],
@@ -260,7 +269,7 @@ describe("the Comments row's count", () => {
     const started = startSend(EMPTY_REVIEW, {
       key: "k1",
       slice: SLICE,
-      instruction: "the review",
+      instruction: instructionOf("the review"),
       paste: ALL,
       pending: [],
       open: ["c1"],
@@ -273,17 +282,12 @@ describe("the Comments row's count", () => {
       hers: true,
       processId: "agent-1",
     };
-    const held = stepReview(
-      stepReview(
-        started,
-        "k1",
-        { kind: "answered", status: "pending", error: null, agent: claude },
-        NOW,
-      ),
-      "k1",
+    const events: ReadonlyArray<SendEvent> = [
+      { kind: "answered", status: "pending", error: null, agent: claude },
+      { kind: "paste-started" },
       { kind: "pasted" },
-      NOW,
-    );
+    ];
+    const held = events.reduce((review, event) => stepReview(review, "k1", event, NOW), started);
     const gone = readOf({ kind: "pinned" }, { comments: [open] });
     const live = readOf(
       { kind: "pinned" },

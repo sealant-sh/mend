@@ -103,6 +103,10 @@ describe("a workspace window that starts as it gains focus", () => {
     const offline = {
       get: async () => ({ url: "http://mend.test", token: null }),
       refused: async () => undefined,
+      held: async () => ({
+        connection: { url: "http://mend.test", token: null },
+        current: () => true,
+      }),
     };
     const client = Object.assign(new MendClient(offline), {
       listProjects: async () => [project],

@@ -8,7 +8,7 @@ import type {
 import { Option, Schema } from "effect";
 import * as vscode from "vscode";
 
-import type { ConnectionStore, MendConnection } from "./config.js";
+import type { ConnectionStore, HeldConnection, MendConnection } from "./config.js";
 import { MendApiError, requestMend } from "./mend-http.js";
 import type { CreateRequest } from "./new-session.js";
 import {
@@ -360,10 +360,25 @@ export const EVENT_STREAM_STALL_MS = 60_000;
 
 /** Small authenticated client for the extension's project and session jobs. */
 export class MendClient {
-  constructor(private readonly connections: Pick<ConnectionStore, "get" | "refused">) {}
+  readonly #accounts = new Map<string, string>();
+
+  constructor(private readonly connections: Pick<ConnectionStore, "get" | "refused" | "held">) {}
 
   async connection(): Promise<MendConnection> {
     return this.connections.get();
+  }
+
+  held(): Promise<HeldConnection> {
+    return this.connections.held();
+  }
+
+  /** The same client, each request made on the connection `connect` gives when it starts. */
+  pinned(connect: () => Promise<MendConnection>): MendClient {
+    return new MendClient({
+      get: connect,
+      refused: (connection) => this.connections.refused(connection),
+      held: () => this.connections.held(),
+    });
   }
 
   /** A refused token is dropped wherever it was met, before its caller says so. */
@@ -421,6 +436,27 @@ export class MendClient {
       return isRecord(view) && typeof view["userId"] === "string" ? view["userId"] : null;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * The account `connection`'s token belongs to, read through that connection; null when Mend
+   * could not say. A token never changes account, so an answer is kept per server and token. Mend's
+   * refusal of the token (401) is thrown, the token dropped first: VS Code is signed out.
+   */
+  async accountOf(connection: MendConnection): Promise<string | null> {
+    const key = JSON.stringify([connection.url, connection.token]);
+    const known = this.#accounts.get(key);
+    if (known !== undefined) return known;
+    try {
+      const view = await requestMend(connection, "/organization");
+      const account = isRecord(view) && typeof view["userId"] === "string" ? view["userId"] : null;
+      if (account !== null) this.#accounts.set(key, account);
+      return account;
+    } catch (cause) {
+      if (!(cause instanceof MendApiError && cause.status === 401)) return null;
+      this.refused(connection);
+      throw cause;
     }
   }
 

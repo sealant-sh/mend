@@ -2,7 +2,8 @@ import * as vscode from "vscode";
 
 import { refusedSignIn } from "../error-toast.js";
 import type { ToastClaims } from "../toast-claims.js";
-import type { RetryTarget, ReviewFailure, ReviewStore } from "./review-store.js";
+import type { ReviewFailure, ReviewStore } from "./review-store.js";
+import type { RetryTarget } from "./send-driver.js";
 
 /** How long the status bar says what a Retry delivery found instead of sending. */
 const SAID_MS = 10_000;
@@ -30,13 +31,14 @@ export const reviewToast =
     onError: (cause: unknown) => void,
   ) =>
   async (failure: ReviewFailure): Promise<void> => {
+    if (!vscode.window.state.focused) return;
     // A refused sign-in reads as it does on every surface: Mend's words with Connect.
     if (refusedSignIn(failure.cause)) {
       onError(failure.cause);
       return;
     }
     if (!(await claims.claim(failure.key, failure.at))) return;
-    if (!(await store.stillFails(failure))) {
+    if (!(await store.stillFails(failure)) || !vscode.window.state.focused) {
       await claims.release(failure.key, failure.at);
       return;
     }

@@ -12,6 +12,7 @@ import {
   replacedDeviceWarning,
   revokeOutcomeOf,
   secretWriteOf,
+  serverOfKey,
   signOutMessage,
   tokenFor,
   type CliCredential,
@@ -35,6 +36,13 @@ export interface MendConnection {
   readonly token: string | null;
 }
 
+export interface HeldConnection {
+  readonly connection: MendConnection;
+  readonly current: () => boolean;
+}
+
+const DEFAULT_URL = "http://localhost:3105";
+
 const mendHome = (): string => {
   const xdg = process.env["XDG_CONFIG_HOME"];
   const preferred = path.join(
@@ -45,11 +53,21 @@ const mendHome = (): string => {
   return fs.existsSync(legacy) && !fs.existsSync(preferred) ? legacy : preferred;
 };
 
-const cliConfig = (): CliCredential | null => {
-  const file = path.join(mendHome(), "cli.json");
-  if (!fs.existsSync(file)) return null;
+const cliFile = (): string => path.join(mendHome(), "cli.json");
+
+const cliSignIn = (): { readonly file: string; readonly text: string | null } => {
+  const file = cliFile();
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+    return { file, text: fs.readFileSync(file, "utf8") };
+  } catch {
+    return { file, text: null };
+  }
+};
+
+const cliCredentialOf = (text: string | null): CliCredential | null => {
+  if (text === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(text);
     if (typeof parsed !== "object" || parsed === null) return null;
     const url = Reflect.get(parsed, "url");
     const token = Reflect.get(parsed, "token");
@@ -62,6 +80,8 @@ const cliConfig = (): CliCredential | null => {
     return null;
   }
 };
+
+const cliConfig = (): CliCredential | null => cliCredentialOf(cliSignIn().text);
 
 /** A browser sign-in's device, which signing out or signing in again revokes. */
 interface Device {
@@ -89,23 +109,73 @@ const configuredUrl = (): string | null => {
 };
 
 /** One connection shared by the tree, status item, URI handler, and commands. */
-export class ConnectionStore {
+export class ConnectionStore implements vscode.Disposable {
   /** The Connect running now: a second one joins it instead of opening another sign-in request. */
   #connecting: Promise<boolean> | null = null;
   /** The device a sign-in just replaced, revoked once the editor reads with the new token. */
   #replaced: Device | null = null;
   readonly #refusing = new Map<string, Promise<void>>();
+  #generation = 0;
+  readonly #writing = new Set<Promise<void>>();
+  readonly #cliChanged = new vscode.EventEmitter<void>();
+  readonly onDidChangeCli = this.#cliChanged.event;
+  readonly #watchers: ReadonlyArray<vscode.Disposable>;
 
   constructor(
-    private readonly context: { readonly secrets: Pick<vscode.SecretStorage, "get" | "store"> },
-  ) {}
+    private readonly context: {
+      readonly secrets: Pick<vscode.SecretStorage, "get" | "store" | "onDidChange">;
+    },
+  ) {
+    const file = cliFile();
+    const cliWritten = (now: fs.Stats, before: fs.Stats): void => {
+      if (now.mtimeMs !== before.mtimeMs || now.ino !== before.ino || now.size !== before.size)
+        this.#cliChanged.fire();
+    };
+    fs.watchFile(file, { persistent: false, interval: 1000 }, cliWritten);
+    this.#watchers = [
+      { dispose: () => fs.unwatchFile(file, cliWritten) },
+      this.#cliChanged,
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration("mend.serverUrl")) this.#generation += 1;
+      }),
+      context.secrets.onDidChange(({ key }) => this.#changed(key)),
+    ];
+  }
+
+  dispose(): void {
+    for (const watcher of this.#watchers) watcher.dispose();
+  }
 
   async get(): Promise<MendConnection> {
-    const discovered = cliConfig();
+    return (await this.#connection(cliConfig())).connection;
+  }
+
+  async held(): Promise<HeldConnection> {
+    while (this.#writing.size > 0) await Promise.allSettled(this.#writing);
+    const generation = this.#generation;
+    const cli = cliSignIn();
+    const { connection, fromCli } = await this.#connection(cliCredentialOf(cli.text));
+    return {
+      connection,
+      current: () => {
+        if (this.#generation !== generation) return false;
+        if (!fromCli) return true;
+        const now = cliSignIn();
+        return now.file === cli.file && now.text === cli.text;
+      },
+    };
+  }
+
+  async #connection(
+    cli: CliCredential | null,
+  ): Promise<{ readonly connection: MendConnection; readonly fromCli: boolean }> {
+    const configured = configuredUrl();
     // Every spelling of a server is one server: the setting, the CLI's URL and the stored entries
     // all compare in the canonical form Connect writes.
-    const url = configuredUrl() ?? discovered?.url ?? "http://localhost:3105";
-    return { url, token: tokenFor(url, await this.#own(url, discovered), discovered) };
+    const url = configured ?? cli?.url ?? DEFAULT_URL;
+    const own = await this.#own(url, cli);
+    const ownDecides = configured !== null && (own?.kind === "token" || own?.kind === "none");
+    return { connection: { url, token: tokenFor(url, own, cli) }, fromCli: !ownDecides };
   }
 
   /** Whether the editor is connected, and from where; what Connect and Use it start from if not. */
@@ -131,9 +201,22 @@ export class ConnectionStore {
     return keptCredential(this.#read, url, cli);
   }
 
-  async #write(change: CredentialChange): Promise<void> {
+  #changed(key: string): void {
+    const server = serverOfKey(key);
+    if (server === null || server === (configuredUrl() ?? cliConfig()?.url ?? DEFAULT_URL))
+      this.#generation += 1;
+  }
+
+  #write(change: CredentialChange): Promise<void> {
     const { key, value } = secretWriteOf(change, randomUUID());
-    await this.context.secrets.store(key, value);
+    // The generation moves as the write begins, since SecretStorage can answer it after a send
+    // bound before it resumes. `held` waits for the write, so a send that binds again reads it.
+    this.#changed(key);
+    const write = Promise.resolve(this.context.secrets.store(key, value)).finally(() =>
+      this.#writing.delete(write),
+    );
+    this.#writing.add(write);
+    return write;
   }
 
   /** The token first: changing the setting restarts the event stream, which reads it. */

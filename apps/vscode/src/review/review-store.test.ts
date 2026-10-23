@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { MendClient } from "../client.js";
+import type { MendConnection } from "../config.js";
 import { MendApiError } from "../mend-http.js";
 import type { Session, SessionDetail } from "../types.js";
+import { mendNote } from "./instruction.js";
 import { NODE_FILES } from "./kept-reviews.js";
 import type { KeptReviews } from "./kept-reviews.js";
 import { addPending, MAX_PENDING } from "./pending.js";
@@ -10,6 +13,8 @@ import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore, type NewComment, type ReviewFailure } from "./review-store.js";
 import type { CommentAnchor, ReadPass, ServerComment, TranscriptEntry } from "./review-wire.js";
 import {
+  checkpoint,
+  CHECKPOINTS,
   comment,
   FakeMend,
   keptIn,
@@ -539,7 +544,7 @@ describe("a comment VS Code could not keep", () => {
     }));
     await store.edit("p0", "edited while the review is full");
     expect(store.review().pending).toHaveLength(MAX_PENDING);
-    expect(store.held().map(({ body }) => body)).toEqual(["I ran them by hand"]);
+    expect(store.held().map((words) => words.comment.body)).toEqual(["I ran them by hand"]);
   });
 });
 
@@ -595,6 +600,40 @@ describe("sending a review from the store", () => {
     expect(mend.writes.filter((write) => write === `deliver s1 ${key}`)).toHaveLength(2);
   });
 
+  it("sends nothing when only Mend's note is left, though the session was renamed since she composed it", async () => {
+    let label = "add-rate-limit";
+    const renamed = {
+      ...sessionReads("change-1"),
+      sessionDetail: async (sessionId: string): Promise<SessionDetail> => ({
+        session: { ...session(sessionId), ownerUserId: "dana", label },
+        processes: [],
+        currentAgent: null,
+        changeId: "change-1",
+      }),
+    };
+    const mend = new FakeMend();
+    const store = new ReviewStore(renamed, mend, new ReviewMemory(memento()), inMemory(), noPaste);
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    const { ref, document } = await store.keepDocument(composed);
+    const saved = await store.saveDocument(ref, document.revision, mendNote("add-rate-limit"));
+    if (saved.kind !== "saved") throw new Error(`not saved: ${saved.kind}`);
+
+    label = "rate-limit-v2";
+    store.reread();
+    await vi.waitFor(() => expect(store.ready()?.sessionName).toBe("rate-limit-v2"), SETTLE);
+    expect(await store.send(ref, saved.revision)).toEqual({
+      sent: false,
+      words: expect.stringMatching(/empty/),
+    });
+    await settle();
+    expect(mend.writes).toEqual([]);
+    expect(store.review().sends).toEqual([]);
+  });
+
   it("sends exactly what it composed, and keeps her text when her comments changed", async () => {
     const store = await readyStore(inMemory());
     await store.comment(onLine(3, "first"));
@@ -611,6 +650,61 @@ describe("sending a review from the store", () => {
       "first",
       "written after the editor opened",
     ]);
+  });
+
+  it.each([
+    ["empty", "   \n", /empty/],
+    ["longer than Mend takes", "x".repeat(100_001), /100,000/],
+  ])(
+    "sends nothing, and keeps her text and comments, when the review is %s",
+    async (_, text, why) => {
+      const mend = new FakeMend();
+      const store = await readyStore(inMemory(), mend);
+      await store.comment(onLine(3, "Use the shared limiter"));
+      const composed = store.compose();
+      if (composed === null) throw new Error("nothing composed");
+      expect(await sendComposed(store, composed, text)).toEqual({
+        sent: false,
+        words: expect.stringMatching(why),
+      });
+      await settle();
+      expect(mend.writes).toEqual([]);
+      expect(store.review().sends).toEqual([]);
+      expect(store.review().pending.map(({ body }) => body)).toEqual(["Use the shared limiter"]);
+      expect(store.review().document?.text).toBe(text);
+    },
+  );
+
+  it("delivers the review she composed on the slice it was composed on, after she repinned", async () => {
+    const mend = new FakeMend();
+    const store = await readyStore(inMemory(), mend);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    const { ref, document } = await store.keepDocument(composed);
+    const newer = {
+      ...PINNED,
+      id: "slice-2",
+      diffDigest: "d2",
+      head: checkpoint(3, "review-open"),
+    };
+    mend.chain = async () => ({
+      worktreeId: "w1",
+      baseName: "main",
+      checkpoints: [...CHECKPOINTS, newer.head],
+    });
+    mend.openReview = async () => newer;
+    await store.repin(false);
+    await vi.waitFor(() => expect(store.ready()?.pinned.id).toBe("slice-2"), SETTLE);
+    expect(await store.send(ref, document.revision)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    expect(mend.delivered[0]).toMatchObject({
+      reviewSliceId: PINNED.id,
+      checkpointAId: PINNED.base.id,
+      checkpointBId: PINNED.head.id,
+      diffDigest: PINNED.diffDigest,
+      instruction: expect.stringContaining("Use the shared limiter"),
+    });
   });
 
   it("reads delivered only when Mend reads the comments back as sent", async () => {
@@ -877,5 +971,403 @@ describe("sending a review from the store", () => {
     expect(
       threadsOf(read, store.review(), "Dana").filter((thread) => thread.kind === "draft"),
     ).toEqual([]);
+  });
+});
+
+describe("a full review of Mend drafts she rewrote", () => {
+  it("posts every one, dismisses every draft, and still delivers the review", async () => {
+    const kept = inMemory();
+    const mend = new FakeMend();
+    const drafts = Array.from({ length: MAX_PENDING }, (_, at) =>
+      comment({
+        id: `d${at}`,
+        state: "draft",
+        line: 3,
+        endLine: 3,
+        author: { kind: "mend", name: "Mend" },
+        body: `Mend's draft ${at}`,
+      }),
+    );
+    mend.serverComments = drafts;
+    await kept.update(DANA_S1, () => ({
+      pending: drafts.map((draft, at) =>
+        pending({
+          id: `p${at}`,
+          line: 3,
+          endLine: 3,
+          body: `Her words in place of draft ${at}`,
+          origin: { kind: "accepted", draftId: draft.id, evidence: [], draftBody: draft.body },
+        }),
+      ),
+      sends: [],
+      document: null,
+    }));
+    const store = await readyStore(kept, mend);
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).not.toBe("sending"), {
+      timeout: 20_000,
+    });
+    expect(mend.writes.filter((write) => write.startsWith("post "))).toHaveLength(MAX_PENDING);
+    expect(mend.writes.filter((write) => write.endsWith(" dismissed"))).toHaveLength(MAX_PENDING);
+    expect(mend.delivered).toHaveLength(1);
+  }, 30_000);
+});
+
+describe("a call Mend refuses while a review is on its way", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reads delivery failed, with Retry, when the launch's follow-up read is refused", async () => {
+    vi.useFakeTimers();
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    mend.followUp = async () => {
+      throw new MendApiError("You cannot read this session's follow-ups.", 403);
+    };
+    const ready = readyStore(kept, mend);
+    await vi.advanceTimersByTimeAsync(20);
+    const store = await ready;
+    const key = await sendAll(store);
+    await vi.advanceTimersByTimeAsync(3_100);
+    expect(await phaseOf(kept, key)).toBe("failed");
+    expect(store.offer()).toEqual({ kind: "retry" });
+  });
+
+  it("keeps a comment whose POST may have landed on its way, when the read that checks is refused", async () => {
+    const kept = inMemory();
+    const mend = new FakeMend();
+    const store = await readyStore(kept, mend);
+    await store.comment(onLine(3, "Use the shared limiter"));
+    const post = mend.postComment.bind(mend);
+    mend.postComment = async (changeId, sliceId, target, body) => {
+      await post(changeId, sliceId, target, body);
+      throw new MendApiError("Bad gateway", 502);
+    };
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("failed"), SETTLE);
+    mend.comments = async () => {
+      throw new MendApiError("Not found", 404);
+    };
+    await store.retry({ place: DANA_S1, key });
+    expect(await phaseOf(kept, key)).toBe("failed");
+    expect(store.review().pending).toEqual([]);
+  });
+
+  it("reads delivery failed, with Retry, when Mend asks VS Code to deliver later", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    mend.deliver = async () => {
+      throw new MendApiError("Too many follow-ups at once. Try again in a minute.", 429);
+    };
+    const store = await readyStore(kept, mend);
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).not.toBe("sending"), SETTLE);
+    expect(await phaseOf(kept, key)).toBe("failed");
+  });
+
+  it("reads not sent when Mend refuses to deliver the review", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    mend.deliver = async () => {
+      throw new MendApiError("The instruction is empty.", 422);
+    };
+    const store = await readyStore(kept, mend);
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).not.toBe("sending"), SETTLE);
+    expect(await phaseOf(kept, key)).toBe("refused");
+  });
+});
+
+/**
+ * Session reads whose sign-in moves: Dana's token, a later sign-in of hers, or Erin's, on one
+ * server. Mend says who a token belongs to only while `says` holds; otherwise the read fails.
+ */
+const signIns = () => {
+  const at = { token: "dana-1", says: true };
+  const owners: Readonly<Record<string, string>> = {
+    "dana-1": "dana",
+    "dana-2": "dana",
+    erin: "erin",
+  };
+  const ownerOf = (token: string | null): string | null =>
+    at.says && token !== null ? (owners[token] ?? null) : null;
+  return {
+    at,
+    sessions: {
+      ...sessionReads("change-1"),
+      connection: async () => ({ url: "http://mend", token: at.token }),
+      accountOf: async (connection: { readonly token: string | null }): Promise<string | null> =>
+        ownerOf(connection.token),
+    },
+  };
+};
+
+/**
+ * Dana's sign-ins, whose account MendClient reads from Mend's `/organization` through each
+ * sign-in's own token: `dana-1` is Dana's, no token is signed out (401), and any other token gets
+ * `failing`, Mend's answer while it cannot say.
+ */
+const organization = (failing: () => Response) => {
+  const at: { token: string | null } = { token: "dana-1" };
+  const asked = { count: 0 };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string, init?: RequestInit) => {
+      asked.count += 1;
+      const token = new Headers(init?.headers).get("authorization");
+      if (token === "Bearer dana-1") return new Response(JSON.stringify({ userId: "dana" }));
+      if (token === null)
+        return new Response(JSON.stringify({ message: "Sign in" }), { status: 401 });
+      return failing();
+    }),
+  );
+  const client = new MendClient({
+    get: async () => ({ url: "http://mend", token: at.token }),
+    refused: async () => undefined,
+    held: async () => ({
+      connection: { url: "http://mend", token: at.token },
+      current: () => true,
+    }),
+  });
+  return {
+    at,
+    asked,
+    sessions: {
+      ...sessionReads("change-1"),
+      connection: async () => ({ url: "http://mend", token: at.token }),
+      accountOf: (connection: MendConnection) => client.accountOf(connection),
+    },
+  };
+};
+
+describe("a review on its way while VS Code is signed out, or Mend cannot say who signed in", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("stops once VS Code is signed out: the review reads failed, with Retry, and Mend is asked nothing more", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    const { at, asked, sessions } = organization(() => new Response("{}", { status: 503 }));
+    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+
+    at.token = null;
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("failed"), SETTLE);
+    const record = (await kept.read(DANA_S1)).review.sends.find(
+      (candidate) => candidate.key === key,
+    );
+    expect(record?.phase).toMatchObject({
+      words: "VS Code was signed out of Mend before Mend answered",
+    });
+    const before = asked.count;
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(asked.count).toBe(before);
+    expect(mend.delivered).toEqual([]);
+  }, 15_000);
+
+  it("reads the review failed, with Retry, once Mend could not say whose a new sign-in is for a while", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    const { at, sessions } = organization(() => new Response("{}", { status: 503 }));
+    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+
+    at.token = "dana-2";
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("failed"), {
+      timeout: 12_000,
+    });
+    const record = (await kept.read(DANA_S1)).review.sends.find(
+      (candidate) => candidate.key === key,
+    );
+    expect(record?.phase).toMatchObject({
+      words: "Mend could not say which account VS Code is signed in as",
+    });
+    expect(mend.delivered).toEqual([]);
+  }, 20_000);
+});
+
+describe("a review on its way while VS Code's sign-in changes on the same server", () => {
+  it("sends nothing on Retry while Mend cannot say whose a new sign-in is", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    let asked = 0;
+    mend.deliver = async () => {
+      asked += 1;
+      throw new MendApiError("Mend is restarting.", 503);
+    };
+    const { at, sessions } = signIns();
+    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("failed"), SETTLE);
+    expect(asked).toBe(1);
+
+    at.token = "erin";
+    at.says = false;
+    expect(await store.retry({ place: DANA_S1, key })).toEqual({
+      retried: false,
+      words: expect.any(String),
+    });
+    await settle();
+    expect(asked).toBe(1);
+    expect(await phaseOf(kept, key)).toBe("failed");
+  });
+
+  it("is delivered when she signs in again as herself while Mend takes it", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    mend.answer = "pending";
+    const held: { land: (() => void) | null } = { land: null };
+    const deliver = mend.deliver.bind(mend);
+    mend.deliver = async (sessionId, request) => {
+      await new Promise<void>((resolve) => {
+        held.land = resolve;
+      });
+      return deliver(sessionId, request);
+    };
+    const { at, sessions } = signIns();
+    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    const key = await sendAll(store);
+    await vi.waitFor(() => expect(held.land).not.toBeNull(), SETTLE);
+
+    at.token = "dana-2";
+    held.land?.();
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).not.toBe("sending"), SETTLE);
+    expect(await phaseOf(kept, key)).toBe("pending");
+    expect(mend.delivered).toHaveLength(1);
+  });
+
+  it("waits, sending nothing and reading nothing failed, while Mend cannot say whose a new sign-in is, and goes on once it can", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    mend.answer = "pending";
+    const held: { land: (() => void) | null } = { land: null };
+    const deliver = mend.deliver.bind(mend);
+    mend.deliver = async (sessionId, request) => {
+      if (held.land === null)
+        await new Promise<void>((resolve) => {
+          held.land = resolve;
+        });
+      return deliver(sessionId, request);
+    };
+    const { at, sessions } = signIns();
+    const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    const key = await sendAll(store);
+    await vi.waitFor(() => expect(held.land).not.toBeNull(), SETTLE);
+
+    at.token = "erin";
+    at.says = false;
+    held.land?.();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(await phaseOf(kept, key)).toBe("sending");
+
+    at.token = "dana-1";
+    at.says = true;
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("pending"), SETTLE);
+    expect(new Set(mend.delivered.map((request) => request.idempotencyKey))).toEqual(
+      new Set([key]),
+    );
+  });
+
+  it("never shows Dana's pending comments once another sign-in Mend cannot name reads the session", async () => {
+    const { at, sessions } = signIns();
+    const store = new ReviewStore(
+      sessions,
+      new FakeMend(),
+      new ReviewMemory(memento()),
+      inMemory(),
+      noPaste,
+    );
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    await store.comment(onLine(3, "Dana's own words"));
+    expect(store.review().pending).toHaveLength(1);
+
+    at.token = "erin";
+    at.says = false;
+    const before = store.ready()?.readAt;
+    store.reread();
+    await vi.waitFor(() => expect(store.ready()?.readAt).not.toBe(before), SETTLE);
+    expect(store.review().pending).toEqual([]);
+  });
+
+  it("keeps no comment while Mend cannot say whose the sign-in is, so no other sign-in finds it, and says its words stay in the thread", async () => {
+    const kept = inMemory();
+    const { at, sessions } = signIns();
+    at.token = "erin";
+    at.says = false;
+    const mend = new FakeMend();
+    mend.serverComments = [DRAFT];
+    const unnamed = async (): Promise<ReviewStore> => {
+      const store = new ReviewStore(sessions, mend, new ReviewMemory(memento()), kept, noPaste);
+      store.follow(PROJECT, session("s1"));
+      await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+      return store;
+    };
+    const store = await unnamed();
+    expect(await store.comment(onLine(3, "Erin's own words"))).toEqual({
+      kept: false,
+      words: expect.stringMatching(
+        /Mend could not say which account VS Code is signed in as.*Its words are still in the thread\.$/,
+      ),
+    });
+    expect(await store.accept("d1", "Erin's reply")).toEqual({
+      kept: false,
+      words: expect.stringMatching(
+        /Mend could not say which account VS Code is signed in as.*Your words are still in the thread\.$/,
+      ),
+    });
+    expect(store.review().pending).toEqual([]);
+    expect((await unnamed()).review().pending).toEqual([]);
+  });
+});
+
+describe("Retry delivery of a review another window delivered meanwhile", () => {
+  it("says it sent nothing, and what the review reads now", async () => {
+    const kept = inMemory();
+    const mend = mendWithOpen();
+    mend.deliver = async () => {
+      throw new MendApiError("Mend is restarting.", 503);
+    };
+    let meanwhile: (() => Promise<void>) | null = null;
+    const delayed = {
+      ...sessionReads("change-1"),
+      sessionDetail: async (sessionId: string): Promise<SessionDetail> => {
+        await meanwhile?.();
+        return sessionReads("change-1").sessionDetail(sessionId);
+      },
+    };
+    const store = new ReviewStore(delayed, mend, new ReviewMemory(memento()), kept, noPaste);
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    const key = await sendAll(store);
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("failed"), SETTLE);
+    meanwhile = async () => {
+      meanwhile = null;
+      await kept.update(DANA_S1, (review) => ({
+        ...review,
+        sends: review.sends.map((record) => ({
+          ...record,
+          phase: { kind: "delivered", at: "2026-10-20T10:05:00.000Z" },
+        })),
+      }));
+    };
+    const writes = mend.writes.length;
+    expect(await store.retry({ place: DANA_S1, key })).toEqual({
+      retried: false,
+      words: "Retry delivery sent nothing: this review already reads sent",
+    });
+    expect(mend.writes).toHaveLength(writes);
   });
 });

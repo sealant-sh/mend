@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 
+import { samePlace } from "./kept-reviews.js";
 import type { ReviewDocument } from "./pending.js";
 import type { DocumentRef, ReviewStore } from "./review-store.js";
 import { retryDelivery } from "./review-toast.js";
@@ -34,6 +35,9 @@ const NEWER =
 const GONE =
   "This review was sent, or VS Code no longer keeps it, so your text is not saved. Your text stays in this editor.";
 
+const ELSEWHERE =
+  "You typed in an earlier review of this session that another window composed anew or sent since, so this review does not hold that text. Your text stays in its editor: copy what you need into this review.";
+
 const UNREAD =
   "This window has not read this review, so your text is not saved over it. Your text stays in this editor.";
 
@@ -43,7 +47,7 @@ class ReviewFiles implements vscode.FileSystemProvider {
   /**
    * The revision each editor's text is based on: the first this window looked at, or the one it
    * read or saved since. VS Code restores unsaved words over what it last looked at, and checks
-   * only by `mtime` before a save, so a save is checked here against this revision.
+   * only by `mtime` and size before a save, so a save is checked here against this revision.
    */
   readonly #based = new Map<string, number>();
 
@@ -56,11 +60,14 @@ class ReviewFiles implements vscode.FileSystemProvider {
   async stat(uri: vscode.Uri): Promise<vscode.FileStat> {
     const document = await this.#document(uri);
     if (!this.#based.has(uri.toString())) this.#based.set(uri.toString(), document.revision);
+    // VS Code's check before a save sees a newer file only when its size differs from the size
+    // the editor's text is based on, so a newer save of the same length would pass: the size is
+    // the revision, never the same twice.
     return {
       type: vscode.FileType.File,
       ctime: 0,
       mtime: document.revision,
-      size: new TextEncoder().encode(document.text).byteLength,
+      size: document.revision,
     };
   }
 
@@ -108,7 +115,9 @@ class ReviewFiles implements vscode.FileSystemProvider {
   }
 }
 
-/** Closes the review's tabs, never reverting one: a tab holding words she typed asks to save them. */
+/**
+ * Closes the review's tabs, never reverting one: a tab holding words she typed asks to save them.
+ */
 const closeTabs = async (uri: vscode.Uri): Promise<void> => {
   const tabs = vscode.window.tabGroups.all
     .flatMap((group) => group.tabs)
@@ -156,6 +165,13 @@ export class SendEditor implements vscode.Disposable {
   async #open(): Promise<void> {
     // Words this window holds are kept first, so the review lists them and is current when sent.
     await this.store.reloadReview();
+    const typed = await this.#saveOpen();
+    if (typed === "unsaved") {
+      void vscode.window.showWarningMessage(
+        "VS Code did not save the review you are writing, so Send review did not compose it again. Your text stays in its editor.",
+      );
+      return;
+    }
     const composition = this.store.compose();
     if (composition === null) return;
     const kept = await this.store.keepDocument(composition);
@@ -167,6 +183,26 @@ export class SendEditor implements vscode.Disposable {
       documentUri(kept.ref, kept.document.composed.sessionName),
     );
     await vscode.window.showTextDocument(document, { preview: false });
+    if (typed === "elsewhere") void vscode.window.showWarningMessage(ELSEWHERE);
+  }
+
+  /**
+   * Saves what she typed in every editor of the session's review: `unsaved` when VS Code could not
+   * save the review kept now, `elsewhere` when an editor holds typing in a review another window
+   * composed anew or sent since, which no save can keep.
+   */
+  async #saveOpen(): Promise<"saved" | "unsaved" | "elsewhere"> {
+    const place = this.store.place();
+    if (place === null) return "saved";
+    const keptId = this.store.review().document?.composed.documentId ?? null;
+    let typed: "saved" | "elsewhere" = "saved";
+    for (const document of vscode.workspace.textDocuments) {
+      const ref = refOf(document.uri);
+      if (!document.isDirty || ref === null || !samePlace(ref.place, place)) continue;
+      if (ref.id !== keptId) typed = "elsewhere";
+      else if (!(await document.save())) return "unsaved";
+    }
+    return typed;
   }
 
   async #send(uri: vscode.Uri | undefined): Promise<void> {

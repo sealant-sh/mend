@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 
 import { changeAddress, changeUri } from "./change-content.js";
 import { noteUri } from "./change-note.js";
+import type { ReviewPlace } from "./kept-reviews.js";
 import { DRAFT_NOT_SHOWN, type Keeping, type ReviewStore } from "./review-store.js";
 import { retryDelivery } from "./review-toast.js";
 import { commentableLines, evidenceLine, threadsOf, type ThreadView } from "./threads.js";
@@ -81,11 +82,10 @@ export class ReviewComments implements vscode.Disposable {
    */
   readonly #note: vscode.CommentController;
   readonly #threads = new Map<string, { view: ThreadView; thread: vscode.CommentThread }>();
-  /**
-   * The Mend draft each thread showed, kept past its redraw: an Accept or Dismiss already on its
-   * way from a thread drawn away still names the draft, and the store keeps her words there.
-   */
-  readonly #drafts = new WeakMap<vscode.CommentThread, string>();
+  readonly #drafts = new WeakMap<
+    vscode.CommentThread,
+    { readonly draftId: string; readonly place: ReviewPlace | null }
+  >();
   /** Threads whose Add, Accept or Dismiss is still being kept: a second click waits it out. */
   readonly #busy = new Set<vscode.CommentThread>();
   readonly #disposables: ReadonlyArray<vscode.Disposable>;
@@ -119,10 +119,10 @@ export class ReviewComments implements vscode.Disposable {
         this.#once(reply.thread, () => this.#add(reply)),
       ),
       vscode.commands.registerCommand("mend.review.accept", (reply: vscode.CommentReply) =>
-        this.#onDraft(reply, (id, text) => store.accept(id, text)),
+        this.#onDraft(reply, (draft, text) => store.accept(draft.draftId, text, draft.place)),
       ),
       vscode.commands.registerCommand("mend.review.dismiss", (reply: vscode.CommentReply) =>
-        this.#onDraft(reply, (id, text) => store.dismiss(id, text)),
+        this.#onDraft(reply, (draft, text) => store.dismiss(draft.draftId, text, draft.place)),
       ),
       vscode.commands.registerCommand("mend.review.edit", (comment: unknown) =>
         this.#mode(comment, vscode.CommentMode.Editing),
@@ -195,8 +195,9 @@ export class ReviewComments implements vscode.Disposable {
       thread.canReply = view.kind === "draft";
       thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
       thread.comments = [shown(view)];
+      const place = this.store.place();
       if (view.kind === "draft" && view.commentId !== null)
-        this.#drafts.set(thread, view.commentId);
+        this.#drafts.set(thread, { draftId: view.commentId, place });
       this.#threads.set(view.key, { view, thread });
     }
   }
@@ -242,19 +243,25 @@ export class ReviewComments implements vscode.Disposable {
 
   async #onDraft(
     reply: vscode.CommentReply,
-    act: (draftId: string, text: string) => Promise<Keeping>,
+    act: (
+      draft: { readonly draftId: string; readonly place: ReviewPlace | null },
+      text: string,
+    ) => Promise<Keeping>,
   ): Promise<void> {
     const { thread, text } = reply;
-    const draftId = this.#drafts.get(thread);
+    const draft = this.#drafts.get(thread);
     // A thread never drawn as a draft is VS Code's own, never redrawn away: her words stay in it.
-    if (draftId === undefined) {
+    if (draft === undefined) {
       this.#hold(thread, text, DRAFT_NOT_SHOWN);
       return;
     }
-    // Words the store could not keep, it holds and draws itself: the draft's thread may go.
+    // Words the store could not keep, it holds and draws itself: the draft's thread may go. Where
+    // nothing is kept (Mend could not name her account), her words stay in this thread.
     await this.#once(thread, async () => {
-      const kept = await act(draftId, text);
-      if (!kept.kept) void vscode.window.showWarningMessage(kept.words);
+      const kept = await act(draft, text);
+      if (kept.kept) return;
+      if (draft.place === null) this.#hold(thread, text, kept.words);
+      else void vscode.window.showWarningMessage(kept.words);
     });
   }
 

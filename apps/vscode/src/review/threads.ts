@@ -1,8 +1,14 @@
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
-import { commentLabel, mayRetry, posts, type LiveAgent, type SendRecord } from "./delivery.js";
-import { acceptedDrafts, type PendingComment, type SessionReview } from "./pending.js";
+import { mayRetry, posts, type LiveAgent, type SendRecord } from "./delivery.js";
+import {
+  acceptedDrafts,
+  type HeldWords,
+  type PendingComment,
+  type SessionReview,
+} from "./pending.js";
 import type { CommentAnchor, RecordLink, ServerComment } from "./review-wire.js";
+import { commentLabel } from "./send-words.js";
 
 /**
  * Every comment of a change as a thread in the editor (story d, steps 3, 4 and 7), decided without
@@ -172,19 +178,21 @@ export const threadsOf = (
   review: SessionReview,
   you: string,
   /** Her words VS Code could not keep yet: pending comments marked not kept. */
-  held: ReadonlyArray<PendingComment> = [],
+  held: ReadonlyArray<HeldWords> = [],
 ): ReadonlyArray<ThreadView> => {
   const accepted = acceptedDrafts(review);
   // A comment in a review she sent reads where that follow-up is; a refused one, as Mend holds it.
   const sentIn = new Map<string, SendRecord>();
   const acceptedIn = new Set<string>();
   // A held edit of a pending comment shows in its place: her newest words, not yet kept.
-  const heldIds = new Set(held.map(({ id }) => id));
+  const heldIds = new Set(
+    held.flatMap(({ comment, edits }) => (edits === null ? [comment.id] : [comment.id, edits.id])),
+  );
   const threads: Array<ThreadView> = [
     ...review.pending
       .filter(({ id }) => !heldIds.has(id))
       .map((comment) => pendingThread(read, comment, you)),
-    ...held.map((comment) => ({
+    ...held.map(({ comment }) => ({
       ...pendingThread(read, comment, you),
       key: `held:${comment.id}`,
       label: "not kept",
@@ -264,8 +272,9 @@ export const commentableLines = (
 };
 
 /**
- * `2 pending · 1 Mend draft`, `2 follow-up pending · pasted into claude's terminal`: the change's comments
- * counted by the state each was observed in; a follow-up Mend holds, by where its words are.
+ * `2 pending · 1 Mend draft`, `2 follow-up pending · pasted into claude's terminal`: the change's
+ * comments counted by the state each was observed in; a follow-up Mend holds, by where its words
+ * are.
  */
 export const commentsLine = (
   threads: ReadonlyArray<Pick<ThreadView, "kind" | "label">>,

@@ -3,16 +3,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  FOLLOW_UP_INSTRUCTION_MAX,
   reviewTargetExists,
   reviewTargetFile,
   type ReviewCommentTarget,
 } from "@mend/domain/workbench";
 
+import type { MendConnection } from "../config.js";
 import { MendApiError } from "../mend-http.js";
 import type { Project, ProjectDetail, Session, SessionDetail } from "../types.js";
 import type { Pasted } from "./agent-paste.js";
+import type { Bound } from "./binding.js";
 import type { ChangeRead } from "./change-rows.js";
 import type { DeliverRequest } from "./delivery.js";
+import { Instruction } from "./instruction.js";
 import { KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
 import type { PendingComment } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
@@ -229,9 +233,21 @@ export const sessionReads = (changeId: string | null) => ({
     changeId,
   }),
   connection: async () => ({ url: "http://mend", token: null }),
-  viewerId: async (): Promise<string | null> => "dana",
+  async held() {
+    return { connection: await this.connection(), current: () => true };
+  },
+  accountOf: async (): Promise<string | null> => "dana",
   memberNames: async () => [{ userId: "dana", name: "Dana" }],
   projectDetail: async (): Promise<ProjectDetail> => ({ project: PROJECT, sessions: [] }),
+  /** Reads made only once `connect` gives a connection, as `MendClient.pinned` makes them. */
+  pinned(connect: () => Promise<MendConnection>) {
+    return {
+      sessionDetail: async (sessionId: string): Promise<SessionDetail> => {
+        await connect();
+        return this.sessionDetail(sessionId);
+      },
+    };
+  },
 });
 
 /** One VS Code's global storage, of its own, for a test's kept reviews. */
@@ -281,6 +297,20 @@ export class FakeMend extends ReviewClient {
     );
   }
 
+  /** This Mend, each call made only once `connect` gives a connection, as a pinned client's are. */
+  override pinned(connect: () => Promise<Bound>): ReviewClient {
+    return new Proxy(this, {
+      get: (target, property) => {
+        const value: unknown = Reflect.get(target, property);
+        if (typeof value !== "function") return value;
+        return async (...args: ReadonlyArray<unknown>) => {
+          await connect();
+          return Reflect.apply(value, target, args);
+        };
+      },
+    });
+  }
+
   override async openReview(): Promise<PinnedSlice> {
     return PINNED;
   }
@@ -313,6 +343,8 @@ export class FakeMend extends ReviewClient {
   /** How `follow-up/deliver` answers, and what `GET …/follow-up` lists. */
   answer: FollowUp["status"] = "delivering";
   listed: FollowUp | null = null;
+  /** The follow-up Mend holds pending, as `GET …/follow-up` lists it until it is delivered. */
+  #held: FollowUp | null = null;
 
   override async setCommentState(
     _changeId: string,
@@ -355,17 +387,26 @@ export class FakeMend extends ReviewClient {
   }
 
   override async deliver(sessionId: string, request: DeliverRequest): Promise<FollowUp> {
+    if (request.instruction.trim() === "" || request.instruction.length > FOLLOW_UP_INSTRUCTION_MAX)
+      throw new MendApiError(
+        `Follow-up instructions must contain between 1 and ${FOLLOW_UP_INSTRUCTION_MAX} characters.`,
+        422,
+        "StoreFailure",
+      );
     this.writes.push(`deliver ${sessionId} ${request.idempotencyKey}`);
     this.delivered.push(request);
-    return { key: request.idempotencyKey, status: this.answer, error: null };
+    const answered: FollowUp = { key: request.idempotencyKey, status: this.answer, error: null };
+    this.#held = this.answer === "pending" ? answered : null;
+    return answered;
   }
 
   override async followUp(): Promise<FollowUp | null> {
-    return this.listed;
+    return this.listed ?? this.#held;
   }
 
   /** Mend marks these comments sent to the session, as a delivered follow-up does. */
   markSent(sessionId: string): void {
+    this.#held = null;
     this.serverComments = this.serverComments.map((candidate) =>
       candidate.state === "open" ? { ...candidate, sentToSessionId: sessionId } : candidate,
     );
@@ -386,6 +427,12 @@ export const sendComposed = async (
   return saved.kind === "saved"
     ? store.send(ref, saved.revision)
     : { sent: false, words: `VS Code did not save the review: ${saved.kind}` };
+};
+
+export const instructionOf = (text: string): Instruction => {
+  const parsed = Instruction.parse(text, "add-rate-limit");
+  if (!parsed.ok) throw new Error(parsed.words);
+  return parsed.instruction;
 };
 
 /** Long enough for a store's read of the fakes to land. */

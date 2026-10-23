@@ -1,5 +1,6 @@
-import { reviewTargetFile, targetFileFor, type ReviewCommentTarget } from "@mend/domain/workbench";
-
+import type { PostAttempt } from "./comment-target.js";
+import type { Instruction } from "./instruction.js";
+import { inputAfter, planFor, type PastePlan, type TerminalInput } from "./paste-plan.js";
 import {
   KEPT_SENDS,
   rewritten,
@@ -7,7 +8,17 @@ import {
   type PendingComment,
   type SessionReview,
 } from "./pending.js";
-import type { ChangeFile, ServerComment } from "./review-wire.js";
+import {
+  DRAFT_GONE,
+  DRAFT_GONE_NOTICE,
+  draftLeftNotice,
+  NOT_LISTED,
+  pasteFailedNotice,
+  refusedNotice,
+  skippedNotice,
+  stopClause,
+  stoppedPasteNotice,
+} from "./send-words.js";
 
 /**
  * Sending a review back (story d, step 6), as a pure state machine. Her pending comments move into
@@ -19,17 +30,6 @@ import type { ChangeFile, ServerComment } from "./review-wire.js";
  * gone (the route then launches the session on the review). A record is `delivered` only once Mend
  * reads its comments back as sent to the session.
  */
-
-/** A post on its way, kept before the request goes: a reload matches only what it made. */
-export interface PostAttempt {
-  /** The words and the target posted, exactly. */
-  readonly body: string;
-  readonly target: ReviewCommentTarget;
-  /** Her name as Mend writes it on her comments; null when Mend could not say who she is. */
-  readonly author: string | null;
-  /** Every comment id on the change before the post: the one it made is not among them. */
-  readonly before: ReadonlyArray<string>;
-}
 
 /** Where one of her own comments is on its way to Mend. */
 export type PostState =
@@ -87,54 +87,35 @@ export type SendPhase =
   /** Mend holds it pending, and this window had no terminal of hers to paste it into. */
   | { readonly kind: "pending" }
   | { readonly kind: "delivered"; readonly at: string }
-  | { readonly kind: "failed"; readonly words: string }
+  | { readonly kind: "failed"; readonly words: string; readonly at: string }
   /** Mend refused this key or this person: a new review, with a new key, is the way on. */
   | { readonly kind: "refused"; readonly words: string };
-
-/**
- * What the agent's input holds as VS Code pasted it, not entered: the text, exactly, and the
- * comments whose words are in it. Mend's follow-up can hold more, after a paste that was skipped.
- */
-export interface TerminalInput {
-  readonly text: string;
-  readonly ids: ReadonlyArray<string>;
-}
-
-/** What one agent process's input holds, as VS Code pasted it: another process's input holds none of it. */
-export interface HeldInput {
-  readonly input: TerminalInput;
-  readonly agent: string;
-  readonly processId: string;
-}
-
-/**
- * What Send to session pastes into the agent's terminal (G12 fallback): the whole text; only what
- * she added onto what its input holds; or nothing, with why, when she changed the part already
- * there. `onto` is what the input of the agent process `processId` held when she composed it: a
- * paste into any other process is the whole text.
- */
-export type PastePlan =
-  | { readonly kind: "all" }
-  | {
-      readonly kind: "added";
-      readonly text: string;
-      readonly onto: TerminalInput;
-      readonly processId: string;
-    }
-  | {
-      readonly kind: "none";
-      readonly words: string;
-      readonly onto: TerminalInput;
-      readonly processId: string;
-    };
 
 /** The paste step of a review Mend holds pending in her agent's terminal. */
 export type PasteStep =
   | { readonly kind: "due" }
-  /** Pasted, or nothing to paste and she was told why: what VS Code pasted into the agent's input. */
+  | { readonly kind: "pasting" }
+  /**
+   * Pasted, or nothing to paste and she was told why: what VS Code pasted into the agent's input.
+   */
   | { readonly kind: "done"; readonly input: TerminalInput }
-  /** VS Code could not attach the live agent's terminal here: Retry delivery pastes it again. */
-  | { readonly kind: "failed" };
+  /** Not pasted, or cut short; `stopped` is why the drive stopped, when it did, as it stopped. */
+  | {
+      readonly kind: "failed";
+      readonly mayHaveLanded: boolean;
+      readonly stopped: StopReason | null;
+    };
+
+/**
+ * Why a drive stopped before the send moved on: VS Code closed (as a window that finds it left
+ * reads it), VS Code connected to another server or account, VS Code was signed out, or a failure
+ * in its own words.
+ */
+export type StopReason =
+  | { readonly kind: "closed" }
+  | { readonly kind: "switched" }
+  | { readonly kind: "signed-out" }
+  | { readonly kind: "error"; readonly words: string };
 
 export interface SendSlice {
   readonly id: string;
@@ -142,6 +123,25 @@ export interface SendSlice {
   readonly headId: string;
   readonly diffDigest: string;
 }
+
+/**
+ * Something a send leaves her to know, kept with it as the step that found it wrote it: every
+ * window reads the same notice, and the one she looks at says it once, claimed by the send's key,
+ * the notice's kind and when it was written. A failed delivery says itself from its phase.
+ */
+export interface SendNotice {
+  readonly kind: "paste" | "draft-gone" | "draft-left" | "refused";
+  readonly at: string;
+  readonly words: string;
+  readonly tone: "error" | "warning";
+  /** It offers Retry delivery, while the send still waits on her. */
+  readonly retry: boolean;
+  /** It offers the review's own words, for a review that stopped before Mend sent it. */
+  readonly text: boolean;
+}
+
+/** How many notices a send keeps, the newest. */
+const KEPT_NOTICES = 8;
 
 export interface SendRecord {
   /** The follow-up's idempotency key: the same on every retry. */
@@ -155,6 +155,7 @@ export interface SendRecord {
   readonly paste: PastePlan;
   readonly items: ReadonlyArray<SendItem>;
   readonly phase: SendPhase;
+  readonly notices: ReadonlyArray<SendNotice>;
   readonly createdAt: string;
 }
 
@@ -177,6 +178,19 @@ export type FollowUpStatus =
   | "delivery_failed"
   | "superseded";
 
+/**
+ * What Mend reads about one key: `GET …/follow-up` lists only the newest follow-up not yet
+ * delivered, so `status` is ours when it is listed, and `sent` is whether Mend reads every comment
+ * of the review back as sent to the session, the only proof it was delivered.
+ */
+export interface FollowUpRead {
+  readonly status: FollowUpStatus | null;
+  readonly error: string | null;
+  /** Another follow-up of the session is listed: a newer one of hers, or ours still on its way. */
+  readonly others: boolean;
+  readonly sent: boolean;
+}
+
 export type SendEvent =
   | { readonly kind: "post-started"; readonly pendingId: string; readonly attempt: PostAttempt }
   | { readonly kind: "posted"; readonly pendingId: string; readonly commentId: string }
@@ -197,36 +211,32 @@ export type SendEvent =
       readonly error: string | null;
       readonly agent: LiveAgent;
     }
+  | { readonly kind: "paste-started" }
+  /** The paste was refused before anything reached the terminal: it is due again. */
+  | { readonly kind: "paste-unstarted" }
   /** The paste reached the agent's input. */
   | { readonly kind: "pasted" }
-  /** Nothing was pasted, and she was told why: the input holds what it held. */
-  | { readonly kind: "skipped" }
-  /**
-   * Nothing was pasted, and Mend still holds the follow-up pending: the agent process is gone
-   * (`gone`), or her terminal could not be attached here.
-   */
-  | { readonly kind: "paste-failed"; readonly gone: boolean }
+  /** Nothing was pasted, and `words` tell her why: the input holds what it held. */
+  | { readonly kind: "skipped"; readonly words: string }
+  | { readonly kind: "paste-failed"; readonly why: "agent-gone" | "not-attached" }
+  /** The paste threw while it pasted, for `words`: some or all of it may be in the input. */
+  | { readonly kind: "paste-failed"; readonly why: "interrupted"; readonly words: string }
   | { readonly kind: "failed"; readonly words: string; readonly retryable: boolean }
   /**
    * Retry delivery, with everything kept: from a failure, or from a follow-up Mend holds pending
-   * once the session has no live agent. `agent` is the session's live agent as read just now.
-   */
-  | { readonly kind: "retry"; readonly at: string; readonly agent: LiveAgent | null }
-  /** A window loaded with this record in it: a send it did not see end is not known to be sent. */
-  | { readonly kind: "loaded" }
-  /**
-   * A watch of a launch: `GET …/follow-up` lists only the newest follow-up not yet delivered, so
-   * `status` is ours when it is listed, and `sent` is whether Mend reads every comment of the
-   * review back as sent to the session, the only proof it was delivered.
+   * once the session has no live agent. `agent` is the session's live agent as read just now, and
+   * `mend` what Mend read about the key just now, for a retry that pastes into her agent.
    */
   | {
-      readonly kind: "follow-up";
-      readonly status: FollowUpStatus | null;
-      readonly error: string | null;
-      /** Another follow-up of the session is listed: ours may still be on its way. */
-      readonly others: boolean;
-      readonly sent: boolean;
-    };
+      readonly kind: "retry";
+      readonly at: string;
+      readonly agent: LiveAgent | null;
+      readonly mend: FollowUpRead | null;
+    }
+  /** The drive stopped, or a window found it left: it moves on by why. */
+  | { readonly kind: "abandoned"; readonly why: StopReason }
+  /** A watch of a launch. */
+  | ({ readonly kind: "follow-up"; readonly agent: LiveAgent | null } & FollowUpRead);
 
 /** What the extension does next for a record. */
 export type SendAction =
@@ -283,7 +293,7 @@ export const commentIds = (record: SendRecord): ReadonlyArray<string> | null => 
   return ids;
 };
 
-export const deliverRequest = (record: SendRecord, ids: ReadonlyArray<string>): DeliverRequest => ({
+const deliverRequest = (record: SendRecord, ids: ReadonlyArray<string>): DeliverRequest => ({
   reviewSliceId: record.sliceId,
   checkpointAId: record.baseId,
   checkpointBId: record.headId,
@@ -331,63 +341,6 @@ export const nextAction = (record: SendRecord): SendAction => {
     : { kind: "deliver", request: deliverRequest(record, ids) };
 };
 
-/**
- * The plan for a paste into the agent process `processId`: one composed onto another process's
- * input is the whole text, since this process's input holds none of it.
- */
-const planFor = (plan: PastePlan, processId: string): PastePlan =>
-  plan.kind !== "all" && plan.processId !== processId ? { kind: "all" } : plan;
-
-/**
- * What the agent's input holds after this record's paste step, in the process it was pasted into:
- * what it was pasted onto, and the paste.
- */
-const inputAfter = (record: SendRecord, processId: string, pasted: boolean): TerminalInput => {
-  const ids = commentIds(record) ?? [];
-  const plan = planFor(record.paste, processId);
-  switch (plan.kind) {
-    case "all":
-      return pasted ? { text: record.instruction, ids } : { text: "", ids: [] };
-    case "added":
-      return pasted ? { text: `${plan.onto.text}${plan.text}`, ids } : plan.onto;
-    case "none":
-      return plan.onto;
-  }
-};
-
-/** What an agent process's input holds, by the newest review not refused; null when nothing of hers is. */
-const recordedInput = (records: ReadonlyArray<SendRecord>): HeldInput | null => {
-  const latest = records.findLast((record) => record.phase.kind !== "refused");
-  if (latest?.phase.kind !== "in-terminal") return null;
-  const { agent, processId, paste } = latest.phase;
-  if (paste.kind === "done") return { input: paste.input, agent, processId };
-  // Nothing was pasted: the input holds what this review was composed onto.
-  return paste.kind === "failed" && latest.paste.kind !== "all"
-    ? { input: latest.paste.onto, agent, processId: latest.paste.processId }
-    : null;
-};
-
-/**
- * What the input of her live agent holds; null when nothing of hers is, or when the agent is a
- * process other than the one VS Code pasted into, as after a stop and a resume.
- */
-export const terminalInput = (
-  records: ReadonlyArray<SendRecord>,
-  agent: LiveAgent | null,
-): HeldInput | null => {
-  const held = recordedInput(records);
-  return held !== null && agent?.kind === "terminal" && agent.processId === held.processId
-    ? held
-    : null;
-};
-
-/**
- * The reviews a composition was made after: the newest one kept, and what an agent's input holds.
- * One composed before another review went out, in any window, no longer says what it would send.
- */
-export const sendGeneration = (records: ReadonlyArray<SendRecord>): string =>
-  JSON.stringify([records.at(-1)?.key ?? null, recordedInput(records)]);
-
 const withPost = (record: SendRecord, pendingId: string, post: PostState): SendRecord => ({
   ...record,
   items: record.items.map((item) =>
@@ -399,6 +352,7 @@ const answeredPhase = (
   status: FollowUpStatus,
   error: string | null,
   agent: LiveAgent,
+  now: string,
 ): SendPhase => {
   switch (status) {
     case "pending":
@@ -415,173 +369,356 @@ const answeredPhase = (
     case "delivered":
       return { kind: "delivering" };
     case "delivery_failed":
-      return { kind: "failed", words: error ?? "Mend could not deliver the review." };
+      return { kind: "failed", words: error ?? "Mend could not deliver the review.", at: now };
     case "superseded":
       return { kind: "refused", words: "Mend replaced this follow-up with a newer one." };
   }
 };
 
-/** A record after an event; an event its phase does not take leaves it as it was. */
+/** What a step leaves her to know, before it is stamped with when. */
+export type Notice = Omit<SendNotice, "at">;
+
+/** A send after an event, and what the change it made leaves her to know, if anything. */
+interface Stepped {
+  readonly record: SendRecord;
+  readonly notice: Notice | null;
+}
+
+const quiet = (record: SendRecord): Stepped => ({ record, notice: null });
+
+/** The send after `event`; an event its phase does not take leaves it as it was, with no notice. */
 export const step = (record: SendRecord, event: SendEvent, now: string): SendRecord => {
+  const { record: next, notice } = transition(record, event, now);
+  if (notice === null) return next;
+  return { ...next, notices: [...next.notices, { ...notice, at: now }].slice(-KEPT_NOTICES) };
+};
+
+const transition = (record: SendRecord, event: SendEvent, now: string): Stepped => {
   switch (event.kind) {
     case "post-started":
-      return withPost(record, event.pendingId, { kind: "posting", ...event.attempt });
+      return quiet(withPost(record, event.pendingId, { kind: "posting", ...event.attempt }));
     case "posted":
-      return withPost(record, event.pendingId, { kind: "posted", commentId: event.commentId });
+      return quiet(
+        withPost(record, event.pendingId, { kind: "posted", commentId: event.commentId }),
+      );
     case "not-posted":
-      return withPost(record, event.pendingId, { kind: "unposted" });
+      return quiet(withPost(record, event.pendingId, { kind: "unposted" }));
     case "opened":
-      return {
+      return quiet({
         ...record,
         items: record.items.map((item) =>
           item.kind === "accepted" && item.draftId === event.draftId
             ? { ...item, opened: true }
             : item,
         ),
-      };
+      });
     case "draft-dismissed":
-      return {
+      return quiet({
         ...record,
         items: record.items.map((item) =>
           item.kind === "rewrite" && item.pending.origin.draftId === event.draftId
             ? { ...item, dismissal: { kind: "dismissed" } }
             : item,
         ),
-      };
+      });
     case "draft-left":
-      return {
+      return quiet({
         ...record,
         items: record.items.map((item) =>
           item.kind === "rewrite" && item.pending.origin.draftId === event.draftId
             ? { ...item, dismissal: { kind: "left", words: event.words } }
             : item,
         ),
+      });
+    case "answered": {
+      if (record.phase.kind !== "sending") return quiet(record);
+      const next = { ...record, phase: answeredPhase(event.status, event.error, event.agent, now) };
+      const left = handedOver(next) ? draftsLeft(next) : [];
+      return {
+        record: next,
+        notice: left.length === 0 ? null : draftLeftNotice(left),
       };
-    case "answered":
-      return record.phase.kind === "sending"
-        ? { ...record, phase: answeredPhase(event.status, event.error, event.agent) }
-        : record;
+    }
+    case "paste-started":
+      return quiet(withPaste(record, "due", { kind: "pasting" }));
+    case "paste-unstarted":
+      return quiet(withPaste(record, "pasting", { kind: "due" }));
     case "pasted":
+      return quiet(
+        record.phase.kind === "in-terminal"
+          ? withPaste(record, "pasting", {
+              kind: "done",
+              input: inputAfter(record, commentIds(record) ?? [], record.phase.processId, true),
+            })
+          : record,
+      );
     case "skipped":
-      return record.phase.kind === "in-terminal" && record.phase.paste.kind === "due"
-        ? {
-            ...record,
-            phase: {
-              ...record.phase,
-              paste: {
-                kind: "done",
-                input: inputAfter(record, record.phase.processId, event.kind === "pasted"),
+      if (record.phase.kind !== "in-terminal" || record.phase.paste.kind !== "due")
+        return quiet(record);
+      return {
+        record: withPaste(record, "due", {
+          kind: "done",
+          input: inputAfter(record, commentIds(record) ?? [], record.phase.processId, false),
+        }),
+        notice: skippedNotice(event.words),
+      };
+    case "paste-failed": {
+      const { phase } = record;
+      if (
+        phase.kind !== "in-terminal" ||
+        (phase.paste.kind !== "due" && phase.paste.kind !== "pasting")
+      )
+        return quiet(record);
+      const notice = pasteFailedNotice(event, phase.agent);
+      return event.why === "agent-gone"
+        ? { record: { ...record, phase: { kind: "pending" } }, notice }
+        : {
+            record: {
+              ...record,
+              phase: {
+                ...phase,
+                paste: {
+                  kind: "failed",
+                  mayHaveLanded: event.why === "interrupted",
+                  stopped: null,
+                },
               },
             },
-          }
-        : record;
-    case "paste-failed":
-      if (record.phase.kind !== "in-terminal") return record;
-      return event.gone
-        ? { ...record, phase: { kind: "pending" } }
-        : { ...record, phase: { ...record.phase, paste: { kind: "failed" } } };
+            notice,
+          };
+    }
     case "failed":
-      return record.phase.kind === "sending" || record.phase.kind === "delivering"
-        ? {
-            ...record,
-            phase: event.retryable
-              ? { kind: "failed", words: event.words }
-              : { kind: "refused", words: event.words },
-          }
-        : record;
+      if (record.phase.kind !== "sending" && record.phase.kind !== "delivering")
+        return quiet(record);
+      // A failed delivery says itself from its phase; only a refusal is a notice.
+      return event.retryable
+        ? quiet({ ...record, phase: { kind: "failed", words: event.words, at: now } })
+        : {
+            record: { ...record, phase: { kind: "refused", words: event.words } },
+            notice: refusedNotice(event.words),
+          };
     case "draft-gone": {
       // Its words are in the instruction: the review stops, and Send review composes it anew.
       const items = record.items.filter(
         (item) => item.kind !== "accepted" || item.draftId !== event.draftId,
       );
-      if (record.phase.kind === "refused") return { ...record, items };
-      return { ...record, items, phase: { kind: "refused", words: DRAFT_GONE } };
+      if (record.phase.kind === "refused") return quiet({ ...record, items });
+      return {
+        record: { ...record, items, phase: { kind: "refused", words: DRAFT_GONE } },
+        notice: DRAFT_GONE_NOTICE,
+      };
     }
     case "superseded":
-      return record.phase.kind === "pending" ||
-        record.phase.kind === "in-terminal" ||
-        record.phase.kind === "failed"
-        ? {
-            ...record,
-            phase: { kind: "refused", words: "Mend replaced this follow-up with a newer review." },
-          }
-        : record;
+      return quiet(
+        record.phase.kind === "pending" ||
+          record.phase.kind === "in-terminal" ||
+          record.phase.kind === "failed"
+          ? {
+              ...record,
+              phase: {
+                kind: "refused",
+                words: "Mend replaced this follow-up with a newer review.",
+              },
+            }
+          : record,
+      );
     case "retry":
-      if (!mayRetry(record, event.agent)) return record;
-      // Mend holds it pending for her live agent: only the paste is done again.
-      return record.phase.kind === "in-terminal" && event.agent?.kind === "terminal"
-        ? {
-            ...record,
-            phase: {
-              kind: "in-terminal",
-              agent: event.agent.name,
-              processId: event.agent.processId,
-              paste: { kind: "due" },
-            },
-          }
-        : { ...record, phase: { kind: "sending", since: event.at } };
-    case "loaded":
-      return record.phase.kind === "sending"
-        ? {
-            ...record,
-            phase: { kind: "failed", words: "VS Code closed before Mend answered" },
-          }
-        : record;
-    case "follow-up":
-      if (record.phase.kind !== "delivering") return record;
-      if (event.sent) return { ...record, phase: { kind: "delivered", at: now } };
-      if (event.status === "delivery_failed")
-        return {
+      if (!mayRetry(record, event.agent)) return quiet(record);
+      // Mend held it pending for her live agent: only the paste is done again, and only while
+      // Mend still holds this key and has not sent its comments.
+      if (
+        (record.phase.kind === "in-terminal" || record.phase.kind === "pending") &&
+        event.agent?.kind === "terminal"
+      )
+        return quiet(
+          event.mend === null
+            ? record
+            : { ...record, phase: heldPhase(event.mend, event.agent, now) },
+        );
+      return quiet({ ...record, phase: { kind: "sending", since: event.at } });
+    case "abandoned": {
+      const { phase } = record;
+      if (phase.kind === "sending")
+        return quiet({
           ...record,
-          phase: { kind: "failed", words: event.error ?? "Mend could not deliver the review." },
-        };
-      // Mend holds it pending (the session went live, or a reload never heard the answer): it waits
-      // there until she retries it.
-      if (event.status === "pending") return { ...record, phase: { kind: "pending" } };
-      if (event.status !== null || event.others) return record;
+          phase: { kind: "failed", words: stopClause(event.why, "before Mend answered"), at: now },
+        });
+      if (
+        phase.kind !== "in-terminal" ||
+        (phase.paste.kind !== "due" && phase.paste.kind !== "pasting")
+      )
+        return quiet(record);
+      const mayHaveLanded = phase.paste.kind === "pasting";
       return {
-        ...record,
-        phase: {
-          kind: "failed",
-          words:
-            "Mend no longer lists this follow-up, and it does not read its comments as sent to the session",
+        record: {
+          ...record,
+          phase: { ...phase, paste: { kind: "failed", mayHaveLanded, stopped: event.why } },
         },
+        notice: stoppedPasteNotice(phase.agent, event.why, mayHaveLanded),
       };
+    }
+    case "follow-up":
+      return quiet(followedUp(record, event, now));
   }
 };
 
-export const DRAFT_GONE =
-  "A Mend draft in this review was dismissed before it was sent, and the review's text still asks for it, so nothing was sent";
+/** A launch after a watch read what Mend holds for its key. */
+const followedUp = (
+  record: SendRecord,
+  event: Extract<SendEvent, { kind: "follow-up" }>,
+  now: string,
+): SendRecord => {
+  if (record.phase.kind !== "delivering") return record;
+  if (event.sent) return { ...record, phase: { kind: "delivered", at: now } };
+  if (event.status === "delivery_failed")
+    return {
+      ...record,
+      phase: {
+        kind: "failed",
+        words: event.error ?? "Mend could not deliver the review.",
+        at: now,
+      },
+    };
+  if (event.status === "pending")
+    return {
+      ...record,
+      phase: answeredPhase("pending", null, event.agent ?? { kind: "other" }, now),
+    };
+  if (event.status !== null || event.others) return record;
+  return { ...record, phase: { kind: "failed", words: NOT_LISTED, at: now } };
+};
 
-/**
- * Retry delivery is offered on a failed record; on a follow-up Mend holds pending once the session
- * has no live agent, when the same key launches the stopped session on the review; and on one whose
- * paste did not happen while her agent lives, when it is pasted again.
- */
+/** Where a review Mend held pending is, as Mend reads its key now. */
+const heldPhase = (read: FollowUpRead, agent: LiveAgent, now: string): SendPhase => {
+  if (read.sent) return { kind: "delivered", at: now };
+  if (read.status !== null) return answeredPhase(read.status, read.error, agent, now);
+  // Mend lists only the newest follow-up it holds: another one listed replaced ours.
+  return read.others
+    ? answeredPhase("superseded", null, agent, now)
+    : { kind: "failed", words: NOT_LISTED, at: now };
+};
+
+const withPaste = (record: SendRecord, from: PasteStep["kind"], to: PasteStep): SendRecord =>
+  record.phase.kind === "in-terminal" && record.phase.paste.kind === from
+    ? { ...record, phase: { ...record.phase, paste: to } }
+    : record;
+
 export const mayRetry = (record: SendRecord, agent: LiveAgent | null): boolean =>
-  record.phase.kind === "failed" ||
-  ((record.phase.kind === "pending" || record.phase.kind === "in-terminal") && agent === null) ||
-  (record.phase.kind === "in-terminal" &&
-    record.phase.paste.kind === "failed" &&
-    agent?.kind === "terminal" &&
-    agent.hers);
+  needs(record) === "her" &&
+  (record.phase.kind === "failed" || agent === null || (agent.kind === "terminal" && agent.hers));
+
+export type Needs = "driver" | "her" | "nothing";
+
+export const needs = (record: SendRecord): Needs => {
+  switch (record.phase.kind) {
+    case "sending":
+    case "delivering":
+      return "driver";
+    case "in-terminal":
+      switch (record.phase.paste.kind) {
+        case "due":
+        case "pasting":
+          return "driver";
+        case "failed":
+          return "her";
+        case "done":
+          return "nothing";
+      }
+    case "pending":
+    case "failed":
+      return "her";
+    case "delivered":
+    case "refused":
+      return "nothing";
+  }
+};
+
+/** What Mend answered a drive's deliver, or its watch, before the drive read her agent. */
+export type MendAnswer =
+  | { readonly via: "deliver"; readonly status: FollowUpStatus; readonly error: string | null }
+  | ({ readonly via: "watch" } & FollowUpRead);
 
 /**
- * A record a toast of hers offered Retry delivery on, and that still waits for it: failed, or held
- * pending with nothing pasted. One sent, or retried meanwhile, does not.
+ * What failed in a step of a send's drive: VS Code's connection is not the send's (another server
+ * or account, signed out, or a sign-in Mend could not name), Mend refused a write, or anything else
+ * failed: a read, a write Mend never answered, VS Code's own keep.
  */
-export const awaitsRetry = (record: SendRecord): boolean =>
-  record.phase.kind === "failed" ||
-  record.phase.kind === "pending" ||
-  (record.phase.kind === "in-terminal" && record.phase.paste.kind === "failed");
+export type DriveFailure =
+  | {
+      readonly kind: "unbound";
+      readonly why: "switched" | "signed-out" | "unknown";
+      readonly words: string;
+    }
+  /** Mend answered, and the read of her agent that answer needs failed. */
+  | { readonly kind: "agent-unread"; readonly answer: MendAnswer }
+  | { readonly kind: "refused"; readonly words: string }
+  | { readonly kind: "failed"; readonly words: string };
+
+/**
+ * What a drive does after a failed step: stops for why, waits and tries again, or keeps an event.
+ */
+export type OnFailure =
+  | { readonly kind: "stop"; readonly why: StopReason }
+  | { readonly kind: "wait" }
+  | { readonly kind: "event"; readonly event: SendEvent };
+
+/**
+ * How many times a drive waits on a sign-in Mend could not name before the send reads failed: Mend
+ * that cannot answer for that long cannot take the review either.
+ */
+export const MAX_ACCOUNT_WAITS = 5;
+
+/**
+ * What the drive does when a step fails, by the send as the drive read it before that step and
+ * how many times the drive already waited on a sign-in Mend could not name.
+ */
+export const onFailure = (record: SendRecord, failure: DriveFailure, waited: number): OnFailure => {
+  // What Mend answered stands without her agent: a review it holds pending then waits on her.
+  if (failure.kind === "agent-unread") {
+    const { answer } = failure;
+    return {
+      kind: "event",
+      event:
+        answer.via === "deliver"
+          ? {
+              kind: "answered",
+              status: answer.status,
+              error: answer.error,
+              agent: { kind: "other" },
+            }
+          : {
+              kind: "follow-up",
+              status: answer.status,
+              error: answer.error,
+              others: answer.others,
+              sent: answer.sent,
+              agent: null,
+            },
+    };
+  }
+  // Nothing more is sent on a connection that is not the send's: a read of its own server, signed
+  // in, picks the send up. One Mend could not name yet is waited on, for a while.
+  if (failure.kind === "unbound" && failure.why !== "unknown")
+    return { kind: "stop", why: { kind: failure.why } };
+  if (failure.kind === "unbound" && waited < MAX_ACCOUNT_WAITS) return { kind: "wait" };
+  // Mend holds the follow-up: what failed is VS Code's, and the paste step stops on it.
+  if (record.phase.kind === "in-terminal")
+    return { kind: "stop", why: { kind: "error", words: failure.words } };
+  return {
+    kind: "event",
+    event: { kind: "failed", words: failure.words, retryable: failure.kind !== "refused" },
+  };
+};
 
 const isHeld = (record: SendRecord): boolean =>
   record.phase.kind === "pending" || record.phase.kind === "in-terminal";
 
-/**
- * The review Retry delivery acts on: the newest one failed, else the newest Mend holds pending once
- * the session has no live agent to paste into.
- */
+/** A review pasted into an agent process other than `agent`, or into one no agent is now. */
+const pastedIntoAnother = (record: SendRecord, agent: LiveAgent | null): boolean =>
+  record.phase.kind === "in-terminal" &&
+  record.phase.paste.kind === "done" &&
+  (agent?.kind !== "terminal" || agent.processId !== record.phase.processId);
+
 export const retryRecord = (
   records: ReadonlyArray<SendRecord>,
   agent: LiveAgent | null,
@@ -593,11 +730,23 @@ export const retryRecord = (
 };
 
 /**
- * The comments of reviews Mend holds pending. They are not counted as new for Send review: a held
- * review waits in her terminal, or for Retry. A newer key still carries them, as Mend supersedes it.
+ * Where each comment of a review on its way is: `sending` while a drive sends, delivers or pastes
+ * it, `held` while Mend holds it pending and Retry delivery or her live agent's input carries it.
+ * A review pasted into an agent process `agent` is not, as after it exited, holds nothing: no
+ * Retry delivers it again, so the next Send carries its comments under a new key.
  */
-export const heldIds = (records: ReadonlyArray<SendRecord>): ReadonlySet<string> =>
-  new Set(records.filter(isHeld).flatMap((record) => commentIds(record) ?? []));
+export const commentsOnTheirWay = (
+  records: ReadonlyArray<SendRecord>,
+  agent: LiveAgent | null,
+): ReadonlyMap<string, "sending" | "held"> => {
+  const where = new Map<string, "sending" | "held">();
+  for (const record of records)
+    if (isHeld(record) && !pastedIntoAnother(record, agent))
+      for (const id of idsOf(record)) if (!where.has(id)) where.set(id, "held");
+  for (const record of records)
+    if (holdsComments(record)) for (const id of idsOf(record)) where.set(id, "sending");
+  return where;
+};
 
 /**
  * A review after an event on one of its records. Mend supersedes every follow-up it holds pending
@@ -622,58 +771,25 @@ export const stepReview = (
     );
 };
 
-/** A record that still holds its comments: this window is sending or delivering it. */
-export const holdsComments = (record: SendRecord): boolean =>
-  record.phase.kind === "sending" || record.phase.kind === "delivering";
+/** A record that still holds its comments: a drive sends, delivers or pastes it. */
+const holdsComments = (record: SendRecord): boolean => needs(record) === "driver";
 
-/** What a thread of a comment in this record reads, as Mend observed it. */
-export const recordLabel = (phase: SendPhase): string => {
-  switch (phase.kind) {
-    case "sending":
-      return "sending";
-    case "delivering":
-      return "delivery in progress";
-    case "in-terminal":
-      switch (phase.paste.kind) {
-        case "done":
-          return `follow-up pending · pasted into ${phase.agent}'s terminal`;
-        case "failed":
-          return `follow-up pending · not pasted into ${phase.agent}'s terminal`;
-        case "due":
-          return "follow-up pending";
-      }
-    case "pending":
-      return "follow-up pending";
-    case "delivered":
-      return "sent";
-    case "failed":
-      return "delivery failed · retryable";
-    case "refused":
-      return "not sent";
-  }
-};
+/** A paste into her agent's terminal not yet made, or being made. */
+const pasteUnderway = (record: SendRecord): boolean =>
+  record.phase.kind === "in-terminal" &&
+  (record.phase.paste.kind === "due" || record.phase.paste.kind === "pasting");
 
 /**
- * What the thread of a comment in this record reads (`commentId` null for one not on Mend yet): in
- * her terminal, whether VS Code pasted its words, and into which agent process. Only what VS Code
- * did: Enter, a reload or her own edits since are not observed.
+ * Whether a send may start its drive now, a new one or a Retry: one review at a time goes to Mend
+ * and into her agent's input, so none starts while another is sending, or its paste is due or under
+ * way. A newer review would supersede it on Mend, or paste over it. Send and Retry both ask under
+ * the kept review's lock.
  */
-export const commentLabel = (
-  record: SendRecord,
-  commentId: string | null,
-  agent: LiveAgent | null,
-): string => {
-  const { phase } = record;
-  if (phase.kind !== "in-terminal" || phase.paste.kind !== "done") return recordLabel(phase);
-  if (commentId !== null && !phase.paste.input.ids.includes(commentId))
-    return `follow-up pending · not pasted into ${phase.agent}'s terminal`;
-  return agent?.kind === "terminal" && agent.processId === phase.processId
-    ? recordLabel(phase)
-    : `follow-up pending · pasted into an earlier ${phase.agent}`;
-};
+export const admits = (records: ReadonlyArray<SendRecord>): boolean =>
+  !records.some((record) => record.phase.kind === "sending" || pasteUnderway(record));
 
 /** Why each Mend draft her posted words replace was left on Mend. */
-export const draftsLeft = (record: SendRecord): ReadonlyArray<string> =>
+const draftsLeft = (record: SendRecord): ReadonlyArray<string> =>
   record.items.flatMap((item) =>
     item.kind === "rewrite" && item.dismissal.kind === "left" ? [item.dismissal.words] : [],
   );
@@ -685,102 +801,15 @@ export const handedOver = (record: SendRecord): boolean =>
   record.phase.kind === "pending" ||
   record.phase.kind === "delivering";
 
-/** The record a new Send waits on, or retries: the newest one not handed over or refused. */
+/**
+ * The record a new Send waits on, or retries: the newest one not handed over or refused, or one
+ * whose paste into her agent's terminal is due or under way.
+ */
 export const openRecord = (records: ReadonlyArray<SendRecord>): SendRecord | null =>
-  records.findLast((record) => record.phase.kind === "sending" || record.phase.kind === "failed") ??
-  null;
-
-/**
- * The target for a pending comment in the slice it was written on: its lines when one hunk holds
- * them, else its file (the words then say which line, when it is on one), else the change as a
- * whole.
- */
-export const commentTarget = (
-  files: ReadonlyArray<ChangeFile>,
-  comment: Pick<PendingComment, "path" | "line" | "endLine" | "body" | "anchor">,
-): { readonly target: ReviewCommentTarget; readonly body: string } => {
-  // Her reply under a Mend draft on the old side goes where the draft is: the base's lines.
-  const side = comment.anchor?.side ?? null;
-  const old = side === "old";
-  const { line, endLine } = comment;
-  const file = comment.path === null ? undefined : targetFileFor(files, comment.path, side);
-  const hunk =
-    line === null || endLine === null
-      ? undefined
-      : file?.hunks.find((candidate) => {
-          const start = old ? candidate.oldStart : candidate.newStart;
-          const lines = old ? candidate.oldLines : candidate.newLines;
-          return lines > 0 && line >= start && endLine <= start + lines - 1;
-        });
-  if (file !== undefined && hunk !== undefined && line !== null && endLine !== null)
-    return {
-      target: {
-        oldPath: file.oldPath,
-        newPath: file.newPath,
-        side: old ? "old" : "new",
-        startLine: line,
-        endLine,
-        hunkContextHash: hunk.contextHash,
-      },
-      body: comment.body,
-    };
-  const where = line === null ? "" : `line ${line}: `;
-  if (file !== undefined)
-    return {
-      target: {
-        oldPath: file.oldPath,
-        newPath: file.newPath,
-        side: null,
-        startLine: null,
-        endLine: null,
-        hunkContextHash: null,
-      },
-      body: `${where}${comment.body}`,
-    };
-  return {
-    target: {
-      oldPath: null,
-      newPath: null,
-      side: null,
-      startLine: null,
-      endLine: null,
-      hunkContextHash: null,
-    },
-    body:
-      comment.path === null
-        ? comment.body
-        : `${comment.path}${line === null ? "" : `:${line}`}: ${comment.body}`,
-  };
-};
-
-/**
- * The comment a post in flight left on Mend, if it landed: one that was not there before the post,
- * not claimed by another item, written by her, with exactly the words and the target posted, on
- * the slice it was posted to. Mend trims the words it keeps.
- */
-export const postedComment = (
-  attempt: PostAttempt,
-  sliceId: string,
-  comments: ReadonlyArray<ServerComment>,
-  claimed: ReadonlySet<string>,
-): string | null => {
-  const before = new Set(attempt.before);
-  const { target } = attempt;
-  return (
-    comments.find(
-      (comment) =>
-        !before.has(comment.id) &&
-        !claimed.has(comment.id) &&
-        comment.author.kind === "reviewer" &&
-        (attempt.author === null || comment.author.name === attempt.author) &&
-        comment.body === attempt.body.trim() &&
-        comment.anchor?.sliceId === sliceId &&
-        comment.file === reviewTargetFile(target) &&
-        comment.line === target.startLine &&
-        comment.endLine === target.endLine,
-    )?.id ?? null
-  );
-};
+  records.findLast(
+    (record) =>
+      record.phase.kind === "sending" || record.phase.kind === "failed" || pasteUnderway(record),
+  ) ?? null;
 
 /**
  * Send review: the pending comments and the comments open on Mend her instruction lists move into
@@ -792,7 +821,7 @@ export const startSend = (
   input: {
     readonly key: string;
     readonly slice: SendSlice;
-    readonly instruction: string;
+    readonly instruction: Instruction;
     readonly paste: PastePlan;
     /** The pending comments the instruction lists: each must still be pending. */
     readonly pending: ReadonlyArray<string>;
@@ -804,9 +833,10 @@ export const startSend = (
   const chosen = new Set(input.pending);
   const moving = review.pending.filter((pending) => chosen.has(pending.id));
   if (moving.length !== chosen.size) return null;
+  if (!admits(review.sends)) return null;
   // Another window sent these comments a moment ago: one review takes them, under one key.
-  const onTheirWay = new Set(review.sends.filter(holdsComments).flatMap((record) => idsOf(record)));
-  if (input.open.some((id) => onTheirWay.has(id))) return null;
+  const onTheirWay = commentsOnTheirWay(review.sends, null);
+  if (input.open.some((id) => onTheirWay.get(id) === "sending")) return null;
   const items: ReadonlyArray<SendItem> = [
     ...moving.map((pending): SendItem => {
       if (rewritten(pending))
@@ -829,10 +859,11 @@ export const startSend = (
     baseId: input.slice.baseId,
     headId: input.slice.headId,
     diffDigest: input.slice.diffDigest,
-    instruction: input.instruction,
+    instruction: input.instruction.text,
     paste: input.paste,
     items,
     phase: { kind: "sending", since: input.now },
+    notices: [],
     createdAt: input.now,
   };
   return {
@@ -842,8 +873,10 @@ export const startSend = (
   };
 };
 
-/** The record with this key, after `change`; a record that is refused gives back what Mend lacks. */
-export const withSend = (
+/**
+ * The record with this key, after `change`; a record that is refused gives back what Mend lacks.
+ */
+const withSend = (
   review: SessionReview,
   key: string,
   change: (record: SendRecord) => SendRecord,

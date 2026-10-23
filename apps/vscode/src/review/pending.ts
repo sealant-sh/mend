@@ -2,17 +2,17 @@ import type { ReviewCommentTarget } from "@mend/domain/workbench";
 
 import type {
   DraftDismissal,
-  HeldInput,
-  PastePlan,
   PasteStep,
   PostState,
   SendItem,
   SendPhase,
+  SendNotice,
   SendRecord,
   SendSlice,
-  TerminalInput,
+  StopReason,
 } from "./delivery.js";
 import { withEarlierText } from "./instruction.js";
+import type { HeldInput, PastePlan, TerminalInput } from "./paste-plan.js";
 import type { CommentAnchor, RecordLink } from "./review-wire.js";
 
 /**
@@ -57,7 +57,8 @@ export interface PendingComment {
   readonly origin: PendingOrigin;
   /**
    * Where the Mend draft it came from hangs, kept through Accept and her reply under it: a draft on
-   * a deleted line stays on the old side. Null for a comment she wrote on a line of the pinned slice.
+   * a deleted line stays on the old side. Null for a comment she wrote on a line of the pinned
+   * slice.
    */
   readonly anchor: CommentAnchor | null;
 }
@@ -87,6 +88,7 @@ export interface ReviewDocument {
   readonly composed: Composed;
   readonly text: string;
   readonly revision: number;
+  readonly earlier: string | null;
 }
 
 export interface SessionReview {
@@ -269,7 +271,7 @@ const parseDismissal = (value: unknown): DraftDismissal | null => {
   return value["kind"] === "left" && words !== null ? { kind: "left", words } : null;
 };
 
-const parsePhase = (value: unknown): SendPhase | null => {
+const parsePhase = (value: unknown, failedAtFallback: string): SendPhase | null => {
   if (!isRecord(value)) return null;
   const words = text(value, "words");
   switch (value["kind"]) {
@@ -294,7 +296,11 @@ const parsePhase = (value: unknown): SendPhase | null => {
     case "delivered":
       return { kind: "delivered", at: text(value, "at") ?? "" };
     case "failed":
-      return { kind: "failed", words: words ?? "Mend could not deliver the review." };
+      return {
+        kind: "failed",
+        words: words ?? "Mend could not deliver the review.",
+        at: text(value, "at") ?? failedAtFallback,
+      };
     case "refused":
       return { kind: "refused", words: words ?? "Mend refused the review." };
     default:
@@ -309,8 +315,32 @@ const parseInput = (value: unknown): TerminalInput | null => {
   return input === null || ids === null ? null : { text: input, ids };
 };
 
+const parseStop = (value: unknown): StopReason | null => {
+  if (!isRecord(value)) return null;
+  switch (value["kind"]) {
+    case "closed":
+      return { kind: "closed" };
+    case "switched":
+      return { kind: "switched" };
+    case "signed-out":
+      return { kind: "signed-out" };
+    case "error": {
+      const words = text(value, "words");
+      return words === null ? null : { kind: "error", words };
+    }
+    default:
+      return null;
+  }
+};
+
 const parsePasteStep = (value: unknown): PasteStep => {
-  if (isRecord(value) && value["kind"] === "failed") return { kind: "failed" };
+  if (isRecord(value) && value["kind"] === "failed")
+    return {
+      kind: "failed",
+      mayHaveLanded: value["mayHaveLanded"] === true,
+      stopped: parseStop(value["stopped"]),
+    };
+  if (isRecord(value) && value["kind"] === "pasting") return { kind: "pasting" };
   const input = isRecord(value) && value["kind"] === "done" ? parseInput(value["input"]) : null;
   return input === null ? { kind: "due" } : { kind: "done", input };
 };
@@ -329,6 +359,31 @@ const parsePaste = (value: unknown): PastePlan | null => {
   return null;
 };
 
+const NOTICE_KINDS: ReadonlyArray<SendNotice["kind"]> = [
+  "paste",
+  "draft-gone",
+  "draft-left",
+  "refused",
+];
+
+const parseNotice = (value: unknown): ReadonlyArray<SendNotice> => {
+  if (!isRecord(value)) return [];
+  const kind = NOTICE_KINDS.find((one) => one === value["kind"]);
+  const at = text(value, "at");
+  const words = text(value, "words");
+  if (kind === undefined || at === null || words === null) return [];
+  return [
+    {
+      kind,
+      at,
+      words,
+      tone: value["tone"] === "warning" ? "warning" : "error",
+      retry: value["retry"] === true,
+      text: value["text"] === true,
+    },
+  ];
+};
+
 const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
   if (!isRecord(value) || !Array.isArray(value["items"])) return [];
   const key = text(value, "key");
@@ -338,7 +393,7 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
   const diffDigest = text(value, "diffDigest");
   const instruction = text(value, "instruction");
   const createdAt = text(value, "createdAt");
-  const phase = parsePhase(value["phase"]);
+  const phase = createdAt === null ? null : parsePhase(value["phase"], createdAt);
   const paste = parsePaste(value["paste"]);
   const items = value["items"].flatMap(parseItem);
   if (
@@ -365,6 +420,8 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
       paste,
       items,
       phase,
+      // A send kept before notices were kept says nothing more.
+      notices: Array.isArray(value["notices"]) ? value["notices"].flatMap(parseNotice) : [],
       createdAt,
     },
   ];
@@ -435,6 +492,7 @@ const parseDocument = (value: unknown): ReviewDocument | null => {
     },
     text: saved,
     revision,
+    earlier: text(value, "earlier"),
   };
 };
 
@@ -447,6 +505,9 @@ export const parseSessionReview = (value: unknown): SessionReview =>
         document: parseDocument(value["document"]),
       }
     : EMPTY_REVIEW;
+
+/** A review document's revision before she saves it: the text as Send review composed it. */
+const AS_COMPOSED = 1;
 
 /**
  * The session's review for a fresh composition: the one kept while it still lists the same
@@ -465,11 +526,15 @@ export const keepComposed = (
     kept.composed.generation === composed.generation
   )
     return { review, carried: false };
-  // Revision 1 is the composition as written; any later one holds words she saved.
-  const carried = kept !== null && kept.revision > 1;
-  const document: ReviewDocument = carried
-    ? { composed, text: withEarlierText(words, kept.text, composed.sessionName), revision: 2 }
-    : { composed, text: words, revision: 1 };
+  const earlier = kept === null ? null : kept.revision > AS_COMPOSED ? kept.text : kept.earlier;
+  const written = earlier === null ? words : withEarlierText(words, earlier, composed.sessionName);
+  const carried = written !== words;
+  const document: ReviewDocument = {
+    composed,
+    text: written,
+    revision: AS_COMPOSED,
+    earlier: carried ? earlier : null,
+  };
   return { review: { ...review, document }, carried };
 };
 
@@ -478,7 +543,9 @@ export type DocumentSave =
   | { readonly kind: "gone" }
   | { readonly kind: "newer" };
 
-/** Her words saved over `revision`, the one her editor's text is based on; never over a newer one. */
+/**
+ * Her words saved over `revision`, the one her editor's text is based on; never over a newer one.
+ */
 export const saveDocument = (
   review: SessionReview,
   documentId: string,
@@ -501,39 +568,50 @@ export const addPending = (review: SessionReview, comment: PendingComment): Sess
   pending: [...review.pending, comment],
 });
 
-/** G1: a pending comment is edited freely until it is sent. A Mend draft's words she edits are hers. */
+/**
+ * G1: a pending comment is edited freely until it is sent. A Mend draft's words she edits are hers.
+ */
 export const editPending = (review: SessionReview, id: string, body: string): SessionReview => ({
   ...review,
   pending: review.pending.map((comment) => (comment.id === id ? { ...comment, body } : comment)),
 });
 
+export interface HeldWords {
+  readonly comment: PendingComment;
+  readonly edits: { readonly id: string; readonly body: string } | null;
+}
+
 /**
- * Her words VS Code held, kept as far as the review takes them: an edit of a pending comment edits
- * it, one of a comment a review already took is a new pending comment of hers at that place, and
- * any other is added as it is while the review holds fewer than `MAX_PENDING`. `kept` lists those
- * it took; the rest stay held.
+ * Her words VS Code held, kept, and which of them were. Words held for a comment still pending, or
+ * for an edit whose comment still reads the words she edited (or already hers), edit it in place.
+ * Any other, for a comment a review took, another window changed or she deleted, is added under
+ * the id minted when it was held, so both words stay. One to add while the review holds
+ * `MAX_PENDING` stays held.
  */
 export const keepHeld = (
   review: SessionReview,
-  held: ReadonlyArray<PendingComment>,
-  freshId: () => string,
-): { readonly review: SessionReview; readonly kept: ReadonlyArray<PendingComment> } =>
-  held.reduce<{ review: SessionReview; kept: ReadonlyArray<PendingComment> }>(
-    (done, comment) => {
+  held: ReadonlyArray<HeldWords>,
+): { readonly review: SessionReview; readonly kept: ReadonlyArray<HeldWords> } =>
+  held.reduce<{ review: SessionReview; kept: ReadonlyArray<HeldWords> }>(
+    (done, words) => {
+      const { comment, edits } = words;
       const next = done.review;
-      if (next.pending.some((candidate) => candidate.id === comment.id))
+      const find = (id: string): PendingComment | undefined =>
+        next.pending.find((candidate) => candidate.id === id);
+      const edited = edits === null ? undefined : find(edits.id);
+      const into =
+        find(comment.id) !== undefined
+          ? comment.id
+          : edited !== undefined && (edited.body === edits?.body || edited.body === comment.body)
+            ? edited.id
+            : null;
+      if (into !== null)
         return {
-          review: editPending(next, comment.id, comment.body),
-          kept: [...done.kept, comment],
+          review: editPending(next, into, comment.body),
+          kept: [...done.kept, words],
         };
       if (next.pending.length >= MAX_PENDING) return done;
-      const taken = next.sends.some((record) =>
-        record.items.some((item) => item.kind !== "open" && item.pending.id === comment.id),
-      );
-      const added: PendingComment = taken
-        ? { ...comment, id: freshId(), origin: { kind: "own" } }
-        : comment;
-      return { review: addPending(next, added), kept: [...done.kept, comment] };
+      return { review: addPending(next, comment), kept: [...done.kept, words] };
     },
     { review, kept: [] },
   );

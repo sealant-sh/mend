@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 import type { EventPointer, MendClient } from "../client.js";
 import type { ToastClaims } from "../toast-claims.js";
 import type { Project, Session } from "../types.js";
-import type { Pasted } from "./agent-paste.js";
+import type { PasteReview } from "./agent-paste.js";
 import { CHANGE_SCHEME, ChangeContent } from "./change-content.js";
 import { ChangeNote, NOTE_SCHEME } from "./change-note.js";
 import { ChangeView } from "./change-view.js";
@@ -37,11 +37,14 @@ export const startReview = (deps: {
   readonly onError: (cause: unknown) => void;
   /** The toast claims every window of this VS Code shares with the notifier. */
   readonly claims: Pick<ToastClaims, "claim" | "release">;
-  /** G12 fallback: the session's agent terminal attached here, the review pasted into that agent process, without Enter. */
-  readonly paste: (sessionId: string, processId: string, text: string) => Promise<Pasted>;
+  /**
+   * G12 fallback: the session's agent terminal attached here, the review pasted into that agent
+   * process, without Enter.
+   */
+  readonly paste: PasteReview;
 }): Review => {
   const client = new ReviewClient(
-    () => deps.client.connection(),
+    async () => ({ connection: await deps.client.connection(), current: () => true }),
     (connection) => deps.client.refused(connection),
   );
   const store = new ReviewStore(

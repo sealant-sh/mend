@@ -369,6 +369,28 @@ export const reviewWorld = (h) => {
     );
   };
 
+  const idOnly = (id) => {
+    if (!/^[0-9a-f-]+$/.test(id)) throw new Error(`not an id: ${id}`);
+    return id;
+  };
+  const jsonRows = async (sql) =>
+    (await psql(`select row_to_json(t) from (${sql}) t`)).map((line) => JSON.parse(line));
+
+  const followUps = (sessionId) =>
+    jsonRows(
+      `select f.idempotency_key as key, f.status, f.review_slice_id as slice, a.ordinal as "from", ` +
+        `b.ordinal as "to", f.comment_ids as "commentIds", f.instruction from follow_ups f ` +
+        `left join checkpoints a on a.id = f.checkpoint_a_id left join checkpoints b on b.id = f.checkpoint_b_id ` +
+        `where f.session_id = '${idOnly(sessionId)}' order by f.created_at`,
+    );
+
+  const reviewSlices = (changeId) =>
+    jsonRows(
+      `select s.id, a.ordinal as "from", b.ordinal as "to" from review_slices s ` +
+        `join checkpoints a on a.id = s.checkpoint_a_id join checkpoints b on b.id = s.checkpoint_b_id ` +
+        `where s.change_id = '${idOnly(changeId)}' order by s.created_at`,
+    );
+
   /** What Mend's connections are doing that is not idle: `state|wait|seconds|query`. */
   const serverActivity = () =>
     psql(
@@ -390,6 +412,8 @@ export const reviewWorld = (h) => {
     revealSession,
     server,
     followUpRows,
+    followUps,
+    reviewSlices,
     serverActivity,
   };
 };

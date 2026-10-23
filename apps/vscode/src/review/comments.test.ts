@@ -352,11 +352,120 @@ describe("saving an edit to a pending comment", () => {
     full = true;
     await ui.commands.get("mend.review.save")?.(editing);
     await editor.reloadReview();
-    expect(editor.held().map(({ body }) => body)).toEqual(["Use guard.ts instead"]);
+    expect(editor.held().map((words) => words.comment.body)).toEqual(["Use guard.ts instead"]);
     expect(shownWords()).toContain("Use guard.ts instead");
     comments.dispose();
     sender.dispose();
     editor.dispose();
+  });
+});
+
+describe("an edit VS Code could not write", () => {
+  const twoWindows = async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    const disk = { full: false };
+    const fillable: KeptFiles = {
+      ...NODE_FILES,
+      writeFile: async (path, text) => {
+        if (disk.full) throw new Error("the disk is full.");
+        await NODE_FILES.writeFile(path, text);
+      },
+    };
+    const window = async (files: KeptFiles) => {
+      const store = new ReviewStore(
+        sessionReads("change-1"),
+        mend,
+        new ReviewMemory(memento()),
+        keptIn(directory, files),
+        noPaste,
+      );
+      store.follow(PROJECT, session("s1"));
+      await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+      return store;
+    };
+    const sender = await window(NODE_FILES);
+    const editor = await window(fillable);
+    await sender.comment({
+      at: {
+        worktreeId: "w1",
+        path: "src/auth/limit.ts",
+        at: PINNED.head.id,
+        absent: false,
+        slice: PINNED.id,
+      },
+      line: 3,
+      endLine: 3,
+      lineText: "",
+      body: "Use the shared limiter",
+    });
+    await editor.reloadReview();
+    const [shown] = editor.review().pending;
+    if (shown === undefined) throw new Error("no pending comment");
+    const sendIt = async () => {
+      const composed = sender.compose();
+      if (composed === null) throw new Error("nothing composed");
+      expect(await sendComposed(sender, composed, composed.text)).toEqual({ sent: true });
+    };
+    return {
+      sender,
+      editor,
+      disk,
+      pendingId: shown.id,
+      sendIt,
+      bodies: () => editor.review().pending.map(({ body }) => body),
+      done: () => {
+        sender.dispose();
+        editor.dispose();
+      },
+    };
+  };
+
+  it("is kept once when she saves it again from its not-kept thread, after another window sent the comment", async () => {
+    const { editor, disk, sendIt, bodies, done } = await twoWindows();
+    const comments = new ReviewComments(editor);
+    const saveFromThread = async (body: string) => {
+      const thread = liveThreads().at(0);
+      if (thread === undefined) throw new Error("no thread drawn");
+      await ui.commands.get("mend.review.edit")?.(thread.comments[0]);
+      const [editing] = thread.comments;
+      if (editing === undefined) throw new Error("not editing");
+      Object.assign(editing, { body });
+      await ui.commands.get("mend.review.save")?.(editing);
+    };
+    await sendIt();
+    disk.full = true;
+    await saveFromThread("Use guard.ts instead");
+    disk.full = false;
+    await saveFromThread("Use guard.ts, and test the burst");
+    expect(bodies()).toEqual(["Use guard.ts, and test the burst"]);
+    comments.dispose();
+    done();
+  });
+
+  it("is kept once when two reads of the review recover it at the same time", async () => {
+    const { editor, disk, pendingId, sendIt, bodies, done } = await twoWindows();
+    await sendIt();
+    disk.full = true;
+    await editor.edit(pendingId, "Use guard.ts instead");
+    disk.full = false;
+    await Promise.all([editor.reloadReview(), editor.reloadReview()]);
+    expect(bodies()).toEqual(["Use guard.ts instead"]);
+    done();
+  });
+
+  it("never overwrites words another window saved to the comment since, and keeps both", async () => {
+    const { sender, editor, disk, pendingId, bodies, done } = await twoWindows();
+    disk.full = true;
+    await editor.edit(pendingId, "Older failed edit");
+    disk.full = false;
+    expect(await sender.edit(pendingId, "Newer successful edit")).toEqual({ kept: true });
+    await editor.reloadReview();
+    expect(bodies()).toEqual(
+      expect.arrayContaining(["Newer successful edit", "Older failed edit"]),
+    );
+    expect(bodies()).toHaveLength(2);
+    done();
   });
 });
 
@@ -467,6 +576,22 @@ describe("her words under a Mend draft", () => {
     },
   );
 
+  it.each(["accept", "dismiss"])(
+    "are kept under the session whose thread showed the draft when %s arrives after another session on the change showed it",
+    async (gesture) => {
+      const { store, thread, done } = await underDraft(new FakeMend());
+      store.follow(PROJECT, session("s2"));
+      await vi.waitFor(() => expect(store.ready()?.sessionId).toBe("s2"), SETTLE);
+      expect(thread.disposed).toBe(true);
+      await ui.commands.get(`mend.review.${gesture}`)?.({ thread, text: WORDS });
+      expect(store.review().pending).toEqual([]);
+      store.follow(PROJECT, session("s1"));
+      await vi.waitFor(() => expect(store.ready()?.sessionId).toBe("s1"), SETTLE);
+      expect(store.review().pending.map(({ body }) => body)).toContain(WORDS);
+      done();
+    },
+  );
+
   it("are held in this window, and kept the next time this window reads the review", async () => {
     let full = true;
     const fullUntilFreed: KeptFiles = {
@@ -479,7 +604,7 @@ describe("her words under a Mend draft", () => {
     const { store, reply, done } = await underDraft(new FakeMend(), fullUntilFreed);
     await Promise.resolve(ui.commands.get("mend.review.accept")?.(reply)).catch(() => undefined);
     expect(ui.warn).toHaveBeenCalledWith(expect.stringMatching(/in this window/));
-    expect(store.held().map(({ body }) => body)).toEqual([WORDS]);
+    expect(store.held().map((words) => words.comment.body)).toEqual([WORDS]);
     full = false;
     await store.reloadReview();
     expect(store.held()).toEqual([]);

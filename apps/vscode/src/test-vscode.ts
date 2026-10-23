@@ -41,6 +41,9 @@ export const window = {
   showErrorMessage: vi.fn(
     async (..._: ReadonlyArray<unknown>): Promise<string | undefined> => undefined,
   ),
+  showWarningMessage: vi.fn(
+    async (..._: ReadonlyArray<unknown>): Promise<string | undefined> => undefined,
+  ),
   setStatusBarMessage: vi.fn(),
   showQuickPick: vi.fn(async (..._: ReadonlyArray<unknown>): Promise<unknown> => undefined),
   showInputBox: vi.fn(
@@ -66,6 +69,7 @@ export const fake = {
     window.state.focused = true;
     window.showInformationMessage.mockClear();
     window.showErrorMessage.mockClear();
+    window.showWarningMessage.mockClear();
     window.setStatusBarMessage.mockClear();
     window.showQuickPick.mockReset();
     window.showInputBox.mockReset();

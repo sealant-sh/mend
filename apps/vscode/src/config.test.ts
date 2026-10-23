@@ -41,6 +41,7 @@ vi.mock("vscode", async () => ({
     createStatusBarItem: () => ({ show: () => undefined, dispose: () => undefined }),
   },
   workspace: {
+    onDidChangeConfiguration: () => ({ dispose: () => undefined }),
     getConfiguration: (section: string) => ({
       get: (key: string) => settings.get(`${section}.${key}`),
       update: async (key: string, value: unknown) => {
@@ -91,17 +92,22 @@ let home = "";
 /** The extension's secret storage, which every window of this VS Code shares. */
 const secrets = new Map<string, string>();
 /** `secrets.onDidChange` in each window. */
-const secretChanged = new Set<() => void>();
+const secretChanged = new Set<(event: { readonly key: string }) => void>();
 const store = () =>
   new ConnectionStore({
     secrets: {
       get: async (key: string) => secrets.get(key),
       store: async (key: string, value: string) => {
         secrets.set(key, value);
-        for (const listener of secretChanged) listener();
+        for (const listener of secretChanged) listener({ key });
+      },
+      onDidChange: (listener: (event: { readonly key: string }) => void) => {
+        secretChanged.add(listener);
+        return { dispose: () => secretChanged.delete(listener) };
       },
     },
   });
+const unheard = () => ({ dispose: () => undefined });
 
 const LEGACY_KEY = "mend.serverToken";
 const EDGE = "https://mend.example.com";
@@ -301,6 +307,7 @@ describe("requests refused together on one token", () => {
     const writes: Array<string> = [];
     const connections = new ConnectionStore({
       secrets: {
+        onDidChange: unheard,
         get: async (key: string) => secrets.get(key),
         store: async (key: string, value: string) => {
           writes.push(key);
@@ -327,6 +334,7 @@ describe("a refusal and a sign-in at once (SLNT-170)", () => {
     let hold = true;
     const connections = new ConnectionStore({
       secrets: {
+        onDidChange: unheard,
         get: async (key: string) => {
           const value = secrets.get(key);
           if (hold) {
@@ -365,6 +373,7 @@ const pausedWindow = () => {
   let hold = true;
   const connections = new ConnectionStore({
     secrets: {
+      onDidChange: unheard,
       get: async (key: string) => {
         const value = secrets.get(key);
         if (hold) {
@@ -433,6 +442,7 @@ const laggySecrets = () => {
     copies.push(copy);
     return new ConnectionStore({
       secrets: {
+        onDidChange: unheard,
         get: async (key: string) => copy.get(key),
         store: async (key: string, value: string) => {
           if (copy.get(key) === value) return;
