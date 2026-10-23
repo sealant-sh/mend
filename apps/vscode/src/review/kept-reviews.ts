@@ -191,13 +191,39 @@ const storedReview = (
     throw new Error(
       "A newer version of the Mend extension keeps the review you are writing for this session, so this window does not compose another. Reload this window to use the newer version.",
     );
+  const fields = isRecord(stored) ? stored : {};
   return {
-    ...(isRecord(stored) ? stored : {}),
+    ...fields,
     ...review,
-    pending: [...review.pending, ...unread.pending],
-    sends: [...review.sends, ...unread.sends],
+    pending: inPlace(fields["pending"], review.pending, unread.pending, "id", ({ id }) => id),
+    sends: inPlace(fields["sends"], review.sends, unread.sends, "key", ({ key }) => key),
     document: review.document ?? unread.document,
   };
+};
+
+/**
+ * Each of `next`'s entries where the stored one with its id was, each one this build could not
+ * read where it was, then the new ones: a send's place is when it was sent, which a newer build
+ * reads its latest by.
+ */
+const inPlace = <T>(
+  stored: unknown,
+  next: ReadonlyArray<T>,
+  unread: ReadonlyArray<unknown>,
+  field: "id" | "key",
+  idOf: (entry: T) => string,
+): ReadonlyArray<unknown> => {
+  const left = new Map(next.map((entry) => [idOf(entry), entry]));
+  const kept = new Set(unread);
+  const placed = (Array.isArray(stored) ? stored : []).flatMap((entry): ReadonlyArray<unknown> => {
+    if (kept.has(entry)) return [entry];
+    const id = isRecord(entry) ? entry[field] : undefined;
+    const found = typeof id === "string" ? left.get(id) : undefined;
+    if (typeof id !== "string" || found === undefined) return [];
+    left.delete(id);
+    return [found];
+  });
+  return [...placed, ...left.values()];
 };
 
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
