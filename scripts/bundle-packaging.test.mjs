@@ -337,6 +337,72 @@ test("the t3code gateway is in the bundle, and runs only when the operator turne
 });
 
 test(
+  "the t3code gateway completes concurrent find and highlight workers with 256 MiB of parent buffers under its supervisor limits",
+  { skip: spawnSync("docker", ["info"], { stdio: "ignore" }).status !== 0 && "no Docker here" },
+  async () => {
+    for (const entries of [
+      "src/bin.ts,src/find-parse-worker.ts",
+      "../../scripts/t3-gateway-worker-load.check.mjs",
+    ]) {
+      const build = spawnSync(
+        "pnpm",
+        ["--filter", "@mend/t3-gateway", "exec", "node", "../../tooling/scripts/bundle-app.mjs"],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            BUNDLE_ENTRIES: entries,
+            BUNDLE_EXTERNAL: "bufferutil,utf-8-validate",
+          },
+          encoding: "utf8",
+          timeout: 120_000,
+        },
+      );
+      assert.equal(build.status, 0, build.stderr);
+    }
+    const dockerfile = await readFile(path.join(root, "Dockerfile"), "utf8");
+    const base = /^FROM (\S+) AS runtime$/m.exec(dockerfile)?.[1];
+    assert.ok(base !== undefined);
+    for (const [bufferMiB, highlights] of [
+      [0, 1],
+      [256, 1],
+      [0, 3],
+      [256, 3],
+    ]) {
+      const result = spawnSync(
+        "docker",
+        [
+          "run",
+          "--rm",
+          "--network=none",
+          "--volume",
+          `${path.join(root, "scripts")}:/scripts:ro`,
+          "--volume",
+          `${path.join(root, "apps/t3-gateway/dist")}:/gateway:ro`,
+          base,
+          "node",
+          "/scripts/t3-gateway-workers.check.mjs",
+          String(bufferMiB),
+          String(highlights),
+        ],
+        { encoding: "utf8", timeout: 300_000 },
+      );
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      const report = JSON.parse(result.stdout.trim().split("\n").at(-1) ?? "");
+      assert.equal(report.phase, "completed");
+      assert.equal(report.bufferBytes, bufferMiB * 1024 * 1024);
+      assert.deepEqual(report.find, ["needle"]);
+      assert.deepEqual(report.highlight, [[{ start: 2, end: 8 }]]);
+      assert.equal(report.extraHighlights.length, highlights - 1);
+      for (const ranges of report.extraHighlights) {
+        assert.deepEqual(ranges, [[{ start: 2, end: 8 }]]);
+      }
+      console.log(result.stdout.trim());
+    }
+  },
+);
+
+test(
   "the t3code gateway runs as its own uid, in its own root, with no capabilities and only its environment",
   { skip: spawnSync("docker", ["info"], { stdio: "ignore" }).status !== 0 && "no Docker here" },
   async () => {
@@ -393,7 +459,7 @@ test(
     // Bounded.
     assert.match(report.limits, /Max open files\s+1024\s+1024/);
     assert.match(report.limits, /Max processes\s+256\s+256/);
-    assert.match(report.limits, /Max data size\s+805306368\s+805306368/);
+    assert.match(report.limits, /Max data size\s+2147483648\s+2147483648/);
     assert.equal(report.nice, 10);
     // Review 643-R2-1: links the gateway planted in its state hand root's chown nothing, and a
     // root it could write is refused.

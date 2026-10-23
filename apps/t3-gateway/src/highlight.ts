@@ -2,6 +2,8 @@ import { Worker } from "node:worker_threads";
 
 import * as Effect from "effect/Effect";
 
+import { startGatewayWorker } from "./workers.ts";
+
 /**
  * Where a searched line matches, as t3code highlights it (`matchRanges`). A literal query is found
  * with `indexOf` on the gateway's own thread: its cost is linear in the line. A regex is the
@@ -75,18 +77,25 @@ const regexRangesOf = (
   const unhighlighted = lines.map((): ReadonlyArray<MatchRange> => []);
   if (lines.length === 0) return Effect.succeed(unhighlighted);
   const source = query.wholeWord ? `\\b(?:${query.query})\\b` : query.query;
-  return Effect.callback<ReadonlyArray<ReadonlyArray<MatchRange>>>((resume) => {
-    const worker = new Worker(REGEX_WORKER, {
-      eval: true,
-      workerData: { source, flags: query.caseSensitive ? "g" : "gi", lines: [...lines] },
-    });
-    worker.once("message", (value: unknown) => {
-      resume(Effect.succeed(isRangeLists(value) ? value : unhighlighted));
-      void worker.terminate();
-    });
-    worker.once("error", () => resume(Effect.succeed(unhighlighted)));
-    return Effect.promise(() => worker.terminate());
-  }).pipe(
+  return Effect.acquireUseRelease(
+    startGatewayWorker(
+      () =>
+        new Worker(REGEX_WORKER, {
+          eval: true,
+          resourceLimits: { codeRangeSizeMb: 64 },
+          workerData: { source, flags: query.caseSensitive ? "g" : "gi", lines: [...lines] },
+        }),
+    ),
+    ({ worker }) =>
+      Effect.callback<ReadonlyArray<ReadonlyArray<MatchRange>>>((resume) => {
+        worker.once("message", (value: unknown) =>
+          resume(Effect.succeed(isRangeLists(value) ? value : unhighlighted)),
+        );
+        worker.once("error", () => resume(Effect.succeed(unhighlighted)));
+        worker.once("exit", () => resume(Effect.succeed(unhighlighted)));
+      }),
+    ({ stop }) => stop,
+  ).pipe(
     Effect.timeoutOrElse({
       duration: REGEX_HIGHLIGHT_BUDGET,
       orElse: () => Effect.succeed(unhighlighted),
