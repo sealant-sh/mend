@@ -161,7 +161,10 @@ export class Notifier {
     await vscode.commands.executeCommand(command, notification.sessionId);
   }
 
-  /** A Retry Mend refused says how the session reads now; an agent already running offers Open. */
+  /**
+   * A Retry Mend refused says how the session reads now; an agent already running, or one that ran
+   * the prompt already, offers Open.
+   */
   async #sayRetry(sessionId: string, answer: RetryAnswer): Promise<void> {
     if (answer.kind === "sent" || answer.kind === "held") return;
     const name =
@@ -178,7 +181,9 @@ export class Notifier {
     }
     const state = answer.read?.status === "starting" ? "starting" : "running";
     const picked = await vscode.window.showInformationMessage(
-      `${name} · an agent is already ${state} · nothing launched`,
+      answer.kind === "alreadyRan"
+        ? `${name} · Mend already ran your prompt · nothing launched again`
+        : `${name} · an agent is already ${state} · nothing launched`,
       "Open",
     );
     if (picked === "Open") await vscode.commands.executeCommand("mend.open", sessionId);

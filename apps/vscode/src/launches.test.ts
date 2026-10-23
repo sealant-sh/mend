@@ -341,6 +341,29 @@ describe("Launches", () => {
     ]);
   });
 
+  it.each(["agentLive", "underWay"])(
+    "offers Open when Mend refuses the Retry as moved on over an agent that is %s",
+    async (reason) => {
+      const running: Session = { ...session("running"), summary: "reading src/auth" };
+      const server = {
+        ...fakeServer(["refused"], [session("starting"), session("starting"), running]),
+        launchSession: async (_: string, body: LaunchBody) => {
+          server.launched.push({ sessionId: "s1", body });
+          if (server.launched.length === 1)
+            throw new MendApiError("Over the organization's budget.", 429);
+          throw new MendApiError(MOVED_ON, 409, "SessionMovedOn", null, { reason });
+        },
+      };
+      const launches = new Launches(server, sink());
+      await launches.launch("s1", START);
+      expect(await launches.relaunch("s1", null)).toEqual({
+        kind: "agentLive",
+        read: running,
+        said: MOVED_ON,
+      });
+    },
+  );
+
   it("refuses the second of two windows' Retries from the same stale toast, and it sends nothing more", async () => {
     const server = admittingServer(session("starting"));
     const here = new Launches(server, sink());

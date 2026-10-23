@@ -1,3 +1,6 @@
+import { LaunchMovedOnReason } from "@mend/domain/workbench";
+import { Option, Schema } from "effect";
+
 import { MendApiError } from "./mend-http.js";
 import { promptIssue, type LaunchRequest } from "./new-session.js";
 import type { LaunchAttempt } from "./session-model.js";
@@ -44,11 +47,32 @@ export type RetryOffer =
  * Mend refused a launch over its precondition (#1094), `SessionMovedOn` or `SessionAgentLive`:
  * nothing launched and nothing was written. `said` is the server's sentence.
  */
-type Precondition = { readonly kind: "movedOn" | "agentLive"; readonly said: string };
+type Precondition = {
+  readonly kind: "movedOn" | "agentLive" | "alreadyRan";
+  readonly said: string;
+};
 
-const PRECONDITIONS: Readonly<Record<string, Precondition["kind"]>> = {
-  SessionMovedOn: "movedOn",
-  SessionAgentLive: "agentLive",
+const MovedOnBody = Schema.Struct({ reason: LaunchMovedOnReason });
+
+/**
+ * A `SessionMovedOn` over a live or starting agent offers Open as `SessionAgentLive` does: a Retry
+ * names what it saw, so Mend answers it in those terms. A server before `reason` names none.
+ */
+const preconditionOf = (cause: MendApiError): Precondition["kind"] | null => {
+  if (cause.status !== 409) return null;
+  if (cause.tag === "SessionAgentLive") return "agentLive";
+  if (cause.tag !== "SessionMovedOn") return null;
+  const body = Option.getOrNull(Schema.decodeUnknownOption(MovedOnBody)(cause.body));
+  switch (body?.reason) {
+    case "agentRan":
+      return "alreadyRan";
+    case "agentLive":
+    case "underWay":
+      return "agentLive";
+    case "settled":
+    case undefined:
+      return "movedOn";
+  }
 };
 
 /**
@@ -64,7 +88,9 @@ export type RetryAnswer =
   | { readonly kind: "movedOn"; readonly read: Session; readonly said: string | null }
   | { readonly kind: "movedOn"; readonly read: null; readonly said: string }
   /** Its agent is live or starting: Open attaches to it. */
-  | { readonly kind: "agentLive"; readonly read: Session | null; readonly said: string };
+  | { readonly kind: "agentLive"; readonly read: Session | null; readonly said: string }
+  /** An agent ran in the session since the attempt the toast saw: Mend ran the prompt already. */
+  | { readonly kind: "alreadyRan"; readonly read: Session | null; readonly said: string };
 
 /**
  * The server's gate refuses a launch while another of the same session is under way
@@ -127,8 +153,8 @@ export class Launches {
   /**
    * Retry: the same launch on the same session, once a read just now says it may be sent. It names
    * `settledAt`, the failure its toast saw, as `expected`, so Mend launches it only over that
-   * failure. Null, for a refusal the server never settled, names none: Mend then refuses it only
-   * over a live agent.
+   * failure. Null, for a refusal the server never settled, names the session as never launched:
+   * Mend refuses it once any agent ran there, which closes the gap between the read and its arrival.
    */
   async relaunch(sessionId: string, settledAt: string | null): Promise<RetryAnswer> {
     const start = this.#sent.get(sessionId);
@@ -137,8 +163,7 @@ export class Launches {
       const offer = await this.#check(sessionId);
       if (offer.kind === "none") return { kind: "held" };
       if (offer.kind === "moved") return { kind: "movedOn", read: offer.read, said: null };
-      const expected = settledAt === null ? null : { settledAt };
-      const sent = await this.#send(sessionId, start, offer.read.settledAt, expected);
+      const sent = await this.#send(sessionId, start, offer.read.settledAt, { settledAt });
       if (sent.kind === "answered") {
         await this.#say(sessionId, sent.attempt);
         return { kind: "sent" };
@@ -170,14 +195,20 @@ export class Launches {
     const start = this.#sent.get(sessionId);
     if (start === undefined || promptIssue(start.prompt ?? "", "the agent") !== null)
       return { kind: "none" };
-    const read = await this.#read(sessionId);
-    if (read === null) return { kind: "none" };
-    const refusal = this.#attempts.get(sessionId)?.refusal ?? null;
+    const detail = await this.#detail(sessionId);
+    if (detail === null) return { kind: "none" };
+    const read = detail.session;
+    const attempt = this.#attempts.get(sessionId);
+    const refusal = attempt?.refusal ?? null;
     if (read.status === "failed") return { kind: "retry", read };
+    // A launch with no answer may arrive late, run its agent and exit while a shell keeps the
+    // session idle: an agent, or a settle since the attempt, means it was taken.
     if (
       (read.status === "starting" || read.status === "idle") &&
       refusal !== null &&
-      !UNDER_WAY.test(refusal.line)
+      !UNDER_WAY.test(refusal.line) &&
+      read.settledAt === attempt?.after &&
+      !agentStarted(detail)
     )
       return { kind: "retry", read };
     return { kind: "moved", read };
@@ -223,8 +254,8 @@ export class Launches {
           },
         };
       }
-      const precondition = cause.status === 409 ? PRECONDITIONS[cause.tag ?? ""] : undefined;
-      if (precondition !== undefined) {
+      const precondition = preconditionOf(cause);
+      if (precondition !== null) {
         if (before === undefined) this.#attempts.delete(sessionId);
         else this.#attempts.set(sessionId, before);
         if (await this.#current(sessionId)) this.sink.forget(sessionId);
