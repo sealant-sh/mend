@@ -98,6 +98,7 @@ class FakeQuickInput {
 }
 
 const inputBoxes: Array<FakeQuickInput> = [];
+const quickPicks: Array<FakeQuickInput> = [];
 
 const windowState = new EventEmitter<{ readonly focused: boolean }>();
 
@@ -125,7 +126,11 @@ export const window = {
     inputBoxes.push(box);
     return box;
   },
-  createQuickPick: (): FakeQuickInput => new FakeQuickInput(),
+  createQuickPick: (): FakeQuickInput => {
+    const pick = new FakeQuickInput();
+    quickPicks.push(pick);
+    return pick;
+  },
   withProgress: <T>(
     _options: unknown,
     task: (progress: { report(value: unknown): void }) => Promise<T>,
@@ -162,6 +167,11 @@ export const fake = {
     if (box === undefined) throw new Error("no input box was made");
     return box;
   },
+  lastQuickPick(): FakeQuickInput {
+    const pick = quickPicks.at(-1);
+    if (pick === undefined) throw new Error("no quick pick was made");
+    return pick;
+  },
   focus(focused: boolean): void {
     window.state.focused = focused;
     windowState.fire({ focused });
@@ -177,5 +187,6 @@ export const fake = {
     window.showWarningMessage.mockReset();
     commands.executeCommand.mockClear();
     inputBoxes.length = 0;
+    quickPicks.length = 0;
   },
 };

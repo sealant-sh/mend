@@ -1,6 +1,9 @@
+import { tmpdir } from "node:os";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 
+import { isRecord } from "./client-data.js";
 import { MendClient } from "./client.js";
 import { Launches } from "./launches.js";
 import { NewSessionInput } from "./new-session-input.js";
@@ -13,16 +16,19 @@ vi.mock("vscode", () => import("./test-vscode.js"));
 
 const PROMPT = "Keep this new-session prompt on its original server";
 const created = receipt("idle").session;
+const ORIGIN = "https://github.com/octocat/Hello-World.git";
+const adopted = { ...project, id: "project-adopted-here", name: "hello-world", source: ORIGIN };
 
 beforeEach(() => fake.reset());
 
-const world = async () => {
+const world = async (windowFolder: { readonly unmatched: boolean } = { unmatched: false }) => {
   const heard = { A: new Array<Heard>(), B: new Array<Heard>() };
   const holds = { create: Promise.withResolvers<void>(), read: Promise.withResolvers<void>() };
   const held = { create: false, read: false };
   const reached = { create: Promise.withResolvers<void>(), read: Promise.withResolvers<void>() };
   const a = await serve(heard.A, async (req, res) => {
     const route = req.url ?? "";
+    if (req.method === "POST" && route === "/api/projects") return json(res, 200, adopted);
     if (req.method === "POST" && route === `/api/projects/${project.id}/sessions`) {
       reached.create.resolve();
       if (held.create) await holds.create.promise;
@@ -47,8 +53,10 @@ const world = async () => {
     }
     json(res, 404, { _tag: "NotFound", message: "not here" });
   });
-  const b = await serve(heard.B, (_req, res) =>
-    json(res, 404, { _tag: "NotFound", message: "The destination has no such session" }),
+  const b = await serve(heard.B, (req, res) =>
+    req.method === "POST" && req.url === "/api/projects"
+      ? json(res, 200, adopted)
+      : json(res, 404, { _tag: "NotFound", message: "The destination has no such session" }),
   );
   const connection = switchable(a);
   const client = new MendClient(connection.connections);
@@ -68,7 +76,14 @@ const world = async () => {
       onDidChange: new vscode.EventEmitter<StoreChange>().event,
       refresh: () => undefined,
       showCreated: () => undefined,
-      unmatchedRepository: () => null,
+      unmatchedRepository: () =>
+        windowFolder.unmatched
+          ? {
+              folder: { uri: vscode.Uri.file(tmpdir()), name: "hello-world", index: 0 },
+              originUrl: ORIGIN,
+              candidates: [],
+            }
+          : null,
       viewer: () => "dana",
       windowProject: () => null,
     },
@@ -83,8 +98,14 @@ const world = async () => {
     return box;
   };
   const posts = (server: "A" | "B") => heard[server].filter((one) => one.method === "POST");
+  const projectPick = async () => {
+    void input.open({ project: null, join: null });
+    await vi.waitFor(() => expect(fake.lastQuickPick().visible).toBe(true));
+    return fake.lastQuickPick();
+  };
   return {
     launches,
+    projectPick,
     holds,
     held,
     reached,
@@ -151,5 +172,34 @@ describe("New session after VS Code connects to another server", () => {
     expect(w.posts("A")).toEqual([]);
     w.switchTo("A");
     expect((await w.prompt()).value).toBe(PROMPT);
+  });
+});
+
+describe("New session's Adopt this repository after VS Code connects to another server", () => {
+  it("adopts nothing on the new server", async () => {
+    const w = await world({ unmatched: true });
+    const pick = await w.projectPick();
+    const adopt = pick.items.find(
+      (item) => isRecord(item) && item["label"] === "$(repo-clone) Adopt this repository",
+    );
+    expect(adopt).toBeDefined();
+
+    w.switchTo("B");
+    pick.activeItems = [adopt];
+    pick.accept();
+    await vi.waitFor(() =>
+      expect(
+        w.posts("A").length +
+          w.posts("B").length +
+          vi.mocked(vscode.window.showErrorMessage).mock.calls.length,
+      ).toBeGreaterThan(0),
+    );
+
+    expect(w.posts("B")).toEqual([]);
+    expect(w.posts("A")).toEqual([]);
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+      expect.stringContaining("Mend could not adopt hello-world"),
+    );
+    expect(pick.busy).toBe(false);
   });
 });
