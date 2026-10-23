@@ -379,6 +379,27 @@ describe("Dana runs mend login", () => {
   });
 });
 
+describe("Another window signs in to another server while the paste asks Mend whether claude still runs", () => {
+  it("types the review into claude's terminal once, and the review reads done", async () => {
+    const { store, phases } = await sendToClaude(async (_connections, secrets) => {
+      const { key, value } = secretWriteOf(
+        { kind: "signedIn", url: OTHER, token: "erin-token", deviceId: null, email: "erin@mend" },
+        "write-2",
+      );
+      await secrets.store(key, value);
+    });
+    await pasteSettled(phases);
+    expect(await phases()).toEqual([
+      expect.objectContaining({
+        kind: "in-terminal",
+        paste: expect.objectContaining({ kind: "done" }),
+      }),
+    ]);
+    expect(typed).toHaveLength(1);
+    store.dispose();
+  }, 15_000);
+});
+
 describe("Dana runs mend login to another server while a send on VS Code's own sign-in pastes", () => {
   it("types the review into claude's terminal once, and the review reads done", async () => {
     await cliSignsIn(MEND);
