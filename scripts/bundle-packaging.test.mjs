@@ -363,7 +363,12 @@ test(
     const dockerfile = await readFile(path.join(root, "Dockerfile"), "utf8");
     const base = /^FROM (\S+) AS runtime$/m.exec(dockerfile)?.[1];
     assert.ok(base !== undefined);
-    for (const bufferMiB of [0, 256]) {
+    for (const [bufferMiB, highlights] of [
+      [0, 1],
+      [256, 1],
+      [0, 3],
+      [256, 3],
+    ]) {
       const result = spawnSync(
         "docker",
         [
@@ -378,6 +383,7 @@ test(
           "node",
           "/scripts/t3-gateway-workers.check.mjs",
           String(bufferMiB),
+          String(highlights),
         ],
         { encoding: "utf8", timeout: 300_000 },
       );
@@ -387,6 +393,10 @@ test(
       assert.equal(report.bufferBytes, bufferMiB * 1024 * 1024);
       assert.deepEqual(report.find, ["needle"]);
       assert.deepEqual(report.highlight, [[{ start: 2, end: 8 }]]);
+      assert.equal(report.extraHighlights.length, highlights - 1);
+      for (const ranges of report.extraHighlights) {
+        assert.deepEqual(ranges, [[{ start: 2, end: 8 }]]);
+      }
       console.log(result.stdout.trim());
     }
   },

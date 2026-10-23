@@ -19,7 +19,7 @@ const specification = t3GatewaySpecification(
   { root, entry: "/app/t3-gateway-worker-load.check.js" },
 );
 const [command, ...args] = specification.command;
-const result = spawnSync(command, [...args, process.argv[2] ?? "256"], {
+const result = spawnSync(command, [...args, process.argv[2] ?? "256", process.argv[3] ?? "1"], {
   env: specification.env,
   encoding: "utf8",
   timeout: 30_000,

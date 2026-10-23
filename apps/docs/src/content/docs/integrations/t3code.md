@@ -176,7 +176,9 @@ t3code shows those controls inert with its own wording, or it refuses them with 
 
 - **Gateway resources.** The packaged gateway has a 256 MiB heap, a 2 GiB data limit, 1,024 file
   descriptors, 256 processes, and nice 10. The data limit includes the virtual address space V8
-  reserves for find and regex-highlight workers, so it is not a measure of resident memory.
+  reserves for find and regex-highlight workers, so it is not a measure of resident memory. Find and
+  highlighting share four worker slots. Each worker has a 64 MiB code range. Extra requests wait for
+  a slot within their existing budgets.
 - **Large diffs.** Mend renders the patches of at most 200 files, 8 MiB, within 20 seconds per turn.
   A larger turn's diff ends with `[truncated]`, the marker t3code's own server uses.
 - **Files on a server that is not Linux.** Mend reads a worktree's files through the directory

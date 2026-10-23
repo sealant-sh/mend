@@ -3,10 +3,12 @@ import { Worker } from "node:worker_threads";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
 
 import type { ParseRequest } from "./find-parse.ts";
+import { startGatewayWorker, type GatewayWorker } from "./workers.ts";
 
 export class FindParser extends Context.Service<
   FindParser,
@@ -44,8 +46,7 @@ const WORKER_ENTRY = new URL(
 
 const asWritten = ({ text }: ParseRequest): ReadonlyArray<string> => [text];
 
-interface PooledWorker {
-  readonly worker: Worker;
+interface PooledWorker extends GatewayWorker {
   idle: ReturnType<typeof setTimeout> | undefined;
 }
 
@@ -57,71 +58,88 @@ export const findParserLayer = (
     Effect.gen(function* () {
       const permits = yield* Semaphore.make(pool.workers);
       const idle: Array<PooledWorker> = [];
-      const running = new Set<Worker>();
-      yield* Effect.addFinalizer(() =>
-        Effect.promise(() => Promise.all(Array.from(running, (worker) => worker.terminate()))),
-      );
-
-      const discard = (pooled: PooledWorker) => {
-        clearTimeout(pooled.idle);
-        const at = idle.indexOf(pooled);
-        if (at !== -1) idle.splice(at, 1);
-        running.delete(pooled.worker);
-        void pooled.worker.terminate();
-      };
-      const take = (): PooledWorker => {
-        const pooled = idle.pop();
-        if (pooled !== undefined) {
+      const running = new Set<PooledWorker>();
+      const discard = (pooled: PooledWorker): Effect.Effect<void> =>
+        Effect.sync(() => {
           clearTimeout(pooled.idle);
-          return pooled;
+          const at = idle.indexOf(pooled);
+          if (at !== -1) idle.splice(at, 1);
+        }).pipe(
+          Effect.andThen(pooled.stop),
+          Effect.andThen(Effect.sync(() => running.delete(pooled))),
+          Effect.asVoid,
+        );
+      yield* Effect.addFinalizer(() =>
+        Effect.forEach(running, discard, { concurrency: "unbounded", discard: true }),
+      );
+      const take = Effect.suspend((): Effect.Effect<PooledWorker> => {
+        const available = idle.pop();
+        if (available !== undefined) {
+          clearTimeout(available.idle);
+          return Effect.succeed(available);
         }
-        const worker = new Worker(WORKER_ENTRY, {
-          resourceLimits: { maxOldGenerationSizeMb: pool.heapMiB },
-        });
-        worker.unref();
-        running.add(worker);
-        return { worker, idle: undefined };
-      };
+        return startGatewayWorker(
+          () =>
+            new Worker(WORKER_ENTRY, {
+              resourceLimits: { maxOldGenerationSizeMb: pool.heapMiB, codeRangeSizeMb: 64 },
+            }),
+        ).pipe(
+          Effect.map((lease) => {
+            lease.worker.unref();
+            const pooled: PooledWorker = { ...lease, idle: undefined };
+            running.add(pooled);
+            return pooled;
+          }),
+        );
+      });
       const putBack = (pooled: PooledWorker) => {
-        pooled.idle = setTimeout(() => discard(pooled), pool.idleMs);
+        pooled.idle = setTimeout(() => {
+          Effect.runFork(discard(pooled));
+        }, pool.idleMs);
         pooled.idle.unref();
         idle.push(pooled);
       };
 
       const parse = (request: ParseRequest) =>
-        Effect.callback<ReadonlyArray<string>>((resume) => {
-          const pooled = take();
-          const settle = () => {
-            pooled.worker.off("message", parsed);
-            pooled.worker.off("error", failed);
-            pooled.worker.off("exit", exited);
-          };
-          const parsed = (segments: ReadonlyArray<string>) => {
-            settle();
-            putBack(pooled);
-            resume(Effect.succeed(segments));
-          };
-          const failed = (cause: unknown) => {
-            settle();
-            discard(pooled);
-            resume(
-              Effect.logWarning("find read a message as written: its parse failed", { cause }).pipe(
-                Effect.as(asWritten(request)),
-              ),
-            );
-          };
-          const exited = (code: number) =>
-            failed(new Error(`find's parse worker exited (${code})`));
-          pooled.worker.on("message", parsed);
-          pooled.worker.on("error", failed);
-          pooled.worker.on("exit", exited);
-          // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a worker's port, which has no origin.
-          pooled.worker.postMessage(request);
-          return Effect.sync(() => {
-            settle();
-            discard(pooled);
-          });
-        });
+        Effect.acquireUseRelease(
+          take,
+          (pooled) =>
+            Effect.callback<ReadonlyArray<string>, unknown>((resume) => {
+              const settle = () => {
+                pooled.worker.off("message", parsed);
+                pooled.worker.off("error", failed);
+                pooled.worker.off("exit", exited);
+              };
+              const parsed = (segments: ReadonlyArray<string>) => {
+                settle();
+                resume(Effect.succeed(segments));
+              };
+              const failed = (cause: unknown) => {
+                settle();
+                resume(Effect.fail(cause));
+              };
+              const exited = (code: number) =>
+                failed(new Error(`find's parse worker exited (${code})`));
+              pooled.worker.on("message", parsed);
+              pooled.worker.on("error", failed);
+              pooled.worker.on("exit", exited);
+              try {
+                // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a worker's port, which has no origin.
+                pooled.worker.postMessage(request);
+              } catch (cause) {
+                failed(cause);
+              }
+              return Effect.sync(settle);
+            }),
+          (pooled, exit) =>
+            Exit.isSuccess(exit) ? Effect.sync(() => putBack(pooled)) : discard(pooled),
+        ).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("find read a message as written: its parse failed", { cause }).pipe(
+              Effect.as(asWritten(request)),
+            ),
+          ),
+        );
 
       return {
         segments: (request) =>

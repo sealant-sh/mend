@@ -191,7 +191,12 @@ The packaged gateway runs through `prlimit`, nice 10, `chroot`, and `setpriv` as
 256 MiB heap, 2 GiB of data, 1,024 file descriptors, and 256 processes. The data limit counts V8's
 virtual address reservations as well as allocations. It leaves room for concurrent find and
 regex-highlight workers beside the loaded gateway. The Linux packaging regression starts the real
-gateway server and both worker paths through this chain with 256 MiB of parent buffers.
+gateway server and both worker paths through this chain with 256 MiB of parent buffers, including
+one find and three overlapping regex highlights. Both worker sites reserve a 64 MiB code range and
+share one process-wide semaphore of four permits. A pooled find worker retains its permit while
+idle; a permit is returned only after termination completes. Waiting for a highlight permit counts
+against its existing 250 ms budget. The four-worker load left over 850 MiB of data headroom in the
+local exact-chain measurement.
 
 Pairing needs no Mend UI change. A pairing code comes from Mend's existing
 `POST /api/me/devices/pairings`; `mend pair` creates one with the person's CLI login and prints the
