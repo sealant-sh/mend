@@ -343,6 +343,58 @@ describe("what this VS Code last looked at, between windows (Decided 3)", () => 
     expect(next.model()?.sessions.get("done")?.sinceYouLastLooked).toBe(false);
   });
 
+  it("keeps the first read's baseline though its first write failed, so news since stays news", async () => {
+    const files = memoryFiles();
+    let failing = true;
+    const flaky: KeptFiles = {
+      ...files,
+      writeFile: async (path, text) => {
+        if (failing && path.includes("/last-seen/") && !path.includes(".lock"))
+          throw new Error("the disk is full.");
+        await files.writeFile(path, text);
+      },
+    };
+    const mend = new FakeMend();
+    const first = new SessionStore(lastSeenOn(flaky), mend, { kind: "local" }, new FakeWindow());
+    first.start();
+    await tick(200);
+    failing = false;
+    await settles(mend);
+    expect(first.model()?.sessions.get("done")?.sinceYouLastLooked).toBe(true);
+    await tick(60_000);
+    const next = new SessionStore(lastSeenOn(files), mend, { kind: "local" }, new FakeWindow());
+    next.start();
+    await tick(200);
+    expect(next.model()?.sessions.get("done")?.sinceYouLastLooked).toBe(true);
+  });
+
+  it("stamps a look at Mend's time of what she looked at, however far Mend's clock runs ahead", async () => {
+    const { files, writes } = disk();
+    const mend = new FakeMend();
+    const store = new SessionStore(lastSeenOn(files), mend, { kind: "local" }, new FakeWindow());
+    store.start();
+    await tick(200);
+    mend.add(
+      session({
+        id: "done",
+        status: "completed",
+        settledAt: new Date(Date.now() + 120_000).toISOString(),
+      }),
+    );
+    mend.signal({ kind: "event", event: event("session", "done") });
+    await tick(MAX_WAIT_MS + 100);
+    store.setVisible(true);
+    store.select(["done"]);
+    await tick(200);
+    const after = writes();
+    for (let emit = 0; emit < 3; emit += 1) {
+      await tick(1_000);
+      store.setVisible(true);
+    }
+    expect(writes()).toBe(after);
+    expect(store.model()?.sessions.get("done")?.sinceYouLastLooked).toBe(false);
+  });
+
   it("reaches a window already open when she brings it to the front", async () => {
     const files = memoryFiles();
     // One server, as each window's own stream hears it.
