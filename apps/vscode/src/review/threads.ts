@@ -1,6 +1,6 @@
 import type { ChangeAddress } from "./change-content.js";
 import type { ChangeRead } from "./change-rows.js";
-import { commentLabel, mayRetry, type LiveAgent, type SendRecord } from "./delivery.js";
+import { commentLabel, mayRetry, posts, type LiveAgent, type SendRecord } from "./delivery.js";
 import { acceptedDrafts, type PendingComment, type SessionReview } from "./pending.js";
 import type { CommentAnchor, RecordLink, ServerComment } from "./review-wire.js";
 
@@ -81,8 +81,8 @@ const pendingThread = (read: ChangeRead, comment: PendingComment, you: string): 
               at: comment.headId,
               slice: comment.sliceId,
             },
-  line: comment.line,
-  endLine: comment.endLine,
+  line: comment.line ?? 1,
+  endLine: comment.endLine ?? comment.line ?? 1,
   author: comment.origin.kind === "accepted" ? `${you} · accepted from Mend` : you,
   label: "pending",
   body: comment.body,
@@ -171,14 +171,25 @@ export const threadsOf = (
   read: ChangeRead,
   review: SessionReview,
   you: string,
+  /** Her words VS Code could not keep yet: pending comments marked not kept. */
+  held: ReadonlyArray<PendingComment> = [],
 ): ReadonlyArray<ThreadView> => {
   const accepted = acceptedDrafts(review);
   // A comment in a review she sent reads where that follow-up is; a refused one, as Mend holds it.
   const sentIn = new Map<string, SendRecord>();
   const acceptedIn = new Set<string>();
-  const threads: Array<ThreadView> = review.pending.map((comment) =>
-    pendingThread(read, comment, you),
-  );
+  // A held edit of a pending comment shows in its place: her newest words, not yet kept.
+  const heldIds = new Set(held.map(({ id }) => id));
+  const threads: Array<ThreadView> = [
+    ...review.pending
+      .filter(({ id }) => !heldIds.has(id))
+      .map((comment) => pendingThread(read, comment, you)),
+    ...held.map((comment) => ({
+      ...pendingThread(read, comment, you),
+      key: `held:${comment.id}`,
+      label: "not kept",
+    })),
+  ];
   for (const record of review.sends) {
     if (record.phase.kind === "refused") continue;
     for (const item of record.items) {
@@ -186,7 +197,7 @@ export const threadsOf = (
       else if (item.kind === "accepted" && item.opened) {
         sentIn.set(item.draftId, record);
         acceptedIn.add(item.draftId);
-      } else if (item.kind === "own" && item.post.kind === "posted")
+      } else if (posts(item) && item.post.kind === "posted")
         sentIn.set(item.post.commentId, record);
       else
         threads.push({

@@ -1,4 +1,12 @@
-import { KEPT_SENDS, type PendingComment, type SessionReview } from "./pending.js";
+import { reviewTargetFile, targetFileFor, type ReviewCommentTarget } from "@mend/domain/workbench";
+
+import {
+  KEPT_SENDS,
+  rewritten,
+  type AcceptedComment,
+  type PendingComment,
+  type SessionReview,
+} from "./pending.js";
 import type { ChangeFile, ServerComment } from "./review-wire.js";
 
 /**
@@ -16,7 +24,7 @@ import type { ChangeFile, ServerComment } from "./review-wire.js";
 export interface PostAttempt {
   /** The words and the target posted, exactly. */
   readonly body: string;
-  readonly target: CommentTarget;
+  readonly target: ReviewCommentTarget;
   /** Her name as Mend writes it on her comments; null when Mend could not say who she is. */
   readonly author: string | null;
   /** Every comment id on the change before the post: the one it made is not among them. */
@@ -29,9 +37,28 @@ export type PostState =
   | ({ readonly kind: "posting" } & PostAttempt)
   | { readonly kind: "posted"; readonly commentId: string };
 
+/**
+ * Where the Mend draft her posted words replace is: to dismiss, dismissed (or gone), or left on
+ * Mend because the dismissal failed, with why. A draft left never holds the review back.
+ */
+export type DraftDismissal =
+  | { readonly kind: "due" }
+  | { readonly kind: "dismissed" }
+  | { readonly kind: "left"; readonly words: string };
+
 /** One comment of the review she sends. */
 export type SendItem =
   | { readonly kind: "own"; readonly pending: PendingComment; readonly post: PostState }
+  /**
+   * Her words in place of a Mend draft she accepted (`pending.origin` names it): posted as hers,
+   * then the draft is dismissed, if still a draft.
+   */
+  | {
+      readonly kind: "rewrite";
+      readonly pending: AcceptedComment;
+      readonly post: PostState;
+      readonly dismissal: DraftDismissal;
+    }
   /** A Mend draft she accepted: Send opens it on Mend, then sends it. */
   | {
       readonly kind: "accepted";
@@ -109,6 +136,13 @@ export type PasteStep =
   /** VS Code could not attach the live agent's terminal here: Retry delivery pastes it again. */
   | { readonly kind: "failed" };
 
+export interface SendSlice {
+  readonly id: string;
+  readonly baseId: string;
+  readonly headId: string;
+  readonly diffDigest: string;
+}
+
 export interface SendRecord {
   /** The follow-up's idempotency key: the same on every retry. */
   readonly key: string;
@@ -149,6 +183,10 @@ export type SendEvent =
   /** The reconcile read found nothing posted for this comment: it is posted again. */
   | { readonly kind: "not-posted"; readonly pendingId: string }
   | { readonly kind: "opened"; readonly draftId: string }
+  /** The draft her posted words replace reads dismissed on Mend, or is gone. */
+  | { readonly kind: "draft-dismissed"; readonly draftId: string }
+  /** VS Code could not dismiss the draft her posted words replace: it stays on Mend. */
+  | { readonly kind: "draft-left"; readonly draftId: string; readonly words: string }
   /** The draft she accepted is dismissed on Mend, or gone: it leaves the review, never reopened. */
   | { readonly kind: "draft-gone"; readonly draftId: string }
   /** A newer review of hers reached Mend, which supersedes every follow-up it held before. */
@@ -194,7 +232,8 @@ export type SendEvent =
 export type SendAction =
   | { readonly kind: "reconcile"; readonly pendingIds: ReadonlyArray<string> }
   | { readonly kind: "post"; readonly pending: PendingComment }
-  | { readonly kind: "open"; readonly draftId: string }
+  | { readonly kind: "open"; readonly draftId: string; readonly pending: PendingComment }
+  | { readonly kind: "dismiss-draft"; readonly draftId: string }
   | { readonly kind: "deliver"; readonly request: DeliverRequest }
   | { readonly kind: "paste"; readonly text: string; readonly processId: string }
   /** Nothing to paste into the agent's terminal, and why, said once. */
@@ -211,6 +250,12 @@ export interface DeliverRequest {
   readonly instruction: string;
   readonly idempotencyKey: string;
 }
+
+/** An item whose words VS Code posts to Mend. */
+export type PostedItem = Extract<SendItem, { readonly post: PostState }>;
+
+export const posts = (item: SendItem): item is PostedItem =>
+  item.kind === "own" || item.kind === "rewrite";
 
 /** Every comment a record carries, by the id Mend knows it by once it is there. */
 const idsOf = (record: SendRecord): ReadonlyArray<string> =>
@@ -269,13 +314,16 @@ export const nextAction = (record: SendRecord): SendAction => {
   if (record.phase.kind === "delivering") return { kind: "watch" };
   if (record.phase.kind !== "sending") return { kind: "idle" };
   const posting = record.items.flatMap((item) =>
-    item.kind === "own" && item.post.kind === "posting" ? [item.pending.id] : [],
+    posts(item) && item.post.kind === "posting" ? [item.pending.id] : [],
   );
   if (posting.length > 0) return { kind: "reconcile", pendingIds: posting };
   for (const item of record.items) {
-    if (item.kind === "own" && item.post.kind === "unposted")
+    if (posts(item) && item.post.kind === "unposted")
       return { kind: "post", pending: item.pending };
-    if (item.kind === "accepted" && !item.opened) return { kind: "open", draftId: item.draftId };
+    if (item.kind === "rewrite" && item.dismissal.kind === "due")
+      return { kind: "dismiss-draft", draftId: item.pending.origin.draftId };
+    if (item.kind === "accepted" && !item.opened)
+      return { kind: "open", draftId: item.draftId, pending: item.pending };
   }
   const ids = commentIds(record);
   return ids === null
@@ -343,7 +391,7 @@ export const sendGeneration = (records: ReadonlyArray<SendRecord>): string =>
 const withPost = (record: SendRecord, pendingId: string, post: PostState): SendRecord => ({
   ...record,
   items: record.items.map((item) =>
-    item.kind === "own" && item.pending.id === pendingId ? { ...item, post } : item,
+    posts(item) && item.pending.id === pendingId ? { ...item, post } : item,
   ),
 });
 
@@ -388,6 +436,24 @@ export const step = (record: SendRecord, event: SendEvent, now: string): SendRec
         items: record.items.map((item) =>
           item.kind === "accepted" && item.draftId === event.draftId
             ? { ...item, opened: true }
+            : item,
+        ),
+      };
+    case "draft-dismissed":
+      return {
+        ...record,
+        items: record.items.map((item) =>
+          item.kind === "rewrite" && item.pending.origin.draftId === event.draftId
+            ? { ...item, dismissal: { kind: "dismissed" } }
+            : item,
+        ),
+      };
+    case "draft-left":
+      return {
+        ...record,
+        items: record.items.map((item) =>
+          item.kind === "rewrite" && item.pending.origin.draftId === event.draftId
+            ? { ...item, dismissal: { kind: "left", words: event.words } }
             : item,
         ),
       };
@@ -606,6 +672,12 @@ export const commentLabel = (
     : `follow-up pending · pasted into an earlier ${phase.agent}`;
 };
 
+/** Why each Mend draft her posted words replace was left on Mend. */
+export const draftsLeft = (record: SendRecord): ReadonlyArray<string> =>
+  record.items.flatMap((item) =>
+    item.kind === "rewrite" && item.dismissal.kind === "left" ? [item.dismissal.words] : [],
+  );
+
 /** A record whose comments were handed to the session: its head is where her last review was. */
 export const handedOver = (record: SendRecord): boolean =>
   record.phase.kind === "delivered" ||
@@ -618,54 +690,46 @@ export const openRecord = (records: ReadonlyArray<SendRecord>): SendRecord | nul
   records.findLast((record) => record.phase.kind === "sending" || record.phase.kind === "failed") ??
   null;
 
-/** Where a comment goes on Mend: on a line inside one of the slice's hunks, else on its file. */
-export type CommentTarget = {
-  readonly oldPath: string | null;
-  readonly newPath: string | null;
-  readonly side: "old" | "new" | null;
-  readonly startLine: number | null;
-  readonly endLine: number | null;
-  readonly hunkContextHash: string | null;
-};
-
 /**
  * The target for a pending comment in the slice it was written on: its lines when one hunk holds
- * them, else its file (the words then say which line), else the change as a whole.
+ * them, else its file (the words then say which line, when it is on one), else the change as a
+ * whole.
  */
 export const commentTarget = (
   files: ReadonlyArray<ChangeFile>,
   comment: Pick<PendingComment, "path" | "line" | "endLine" | "body" | "anchor">,
-): { readonly target: CommentTarget; readonly body: string } => {
+): { readonly target: ReviewCommentTarget; readonly body: string } => {
   // Her reply under a Mend draft on the old side goes where the draft is: the base's lines.
-  const old = comment.anchor?.side === "old";
-  const file =
-    comment.path === null
+  const side = comment.anchor?.side ?? null;
+  const old = side === "old";
+  const { line, endLine } = comment;
+  const file = comment.path === null ? undefined : targetFileFor(files, comment.path, side);
+  const hunk =
+    line === null || endLine === null
       ? undefined
-      : files.find((candidate) => (old ? candidate.oldPath : candidate.newPath) === comment.path);
-  const hunk = file?.hunks.find((candidate) => {
-    const start = old ? candidate.oldStart : candidate.newStart;
-    const lines = old ? candidate.oldLines : candidate.newLines;
-    return lines > 0 && comment.line >= start && comment.endLine <= start + lines - 1;
-  });
-  const paths = old
-    ? { oldPath: comment.path, newPath: null }
-    : { oldPath: null, newPath: comment.path };
-  if (file !== undefined && hunk !== undefined)
+      : file?.hunks.find((candidate) => {
+          const start = old ? candidate.oldStart : candidate.newStart;
+          const lines = old ? candidate.oldLines : candidate.newLines;
+          return lines > 0 && line >= start && endLine <= start + lines - 1;
+        });
+  if (file !== undefined && hunk !== undefined && line !== null && endLine !== null)
     return {
       target: {
-        ...paths,
+        oldPath: file.oldPath,
+        newPath: file.newPath,
         side: old ? "old" : "new",
-        startLine: comment.line,
-        endLine: comment.endLine,
+        startLine: line,
+        endLine,
         hunkContextHash: hunk.contextHash,
       },
       body: comment.body,
     };
-  const where = `line ${comment.line}: `;
+  const where = line === null ? "" : `line ${line}: `;
   if (file !== undefined)
     return {
       target: {
-        ...paths,
+        oldPath: file.oldPath,
+        newPath: file.newPath,
         side: null,
         startLine: null,
         endLine: null,
@@ -682,7 +746,10 @@ export const commentTarget = (
       endLine: null,
       hunkContextHash: null,
     },
-    body: comment.path === null ? comment.body : `${comment.path}:${comment.line}: ${comment.body}`,
+    body:
+      comment.path === null
+        ? comment.body
+        : `${comment.path}${line === null ? "" : `:${line}`}: ${comment.body}`,
   };
 };
 
@@ -708,7 +775,7 @@ export const postedComment = (
         (attempt.author === null || comment.author.name === attempt.author) &&
         comment.body === attempt.body.trim() &&
         comment.anchor?.sliceId === sliceId &&
-        comment.file === (target.newPath ?? target.oldPath) &&
+        comment.file === reviewTargetFile(target) &&
         comment.line === target.startLine &&
         comment.endLine === target.endLine,
     )?.id ?? null
@@ -724,12 +791,7 @@ export const startSend = (
   review: SessionReview,
   input: {
     readonly key: string;
-    readonly slice: {
-      readonly id: string;
-      readonly baseId: string;
-      readonly headId: string;
-      readonly diffDigest: string;
-    };
+    readonly slice: SendSlice;
     readonly instruction: string;
     readonly paste: PastePlan;
     /** The pending comments the instruction lists: each must still be pending. */
@@ -746,12 +808,19 @@ export const startSend = (
   const onTheirWay = new Set(review.sends.filter(holdsComments).flatMap((record) => idsOf(record)));
   if (input.open.some((id) => onTheirWay.has(id))) return null;
   const items: ReadonlyArray<SendItem> = [
-    ...moving.map(
-      (pending): SendItem =>
-        pending.origin.kind === "accepted"
-          ? { kind: "accepted", pending, draftId: pending.origin.draftId, opened: false }
-          : { kind: "own", pending, post: { kind: "unposted" } },
-    ),
+    ...moving.map((pending): SendItem => {
+      if (rewritten(pending))
+        return {
+          kind: "rewrite",
+          pending,
+          post: { kind: "unposted" },
+          dismissal: { kind: "due" },
+        };
+      const { origin } = pending;
+      return origin.kind === "own"
+        ? { kind: "own", pending, post: { kind: "unposted" } }
+        : { kind: "accepted", pending, draftId: origin.draftId, opened: false };
+    }),
     ...input.open.map((commentId): SendItem => ({ kind: "open", commentId })),
   ];
   const record: SendRecord = {
@@ -767,6 +836,7 @@ export const startSend = (
     createdAt: input.now,
   };
   return {
+    ...review,
     pending: review.pending.filter((pending) => !chosen.has(pending.id)),
     sends: [...review.sends, record].slice(-KEPT_SENDS),
   };
@@ -788,12 +858,12 @@ export const withSend = (
     };
   // Refused: a comment not on Mend yet is pending again, so nothing she wrote is lost.
   const back = next.items.flatMap((item) =>
-    (item.kind === "own" && item.post.kind !== "posted") ||
-    (item.kind === "accepted" && !item.opened)
+    (posts(item) && item.post.kind !== "posted") || (item.kind === "accepted" && !item.opened)
       ? [item.pending]
       : [],
   );
   return {
+    ...review,
     pending: [...review.pending, ...back],
     sends: review.sends.map((candidate) => (candidate.key === key ? next : candidate)),
   };

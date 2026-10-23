@@ -1,6 +1,8 @@
+import type { ReviewCommentTarget } from "@mend/domain/workbench";
+
 import type { MendConnection } from "../config.js";
 import { MendApiError, requestMend } from "../mend-http.js";
-import type { CommentTarget, DeliverRequest } from "./delivery.js";
+import type { DeliverRequest } from "./delivery.js";
 import {
   parseComment,
   parseComments,
@@ -111,7 +113,7 @@ export class ReviewClient {
   async postComment(
     changeId: string,
     sliceId: string,
-    target: CommentTarget,
+    target: ReviewCommentTarget,
     body: string,
   ): Promise<ServerComment> {
     return parseComment(

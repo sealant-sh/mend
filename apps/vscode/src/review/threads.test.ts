@@ -48,7 +48,7 @@ describe("a change's comments as threads", () => {
   it("shows her pending comment as hers, pending, on the pinned new side", () => {
     const threads = threadsOf(
       readOf({ kind: "pinned" }),
-      { pending: [pending({})], sends: [] },
+      { pending: [pending({})], sends: [], document: null },
       "Dana",
     );
     expect(threads).toMatchObject([
@@ -77,10 +77,16 @@ describe("a change's comments as threads", () => {
             id: "a1",
             line: 13,
             body: draft.body,
-            origin: { kind: "accepted", draftId: "d1", evidence: draft.evidence },
+            origin: {
+              kind: "accepted",
+              draftId: "d1",
+              evidence: draft.evidence,
+              draftBody: draft.body,
+            },
           }),
         ],
         sends: [],
+        document: null,
       },
       "Dana",
     );
@@ -184,12 +190,17 @@ describe("the threads of a review she sent", () => {
     id: "a1",
     line: 13,
     endLine: 13,
-    origin: { kind: "accepted", draftId: "d1", evidence: [] },
+    origin: {
+      kind: "accepted",
+      draftId: "d1",
+      evidence: [],
+      draftBody: "Use the shared limiter from guard.ts",
+    },
   });
 
   it("show a draft she accepted once while its review is on its way, as hers", () => {
     const review = startSend(
-      { pending: [accepted], sends: [] },
+      { pending: [accepted], sends: [], document: null },
       {
         key: "k1",
         slice: SLICE,

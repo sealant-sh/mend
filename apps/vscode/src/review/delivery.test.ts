@@ -1,3 +1,4 @@
+import { reviewTargetExists } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import { changeRows } from "./change-rows.js";
@@ -16,7 +17,14 @@ import {
   type SendRecord,
 } from "./delivery.js";
 import type { PastePlan } from "./delivery.js";
-import { acceptedDrafts, EMPTY_REVIEW, parseSessionReview, type SessionReview } from "./pending.js";
+import {
+  acceptedDrafts,
+  EMPTY_REVIEW,
+  parseSessionReview,
+  type PendingComment,
+  type SessionReview,
+} from "./pending.js";
+import type { ChangeFile, CommentAnchor } from "./review-wire.js";
 import { comment, FILES, pending, PINNED, readOf } from "./test-fixtures.js";
 
 const ALL: PastePlan = { kind: "all" };
@@ -38,6 +46,7 @@ const sent = (
   review: SessionReview = {
     pending: [pending({}), pending({ id: "p2", line: 13, endLine: 13 })],
     sends: [],
+    document: null,
   },
   key = "key-1",
 ): SessionReview =>
@@ -126,6 +135,7 @@ describe("sending a review (story d, step 6)", () => {
     const review: SessionReview = {
       pending: [pending({}), pending({ id: "p2", line: 13, endLine: 13 })],
       sends: [],
+      document: null,
     };
     const input = {
       key: "key-1",
@@ -258,20 +268,40 @@ describe("sending a review (story d, step 6)", () => {
 describe("an accepted draft in a review she sent", () => {
   const accepted = pending({
     id: "a1",
-    origin: { kind: "accepted", draftId: "d1", evidence: [] },
+    origin: {
+      kind: "accepted",
+      draftId: "d1",
+      evidence: [],
+      draftBody: "Use the shared limiter from guard.ts",
+    },
   });
 
   it("stays hers while the review is on its way, not a draft beside it", () => {
-    const review = sent({ pending: [accepted], sends: [] });
+    const review = sent({ pending: [accepted], sends: [], document: null });
     expect(acceptedDrafts(review).has("d1")).toBe(true);
   });
 
+  it("stays hers once her words in its place are on Mend, though the review was refused", () => {
+    const review = sent({
+      pending: [{ ...accepted, body: "Run the burst test too." }],
+      sends: [],
+      document: null,
+    });
+    const refused = apply(
+      review,
+      { kind: "posted", pendingId: "a1", commentId: "c9" },
+      { kind: "failed", words: "Mend refused this review", retryable: false },
+    );
+    expect(only(refused).phase.kind).toBe("refused");
+    expect(acceptedDrafts(refused).has("d1")).toBe(true);
+  });
+
   it("leaves the review when it is dismissed on Mend, and is never opened", () => {
-    const review = sent({ pending: [accepted, pending({})], sends: [] });
-    expect(nextAction(only(review))).toEqual({ kind: "open", draftId: "d1" });
+    const review = sent({ pending: [accepted, pending({})], sends: [], document: null });
+    expect(nextAction(only(review))).toMatchObject({ kind: "open", draftId: "d1" });
     const gone = apply(review, { kind: "draft-gone", draftId: "d1" });
     expect(only(gone).items.map((item) => item.kind)).toEqual(["own"]);
-    const alone = apply(sent({ pending: [accepted], sends: [] }), {
+    const alone = apply(sent({ pending: [accepted], sends: [], document: null }), {
       kind: "draft-gone",
       draftId: "d1",
     });
@@ -295,6 +325,28 @@ describe("the comment a cut-short post left on Mend", () => {
     expect(postedComment(ATTEMPT, PINNED.id, [landed], new Set(["c9"]))).toBe(null);
   });
 
+  it("is found for a reply on a renamed file's deleted line, under the old name Mend files it by", () => {
+    const renamed: ChangeFile = {
+      oldPath: "src/old-name.ts",
+      newPath: "src/new-name.ts",
+      status: "renamed",
+      additions: 1,
+      deletions: 1,
+      binary: false,
+      hunks: [{ oldStart: 3, oldLines: 3, newStart: 3, newLines: 3, contextHash: "r1" }],
+    };
+    const anchor: CommentAnchor = {
+      sliceId: PINNED.id,
+      baseId: PINNED.base.id,
+      headId: PINNED.head.id,
+      side: "old",
+    };
+    const reply = pending({ path: "src/old-name.ts", line: 5, endLine: 5, anchor });
+    const attempt = { ...ATTEMPT, target: commentTarget([renamed], reply).target };
+    const onMend = comment({ ...landed, file: "src/old-name.ts", line: 5, endLine: 5, anchor });
+    expect(postedComment(attempt, PINNED.id, [onMend], new Set())).toBe("c9");
+  });
+
   it("is never one that was there before the post, nor another person's, nor other words", () => {
     expect(postedComment({ ...ATTEMPT, before: ["c9"] }, PINNED.id, [landed], new Set())).toBe(
       null,
@@ -307,6 +359,24 @@ describe("the comment a cut-short post left on Mend", () => {
     expect(postedComment(ATTEMPT, PINNED.id, [{ ...landed, line: 13 }], new Set())).toBe(null);
   });
 });
+
+const changeFile = (
+  oldPath: string | null,
+  newPath: string | null,
+  status: ChangeFile["status"],
+  hunk: ChangeFile["hunks"][number],
+): ChangeFile => ({
+  oldPath,
+  newPath,
+  status,
+  additions: 1,
+  deletions: 1,
+  binary: false,
+  hunks: [hunk],
+});
+
+const lineOf = (path: string, line: number, anchor: CommentAnchor | null = null): PendingComment =>
+  pending({ path, line, endLine: line, anchor });
 
 describe("where a comment goes on Mend", () => {
   it("is its lines when a hunk of its slice holds them, else its file with the line in words", () => {
@@ -325,6 +395,78 @@ describe("where a comment goes on Mend", () => {
       "line 40: Use the shared limiter from guard.ts",
     );
     expect(commentTarget(FILES, pending({ path: "gone.ts" })).target.newPath).toBe(null);
+  });
+
+  it("is a deleted file, with her words unchanged, for a comment about that whole file", () => {
+    const whole = pending({ path: "README", line: null, endLine: null, body: "Keep the notes." });
+    const filed = commentTarget(FILES, whole);
+    expect(filed).toEqual({
+      target: {
+        oldPath: "README",
+        newPath: null,
+        side: null,
+        startLine: null,
+        endLine: null,
+        hunkContextHash: null,
+      },
+      body: "Keep the notes.",
+    });
+    expect(reviewTargetExists(FILES, filed.target)).toBe(true);
+  });
+
+  it("is a target Mend accepts on an added, modified, renamed or deleted file, on either side", () => {
+    const files = [
+      changeFile(null, "src/auth/limit.ts", "added", {
+        oldStart: 0,
+        oldLines: 0,
+        newStart: 1,
+        newLines: 15,
+        contextHash: "a1",
+      }),
+      changeFile("src/app.ts", "src/app.ts", "modified", {
+        oldStart: 10,
+        oldLines: 4,
+        newStart: 10,
+        newLines: 5,
+        contextHash: "m1",
+      }),
+      changeFile("src/old-name.ts", "src/new-name.ts", "renamed", {
+        oldStart: 3,
+        oldLines: 3,
+        newStart: 3,
+        newLines: 3,
+        contextHash: "r1",
+      }),
+      changeFile("README", null, "deleted", {
+        oldStart: 1,
+        oldLines: 5,
+        newStart: 0,
+        newLines: 0,
+        contextHash: "d1",
+      }),
+    ];
+    const old: CommentAnchor = {
+      sliceId: PINNED.id,
+      baseId: PINNED.base.id,
+      headId: PINNED.head.id,
+      side: "old",
+    };
+    const cases: ReadonlyArray<readonly [string, PendingComment, "old" | "new" | null]> = [
+      ["added, a new line", lineOf("src/auth/limit.ts", 3), "new"],
+      ["modified, a new line", lineOf("src/app.ts", 11), "new"],
+      ["modified, a deleted line", lineOf("src/app.ts", 12, old), "old"],
+      ["modified, outside its hunks", lineOf("src/app.ts", 40), null],
+      ["renamed, a new line", lineOf("src/new-name.ts", 4), "new"],
+      ["renamed, a deleted line", lineOf("src/old-name.ts", 5, old), "old"],
+      ["renamed, outside its hunks", lineOf("src/new-name.ts", 30), null],
+      ["deleted, a deleted line", lineOf("README", 2, old), "old"],
+    ];
+    const refused = cases.flatMap(([name, written, side]) => {
+      const { target } = commentTarget(files, written);
+      const onItsFile = target.oldPath !== null || target.newPath !== null;
+      return onItsFile && target.side === side && reviewTargetExists(files, target) ? [] : [name];
+    });
+    expect(refused).toEqual([]);
   });
 
   it("is the old side's lines for her reply under a Mend draft on a deleted line", () => {

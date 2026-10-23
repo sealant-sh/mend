@@ -1,13 +1,18 @@
+import type { ReviewCommentTarget } from "@mend/domain/workbench";
+
 import type {
-  CommentTarget,
+  DraftDismissal,
+  HeldInput,
   PastePlan,
   PasteStep,
   PostState,
   SendItem,
   SendPhase,
   SendRecord,
+  SendSlice,
   TerminalInput,
 } from "./delivery.js";
+import { withEarlierText } from "./instruction.js";
 import type { CommentAnchor, RecordLink } from "./review-wire.js";
 
 /**
@@ -21,25 +26,30 @@ import type { CommentAnchor, RecordLink } from "./review-wire.js";
 export const MAX_PENDING = 200;
 
 /** Where a pending comment came from: her own words, or a Mend draft she accepted. */
-export type PendingOrigin =
-  | { readonly kind: "own" }
-  | {
-      readonly kind: "accepted";
-      /** The draft on Mend: it stays a draft there until Send review opens it. */
-      readonly draftId: string;
-      readonly evidence: ReadonlyArray<RecordLink>;
-    };
+export type PendingOrigin = { readonly kind: "own" } | AcceptedOrigin;
+
+export interface AcceptedOrigin {
+  readonly kind: "accepted";
+  /** The draft on Mend: it stays a draft there until Send review opens it. */
+  readonly draftId: string;
+  readonly evidence: ReadonlyArray<RecordLink>;
+  /** The draft's words as Mend wrote them: see `rewritten`. */
+  readonly draftBody: string;
+}
 
 export interface PendingComment {
   readonly id: string;
-  /** The pinned slice she wrote it on, and its head: its hunks anchor it when it is sent. */
+  /**
+   * The slice she wrote it on, and its head: its hunks anchor it when it is sent. The pinned slice,
+   * or for words on a Mend draft, the slice the draft was written on.
+   */
   readonly sliceId: string;
   readonly headId: string;
   /** Null for a comment on the change as a whole, as a Mend draft about the whole change is. */
   readonly path: string | null;
-  /** Lines on the slice's new side, from 1; 1 for the whole change. */
-  readonly line: number;
-  readonly endLine: number;
+  /** Lines from 1; null for a comment about its whole file, or the change as a whole. */
+  readonly line: number | null;
+  readonly endLine: number | null;
   /** The first commented line as it read: what carries the comment to a newer slice. */
   readonly lineText: string;
   readonly body: string;
@@ -52,16 +62,41 @@ export interface PendingComment {
   readonly anchor: CommentAnchor | null;
 }
 
+export type AcceptedComment = PendingComment & { readonly origin: AcceptedOrigin };
+
 /**
- * One session's review on this machine: her pending comments, and the reviews she sent. A comment
- * is pending or in exactly one send record, never both.
+ * An accepted draft whose words she changed: Send review posts hers on the draft's place, and
+ * dismisses the draft. Words she edits back to the draft's are the draft's again.
  */
+export const rewritten = (comment: PendingComment): comment is AcceptedComment =>
+  comment.origin.kind === "accepted" && comment.body.trim() !== comment.origin.draftBody.trim();
+
+export interface Composed {
+  readonly documentId: string;
+  readonly sessionId: string;
+  readonly sessionName: string;
+  readonly slice: SendSlice;
+  readonly pending: ReadonlyArray<string>;
+  readonly open: ReadonlyArray<string>;
+  readonly digest: string;
+  readonly generation: string;
+  readonly base: HeldInput | null;
+}
+
+export interface ReviewDocument {
+  readonly composed: Composed;
+  readonly text: string;
+  readonly revision: number;
+}
+
 export interface SessionReview {
   readonly pending: ReadonlyArray<PendingComment>;
   readonly sends: ReadonlyArray<SendRecord>;
+  /** The review Send review opened for the session, until it is sent: one per session. */
+  readonly document: ReviewDocument | null;
 }
 
-export const EMPTY_REVIEW: SessionReview = { pending: [], sends: [] };
+export const EMPTY_REVIEW: SessionReview = { pending: [], sends: [], document: null };
 
 /** The reviews kept: the newest few, enough for since my last review and a retry. */
 export const KEPT_SENDS = 5;
@@ -91,12 +126,18 @@ const parseEvidence = (value: unknown): ReadonlyArray<RecordLink> =>
       })
     : [];
 
-const parseOrigin = (value: unknown): PendingOrigin | null => {
+/** An accepted draft kept with no words of its own reads as accepted with `body`, unchanged. */
+const parseOrigin = (value: unknown, body: string): PendingOrigin | null => {
   if (!isRecord(value)) return null;
   if (value["kind"] === "own") return { kind: "own" };
   const draftId = text(value, "draftId");
   return value["kind"] === "accepted" && draftId !== null
-    ? { kind: "accepted", draftId, evidence: parseEvidence(value["evidence"]) }
+    ? {
+        kind: "accepted",
+        draftId,
+        evidence: parseEvidence(value["evidence"]),
+        draftBody: text(value, "draftBody") ?? body,
+      }
     : null;
 };
 
@@ -117,20 +158,21 @@ const parsePending = (value: unknown): ReadonlyArray<PendingComment> => {
   const sliceId = text(value, "sliceId");
   const headId = text(value, "headId");
   const path = value["path"] === null ? null : text(value, "path");
-  const line = whole(value, "line");
-  const endLine = whole(value, "endLine");
+  const line = nullableWhole(value, "line");
+  const endLine = nullableWhole(value, "endLine");
   const lineText = text(value, "lineText");
   const body = text(value, "body");
   const createdAt = text(value, "createdAt");
-  const origin = parseOrigin(value["origin"]);
+  const origin = body === null ? null : parseOrigin(value["origin"], body);
   const anchor = parseAnchor(value["anchor"]);
   if (
     id === null ||
     sliceId === null ||
     headId === null ||
     (path === null && value["path"] !== null) ||
-    line === null ||
-    endLine === null ||
+    line === undefined ||
+    endLine === undefined ||
+    (line === null) !== (endLine === null) ||
     lineText === null ||
     body === null ||
     createdAt === null ||
@@ -153,7 +195,7 @@ const nullableWhole = (
   return found === null ? null : (whole(value, field) ?? undefined);
 };
 
-const parseTarget = (value: unknown): CommentTarget | null => {
+const parseTarget = (value: unknown): ReviewCommentTarget | null => {
   if (!isRecord(value)) return null;
   const oldPath = nullableText(value, "oldPath");
   const newPath = nullableText(value, "newPath");
@@ -206,10 +248,25 @@ const parseItem = (value: unknown): ReadonlyArray<SendItem> => {
   const commentId = text(value, "commentId");
   if (value["kind"] === "own" && pending !== undefined && post !== null)
     return [{ kind: "own", pending, post }];
+  if (value["kind"] === "rewrite" && pending !== undefined && post !== null) {
+    const { origin } = pending;
+    const dismissal = parseDismissal(value["dismissal"]);
+    return origin.kind === "accepted" && dismissal !== null
+      ? [{ kind: "rewrite", pending: { ...pending, origin }, post, dismissal }]
+      : [];
+  }
   if (value["kind"] === "accepted" && pending !== undefined && draftId !== null)
     return [{ kind: "accepted", pending, draftId, opened: value["opened"] === true }];
   if (value["kind"] === "open" && commentId !== null) return [{ kind: "open", commentId }];
   return [];
+};
+
+const parseDismissal = (value: unknown): DraftDismissal | null => {
+  if (!isRecord(value)) return null;
+  if (value["kind"] === "due") return { kind: "due" };
+  if (value["kind"] === "dismissed") return { kind: "dismissed" };
+  const words = text(value, "words");
+  return value["kind"] === "left" && words !== null ? { kind: "left", words } : null;
 };
 
 const parsePhase = (value: unknown): SendPhase | null => {
@@ -246,10 +303,10 @@ const parsePhase = (value: unknown): SendPhase | null => {
 };
 
 const parseInput = (value: unknown): TerminalInput | null => {
-  if (!isRecord(value) || !Array.isArray(value["ids"])) return null;
+  if (!isRecord(value)) return null;
   const input = text(value, "text");
-  const ids = value["ids"].flatMap((id) => (typeof id === "string" ? [id] : []));
-  return input === null || ids.length !== value["ids"].length ? null : { text: input, ids };
+  const ids = parseIds(value["ids"]);
+  return input === null || ids === null ? null : { text: input, ids };
 };
 
 const parsePasteStep = (value: unknown): PasteStep => {
@@ -313,41 +370,196 @@ const parseSend = (value: unknown): ReadonlyArray<SendRecord> => {
   ];
 };
 
+const parseIds = (value: unknown): ReadonlyArray<string> | null => {
+  if (!Array.isArray(value)) return null;
+  const ids = value.flatMap((id) => (typeof id === "string" ? [id] : []));
+  return ids.length === value.length ? ids : null;
+};
+
+const parseHeld = (value: unknown): HeldInput | null => {
+  if (!isRecord(value)) return null;
+  const input = parseInput(value["input"]);
+  const agent = text(value, "agent");
+  const processId = text(value, "processId");
+  return input === null || agent === null || processId === null
+    ? null
+    : { input, agent, processId };
+};
+
+const parseDocument = (value: unknown): ReviewDocument | null => {
+  if (!isRecord(value)) return null;
+  const composed = value["composed"];
+  const saved = text(value, "text");
+  const revision = whole(value, "revision");
+  if (!isRecord(composed) || !isRecord(composed["slice"]) || saved === null || revision === null)
+    return null;
+  const slice = composed["slice"];
+  const documentId = text(composed, "documentId");
+  const sessionId = text(composed, "sessionId");
+  const sessionName = text(composed, "sessionName");
+  const sliceId = text(slice, "id");
+  const baseId = text(slice, "baseId");
+  const headId = text(slice, "headId");
+  const diffDigest = text(slice, "diffDigest");
+  const pending = parseIds(composed["pending"]);
+  const open = parseIds(composed["open"]);
+  const digest = text(composed, "digest");
+  const generation = text(composed, "generation");
+  const base = composed["base"] === null ? null : parseHeld(composed["base"]);
+  if (
+    documentId === null ||
+    sessionId === null ||
+    sessionName === null ||
+    sliceId === null ||
+    baseId === null ||
+    headId === null ||
+    diffDigest === null ||
+    pending === null ||
+    open === null ||
+    digest === null ||
+    generation === null ||
+    (base === null && composed["base"] !== null)
+  )
+    return null;
+  return {
+    composed: {
+      documentId,
+      sessionId,
+      sessionName,
+      slice: { id: sliceId, baseId, headId, diffDigest },
+      pending,
+      open,
+      digest,
+      generation,
+      base,
+    },
+    text: saved,
+    revision,
+  };
+};
+
 /** A session's review as stored; a comment or a review that does not read back is dropped alone. */
 export const parseSessionReview = (value: unknown): SessionReview =>
   isRecord(value)
     ? {
         pending: Array.isArray(value["pending"]) ? value["pending"].flatMap(parsePending) : [],
         sends: Array.isArray(value["sends"]) ? value["sends"].flatMap(parseSend) : [],
+        document: parseDocument(value["document"]),
       }
     : EMPTY_REVIEW;
+
+/**
+ * The session's review for a fresh composition: the one kept while it still lists the same
+ * comments, with the same words, after the same reviews; else the composition, replacing it. The
+ * text she saved in the one it replaces follows the composition (`carried`), in the same write.
+ */
+export const keepComposed = (
+  review: SessionReview,
+  composed: Composed,
+  words: string,
+): { readonly review: SessionReview; readonly carried: boolean } => {
+  const kept = review.document;
+  if (
+    kept !== null &&
+    kept.composed.digest === composed.digest &&
+    kept.composed.generation === composed.generation
+  )
+    return { review, carried: false };
+  // Revision 1 is the composition as written; any later one holds words she saved.
+  const carried = kept !== null && kept.revision > 1;
+  const document: ReviewDocument = carried
+    ? { composed, text: withEarlierText(words, kept.text, composed.sessionName), revision: 2 }
+    : { composed, text: words, revision: 1 };
+  return { review: { ...review, document }, carried };
+};
+
+export type DocumentSave =
+  | { readonly kind: "saved"; readonly review: SessionReview; readonly revision: number }
+  | { readonly kind: "gone" }
+  | { readonly kind: "newer" };
+
+/** Her words saved over `revision`, the one her editor's text is based on; never over a newer one. */
+export const saveDocument = (
+  review: SessionReview,
+  documentId: string,
+  revision: number,
+  words: string,
+): DocumentSave => {
+  const found = review.document;
+  if (found?.composed.documentId !== documentId) return { kind: "gone" };
+  if (found.revision !== revision) return { kind: "newer" };
+  if (found.text === words) return { kind: "saved", review, revision: found.revision };
+  const saved: ReviewDocument = { ...found, text: words, revision: found.revision + 1 };
+  return { kind: "saved", review: { ...review, document: saved }, revision: saved.revision };
+};
+
+export const removeDocument = (review: SessionReview, documentId: string): SessionReview =>
+  review.document?.composed.documentId === documentId ? { ...review, document: null } : review;
 
 export const addPending = (review: SessionReview, comment: PendingComment): SessionReview => ({
   ...review,
   pending: [...review.pending, comment],
 });
 
-/** G1: a pending comment is edited freely until it is sent. */
+/** G1: a pending comment is edited freely until it is sent. A Mend draft's words she edits are hers. */
 export const editPending = (review: SessionReview, id: string, body: string): SessionReview => ({
   ...review,
   pending: review.pending.map((comment) => (comment.id === id ? { ...comment, body } : comment)),
 });
+
+/**
+ * Her words VS Code held, kept as far as the review takes them: an edit of a pending comment edits
+ * it, one of a comment a review already took is a new pending comment of hers at that place, and
+ * any other is added as it is while the review holds fewer than `MAX_PENDING`. `kept` lists those
+ * it took; the rest stay held.
+ */
+export const keepHeld = (
+  review: SessionReview,
+  held: ReadonlyArray<PendingComment>,
+  freshId: () => string,
+): { readonly review: SessionReview; readonly kept: ReadonlyArray<PendingComment> } =>
+  held.reduce<{ review: SessionReview; kept: ReadonlyArray<PendingComment> }>(
+    (done, comment) => {
+      const next = done.review;
+      if (next.pending.some((candidate) => candidate.id === comment.id))
+        return {
+          review: editPending(next, comment.id, comment.body),
+          kept: [...done.kept, comment],
+        };
+      if (next.pending.length >= MAX_PENDING) return done;
+      const taken = next.sends.some((record) =>
+        record.items.some((item) => item.kind !== "open" && item.pending.id === comment.id),
+      );
+      const added: PendingComment = taken
+        ? { ...comment, id: freshId(), origin: { kind: "own" } }
+        : comment;
+      return { review: addPending(next, added), kept: [...done.kept, comment] };
+    },
+    { review, kept: [] },
+  );
 
 export const removePending = (review: SessionReview, id: string): SessionReview => ({
   ...review,
   pending: review.pending.filter((comment) => comment.id !== id),
 });
 
-/** The drafts she accepted, by their id on Mend: their threads show as hers, not as drafts. */
+/**
+ * The drafts she accepted, by their id on Mend: their threads show as hers, not as drafts. One
+ * her posted words replace stays hers though its review was refused: her words are on Mend.
+ */
 export const acceptedDrafts = (review: SessionReview): ReadonlySet<string> =>
   new Set([
     ...review.pending.flatMap((comment) =>
       comment.origin.kind === "accepted" ? [comment.origin.draftId] : [],
     ),
-    // One on its way in a review she sent is hers too, until Mend opens it.
     ...review.sends.flatMap((record) =>
-      record.phase.kind === "refused"
-        ? []
-        : record.items.flatMap((item) => (item.kind === "accepted" ? [item.draftId] : [])),
+      record.items.flatMap((item) =>
+        item.kind === "open" ||
+        item.pending.origin.kind !== "accepted" ||
+        (record.phase.kind === "refused" &&
+          (item.kind !== "rewrite" || item.post.kind !== "posted"))
+          ? []
+          : [item.pending.origin.draftId],
+      ),
     ),
   ]);

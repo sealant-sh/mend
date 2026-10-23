@@ -2,13 +2,21 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import {
+  reviewTargetExists,
+  reviewTargetFile,
+  type ReviewCommentTarget,
+} from "@mend/domain/workbench";
+
+import { MendApiError } from "../mend-http.js";
 import type { Project, ProjectDetail, Session, SessionDetail } from "../types.js";
 import type { Pasted } from "./agent-paste.js";
 import type { ChangeRead } from "./change-rows.js";
-import type { CommentTarget, DeliverRequest } from "./delivery.js";
+import type { DeliverRequest } from "./delivery.js";
 import { KeptReviews, NODE_FILES, type KeptFiles } from "./kept-reviews.js";
 import type { PendingComment } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
+import type { Composition, ReviewStore, Sent } from "./review-store.js";
 import type {
   ChangeFile,
   Checkpoint,
@@ -20,6 +28,8 @@ import type {
   WorktreeChain,
 } from "./review-wire.js";
 import { resolveSlice, type SliceChoice } from "./slices.js";
+
+export const SETTLE = { timeout: 10_000 } as const;
 
 /** One change for the review's unit tests: base, a mark, and the checkpoint review opened. */
 
@@ -57,6 +67,24 @@ export const FILES: ReadonlyArray<ChangeFile> = [
     deletions: 0,
     binary: false,
     hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 15, contextHash: "h1" }],
+  },
+  {
+    oldPath: "src/app.ts",
+    newPath: "src/app.ts",
+    status: "modified",
+    additions: 2,
+    deletions: 1,
+    binary: false,
+    hunks: [{ oldStart: 10, oldLines: 4, newStart: 10, newLines: 5, contextHash: "m1" }],
+  },
+  {
+    oldPath: "src/old-name.ts",
+    newPath: "src/new-name.ts",
+    status: "renamed",
+    additions: 1,
+    deletions: 1,
+    binary: false,
+    hunks: [{ oldStart: 3, oldLines: 3, newStart: 3, newLines: 3, contextHash: "r1" }],
   },
   {
     oldPath: "README",
@@ -304,13 +332,19 @@ export class FakeMend extends ReviewClient {
   override async postComment(
     _changeId: string,
     sliceId: string,
-    target: CommentTarget,
+    target: ReviewCommentTarget,
     body: string,
   ): Promise<ServerComment> {
+    if (!reviewTargetExists(FILES, target))
+      throw new MendApiError(
+        "The comment anchor is not present in this Review slice.",
+        422,
+        "StoreFailure",
+      );
     this.writes.push(`post ${body}`);
     const posted = comment({
       id: `posted-${this.serverComments.length}`,
-      file: target.newPath,
+      file: reviewTargetFile(target),
       line: target.startLine,
       endLine: target.endLine,
       anchor: { sliceId, baseId: PINNED.base.id, headId: PINNED.head.id, side: target.side },
@@ -337,6 +371,22 @@ export class FakeMend extends ReviewClient {
     );
   }
 }
+
+/**
+ * Send review as its editor does: the composition kept as the session's review, `text` saved over
+ * it, and sent as saved.
+ */
+export const sendComposed = async (
+  store: ReviewStore,
+  composition: Composition,
+  text: string,
+): Promise<Sent> => {
+  const { ref, document } = await store.keepDocument(composition);
+  const saved = await store.saveDocument(ref, document.revision, text);
+  return saved.kind === "saved"
+    ? store.send(ref, saved.revision)
+    : { sent: false, words: `VS Code did not save the review: ${saved.kind}` };
+};
 
 /** Long enough for a store's read of the fakes to land. */
 export const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));

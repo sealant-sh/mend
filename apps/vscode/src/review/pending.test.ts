@@ -20,6 +20,7 @@ describe("her pending comments (story d, step 4)", () => {
         kind: "accepted",
         draftId: "d1",
         evidence: [{ runId: "run-1", sequence: "214", excerpt: "pnpm test auth · never ran" }],
+        draftBody: "Use the shared limiter from guard.ts",
       },
     });
     const whole = pending({ id: "w1", path: null, line: 1, endLine: 1 });

@@ -5,6 +5,7 @@ import { changeUri } from "./change-content.js";
 import { noteUri } from "./change-note.js";
 import {
   changeRows,
+  diffSides,
   fileRow,
   type ChangeRead,
   type ChangeRow,
@@ -265,11 +266,18 @@ export class ChangeView implements vscode.TreeDataProvider<ChangeNode>, vscode.D
       return;
     }
     const file = read.pinnedDiff.files.find((candidate) => candidate.newPath === at.path);
-    const left = { ...at, at: read.pinned.base.id, path: file?.oldPath ?? at.path, slice: null };
+    const { left, right } =
+      file === undefined
+        ? { left: { ...at, at: read.pinned.base.id, slice: null }, right: at }
+        : diffSides(file, at.worktreeId, {
+            from: read.pinned.base,
+            to: read.pinned.head,
+            slice: read.pinned.id,
+          });
     await vscode.commands.executeCommand(
       "vscode.diff",
       changeUri(left),
-      changeUri(at),
+      changeUri(right),
       `${at.path.split("/").at(-1) ?? at.path} (${read.chain.baseName} ↔ checkpoint ${read.pinned.head.ordinal})`,
       { preview: true, selection },
     );

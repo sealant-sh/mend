@@ -148,6 +148,14 @@ export const textToSend = (editorText: string, sessionName: string): string => {
   return [...lines.slice(0, at), ...lines.slice(at + after)].join("\n").trim();
 };
 
+export const EARLIER_TEXT = "## Your earlier text, kept for you to edit or delete";
+
+/** A review composed anew over one she saved: her saved text follows it, as she would send it. */
+export const withEarlierText = (text: string, earlier: string, sessionName: string): string => {
+  const saved = textToSend(earlier, sessionName);
+  return saved === "" ? text : `${text.trimEnd()}\n\n${EARLIER_TEXT}\n\n${saved}\n`;
+};
+
 /** Whether Send review is offered here, and if not, why. */
 export type SendOffer =
   | { readonly kind: "ready"; readonly count: number }

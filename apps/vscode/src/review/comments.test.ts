@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ReviewComments } from "./comments.js";
+import { NODE_FILES, type KeptFiles } from "./kept-reviews.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore } from "./review-store.js";
+import type { ServerComment } from "./review-wire.js";
 import {
   comment,
   FakeMend,
@@ -15,12 +17,21 @@ import {
   slowFiles,
   storage,
   noPaste,
+  SETTLE,
+  sendComposed,
 } from "./test-fixtures.js";
+
+interface Thread {
+  readonly uri: { readonly scheme: string };
+  comments: ReadonlyArray<{ readonly body: unknown; readonly mode?: number }>;
+  disposed: boolean;
+  dispose(): void;
+}
 
 interface Controller {
   readonly id: string;
   options: { readonly prompt?: string };
-  readonly threads: Array<{ readonly uri: { readonly scheme: string } }>;
+  readonly threads: Array<Thread>;
 }
 
 const ui = vi.hoisted(() => ({
@@ -73,8 +84,17 @@ vi.mock("vscode", async () => {
         ui.controllers.push(controller);
         return Object.assign(controller, {
           createCommentThread: (uri: { readonly scheme: string }) => {
-            controller.threads.push({ uri });
-            return { dispose: () => undefined, comments: [] };
+            const thread: Thread = {
+              uri,
+              comments: [],
+              disposed: false,
+              dispose: () => {
+                thread.disposed = true;
+                controller.threads.splice(controller.threads.indexOf(thread), 1);
+              },
+            };
+            controller.threads.push(thread);
+            return thread;
           },
           dispose: () => undefined,
         });
@@ -82,6 +102,22 @@ vi.mock("vscode", async () => {
     },
   };
 });
+
+/** The threads VS Code shows: a disposed one is gone, and so is every word in it. */
+const liveThreads = (): ReadonlyArray<Thread> =>
+  ui.controllers.flatMap((controller) => controller.threads);
+
+/** Every word the live threads show. */
+const shownWords = (): ReadonlyArray<string> =>
+  liveThreads().flatMap((thread) =>
+    thread.comments.map(({ body }) =>
+      typeof body === "string"
+        ? body
+        : typeof body === "object" && body !== null && "value" in body
+          ? String(body.value)
+          : "",
+    ),
+  );
 
 const memento = (): ReviewMemento => {
   const saved = new Map<string, unknown>();
@@ -167,7 +203,7 @@ describe("a double click", () => {
       noPaste,
     );
     store.follow(PROJECT, session("s1"));
-    await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     const comments = new ReviewComments(store);
     const reply = replyOnLine3("Use the shared limiter");
     await Promise.all([submit(reply), submit(reply)]);
@@ -192,8 +228,9 @@ describe("the reply box", () => {
     );
     store.follow(PROJECT, session("s1"));
     const comments = new ReviewComments(store);
-    await vi.waitFor(() =>
-      expect(ui.controllers.flatMap((controller) => controller.threads)).toHaveLength(2),
+    await vi.waitFor(
+      () => expect(ui.controllers.flatMap((controller) => controller.threads)).toHaveLength(2),
+      SETTLE,
     );
     const promptFor = (scheme: string): ReadonlyArray<string | undefined> =>
       ui.controllers
@@ -203,5 +240,275 @@ describe("the reply box", () => {
     expect(promptFor("mend-change")).toEqual(["Comment on this line"]);
     comments.dispose();
     store.dispose();
+  });
+});
+
+describe("saving an edit to a pending comment", () => {
+  it("keeps her edited words as a new pending comment at its place, and says so, when another window already sent the comment", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    const window = async () => {
+      const store = new ReviewStore(
+        sessionReads("change-1"),
+        mend,
+        new ReviewMemory(memento()),
+        keptIn(directory),
+        noPaste,
+      );
+      store.follow(PROJECT, session("s1"));
+      await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+      return store;
+    };
+    const sender = await window();
+    const editor = await window();
+    const comments = new ReviewComments(editor);
+    await sender.comment({
+      at: {
+        worktreeId: "w1",
+        path: "src/auth/limit.ts",
+        at: PINNED.head.id,
+        absent: false,
+        slice: PINNED.id,
+      },
+      line: 3,
+      endLine: 3,
+      lineText: "",
+      body: "Use the shared limiter",
+    });
+    await editor.reloadReview();
+    const thread = liveThreads().at(0);
+    if (thread === undefined) throw new Error("no thread drawn");
+    await ui.commands.get("mend.review.edit")?.(thread.comments[0]);
+    const [editing] = thread.comments;
+    if (editing === undefined) throw new Error("not editing");
+    Object.assign(editing, { body: "Use guard.ts instead" });
+    const composed = sender.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(sender, composed, composed.text)).toEqual({ sent: true });
+    await ui.commands.get("mend.review.save")?.(editing);
+    expect(
+      editor
+        .review()
+        .pending.map(({ path, line, endLine, body }) => ({ path, line, endLine, body })),
+    ).toEqual([{ path: "src/auth/limit.ts", line: 3, endLine: 3, body: "Use guard.ts instead" }]);
+    expect(shownWords()).toContain("Use guard.ts instead");
+    expect(ui.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/already sent.*kept as a new pending comment/),
+    );
+    comments.dispose();
+    sender.dispose();
+    editor.dispose();
+  });
+
+  it("keeps her edited words in the review store when VS Code could not write them, though another window sent the comment and its thread is redrawn", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    let full = false;
+    const fillable: KeptFiles = {
+      ...NODE_FILES,
+      writeFile: async (path, text) => {
+        if (full) throw new Error("the disk is full.");
+        await NODE_FILES.writeFile(path, text);
+      },
+    };
+    const window = async (files: KeptFiles) => {
+      const store = new ReviewStore(
+        sessionReads("change-1"),
+        mend,
+        new ReviewMemory(memento()),
+        keptIn(directory, files),
+        noPaste,
+      );
+      store.follow(PROJECT, session("s1"));
+      await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+      return store;
+    };
+    const sender = await window(NODE_FILES);
+    const editor = await window(fillable);
+    const comments = new ReviewComments(editor);
+    await sender.comment({
+      at: {
+        worktreeId: "w1",
+        path: "src/auth/limit.ts",
+        at: PINNED.head.id,
+        absent: false,
+        slice: PINNED.id,
+      },
+      line: 3,
+      endLine: 3,
+      lineText: "",
+      body: "Use the shared limiter",
+    });
+    await editor.reloadReview();
+    const thread = liveThreads().at(0);
+    if (thread === undefined) throw new Error("no thread drawn");
+    await ui.commands.get("mend.review.edit")?.(thread.comments[0]);
+    const [editing] = thread.comments;
+    if (editing === undefined) throw new Error("not editing");
+    Object.assign(editing, { body: "Use guard.ts instead" });
+    const composed = sender.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(sender, composed, composed.text)).toEqual({ sent: true });
+    full = true;
+    await ui.commands.get("mend.review.save")?.(editing);
+    await editor.reloadReview();
+    expect(editor.held().map(({ body }) => body)).toEqual(["Use guard.ts instead"]);
+    expect(shownWords()).toContain("Use guard.ts instead");
+    comments.dispose();
+    sender.dispose();
+    editor.dispose();
+  });
+});
+
+describe("her words under a Mend draft", () => {
+  const WORDS = "I ran them by hand";
+  const DRAFT = comment({
+    id: "d1",
+    state: "draft",
+    line: 3,
+    author: { kind: "mend", name: "Mend" },
+    body: "Nothing in this session ran the tests.",
+  });
+  const fullDisk: KeptFiles = {
+    ...NODE_FILES,
+    writeFile: async () => {
+      throw new Error("the disk is full.");
+    },
+  };
+
+  const underDraft = async (mend: FakeMend, files: KeptFiles = NODE_FILES) => {
+    mend.serverComments = [DRAFT];
+    const store = new ReviewStore(
+      sessionReads("change-1"),
+      mend,
+      new ReviewMemory(memento()),
+      keptIn(await storage(), files),
+      noPaste,
+    );
+    store.follow(PROJECT, session("s1"));
+    const comments = new ReviewComments(store);
+    await vi.waitFor(
+      () => expect(ui.controllers.flatMap((controller) => controller.threads)).toHaveLength(1),
+      SETTLE,
+    );
+    const thread = liveThreads().at(0);
+    if (thread === undefined) throw new Error("no draft drawn");
+    const keptOrHeld = (): ReadonlyArray<unknown> => [
+      ...store.review().pending.map(({ body }) => body),
+      ...shownWords(),
+    ];
+    return {
+      store,
+      thread,
+      reply: { thread, text: WORDS },
+      keptOrHeld,
+      done: () => {
+        comments.dispose();
+        store.dispose();
+      },
+    };
+  };
+
+  it("stay in the thread, with why, when VS Code could not keep an Accept", async () => {
+    const { reply, keptOrHeld, done } = await underDraft(new FakeMend(), fullDisk);
+    await Promise.resolve(ui.commands.get("mend.review.accept")?.(reply)).catch(() => undefined);
+    expect(keptOrHeld()).toContain(WORDS);
+    expect(ui.warn).toHaveBeenCalledWith(expect.stringMatching(/the disk is full/));
+    done();
+  });
+
+  it("stay when VS Code could not keep a Dismiss", async () => {
+    const { reply, keptOrHeld, done } = await underDraft(new FakeMend(), fullDisk);
+    await Promise.resolve(ui.commands.get("mend.review.dismiss")?.(reply)).catch(() => undefined);
+    expect(keptOrHeld()).toContain(WORDS);
+    done();
+  });
+
+  it("stay when Mend refused the Dismiss", async () => {
+    class Refusing extends FakeMend {
+      override async setCommentState(): Promise<ServerComment> {
+        throw new Error("Mend is restarting.");
+      }
+    }
+    const { reply, keptOrHeld, done } = await underDraft(new Refusing());
+    await ui.commands.get("mend.review.dismiss")?.(reply);
+    expect(keptOrHeld()).toContain(WORDS);
+    done();
+  });
+
+  it("stay when the draft's thread is drawn away, after VS Code could not keep an Accept", async () => {
+    const mend = new FakeMend();
+    const { store, reply, done } = await underDraft(mend, fullDisk);
+    await Promise.resolve(ui.commands.get("mend.review.accept")?.(reply)).catch(() => undefined);
+    mend.serverComments = [{ ...DRAFT, state: "dismissed" }];
+    store.reread();
+    await vi.waitFor(
+      () => expect(shownWords()).not.toContain("Nothing in this session ran the tests."),
+      SETTLE,
+    );
+    expect(shownWords()).toContain(WORDS);
+    done();
+  });
+
+  it.each(["accept", "dismiss"])(
+    "are kept at the draft's place when %s arrives after the draft's thread was redrawn away",
+    async (gesture) => {
+      const mend = new FakeMend();
+      const { store, thread, done } = await underDraft(mend);
+      mend.serverComments = [{ ...DRAFT, state: "dismissed" }];
+      store.reread();
+      await vi.waitFor(() => expect(thread.disposed).toBe(true), SETTLE);
+      await ui.commands.get(`mend.review.${gesture}`)?.({ thread, text: WORDS });
+      expect(store.review().pending.map(({ path, line, body }) => ({ path, line, body }))).toEqual([
+        { path: DRAFT.file, line: DRAFT.line, body: WORDS },
+      ]);
+      expect(shownWords()).toContain(WORDS);
+      done();
+    },
+  );
+
+  it("are held in this window, and kept the next time this window reads the review", async () => {
+    let full = true;
+    const fullUntilFreed: KeptFiles = {
+      ...NODE_FILES,
+      writeFile: async (path, text) => {
+        if (full) throw new Error("the disk is full.");
+        await NODE_FILES.writeFile(path, text);
+      },
+    };
+    const { store, reply, done } = await underDraft(new FakeMend(), fullUntilFreed);
+    await Promise.resolve(ui.commands.get("mend.review.accept")?.(reply)).catch(() => undefined);
+    expect(ui.warn).toHaveBeenCalledWith(expect.stringMatching(/in this window/));
+    expect(store.held().map(({ body }) => body)).toEqual([WORDS]);
+    full = false;
+    await store.reloadReview();
+    expect(store.held()).toEqual([]);
+    expect(store.review().pending.map(({ body }) => body)).toContain(WORDS);
+    done();
+  });
+
+  it("are not dropped by a newer reply, held or kept", async () => {
+    let full = true;
+    const fullUntilFreed: KeptFiles = {
+      ...NODE_FILES,
+      writeFile: async (path, text) => {
+        if (full) throw new Error("the disk is full.");
+        await NODE_FILES.writeFile(path, text);
+      },
+    };
+    const { store, thread, done } = await underDraft(new FakeMend(), fullUntilFreed);
+    const accept = (text: string) =>
+      Promise.resolve(ui.commands.get("mend.review.accept")?.({ thread, text })).catch(
+        () => undefined,
+      );
+    await accept(WORDS);
+    await accept("and on CI");
+    expect(shownWords()).toEqual(expect.arrayContaining([WORDS, "and on CI"]));
+    full = false;
+    await accept("then merged");
+    expect(store.review().pending.map(({ body }) => body)).toEqual(
+      expect.arrayContaining([WORDS, "and on CI", "then merged"]),
+    );
+    done();
   });
 });

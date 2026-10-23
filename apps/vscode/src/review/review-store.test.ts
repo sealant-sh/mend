@@ -8,7 +8,7 @@ import { addPending, MAX_PENDING } from "./pending.js";
 import { ReviewClient } from "./review-client.js";
 import { ReviewMemory, type ReviewMemento } from "./review-memory.js";
 import { ReviewStore, type NewComment, type ReviewFailure } from "./review-store.js";
-import type { ReadPass, ServerComment, TranscriptEntry } from "./review-wire.js";
+import type { CommentAnchor, ReadPass, ServerComment, TranscriptEntry } from "./review-wire.js";
 import {
   comment,
   FakeMend,
@@ -23,6 +23,8 @@ import {
   slowFiles,
   storage,
   noPaste,
+  SETTLE,
+  sendComposed,
 } from "./test-fixtures.js";
 import { threadsOf } from "./threads.js";
 
@@ -53,7 +55,7 @@ const readyStore = async (
     noPaste,
   );
   store.follow(PROJECT, session("s1"));
-  await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+  await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
   return store;
 };
 
@@ -210,6 +212,35 @@ describe("two windows on one session", () => {
     const kept = (await keptIn(directory).read(DANA_S1)).review.pending;
     expect(kept.map(({ origin }) => origin.kind)).toEqual(["accepted"]);
   });
+
+  it("accept a draft once and keep both replies, when each accepts it with words of its own", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.serverComments = [DRAFT];
+    const first = await readyStore(keptIn(directory), mend);
+    const second = await readyStore(keptIn(directory), mend);
+    await first.accept("d1", "reply from the first window");
+    await second.accept("d1", "reply from the second window");
+    const kept = (await keptIn(directory).read(DANA_S1)).review.pending;
+    expect(kept.map(({ origin, body }) => ({ kind: origin.kind, body }))).toEqual([
+      { kind: "accepted", body: DRAFT.body },
+      { kind: "own", body: "reply from the first window" },
+      { kind: "own", body: "reply from the second window" },
+    ]);
+  });
+
+  it("accept a draft once, when the other already sent it in a review", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.serverComments = [DRAFT];
+    const first = await readyStore(keptIn(directory), mend);
+    const second = await readyStore(keptIn(directory), mend);
+    await first.accept("d1", "");
+    await sendAll(first);
+    await second.accept("d1", "");
+    const { review } = await keptIn(directory).read(DANA_S1);
+    expect(review.pending).toEqual([]);
+  });
 });
 
 describe("a comment she submits", () => {
@@ -351,6 +382,7 @@ describe("a Mend draft she acts on", () => {
       kind: "accepted",
       draftId: "d1",
       evidence: DRAFT.evidence,
+      draftBody: DRAFT.body,
     });
   });
 });
@@ -473,6 +505,7 @@ describe("a comment VS Code could not keep", () => {
     await keptIn(directory).update(DANA_S1, () => ({
       pending: Array.from({ length: MAX_PENDING }, (_, index) => pending({ id: `p${index}` })),
       sends: [],
+      document: null,
     }));
     const store = await readyStore(keptIn(directory));
     expect(await store.comment(onLine(3, "one more"))).toEqual({
@@ -480,6 +513,33 @@ describe("a comment VS Code could not keep", () => {
       words: expect.stringMatching(/already holds 200 pending comments/),
     });
     expect(store.review().pending).toHaveLength(MAX_PENDING);
+  });
+
+  it("waits, held, past the cap rather than going over it", async () => {
+    const directory = await storage();
+    let full = true;
+    const mend = new FakeMend();
+    mend.serverComments = [DRAFT];
+    const store = await readyStore(
+      keptIn(directory, {
+        ...NODE_FILES,
+        writeFile: async (path, text) => {
+          if (full) throw new Error("the disk is full.");
+          await NODE_FILES.writeFile(path, text);
+        },
+      }),
+      mend,
+    );
+    await store.accept("d1", "I ran them by hand");
+    full = false;
+    await keptIn(directory).update(DANA_S1, () => ({
+      pending: Array.from({ length: MAX_PENDING }, (_, index) => pending({ id: `p${index}` })),
+      sends: [],
+      document: null,
+    }));
+    await store.edit("p0", "edited while the review is full");
+    expect(store.review().pending).toHaveLength(MAX_PENDING);
+    expect(store.held().map(({ body }) => body)).toEqual(["I ran them by hand"]);
   });
 });
 
@@ -494,7 +554,7 @@ const mendWithOpen = (): FakeMend => {
 const sendAll = async (store: ReviewStore): Promise<string> => {
   const composed = store.compose();
   if (composed === null) throw new Error("nothing composed");
-  expect(await store.send(composed, composed.text)).toEqual({ sent: true });
+  expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
   const record = store.review().sends.at(-1);
   if (record === undefined) throw new Error("no review kept");
   return record.key;
@@ -541,11 +601,11 @@ describe("sending a review from the store", () => {
     const composed = store.compose();
     if (composed === null) throw new Error("nothing composed");
     await store.comment(onLine(4, "written after the editor opened"));
-    const refused = await store.send(composed, composed.text);
+    const refused = await sendComposed(store, composed, composed.text);
     expect(refused).toEqual({ sent: false, words: expect.stringMatching(/changed/) });
-    expect(await store.send({ ...composed, sessionId: "s2" }, composed.text)).toMatchObject({
-      sent: false,
-    });
+    const { ref } = await store.keepDocument(composed);
+    const elsewhere = { ...ref, place: { ...ref.place, sessionId: "s2" } };
+    expect(await store.send(elsewhere, 1)).toMatchObject({ sent: false });
     expect(store.review().sends).toEqual([]);
     expect(store.review().pending.map(({ body }) => body)).toEqual([
       "first",
@@ -633,5 +693,189 @@ describe("sending a review from the store", () => {
     await settle();
     expect(mend.writes).not.toContain("state d1 open");
     expect(await phaseOf(kept, key)).toBe("refused");
+  });
+
+  it("puts her words on Mend when she edited a draft she accepted, and dismisses the draft once they are there", async () => {
+    const mend = new FakeMend();
+    mend.serverComments = [DRAFT];
+    const store = await readyStore(inMemory(), mend);
+    await store.accept("d1", "");
+    const [accepted] = store.review().pending;
+    if (accepted === undefined) throw new Error("the draft was not accepted");
+    const words = "Keep the limiter, and add a test for the burst case.";
+    expect(await store.edit(accepted.id, words)).toEqual({ kept: true });
+    const key = await sendAll(store);
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    const hers = mend.serverComments.find((one) => one.body === words);
+    expect(hers).toMatchObject({
+      state: "open",
+      author: { kind: "reviewer" },
+      file: DRAFT.file,
+      line: DRAFT.line,
+    });
+    expect(mend.delivered[0]?.commentIds).toEqual([hers?.id]);
+    expect(mend.serverComments.find((one) => one.id === "d1")?.state).toBe("dismissed");
+    expect(mend.writes).toEqual([`post ${words}`, "state d1 dismissed", `deliver s1 ${key}`]);
+  });
+
+  it("posts her comments on modified, renamed and deleted files where Mend's own check takes them", async () => {
+    const oldSide: CommentAnchor = {
+      sliceId: PINNED.id,
+      baseId: PINNED.base.id,
+      headId: PINNED.head.id,
+      side: "old",
+    };
+    const mend = new FakeMend();
+    mend.serverComments = [
+      comment({
+        id: "d1",
+        state: "draft",
+        author: { kind: "mend", name: "Mend" },
+        file: "src/old-name.ts",
+        line: 4,
+        endLine: 4,
+        anchor: oldSide,
+        body: "The old name is still imported.",
+      }),
+      comment({
+        id: "d2",
+        state: "draft",
+        author: { kind: "mend", name: "Mend" },
+        file: "README",
+        line: null,
+        endLine: null,
+        body: "The install notes went with it.",
+      }),
+    ];
+    const store = await readyStore(inMemory(), mend);
+    const on = (path: string, line: number, body: string): NewComment => ({
+      ...onLine(line, body),
+      at: { ...onLine(line, body).at, path },
+    });
+    expect(await store.comment(on("src/app.ts", 11, "On the modified file."))).toEqual({
+      kept: true,
+    });
+    expect(await store.comment(on("src/new-name.ts", 4, "On the renamed file."))).toEqual({
+      kept: true,
+    });
+    expect(await store.dismiss("d1", "On the renamed file's old side.")).toEqual({ kept: true });
+    expect(await store.accept("d2", "")).toEqual({ kept: true });
+    const readme = store.review().pending.find((one) => one.origin.kind === "accepted");
+    if (readme === undefined) throw new Error("the draft was not accepted");
+    expect(await store.edit(readme.id, "Keep the install notes.")).toEqual({ kept: true });
+    await sendAll(store);
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    expect(
+      mend.serverComments
+        .filter((one) => one.author.kind === "reviewer")
+        .map(({ file, line, anchor, body }) => ({ file, line, side: anchor?.side ?? null, body })),
+    ).toEqual([
+      { file: "src/app.ts", line: 11, side: "new", body: "On the modified file." },
+      { file: "src/new-name.ts", line: 4, side: "new", body: "On the renamed file." },
+      { file: "src/old-name.ts", line: 4, side: "old", body: "On the renamed file's old side." },
+      { file: "README", line: null, side: null, body: "Keep the install notes." },
+    ]);
+  });
+
+  it("opens the draft she accepted, not her words, when her edits leave its words as they were", async () => {
+    const mend = new FakeMend();
+    mend.serverComments = [{ ...DRAFT, body: `${DRAFT.body}\n` }];
+    const store = await readyStore(inMemory(), mend);
+    await store.accept("d1", "");
+    const [accepted] = store.review().pending;
+    if (accepted === undefined) throw new Error("the draft was not accepted");
+    await store.edit(accepted.id, DRAFT.body);
+    await store.edit(accepted.id, "Run the burst test too.");
+    await store.edit(accepted.id, DRAFT.body);
+    const key = await sendAll(store);
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    expect(mend.writes).toEqual(["state d1 open", `deliver s1 ${key}`]);
+  });
+
+  const rewrite = async (mend: FakeMend, words: string): Promise<ReviewStore> => {
+    const store = await readyStore(inMemory(), mend);
+    await store.accept("d1", "");
+    const [accepted] = store.review().pending;
+    if (accepted === undefined) throw new Error("the draft was not accepted");
+    expect(await store.edit(accepted.id, words)).toEqual({ kept: true });
+    return store;
+  };
+
+  it("sends her edited words of a draft that was dismissed on Mend before the review reached it", async () => {
+    const mend = new FakeMend();
+    mend.serverComments = [DRAFT];
+    const words = "Keep the limiter, and add a test for the burst case.";
+    const store = await rewrite(mend, words);
+    mend.serverComments = [{ ...DRAFT, state: "dismissed" }];
+    await sendAll(store);
+    await vi.waitFor(
+      () => expect(store.review().sends.at(-1)?.phase.kind).not.toBe("sending"),
+      SETTLE,
+    );
+    expect(store.review().sends.at(-1)?.phase.kind).not.toBe("refused");
+    const hers = mend.serverComments.find((one) => one.body === words);
+    expect(mend.delivered[0]?.commentIds).toEqual([hers?.id]);
+    expect(mend.writes).not.toContain("state d1 dismissed");
+  });
+
+  it("posts her edited words of a draft about a whole file on that file, with no line", async () => {
+    const mend = new FakeMend();
+    mend.serverComments = [{ ...DRAFT, line: null, endLine: null }];
+    const words = "Keep the file's exports as they are.";
+    const store = await rewrite(mend, words);
+    await sendAll(store);
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    expect(mend.serverComments.find((one) => one.author.kind === "reviewer")).toMatchObject({
+      body: words,
+      file: DRAFT.file,
+      line: null,
+      endLine: null,
+    });
+  });
+
+  it("posts her edited words of a draft on the slice the draft was written on", async () => {
+    const mend = new FakeMend();
+    const anchor = { sliceId: "slice-0", baseId: "cp0", headId: "cp1", side: "new" as const };
+    mend.serverComments = [{ ...DRAFT, line: 3, endLine: 3, anchor }];
+    const words = "Name the window, not the count.";
+    const store = await rewrite(mend, words);
+    await sendAll(store);
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
+    expect(mend.serverComments.find((one) => one.author.kind === "reviewer")).toMatchObject({
+      body: words,
+      line: 3,
+      anchor: { sliceId: "slice-0" },
+    });
+  });
+
+  it("delivers the review though the draft her edited words replace could not be dismissed, and says that draft is still on Mend", async () => {
+    class NoDismiss extends FakeMend {
+      override async setCommentState(
+        changeId: string,
+        commentId: string,
+        state: "open" | "addressed" | "dismissed",
+      ): Promise<ServerComment> {
+        if (state === "dismissed") throw new Error("Mend is restarting.");
+        return super.setCommentState(changeId, commentId, state);
+      }
+    }
+    const mend = new NoDismiss();
+    mend.serverComments = [DRAFT];
+    const words = "Keep the limiter, and add a test for the burst case.";
+    const store = await rewrite(mend, words);
+    const said: Array<string> = [];
+    store.onDidFail((failure) => said.push(failure.words));
+    const key = await sendAll(store);
+    await vi.waitFor(() => expect(said).toHaveLength(1), SETTLE);
+    expect(mend.delivered).toHaveLength(1);
+    expect(said[0]).toMatch(/sent the review.*draft .* is still on Mend.*Mend is restarting/);
+    expect(store.review().sends.find((record) => record.key === key)?.phase.kind).not.toBe(
+      "refused",
+    );
+    const read = store.ready();
+    if (read === null) throw new Error("the change is not read");
+    expect(
+      threadsOf(read, store.review(), "Dana").filter((thread) => thread.kind === "draft"),
+    ).toEqual([]);
   });
 });

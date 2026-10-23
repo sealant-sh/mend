@@ -141,20 +141,32 @@ const clock = (iso: string): string => {
   return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
 };
 
+export const diffSides = (
+  file: ChangeFile,
+  worktreeId: string,
+  sides: { readonly from: Checkpoint; readonly to: Checkpoint; readonly slice: string | null },
+): { readonly left: ChangeAddress; readonly right: ChangeAddress } => {
+  const path = filePath(file);
+  return {
+    left: {
+      worktreeId,
+      path: file.oldPath ?? path,
+      at: sides.from.id,
+      absent: file.status === "added",
+      slice: null,
+    },
+    right: {
+      worktreeId,
+      path: file.newPath ?? path,
+      at: sides.to.id,
+      absent: file.status === "deleted",
+      slice: sides.slice,
+    },
+  };
+};
+
 export const fileRow = (file: ChangeFile, read: ChangeRead): FileRow => {
   const path = filePath(file);
-  const at = (
-    checkpoint: Checkpoint,
-    where: string,
-    absent: boolean,
-    slice: string | null,
-  ): ChangeAddress => ({
-    worktreeId: read.chain.worktreeId,
-    path: where,
-    at: checkpoint.id,
-    absent,
-    slice,
-  });
   const slash = path.lastIndexOf("/");
   return {
     kind: "file",
@@ -163,13 +175,11 @@ export const fileRow = (file: ChangeFile, read: ChangeRead): FileRow => {
     folder: slash === -1 ? "" : path.slice(0, slash),
     letter: statusLetter(file),
     file,
-    left: at(read.slice.from, file.oldPath ?? path, file.status === "added", null),
-    right: at(
-      read.slice.to,
-      file.newPath ?? path,
-      file.status === "deleted",
-      read.slice.commentable ? read.pinned.id : null,
-    ),
+    ...diffSides(file, read.chain.worktreeId, {
+      from: read.slice.from,
+      to: read.slice.to,
+      slice: read.slice.commentable ? read.pinned.id : null,
+    }),
     title: diffTitle(path, read.slice, read.chain.baseName),
   };
 };

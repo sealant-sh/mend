@@ -21,6 +21,8 @@ import {
   sessionReads,
   slowFiles,
   storage,
+  SETTLE,
+  sendComposed,
 } from "./test-fixtures.js";
 import { threadsOf } from "./threads.js";
 
@@ -79,7 +81,7 @@ const window = async (
     },
   );
   store.follow(PROJECT, session("s1"));
-  await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+  await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
   return { store, pastes };
 };
 
@@ -121,7 +123,7 @@ const pastedInto = async (
   vi.waitFor(() => {
     expect(pastes).toHaveLength(count);
     expect(store.review().sends.at(-1)?.phase).toMatchObject({ paste: { kind: "done" } });
-  });
+  }, SETTLE);
 
 const failures = (store: ReviewStore): Array<ReviewFailure> => {
   const seen: Array<ReviewFailure> = [];
@@ -141,7 +143,7 @@ describe("Send review twice before she presses Enter in claude's terminal", () =
       "Address each comment above",
       "Address each comment carefully",
     );
-    expect(await store.send(first, edited)).toEqual({ sent: true });
+    expect(await sendComposed(store, first, edited)).toEqual({ sent: true });
     await pastedInto(store, pastes, 1);
     expect(pastes[0]).toContain("Address each comment carefully");
 
@@ -152,8 +154,8 @@ describe("Send review twice before she presses Enter in claude's terminal", () =
     expect(second.text.split("Use the shared limiter")).toHaveLength(2);
     expect(second.text).toContain("Address each comment carefully");
     expect(second.text).toContain("## 2 · src/auth/limit.ts:5");
-    expect(await store.send(second, second.text)).toEqual({ sent: true });
-    await vi.waitFor(() => expect(pastes).toHaveLength(2));
+    expect(await sendComposed(store, second, second.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(pastes).toHaveLength(2), SETTLE);
     // claude's input holds the first review; the second paste adds only what follows it.
     expect(pastes[1]).not.toContain("Use the shared limiter");
     expect(pastes[1]).toContain("Name the constant");
@@ -172,13 +174,17 @@ describe("Send review twice before she presses Enter in claude's terminal", () =
     await store.comment(onLine(3, "Use the shared limiter"));
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
-    await store.send(first, first.text);
+    await sendComposed(store, first, first.text);
     await pastedInto(store, pastes, 1);
     await store.comment(onLine(5, "Name the constant"));
     const second = store.compose();
     if (second === null) throw new Error("nothing composed");
-    await store.send(second, second.text.replace("Use the shared limiter", "Use guard.ts"));
-    await vi.waitFor(() => expect(told.map(({ words }) => words)).toHaveLength(1));
+    await sendComposed(
+      store,
+      second,
+      second.text.replace("Use the shared limiter", "Use guard.ts"),
+    );
+    await vi.waitFor(() => expect(told.map(({ words }) => words)).toHaveLength(1), SETTLE);
     expect(pastes).toHaveLength(1);
     expect(told[0]).toMatchObject({
       tone: "warning",
@@ -198,14 +204,18 @@ describe("a third Send after one that pasted nothing", () => {
     await store.comment(onLine(3, "Use the shared limiter"));
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
-    await store.send(first, first.text);
+    await sendComposed(store, first, first.text);
     await pastedInto(store, pastes, 1);
 
     await store.comment(onLine(5, "Name the constant"));
     const second = store.compose();
     if (second === null) throw new Error("nothing composed");
-    await store.send(second, second.text.replace("Use the shared limiter", "Use guard.ts"));
-    await vi.waitFor(() => expect(told).toHaveLength(1));
+    await sendComposed(
+      store,
+      second,
+      second.text.replace("Use the shared limiter", "Use guard.ts"),
+    );
+    await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
     expect(pastes).toHaveLength(1);
     // Mend holds "Name the constant", and VS Code never pasted it: its thread says so once the
     // store reads the comment Mend posted.
@@ -216,7 +226,7 @@ describe("a third Send after one that pasted nothing", () => {
         body.includes("Name the constant"),
       );
       expect(named?.label).toBe("follow-up pending · not pasted into claude's terminal");
-    });
+    }, SETTLE);
 
     await store.comment(onLine(9, "Log the limit"));
     const third = store.compose();
@@ -224,8 +234,8 @@ describe("a third Send after one that pasted nothing", () => {
     // Composed on top of what claude's input holds: the first review as it was pasted.
     expect(third.text).toContain("Use the shared limiter");
     expect(third.text).not.toContain("Use guard.ts");
-    await store.send(third, third.text);
-    await vi.waitFor(() => expect(pastes).toHaveLength(2));
+    await sendComposed(store, third, third.text);
+    await vi.waitFor(() => expect(pastes).toHaveLength(2), SETTLE);
     const input = pastes.join("");
     expect(input.split("Use the shared limiter")).toHaveLength(2);
     expect(input).toContain("Name the constant");
@@ -244,13 +254,13 @@ describe("a Send whose earlier part changed only its line endings", () => {
     await store.comment(onLine(3, "Use the shared limiter"));
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
-    await store.send(first, first.text);
+    await sendComposed(store, first, first.text);
     await pastedInto(store, pastes, 1);
     await store.comment(onLine(5, "Name the constant"));
     const second = store.compose();
     if (second === null) throw new Error("nothing composed");
-    await store.send(second, second.text.replaceAll("\n", "\r\n"));
-    await vi.waitFor(() => expect(pastes).toHaveLength(2));
+    await sendComposed(store, second, second.text.replaceAll("\n", "\r\n"));
+    await vi.waitFor(() => expect(pastes).toHaveLength(2), SETTLE);
     expect(pastes[1]).toContain("Name the constant");
     expect(pastes[1]).not.toContain("Use the shared limiter");
     expect(told).toEqual([]);
@@ -271,8 +281,8 @@ describe("the agent exits after Mend holds the review", () => {
     await store.comment(onLine(3, "Use the shared limiter"));
     const composed = store.compose();
     if (composed === null) throw new Error("nothing composed");
-    await store.send(composed, composed.text);
-    await vi.waitFor(() => expect(told).toHaveLength(1));
+    await sendComposed(store, composed, composed.text);
+    await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
     expect(pastes).toHaveLength(1);
     expect(told[0]?.words).toMatch(
       /claude exited before the review was pasted, so nothing was pasted/,
@@ -307,15 +317,18 @@ describe("a review with a draft dismissed while it is on its way", () => {
     mend.serverComments = mend.serverComments.map((one) =>
       one.id === "d1" ? { ...one, state: "dismissed" } : one,
     );
-    await store.send(composed, composed.text);
-    await vi.waitFor(() => expect(told).toHaveLength(1));
+    await sendComposed(store, composed, composed.text);
+    await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
     expect(mend.delivered).toEqual([]);
     expect(told[0]).toMatchObject({
       words: expect.stringContaining(DRAFT_GONE),
       text: expect.stringContaining(draft.body),
     });
     store.reread();
-    await vi.waitFor(() => expect(store.compose()?.text).toContain("Use the shared limiter"));
+    await vi.waitFor(
+      () => expect(store.compose()?.text).toContain("Use the shared limiter"),
+      SETTLE,
+    );
     expect(store.compose()?.text).not.toContain(draft.body);
   });
 });
@@ -363,8 +376,8 @@ describe("two windows send one review at once", () => {
     const fromB = b.store.compose();
     if (fromA === null || fromB === null) throw new Error("nothing composed");
     const sent = await Promise.all([
-      a.store.send(fromA, fromA.text),
-      b.store.send(fromB, fromB.text),
+      sendComposed(a.store, fromA, fromA.text),
+      sendComposed(b.store, fromB, fromB.text),
     ]);
     expect(sent.filter((one) => one.sent)).toHaveLength(1);
     await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SLOW_DRIVE);
@@ -383,7 +396,7 @@ describe("a comment edited after the review was composed", () => {
     const [mine] = store.review().pending;
     if (composed === null || mine === undefined) throw new Error("nothing composed");
     await store.edit(mine.id, "Use guard.ts instead");
-    expect(await store.send(composed, composed.text)).toEqual({
+    expect(await sendComposed(store, composed, composed.text)).toEqual({
       sent: false,
       words: expect.stringMatching(/Your comments changed since this review was composed/),
     });
@@ -403,8 +416,8 @@ describe("two windows, one review of comments already open on Mend", () => {
     const fromB = b.store.compose();
     if (fromA === null || fromB === null) throw new Error("nothing composed");
     const sent = await Promise.all([
-      a.store.send(fromA, fromA.text),
-      b.store.send(fromB, fromB.text),
+      sendComposed(a.store, fromA, fromA.text),
+      sendComposed(b.store, fromB, fromB.text),
     ]);
     expect(sent.filter((one) => one.sent)).toHaveLength(1);
     await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SLOW_DRIVE);
@@ -425,7 +438,7 @@ describe("a comment edited in another window after this one composed the review"
     const [theirs] = b.store.review().pending;
     if (composed === null || theirs === undefined) throw new Error("nothing composed");
     await b.store.edit(theirs.id, "Use guard.ts instead");
-    expect(await a.store.send(composed, composed.text)).toMatchObject({ sent: false });
+    expect(await sendComposed(a.store, composed, composed.text)).toMatchObject({ sent: false });
     expect(mend.delivered).toEqual([]);
   });
 });
@@ -454,8 +467,8 @@ describe("Retry from the toast when nothing was pasted", () => {
     await store.comment(onLine(3, "Use the shared limiter"));
     const composed = store.compose();
     if (composed === null) throw new Error("nothing composed");
-    await store.send(composed, composed.text);
-    await vi.waitFor(() => expect(told).toHaveLength(1));
+    await sendComposed(store, composed, composed.text);
+    await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
     agent = { ...CLAUDE, status: "exited", exitedAt: "2026-10-20T10:00:00.000Z" };
     mend.answer = "delivering";
     vscodeWindow.showErrorMessage.mockResolvedValueOnce("Retry delivery");
@@ -466,7 +479,7 @@ describe("Retry from the toast when nothing was pasted", () => {
       expect.stringMatching(/claude exited before the review was pasted/),
       "Retry delivery",
     );
-    await vi.waitFor(() => expect(mend.delivered).toHaveLength(2));
+    await vi.waitFor(() => expect(mend.delivered).toHaveLength(2), SETTLE);
     expect(mend.delivered[1]?.idempotencyKey).toBe(mend.delivered[0]?.idempotencyKey);
   });
 
@@ -486,13 +499,13 @@ describe("Retry from the toast when nothing was pasted", () => {
       },
     );
     store.follow(PROJECT, session("s1"));
-    await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     const told = failures(store);
     await store.comment(onLine(3, "Use the shared limiter"));
     const composed = store.compose();
     if (composed === null) throw new Error("nothing composed");
-    await store.send(composed, composed.text);
-    await vi.waitFor(() => expect(told).toHaveLength(1));
+    await sendComposed(store, composed, composed.text);
+    await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
     expect(told[0]?.retry).not.toBeNull();
     vscodeWindow.showErrorMessage.mockResolvedValueOnce("Retry delivery");
     const [failure] = told;
@@ -502,14 +515,16 @@ describe("Retry from the toast when nothing was pasted", () => {
       expect.stringMatching(/could not attach claude's terminal here/),
       "Retry delivery",
     );
-    await vi.waitFor(() => expect(pastes).toHaveLength(2));
+    await vi.waitFor(() => expect(pastes).toHaveLength(2), SETTLE);
     expect(pastes[1]).toBe(pastes[0]);
     expect(mend.delivered).toHaveLength(1);
-    await vi.waitFor(() =>
-      expect(store.review().sends.at(-1)?.phase).toMatchObject({
-        kind: "in-terminal",
-        paste: { kind: "done" },
-      }),
+    await vi.waitFor(
+      () =>
+        expect(store.review().sends.at(-1)?.phase).toMatchObject({
+          kind: "in-terminal",
+          paste: { kind: "done" },
+        }),
+      SETTLE,
     );
   });
 
@@ -522,8 +537,8 @@ describe("Retry from the toast when nothing was pasted", () => {
     await store.comment(onLine(3, "Use the shared limiter"));
     const composed = store.compose();
     if (composed === null) throw new Error("nothing composed");
-    await store.send(composed, composed.text);
-    await vi.waitFor(() => expect(told).toHaveLength(1));
+    await sendComposed(store, composed, composed.text);
+    await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
     const [failure] = told;
     if (failure === undefined || failure.retry === null) throw new Error("no retry offered");
     const { place } = failure.retry;
@@ -573,7 +588,7 @@ describe("a read Mend could not finish, its toast waiting while she starts anoth
       words: "the model timed out",
     };
     store.reread();
-    await vi.waitFor(() => expect(told).toHaveLength(1));
+    await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
     const [failure] = told;
     if (failure === undefined) throw new Error("no failure");
     expect(failure.words).toBe("Mend could not read this change: the model timed out");
@@ -582,7 +597,7 @@ describe("a read Mend could not finish, its toast waiting while she starts anoth
       claim: async () => {
         mend.pass = { kind: "reading", since: "2026-10-20T10:01:00.000Z" };
         store.reread();
-        await vi.waitFor(() => expect(store.ready()?.pass?.kind).toBe("reading"));
+        await vi.waitFor(() => expect(store.ready()?.pass?.kind).toBe("reading"), SETTLE);
         return true;
       },
       release: async () => undefined,
@@ -604,7 +619,7 @@ describe("a window that loads its kept reviews while another window sends one", 
     const told = failures(a.store);
     const fromA = a.store.compose();
     if (fromA === null) throw new Error("nothing composed");
-    expect(await a.store.send(fromA, fromA.text)).toEqual({ sent: true });
+    expect(await sendComposed(a.store, fromA, fromA.text)).toEqual({ sent: true });
     await vi.waitFor(() => expect(a.pastes).toHaveLength(1), SLOW_DRIVE);
     expect(mend.delivered).toHaveLength(1);
     expect(told).toEqual([]);
@@ -636,7 +651,7 @@ describe("a window that loads its kept reviews while another window sends one", 
     const told = failures(a.store);
     const fromA = a.store.compose();
     if (fromA === null) throw new Error("nothing composed");
-    const sent = a.store.send(fromA, fromA.text);
+    const sent = sendComposed(a.store, fromA, fromA.text);
     await claiming;
     const { promise: loaded, resolve: load } = Promise.withResolvers<void>();
     const b = await window(
@@ -652,7 +667,7 @@ describe("a window that loads its kept reviews while another window sends one", 
     await loaded;
     allow();
     expect(await sent).toEqual({ sent: true });
-    await vi.waitFor(() => expect(a.pastes).toHaveLength(1));
+    await vi.waitFor(() => expect(a.pastes).toHaveLength(1), SETTLE);
     expect(told).toEqual([]);
     await b.store.reloadReview();
     expect(b.store.review().sends.map(({ phase }) => phase.kind)).toEqual(["in-terminal"]);
@@ -667,8 +682,8 @@ describe("a window that loads its kept reviews while another window sends one", 
     const told = failures(a.store);
     const fromA = a.store.compose();
     if (fromA === null) throw new Error("nothing composed");
-    await a.store.send(fromA, fromA.text);
-    await vi.waitFor(() => expect(told).toHaveLength(1));
+    await sendComposed(a.store, fromA, fromA.text);
+    await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
     const target = a.store.retryTarget();
     if (target === null) throw new Error("no Retry delivery offered");
 
@@ -703,7 +718,7 @@ describe("a window that loads its kept reviews while another window sends one", 
     await loaded;
     mend.answers();
     expect(await retried).toEqual({ retried: true });
-    await vi.waitFor(() => expect(a.pastes).toHaveLength(1));
+    await vi.waitFor(() => expect(a.pastes).toHaveLength(1), SETTLE);
     expect(mend.delivered.map(({ idempotencyKey }) => idempotencyKey)).toEqual([target.key]);
     // The one failure said is the first delivery's; nothing reads VS Code closed.
     expect(told).toHaveLength(1);
@@ -733,7 +748,7 @@ describe("a window reloaded while its send was on its way to Mend", () => {
     const closing = await window(keptIn(directory), mend);
     const fromClosing = closing.store.compose();
     if (fromClosing === null) throw new Error("nothing composed");
-    await closing.store.send(fromClosing, fromClosing.text);
+    await sendComposed(closing.store, fromClosing, fromClosing.text);
     await mend.asked;
 
     // The reloaded window loads while the closed window's lease is still fresh, and leaves it.
@@ -760,10 +775,12 @@ describe("a window reloaded while its send was on its way to Mend", () => {
       late += DRIVE_STALE_MS;
       await vi.advanceTimersByTimeAsync(DRIVE_STALE_MS);
       vi.useRealTimers();
-      await vi.waitFor(() =>
-        expect(reloaded.store.review().sends.map(({ phase }) => phase)).toEqual([
-          { kind: "failed", words: "VS Code closed before Mend answered" },
-        ]),
+      await vi.waitFor(
+        () =>
+          expect(reloaded.store.review().sends.map(({ phase }) => phase)).toEqual([
+            { kind: "failed", words: "VS Code closed before Mend answered" },
+          ]),
+        SETTLE,
       );
       expect(reloaded.store.offer()).toEqual({ kind: "retry" });
       expect(reloaded.store.retryTarget()).not.toBeNull();
@@ -809,13 +826,13 @@ describe("a second window sends a review composed before the first window's went
     const fromA = a.store.compose();
     const fromB = b.store.compose();
     if (fromA === null || fromB === null) throw new Error("nothing composed");
-    expect(await a.store.send(fromA, fromA.text)).toEqual({ sent: true });
+    expect(await sendComposed(a.store, fromA, fromA.text)).toEqual({ sent: true });
     await vi.waitFor(() => expect(a.pastes).toHaveLength(1), SLOW_DRIVE);
     await vi.waitFor(
       () => expect(a.store.review().sends.at(-1)?.phase).toMatchObject({ paste: { kind: "done" } }),
       SLOW_DRIVE,
     );
-    expect(await b.store.send(fromB, fromB.text)).toMatchObject({ sent: false });
+    expect(await sendComposed(b.store, fromB, fromB.text)).toMatchObject({ sent: false });
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(mend.delivered).toHaveLength(1);
     expect(b.pastes).toEqual([]);
@@ -824,7 +841,7 @@ describe("a second window sends a review composed before the first window's went
     await b.store.comment(onLine(5, "Name the constant"));
     const more = b.store.compose();
     if (more === null) throw new Error("nothing composed");
-    expect(await b.store.send(more, more.text)).toEqual({ sent: true });
+    expect(await sendComposed(b.store, more, more.text)).toEqual({ sent: true });
     await vi.waitFor(() => expect(b.pastes).toHaveLength(1), SLOW_DRIVE);
     expect(b.pastes[0]).toContain("Name the constant");
     expect(b.pastes[0]).not.toContain(fromA.text.split("\n")[0]);
@@ -870,8 +887,8 @@ describe("a window whose send another window took over while a POST was on its w
     await a.store.comment(onLine(7, "Name the retry budget"));
     const composed = a.store.compose();
     if (composed === null) throw new Error("nothing composed");
-    expect(await a.store.send(composed, composed.text)).toEqual({ sent: true });
-    await vi.waitFor(() => expect(server.asked).toHaveLength(1));
+    expect(await sendComposed(a.store, composed, composed.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(server.asked).toHaveLength(1), SETTLE);
     // Its POST outlasts its lease, as from a window asleep: a window opened now reads the send as
     // abandoned, and Retry delivery drives it.
     late += DRIVE_STALE_MS + 1_000;
@@ -879,7 +896,7 @@ describe("a window whose send another window took over while a POST was on its w
     const target = b.store.retryTarget();
     if (target === null) throw new Error("the other window offers no retry");
     const retried = b.store.retry(target);
-    await vi.waitFor(() => expect(server.asked).toHaveLength(2));
+    await vi.waitFor(() => expect(server.asked).toHaveLength(2), SETTLE);
     server.land();
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(server.asked).toHaveLength(2);
@@ -890,7 +907,7 @@ describe("a window whose send another window took over while a POST was on its w
     ).toEqual(["posting", "unposted"]);
     server.land();
     await retried;
-    await vi.waitFor(() => expect(server.delivered).toHaveLength(1));
+    await vi.waitFor(() => expect(server.delivered).toHaveLength(1), SETTLE);
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(server.asked.filter((body) => body.includes("Name the retry budget"))).toHaveLength(1);
     expect(server.delivered).toHaveLength(1);
@@ -903,7 +920,7 @@ const sees = async (store: ReviewStore, processId: string): Promise<void> => {
   await vi.waitFor(() => {
     const agent = store.ready()?.facts.agent;
     expect(agent?.kind === "terminal" ? agent.processId : null).toBe(processId);
-  });
+  }, SETTLE);
 };
 
 describe("claude is replaced between two Sends, before she pressed Enter", () => {
@@ -946,7 +963,7 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
       },
     );
     store.follow(PROJECT, session("s1"));
-    await vi.waitFor(() => expect(store.ready()).not.toBeNull());
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
     return { store, pastes };
   };
 
@@ -959,7 +976,7 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
     await store.comment(onLine(3, "Use the shared limiter"));
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
-    await store.send(first, first.text);
+    await sendComposed(store, first, first.text);
     await pastedInto(store, pastes, 1);
     expect(pastes[0]?.processId).toBe("agent-1");
 
@@ -981,8 +998,8 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
     // A review on its own: the new claude's input holds nothing it would go on top of.
     expect(second.base).toBeNull();
     expect(second.text).toContain("Use the shared limiter");
-    expect(await other.store.send(second, second.text)).toEqual({ sent: true });
-    await vi.waitFor(() => expect(other.pastes).toHaveLength(1));
+    expect(await sendComposed(other.store, second, second.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(other.pastes).toHaveLength(1), SETTLE);
     const into = other.pastes[0];
     expect(into?.processId).toBe("agent-2");
     expect(into?.text).toContain("Use the shared limiter");
@@ -999,7 +1016,7 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
         "follow-up pending · pasted into claude's terminal",
         "follow-up pending · pasted into claude's terminal",
       ]);
-    });
+    }, SETTLE);
   });
 
   it("pastes the whole review when claude was replaced after she composed onto the old one", async () => {
@@ -1010,7 +1027,7 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
     await store.comment(onLine(3, "Use the shared limiter"));
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
-    await store.send(first, first.text);
+    await sendComposed(store, first, first.text);
     await pastedInto(store, pastes, 1);
 
     await store.comment(onLine(5, "Name the constant"));
@@ -1019,8 +1036,8 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
     expect(second.base).not.toBeNull();
     world.replace(CLAUDE_2);
     await sees(store, "agent-2");
-    expect(await store.send(second, second.text)).toEqual({ sent: true });
-    await vi.waitFor(() => expect(pastes).toHaveLength(2));
+    expect(await sendComposed(store, second, second.text)).toEqual({ sent: true });
+    await vi.waitFor(() => expect(pastes).toHaveLength(2), SETTLE);
     expect(pastes[1]?.processId).toBe("agent-2");
     expect(pastes[1]?.text).toContain("Use the shared limiter");
     expect(pastes[1]?.text).toContain("Name the constant");

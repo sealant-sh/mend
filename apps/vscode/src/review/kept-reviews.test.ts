@@ -11,7 +11,7 @@ import {
   type ReviewPlace,
 } from "./kept-reviews.js";
 import { addPending, type SessionReview } from "./pending.js";
-import { keptIn, pending, slowFiles, storage } from "./test-fixtures.js";
+import { keptIn, pending, slowFiles, storage, SETTLE } from "./test-fixtures.js";
 
 const DANA: ReviewPlace = { url: "http://mend", viewer: "dana", sessionId: "s1" };
 
@@ -74,7 +74,7 @@ const renewedBy = async (directory: string, name: string, at: number): Promise<v
     if (folder === undefined) throw new Error("no folder was made for her reviews");
     const text = await NODE_FILES.readFile(join(directory, folder, name)).catch(() => "");
     expect(Number(text.split(" ")[0])).toBeGreaterThanOrEqual(at);
-  });
+  }, SETTLE);
 };
 
 /** A lock's or a lease's renewal: `<name>.lock.<uuid>.tmp`, `<name>.<key>.drive.<uuid>.tmp`. */

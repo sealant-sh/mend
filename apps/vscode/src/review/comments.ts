@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 
 import { changeAddress, changeUri } from "./change-content.js";
 import { noteUri } from "./change-note.js";
-import type { ReviewStore } from "./review-store.js";
+import { DRAFT_NOT_SHOWN, type Keeping, type ReviewStore } from "./review-store.js";
 import { retryDelivery } from "./review-toast.js";
 import { commentableLines, evidenceLine, threadsOf, type ThreadView } from "./threads.js";
 
@@ -81,6 +81,11 @@ export class ReviewComments implements vscode.Disposable {
    */
   readonly #note: vscode.CommentController;
   readonly #threads = new Map<string, { view: ThreadView; thread: vscode.CommentThread }>();
+  /**
+   * The Mend draft each thread showed, kept past its redraw: an Accept or Dismiss already on its
+   * way from a thread drawn away still names the draft, and the store keeps her words there.
+   */
+  readonly #drafts = new WeakMap<vscode.CommentThread, string>();
   /** Threads whose Add, Accept or Dismiss is still being kept: a second click waits it out. */
   readonly #busy = new Set<vscode.CommentThread>();
   readonly #disposables: ReadonlyArray<vscode.Disposable>;
@@ -162,7 +167,10 @@ export class ReviewComments implements vscode.Disposable {
   /** Draws every thread the store's read holds; a thread whose document moved is drawn anew. */
   #draw(): void {
     const read = this.store.ready();
-    const views = read === null ? [] : threadsOf(read, this.store.review(), this.store.you());
+    const views =
+      read === null
+        ? []
+        : threadsOf(read, this.store.review(), this.store.you(), this.store.held());
     const wanted = new Map(views.map((view) => [view.key, view]));
     for (const [key, drawn] of this.#threads) {
       const next = wanted.get(key);
@@ -187,6 +195,8 @@ export class ReviewComments implements vscode.Disposable {
       thread.canReply = view.kind === "draft";
       thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
       thread.comments = [shown(view)];
+      if (view.kind === "draft" && view.commentId !== null)
+        this.#drafts.set(thread, view.commentId);
       this.#threads.set(view.key, { view, thread });
     }
   }
@@ -220,20 +230,32 @@ export class ReviewComments implements vscode.Disposable {
     else this.#hold(thread, body, kept.words);
   }
 
-  /** Words the store did not keep stay in their thread, with why, until she tries again. */
   #hold(thread: vscode.CommentThread, body: string, words: string): void {
-    if (body.trim() !== "") thread.comments = [new UnkeptComment(body, this.store.you())];
+    if (body.trim() !== "")
+      thread.comments = [
+        ...thread.comments.filter((comment) => !(comment instanceof UnkeptComment)),
+        new UnkeptComment(body, this.store.you()),
+      ];
     thread.canReply = true;
     void vscode.window.showWarningMessage(words);
   }
 
   async #onDraft(
     reply: vscode.CommentReply,
-    act: (draftId: string, text: string) => Promise<void>,
+    act: (draftId: string, text: string) => Promise<Keeping>,
   ): Promise<void> {
-    const drawn = [...this.#threads.values()].find(({ thread }) => thread === reply.thread);
-    const draftId = drawn?.view.commentId ?? null;
-    if (draftId !== null) await this.#once(reply.thread, () => act(draftId, reply.text));
+    const { thread, text } = reply;
+    const draftId = this.#drafts.get(thread);
+    // A thread never drawn as a draft is VS Code's own, never redrawn away: her words stay in it.
+    if (draftId === undefined) {
+      this.#hold(thread, text, DRAFT_NOT_SHOWN);
+      return;
+    }
+    // Words the store could not keep, it holds and draws itself: the draft's thread may go.
+    await this.#once(thread, async () => {
+      const kept = await act(draftId, text);
+      if (!kept.kept) void vscode.window.showWarningMessage(kept.words);
+    });
   }
 
   /** One gesture per thread at a time: a double click keeps one comment, not two. */
@@ -257,7 +279,9 @@ export class ReviewComments implements vscode.Disposable {
   async #save(comment: unknown): Promise<void> {
     if (!(comment instanceof ShownComment) || comment.thread.pendingId === null) return;
     const body = typeof comment.body === "string" ? comment.body : comment.body.value;
-    await this.store.edit(comment.thread.pendingId, body);
+    // The store keeps her edit, or holds it and draws it as not kept: either way it is redrawn.
+    const kept = await this.store.edit(comment.thread.pendingId, body);
+    if (!kept.kept) void vscode.window.showWarningMessage(kept.words);
     const drawn = this.#threads.get(comment.thread.key);
     if (drawn !== undefined) drawn.thread.comments = [shown(drawn.view)];
   }

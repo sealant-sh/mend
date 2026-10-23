@@ -16,6 +16,7 @@ import {
   commentIds,
   commentTarget,
   DRAFT_GONE,
+  draftsLeft,
   handedOver,
   heldIds,
   holdsComments,
@@ -23,6 +24,7 @@ import {
   nextAction,
   openRecord,
   postedComment,
+  posts,
   commentLabel,
   retryRecord,
   sendGeneration,
@@ -33,7 +35,7 @@ import {
   type PastePlan,
   type SendEvent,
   type SendRecord,
-  type HeldInput,
+  type SendSlice,
   terminalInput,
 } from "./delivery.js";
 import {
@@ -48,12 +50,20 @@ import {
 } from "./instruction.js";
 import { samePlace, type KeptReviews, type ReviewPlace } from "./kept-reviews.js";
 import {
+  acceptedDrafts,
+  keepComposed,
+  keepHeld,
   addPending,
   editPending,
   EMPTY_REVIEW,
   MAX_PENDING,
+  removeDocument,
   removePending,
+  saveDocument,
+  type Composed,
+  type DocumentSave,
   type PendingComment,
+  type ReviewDocument,
   type SessionReview,
 } from "./pending.js";
 import type { ReviewClient } from "./review-client.js";
@@ -124,24 +134,11 @@ export interface RetryTarget {
   readonly key: string;
 }
 
-/** What Send review composed: the text, and exactly the comments it lists. */
-export interface Composed {
-  readonly sessionId: string;
-  readonly sessionName: string;
-  readonly text: string;
-  /** Her pending comments, by id. */
-  readonly pending: ReadonlyArray<string>;
-  /** The comments open on Mend, by id. */
-  readonly open: ReadonlyArray<string>;
-  /** Every comment it lists with its words as they were: an edit since reads as a change. */
-  readonly digest: string;
-  /** The reviews it was composed after (`sendGeneration`): one sent since makes it stale. */
-  readonly generation: string;
-  /**
-   * What the agent's input holds, as VS Code pasted it, that this review is composed on top of:
-   * Send to session pastes only what follows it. Null for a review on its own.
-   */
-  readonly base: HeldInput | null;
+export type Composition = Composed & { readonly text: string };
+
+export interface DocumentRef {
+  readonly place: ReviewPlace;
+  readonly id: string;
 }
 
 /** Whether Retry delivery sent the review again; when not, what it found instead. */
@@ -205,6 +202,10 @@ const TEXT_STAYS = "Your text stays in this editor.";
 
 const COMMENTS_CHANGED = `Your comments changed since this review was composed, so nothing was sent. ${TEXT_STAYS} Close it and choose Send review again to compose the review with your comments as they are now.`;
 
+const SAVED_SINCE = `Another window saved this review since this editor read it, so nothing was sent. ${TEXT_STAYS}`;
+
+const NOT_KEPT = `This review was sent, or VS Code no longer keeps it, so nothing was sent. ${TEXT_STAYS}`;
+
 const ANOTHER_WENT_OUT = `Another review of this session went out since this one was composed, so nothing was sent. ${TEXT_STAYS} Close it and choose Send review again to compose the review on top of the one sent.`;
 
 const offerWords = (offer: SendOffer): string => {
@@ -231,6 +232,19 @@ export type ShownRecord =
       readonly entries: ReadonlyArray<TranscriptEntry>;
     }
   | { readonly kind: "not-found"; readonly words: string };
+
+const wordsStay = (reply: string): string =>
+  reply.trim() === "" ? "" : " Your words are still in the thread.";
+
+export const DRAFT_NOT_SHOWN =
+  "The Change section no longer shows this Mend draft, so nothing was done.";
+
+const NO_LONGER_A_DRAFT = "This Mend draft is no longer a draft on Mend, so nothing was done to it";
+
+const draftGone = (reply: string): Keeping => ({
+  kept: false,
+  words: `${DRAFT_NOT_SHOWN}${wordsStay(reply)}`,
+});
 
 const TOO_MANY = `This session's review already holds ${MAX_PENDING} pending comments, so this one is not kept. Its words are still in the thread: send the review, or delete a comment, first.`;
 
@@ -259,6 +273,16 @@ export class ReviewStore implements vscode.Disposable {
   /** A re-pin after a sent review: since my last review opens from this head once Mend pins. */
   readonly #sinceAfterRepin = new Map<string, Checkpoint>();
   #review: SessionReview = EMPTY_REVIEW;
+  /**
+   * Her words under a Mend draft that VS Code could not write, by the place they belong to: shown
+   * as not kept, never replaced by a newer reply, and kept by the next write to that place.
+   */
+  #held: ReadonlyArray<{ readonly place: ReviewPlace; readonly comment: PendingComment }> = [];
+  /**
+   * Every Mend draft a read showed, as last read, with the session it is in: her reply under one
+   * whose thread was redrawn away, or whose session she left, still has a place to go.
+   */
+  readonly #drafts = new Map<string, SeenDraft>();
   /** Where `#review` is kept: her account on the server, and the session. */
   #place: ReviewPlace | null = null;
   /** Who she is on each server, as Mend last said: a read that cannot say keeps her place. */
@@ -341,6 +365,11 @@ export class ReviewStore implements vscode.Disposable {
     return this.#review;
   }
 
+  /** Her words VS Code could not keep yet, for the followed session: see `#held`. */
+  held(): ReadonlyArray<PendingComment> {
+    return this.#heldAt(this.#place);
+  }
+
   /** Her name, as threads show it. */
   you(): string {
     return this.#you;
@@ -394,6 +423,7 @@ export class ReviewStore implements vscode.Disposable {
   async reloadReview(): Promise<void> {
     const place = this.#place;
     if (place === null) return;
+    if (await this.#keepHeld(place)) return;
     const { review } = await this.kept.read(place);
     if (!samePlace(this.#place, place)) return;
     this.#review = review;
@@ -483,60 +513,150 @@ export class ReviewStore implements vscode.Disposable {
     return full ? { kept: false, words: TOO_MANY } : { kept: true };
   }
 
-  /** G1: a pending comment is hers to edit until Send review. */
-  async edit(pendingId: string, body: string): Promise<void> {
-    if (body.trim() === "") return;
-    await this.#keepAt(this.#place, (review) => editPending(review, pendingId, body.trim()));
+  /**
+   * G1: a pending comment is hers to edit until Send review. An edit to one another window sent or
+   * deleted meanwhile is kept as a new pending comment where that one was; one VS Code could not
+   * write is held by the store until it can.
+   */
+  async edit(pendingId: string, body: string): Promise<Keeping> {
+    const words = body.trim();
+    if (words === "")
+      return { kept: false, words: "Your comment is empty: there is nothing to keep." };
+    const place = this.#place;
+    const before = this.#review;
+    this.#held = this.#held.map((held) =>
+      held.comment.id === pendingId ? { ...held, comment: { ...held.comment, body: words } } : held,
+    );
+    let anew: "sent" | "deleted" | null = null;
+    let review: SessionReview;
+    try {
+      review = await this.#keepAt(place, (kept) => {
+        anew = null;
+        if (kept.pending.some((comment) => comment.id === pendingId))
+          return editPending(kept, pendingId, words);
+        const sent = takenBy(kept, pendingId);
+        const edited = sent ?? before.pending.find((comment) => comment.id === pendingId);
+        if (edited === undefined) return kept;
+        anew = sent === undefined ? "deleted" : "sent";
+        return addPending(kept, {
+          ...edited,
+          id: randomUUID(),
+          body: words,
+          createdAt: new Date().toISOString(),
+          origin: { kind: "own" },
+        });
+      });
+    } catch (cause) {
+      const edited =
+        this.#heldAt(place).find((comment) => comment.id === pendingId) ??
+        before.pending.find((comment) => comment.id === pendingId) ??
+        takenBy(before, pendingId);
+      return {
+        kept: false,
+        words: `VS Code could not keep your edit: ${errorWords(cause)}${
+          edited === undefined ? "" : this.#hold(place, { ...edited, body: words })
+        }`,
+      };
+    }
+    if (anew === "sent")
+      return {
+        kept: false,
+        words:
+          "This comment was already sent in a review, so your edit is kept as a new pending comment at the same place.",
+      };
+    if (anew === "deleted")
+      return {
+        kept: false,
+        words:
+          "This comment was deleted in another window, so your edit is kept as a new pending comment at the same place.",
+      };
+    if (review.pending.some((comment) => comment.id === pendingId)) return { kept: true };
+    return {
+      kept: false,
+      words: "This comment was deleted in another window, so your edit is not kept.",
+    };
   }
 
   async remove(pendingId: string): Promise<void> {
+    if (this.#held.some((held) => held.comment.id === pendingId)) {
+      this.#held = this.#held.filter((held) => held.comment.id !== pendingId);
+      this.#changed.fire();
+    }
     await this.#keepAt(this.#place, (review) => removePending(review, pendingId));
   }
 
   /**
-   * Accept makes a Mend draft hers: pending like her own comments, with its evidence, until Send
-   * review opens it on Mend. Words she typed under it are a comment of her own on the same lines.
-   * A draft she already accepted, in this window or another, is accepted once.
+   * Accept: the draft becomes hers, pending, and her reply under it a pending comment at its place.
+   * A draft that is no longer one on Mend is not accepted, and her reply is kept all the same.
    */
-  async accept(draftId: string, reply: string): Promise<void> {
-    const read = this.ready();
-    const place = this.#place;
-    const draft = read?.comments.find((comment) => comment.id === draftId);
-    if (read === null || draft === undefined) return;
-    const accepted = onDraft(read, draft, draft.body, {
+  async accept(draftId: string, reply: string): Promise<Keeping> {
+    const seen = this.#drafts.get(draftId);
+    if (seen === undefined) return draftGone(reply);
+    const { place, draft } = seen;
+    const own = onDraft(seen, reply.trim(), { kind: "own" });
+    if (draft.state !== "draft") return this.#keepReply(place, own);
+    const accepted = onDraft(seen, draft.body, {
       kind: "accepted",
       draftId,
       evidence: draft.evidence,
+      draftBody: draft.body,
     });
-    const own = onDraft(read, draft, reply.trim(), { kind: "own" });
-    await this.#keepAt(place, (review) => {
-      const already = review.pending.some(
-        (comment) => comment.origin.kind === "accepted" && comment.origin.draftId === draftId,
-      );
-      if (already) return review;
-      const next = addPending(review, accepted);
-      return own.body === "" ? next : addPending(next, own);
-    });
+    try {
+      await this.#keepAt(place, (review) => {
+        const next = acceptedDrafts(review).has(draftId) ? review : addPending(review, accepted);
+        return own.body === "" ? next : addPending(next, own);
+      });
+    } catch (cause) {
+      return {
+        kept: false,
+        words: `VS Code could not keep the accepted draft: ${errorWords(cause)}${this.#hold(place, own)}`,
+      };
+    }
+    return { kept: true };
   }
 
-  /** Dismiss removes a Mend draft, on Mend for everyone; words she typed stay as her own comment. */
-  async dismiss(draftId: string, reply: string): Promise<void> {
-    const read = this.ready();
-    // Where her words go is decided now: she may follow another session before Mend answers.
-    const place = this.#place;
-    const draft = read?.comments.find((comment) => comment.id === draftId);
-    if (read === null || draft === undefined) return;
+  async dismiss(draftId: string, reply: string): Promise<Keeping> {
+    // Her words go to the draft's session: she may follow another before Mend answers.
+    const seen = this.#drafts.get(draftId);
+    if (seen === undefined) return draftGone(reply);
+    const { place, draft } = seen;
+    const own = onDraft(seen, reply.trim(), { kind: "own" });
+    if (draft.state !== "draft") return this.#keepReply(place, own);
+    if (own.body !== "") {
+      try {
+        await this.#keepAt(place, (review) => addPending(review, own));
+      } catch (cause) {
+        return {
+          kept: false,
+          words: `VS Code could not keep your words, so the draft is not dismissed: ${errorWords(cause)}${this.#hold(place, own)}`,
+        };
+      }
+    }
     try {
-      await this.client.setCommentState(read.changeId, draftId, "dismissed");
+      await this.client.setCommentState(seen.changeId, draftId, "dismissed");
     } catch (cause) {
       this.#fail("error", errorWords(cause), { cause });
-      return;
+      return { kept: true };
     }
-    if (reply.trim() !== "")
-      await this.#keepAt(place, (review) =>
-        addPending(review, onDraft(read, draft, reply.trim(), { kind: "own" })),
-      );
-    this.#rereadIfFollowed(read.sessionId);
+    this.#rereadIfFollowed(place.sessionId);
+    return { kept: true };
+  }
+
+  /** Her reply under a draft that is no longer one on Mend: a pending comment at its place. */
+  async #keepReply(place: ReviewPlace, own: PendingComment): Promise<Keeping> {
+    if (own.body === "") return { kept: false, words: `${NO_LONGER_A_DRAFT}.` };
+    try {
+      await this.#keepAt(place, (review) => addPending(review, own));
+    } catch (cause) {
+      return {
+        kept: false,
+        words: `${NO_LONGER_A_DRAFT}, and VS Code could not keep your words: ${errorWords(cause)}${this.#hold(place, own)}`,
+      };
+    }
+    return {
+      kept: false,
+      words: `${NO_LONGER_A_DRAFT}. Your words are kept as a pending comment at its place.`,
+    };
   }
 
   /** Read this change: Mend reads it and writes drafts with their evidence, never a verdict. */
@@ -656,13 +776,15 @@ export class ReviewStore implements vscode.Disposable {
    * pasted into the agent's terminal and not entered, it keeps that review's text as she sent it
    * and adds only the comments that are new.
    */
-  compose(): Composed | null {
+  compose(): Composition | null {
     const read = this.ready();
     if (read === null) return null;
     const open = this.#openOnMend(read);
     const listed = {
+      documentId: randomUUID(),
       sessionId: read.sessionId,
       sessionName: read.sessionName,
+      slice: sliceOf(read),
       pending: this.#review.pending.map((pending) => pending.id),
       open: open.map((comment) => comment.id),
       digest: digestOf(this.#review.pending, open),
@@ -700,53 +822,59 @@ export class ReviewStore implements vscode.Disposable {
   }
 
   /**
-   * Send to session: the text she sent, with exactly the comments it was composed with, under one
-   * new idempotency key kept in the record; the record is then driven until Mend answers. Says
-   * whether the send was recorded, and why not in Mend's words.
+   * Send to session: the review's text as kept at `revision`, the one her editor saved or read,
+   * with exactly the comments it was composed with, under one new idempotency key kept in the
+   * record; the record is then driven until Mend answers. A revision another window saved since is
+   * not sent. Says whether the send was recorded, and why not in Mend's words.
    */
-  async send(composed: Omit<Composed, "sessionName" | "text">, text: string): Promise<Sent> {
+  async send(ref: DocumentRef, revision: number): Promise<Sent> {
     const read = this.ready();
     const place = this.#place;
-    if (read === null || place === null || read.sessionId !== composed.sessionId)
+    if (read === null || place === null || !samePlace(place, ref.place))
       return {
         sent: false,
         words: `The Change section no longer shows this review's session, so nothing was sent. ${TEXT_STAYS}`,
       };
+    const ofRef = (review: SessionReview): ReviewDocument | undefined =>
+      review.document?.composed.documentId === ref.id ? review.document : undefined;
+    const document = ofRef((await this.kept.read(place)).review);
+    if (document === undefined) return { sent: false, words: NOT_KEPT };
+    if (document.revision !== revision) return { sent: false, words: SAVED_SINCE };
+    const { composed } = document;
     const offer = this.offer();
     if (offer.kind !== "ready")
       return { sent: false, words: `${offerWords(offer)}. ${TEXT_STAYS}` };
     const open = this.#openOnMend(read);
     if (digestOf(this.#review.pending, open) !== composed.digest)
       return { sent: false, words: COMMENTS_CHANGED };
-    const instruction = textToSend(text, read.sessionName);
+    const instruction = textToSend(document.text, read.sessionName);
     const paste: PastePlan =
       composed.base === null ? { kind: "all" } : addedText(instruction, composed.base);
     const key = `vscode-follow-up:${read.changeId}:${randomUUID()}`;
     let next: SessionReview;
     let stale = false;
+    let saved: "gone" | "newer" | null = null;
     try {
       // Its drive is claimed before the record is kept: a window loading it then reads it driven
       // here, never left behind by a window that closed.
       await this.kept.claimDrive(place, key);
       // Checked again as kept, under the lock: another window may have sent these comments.
       next = await this.#keepAt(place, (review) => {
+        const kept = ofRef(review);
+        saved = kept === undefined ? "gone" : kept.revision === revision ? null : "newer";
         stale = sendGeneration(review.sends) !== composed.generation;
-        return stale || digestOf(review.pending, open) !== composed.digest
-          ? review
-          : (startSend(review, {
-              key,
-              slice: {
-                id: read.pinned.id,
-                baseId: read.pinned.base.id,
-                headId: read.pinned.head.id,
-                diffDigest: read.pinned.diffDigest,
-              },
-              instruction,
-              paste,
-              pending: composed.pending,
-              open: composed.open,
-              now: new Date().toISOString(),
-            }) ?? review);
+        if (saved !== null || stale || digestOf(review.pending, open) !== composed.digest)
+          return review;
+        const started = startSend(review, {
+          key,
+          slice: sliceOf(read),
+          instruction,
+          paste,
+          pending: composed.pending,
+          open: composed.open,
+          now: new Date().toISOString(),
+        });
+        return started === null ? review : removeDocument(started, composed.documentId);
       });
     } catch (cause) {
       await this.kept.releaseDrive(place, key).catch(() => undefined);
@@ -757,10 +885,49 @@ export class ReviewStore implements vscode.Disposable {
     }
     if (!next.sends.some((record) => record.key === key)) {
       await this.kept.releaseDrive(place, key);
+      if (saved === "gone") return { sent: false, words: NOT_KEPT };
+      if (saved === "newer") return { sent: false, words: SAVED_SINCE };
       return { sent: false, words: stale ? ANOTHER_WENT_OUT : COMMENTS_CHANGED };
     }
     void this.#drive(this.#context(read, place), key);
     return { sent: true };
+  }
+
+  /**
+   * The session's one review for Send review: the one kept while it is still current, else this
+   * composition. `carried` says the text she saved in the one it replaced follows the composition,
+   * kept in the same write, so nothing she wrote goes.
+   */
+  async keepDocument(composition: Composition): Promise<{
+    readonly ref: DocumentRef;
+    readonly document: ReviewDocument;
+    readonly carried: boolean;
+  }> {
+    const place = this.#place;
+    if (place === null) throw new Error("Mend has not finished reading this session.");
+    const { text, ...composed } = composition;
+    let carried = false;
+    const { document } = await this.#keepAt(place, (review) => {
+      const next = keepComposed(review, composed, text);
+      carried = next.carried;
+      return next.review;
+    });
+    if (document === null) throw new Error("VS Code did not keep the review.");
+    return { ref: { place, id: document.composed.documentId }, document, carried };
+  }
+
+  async document(ref: DocumentRef): Promise<ReviewDocument | null> {
+    const { document } = (await this.kept.read(ref.place)).review;
+    return document?.composed.documentId === ref.id ? document : null;
+  }
+
+  async saveDocument(ref: DocumentRef, revision: number, text: string): Promise<DocumentSave> {
+    let saved: DocumentSave | null = null;
+    await this.#keepAt(ref.place, (review) => {
+      saved = saveDocument(review, ref.id, revision, text);
+      return saved.kind === "saved" ? saved.review : review;
+    });
+    return saved ?? { kind: "gone" };
   }
 
   /** The review of the followed session that offers Retry delivery from the title, if any. */
@@ -987,11 +1154,11 @@ export class ReviewStore implements vscode.Disposable {
             const comments = await this.client.comments(changeId);
             const claimed = new Set(
               record.items.flatMap((item) =>
-                item.kind === "own" && item.post.kind === "posted" ? [item.post.commentId] : [],
+                posts(item) && item.post.kind === "posted" ? [item.post.commentId] : [],
               ),
             );
             for (const item of record.items) {
-              if (item.kind !== "own" || item.post.kind !== "posting") continue;
+              if (!posts(item) || item.post.kind !== "posting") continue;
               const found = postedComment(item.post, item.pending.sliceId, comments, claimed);
               if (found !== null) claimed.add(found);
               await this.#step(
@@ -1041,15 +1208,41 @@ export class ReviewStore implements vscode.Disposable {
             await this.#step(context, key, { kind: "opened", draftId: action.draftId });
             break;
           }
+          case "dismiss-draft": {
+            // Her words are on Mend: a draft left beside them never holds the review back.
+            try {
+              const draft = (await this.client.comments(changeId)).find(
+                (comment) => comment.id === action.draftId,
+              );
+              if (draft?.state === "draft")
+                await this.client.setCommentState(changeId, action.draftId, "dismissed");
+            } catch (cause) {
+              await this.#step(context, key, {
+                kind: "draft-left",
+                draftId: action.draftId,
+                words: errorWords(cause),
+              });
+              break;
+            }
+            await this.#step(context, key, { kind: "draft-dismissed", draftId: action.draftId });
+            break;
+          }
           case "deliver": {
             const detail = await this.sessions.sessionDetail(sessionId);
             const answered = await this.client.deliver(sessionId, action.request);
-            await this.#step(context, key, {
+            const next = await this.#step(context, key, {
               kind: "answered",
               status: answered.status,
               error: answered.error,
               agent: liveAgent(detail, context.viewer) ?? { kind: "other" },
             });
+            const left = next !== null && handedOver(next) ? draftsLeft(next) : [];
+            if (left.length > 0)
+              this.#fail(
+                `draft-left:${key}`,
+                `Mend sent the review. The Mend draft your words replace is still on Mend, because VS Code could not dismiss it: ${left.join(" ")}`,
+                { tone: "warning" },
+              );
             break;
           }
           case "paste": {
@@ -1165,12 +1358,49 @@ export class ReviewStore implements vscode.Disposable {
     update: (review: SessionReview) => SessionReview | Promise<SessionReview>,
   ): Promise<SessionReview> {
     if (place === null) throw new Error("Mend has not finished reading this session.");
-    const { review } = await this.kept.update(place, update);
+    const held = this.#heldAt(place);
+    let taken: ReadonlyArray<PendingComment> = [];
+    const { review } = await this.kept.update(place, async (current) => {
+      const next = keepHeld(await update(current), held, randomUUID);
+      taken = next.kept;
+      return next.review;
+    });
+    this.#held = this.#held.filter((entry) => !taken.includes(entry.comment));
     if (samePlace(this.#place, place)) {
       this.#review = review;
       this.#changed.fire();
     }
     return review;
+  }
+
+  /** Keeps the words held for `place`, if any: whether the review was written. */
+  async #keepHeld(place: ReviewPlace): Promise<boolean> {
+    if (this.#heldAt(place).length === 0) return false;
+    try {
+      await this.#keepAt(place, (review) => review);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  #heldAt(place: ReviewPlace | null): ReadonlyArray<PendingComment> {
+    return place === null
+      ? []
+      : this.#held.flatMap((entry) => (samePlace(entry.place, place) ? [entry.comment] : []));
+  }
+
+  /** Her words that were not written: held until a write to their place keeps them. */
+  #hold(place: ReviewPlace | null, comment: PendingComment): string {
+    if (place === null || comment.body === "") return "";
+    this.#held = [
+      ...this.#held.filter(
+        (entry) => entry.comment.id !== comment.id || !samePlace(entry.place, place),
+      ),
+      { place, comment },
+    ];
+    this.#changed.fire();
+    return " Your words stay in this window, marked not kept, and VS Code keeps them when this window next reads this session's review.";
   }
 
   #set(state: ReviewState): void {
@@ -1209,6 +1439,8 @@ export class ReviewStore implements vscode.Disposable {
       if (generation !== this.#generation) return;
       this.#set(next);
       if (next.kind === "ready") {
+        this.#see(next.read);
+        if (this.#place !== null) await this.#keepHeld(this.#place);
         this.#tellFailure(next.read);
         const unloaded = this.#unloaded;
         if (unloaded !== null && unloaded === this.#place) {
@@ -1224,6 +1456,14 @@ export class ReviewStore implements vscode.Disposable {
       if (offline && kept) this.#changed.fire();
       else this.#set({ kind: "failed", followed, words: errorWords(cause) });
     }
+  }
+
+  #see(read: ChangeRead): void {
+    const place = this.#place;
+    if (place === null) return;
+    for (const draft of read.comments)
+      if (draft.state === "draft" || this.#drafts.has(draft.id))
+        this.#drafts.set(draft.id, { place, changeId: read.changeId, pinned: read.pinned, draft });
   }
 
   /** The read she asked for that Mend could not finish says why, once, in Mend's own words. */
@@ -1398,21 +1638,46 @@ const liveAgent = (detail: SessionDetail, viewer: string | null): LiveAgent | nu
   };
 };
 
-/** A pending comment on a Mend draft's place: its lines where the draft hangs, or the whole change. */
+/** A Mend draft as a read showed it, and where her words under it are kept. */
+interface SeenDraft {
+  readonly place: ReviewPlace;
+  readonly changeId: string;
+  readonly pinned: ChangeRead["pinned"];
+  readonly draft: ServerComment;
+}
+
+/** The pending comment a review in the record took with this id. */
+const takenBy = (review: SessionReview, pendingId: string): PendingComment | undefined =>
+  review.sends
+    .flatMap((record) =>
+      record.items.flatMap((item) => (item.kind === "open" ? [] : [item.pending])),
+    )
+    .find((comment) => comment.id === pendingId);
+
+const sliceOf = (read: ChangeRead): SendSlice => ({
+  id: read.pinned.id,
+  baseId: read.pinned.base.id,
+  headId: read.pinned.head.id,
+  diffDigest: read.pinned.diffDigest,
+});
+
+/**
+ * A pending comment on a Mend draft's place: the slice it was written on, and its lines, its whole
+ * file or the whole change, as the draft has them.
+ */
 const onDraft = (
-  read: ChangeRead,
-  draft: ServerComment,
+  { draft, pinned }: Pick<SeenDraft, "draft" | "pinned">,
   body: string,
   origin: PendingComment["origin"],
 ): PendingComment => {
-  const line = draft.file === null ? 1 : (draft.line ?? 1);
+  const line = draft.file === null ? null : draft.line;
   return {
     id: randomUUID(),
-    sliceId: read.pinned.id,
-    headId: read.pinned.head.id,
+    sliceId: draft.anchor?.sliceId ?? pinned.id,
+    headId: draft.anchor?.headId ?? pinned.head.id,
     path: draft.file,
     line,
-    endLine: draft.file === null ? 1 : Math.max(line, draft.endLine ?? line),
+    endLine: line === null ? null : Math.max(line, draft.endLine ?? line),
     lineText: "",
     body,
     createdAt: new Date().toISOString(),
