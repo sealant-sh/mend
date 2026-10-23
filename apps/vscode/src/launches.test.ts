@@ -438,7 +438,7 @@ describe("a held handoff's launch", () => {
     expect(server.launched).toEqual([START]);
   });
 
-  it("says Mend already ran the prompt when the late launch ran between Retry's read and its arrival", async () => {
+  it("says an agent already ran in the session when the late launch ran between Retry's read and its arrival", async () => {
     const server = lateOriginal();
     const launches = new Launches(server, sink());
     await launches.launch("s1", START);

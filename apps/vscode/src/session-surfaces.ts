@@ -178,7 +178,7 @@ export class Notifier {
     const state = answer.read?.status === "starting" ? "starting" : "running";
     const picked = await vscode.window.showInformationMessage(
       answer.kind === "alreadyRan"
-        ? `${name} · Mend already ran your prompt · nothing launched again`
+        ? `${name} · an agent already ran in this session · nothing launched again`
         : `${name} · an agent is already ${state} · nothing launched`,
       "Open",
     );

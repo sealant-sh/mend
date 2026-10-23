@@ -423,7 +423,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     expect(agentLive.relaunch).toHaveBeenCalledTimes(1);
   });
 
-  it("says Mend already ran the prompt, as information with Open, when Mend refuses Retry over an agent that ran", async () => {
+  it("says an agent already ran in the session, as information with Open, when Mend refuses Retry over an agent that ran", async () => {
     fake.reset();
     const change = refused();
     const idle: Session = { ...waiting, status: "idle" };
@@ -445,7 +445,7 @@ describe("a launch she sent that the server refused (flow 3)", () => {
     ).changed(change);
     await vi.waitFor(() => expect(commands.executeCommand).toHaveBeenCalledWith("mend.open", "s"));
     expect(window.showInformationMessage).toHaveBeenCalledWith(
-      "add-rate-limit · Mend already ran your prompt · nothing launched again",
+      "add-rate-limit · an agent already ran in this session · nothing launched again",
       "Open",
     );
     expect(window.showErrorMessage).toHaveBeenCalledTimes(1);
