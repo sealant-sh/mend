@@ -2376,6 +2376,7 @@ describe("a window whose send another window took over while a POST was on its w
     // abandoned, and Retry delivery drives it.
     late += DRIVE_STALE_MS + 1_000;
     const b = await window(new KeptReviews(directory, NODE_FILES, clock), server);
+    await vi.waitFor(() => expect(b.store.retryTarget()).not.toBeNull(), SETTLE);
     const target = b.store.retryTarget();
     if (target === null) throw new Error("the other window offers no retry");
     const retried = b.store.retry(target);
