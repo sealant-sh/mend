@@ -13,13 +13,13 @@ import type { SessionProcess } from "../types.js";
 import { pasteIntoAgent } from "./agent-paste.js";
 import { boundConnection } from "./binding.js";
 import { ReviewClient } from "./review-client.js";
-import { ReviewMemory } from "./review-memory.js";
 import { ReviewStore } from "./review-store.js";
 import {
   comment,
   FakeMend,
   keptIn,
   PINNED,
+  pinsInMemory,
   PROJECT,
   SETTLE,
   sendComposed,
@@ -208,16 +208,6 @@ afterEach(async () => {
   await rm(home, { recursive: true, force: true });
 });
 
-const memento = () => {
-  const saved = new Map<string, unknown>();
-  return {
-    get: (key: string) => saved.get(key),
-    update: async (key: string, value: unknown) => {
-      saved.set(key, JSON.parse(JSON.stringify(value)));
-    },
-  };
-};
-
 type Secrets = ReturnType<typeof secretStorage>;
 
 const sendToClaude = async (
@@ -239,7 +229,7 @@ const sendToClaude = async (
   const store = new ReviewStore(
     client,
     mend,
-    new ReviewMemory(memento()),
+    pinsInMemory(),
     keptIn(directory),
     (sessionId, processId, text, reads, bound) =>
       pasteIntoAgent<string>(
