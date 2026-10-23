@@ -740,6 +740,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     firstRun.onDidChange(followFirstRun),
     vscode.authentication.registerAuthenticationProvider(AUTH_PROVIDER_ID, "Mend", accounts),
     context.secrets.onDidChange(() => void firstRun.refresh()),
+    connections.onDidChangeCli(() => void firstRun.refresh()),
     vscode.extensions.onDidChange(() => void firstRun.refresh()),
     vscode.commands.registerCommand("mend.connect", connect),
     vscode.commands.registerCommand("mend.useCli", () => firstRun.useCli()),

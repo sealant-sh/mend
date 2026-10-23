@@ -1125,7 +1125,10 @@ const organization = (failing: () => Response) => {
   const client = new MendClient({
     get: async () => ({ url: "http://mend", token: at.token }),
     refused: async () => undefined,
-    generation: () => 0,
+    held: async () => ({
+      connection: { url: "http://mend", token: at.token },
+      current: () => true,
+    }),
   });
   return {
     at,

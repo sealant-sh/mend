@@ -1,4 +1,4 @@
-import type { MendConnection } from "../config.js";
+import type { HeldConnection, MendConnection } from "../config.js";
 import { MendApiError } from "../mend-http.js";
 import type { SessionDetail } from "../types.js";
 import type { ReviewPlace } from "./kept-reviews.js";
@@ -6,7 +6,7 @@ import type { ReviewPlace } from "./kept-reviews.js";
 /** Who VS Code is signed in as, read through one exact connection. */
 export interface AccountReads {
   connection(): Promise<MendConnection>;
-  generation(): number;
+  held(): Promise<HeldConnection>;
   /**
    * The account `connection`'s token belongs to; null when Mend could not say. Throws Mend's
    * refusal (401) when it refused the token: VS Code is signed out.
@@ -42,10 +42,7 @@ export class Unbound extends Error {
   }
 }
 
-export interface Bound {
-  readonly connection: MendConnection;
-  readonly current: () => boolean;
-}
+export type Bound = HeldConnection;
 
 /**
  * VS Code's connection now, while it is the server and account `place` belongs to; throws
@@ -55,15 +52,15 @@ export const boundConnection = async (
   reads: AccountReads,
   place: Pick<ReviewPlace, "url" | "viewer">,
 ): Promise<Bound> => {
-  const generation = reads.generation();
-  const connection = await reads.connection();
+  const bound = await reads.held();
+  const { connection } = bound;
   if (connection.url !== place.url) throw new Unbound("switched");
   const account = await reads.accountOf(connection).catch((cause: unknown) => {
     throw cause instanceof MendApiError && cause.status === 401 ? new Unbound("signed-out") : cause;
   });
   if (account === null) throw new Unbound("unknown");
   if (account !== place.viewer) throw new Unbound("switched");
-  return { connection, current: () => reads.generation() === generation };
+  return bound;
 };
 
 export const unboundSince = async (bind: () => Promise<Bound>): Promise<Unbound> => {

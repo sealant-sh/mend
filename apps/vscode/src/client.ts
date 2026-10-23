@@ -8,7 +8,7 @@ import type {
 import { Option, Schema } from "effect";
 import * as vscode from "vscode";
 
-import type { ConnectionStore, MendConnection } from "./config.js";
+import type { ConnectionStore, HeldConnection, MendConnection } from "./config.js";
 import { MendApiError, requestMend } from "./mend-http.js";
 import type { CreateRequest } from "./new-session.js";
 import {
@@ -362,16 +362,14 @@ export const EVENT_STREAM_STALL_MS = 60_000;
 export class MendClient {
   readonly #accounts = new Map<string, string>();
 
-  constructor(
-    private readonly connections: Pick<ConnectionStore, "get" | "refused" | "generation">,
-  ) {}
+  constructor(private readonly connections: Pick<ConnectionStore, "get" | "refused" | "held">) {}
 
   async connection(): Promise<MendConnection> {
     return this.connections.get();
   }
 
-  generation(): number {
-    return this.connections.generation();
+  held(): Promise<HeldConnection> {
+    return this.connections.held();
   }
 
   /** The same client, each request made on the connection `connect` gives when it starts. */
@@ -379,7 +377,7 @@ export class MendClient {
     return new MendClient({
       get: connect,
       refused: (connection) => this.connections.refused(connection),
-      generation: () => this.connections.generation(),
+      held: () => this.connections.held(),
     });
   }
 

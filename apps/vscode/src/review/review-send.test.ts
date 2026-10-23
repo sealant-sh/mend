@@ -2157,7 +2157,13 @@ describe("Dana signs out while VS Code reads claude's process right before the p
     const store = new ReviewStore(
       {
         ...withAgent(CLAUDE),
-        generation: () => generation,
+        async held() {
+          const bound = generation;
+          return {
+            connection: await this.connection(),
+            current: () => generation === bound,
+          };
+        },
         accountOf: async (): Promise<string | null> => {
           if (signedOut) throw new MendApiError("Signed out", 401);
           return "dana";

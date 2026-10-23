@@ -368,6 +368,33 @@ describe("Dana runs mend login to another server while the paste asks Mend wheth
   );
 });
 
+describe("Dana runs mend login", () => {
+  it("tells VS Code's views that the CLI's sign-in changed", async () => {
+    const connections = new ConnectionStore({ secrets: secretStorage() });
+    const heard = vi.fn();
+    connections.onDidChangeCli(heard);
+    await cliSignsIn(OTHER);
+    await vi.waitFor(() => expect(heard).toHaveBeenCalled(), { timeout: 5_000 });
+    connections.dispose();
+  });
+});
+
+describe("Dana runs mend login to another server while a send on VS Code's own sign-in pastes", () => {
+  it("types the review into claude's terminal once, and the review reads done", async () => {
+    await cliSignsIn(MEND);
+    const { store, phases } = await sendToClaude(() => cliSignsIn(OTHER));
+    await pasteSettled(phases);
+    expect(typed).toHaveLength(1);
+    expect(await phases()).toEqual([
+      expect.objectContaining({
+        kind: "in-terminal",
+        paste: expect.objectContaining({ kind: "done" }),
+      }),
+    ]);
+    store.dispose();
+  }, 15_000);
+});
+
 describe("Dana signs out, and the paste's last read answers while VS Code is still storing the sign-out", () => {
   it("types nothing into claude's terminal, and the review reads stopped because VS Code signed out", async () => {
     const { store, phases } = await sendToClaude(async (connections, secrets) => {

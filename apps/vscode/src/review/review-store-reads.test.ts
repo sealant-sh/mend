@@ -199,7 +199,9 @@ const storeOver = (
         }
       },
       connection: async () => ({ url: "http://mend.test", token: "t" }),
-      generation: () => 0,
+      async held() {
+        return { connection: await this.connection(), current: () => true };
+      },
       accountOf: async (): Promise<string | null> => options.viewer ?? "dana",
       pinned(connect) {
         return {
