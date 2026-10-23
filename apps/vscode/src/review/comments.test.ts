@@ -455,6 +455,170 @@ describe("an edit VS Code could not write", () => {
   });
 });
 
+/**
+ * VS Code's editor for a comment in edit mode, as VS Code keeps it: by the comment object, while
+ * that object stays in edit mode in a thread that is not disposed. What she types reaches the
+ * extension only when she saves, as the comment's body.
+ */
+const EDITING = 0;
+const typed = new WeakMap<object, string>();
+
+const startEditing = async (thread: Thread) => {
+  await ui.commands.get("mend.review.edit")?.(thread.comments[0]);
+  const [editing] = thread.comments;
+  if (editing === undefined || editing.mode !== EDITING) throw new Error("not editing");
+  return editing;
+};
+
+/** The words her open editors hold. */
+const openEdits = (): ReadonlyArray<string> =>
+  liveThreads().flatMap((thread) =>
+    thread.comments.flatMap((shown) => {
+      const words = typed.get(shown);
+      return shown.mode === EDITING && words !== undefined ? [words] : [];
+    }),
+  );
+
+const saveEdit = async (editing: object): Promise<void> => {
+  Object.assign(editing, { body: typed.get(editing) });
+  await ui.commands.get("mend.review.save")?.(editing);
+};
+
+describe("her words in an open edit, when another window changes the review", () => {
+  const WORDS = "Use guard.ts instead";
+
+  it("stay in her editor when another window sends the comment, and are kept once as a new pending comment at its place when she saves", async () => {
+    const { editor, sendIt, done } = await twoWindows();
+    const comments = new ReviewComments(editor);
+    const [thread] = liveThreads();
+    if (thread === undefined) throw new Error("no thread drawn");
+    typed.set(await startEditing(thread), WORDS);
+    const [editing] = thread.comments;
+    if (editing === undefined) throw new Error("not editing");
+    await sendIt();
+    await editor.reloadReview();
+    expect(openEdits()).toEqual([WORDS]);
+    await saveEdit(editing);
+    expect(openEdits()).toEqual([]);
+    const place = () =>
+      editor
+        .review()
+        .pending.map(({ path, line, endLine, body }) => ({ path, line, endLine, body }));
+    expect(place()).toEqual([{ path: "src/auth/limit.ts", line: 3, endLine: 3, body: WORDS }]);
+    expect(ui.warn).toHaveBeenCalledTimes(1);
+    expect(ui.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/already sent.*kept as a new pending comment at the same place/),
+    );
+    await editor.reloadReview();
+    expect(place()).toEqual([{ path: "src/auth/limit.ts", line: 3, endLine: 3, body: WORDS }]);
+    expect(shownWords().filter((words) => words.includes(WORDS))).toHaveLength(1);
+    comments.dispose();
+    done();
+  });
+
+  it("stay in her editor when another window deletes the comment, and are kept as a new pending comment at its place when she saves", async () => {
+    const { sender, editor, pendingId, done } = await twoWindows();
+    const comments = new ReviewComments(editor);
+    const [thread] = liveThreads();
+    if (thread === undefined) throw new Error("no thread drawn");
+    const editing = await startEditing(thread);
+    typed.set(editing, WORDS);
+    await sender.remove(pendingId);
+    await editor.reloadReview();
+    expect(openEdits()).toEqual([WORDS]);
+    await saveEdit(editing);
+    expect(editor.review().pending.map(({ path, line, body }) => ({ path, line, body }))).toEqual([
+      { path: "src/auth/limit.ts", line: 3, body: WORDS },
+    ]);
+    expect(ui.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/deleted in another window.*kept as a new pending comment/),
+    );
+    comments.dispose();
+    done();
+  });
+
+  it("stay in her editor when another window edits the comment, and both words are kept when she saves", async () => {
+    const { sender, editor, pendingId, bodies, done } = await twoWindows();
+    const comments = new ReviewComments(editor);
+    const [thread] = liveThreads();
+    if (thread === undefined) throw new Error("no thread drawn");
+    const editing = await startEditing(thread);
+    typed.set(editing, WORDS);
+    expect(await sender.edit(pendingId, "Count the burst per key")).toEqual({ kept: true });
+    await editor.reloadReview();
+    expect(openEdits()).toEqual([WORDS]);
+    await saveEdit(editing);
+    expect(bodies()).toEqual(expect.arrayContaining(["Count the burst per key", WORDS]));
+    expect(bodies()).toHaveLength(2);
+    expect(ui.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/Another window changed this comment.*kept as a new pending comment/),
+    );
+    comments.dispose();
+    done();
+  });
+
+  it("stay in her editor of an accepted Mend draft when another window sends it, and are kept as a new pending comment when she saves", async () => {
+    const directory = await storage();
+    const mend = new FakeMend();
+    mend.serverComments = [comment({ id: "d1", state: "draft", line: 3 })];
+    const window = async () => {
+      const store = new ReviewStore(
+        sessionReads("change-1"),
+        mend,
+        pinsInMemory(),
+        keptIn(directory),
+        noPaste,
+      );
+      store.follow(PROJECT, session("s1"));
+      await vi.waitFor(() => expect(store.ready()?.comments).toHaveLength(1), SETTLE);
+      return store;
+    };
+    const sender = await window();
+    const editor = await window();
+    expect(await sender.accept("d1", "")).toEqual({ kept: true });
+    const comments = new ReviewComments(editor);
+    await editor.reloadReview();
+    const [thread] = liveThreads();
+    if (thread === undefined) throw new Error("no thread drawn");
+    const editing = await startEditing(thread);
+    typed.set(editing, WORDS);
+    const composed = sender.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(sender, composed, composed.text)).toEqual({ sent: true });
+    await editor.reloadReview();
+    expect(openEdits()).toEqual([WORDS]);
+    await saveEdit(editing);
+    expect(editor.review().pending.map(({ line, body }) => ({ line, body }))).toEqual([
+      { line: 3, body: WORDS },
+    ]);
+    expect(ui.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/already sent.*kept as a new pending comment/),
+    );
+    comments.dispose();
+    sender.dispose();
+    editor.dispose();
+  });
+
+  it("stay in her editor when the section follows another session, and are kept under the session she edited", async () => {
+    const { editor, done } = await twoWindows();
+    const comments = new ReviewComments(editor);
+    const [thread] = liveThreads();
+    if (thread === undefined) throw new Error("no thread drawn");
+    const editing = await startEditing(thread);
+    typed.set(editing, WORDS);
+    editor.follow(PROJECT, session("s2"));
+    await vi.waitFor(() => expect(editor.ready()?.sessionId).toBe("s2"), SETTLE);
+    expect(openEdits()).toEqual([WORDS]);
+    await saveEdit(editing);
+    expect(editor.review().pending).toEqual([]);
+    editor.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(editor.ready()?.sessionId).toBe("s1"), SETTLE);
+    expect(editor.review().pending.map(({ body }) => body)).toEqual([WORDS]);
+    comments.dispose();
+    done();
+  });
+});
+
 describe("her words under a Mend draft", () => {
   const WORDS = "I ran them by hand";
   const DRAFT = comment({
@@ -577,6 +741,31 @@ describe("her words under a Mend draft", () => {
       done();
     },
   );
+
+  it("stay in the draft's thread while it is redrawn and after the draft is gone, where Mend could not name her account", async () => {
+    const mend = new FakeMend();
+    mend.serverComments = [DRAFT];
+    const unnamed = { ...sessionReads("change-1"), accountOf: async () => null };
+    const store = new ReviewStore(unnamed, mend, pinsInMemory(), keptIn(await storage()), noPaste);
+    store.follow(PROJECT, session("s1"));
+    const comments = new ReviewComments(store);
+    await vi.waitFor(() => expect(liveThreads()).toHaveLength(1), SETTLE);
+    const [thread] = liveThreads();
+    await ui.commands.get("mend.review.accept")?.({ thread, text: WORDS });
+    expect(ui.warn).toHaveBeenCalledWith(expect.stringMatching(/could not say which account/));
+    expect(shownWords()).toContain(WORDS);
+    const reread = "Nothing in this session ran the tests, read again.";
+    mend.serverComments = [{ ...DRAFT, body: reread }];
+    store.reread();
+    await vi.waitFor(() => expect(shownWords()).toContain(reread), SETTLE);
+    expect(shownWords()).toContain(WORDS);
+    mend.serverComments = [{ ...DRAFT, state: "dismissed" }];
+    store.reread();
+    await vi.waitFor(() => expect(shownWords()).not.toContain(reread), SETTLE);
+    expect(shownWords()).toContain(WORDS);
+    comments.dispose();
+    store.dispose();
+  });
 
   it("are held in this window, and kept the next time this window reads the review", async () => {
     let full = true;
