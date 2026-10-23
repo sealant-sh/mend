@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { HandoffDraft } from "./handoff-draft.js";
 import { HandoffSubmission } from "./handoff-submit.js";
 import type { LocalResult } from "./handoff-worker.js";
-import { Launches } from "./launches.js";
+import { ConnectionChanged, Launches } from "./launches.js";
 import { MendApiError } from "./mend-http.js";
 import { detail, fakeHandoff, project, receipt, summary } from "./test-handoff.js";
 import type { SessionStatus } from "./types.js";
@@ -139,7 +139,7 @@ describe("an accepted handoff", () => {
     ).toMatchObject({ kind: "refused", issue: { kind: "server-changed" } });
     expect(f.calls).not.toContain("receive");
   });
-  it("after dispatch keeps working on the bound destination and never inserts into a switched store", async () => {
+  it("after dispatch sends no launch to the bound destination once VS Code switched, and keeps the prompt", async () => {
     const f = setup();
     const bound = {
       ...f.client,
@@ -153,9 +153,32 @@ describe("an accepted handoff", () => {
       f.dependencies,
     ).run();
     expect(result.kind).toBe("done");
-    expect(f.calls).toContain("launch");
+    expect(f.calls).not.toContain("launch");
+    expect(f.calls).not.toContain("launch confirmed");
     expect(f.calls).not.toContain("record");
     expect(f.calls).not.toContain("attempt");
+  });
+  it("adopts nothing and says the connection changed when VS Code switches just before the adoption", async () => {
+    const f = setup();
+    const client = {
+      ...f.client,
+      adoptProject: async () => {
+        throw new ConnectionChanged();
+      },
+    };
+    const result = await new HandoffSubmission(
+      {
+        ...f.accepted,
+        client,
+        projectsBefore: [],
+        target: { kind: "adopt", name: project.name, origin: project.originUrl ?? "" },
+      },
+      f.dependencies,
+    ).run();
+    expect(result).toMatchObject({ kind: "refused", issue: { kind: "server-changed" } });
+    expect(result.message).not.toContain("stays adopted");
+    expect(result.message).not.toContain("hasn't confirmed");
+    expect(f.calls).not.toContain("receive");
   });
   it("reconciles a lost adoption answer without ever reposting it", async () => {
     const f = setup();

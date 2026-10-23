@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { BoundClient } from "./handoff-client.js";
 import { HandoffSubmission } from "./handoff-submit.js";
+import { ConnectionChanged } from "./launches.js";
 import { uploadMendBundle } from "./mend-http.js";
 import { bundle, fakeHandoff, project, receipt, summary, terms } from "./test-handoff.js";
 
@@ -34,16 +35,20 @@ const answer = (res: ServerResponse, status: number, body: unknown) => {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
 };
+const held = (connection: { readonly url: string; readonly token: string | null }) => ({
+  connection,
+  current: () => true,
+});
 const bound = (url: string) =>
   new BoundClient(
-    { url, token: "test-token" },
+    held({ url, token: "test-token" }),
     async () => ({ url, token: "test-token" }),
     () => undefined,
   );
 
 const as = (token: string) =>
   new BoundClient(
-    { url: "https://mend.example", token },
+    held({ url: "https://mend.example", token }),
     async () => ({ url: "https://mend.example", token }),
     () => undefined,
   );
@@ -209,21 +214,19 @@ describe("raw handoff HTTP", () => {
     ).toBe(307);
     expect(requests).not.toContain("/api/stolen");
   });
-  it("binds the first launch and Retry to the same account, stopping after a 401", async () => {
+  it("sends the launch and its Retry on the bound account, stopping after a 401", async () => {
     const auth: Array<string | undefined> = [];
     let signedOut = false;
     const url = await serve((req, res) => {
       auth.push(req.headers.authorization);
       answer(res, signedOut ? 401 : 200, receipt().session);
     });
-    let current = { url, token: "first" };
+    const first = { url, token: "first" };
     const client = new BoundClient(
-      current,
-      async () => current,
+      held(first),
+      async () => first,
       () => undefined,
     );
-    current = { url: "http://unused.invalid", token: "second" };
-    expect(await client.isCurrent()).toBe(false);
     await client.launchSession("s1", { mode: "pty", prompt: "one" });
     signedOut = true;
     await expect(client.launchSession("s1", { mode: "pty", prompt: "two" })).rejects.toMatchObject({
@@ -233,6 +236,59 @@ describe("raw handoff HTTP", () => {
       client.launchSession("s1", { mode: "pty", prompt: "three" }),
     ).rejects.toMatchObject({ status: 401 });
     expect(auth).toEqual(["Bearer first", "Bearer first"]);
+  });
+  it("sends no adoption, upload, launch or Retry once VS Code connects to another server", async () => {
+    const requests: string[] = [];
+    const url = await serve((req, res) => {
+      requests.push(req.url ?? "");
+      answer(res, 200, receipt().session);
+    });
+    const first = { url, token: "first" };
+    let current = true;
+    const client = new BoundClient(
+      { connection: first, current: () => current },
+      async () => (current ? first : { url: "https://other.example", token: "second" }),
+      () => undefined,
+    );
+    current = false;
+    expect(await client.isCurrent()).toBe(false);
+    await expect(
+      client.adoptProject("newsroom-api", "git@github.com:a/b.git"),
+    ).rejects.toBeInstanceOf(ConnectionChanged);
+    expect(await client.receiveBranchHandoff(project.id, bundle(), () => undefined)).toEqual({
+      kind: "refused",
+      issue: { kind: "server-changed" },
+    });
+    await expect(client.launchSession("s1", { mode: "pty", prompt: "one" })).rejects.toBeInstanceOf(
+      ConnectionChanged,
+    );
+    await expect(
+      client.launchSession("s1", { mode: "pty", prompt: "one", expected: { settledAt: null } }),
+    ).rejects.toBeInstanceOf(ConnectionChanged);
+    expect(requests).toEqual([]);
+  });
+  it("sends no upload or launch once VS Code signs out, and says it is signed out", async () => {
+    const requests: string[] = [];
+    const url = await serve((req, res) => {
+      requests.push(req.url ?? "");
+      answer(res, 200, receipt().session);
+    });
+    const first = { url, token: "first" };
+    let current = true;
+    const client = new BoundClient(
+      { connection: first, current: () => current },
+      async () => (current ? first : { url, token: null }),
+      () => undefined,
+    );
+    current = false;
+    expect(await client.receiveBranchHandoff(project.id, bundle(), () => undefined)).toEqual({
+      kind: "refused",
+      issue: { kind: "signed-out" },
+    });
+    await expect(client.launchSession("s1", { mode: "pty", prompt: "one" })).rejects.toMatchObject({
+      status: 401,
+    });
+    expect(requests).toEqual([]);
   });
   it.each([
     [404, "Not found", "unsupported"],

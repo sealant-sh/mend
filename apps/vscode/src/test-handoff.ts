@@ -12,6 +12,7 @@ import type {
 } from "./handoff-client.js";
 import type { AcceptedHandoff } from "./handoff-draft.js";
 import type { CheckoutWorker, HandoffBundle } from "./handoff-worker.js";
+import { ConnectionChanged } from "./launches.js";
 import { HandoffProvenance, type SessionDetail, type SessionStatus } from "./types.js";
 
 export const project: HandoffProject = {
@@ -134,6 +135,7 @@ export const fakeHandoff = () => {
       return read;
     },
     launchSession: async () => {
+      if (!current) throw new ConnectionChanged();
       calls.push("launch");
       return read.session;
     },

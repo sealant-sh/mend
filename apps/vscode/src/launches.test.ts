@@ -1,7 +1,7 @@
 import type { LaunchAdmissionRule } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
-import { Launches } from "./launches.js";
+import { ConnectionChanged, Launches } from "./launches.js";
 import { MendApiError } from "./mend-http.js";
 import type { LaunchRequest } from "./new-session.js";
 import type { LaunchAttempt } from "./session-model.js";
@@ -466,7 +466,7 @@ describe("a held handoff's launch", () => {
     expect(server.launched).toEqual([START, { ...START, expected: { settledAt: null } }]);
   });
 
-  it("keeps the bound client for the first launch and its Retry after a connection switch", async () => {
+  it("sends the first launch and its Retry on the client it was bound to, never the window's", async () => {
     const original = fakeServer(["refused", "ok"], [session("idle")]);
     const switched = fakeServer(["ok"], [session("idle")]);
     const attempts: LaunchAttempt[] = [];
@@ -482,6 +482,52 @@ describe("a held handoff's launch", () => {
     expect(original.launched).toHaveLength(2);
     expect(switched.launched).toEqual([]);
     expect(attempts.some((attempt) => attempt.refusal?.line.includes("budget"))).toBe(true);
+  });
+
+  it("sends no launch or Retry once its client's connection changed, and says no attempt", async () => {
+    const server = fakeServer(["refused", "ok"], [session("idle")]);
+    let moved = false;
+    const bound = {
+      isCurrent: async () => !moved,
+      sessionDetail: server.sessionDetail,
+      launchSession: async (sessionId: string, body: LaunchBody) => {
+        if (moved) throw new ConnectionChanged();
+        return server.launchSession(sessionId, body);
+      },
+    };
+    const attempts: LaunchAttempt[] = [];
+    let confirmed = 0;
+    const launches = new Launches(fakeServer([], [session("idle")]), {
+      attempted: (_id, attempt) => {
+        attempts.push(attempt);
+      },
+      forget: () => undefined,
+    });
+
+    moved = true;
+    await launches.launch("s2", START, {
+      client: bound,
+      confirmed: () => {
+        confirmed++;
+      },
+    });
+    expect(server.launched).toEqual([]);
+    expect(attempts).toEqual([]);
+    expect(confirmed).toBe(0);
+
+    moved = false;
+    await launches.launch("s1", START, { client: bound });
+    expect((await launches.offer("s1")).kind).toBe("retry");
+    const said = attempts.length;
+    moved = true;
+    expect(await launches.relaunch("s1", null)).toEqual({ kind: "held" });
+    expect(server.launched).toHaveLength(1);
+    expect(attempts).toHaveLength(said);
+
+    moved = false;
+    expect(await launches.relaunch("s1", null)).toEqual({ kind: "sent" });
+    expect(server.launched).toHaveLength(2);
+    expect(attempts.at(-1)?.n).toBe(2);
   });
 });
 
