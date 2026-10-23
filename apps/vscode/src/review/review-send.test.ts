@@ -2141,6 +2141,91 @@ describe("VS Code connects to another Mend server while claude's terminal opens 
   }, 15_000);
 });
 
+describe("Dana signs out while VS Code reads claude's process right before the paste", () => {
+  it("pastes nothing into claude's terminal, and the review reads stopped because VS Code signed out", async () => {
+    const mend = new FakeMend();
+    mend.answer = "pending";
+    mend.serverComments = [comment({ id: "c1" })];
+    let signedOut = false;
+    let socketOpen = false;
+    const lastRead = Promise.withResolvers<void>();
+    const answered = Promise.withResolvers<void>();
+    const written: Array<string> = [];
+    const directory = await storage();
+    const store = new ReviewStore(
+      {
+        ...withAgent(CLAUDE),
+        accountOf: async (): Promise<string | null> => {
+          if (signedOut) throw new MendApiError("Signed out", 401);
+          return "dana";
+        },
+        sessionDetail: async (sessionId: string): Promise<SessionDetail> => {
+          // The read once the socket is open passed its sign-in check; Mend answers it after she signs out.
+          if (socketOpen) {
+            lastRead.resolve();
+            await answered.promise;
+          }
+          return {
+            session: { ...session(sessionId), ownerUserId: "dana" },
+            processes: [CLAUDE],
+            currentAgent: CLAUDE,
+            changeId: "change-1",
+          };
+        },
+      },
+      mend,
+      new ReviewMemory(memento()),
+      keptIn(directory),
+      (sessionId, processId, text, bound) =>
+        pasteIntoAgent<string>(
+          {
+            detail: (id) => bound.sessionDetail(id),
+            answer: async () => undefined,
+            activeTab: () => "claude's tab",
+            processOf: () => "agent-1",
+            paste: async (_tab, pasted, ready) => {
+              socketOpen = true;
+              if (!(await ready())) return false;
+              written.push(pasted);
+              return true;
+            },
+            sleep: async () => undefined,
+          },
+          sessionId,
+          processId,
+          text,
+        ),
+    );
+    store.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(store.ready()).not.toBeNull(), SETTLE);
+    const composed = store.compose();
+    if (composed === null) throw new Error("nothing composed");
+    expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
+    await lastRead.promise;
+
+    signedOut = true;
+    store.forget();
+    answered.resolve();
+    const place = { url: "http://mend", viewer: "dana", sessionId: "s1" };
+    const phases = async () =>
+      (await keptIn(directory).read(place)).review.sends.map(({ phase }) => phase);
+    await vi.waitFor(
+      async () =>
+        expect(await phases()).not.toEqual([
+          expect.objectContaining({ paste: { kind: "pasting" } }),
+        ]),
+      SETTLE,
+    );
+    expect(written).toEqual([]);
+    expect(await phases()).toEqual([
+      expect.objectContaining({
+        kind: "in-terminal",
+        paste: { kind: "failed", mayHaveLanded: false, stopped: { kind: "signed-out" } },
+      }),
+    ]);
+  }, 15_000);
+});
+
 describe("a session read that fails after Mend answered the follow-up", () => {
   /** Dana's session with claude live, which the send's drive cannot read once Mend got it. */
   const unreadAfter = (mend: FakeMend) => {
