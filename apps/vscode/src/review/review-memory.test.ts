@@ -83,6 +83,23 @@ describe("the key that pins a change's slice", () => {
     expect(await memory.pinKey("http://mend", "change-1")).not.toBe(old);
   });
 
+  it("still answers when a newer version of the extension keeps the pins", async () => {
+    const files = memoryFiles();
+    const file = "/global-storage/reviews/pins/http%3A%2F%2Fmend.json";
+    const usedAt = Date.now() - 2 * DAY;
+    const newer = JSON.stringify({
+      format: 2,
+      rev: 1,
+      record: { "change-1": { key: "kept-key", usedAt } },
+    });
+    await files.writeFile(file, newer);
+    const memory = windowOn(files);
+    expect(await memory.pinKey("http://mend", "change-1")).toBe("kept-key");
+    const unpinned = await memory.pinKey("http://mend", "change-2");
+    expect(await memory.pinKey("http://mend", "change-2")).toBe(unpinned);
+    expect(await files.readFile(file)).toBe(newer);
+  });
+
   it("reads anything unreadable as nothing kept", () => {
     expect(parsePins("garbage")).toEqual({});
     expect(parsePins({ a: { key: "k", usedAt: 1 }, b: 3, c: { key: 4, usedAt: 1 } })).toEqual({
