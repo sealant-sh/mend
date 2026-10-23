@@ -2396,7 +2396,6 @@ const sees = async (store: ReviewStore, processId: string): Promise<void> => {
   }, SETTLE);
 };
 
-/** Dana's session `s1`, its live claude the one last `replace`d in. */
 const replaceable = () => {
   let agent = CLAUDE;
   return {
@@ -2415,7 +2414,6 @@ const replaceable = () => {
   };
 };
 
-/** A window with its own kept files over `directory`, each paste kept with its process. */
 const windowOver = async (
   directory: string,
   mend: FakeMend,

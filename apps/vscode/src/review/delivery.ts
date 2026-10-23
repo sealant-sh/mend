@@ -776,25 +776,20 @@ export const stepReview = (
     );
 };
 
-/**
- * The Mend drafts her posted words replace while Mend may still hold them as drafts: from the
- * moment her words land until the draft reads dismissed. Kept apart from the record, so neither
- * trimming the record, the sweep, nor a build that cannot read it offers Accept on them again.
- */
 const withReplaced = (review: SessionReview, key: string, event: SendEvent): SessionReview => {
   if (event.kind === "draft-dismissed")
-    return review.replaced.includes(event.draftId)
-      ? { ...review, replaced: review.replaced.filter((id) => id !== event.draftId) }
+    return review.replacedDrafts.includes(event.draftId)
+      ? { ...review, replacedDrafts: review.replacedDrafts.filter((id) => id !== event.draftId) }
       : review;
   if (event.kind !== "posted") return review;
   const item = review.sends
     .find((record) => record.key === key)
     ?.items.find((one) => one.kind === "rewrite" && one.pending.id === event.pendingId);
-  if (item?.kind !== "rewrite" || review.replaced.includes(item.pending.origin.draftId))
+  if (item?.kind !== "rewrite" || review.replacedDrafts.includes(item.pending.origin.draftId))
     return review;
   return {
     ...review,
-    replaced: [...review.replaced, item.pending.origin.draftId].slice(-KEPT_REPLACED),
+    replacedDrafts: [...review.replacedDrafts, item.pending.origin.draftId].slice(-KEPT_REPLACED),
   };
 };
 

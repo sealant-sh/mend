@@ -6,11 +6,9 @@ import { keptIn, memoryFiles } from "./test-fixtures.js";
 
 const DAY = 24 * 60 * 60 * 1000;
 
-/** A window of this VS Code: its own pins over the global storage every window shares. */
 const windowOn = (files: KeptFiles, now: () => number = Date.now): ReviewMemory =>
   new ReviewMemory(keptIn("/global-storage/reviews", files), now);
 
-/** The machine's disk, and how many files were written to it. */
 const counted = (): { readonly files: KeptFiles; readonly writes: () => number } => {
   const files = memoryFiles();
   let writes = 0;

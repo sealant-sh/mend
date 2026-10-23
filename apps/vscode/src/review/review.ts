@@ -31,7 +31,6 @@ export interface Review extends vscode.Disposable {
 
 export const startReview = (deps: {
   readonly client: MendClient;
-  /** Her pending comments and the pins, kept in the global storage every window shares. */
   readonly kept: KeptReviews;
   readonly onError: (cause: unknown) => void;
   /** The toast claims every window of this VS Code shares with the notifier. */

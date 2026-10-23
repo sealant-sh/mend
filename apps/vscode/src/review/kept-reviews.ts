@@ -52,10 +52,6 @@ export const NODE_FILES: KeptFiles = {
     ),
 };
 
-/**
- * A session's review untouched this long goes, unless it holds something she could still need:
- * nobody reviews a session a month on, and nothing of hers is lost when it goes.
- */
 export const KEPT_REVIEW_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** A lock its holder has not renewed this long was left by a window that died holding it. */
@@ -73,55 +69,51 @@ const DRIVE_BEAT_MS = DRIVE_STALE_MS / 4;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A session's review as kept, with its revision: a later write's is higher. */
 export interface KeptReview {
   readonly rev: number;
   readonly review: SessionReview;
 }
 
 /**
- * The format this build writes a session's review in. Raise it only for a change an older build
- * would write back wrongly: it then leaves the file as it is. An entry an older build cannot read
- * (a new kind of send, phase or origin) needs no raise: that build writes it back where it was,
- * and sends no review after a send it cannot read.
+ * Builds already installed read this, and cannot be changed: raise it only for a change they would
+ * write back wrongly, so they leave the file as it is. They write back an entry they cannot read
+ * where it was, and send no review after a send they cannot read, so a new kind of entry needs no
+ * raise.
  */
 export const KEPT_FORMAT = 1;
 
-/** A write this build refuses for as long as the file stays as it is: retrying it changes nothing. */
 export class Unwritable extends Error {}
 
-/** A kind of file every window shares: what it keeps, in her words, and the format it is in. */
 interface FileKind {
   readonly what: string;
   readonly format: number;
-  /**
-   * What becomes of bytes this build cannot read: her words are left as they are; state this VS
-   * Code can make again (a pin, a look) is written over, so a file a crash cut short mends.
-   */
-  readonly damaged: "left" | "replaced";
+  readonly onUnreadable: "keep" | "overwrite";
 }
 
-const REVIEW: FileKind = { what: "this session's review", format: KEPT_FORMAT, damaged: "left" };
+const REVIEW: FileKind = {
+  what: "this session's review",
+  format: KEPT_FORMAT,
+  onUnreadable: "keep",
+};
 
-/** A file every window shares, as stored: its fields, and whether this build may write it. */
 interface Stored {
   readonly rev: number;
-  /** Every field of the file: a write keeps each one this build does not write itself. */
   readonly fields: Readonly<Record<string, unknown>>;
-  /** Why this build leaves the file as it is; null when it may write it. */
   readonly unwritable: string | null;
 }
+
+/** Never below the clock, so a file swept and written anew reads newer than any a window read. */
+const revisionAfter = (rev: number, now: number): number => Math.max(rev + 1, now);
 
 const NOTHING_STORED: Stored = { rev: 0, fields: {}, unwritable: null };
 
 const FROM_NEWER =
   "Change it from a window that runs the newer version: reload this window if VS Code updated the extension.";
 
-/** A shared file's text as stored; one a build before formats were kept wrote is format 1. */
 const parseStored = (
   file: string,
   text: string,
-  { what, format: mine, damaged }: FileKind,
+  { what, format: mine, onUnreadable }: FileKind,
 ): Stored => {
   let value: unknown;
   try {
@@ -130,7 +122,7 @@ const parseStored = (
     value = undefined;
   }
   const unreadable = (why: string): Stored =>
-    damaged === "replaced"
+    onUnreadable === "overwrite"
       ? NOTHING_STORED
       : {
           rev: 0,
@@ -152,7 +144,6 @@ const parseStored = (
   };
 };
 
-/** A kept review as this build reads it, and the entries it cannot, to write back as they were. */
 interface Opened {
   readonly stored: Stored;
   readonly kept: KeptReview;
@@ -165,32 +156,24 @@ const openReview = (stored: Stored): Opened => {
 };
 
 /**
- * A record of this machine every window reads and writes, in its own file beside the reviews:
- * the keys pinning each change's slice, what this VS Code last looked at. A write keeps only what
- * `parse` reads, so any change to the record's shape raises its `format`.
+ * Builds already installed write back only what their `parse` reads, and cannot be changed: any
+ * change to a record's shape raises its `format`.
  */
 export interface SharedRecord<T> extends FileKind {
-  /** Its file, under the directory the reviews are kept in. */
   readonly name: string;
-  /** The record as stored; nothing stored reads as `undefined`. */
   readonly parse: (stored: unknown) => T;
 }
 
-/**
- * Whether a kept file holds nothing she could still need: no comment she has not sent, no words of
- * a review she is writing, no send unfinished or waiting on her, and nothing this build cannot read.
- */
 const holdsNothing = ({ stored, kept: { review }, unread }: Opened): boolean =>
   stored.unwritable === null &&
   unread.pending.length === 0 &&
   unread.sends.length === 0 &&
   unread.document === null &&
   review.pending.length === 0 &&
-  review.replaced.length === 0 &&
+  review.replacedDrafts.length === 0 &&
   (review.document === null || asComposed(review.document)) &&
   review.sends.every((record) => needs(record) === "nothing");
 
-/** `review` as stored, with every entry this build could not read written back as it was. */
 const storedReview = (
   stored: unknown,
   review: SessionReview,
@@ -216,11 +199,6 @@ const storedReview = (
   };
 };
 
-/**
- * Each of `next`'s entries where the stored one with its id was, each one this build could not
- * read where it was, then the new ones: a send's place is when it was sent, which a newer build
- * reads its latest by.
- */
 const inPlace = <T>(
   stored: unknown,
   next: ReadonlyArray<T>,
@@ -284,19 +262,10 @@ export class KeptReviews {
     private readonly now: () => number = Date.now,
   ) {}
 
-  /**
-   * The session's review as kept now; nothing kept reads as no comment. A file this build leaves as
-   * it is reads as far as this build reads it.
-   */
   async read(place: ReviewPlace): Promise<KeptReview> {
     return openReview(await this.#stored(this.#file(place), REVIEW)).kept;
   }
 
-  /**
-   * Applies `update` to the review as kept now, never to a copy this window read earlier, and
-   * answers what was kept. Nothing is written when nothing changed. A write that fails throws, and
-   * what is kept stays as it was; so does a write to a file this build leaves as it is.
-   */
   async update(
     place: ReviewPlace,
     update: (kept: SessionReview) => SessionReview | Promise<SessionReview>,
@@ -318,16 +287,11 @@ export class KeptReviews {
     });
   }
 
-  /** The record as kept now, as far as this build reads it. */
   async readRecord<T>(record: SharedRecord<T>): Promise<T> {
     const file = join(this.directory, record.name);
     return record.parse((await this.#stored(file, record)).fields["record"]);
   }
 
-  /**
-   * Applies `update` to the record as kept now, as `update` does to a review, and answers what was
-   * kept: under its lock, so one window's write keeps what another wrote.
-   */
   async updateRecord<T>(record: SharedRecord<T>, update: (kept: T) => T): Promise<T> {
     const file = join(this.directory, record.name);
     return this.#serial(file, () =>
@@ -342,7 +306,6 @@ export class KeptReviews {
     );
   }
 
-  /** One write at a time per file in this window, so it never waits on its own lock. */
   async #serial<T>(file: string, work: () => Promise<T>): Promise<T> {
     const before = this.#queued.get(file) ?? Promise.resolve();
     const run = before.catch(() => undefined).then(work);
@@ -363,10 +326,6 @@ export class KeptReviews {
     }
   }
 
-  /**
-   * Writes `fields` over the file as stored, keeping every other field, while this window still
-   * holds its lock, and answers the revision written.
-   */
   async #replace(
     file: string,
     kind: FileKind,
@@ -375,9 +334,7 @@ export class KeptReviews {
     held: () => Promise<boolean>,
   ): Promise<number> {
     if (stored.unwritable !== null) throw new Unwritable(stored.unwritable);
-    // Never below the clock: a file swept or removed and written anew stays newer than any
-    // revision a window read before.
-    const rev = Math.max(stored.rev + 1, this.now());
+    const rev = revisionAfter(stored.rev, this.now());
     const written = `${file}.${randomUUID()}.tmp`;
     try {
       await this.files.writeFile(
@@ -571,11 +528,6 @@ export class KeptReviews {
     };
   }
 
-  /**
-   * Reviews untouched past the expiry that hold nothing she could still need, and what a crash
-   * left, go; at most hourly. An expired review is read and goes only under its own lock, so a
-   * window writing it at that moment keeps its write; the one `writing` is about to change stays.
-   */
   async #sweep(writing: string): Promise<void> {
     const directory = dirname(writing);
     if (this.now() - (this.#swept.get(directory) ?? Number.NEGATIVE_INFINITY) < SWEEP_EVERY_MS)

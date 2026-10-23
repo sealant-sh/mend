@@ -1,18 +1,8 @@
 import type { KeptReviews, SharedRecord } from "./review/kept-reviews.js";
 import { mergeLastSeen, type LastSeen } from "./session-model.js";
 
-/**
- * What this VS Code last looked at, per server URL (Decided 3: per machine), kept for every window
- * in a file they share (`kept-reviews.ts`): a window merges its looks into what the others kept,
- * under the file's lock, so none writes away another's.
- */
 export interface LastSeenStore {
-  /** As kept now; null when nothing is kept for the server. */
   read(url: string): Promise<LastSeen | null>;
-  /**
-   * Merges `mine` into what is kept (the later look per session, the earlier baseline), forgets
-   * the sessions in `forget`, and answers what is kept now.
-   */
   merge(url: string, mine: LastSeen, forget: ReadonlyArray<string>): Promise<LastSeen>;
 }
 
@@ -32,7 +22,7 @@ const recordOf = (url: string): SharedRecord<LastSeen | null> => ({
   name: `last-seen/${encodeURIComponent(url)}.json`,
   what: "what this VS Code last looked at",
   format: 1,
-  damaged: "replaced",
+  onUnreadable: "overwrite",
   parse: parseLastSeen,
 });
 

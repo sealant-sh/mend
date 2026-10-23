@@ -168,7 +168,6 @@ export class SessionStore implements vscode.Disposable {
   #lastHeardAt: string | null = null;
   #serverUrl: string | null = null;
   #lastSeen: LastSeen = { baseline: new Date().toISOString(), sessions: {} };
-  /** The server whose looks a write failed to keep: the next emit writes them again. */
   #unsavedFor: string | null = null;
   #model: WindowModel | null = null;
   /** Whether `#model` came from a read: the first read's change then raises no toast. */
@@ -211,7 +210,6 @@ export class SessionStore implements vscode.Disposable {
   readonly #disposables: ReadonlyArray<vscode.Disposable>;
 
   constructor(
-    /** What this VS Code last looked at, kept for every window. */
     private readonly lastSeen: LastSeenStore,
     private readonly client: StoreClient,
     private readonly role: WindowRole,
@@ -842,10 +840,6 @@ export class SessionStore implements vscode.Disposable {
     this.#unmatched = unmatched;
   }
 
-  /**
-   * What this VS Code last looked at on the server, as every window kept it; a server read for the
-   * first time on this machine starts from now: what settled before is not news.
-   */
   async #loadLastSeen(url: string): Promise<LastSeen> {
     const fresh: LastSeen = { baseline: new Date().toISOString(), sessions: {} };
     return this.lastSeen.merge(url, fresh, []).catch((cause: unknown) => {
@@ -854,7 +848,6 @@ export class SessionStore implements vscode.Disposable {
     });
   }
 
-  /** What other windows looked at since: a look there is no news here. */
   async #readLastSeen(): Promise<void> {
     const url = this.#serverUrl;
     if (url === null) return;
@@ -870,10 +863,6 @@ export class SessionStore implements vscode.Disposable {
     this.#emit();
   }
 
-  /**
-   * Every window of this VS Code keeps the same record (Decided 3: per machine): this window's
-   * looks are merged into what the others kept, never written over it.
-   */
   #saveLastSeen(forget: ReadonlyArray<string> = []): void {
     const url = this.#serverUrl;
     if (url === null) return;
@@ -884,17 +873,11 @@ export class SessionStore implements vscode.Disposable {
     );
   }
 
-  /** A write that failed is tried again, unless the file is one this build never writes. */
   #unsaved(url: string, cause: unknown): void {
     if (!(cause instanceof Unwritable)) this.#unsavedFor = url;
   }
 
-  /**
-   * The sessions she looks at now that settled since she last looked at them, each with when it
-   * settled by Mend's clock, the time its look is kept at: only those are written, so a window she
-   * keeps in front writes nothing while nothing new settles, whatever this machine's clock reads.
-   */
-  #lookedAt(model: WindowModel): ReadonlyMap<string, string> {
+  #settledNewsLookedAt(model: WindowModel): ReadonlyMap<string, string> {
     if (!vscode.window.state.focused || !this.#read) return new Map();
     return new Map(
       [...this.showing()].flatMap((id): ReadonlyArray<[string, string]> => {
@@ -930,7 +913,7 @@ export class SessionStore implements vscode.Disposable {
     }
     const prev = this.#modelRead ? this.#model : null;
     let next = this.#modelAt(now);
-    const looked = this.#lookedAt(next);
+    const looked = this.#settledNewsLookedAt(next);
     if (looked.size > 0) {
       this.#lastSeen = {
         ...this.#lastSeen,

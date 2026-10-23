@@ -208,7 +208,6 @@ class FakeWindow implements WindowSessions {
   }
 }
 
-/** The machine's disk, and how many times a window wrote what this VS Code last looked at. */
 const disk = (): { readonly files: KeptFiles; readonly writes: () => number } => {
   const files = memoryFiles();
   let writes = 0;
@@ -285,7 +284,6 @@ describe("what this VS Code last looked at (Decided 3)", () => {
 });
 
 describe("what this VS Code last looked at, between windows (Decided 3)", () => {
-  /** `done` settles now, and the store reads it. */
   const settles = async (mend: FakeMend): Promise<void> => {
     mend.add(
       session({ id: "done", status: "completed", settledAt: new Date(Date.now()).toISOString() }),
@@ -397,15 +395,24 @@ describe("what this VS Code last looked at, between windows (Decided 3)", () => 
 
   it("reaches a window already open when she brings it to the front", async () => {
     const files = memoryFiles();
-    // One server, as each window's own stream hears it.
-    const [hers, other] = [new FakeMend(), new FakeMend()];
-    const behind = new SessionStore(lastSeenOn(files), hers, { kind: "local" }, new FakeWindow());
-    const front = new SessionStore(lastSeenOn(files), other, { kind: "local" }, new FakeWindow());
+    const [behindStream, frontStream] = [new FakeMend(), new FakeMend()];
+    const behind = new SessionStore(
+      lastSeenOn(files),
+      behindStream,
+      { kind: "local" },
+      new FakeWindow(),
+    );
+    const front = new SessionStore(
+      lastSeenOn(files),
+      frontStream,
+      { kind: "local" },
+      new FakeWindow(),
+    );
     behind.start();
     front.start();
     await tick(200);
-    await settles(hers);
-    await settles(other);
+    await settles(behindStream);
+    await settles(frontStream);
     front.setVisible(true);
     front.select(["done"]);
     await tick(200);

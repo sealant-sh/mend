@@ -55,7 +55,7 @@ const sent = (
     pending: [pending({}), pending({ id: "p2", line: 13, endLine: 13 })],
     sends: [],
     document: null,
-    replaced: [],
+    replacedDrafts: [],
   },
   key = "key-1",
 ): SessionReview =>
@@ -146,7 +146,7 @@ describe("sending a review (story d, step 6)", () => {
       pending: [pending({}), pending({ id: "p2", line: 13, endLine: 13 })],
       sends: [],
       document: null,
-      replaced: [],
+      replacedDrafts: [],
     };
     const input = {
       key: "key-1",
@@ -637,7 +637,7 @@ describe("an accepted draft in a review she sent", () => {
   });
 
   it("stays hers while the review is on its way, not a draft beside it", () => {
-    const review = sent({ pending: [accepted], sends: [], document: null, replaced: [] });
+    const review = sent({ pending: [accepted], sends: [], document: null, replacedDrafts: [] });
     expect(acceptedDrafts(review).has("d1")).toBe(true);
   });
 
@@ -646,7 +646,7 @@ describe("an accepted draft in a review she sent", () => {
       pending: [{ ...accepted, body: "Run the burst test too." }],
       sends: [],
       document: null,
-      replaced: [],
+      replacedDrafts: [],
     });
     const refused = apply(
       review,
@@ -662,7 +662,7 @@ describe("an accepted draft in a review she sent", () => {
       pending: [{ ...accepted, body: "Run the burst test too." }],
       sends: [],
       document: null,
-      replaced: [],
+      replacedDrafts: [],
     });
     const left = apply(
       review,
@@ -687,11 +687,11 @@ describe("an accepted draft in a review she sent", () => {
       pending: [{ ...accepted, body: "Run the burst test too." }],
       sends: [],
       document: null,
-      replaced: [],
+      replacedDrafts: [],
     });
     const landed = apply(review, { kind: "posted", pendingId: "a1", commentId: "c9" });
-    expect(landed.replaced).toEqual(["d1"]);
-    expect(apply(landed, { kind: "draft-dismissed", draftId: "d1" }).replaced).toEqual([]);
+    expect(landed.replacedDrafts).toEqual(["d1"]);
+    expect(apply(landed, { kind: "draft-dismissed", draftId: "d1" }).replacedDrafts).toEqual([]);
   });
 
   it("leaves the review when it is dismissed on Mend, and is never opened", () => {
@@ -699,15 +699,18 @@ describe("an accepted draft in a review she sent", () => {
       pending: [accepted, pending({})],
       sends: [],
       document: null,
-      replaced: [],
+      replacedDrafts: [],
     });
     expect(nextAction(only(review))).toMatchObject({ kind: "open", draftId: "d1" });
     const gone = apply(review, { kind: "draft-gone", draftId: "d1" });
     expect(only(gone).items.map((item) => item.kind)).toEqual(["own"]);
-    const alone = apply(sent({ pending: [accepted], sends: [], document: null, replaced: [] }), {
-      kind: "draft-gone",
-      draftId: "d1",
-    });
+    const alone = apply(
+      sent({ pending: [accepted], sends: [], document: null, replacedDrafts: [] }),
+      {
+        kind: "draft-gone",
+        draftId: "d1",
+      },
+    );
     expect(only(alone).phase.kind).toBe("refused");
     expect(alone.pending).toEqual([]);
   });

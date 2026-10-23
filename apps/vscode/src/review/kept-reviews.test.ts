@@ -274,10 +274,6 @@ describe("her pending comments, kept for every window of one VS Code", () => {
   });
 });
 
-/**
- * Keeps `review` for `s1`, ages its file past the expiry, and has a window write another session
- * an hour on, so the sweep runs: whether `s1` is still kept after.
- */
 const keptPastExpiry = async (
   review: SessionReview | string,
 ): Promise<{ readonly kept: boolean; readonly read: SessionReview }> => {
@@ -300,7 +296,6 @@ const keptPastExpiry = async (
   };
 };
 
-/** `review` with a review she is writing for it: as composed, or saved with `text`. */
 const withDocument = (review: SessionReview, text: string | null): SessionReview => {
   const composed: Composed = {
     documentId: "doc-1",
@@ -356,9 +351,9 @@ describe("a review untouched past the expiry", () => {
   });
 
   it("stays while it keeps a Mend draft her posted words replace from Accept", async () => {
-    expect((await keptPastExpiry({ ...delivered(), replaced: ["d1"] })).read.replaced).toEqual([
-      "d1",
-    ]);
+    expect(
+      (await keptPastExpiry({ ...delivered(), replacedDrafts: ["d1"] })).read.replacedDrafts,
+    ).toEqual(["d1"]);
   });
 
   it("stays while a Mend draft her posted words replace is still a draft there", async () => {

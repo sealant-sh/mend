@@ -10,7 +10,6 @@ import { instructionOf, keptIn, pending, sentReview, storage } from "./test-fixt
 
 const DANA: ReviewPlace = { url: "http://mend", viewer: "dana", sessionId: "s1" };
 
-/** Her review's file for `s1`, as every window of this VS Code finds it. */
 const fileIn = async (directory: string): Promise<string> => {
   const folder = join(directory, encodeURIComponent("http://mend dana"));
   await mkdir(folder, { recursive: true });
@@ -27,7 +26,6 @@ const stored = async (file: string): Promise<Record<string, unknown>> => {
   return Object.fromEntries(Object.entries(value));
 };
 
-/** Her next review, of the comment `new`. */
 const sendNew = (review: SessionReview): SessionReview => {
   const next = startSend(review, {
     key: "key-2",

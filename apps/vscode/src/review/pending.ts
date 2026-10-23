@@ -94,16 +94,16 @@ export interface SessionReview {
   readonly sends: ReadonlyArray<SendRecord>;
   /** The review Send review opened for the session, until it is sent: one per session. */
   readonly document: ReviewDocument | null;
-  /**
-   * Mend drafts her posted words replace that Mend may still hold as drafts, by id: Accept is not
-   * offered on them again, whatever becomes of the review that posted them.
-   */
-  readonly replaced: ReadonlyArray<string>;
+  readonly replacedDrafts: ReadonlyArray<string>;
 }
 
-export const EMPTY_REVIEW: SessionReview = { pending: [], sends: [], document: null, replaced: [] };
+export const EMPTY_REVIEW: SessionReview = {
+  pending: [],
+  sends: [],
+  document: null,
+  replacedDrafts: [],
+};
 
-/** As many replaced drafts as one session's review keeps: the newest. */
 export const KEPT_REPLACED = MAX_PENDING;
 
 /** The reviews kept: the newest few, enough for since my last review and a retry. */
@@ -334,7 +334,6 @@ const parseStop = (value: unknown): StopReason | null => {
   }
 };
 
-/** Null for a step this build does not know: read as due, it would paste the review again. */
 const parsePasteStep = (value: unknown): PasteStep | null => {
   if (!isRecord(value)) return null;
   switch (value["kind"]) {
@@ -397,7 +396,6 @@ const parseNotice = (value: unknown): ReadonlyArray<SendNotice> => {
   ];
 };
 
-/** A send kept before notices were kept says nothing more; one it cannot read is not read. */
 const parseNotices = (value: unknown): ReadonlyArray<SendNotice> | null => {
   if (value === undefined) return [];
   if (!Array.isArray(value)) return null;
@@ -518,10 +516,6 @@ const parseDocument = (value: unknown): ReviewDocument | null => {
   };
 };
 
-/**
- * What a kept review holds that this build cannot read, as it was: a newer build wrote it, and
- * writes it back as it is (`kept-reviews.ts`). Null for no document.
- */
 export interface Unread {
   readonly pending: ReadonlyArray<unknown>;
   readonly sends: ReadonlyArray<unknown>;
@@ -530,7 +524,6 @@ export interface Unread {
 
 export const NOTHING_UNREAD: Unread = { pending: [], sends: [], document: null };
 
-/** Each entry of `values` this build reads, and the ones it cannot. */
 const partition = <T>(
   values: unknown,
   parse: (value: unknown) => ReadonlyArray<T>,
@@ -545,7 +538,6 @@ const partition = <T>(
   return { read, unread };
 };
 
-/** A session's review as stored: what this build reads of it, and each entry it cannot. */
 export const parseSessionReview = (
   value: unknown,
 ): { readonly review: SessionReview; readonly unread: Unread } => {
@@ -559,7 +551,7 @@ export const parseSessionReview = (
       pending: pending.read,
       sends: sends.read,
       document,
-      replaced: parseIds(value["replaced"]) ?? [],
+      replacedDrafts: parseIds(value["replacedDrafts"]) ?? [],
     },
     unread: {
       pending: pending.unread,
@@ -601,7 +593,6 @@ export const keepComposed = (
   return { review: { ...review, document }, carried };
 };
 
-/** A review she is writing whose text is as Send review composed it, with none of hers in it. */
 export const asComposed = (document: ReviewDocument): boolean =>
   document.revision === AS_COMPOSED && document.earlier === null;
 
@@ -694,7 +685,7 @@ export const removePending = (review: SessionReview, id: string): SessionReview 
  */
 export const acceptedDrafts = (review: SessionReview): ReadonlySet<string> =>
   new Set([
-    ...review.replaced,
+    ...review.replacedDrafts,
     ...review.pending.flatMap((comment) =>
       comment.origin.kind === "accepted" ? [comment.origin.draftId] : [],
     ),

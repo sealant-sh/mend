@@ -435,7 +435,6 @@ export const instructionOf = (text: string): Instruction => {
   return parsed.instruction;
 };
 
-/** A review she sent with one comment, `sent`: its record holds the comment, sending still. */
 export const sentReview = (key = "key-1"): SessionReview => {
   const review = startSend(
     { ...EMPTY_REVIEW, pending: [pending({ id: "sent" })] },
@@ -501,7 +500,6 @@ export const memoryFiles = (): KeptFiles => {
   };
 };
 
-/** A window's pins for review, over a disk of their own. */
 export const pinsInMemory = (): ReviewMemory =>
   new ReviewMemory(keptIn("/global-storage/reviews", memoryFiles()));
 
