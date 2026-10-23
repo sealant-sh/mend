@@ -3,9 +3,10 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { startSend } from "./delivery.js";
 import type { ReviewPlace } from "./kept-reviews.js";
 import { addPending, type SessionReview } from "./pending.js";
-import { keptIn, pending, sentReview, storage } from "./test-fixtures.js";
+import { instructionOf, keptIn, pending, sentReview, storage } from "./test-fixtures.js";
 
 const DANA: ReviewPlace = { url: "http://mend", viewer: "dana", sessionId: "s1" };
 
@@ -113,6 +114,34 @@ describe("the kept review, across versions of the extension", () => {
     };
     expect(ids("sends", "key")).toEqual(["key-1", "key-2"]);
     expect(ids("pending", "id")).toEqual(["later", "hers", "new"]);
+  });
+
+  it("sends no review while it holds a send it cannot read: what that send pasted is not known here", async () => {
+    const directory = await storage();
+    const file = await fileIn(directory);
+    const [pasted] = sentReview("key-1").sends;
+    const unread = { ...pasted, notices: [{ kind: "later", at: "2026-10-19T11:00:00.000Z" }] };
+    await writeFile(
+      file,
+      JSON.stringify({ format: 1, rev: 3, review: { pending: [], sends: [unread] } }),
+    );
+    const kept = keptIn(directory);
+    await kept.update(DANA, addOne);
+    const send = (review: SessionReview): SessionReview => {
+      const next = startSend(review, {
+        key: "key-2",
+        slice: { id: "slice-1", baseId: "cp1", headId: "cp2", diffDigest: "d" },
+        instruction: instructionOf("the next review"),
+        paste: { kind: "all" },
+        pending: ["new"],
+        open: [],
+        now: "2026-10-19T12:00:00.000Z",
+      });
+      if (next === null) throw new Error("the review did not start");
+      return next;
+    };
+    await expect(kept.update(DANA, send)).rejects.toThrow(/newer version/);
+    expect((await kept.read(DANA)).review.pending.map(({ id }) => id)).toEqual(["new"]);
   });
 
   it("is never written over when its bytes do not read as JSON", async () => {
