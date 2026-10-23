@@ -86,8 +86,8 @@ export default async (h) => {
   const oldSettings = readFileSync(settingsFile, "utf8");
   const proxy = await handoffProxy(state.server.origin, token);
   // A launch needs a Claude login. The skill's fake one starts the agent, which is all a handoff's
-  // launch is checked for here; the provider then marks it for reconnecting, so each launch lane
-  // connects it again.
+  // launch is checked for here. Core marks it invalid within seconds of the first inference after
+  // a connect (a new session's naming), so every gesture that launches connects right before it.
   const connectClaude = async () => {
     const connected = await world.cli(["connect", "claude", "--from-stdin"], env, {
       input: FAKES.claude,
@@ -260,6 +260,7 @@ export default async (h) => {
     const knownWindows = await windows();
     const seen = await watch();
     const launchCount = launches().length;
+    if (prompt !== "") await connectClaude();
     await quickInput.type(prompt);
     await quickInput.accept();
     const result = await waitReceived(before, projectId);
@@ -284,6 +285,20 @@ export default async (h) => {
 
     return { ...result, detail, observed, toast };
   };
+  const agentRuns = (sessionId, prompt) =>
+    waitUntil(
+      "an agent-pty whose argv holds the prompt",
+      async () => {
+        const detail = await api(`/sessions/${sessionId}`);
+        return detail.processes.some(
+          (process) =>
+            process.kind === "agent-pty" && JSON.stringify(process.argv).includes(prompt),
+        )
+          ? detail
+          : null;
+      },
+      120_000,
+    );
   const nextCut = (label) => appendFileSync(join(state.checkout, "untracked.txt"), `${label}\n`);
   let held;
   let H, M;
@@ -567,18 +582,11 @@ export default async (h) => {
     ]) {
       await step(`lane 5: ${entry} prompt launches once through Launches`, async () => {
         nextCut(entry);
-        await connectClaude();
         await open(entry);
         const count = launches().length;
         const result = await accept(prompt);
         await waitUntil("one launch", async () => launches().length === count + 1, 120_000);
-        const detail = await api(`/sessions/${result.session.id}`);
-        assert.ok(
-          detail.processes.some(
-            (process) =>
-              process.kind === "agent-pty" && JSON.stringify(process.argv).includes(prompt),
-          ),
-        );
+        await agentRuns(result.session.id, prompt);
         return {
           observed: `one session ${result.session.id}, one launch, ${prompt.length} prompt characters`,
         };
@@ -586,7 +594,6 @@ export default async (h) => {
     }
     await step("lane 5: a refused launch's Retry keeps its session and worktree", async () => {
       nextCut("retry");
-      await connectClaude();
       proxy.controls.refuseLaunch = true;
       await open();
       // The launch's refusal toast arrives before the completion's; clearing would take it too.
@@ -601,6 +608,7 @@ export default async (h) => {
       );
       proxy.controls.refuseLaunch = false;
       const n = launches().length;
+      await connectClaude();
       await answer(/launch refused/, "Retry");
       await waitUntil("same session relaunched", async () => launches().length === n + 1, 120_000);
       const after = await projectRead();
@@ -631,7 +639,6 @@ export default async (h) => {
       "prompt kept: a dismissed slow start keeps her prompt, and the next question launches it",
       async () => {
         nextCut("kept");
-        await connectClaude();
         const prompt = "carry the login fix through a slow start";
         const before = await projectRead();
         const n = launches().length;
@@ -655,13 +662,7 @@ export default async (h) => {
         const result = await accept(prompt);
         await waitUntil("one launch", async () => launches().length === n + 1, 120_000);
         assert.ok(launches().at(-1).route.includes(result.session.id));
-        const detail = await api(`/sessions/${result.session.id}`);
-        assert.ok(
-          detail.processes.some(
-            (process) =>
-              process.kind === "agent-pty" && JSON.stringify(process.argv).includes(prompt),
-          ),
-        );
+        await agentRuns(result.session.id, prompt);
         const first = await api(`/sessions/${unsent.session.id}`);
         assert.ok(!first.processes.some((process) => process.kind.startsWith("agent-")));
         return {
@@ -919,7 +920,13 @@ export default async (h) => {
         await useWindow(opened);
         await command();
         await quickInput.waitFor();
-        assertText(await quickInput.title(), "choose a repository");
+        // The question opens on its general title and turns into the repository pick once the
+        // extension has read the roots and the server's support.
+        await waitUntil(
+          "the repository pick's title",
+          async () => (await quickInput.title()).includes("choose a repository"),
+          60_000,
+        );
         const n = writes().length;
         await quickInput.cancel();
         assert.equal(writes().length, n);
