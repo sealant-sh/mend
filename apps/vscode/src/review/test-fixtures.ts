@@ -13,6 +13,7 @@ import type { MendConnection } from "../config.js";
 import { MendApiError } from "../mend-http.js";
 import type { Project, ProjectDetail, Session, SessionDetail } from "../types.js";
 import type { Pasted } from "./agent-paste.js";
+import type { Bound } from "./binding.js";
 import type { ChangeRead } from "./change-rows.js";
 import type { DeliverRequest } from "./delivery.js";
 import { Instruction } from "./instruction.js";
@@ -295,7 +296,7 @@ export class FakeMend extends ReviewClient {
   }
 
   /** This Mend, each call made only once `connect` gives a connection, as a pinned client's are. */
-  override pinned(connect: () => Promise<MendConnection>): ReviewClient {
+  override pinned(connect: () => Promise<Bound>): ReviewClient {
     return new Proxy(this, {
       get: (target, property) => {
         const value: unknown = Reflect.get(target, property);

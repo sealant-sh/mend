@@ -1,7 +1,6 @@
-import type { MendConnection } from "../config.js";
 import { attachableProcesses } from "../tty-protocol.js";
 import type { SessionDetail } from "../types.js";
-import { Unbound, type SessionReads } from "./binding.js";
+import { Unbound, unboundSince, type Bound, type SessionReads } from "./binding.js";
 
 /** Where a G12 paste went: into the agent's input, or nowhere, and why. */
 export type Pasted = "pasted" | "agent-gone" | "not-attached";
@@ -16,17 +15,14 @@ export type PasteReview = (
   processId: string,
   text: string,
   reads: SessionReads,
-  bound: () => Promise<MendConnection>,
+  bound: () => Promise<Bound>,
 ) => Promise<Pasted>;
 
 /** What a paste into a session's agent terminal does to the world, injected so it reads plain. */
 export interface PasteEffects<Tab> {
   readonly detail: (sessionId: string) => Promise<SessionDetail>;
-  /**
-   * VS Code's connection while it is the send's; throws `Unbound` otherwise. Asked after the last
-   * read, right before the write: she can sign out while that read is out.
-   */
-  readonly bound: () => Promise<MendConnection>;
+  /** VS Code's connection while it is the send's; throws `Unbound` otherwise. */
+  readonly bound: () => Promise<Bound>;
   /** Answer: the session's agent attached and shown in this window's panel. */
   readonly answer: (sessionId: string) => Promise<void>;
   /** The active terminal tab when it is one of this session's; null otherwise. */
@@ -35,10 +31,15 @@ export interface PasteEffects<Tab> {
   readonly processOf: (tab: Tab) => string | null;
   /**
    * The bracketed paste into the tab, once its socket is open and `ready` answers true, asked right
-   * before the write; false when the socket never opened or `ready` said no. Throws what `ready`
-   * throws, and then writes nothing.
+   * before the write, and `current` still does; false when the socket never opened or either said
+   * no. Throws what `ready` throws, and then writes nothing.
    */
-  readonly paste: (tab: Tab, text: string, ready: () => Promise<boolean>) => Promise<boolean>;
+  readonly paste: (
+    tab: Tab,
+    text: string,
+    ready: () => Promise<boolean>,
+    current: () => boolean,
+  ) => Promise<boolean>;
   readonly sleep: (ms: number) => Promise<void>;
 }
 
@@ -51,8 +52,8 @@ const ATTACH_POLL_MS = 100;
  * pasted line would run: so the paste goes only into a tab attached to that process, and only
  * while Mend lists the process live, read again once the tab's socket is open, right before the
  * write, since the socket can take seconds to open. A failure before the write pasted nothing, so
- * it reads not attached; only the write itself throws, and a connection that is not the send's,
- * which pasted nothing either.
+ * it reads not attached; only the write itself throws, and a connection that changed since the
+ * paste bound it, which pasted nothing either.
  */
 export const pasteIntoAgent = async <Tab>(
   effects: PasteEffects<Tab>,
@@ -60,25 +61,30 @@ export const pasteIntoAgent = async <Tab>(
   processId: string,
   text: string,
 ): Promise<Pasted> => {
+  const bound = await effects.bound();
   const found = await attach(effects, sessionId, processId).catch((cause: unknown): Pasted => {
     if (cause instanceof Unbound) throw cause;
     return "not-attached";
   });
   if (typeof found === "string") return found;
   let unwritten: Exclude<Pasted, "pasted"> = "not-attached";
-  const written = await effects.paste(found.tab, text, async () => {
-    try {
-      if (await live(effects, sessionId, processId)) {
-        await effects.bound();
-        return true;
+  const written = await effects.paste(
+    found.tab,
+    text,
+    async () => {
+      try {
+        if (await live(effects, sessionId, processId)) return true;
+        unwritten = "agent-gone";
+      } catch (cause) {
+        if (cause instanceof Unbound) throw cause;
       }
-      unwritten = "agent-gone";
-    } catch (cause) {
-      if (cause instanceof Unbound) throw cause;
-    }
-    return false;
-  });
-  return written ? "pasted" : unwritten;
+      return false;
+    },
+    bound.current,
+  );
+  if (written) return "pasted";
+  if (!bound.current()) throw await unboundSince(effects.bound);
+  return unwritten;
 };
 
 /** Whether Mend lists the agent process live in the session now. */

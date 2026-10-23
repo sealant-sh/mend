@@ -44,7 +44,7 @@ export const startReview = (deps: {
   readonly paste: PasteReview;
 }): Review => {
   const client = new ReviewClient(
-    () => deps.client.connection(),
+    async () => ({ connection: await deps.client.connection(), current: () => true }),
     (connection) => deps.client.refused(connection),
   );
   const store = new ReviewStore(

@@ -2186,9 +2186,9 @@ describe("Dana signs out while VS Code reads claude's process right before the p
             answer: async () => undefined,
             activeTab: () => "claude's tab",
             processOf: () => "agent-1",
-            paste: async (_tab, pasted, ready) => {
+            paste: async (_tab, pasted, ready, current) => {
               socketOpen = true;
-              if (!(await ready())) return false;
+              if (!(await ready()) || !current()) return false;
               written.push(pasted);
               return true;
             },
@@ -2206,7 +2206,6 @@ describe("Dana signs out while VS Code reads claude's process right before the p
     expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
     await lastRead.promise;
 
-    // As VS Code's sign-out does, it moves the connection's generation.
     signedOut = true;
     generation += 1;
     store.forget();

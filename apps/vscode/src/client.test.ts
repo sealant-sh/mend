@@ -12,6 +12,7 @@ const client = () =>
   new MendClient({
     get: async () => ({ url: "http://mend-mini:3105", token: "secret" }),
     refused: async () => {},
+    generation: () => 0,
   });
 
 const row = (id: string, status: string) => ({

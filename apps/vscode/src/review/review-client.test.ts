@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { MendConnection } from "../config.js";
 import { MendApiError } from "../mend-http.js";
-import { Unbound } from "./binding.js";
+import { Unbound, type Bound } from "./binding.js";
 import { ReviewClient } from "./review-client.js";
 
 const answers = vi.hoisted(() => ({ status: 401, asked: new Array<string>() }));
@@ -20,6 +20,8 @@ vi.mock("../mend-http.js", async (importOriginal) => {
 
 const DANA: MendConnection = { url: "http://mend", token: "dana-token" };
 
+const steady = (connection: MendConnection): Bound => ({ connection, current: () => true });
+
 const WHOLE = {
   oldPath: null,
   newPath: null,
@@ -33,7 +35,7 @@ describe("a review read Mend refuses", () => {
   it("drops the refused token, as every reader of Mend does, and still fails", async () => {
     const refused: Array<MendConnection> = [];
     const client = new ReviewClient(
-      async () => DANA,
+      async () => steady(DANA),
       (connection) => refused.push(connection),
     );
     answers.status = 401;
@@ -44,7 +46,7 @@ describe("a review read Mend refuses", () => {
   it("keeps the token when Mend fails for another reason", async () => {
     const refused: Array<MendConnection> = [];
     const client = new ReviewClient(
-      async () => DANA,
+      async () => steady(DANA),
       (connection) => refused.push(connection),
     );
     answers.status = 500;
@@ -57,10 +59,10 @@ describe("a pinned review client", () => {
   it("asks the server its pin gives, whatever VS Code connects to, and asks nothing when the pin refuses", async () => {
     let connection = DANA;
     const client = new ReviewClient(
-      async () => connection,
+      async () => steady(connection),
       () => undefined,
     );
-    const pinned = client.pinned(async () => DANA);
+    const pinned = client.pinned(async () => steady(DANA));
     const refusing = client.pinned(async () => {
       throw new Unbound("switched");
     });

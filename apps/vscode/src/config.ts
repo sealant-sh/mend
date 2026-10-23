@@ -89,16 +89,37 @@ const configuredUrl = (): string | null => {
 };
 
 /** One connection shared by the tree, status item, URI handler, and commands. */
-export class ConnectionStore {
+export class ConnectionStore implements vscode.Disposable {
   /** The Connect running now: a second one joins it instead of opening another sign-in request. */
   #connecting: Promise<boolean> | null = null;
   /** The device a sign-in just replaced, revoked once the editor reads with the new token. */
   #replaced: Device | null = null;
   readonly #refusing = new Map<string, Promise<void>>();
+  #generation = 0;
+  readonly #watchers: ReadonlyArray<vscode.Disposable>;
 
   constructor(
-    private readonly context: { readonly secrets: Pick<vscode.SecretStorage, "get" | "store"> },
-  ) {}
+    private readonly context: {
+      readonly secrets: Pick<vscode.SecretStorage, "get" | "store" | "onDidChange">;
+    },
+  ) {
+    this.#watchers = [
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration("mend.serverUrl")) this.#generation += 1;
+      }),
+      context.secrets.onDidChange(() => {
+        this.#generation += 1;
+      }),
+    ];
+  }
+
+  generation(): number {
+    return this.#generation;
+  }
+
+  dispose(): void {
+    for (const watcher of this.#watchers) watcher.dispose();
+  }
 
   async get(): Promise<MendConnection> {
     const discovered = cliConfig();
@@ -134,6 +155,7 @@ export class ConnectionStore {
   async #write(change: CredentialChange): Promise<void> {
     const { key, value } = secretWriteOf(change, randomUUID());
     await this.context.secrets.store(key, value);
+    this.#generation += 1;
   }
 
   /** The token first: changing the setting restarts the event stream, which reads it. */

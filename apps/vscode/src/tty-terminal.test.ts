@@ -40,7 +40,13 @@ describe("a review pasted into a terminal", () => {
       "\u007f\u0080\u0085\u009b\u009f",
       "é → ✓",
     ].join("");
-    expect(await terminal().paste(text, async () => true)).toBe(true);
+    expect(
+      await terminal().paste(
+        text,
+        async () => true,
+        () => true,
+      ),
+    ).toBe(true);
     expect(typed.bytes).toEqual([
       "\u001b[200~line one\nline two\nthree\n  tabbed[201~escaped]0;titleé → ✓\u001b[201~",
     ]);
@@ -48,7 +54,11 @@ describe("a review pasted into a terminal", () => {
 
   it("never carries a carriage return a shell would run as Enter", async () => {
     typed.bytes.length = 0;
-    await terminal().paste("rm -rf build\r", async () => true);
+    await terminal().paste(
+      "rm -rf build\r",
+      async () => true,
+      () => true,
+    );
     const [bytes] = typed.bytes;
     expect(bytes).toBe("\u001b[200~rm -rf build\n\u001b[201~");
     expect(bytes?.includes("\r")).toBe(false);
@@ -58,11 +68,37 @@ describe("a review pasted into a terminal", () => {
     typed.bytes.length = 0;
     const refused = new Error("VS Code is connected to another Mend server");
     await expect(
-      terminal().paste("the review", async () => {
-        throw refused;
-      }),
+      terminal().paste(
+        "the review",
+        async () => {
+          throw refused;
+        },
+        () => true,
+      ),
     ).rejects.toBe(refused);
-    expect(await terminal().paste("the review", async () => false)).toBe(false);
+    expect(
+      await terminal().paste(
+        "the review",
+        async () => false,
+        () => true,
+      ),
+    ).toBe(false);
+    expect(typed.bytes).toEqual([]);
+  });
+
+  it("writes nothing when VS Code's connection changed after the check right before the write answered", async () => {
+    typed.bytes.length = 0;
+    let generation = 0;
+    const bound = generation;
+    const pasted = await terminal().paste(
+      "the review",
+      async () => {
+        generation += 1;
+        return true;
+      },
+      () => generation === bound,
+    );
+    expect(pasted).toBe(false);
     expect(typed.bytes).toEqual([]);
   });
 });

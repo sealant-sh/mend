@@ -96,7 +96,7 @@ class World extends ReviewClient {
 
   constructor() {
     super(
-      async () => ({ url: "http://mend.test", token: "t" }),
+      async () => ({ connection: { url: "http://mend.test", token: "t" }, current: () => true }),
       () => undefined,
     );
   }
@@ -199,6 +199,7 @@ const storeOver = (
         }
       },
       connection: async () => ({ url: "http://mend.test", token: "t" }),
+      generation: () => 0,
       accountOf: async (): Promise<string | null> => options.viewer ?? "dana",
       pinned(connect) {
         return {

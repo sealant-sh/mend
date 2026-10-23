@@ -80,16 +80,21 @@ export class MendTtyTerminal implements vscode.Pseudoterminal {
   }
 
   /**
-   * Text pasted into the terminal once its socket is open and `ready` answers true, asked right
-   * before the write, as a bracketed paste (the TUI takes it as one paste, its newlines without
-   * Enter; `pasteBytes`). False when the socket never opened or `ready` said no.
+   * Text pasted into the terminal once its socket is open, `ready` answers true, asked right before
+   * the write, and `current` still does, as a bracketed paste (the TUI takes it as one paste, its
+   * newlines without Enter; `pasteBytes`). False when the socket never opened or either said no.
    */
-  async paste(text: string, ready: () => Promise<boolean>, waitMs = 15_000): Promise<boolean> {
+  async paste(
+    text: string,
+    ready: () => Promise<boolean>,
+    current: () => boolean,
+    waitMs = 15_000,
+  ): Promise<boolean> {
     for (let waited = 0; !this.attachment.isOpen(); waited += 100) {
       if (waited >= waitMs || this.attachment.isClosed()) return false;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    if (!(await ready()) || !this.attachment.isOpen()) return false;
+    if (!(await ready()) || !this.attachment.isOpen() || !current()) return false;
     this.attachment.input(pasteBytes(text));
     return true;
   }

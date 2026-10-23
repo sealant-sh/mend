@@ -20,13 +20,14 @@ const ptys = new WeakMap<vscode.Terminal, MendTtyTerminal>();
 
 /**
  * Pastes into one of Mend's terminal tabs, without Enter, once `ready` answers true right before
- * the write; false when it is not one, never opened, or `ready` said no.
+ * the write and `current` still does; false when it is not one, never opened, or either said no.
  */
 export const pasteInto = async (
   terminal: vscode.Terminal,
   text: string,
   ready: () => Promise<boolean>,
-): Promise<boolean> => (await ptys.get(terminal)?.paste(text, ready)) ?? false;
+  current: () => boolean,
+): Promise<boolean> => (await ptys.get(terminal)?.paste(text, ready, current)) ?? false;
 
 /** The process one of Mend's terminal tabs is attached to: its socket reaches that one alone. */
 export const terminalProcess = (terminal: vscode.Terminal): string | null =>

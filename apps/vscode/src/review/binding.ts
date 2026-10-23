@@ -6,6 +6,7 @@ import type { ReviewPlace } from "./kept-reviews.js";
 /** Who VS Code is signed in as, read through one exact connection. */
 export interface AccountReads {
   connection(): Promise<MendConnection>;
+  generation(): number;
   /**
    * The account `connection`'s token belongs to; null when Mend could not say. Throws Mend's
    * refusal (401) when it refused the token: VS Code is signed out.
@@ -41,6 +42,11 @@ export class Unbound extends Error {
   }
 }
 
+export interface Bound {
+  readonly connection: MendConnection;
+  readonly current: () => boolean;
+}
+
 /**
  * VS Code's connection now, while it is the server and account `place` belongs to; throws
  * `Unbound` otherwise. A new sign-in of the same account is the same account.
@@ -48,7 +54,8 @@ export class Unbound extends Error {
 export const boundConnection = async (
   reads: AccountReads,
   place: Pick<ReviewPlace, "url" | "viewer">,
-): Promise<MendConnection> => {
+): Promise<Bound> => {
+  const generation = reads.generation();
   const connection = await reads.connection();
   if (connection.url !== place.url) throw new Unbound("switched");
   const account = await reads.accountOf(connection).catch((cause: unknown) => {
@@ -56,5 +63,15 @@ export const boundConnection = async (
   });
   if (account === null) throw new Unbound("unknown");
   if (account !== place.viewer) throw new Unbound("switched");
-  return connection;
+  return { connection, current: () => reads.generation() === generation };
+};
+
+export const unboundSince = async (bind: () => Promise<Bound>): Promise<Unbound> => {
+  try {
+    await bind();
+  } catch (cause) {
+    if (cause instanceof Unbound) return cause;
+    throw cause;
+  }
+  return new Unbound("switched");
 };

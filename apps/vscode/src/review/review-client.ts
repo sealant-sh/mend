@@ -2,6 +2,7 @@ import type { ReviewCommentTarget } from "@mend/domain/workbench";
 
 import type { MendConnection } from "../config.js";
 import { MendApiError, requestMend } from "../mend-http.js";
+import { unboundSince, type Bound } from "./binding.js";
 import type { DeliverRequest } from "./delivery.js";
 import {
   parseComment,
@@ -29,22 +30,23 @@ const segment = encodeURIComponent;
 /** The review's reads and writes on Mend, each answer parsed into the review's types. */
 export class ReviewClient {
   constructor(
-    private readonly connection: () => Promise<MendConnection>,
+    private readonly connection: () => Promise<Bound>,
     /** A token Mend refused, dropped as every reader of Mend drops it (`MendClient.refused`). */
     private readonly refused: (connection: MendConnection) => void,
   ) {}
 
-  /** The same reads and writes, each made on the connection `connect` gives when it starts. */
-  pinned(connect: () => Promise<MendConnection>): ReviewClient {
-    return new ReviewClient(connect, this.refused);
+  /** The same reads and writes, each made on the connection `bind` gives when it starts. */
+  pinned(bind: () => Promise<Bound>): ReviewClient {
+    return new ReviewClient(bind, this.refused);
   }
 
   private async request(path: string, init?: RequestInit): Promise<unknown> {
-    const connection = await this.connection();
+    const bound = await this.connection();
+    if (!bound.current()) throw await unboundSince(this.connection);
     try {
-      return await requestMend(connection, path, init);
+      return await requestMend(bound.connection, path, init);
     } catch (cause) {
-      if (cause instanceof MendApiError && cause.status === 401) this.refused(connection);
+      if (cause instanceof MendApiError && cause.status === 401) this.refused(bound.connection);
       throw cause;
     }
   }

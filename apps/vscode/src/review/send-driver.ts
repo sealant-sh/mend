@@ -286,7 +286,9 @@ export class SendDriver {
     const bind = () => boundConnection(this.sessions, target.place);
     let detail: SessionDetail;
     try {
-      detail = await this.sessions.pinned(bind).sessionDetail(target.place.sessionId);
+      detail = await this.sessions
+        .pinned(async () => (await bind()).connection)
+        .sessionDetail(target.place.sessionId);
     } catch (cause) {
       if (!(cause instanceof Unbound)) throw cause;
       return answer(cause.message);
@@ -567,7 +569,7 @@ export class SendDriver {
     // connection is the send's server and account; one that is not refuses before it goes out.
     const bind = () => boundConnection(this.sessions, context.place);
     const client = this.client.pinned(bind);
-    const reads = this.sessions.pinned(bind);
+    const reads = this.sessions.pinned(async () => (await bind()).connection);
     const files = new Map<string, ReadonlyArray<ChangeFile>>();
     const sliceFiles = async (sliceId: string): Promise<ReadonlyArray<ChangeFile>> => {
       const known = files.get(sliceId);

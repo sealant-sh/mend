@@ -362,10 +362,16 @@ export const EVENT_STREAM_STALL_MS = 60_000;
 export class MendClient {
   readonly #accounts = new Map<string, string>();
 
-  constructor(private readonly connections: Pick<ConnectionStore, "get" | "refused">) {}
+  constructor(
+    private readonly connections: Pick<ConnectionStore, "get" | "refused" | "generation">,
+  ) {}
 
   async connection(): Promise<MendConnection> {
     return this.connections.get();
+  }
+
+  generation(): number {
+    return this.connections.generation();
   }
 
   /** The same client, each request made on the connection `connect` gives when it starts. */
@@ -373,6 +379,7 @@ export class MendClient {
     return new MendClient({
       get: connect,
       refused: (connection) => this.connections.refused(connection),
+      generation: () => this.connections.generation(),
     });
   }
 

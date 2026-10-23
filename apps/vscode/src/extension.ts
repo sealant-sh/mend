@@ -605,6 +605,7 @@ export interface MendExtensionApi {
 
 export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const connections = new ConnectionStore(context);
+  context.subscriptions.push(connections);
   const client = new MendClient(connections);
   const role = windowRole(
     vscode.env.remoteName,

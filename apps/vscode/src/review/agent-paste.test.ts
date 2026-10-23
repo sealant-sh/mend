@@ -37,12 +37,12 @@ const world = (
   return {
     pasted,
     detail: async () => detail(answers[Math.min(read++, answers.length - 1)] ?? []),
-    bound: async () => ({ url: "http://mend", token: null }),
+    bound: async () => ({ connection: { url: "http://mend", token: null }, current: () => true }),
     answer: async () => undefined,
     activeTab: () => `tab of ${attached}`,
     processOf: (tab) => tab.replace("tab of ", ""),
-    paste: async (tab, text, ready) => {
-      if (!(await ready())) return false;
+    paste: async (tab, text, ready, current) => {
+      if (!(await ready()) || !current()) return false;
       pasted.push([tab, text]);
       return true;
     },
