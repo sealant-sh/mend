@@ -624,6 +624,64 @@ describe("her words in an open edit, when another window changes the review", ()
   });
 });
 
+describe("Delete on her open edit", () => {
+  const deleteEdit = async (editing: object): Promise<void> => {
+    await ui.commands.get("mend.review.delete")?.(editing);
+  };
+
+  it("deletes the comment in the session she opened it in, after the section follows another session", async () => {
+    const { editor, done } = await twoWindows();
+    const comments = new ReviewComments(editor);
+    const [thread] = liveThreads();
+    if (thread === undefined) throw new Error("no thread drawn");
+    const editing = await startEditing(thread);
+    editor.follow(PROJECT, session("s2"));
+    await vi.waitFor(() => expect(editor.ready()?.sessionId).toBe("s2"), SETTLE);
+    await deleteEdit(editing);
+    expect(openEdits()).toEqual([]);
+    expect(editor.review().pending).toEqual([]);
+    editor.follow(PROJECT, session("s1"));
+    await vi.waitFor(() => expect(editor.ready()?.sessionId).toBe("s1"), SETTLE);
+    expect(editor.review().pending).toEqual([]);
+    expect(ui.warn).not.toHaveBeenCalled();
+    comments.dispose();
+    done();
+  });
+
+  it("deletes nothing, and says so once, when another window sent the comment", async () => {
+    const { editor, sendIt, done } = await twoWindows();
+    const comments = new ReviewComments(editor);
+    const [thread] = liveThreads();
+    if (thread === undefined) throw new Error("no thread drawn");
+    const editing = await startEditing(thread);
+    await sendIt();
+    await editor.reloadReview();
+    await deleteEdit(editing);
+    expect(editor.review().sends).toHaveLength(1);
+    expect(ui.warn).toHaveBeenCalledTimes(1);
+    expect(ui.warn).toHaveBeenCalledWith(
+      "This comment was already sent in a review, so nothing was deleted.",
+    );
+    comments.dispose();
+    done();
+  });
+
+  it("deletes nothing, and says so once, when another window deleted the comment", async () => {
+    const { sender, editor, pendingId, done } = await twoWindows();
+    const comments = new ReviewComments(editor);
+    const [thread] = liveThreads();
+    if (thread === undefined) throw new Error("no thread drawn");
+    const editing = await startEditing(thread);
+    await sender.remove(pendingId);
+    await editor.reloadReview();
+    await deleteEdit(editing);
+    expect(ui.warn).toHaveBeenCalledTimes(1);
+    expect(ui.warn).toHaveBeenCalledWith("This comment was already deleted in another window.");
+    comments.dispose();
+    done();
+  });
+});
+
 describe("her words under a Mend draft", () => {
   const WORDS = "I ran them by hand";
   const DRAFT = comment({
