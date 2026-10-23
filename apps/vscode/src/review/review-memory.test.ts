@@ -100,6 +100,25 @@ describe("the key that pins a change's slice", () => {
     expect(await files.readFile(file)).toBe(newer);
   });
 
+  it("is one key in every window when a newer version keeps pins without this change", async () => {
+    const files = memoryFiles();
+    const newer = JSON.stringify({ format: 2, rev: 1, record: {} });
+    await files.writeFile("/global-storage/reviews/pins/http%3A%2F%2Fmend.json", newer);
+    const first = await windowOn(files).pinKey("http://mend", "change-1");
+    expect(await windowOn(files).pinKey("http://mend", "change-1")).toBe(first);
+  });
+
+  it("is kept again over a pins file a crash left empty", async () => {
+    const files = memoryFiles();
+    const file = "/global-storage/reviews/pins/http%3A%2F%2Fmend.json";
+    await files.writeFile(file, "");
+    const first = await windowOn(files).pinKey("http://mend", "change-1");
+    expect(await windowOn(files).pinKey("http://mend", "change-1")).toBe(first);
+    expect(parsePins(Reflect.get(JSON.parse(await files.readFile(file)), "record"))).toHaveProperty(
+      "change-1",
+    );
+  });
+
   it("reads anything unreadable as nothing kept", () => {
     expect(parsePins("garbage")).toEqual({});
     expect(parsePins({ a: { key: "k", usedAt: 1 }, b: 3, c: { key: 4, usedAt: 1 } })).toEqual({
