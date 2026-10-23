@@ -232,6 +232,7 @@ export const sessionReads = (changeId: string | null) => ({
     changeId,
   }),
   connection: async () => ({ url: "http://mend", token: null }),
+  generation: () => 0,
   accountOf: async (): Promise<string | null> => "dana",
   memberNames: async () => [{ userId: "dana", name: "Dana" }],
   projectDetail: async (): Promise<ProjectDetail> => ({ project: PROJECT, sessions: [] }),

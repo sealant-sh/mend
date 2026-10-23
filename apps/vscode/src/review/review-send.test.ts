@@ -2148,6 +2148,7 @@ describe("Dana signs out while VS Code reads claude's process right before the p
     mend.answer = "pending";
     mend.serverComments = [comment({ id: "c1" })];
     let signedOut = false;
+    let generation = 0;
     let socketOpen = false;
     const lastRead = Promise.withResolvers<void>();
     const answered = Promise.withResolvers<void>();
@@ -2156,6 +2157,7 @@ describe("Dana signs out while VS Code reads claude's process right before the p
     const store = new ReviewStore(
       {
         ...withAgent(CLAUDE),
+        generation: () => generation,
         accountOf: async (): Promise<string | null> => {
           if (signedOut) throw new MendApiError("Signed out", 401);
           return "dana";
@@ -2204,7 +2206,9 @@ describe("Dana signs out while VS Code reads claude's process right before the p
     expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
     await lastRead.promise;
 
+    // As VS Code's sign-out does, it moves the connection's generation.
     signedOut = true;
+    generation += 1;
     store.forget();
     answered.resolve();
     const place = { url: "http://mend", viewer: "dana", sessionId: "s1" };
