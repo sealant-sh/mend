@@ -1,7 +1,13 @@
 import { Session, SessionProcess } from "@mend/domain/workbench";
-import { SealantPlatformError } from "@mend/sealant";
-import { ProtocolHost, ProtocolHostNotLiveError, SessionEngine } from "@mend/sessions";
-import type { CreateOptions } from "@sealant/sdk";
+import { SealantClient, SealantPlatformError } from "@mend/sealant";
+import {
+  HARNESS_STATE,
+  harvestHarnessStateScript,
+  ProtocolHost,
+  ProtocolHostNotLiveError,
+  SessionEngine,
+} from "@mend/sessions";
+import type { CreateOptions, InteractiveSessionStatus } from "@sealant/sdk";
 import { Effect, Layer, Result } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -95,5 +101,141 @@ describe("a mode switch to the terminal the conversation cannot make (SLNT-142)"
     expect.soft(laterTurn).toBe("delivered");
     expect.soft(submitted).toEqual(["still here?"]);
     expect(attached).toHaveLength(1);
+  }, 30_000);
+});
+
+const PROVIDER = "5d1c2b7a-9e4f-4a3b-8c6d-0f1e2a3b4c5d";
+const TRANSCRIPT = `/home/agent/.claude/projects/-workspace-repo/${PROVIDER}.jsonl`;
+const claudeHarness = HARNESS_STATE["claude"];
+if (claudeHarness === undefined) throw new Error("no claude harness state shape");
+
+/** The executor's answers to a harvest of a claude whose first turn completed. */
+const completedTurnExec = (argv: ReadonlyArray<string>) => {
+  if (argv[2] === harvestHarnessStateScript(claudeHarness.paths)) {
+    return { exitCode: 0, stdout: "eA==", stderr: "" };
+  }
+  if (argv[2] === claudeHarness.latestTranscript) {
+    return { exitCode: 0, stdout: `${TRANSCRIPT}\n`, stderr: "" };
+  }
+  if (argv[3] === "mend-read") {
+    const line = {
+      type: "user",
+      sessionId: PROVIDER,
+      message: { role: "user", content: "say hi" },
+    };
+    return { exitCode: 0, stdout: `${JSON.stringify(line)}\n`, stderr: "" };
+  }
+  return undefined;
+};
+
+/**
+ * A claude conversation with a completed turn, switched to the terminal. `watcherFirst`: the
+ * platform ends the process inside its close and answers the close as soon as the engine's process
+ * watcher (a 2 s poll) has seen the exit, as in the vscode lane's r2a and r3a.
+ */
+const switchAfterACompletedTurn = async (watcherFirst: boolean) => {
+  const created: Array<CreateOptions> = [];
+  const spawned: Array<ReadonlyArray<string>> = [];
+  const ptyStates = new Map<string, InteractiveSessionStatus>();
+  const watcherSaw = new Map<string, () => void>();
+  const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+  let outcome = "not switched";
+  let status: string | undefined;
+  let terminal: SessionProcess | undefined;
+  const base = sealantLaunchLayer(
+    created,
+    undefined,
+    undefined,
+    spawned,
+    undefined,
+    undefined,
+    ptyStates,
+    undefined,
+    undefined,
+    [],
+    undefined,
+    { exec: completedTurnExec },
+  );
+  const sealantLayer = Layer.effect(
+    SealantClient,
+    Effect.map(SealantClient, (client) => ({
+      ...client,
+      getSession: (workspace, id) =>
+        client.getSession(workspace, id).pipe(
+          Effect.map((pty) => ({
+            ...pty,
+            status: async () => {
+              const observed = await pty.status();
+              if (observed.status === "exited") watcherSaw.get(pty.id)?.();
+              return observed;
+            },
+            close: async () => {
+              if (!watcherFirst) return;
+              const seen = new Promise<void>((resolve) => watcherSaw.set(pty.id, resolve));
+              ptyStates.set(pty.id, { status: "exited", exitCode: 0, outputHighWater: 0n });
+              await seen;
+            },
+          })),
+        ),
+    })),
+  ).pipe(Layer.provide(base));
+  await withEngine(
+    (world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        const engine = yield* SessionEngine;
+        const session = yield* engine.provision({
+          projectId: project.id,
+          harness: "claude",
+          label: null,
+          name: null,
+          ownerUserId: "user-fixture",
+          start: { kind: "base", base: null },
+        });
+        yield* engine.launchProtocol(
+          session.id,
+          { mode: "protocol", prompt: "say hi" },
+          "user-fixture",
+        );
+        const switched = yield* engine
+          .switchMode(session.id, "pty", { mode: "pty" }, "user-fixture")
+          .pipe(Effect.result);
+        outcome = Result.isSuccess(switched)
+          ? "switched"
+          : switched.failure instanceof SealantPlatformError
+            ? switched.failure.code
+            : switched.failure._tag;
+        status = world.sessions.get(session.id)?.status;
+        terminal = [...world.processes.values()].find(
+          (process) =>
+            process.sessionId === session.id &&
+            process.kind === "agent-pty" &&
+            process.exitedAt === null,
+        );
+      }),
+    {
+      sealantLayer,
+      protocolHostLayer: recordingProtocolHostLayer(attached, []),
+    },
+  );
+  const argv = spawned.at(-1) ?? [];
+  return { outcome, status, terminal, resumed: argv[argv.indexOf("--resume") + 1] ?? null };
+};
+
+describe("a mode switch to the terminal racing the process watcher (SLNT-142, SLNT-147)", () => {
+  it("continues a conversation with a completed turn as a terminal", async () => {
+    const run = await switchAfterACompletedTurn(false);
+    expect(run.outcome).toBe("switched");
+    expect(run.status).toBe("running");
+    expect(run.terminal).toBeDefined();
+    expect(run.resumed).toBe(PROVIDER);
+  }, 30_000);
+
+  it("continues it as a terminal when the watcher records the conversation's end first", async () => {
+    const run = await switchAfterACompletedTurn(true);
+    expect.soft(run.outcome).toBe("switched");
+    expect.soft(run.status).toBe("running");
+    expect.soft(run.terminal).toBeDefined();
+    expect.soft(run.resumed).toBe(PROVIDER);
   }, 30_000);
 });
