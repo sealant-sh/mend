@@ -1263,16 +1263,16 @@ export class Store extends Context.Service<
       relative: string,
       maxBytes: number,
     ) => Effect.Effect<FileRead | null, GitError>;
-    /**
-     * The start of one file of a worktree as it stands on disk, at most `maxBytes`; null when
-     * nothing readable is there, or the path leaves the worktree (a symlink out of it, `.git`).
-     */
     /** Current bytes from a contained regular file, without buffering the whole file. */
     readonly openRawWorktreeFile: (
       worktreePath: string,
       relative: string,
       within: string,
     ) => Effect.Effect<OpenRawFile, RawReadError, Scope.Scope>;
+    /**
+     * The start of one file of a worktree as it stands on disk, at most `maxBytes`; null when
+     * nothing readable is there, or the path leaves the worktree (a symlink out of it, `.git`).
+     */
     readonly readWorktreeFile: (
       worktreePath: string,
       relative: string,

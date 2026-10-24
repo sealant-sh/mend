@@ -18,7 +18,12 @@ import { GatewayCorsLive } from "../../src/http.ts";
 import { Projections, type PersonHub } from "../../src/hub.ts";
 import { MendClientLive } from "../../src/mend-client.ts";
 import { makeGatewayRpcHandlers } from "../../src/rpc.ts";
-import { GatewayState, openGatewayState, type StoredImage } from "../../src/state.ts";
+import {
+  GatewayState,
+  type GatewayStateError,
+  openGatewayState,
+  type StoredImage,
+} from "../../src/state.ts";
 import { emptyHub, testBearerSession } from "./stubs.ts";
 
 export const ROOT = "/var/lib/mend/store/project-1/worktrees/wt-session-1";
@@ -329,10 +334,7 @@ export interface AssetHarness {
   readonly revoke: (token: string) => void;
   readonly pair: (
     code: string,
-  ) => Effect.Effect<
-    { rpc: ReturnType<typeof makeGatewayRpcHandlers> },
-    import("../../src/state.ts").GatewayStateError
-  >;
+  ) => Effect.Effect<{ rpc: ReturnType<typeof makeGatewayRpcHandlers> }, GatewayStateError>;
   readonly urls: AssetUrls["Service"];
   readonly spans: readonly Tracer.Span[];
   readonly beforeRaw: (action: () => Effect.Effect<void>) => void;

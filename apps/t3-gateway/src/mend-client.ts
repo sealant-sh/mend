@@ -59,6 +59,13 @@ export interface MendRawFile {
   readonly body: Stream.Stream<Uint8Array, MendRawFileUnavailable>;
 }
 
+export interface MendRawFileRequest {
+  readonly path: Redacted.Redacted<string>;
+  readonly within: Redacted.Redacted<string>;
+  readonly method: "GET" | "HEAD";
+  readonly range?: string | undefined;
+}
+
 export class MendRawFileUnavailable extends Schema.TaggedError<MendRawFileUnavailable>()(
   "MendRawFileUnavailable",
   { status: Schema.NullOr(Schema.Number) },
@@ -374,22 +381,18 @@ export class MendClient extends Context.Service<
         readonly ignoreWhitespace: boolean;
       },
     ) => MendRead<MendRangeDiff>;
+    /** `GET|HEAD /api/worktrees/:id/raw`: one current file's bytes, whole or one range. */
+    readonly openRawFile: (
+      deviceToken: Redacted.Redacted<string>,
+      worktreeId: string,
+      input: MendRawFileRequest,
+    ) => Effect.Effect<MendRawFile, MendRawFileUnavailable, Scope.Scope>;
     /**
      * `GET /api/worktrees/:id/contents`: one file (as it stands, or at a checkpoint) or the lines a
      * search matches. A path Mend refuses (outside the worktree) is its 422, a refusal. A path with
      * no readable file is `file: null` (Mend's 404 `NotFound` naming the path); a worktree or
      * checkpoint Mend does not have is `MendNotFound`.
      */
-    readonly openRawFile: (
-      deviceToken: Redacted.Redacted<string>,
-      worktreeId: string,
-      input: {
-        readonly path: Redacted.Redacted<string>;
-        readonly within: Redacted.Redacted<string>;
-        readonly method: "GET" | "HEAD";
-        readonly range?: string | undefined;
-      },
-    ) => Effect.Effect<MendRawFile, MendRawFileUnavailable, Scope.Scope>;
     readonly worktreeContents: (
       deviceToken: string,
       worktreeId: string,
