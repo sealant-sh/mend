@@ -1125,6 +1125,7 @@ export const makeGatewayRpcHandlers = ({
             kind: "image",
             imageId: image.id,
             fileName: Redacted.make(image.name),
+            sizeBytes: image.sizeBytes,
           })
           .pipe(Effect.mapError(() => new AssetAttachmentNotFoundError({ resource })));
       }),

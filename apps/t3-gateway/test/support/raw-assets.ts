@@ -6,7 +6,9 @@ import { Clock, Context, Effect, Layer, Logger, Tracer } from "effect";
 import { HttpClient, HttpClientResponse, HttpRouter, HttpServer } from "effect/http";
 
 import {
+  AssetLimits,
   AssetRouteLive,
+  DEFAULT_ASSET_LIMITS,
   AssetTracingDisabledLive,
   AssetUrls,
   AssetUrlsLive,
@@ -42,6 +44,7 @@ interface RawFixture {
 /** Real grants, auth, SQLite, Mend HTTP decoding and asset HTTP responses, served in memory and on Node. */
 export const withAssetHarness = <A, E, R>(
   test: (fixture: AssetHarness, logs: string[]) => Effect.Effect<A, E, R>,
+  limits: Partial<AssetLimits> = {},
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -184,6 +187,7 @@ export const withAssetHarness = <A, E, R>(
           Layer.provideMerge(mend),
           Layer.provideMerge(Layer.succeed(GatewayState, state)),
           Layer.provideMerge(Layer.succeed(GatewayEnvironment, environment)),
+          Layer.provideMerge(Layer.succeed(AssetLimits, { ...DEFAULT_ASSET_LIMITS, ...limits })),
         ),
       );
       const urls = Context.get(services, AssetUrls);

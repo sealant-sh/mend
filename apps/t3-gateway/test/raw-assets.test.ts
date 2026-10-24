@@ -1,9 +1,10 @@
 import { Agent, get } from "node:http";
 
 import { MessageId, ThreadId, WS_METHODS } from "@mend/t3-contracts";
-import { Deferred, Effect, Exit, Fiber } from "effect";
+import { Deferred, Duration, Effect, Exit, Fiber } from "effect";
 import * as HttpClient from "effect/http/HttpClient";
 
+import { DEFAULT_ASSET_LIMITS, type AssetLimits } from "../src/assets.ts";
 import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import {
   withAssetHarness,
@@ -14,36 +15,41 @@ import {
 const THREAD = ThreadId.make("session-1");
 const ROOT = "/var/lib/mend/store/project-1/worktrees/wt-session-1";
 const BYTES = Uint8Array.from({ length: 256 }, (_, i) => i);
-const withGateway = <A, E, R>(test: (mend: FakeMend, logs: string[]) => Effect.Effect<A, E, R>) =>
-  withAssetHarness((mend, logs) =>
-    Effect.gen(function* () {
-      for (const name of [
-        "image.png",
-        "movie.mp4",
-        "song.opus",
-        "docs/index.html",
-        "docs/book.pdf",
-        "docs/style.css",
-        "docs/nested/a.mjs",
-        "private/secret.css",
-        "vector.svg",
-        "space % #.png",
-      ]) {
-        mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+const withGateway = <A, E, R>(
+  test: (mend: FakeMend, logs: string[]) => Effect.Effect<A, E, R>,
+  limits: Partial<AssetLimits> = {},
+) =>
+  withAssetHarness(
+    (mend, logs) =>
+      Effect.gen(function* () {
+        for (const name of [
+          "image.png",
+          "movie.mp4",
+          "song.opus",
+          "docs/index.html",
+          "docs/book.pdf",
+          "docs/style.css",
+          "docs/nested/a.mjs",
+          "private/secret.css",
+          "vector.svg",
+          "space % #.png",
+        ]) {
+          mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+            bytes: BYTES,
+            canonicalPath: name,
+          });
+        }
+        mend.workbench.rawFiles.set("worktree-session-1/docs/leak.css", {
           bytes: BYTES,
-          canonicalPath: name,
+          canonicalPath: "private/secret.css",
         });
-      }
-      mend.workbench.rawFiles.set("worktree-session-1/docs/leak.css", {
-        bytes: BYTES,
-        canonicalPath: "private/secret.css",
-      });
-      mend.workbench.rawFiles.set("worktree-session-1/disguised.png", {
-        bytes: BYTES,
-        canonicalPath: "docs/index.html",
-      });
-      return yield* test(mend, logs);
-    }),
+        mend.workbench.rawFiles.set("worktree-session-1/disguised.png", {
+          bytes: BYTES,
+          canonicalPath: "docs/index.html",
+        });
+        return yield* test(mend, logs);
+      }),
+    limits,
   );
 const resource = (name: string, kind: "workspace-file" | "media-file" = "workspace-file") => ({
   _tag: kind,
@@ -589,64 +595,172 @@ it.live("refuses all upstream failures as the same plain 404", () =>
   ),
 );
 
-it.live("keeps grant publication within capacity when mints overlap and bounds pending mints", () =>
+it.live("keeps grant publication within capacity when mints overlap", () =>
+  withGateway(
+    (mend) =>
+      Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "RACING");
+        const mint = (name: string) =>
+          rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(name) });
+        yield* mint("image.png");
+        yield* mint("vector.svg");
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let pending = 0;
+        mend.beforeRaw(() =>
+          Effect.gen(function* () {
+            pending++;
+            if (pending === 2) yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(release);
+          }),
+        );
+        const a = yield* Effect.forkChild(Effect.exit(mint("space % #.png")));
+        const b = yield* Effect.forkChild(Effect.exit(mint("docs/book.pdf")));
+        yield* Deferred.await(entered);
+        yield* Deferred.succeed(release, undefined);
+        const results = [yield* Fiber.join(a), yield* Fiber.join(b)];
+        assert.strictEqual(results.filter(Exit.isSuccess).length, 1);
+      }),
+    { grantsPerDevice: 3 },
+  ),
+);
+
+it.live("mints a thread's hundred images at once, each waiting its turn instead of failing", () =>
   withGateway((mend) =>
     Effect.gen(function* () {
-      const { rpc } = yield* pairAndConnect(mend, "RACING");
-      const mint = () => rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") });
-      for (let i = 0; i < 255; i++) yield* mint();
-      const entered = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      let pending = 0;
+      const { rpc } = yield* pairAndConnect(mend, "PAGE");
+      for (let i = 0; i < 100; i++)
+        mend.workbench.rawFiles.set(`worktree-session-1/shots/${i}.png`, {
+          bytes: BYTES,
+          canonicalPath: `shots/${i}.png`,
+        });
+      let atMend = 0;
+      let most = 0;
       mend.beforeRaw(() =>
         Effect.gen(function* () {
-          pending++;
-          if (pending === 2) yield* Deferred.succeed(entered, undefined);
-          yield* Deferred.await(release);
+          atMend++;
+          most = Math.max(most, atMend);
+          yield* Effect.sleep("5 millis");
+          atMend--;
         }),
       );
-      const a = yield* Effect.forkChild(Effect.exit(mint()));
-      const b = yield* Effect.forkChild(Effect.exit(mint()));
-      yield* Deferred.await(entered);
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(mint())));
-      assert.strictEqual(pending, 2);
-      yield* Deferred.succeed(release, undefined);
-      const results = [yield* Fiber.join(a), yield* Fiber.join(b)];
-      assert.strictEqual(results.filter(Exit.isSuccess).length, 1);
+      const urls = yield* Effect.forEach(
+        Array.from({ length: 100 }, (_, i) => i),
+        (i) => rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(`shots/${i}.png`) }),
+        { concurrency: "unbounded" },
+      );
+      assert.strictEqual(urls.length, 100);
+      assert.isAtMost(most, DEFAULT_ASSET_LIMITS.mints.perKey);
     }),
   ),
 );
 
-it.live("refuses excess active reads and returns capacity when a client cancels", () =>
+it.live("loads a message's images in parallel", () =>
   withGateway((mend) =>
     Effect.gen(function* () {
-      const { rpc } = yield* pairAndConnect(mend, "READS");
-      mend.workbench.rawFiles.set("worktree-session-1/large.mp4", {
-        bytes: BYTES,
-        canonicalPath: "large.mp4",
-        size: 1024 * 1024 * 1024,
+      const { rpc } = yield* pairAndConnect(mend, "CHAT");
+      const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const kept = yield* rpc[WS_METHODS.assetsPersistChatAttachments]({
+        threadId: THREAD,
+        messageId: MessageId.make("many-images"),
+        attachments: Array.from({ length: 20 }, (_, i) => ({
+          type: "image" as const,
+          name: `shot-${i}.png`,
+          mimeType: "image/png",
+          sizeBytes: png.length,
+          dataUrl: `data:image/png;base64,${Buffer.from(png).toString("base64")}`,
+        })),
       });
-      const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
-        resource: resource("large.mp4", "media-file"),
+      const urls = yield* Effect.forEach(kept.attachments, (attachment) =>
+        rpc[WS_METHODS.assetsCreateUrl]({
+          resource: { _tag: "attachment", attachmentId: attachment.id },
+        }),
+      );
+      // Every response open at once, as a browser holds a page of <img> loads.
+      const responses = yield* Effect.forEach(urls, (url) => mend.fetch(url.relativeUrl), {
+        concurrency: "unbounded",
       });
-      const responses: Response[] = [];
-      for (let i = 0; i < 8; i++) {
-        const response = yield* mend.fetch(url.relativeUrl);
-        assert.strictEqual(response.status, 200);
-        responses.push(response);
-      }
-      assert.strictEqual((yield* mend.fetch(url.relativeUrl)).status, 404);
-      const released = responses.shift();
-      const releasedBody = released?.body;
-      if (releasedBody !== undefined && releasedBody !== null)
-        yield* Effect.promise(() => releasedBody.cancel());
-      const admitted = yield* mend.fetch(url.relativeUrl);
-      assert.strictEqual(admitted.status, 200);
-      responses.push(admitted);
-      for (const response of responses) {
-        const body = response.body;
-        if (body !== null) yield* Effect.promise(() => body.cancel());
-      }
+      assert.deepStrictEqual(
+        responses.map((response) => response.status),
+        responses.map(() => 200),
+      );
+      for (const response of responses)
+        assert.deepStrictEqual(
+          new Uint8Array(yield* Effect.promise(() => response.arrayBuffer())),
+          png,
+        );
     }),
+  ),
+);
+
+it.live("holds a device's reads past its share until one ends, and refuses past the wait", () =>
+  withGateway(
+    (mend) =>
+      Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "READS");
+        const other = yield* pairAndConnect(mend, "OTHER");
+        mend.workbench.rawFiles.set("worktree-session-1/large.mp4", {
+          bytes: BYTES,
+          canonicalPath: "large.mp4",
+          size: 1024 * 1024 * 1024,
+        });
+        const media = { resource: resource("large.mp4", "media-file") };
+        const url = yield* rpc[WS_METHODS.assetsCreateUrl](media);
+        const held = [yield* mend.fetch(url.relativeUrl), yield* mend.fetch(url.relativeUrl)];
+        for (const response of held) assert.strictEqual(response.status, 200);
+        const waiting = yield* Effect.forkChild(mend.fetch(url.relativeUrl));
+        // Another device is not behind this one.
+        const theirs = yield* other.rpc[WS_METHODS.assetsCreateUrl](media);
+        const beside = yield* mend.fetch(theirs.relativeUrl);
+        assert.strictEqual(beside.status, 200);
+        yield* Effect.sleep("50 millis");
+        assert.isUndefined(waiting.pollUnsafe());
+        yield* Effect.promise(() => held[0]?.body?.cancel() ?? Promise.resolve());
+        const admitted = yield* Fiber.join(waiting);
+        assert.strictEqual(admitted.status, 200);
+        // Past the wait, a read that never found room is refused.
+        const late = yield* mend.fetch(url.relativeUrl);
+        assert.strictEqual(late.status, 404);
+        for (const response of [held[1], beside, admitted])
+          yield* Effect.promise(() => response?.body?.cancel() ?? Promise.resolve());
+      }),
+    { reads: { total: 8, perKey: 2, queue: 8 }, wait: Duration.millis(300) },
+  ),
+);
+
+it.live("resets a reader that stops taking bytes, which stops Mend's read and frees its slot", () =>
+  withGateway(
+    (mend) =>
+      Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "STALL");
+        const file = {
+          bytes: BYTES,
+          canonicalPath: "paused.mp4",
+          size: 1024 * 1024 * 1024,
+          cancelled: false,
+        };
+        mend.workbench.rawFiles.set("worktree-session-1/paused.mp4", file);
+        const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
+          resource: resource("paused.mp4", "media-file"),
+        });
+        const agent = new Agent({ keepAlive: true });
+        yield* Effect.callback<void>((resume) => {
+          const request = get(`${mend.nodeOrigin}${url.relativeUrl}`, { agent }, (response) => {
+            // A paused video: one chunk, then nothing, and the connection stays open.
+            response.once("data", () => {
+              response.pause();
+              resume(Effect.void);
+            });
+          });
+          request.on("error", () => undefined);
+        });
+        for (let attempt = 0; attempt < 100 && !file.cancelled; attempt++)
+          yield* Effect.sleep("20 millis");
+        assert.isTrue(file.cancelled);
+        const next = yield* mend.fetch(url.relativeUrl, { method: "HEAD" });
+        assert.strictEqual(next.status, 200);
+        agent.destroy();
+      }),
+    { reads: { total: 4, perKey: 1, queue: 4 }, stall: Duration.millis(300) },
   ),
 );
