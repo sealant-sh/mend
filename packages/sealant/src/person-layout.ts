@@ -84,7 +84,7 @@ export const LOGIN_PROVIDERS: ReadonlyArray<LoginProvider> = [
 ];
 
 /**
- * What a POST puts into a home, per provider: `true` for the person's account named `default`, a
+ * What a POST puts into a home, per provider: `true` for the person's chosen default account, a
  * name for another of theirs, `null` to remove that provider's login from the home (they have not
  * connected it), absent to leave it as it is.
  */

@@ -1748,7 +1748,10 @@ export const SealantLiveFromEnv: Layer.Layer<
   SealantIdentityStore
 > = SealantClientLive.pipe(Layer.provideMerge(SealantClientsLive), Layer.provide(SealantEnv.layer));
 
-/** The facade's `true` means "the account named default"; the wire wants a name or nothing. */
+/**
+ * The facade's `true` means the chosen default, which Core resolves the name `default` to; the
+ * wire wants a name or nothing.
+ */
 const accountReference = (value: boolean | string | undefined) =>
   typeof value === "string" ? value : value === true ? "default" : undefined;
 
