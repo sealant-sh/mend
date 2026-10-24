@@ -436,8 +436,10 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
           (event) => event.threadId === input.threadId && event.terminalId === input.terminalId,
         );
         let terminal = terminals.get(keyOf(input.threadId, input.terminalId));
+        // A client's resubscription (`resume`) keeps a terminal that stopped as it is.
         const restart =
           input.restartIfNotRunning === true &&
+          input.resume !== true &&
           (terminal === undefined || terminal.status !== "running");
         if ((terminal === undefined || restart) && input.cwd !== undefined) {
           terminal = yield* start(session, { ...input, cwd: input.cwd });
