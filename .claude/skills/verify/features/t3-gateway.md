@@ -59,7 +59,7 @@ a checkout beside a Mend server.
   (`worktreeSetup.cancel` stops it). A `t3.json` in the worktree never runs by itself
   (`apps/t3-gateway/src/worktree-setup.ts`).
 - `t3-commands` takes `message.dispatch` (queued, relaunching a stopped agent), `run.interrupt`,
-  `queued-run.cancel`, `queue.resume`, `queued-run.edit`, `queued-run.reorder`,
+  `queued-run.cancel`, `queue.resume`, `queued-run.start`, `queued-run.edit`, `queued-run.reorder`,
   `prepared-run.retry`, `runtime-request.respond`, `thread.user-input.dismiss`,
   `thread.metadata.update` (title only), `provider-session.detach`, `thread.delete`,
   `thread.archive`, `thread.unarchive`, `thread.settle`, `thread.unsettle`, `thread.snooze`,
@@ -120,7 +120,7 @@ a checkout beside a Mend server.
   `http://127.0.0.1:3101`, Mend's API), `MEND_T3_GATEWAY_HOST` (`127.0.0.1`), `MEND_T3_GATEWAY_PORT`
   (`3120`), `MEND_T3_GATEWAY_STATE_PATH` (`$XDG_STATE_HOME/mend/t3-gateway/state.sqlite`),
   `MEND_T3_GATEWAY_LABEL` (`Mend`) (`apps/t3-gateway/src/config.ts`).
-- t3code clients (desktop, mobile, web): a client of the pinned tag `v0.1.1-preview.20261017.3254`
+- t3code clients (desktop, mobile, web): a client of the pinned tag `v0.1.2`
   (`packages/t3-contracts/t3code.pin.json`). Add a remote environment with the gateway's host and a
   Mend pairing code, or paste `http://<gateway>/pair#token=<code>` into t3code's pairing input. The
   URL is pairing input for t3code; the gateway serves no `/pair` page.
@@ -144,7 +144,9 @@ host, as [server.md](./server.md) drives `mend server`; never against the owner'
 Launch's stack. The live pass on 2026-10-10 started the gateway by hand from a checkout and drove
 the HTTP steps below; its shell read `threads 0`, so it drove no thread, and nothing past the HTTP
 routes was observed then. On 2026-10-18 the RPC steps below were driven with `drive-t3.mjs` on a
-local verify stack with a fake Claude login, two threads launched through the gateway.
+local verify stack with a fake Claude login, two threads launched through the gateway. On 2026-10-24
+a real t3code client (the hosted web build of `v0.1.2`) was driven against the gateway with
+`recipes/t3-client.mjs`: **Driving the t3code client**, below.
 
 Preconditions:
 
@@ -161,8 +163,8 @@ Preconditions:
 - For the shell and thread steps, at least one claude or codex session runs as a conversation. The
   RPC steps below launch one through the gateway; with only a fake Claude login connected
   (`mend connect claude --from-stdin` with `FAKES.claude`) the session and its thread are made, and
-  the agent's own turns never run. The t3code client itself is `not drivable yet`: the verify stack
-  has no t3code client.
+  each turn starts and ends at once with Claude's refusal of the login. The t3code client is driven
+  under **Driving the t3code client**, below.
 - For the RPC steps, the gateway bearer from **Pair** is in a private file, `<bearer-file>`
   (`jq -r .access_token` of the token response, written under the run's private directory), and
   `<t3>` is `node <skill>/scripts/drive-t3.mjs --gw <gw> --bearer-file <bearer-file>`. Each `<t3>`
@@ -279,18 +281,12 @@ Preconditions:
   (`blocksStart: false`, `apps/api/src/exposure.ts:159`), so it counts among the `do not`. Restart
   with `MEND_T3_GATEWAY_ENABLED=1` and `MEND_EXPOSURE_DECLARED=t3code-gateway`: the line starts `○`
   and reads `declared`. Restart without either: no `t3code-gateway` line, fourteen items.
-- **Client thread view, follow-up, images, interrupt, approvals, rename, archive, runtime mode,
-  files, diffs, terminal, skills in the composer, find highlighting, drag order.** Through a t3code
-  client: `not drivable yet` (no t3code client in the stack; `drive-t3.mjs` makes single RPC calls,
-  so these are reachable call by call, but the client's rendering is not). An agent's turns need a
-  real provider login. End state when driven from t3code: the thread shows the session's turns and
-  items; a new thread is a session in a new worktree named from the branch's last segment and a
-  random suffix (`health-check-k3x9qa`), owned by the person who paired; a sent message becomes a
-  turn in Mend (`GET /api/sessions/<id>/turns`, or the session page on the web); an idle-stopped
-  session is launched again first; an interrupt ends the open turn; an approval answered in t3code
-  reads as answered on the web; a rename shows as the session's label in Mend; an archived thread is
-  still listed in Mend; the changes panel shows the change's patch and each turn's files; the
-  terminal is a shell process on the session in Mend.
+- **Images, approvals, rename, archive, runtime mode, skills in the composer, find highlighting,
+  drag order.** Through a t3code client: not driven yet. **Driving the t3code client**, below,
+  drives pairing, launch, turns, the queue, settle and snooze, the terminal, files and the diff.
+  Approvals and an agent's own output need a real provider login. End state when driven from t3code
+  (from source): an approval answered in t3code reads as answered on the web; a rename shows as the
+  session's label in Mend; an archived thread is still listed in Mend.
 - **Revoke.** On the web, revoke `t3code · verify` in Settings → Devices. Wait more than five
   seconds (one confirmation of the device serves its requests for five seconds,
   `DEVICE_CONFIRMED_FOR_MS` in `apps/t3-gateway/src/auth.ts`). Run the authenticated session `curl`
@@ -303,6 +299,119 @@ Preconditions:
   gateway's stdout and stderr. Stop the gateway by its PID, restore the server variables, delete
   `<scratch>/t3`, remove the fake Claude login (`mend connect claude --remove`), and stop the
   threads' sessions.
+
+## Driving the t3code client
+
+`recipes/t3-client.mjs` drives a real t3code client: the hosted web build of the pinned tag, served
+on this machine by `scripts/serve-t3-client.mjs` and driven in Chromium by `drive-web.mjs`, paired
+with the gateway as a remote environment. Driven on 2026-10-24 on a local verify stack
+(`local-outer.sh`, Mend at d27323a82), gateway started by hand from the same checkout, fake Claude
+login (evidence `st-verify-1024-t3pv-41b9/t3-client/`). Every step below is an `ok ·` line of the
+recipe's `steps.log`; `observed ·` lines record what was seen where the outcome is not fixed in
+advance, and `rpc ·` lines the client's own calls, read from its WebSocket frames (the gateway logs
+HTTP only).
+
+Build the client once, outside this repository. The tag is `packages/t3-contracts/t3code.pin.json`'s
+`tag` (`v0.1.2`, commit `044f07257c96`); use the pnpm version t3code's `packageManager` names
+(`pnpm@12.14.0` at `v0.1.2`) and the Node its `engines` names (`26.12.1`):
+
+```sh
+git clone https://github.com/pingdotgg/t3code.git <t3code>
+git -C <t3code> checkout "$(jq -r .tag packages/t3-contracts/t3code.pin.json)"
+(cd <t3code> && pnpm install && VITE_HOSTED_APP_CHANNEL=latest pnpm --filter @t3tools/web build)
+```
+
+`VITE_HOSTED_APP_CHANNEL=latest` builds the hosted app (app.t3.codes): no local server, every
+environment added by pairing. The build is `<t3code>/apps/web/dist` (its `build` script is
+`vp build`). The 2026-10-24 run drove a dist built this way beforehand; these commands were not run
+again that day.
+
+Serve it and drive it, after the gateway answers (Preconditions above, with `MEND_T3_GATEWAY_PORT`
+set to a free port):
+
+```sh
+node $skill/scripts/serve-t3-client.mjs --dist <t3code>/apps/web/dist --port <client port> \
+  --gw http://127.0.0.1:<gateway port> &
+node $skill/scripts/drive-web.mjs --web http://127.0.0.1:<client port> --out "$E/t3-client/web" \
+  --private "$P" --recipe $skill/recipes/t3-client.mjs --timeout 60000
+```
+
+`serve-t3-client.mjs` refuses (exit 97) a gateway whose process was not started with
+`MEND_T3_GATEWAY_MEND_URL` set to the run's tunnel, records itself in `$P/t3-client.json`, and ends
+with the gateway; `drive-web.mjs` drives its page only while that record's process lives. Every path
+answers `index.html`, so a reload of a thread's page loads it. The browser starts empty each run:
+the client keeps its environments in IndexedDB, which `--state` does not carry, so the recipe pairs
+every run and each run adds a `t3code · T3 Code Web` device in Mend. A full run took about 90
+seconds.
+
+- **Pair.** The root reads `No computer connected`. **Add pairing link** opens Settings →
+  Connections; **Add environment**; the recipe types `http://<gateway>/pair#token=<code>` (a code it
+  mints with `POST /api/me/devices/pairings`) into **Host**, which the client splits into host and
+  pairing code. Typed into **Pairing code** instead, it stays there whole and **Add environment**
+  answers `Enter a backend host.` Observed: the toast
+  `Backend added · The environment is saved and will reconnect on app startup.`, and the row
+  `Mend · http://127.0.0.1:<gateway port>/ · Connected`. The client shows a server version only when
+  the server is behind it, and showed none; `subscribeServerConfig` gave it `serverVersion`
+  `v0.1.2+mend.1` (the descriptor reads the same). Mend lists the device as `t3code · T3 Code Web`.
+- **The project, and a thread in a new worktree.** The root opens a new thread in `verify-fixture`
+  (`What should we build in verify-fixture?`); the **Mend** menu reads Workspace · **New worktree**,
+  checked, from `main (remote)`. Submitting a message adds a sidebar row (`li[data-thread-item]`)
+  and opens the thread. Mend has a `claude` session labelled with the message, on branch
+  `mend/wt/<worktree id>`: the hosted client names no branch.
+- **A turn, an interrupt, a held queue, Send now.** The opening message runs as a turn: the thread
+  shows Claude's refusal of the fake login
+  (`Failed to authenticate. API Error: 401 OAuth access token is invalid.`) and Mend records the
+  turn `completed`. A second message, then two more while its turn runs, then **Stop generation**:
+  Mend records the second turn `interrupted`, and the thread shows the region `2 queued messages`,
+  each row with **Send now**. Enter while the composer's button reads **Submitting message** is
+  dropped (the text stays, or joins the next message), so the recipe waits it out before each Enter.
+  After a reload, once the environment reconnects (the button reads **Environment disconnected**
+  until then), the composer offers **Resume thread**. **Send now** on the first queued message
+  starts its turn, and the queue resumes behind it: both queued messages ran as turns in Mend
+  (`completed`, then `completed`).
+- **Send now while a turn runs.** The client offers **Send now** only while it sees no run, so the
+  recipe opens the thread in a second tab and clicks **Send now** in both tabs in the same instant
+  (DOM clicks on buttons resolved first; Playwright's own click waits long enough for the second tab
+  to see the turn start). The second is refused: `orchestration.dispatchCommand` fails with
+  `A queued user message can only be sent now while the thread is stopped.` The client shows no
+  toast for it; the refusal is in the frames only.
+- **Snooze, then settle.** On the row, **Snooze thread** → **In 1 hour**: the thread leaves the
+  sidebar and the page moves on to another thread; the shell's thread carries `snoozedUntil` and
+  `snoozedAt`. On the thread again (its URL), **Thread actions** → **Settle thread**: `settledAt` is
+  set and `snoozedUntil` and `snoozedAt` read `null`: the settle ended the snooze.
+- **The terminal.** **Toggle terminal drawer** opens Mend's shell in the worktree
+  (`root@<workspace>:/workspace/repo#`; the terminal draws on a canvas, so its text is read from the
+  `terminal.attach` output frames). The recipe types into `textarea.t3-ghostty-input` a `printf`
+  into `verify-terminal.txt`, then `exit`: the gateway reports the terminal `exited`, and the client
+  closes it (`terminal.close`). After a reload no terminal of the thread runs. The web client never
+  sends `restartIfNotRunning` (in `v0.1.2` only t3code's mobile app does), and sends `resume: true`
+  only when it resubscribes after a dropped socket, so the gateway's "a stopped terminal stays
+  stopped on `resume`" is not reached from it. Over RPC with `<t3>`: `terminal.open` a new terminal
+  id, `terminal.write` `exit\n`, then `terminal.attach` with
+  `"restartIfNotRunning":true,"resume":true` answers the snapshot `exited`; the same attach without
+  `resume` answers `running` (a new shell). `terminal.close` it after.
+- **Files and the diff.** The right panel's **Files** lists `README.md` and the terminal's
+  `verify-terminal.txt`; `README.md` opens with `# Verify fixture`, under the line
+  `Read-only connection. Unsaved edits are kept until write access returns.` **Add panel surface** →
+  **Diff**: `Changes` against `main`, `1 additions, 0 deletions`, `verify-terminal.txt +1`.
+- **What the client calls that the gateway refuses.** On every connect:
+  `server.discoverSourceControl`
+  (`Mend's t3code gateway does not offer server.discoverSourceControl.`), `assets.createUrl` for the
+  project's favicon (`AssetWorkspaceContextNotFoundError`, at the project's `repo.git`) and
+  `projects.readFile` of `t3.json` (the fixture has none). None shows a toast.
+- **A thread interrupted with messages queued reads Working.** After **Stop generation** with
+  messages queued, the live page keeps `Working for <n>s` and **Submitting message** while Mend
+  records the turn `interrupted`, and the sidebar row reads `Working`, on later loads too, until a
+  queued message is sent. The gateway's shell row reads `"status":"queued"`,
+  `"latestRunCompletedAt":null`: its latest run is the held queued one
+  (`apps/t3-gateway/src/shell.ts`, `runs.at(-1)`), where t3code's own server takes the latest run
+  that is not held (`latestUnheldRun`, `packages/shared/src/orchestrationV2ThreadError.ts`, at both
+  the previous pin and `v0.1.2`).
+- **Not driven:** a completed turn under a snooze, and the automatic settle of empty old threads (it
+  needs a thread older than t3code's default days).
+- **Screenshots.** Claude's logo is one long SVG path, which `drive-web.mjs` takes for a QR code, so
+  every view that shows it (each thread) keeps its ARIA snapshot only (`<name>.png.withheld`). The
+  empty root and Settings → Connections keep their screenshots.
 
 ## Gotchas
 

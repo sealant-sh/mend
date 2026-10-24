@@ -352,6 +352,32 @@ export const reorder = (queue: ThreadQueue, runId: string, beforeRunId: string |
 };
 
 /**
+ * What `queued-run.start` did: the message went first, or why it did not. `unknown` is a thread
+ * Mend has not reported; `busy` a thread that is not stopped (a Mend turn open, or a message on its
+ * way to Mend); `gone` a message no longer waiting.
+ */
+export type StartQueued = "started" | "unknown" | "busy" | "gone";
+
+/**
+ * `queued-run.start` (t3code's "Send now"), as t3code's server takes it: only on a stopped thread,
+ * the waiting message goes first among those still waiting and the queue resumes. A person's "now"
+ * is new evidence: a message waiting out a retry's backoff goes at once.
+ */
+export const startQueued = (queue: ThreadQueue, view: SessionView, runId: string): StartQueued => {
+  if (!view.known) return "unknown";
+  const entry = waiting(queue, runId);
+  if (entry === undefined) return "gone";
+  const onItsWay = queue.entries.some((other) => canProgress(other) && other.state !== "queued");
+  if (view.turnOpen || onItsWay) return "busy";
+  const first = queue.entries.find((candidate) => candidate.state === "queued");
+  if (first !== undefined && first !== entry) reorder(queue, runId, first.runId);
+  entry.retryAt = null;
+  entry.retryEvidence = 0;
+  resume(queue);
+  return "started";
+};
+
+/**
  * Takes a message back, wherever it is on its way. Queued or launching, it is cancelled at once:
  * it stops blocking the thread and stops holding the hub (a launch already asked for may still
  * bring the agent up). Sending, its turn is interrupted when `POST /turns` answers. With

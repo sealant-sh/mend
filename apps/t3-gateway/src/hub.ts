@@ -33,6 +33,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as RcMap from "effect/RcMap";
 import * as Schedule from "effect/Schedule";
@@ -140,6 +141,7 @@ import {
   type GatewayStateError,
   type BearerSession,
   type LaunchedThread,
+  type LifecycleReceipt,
   type ImagePlacement,
   type SentImage,
   type StoredImage,
@@ -425,6 +427,23 @@ export class ThreadCommandRefused extends Schema.TaggedError<ThreadCommandRefuse
 
 export type ThreadCommandFailure = ThreadCommandRefused | HubReadError;
 
+/** A settle, snooze, pin or order the state file failed on: logged, and refused as not applied. */
+const lifecycleKept = <A>(effect: Effect.Effect<A, GatewayStateError>) =>
+  effect.pipe(
+    Effect.tapError((error) =>
+      Effect.logError("t3 gateway could not keep a settle, snooze, pin or order", {
+        cause: error.message,
+      }),
+    ),
+    Effect.mapError(
+      () =>
+        new ThreadCommandRefused({
+          reason: "The gateway could not keep this, so nothing changed. Try again.",
+          authorization: false,
+        }),
+    ),
+  );
+
 export interface ThreadCommands {
   /**
    * A message for the thread. The gateway queues it and sends it once no turn is open: as a turn
@@ -456,7 +475,16 @@ export interface ThreadCommands {
     threadId: string,
     runId: string,
   ) => Effect.Effect<number, ThreadCommandFailure>;
+  /** Resumes a held queue (`queue.resume`). */
   readonly resumeQueue: (threadId: string) => Effect.Effect<number, ThreadCommandFailure>;
+  /**
+   * Sends a waiting message first and resumes the queue (`queued-run.start`), refused unless the
+   * thread is stopped, as on t3code's server.
+   */
+  readonly startQueued: (
+    threadId: string,
+    runId: string,
+  ) => Effect.Effect<number, ThreadCommandFailure>;
   /** New text for a message still waiting in the gateway's queue (`queued-run.edit`). */
   readonly editQueued: (
     threadId: string,
@@ -548,6 +576,11 @@ export interface ThreadCommands {
    * not touched.
    */
   readonly setLifecycle: (input: {
+    /**
+     * The client's command: one sent again (a retry of one it saw no answer to) is answered as it
+     * first was, never applied twice, as t3code's own server answers from its command receipts.
+     */
+    readonly commandId: string;
     readonly threadId: string;
     readonly change: LifecycleChange;
   }) => Effect.Effect<number, ThreadCommandFailure>;
@@ -3196,6 +3229,28 @@ export const makePersonHub = (input: {
         }),
       );
 
+    const startQueued: ThreadCommands["startQueued"] = (threadId, runId) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        return yield* locked(
+          Effect.gen(function* () {
+            if (archived.has(threadId)) {
+              return yield* refused(
+                "The thread is archived: nothing in its queue is sent until it is unarchived. Unarchive it, then send the message.",
+              );
+            }
+            let outcome: Queueing.StartQueued = "unknown";
+            const started = yield* changeKept(threadId, (queue) => {
+              outcome = Queueing.startQueued(queue, viewOf(threadId), runId);
+              return outcome === "started";
+            });
+            if (!started) return yield* refused(START_QUEUED_REFUSALS[outcome]);
+            yield* publishAll;
+            return sequence;
+          }),
+        );
+      });
+
     /** A change to what is still waiting in a thread's queue, published at once. */
     /** An edit or a reorder, kept before it is acknowledged (594-R2-1): refused, nothing changed. */
     const changeQueue = (sessionId: string, change: (queue: Queueing.ThreadQueue) => boolean) =>
@@ -3964,36 +4019,69 @@ export const makePersonHub = (input: {
         const sessionId = sessionIdOf(command.threadId);
         return yield* locked(
           Effect.gen(function* () {
+            // Applied again, a snooze would be stamped past a failure that arrived since and hide
+            // it: a command already answered is answered the same way.
+            const kept = yield* state
+              .lifecycleReceipt(keeper.id, command.commandId)
+              .pipe(lifecycleKept);
+            if (Option.isSome(kept)) {
+              const { sessionId: keptFor, answer } = kept.value;
+              if (keptFor !== sessionId) {
+                return yield* refused(
+                  `Command ${command.commandId} was already handled for another thread and cannot be replayed for ${command.threadId}.`,
+                );
+              }
+              return answer._tag === "Applied" ? answer.sequence : yield* refused(answer.reason);
+            }
+            const receiptOf = (answer: LifecycleReceipt["answer"]): LifecycleReceipt => ({
+              commandId: command.commandId,
+              sessionId,
+              answer,
+            });
+            const refuse = (reason: string) =>
+              state.keepLifecycleReceipt(keeper.id, receiptOf({ _tag: "Refused", reason })).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("t3 gateway could not keep a refused settle or snooze", {
+                    cause: error.message,
+                  }),
+                ),
+                Effect.andThen(refused(reason)),
+              );
             const source = sourceOf(sessionId);
             if (source === null) {
-              return yield* refused(`Thread ${command.threadId} is not in this environment.`);
+              return yield* refuse(`Thread ${command.threadId} is not in this environment.`);
             }
             if (source.archivedAt !== null) {
-              return yield* refused("The thread is archived. Unarchive it first.");
+              return yield* refuse("The thread is archived. Unarchive it first.");
             }
             const result = changeLifecycle(source, command.change, yield* DateTime.nowAsDate);
-            if (result._tag === "Refused") return yield* refused(result.reason);
+            if (result._tag === "Refused") return yield* refuse(result.reason);
             const next = result.lifecycle;
-            if (!sameLifecycle(next, source.lifecycle)) {
+            const before = sequence;
+            const applied = receiptOf({ _tag: "Applied", sequence: before });
+            if (sameLifecycle(next, source.lifecycle)) {
+              yield* state.keepLifecycleReceipt(keeper.id, applied).pipe(lifecycleKept);
+              return sequence;
+            }
+            yield* state
+              .setLifecycle(keeper.id, sessionId, isLifecycleEmpty(next) ? null : next, applied)
+              .pipe(lifecycleKept);
+            if (isLifecycleEmpty(next)) lifecycles.delete(sessionId);
+            else lifecycles.set(sessionId, next);
+            yield* publishAll;
+            // The receipt was kept with the change, before the sequence that published it was
+            // known. Should this second write fail, a replay is answered with the earlier one, and
+            // the client's shell has carried the change since.
+            if (sequence !== before) {
               yield* state
-                .setLifecycle(keeper.id, sessionId, isLifecycleEmpty(next) ? null : next)
+                .keepLifecycleReceipt(keeper.id, receiptOf({ _tag: "Applied", sequence }))
                 .pipe(
-                  Effect.tapError((error) =>
-                    Effect.logError("t3 gateway could not keep a settle, snooze, pin or order", {
+                  Effect.catch((error) =>
+                    Effect.logWarning("t3 gateway could not update a settle or snooze receipt", {
                       cause: error.message,
                     }),
                   ),
-                  Effect.mapError(
-                    () =>
-                      new ThreadCommandRefused({
-                        reason: "The gateway could not keep this, so nothing changed. Try again.",
-                        authorization: false,
-                      }),
-                  ),
                 );
-              if (isLifecycleEmpty(next)) lifecycles.delete(sessionId);
-              else lifecycles.set(sessionId, next);
-              yield* publishAll;
             }
             return sequence;
           }),
@@ -4049,6 +4137,7 @@ export const makePersonHub = (input: {
       interrupt: (command) => interrupt({ ...command, threadId: sessionIdOf(command.threadId) }),
       cancelQueued: (threadId, runId) => cancelQueued(sessionIdOf(threadId), runId),
       resumeQueue: (threadId) => resumeQueue(sessionIdOf(threadId)),
+      startQueued: (threadId, runId) => startQueued(sessionIdOf(threadId), runId),
       editQueued: (threadId, runId, text, imageIds) => {
         const sessionId = sessionIdOf(threadId);
         const selection =
@@ -4524,6 +4613,13 @@ const isOutage = (error: MendUnavailable): boolean => error.status === null || e
 /** Why a change to a queue the state file could not keep was refused: nothing changed. */
 const QUEUE_NOT_KEPT =
   "The gateway could not write this to its state file, so nothing changed. Try again.";
+
+/** t3code's refusal of `queued-run.start` (`Orchestrator.ts`, v0.1.2), and Mend's for its own. */
+const START_QUEUED_REFUSALS: Record<Exclude<Queueing.StartQueued, "started">, string> = {
+  unknown: "Mend has not reported this thread's state yet. Try again in a moment.",
+  busy: "A queued user message can only be sent now while the thread is stopped.",
+  gone: "A queued user message can only be sent now while the thread is stopped.",
+};
 
 /** The queue's clock (`queue.ts`): monotonic milliseconds, never wall time. */
 const queueNow = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos) / 1_000_000);

@@ -7,8 +7,9 @@ token of the person who paired. Mend stays the only source of truth and its acce
 unchanged.
 
 It runs on Effect `4.0.5` from the `t3` catalog and speaks t3code's contracts from
-`@mend/t3-contracts`, pinned to one t3code nightly or preview tag. It does not import
-`@mend/api-contracts`: it decodes only the Mend fields it reads.
+`@mend/t3-contracts`, pinned to one t3code tag (`v0.1.2` today,
+`packages/t3-contracts/t3code.pin.json`). It does not import `@mend/api-contracts`: it decodes only
+the Mend fields it reads.
 
 ## Phase 0: HTTP
 
@@ -160,13 +161,13 @@ after a sequence the hub still holds, with only what changed since (see "Replay 
 `orchestration.dispatchCommand` takes what Mend can back (`src/commands.ts`); every other command
 answers `OrchestrationV2DispatchCommandError` naming it.
 
-| t3code                                                                       | What the gateway does                                                                                                                                                                                                                                                        |
-| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `message.dispatch`                                                           | Checks Mend's steering rule as the sender (`GET /api/sessions/:id`), queues the message, and sends it once no turn is open: `POST /api/sessions/:id/turns`, or, when the agent stopped, `POST /api/sessions/:id/launch` with no prompt and then the turn once the agent runs |
-| `run.interrupt`                                                              | `POST /api/turns/:id/interrupt`; with `holdQueue` (t3code always sends it) the queue is held before the turn ends. A queued run is taken back instead                                                                                                                        |
-| `queued-run.cancel`, `queue.resume`, `queued-run.edit`, `queued-run.reorder` | The gateway's queue                                                                                                                                                                                                                                                          |
-| `runtime-request.respond`                                                    | `POST /api/requests/:id/respond`: decisions as Mend's (`acceptAlways` is `accept-for-session`), answers as lists of strings                                                                                                                                                  |
-| `thread.user-input.dismiss`                                                  | The same, answering `cancel`                                                                                                                                                                                                                                                 |
+| t3code                                                                                           | What the gateway does                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `message.dispatch`                                                                               | Checks Mend's steering rule as the sender (`GET /api/sessions/:id`), queues the message, and sends it once no turn is open: `POST /api/sessions/:id/turns`, or, when the agent stopped, `POST /api/sessions/:id/launch` with no prompt and then the turn once the agent runs |
+| `run.interrupt`                                                                                  | `POST /api/turns/:id/interrupt`; with `holdQueue` (t3code always sends it) the queue is held before the turn ends. A queued run is taken back instead                                                                                                                        |
+| `queued-run.cancel`, `queue.resume`, `queued-run.start`, `queued-run.edit`, `queued-run.reorder` | The gateway's queue                                                                                                                                                                                                                                                          |
+| `runtime-request.respond`                                                                        | `POST /api/requests/:id/respond`: decisions as Mend's (`acceptAlways` is `accept-for-session`), answers as lists of strings                                                                                                                                                  |
+| `thread.user-input.dismiss`                                                                      | The same, answering `cancel`                                                                                                                                                                                                                                                 |
 
 The gateway holds the queue (ADR 0012): it never sends a second turn while one is open in Mend,
 whoever opened it. A queued message is a run of the gateway's own (`t3-run:…`) until Mend opens its
@@ -203,7 +204,12 @@ agent up) is taken as under way, and the message waits for the agent. Every wait
 
 `queued-run.edit` rewrites a message still waiting (t3code sees a `message.updated`), and
 `queued-run.reorder` moves one before another waiting message, or after the last one, as t3code's
-own server places it. A message on its way to Mend, or settled, is neither rewritten nor moved.
+own server places it. `queued-run.start` (t3code's "Send now", offered on a waiting message whenever
+no run is active) moves that message first, resumes the queue, and sends it at once even if it was
+waiting out a retry. As on t3code's server, it is refused while a turn runs or a message is on its
+way to Mend, and the queue stays as it was. It also waits for the gateway's first read of Mend after
+a restart, so a queue kept across the restart is never sent ahead of a running turn. A message on
+its way to Mend, or settled, is neither rewritten, moved nor sent first.
 
 Steering mid-turn and holding a message for later are refused.
 
@@ -377,7 +383,9 @@ thread's worktree as it stands through Mend's `GET /api/worktrees/:id/contents`,
 
 - A file comes back as text, at most 1 MiB of it (`truncated` says so); a binary file answers
   `binary_file`, a missing one `path_not_file`, a path Mend refuses (outside the worktree, `.git`)
-  `workspace_path_outside_root`.
+  `workspace_path_outside_root`. A read with `allowMissing` (the client's read of `t3.json`) answers
+  a missing file as t3code's own server does: empty contents with `exists: false`. A worktree Mend
+  no longer has still fails.
 - A search matches across the worktree, untracked files included and ignored ones not, up to 500
   lines. The gateway marks where each line matched, as t3code highlights it: a literal with
   `indexOf`, a regex in a worker stopped after 250 ms (`src/highlight.ts`), so the client's regex
@@ -460,16 +468,24 @@ they are the person's own view, kept by the gateway the way the archive is (`thr
 the state file, `src/lifecycle.ts`), and the session in Mend is not touched.
 
 - `thread.settle` sets the thread's `settledOverride` to `settled`, `thread.unsettle` to `active`,
-  with `settledAt` and `unsettledAt`. A settle is refused while a turn runs, a message waits in the
-  queue or a request is open, as t3code's own server refuses it.
-- `thread.snooze` sets `snoozedUntil` and `snoozedAt`; `thread.unsnooze` clears them. A snooze ends
-  in the future, and is refused while a request is open or a message waits to be sent. A running
-  thread can be snoozed.
+  with `settledAt` and `unsettledAt`, and ends a snooze. A settle is refused while a turn runs, a
+  message waits in the queue or a request is open, as t3code's own server refuses it.
+- `thread.snooze` sets `snoozedUntil` and stamps `snoozedAt` again for each new command, the same
+  time too; `thread.unsnooze` clears them. A snooze ends in the future, and is refused while a
+  request is open or a message waits to be sent. A running thread can be snoozed.
+- Each settle, snooze, pin and order command keeps a receipt by its `commandId`
+  (`lifecycle_receipts` in the state file), as t3code's own server does. A command the client sends
+  again (a retry of one it saw no answer to) gets the answer it first got, its sequence or its
+  refusal, and is not applied again, after other commands and across a restart too. So a retried
+  snooze never moves `snoozedAt` past a failure that came after it. A `commandId` already used for
+  another thread is refused. A receipt is written in the same transaction as the change it answers.
+  Receipts are kept for as long as the thread is, as t3code keeps its own, and go when the thread is
+  deleted through the gateway.
 - A turn opened, or a message queued, after a settle or a snooze ends both, as a new run does on
   t3code's own server; the state file lets go of them too.
 - t3code's client decides when a snooze has woken, from the shell (`threadSettled.ts` in its client
   runtime, vendored in `@mend/t3-contracts/thread-settled`): at `snoozedUntil`, or earlier on a
-  pending approval or question, a turn that failed after the snooze, or one that completed after it.
+  pending request or a turn that failed after the snooze. A turn that completes leaves it snoozed.
   The gateway keeps the snooze as set and projects what that reads, so the thread shows as woken. A
   mark is stamped no earlier than Mend's latest time on the thread, so a Mend clock ahead of the
   gateway's does not wake it at once.

@@ -63,6 +63,13 @@ const tagOf = (exit: Exit.Exit<unknown, unknown>): string | undefined => {
     : undefined;
 };
 
+/** The refusal's message, as t3code's client shows it; undefined for a success. */
+const refusalOf = (exit: Exit.Exit<unknown, unknown>): string | undefined => {
+  if (!Exit.isFailure(exit)) return undefined;
+  const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause));
+  return error instanceof Error ? error.message : undefined;
+};
+
 /** The person's shell, kept current from `subscribeShell`. */
 const watchShell = (rpc: Rpc) =>
   Effect.gen(function* () {
@@ -107,8 +114,13 @@ const TERMINAL = new Set(["completed", "interrupted", "failed", "cancelled", "ro
  */
 const asClientSees = (thread: OrchestrationV2ThreadShell): ThreadSnoozeShell => {
   const updatedAt = DateTime.formatIso(thread.updatedAt);
-  const kind = thread.pendingRuntimeRequest?.kind;
+  const request = thread.pendingRuntimeRequest;
+  const kind = request?.kind;
+  const runtimeStatus = thread.activityRunStatus ?? thread.status;
+  const working =
+    runtimeStatus === "preparing" || runtimeStatus === "starting" || runtimeStatus === "running";
   return {
+    source: { pendingRuntimeRequest: request },
     latestUserMessageAt: iso(thread.latestUserMessageAt),
     latestRun:
       thread.latestRunId === null
@@ -124,9 +136,9 @@ const asClientSees = (thread: OrchestrationV2ThreadShell): ThreadSnoozeShell => 
                   : null
                 : iso(thread.latestRunCompletedAt),
           },
-    runtime: { status: thread.activityRunStatus ?? thread.status, updatedAt },
+    runtime: { status: runtimeStatus, updatedAt },
     hasPendingApprovals: kind !== undefined && kind !== "user_input" && kind !== "auth_refresh",
-    hasPendingUserInput: kind === "user_input",
+    hasPendingUserInput: kind === "user_input" && (request?.blocking !== false || !working),
     snoozedUntil: iso(thread.snoozedUntil),
     snoozedAt: iso(thread.snoozedAt),
   };
@@ -193,6 +205,32 @@ describe("settle", () => {
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
     });
   });
+
+  it.live("settling a snoozed thread ends its snooze", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      mend.workbench.addTurn("session-1", "Done already", "completed");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SETTLE-SNOOZED");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.latestRunId !== null, "the thread");
+        yield* dispatch(rpc, {
+          type: "thread.snooze",
+          snoozedUntil: new Date(Date.now() + HOUR).toISOString(),
+        });
+        yield* shell.until((thread) => thread.snoozedUntil != null, "the snooze");
+        yield* dispatch(rpc, { type: "thread.settle" });
+        const settled = yield* shell.until(
+          (thread) => thread.settledOverride === "settled",
+          "the settle",
+        );
+        assert.isNull(settled.snoozedUntil ?? null);
+        assert.isNull(settled.snoozedAt ?? null);
+        assert.isFalse(snoozedNow(settled));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
 
   it.live("refuses to settle a thread with a turn running or a question waiting", () =>
     Effect.gen(function* () {
@@ -357,31 +395,124 @@ describe("snooze", () => {
     }),
   );
 
-  for (const ending of ["failed", "completed"] as const) {
-    it.live(`wakes early when the turn running under the snooze ${ending}`, () =>
-      Effect.gen(function* () {
-        const mend = yield* startFakeMend;
-        withSession(mend);
-        const turn = mend.workbench.addTurn("session-1", "A long job");
-        yield* Effect.gen(function* () {
-          const { rpc } = yield* pairAndConnect(mend, `SNOOZE-${ending.toUpperCase()}`);
-          const shell = yield* watchShell(rpc);
-          yield* shell.until((thread) => thread.status === "running", "the running turn");
-          yield* dispatch(rpc, {
-            type: "thread.snooze",
-            snoozedUntil: new Date(Date.now() + HOUR).toISOString(),
-          });
-          const snoozed = yield* shell.until((thread) => thread.snoozedUntil != null, "the snooze");
-          assert.isTrue(snoozedNow(snoozed));
+  it.live("wakes early when the turn running under the snooze fails", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      const turn = mend.workbench.addTurn("session-1", "A long job");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SNOOZE-FAILED");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.status === "running", "the running turn");
+        yield* dispatch(rpc, {
+          type: "thread.snooze",
+          snoozedUntil: new Date(Date.now() + HOUR).toISOString(),
+        });
+        const snoozed = yield* shell.until((thread) => thread.snoozedUntil != null, "the snooze");
+        assert.isTrue(snoozedNow(snoozed));
 
-          mend.workbench.setTurn(turn, ending, ending === "failed" ? "The agent crashed." : null);
-          const ended = yield* shell.until((thread) => thread.status === ending, `the ${ending}`);
-          assert.isFalse(snoozedNow(ended));
-          assert.isNotNull(threadWokeAt(asClientSees(ended), { now: new Date().toISOString() }));
-        }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
-      }),
-    );
-  }
+        mend.workbench.setTurn(turn, "failed", "The agent crashed.");
+        const ended = yield* shell.until((thread) => thread.status === "failed", "the failure");
+        assert.isFalse(snoozedNow(ended));
+        assert.isNotNull(threadWokeAt(asClientSees(ended), { now: new Date().toISOString() }));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
+
+  it.live("stays snoozed when the turn running under the snooze completes", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      const turn = mend.workbench.addTurn("session-1", "A long job");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SNOOZE-COMPLETED");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.status === "running", "the running turn");
+        yield* dispatch(rpc, {
+          type: "thread.snooze",
+          snoozedUntil: new Date(Date.now() + HOUR).toISOString(),
+        });
+        yield* shell.until((thread) => thread.snoozedUntil != null, "the snooze");
+
+        mend.workbench.setTurn(turn, "completed", null);
+        const ended = yield* shell.until(
+          (thread) => thread.status === "completed",
+          "the completion",
+        );
+        assert.isTrue(snoozedNow(ended));
+        assert.isNull(threadWokeAt(asClientSees(ended), { now: new Date().toISOString() }));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
+
+  it.live("snoozing again for the same time stamps the snooze again", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      mend.workbench.addTurn("session-1", "Done already", "completed");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SNOOZE-AGAIN");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.latestRunId !== null, "the thread");
+        const snoozedUntil = new Date(Date.now() + HOUR).toISOString();
+        yield* dispatch(rpc, { type: "thread.snooze", snoozedUntil });
+        const first = yield* shell.until((thread) => thread.snoozedAt != null, "the snooze");
+        const firstAt = iso(first.snoozedAt);
+        // A snooze is never dated before Mend's latest time for the thread, which runs ahead here.
+        yield* Effect.sleep(Math.max(0, Date.parse(firstAt ?? "") - Date.now()) + 20);
+        yield* dispatch(rpc, { type: "thread.snooze", snoozedUntil });
+        const again = yield* shell.until(
+          (thread) => iso(thread.snoozedAt) !== firstAt,
+          "the snooze stamped again",
+        );
+        assert.strictEqual(iso(again.snoozedUntil), snoozedUntil);
+        assert.isTrue(Date.parse(iso(again.snoozedAt) ?? "") > Date.parse(firstAt ?? ""));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
+
+  it.live("a snooze the client sends again is not stamped again, across a restart too", () => {
+    const statePath = statePathOf();
+    const snooze = {
+      type: "thread.snooze",
+      commandId: commandId(),
+      threadId: THREAD,
+      snoozedUntil: new Date(Date.now() + HOUR).toISOString(),
+    } as const;
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      const turn = mend.workbench.addTurn("session-1", "A long job");
+      const snoozedAt = yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SNOOZE-REPLAY");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.status === "running", "the running turn");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](snooze);
+        const snoozed = yield* shell.until((thread) => thread.snoozedAt != null, "the snooze");
+
+        mend.workbench.setTurn(turn, "failed", "The agent crashed.");
+        yield* shell.until((thread) => thread.status === "failed", "the failure");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](snooze);
+        // Real time: a restamp the replay made would be published within this.
+        yield* Effect.sleep("300 millis");
+        const replayed = yield* shell.until(() => true, "the thread");
+        assert.strictEqual(iso(replayed.snoozedAt), iso(snoozed.snoozedAt));
+        assert.isFalse(snoozedNow(replayed));
+        return iso(snoozed.snoozedAt);
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SNOOZE-REPLAY-AFTER");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.status === "failed", "the failed thread");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](snooze);
+        yield* Effect.sleep("300 millis");
+        const replayed = yield* shell.until(() => true, "the thread");
+        assert.strictEqual(iso(replayed.snoozedAt), snoozedAt);
+        assert.isFalse(snoozedNow(replayed));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+    });
+  });
 
   it.live("a thread that had failed before the snooze stays snoozed", () =>
     Effect.gen(function* () {
@@ -496,6 +627,154 @@ describe("per person", () => {
         });
         assert.notStrictEqual(iso(adas.thread.snoozedUntil), beaUntil);
         assert.strictEqual(adas.thread.settledOverride, "settled");
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
+});
+
+describe("a command the client sends again", () => {
+  /**
+   * Snooze A under a running turn, the turn fails, another command B, then A sent again: A is
+   * answered as it first was and never applied again, so the failure stays shown. The same on a
+   * gateway restarted on the same state file.
+   */
+  const snoozeSentAgainAfter = (
+    label: string,
+    other:
+      | { readonly type: "thread.auto-settle.set"; readonly enabled: false }
+      | { readonly type: "thread.unsnooze"; readonly reason: "user" },
+    applied: (thread: OrchestrationV2ThreadShell) => boolean,
+  ) => {
+    const statePath = statePathOf();
+    const snooze = {
+      type: "thread.snooze",
+      commandId: commandId(),
+      threadId: THREAD,
+      snoozedUntil: new Date(Date.now() + HOUR).toISOString(),
+    } as const;
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      const turn = mend.workbench.addTurn("session-1", "A long job");
+      const first = yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, label);
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.status === "running", "the running turn");
+        const answered = yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](snooze);
+        yield* shell.until((thread) => thread.snoozedAt != null, "the snooze");
+        mend.workbench.setTurn(turn, "failed", "The agent crashed.");
+        yield* shell.until((thread) => thread.status === "failed", "the failure");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          ...other,
+          commandId: commandId(),
+          threadId: THREAD,
+        });
+        const before = yield* shell.until(applied, `the ${other.type}`);
+        assert.isFalse(snoozedNow(before));
+
+        const again = yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](snooze);
+        // Real time: a restamp the replay made would be published within this.
+        yield* Effect.sleep("300 millis");
+        const replayed = yield* shell.until(() => true, "the thread");
+        assert.strictEqual(iso(replayed.snoozedAt), iso(before.snoozedAt));
+        assert.strictEqual(iso(replayed.snoozedUntil), iso(before.snoozedUntil));
+        assert.isFalse(snoozedNow(replayed), "the failure stays shown");
+        assert.strictEqual(again.sequence, answered.sequence, "answered as it first was");
+        return { sequence: answered.sequence, snoozedAt: iso(before.snoozedAt) };
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, `${label}-AFTER`);
+        const shell = yield* watchShell(rpc);
+        yield* shell.until(
+          (thread) => thread.status === "failed" && applied(thread),
+          "the kept thread",
+        );
+        const again = yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](snooze);
+        yield* Effect.sleep("300 millis");
+        const replayed = yield* shell.until(() => true, "the thread");
+        assert.strictEqual(iso(replayed.snoozedAt), first.snoozedAt);
+        assert.isFalse(snoozedNow(replayed), "the failure stays shown");
+        assert.strictEqual(again.sequence, first.sequence, "answered as it first was");
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+    });
+  };
+
+  it.live("a snooze sent again after an auto-settle change is answered as it was", () =>
+    snoozeSentAgainAfter(
+      "REPLAY-AFTER-PREFERENCE",
+      { type: "thread.auto-settle.set", enabled: false },
+      (thread) => thread.autoSettleDisabledAt != null,
+    ),
+  );
+
+  it.live("a snooze sent again after an unsnooze is answered as it was", () =>
+    snoozeSentAgainAfter(
+      "REPLAY-AFTER-UNSNOOZE",
+      { type: "thread.unsnooze", reason: "user" },
+      (thread) => thread.snoozedAt == null,
+    ),
+  );
+
+  it.live("a refused settle sent again is refused as it was, after its reason has passed", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      const turn = mend.workbench.addTurn("session-1", "Still going");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "REPLAY-REFUSED");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.status === "running", "the running turn");
+        const settle = { type: "thread.settle", commandId: commandId(), threadId: THREAD } as const;
+        const refused = refusalOf(
+          yield* Effect.exit(rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](settle)),
+        );
+        assert.isDefined(refused);
+
+        mend.workbench.setTurn(turn, "completed", null);
+        yield* shell.until((thread) => thread.status === "completed", "the completion");
+        const again = refusalOf(
+          yield* Effect.exit(rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](settle)),
+        );
+        assert.strictEqual(again, refused);
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        assert.isNull(projection.thread.settledOverride);
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
+
+  it.live("a command id already used for one thread is refused for another", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      mend.workbench.addSession({ id: "session-2", projectId: "project-1" });
+      mend.workbench.addTurn("session-1", "Done already", "completed");
+      mend.workbench.addTurn("session-2", "Done too", "completed");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "REPLAY-OTHER-THREAD");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.latestRunId !== null, "the thread");
+        const id = commandId();
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          type: "thread.settle",
+          commandId: id,
+          threadId: THREAD,
+        });
+        const other = ThreadId.make("session-2");
+        const reused = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.settle",
+            commandId: id,
+            threadId: other,
+          }),
+        );
+        assert.strictEqual(tagOf(reused), "OrchestrationV2DispatchCommandError");
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: other,
+        });
+        assert.isNull(projection.thread.settledOverride);
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
     }),
   );

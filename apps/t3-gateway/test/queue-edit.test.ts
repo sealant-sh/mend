@@ -9,14 +9,26 @@ import {
   ORCHESTRATION_V2_WS_METHODS,
   RunId,
   ThreadId,
+  type OrchestrationV2Run,
   type OrchestrationV2ThreadStreamItem,
 } from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 
-import { emptyQueue, newEntry, reorder, edit, type ThreadQueue } from "../src/queue.ts";
+import {
+  DEFAULT_QUEUE_TIMINGS,
+  emptyQueue,
+  newEntry,
+  nextStep,
+  reorder,
+  edit,
+  startQueued,
+  type SessionView,
+  type ThreadQueue,
+} from "../src/queue.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
@@ -24,8 +36,9 @@ import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 
 /**
- * `queued-run.edit` and `queued-run.reorder` (ADR 0012, phase 2): what still waits in the gateway's
- * queue can be rewritten and moved; what is on its way to Mend cannot.
+ * `queued-run.edit`, `queued-run.reorder` and `queued-run.start` (ADR 0012, phase 2): what still
+ * waits in the gateway's queue can be rewritten, moved and sent first; what is on its way to Mend
+ * cannot.
  */
 
 type Item = OrchestrationV2ThreadStreamItem;
@@ -190,6 +203,236 @@ describe("editing and reordering the queue", () => {
   );
 });
 
+describe("sending a held message now", () => {
+  it.live("sends the chosen message first once the queue was held, then the rest in order", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const open = mend.workbench.addTurn("session-1", "A long job");
+        const { rpc } = yield* pairAndConnect(mend, "SEND-NOW");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        for (const [id, text] of [
+          ["message-a", "First"],
+          ["message-b", "Second"],
+          ["message-c", "Third"],
+        ] as const) {
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](message(id, text));
+        }
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        const runOf = (messageId: string) => {
+          const run = projection.runs.find((candidate) => candidate.userMessageId === messageId);
+          if (run === undefined) throw new Error(`no run for ${messageId}`);
+          return run.id;
+        };
+        const running = projection.runs.find((run) => run.status === "running");
+        assert.isDefined(running);
+        if (running === undefined) return;
+
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          type: "run.interrupt",
+          commandId: commandId(),
+          threadId: THREAD,
+          runId: running.id,
+          holdQueue: true,
+        });
+        yield* eventually(() => open.status === "interrupted", "the interrupt");
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "event" }> =>
+            item.kind === "event" &&
+            item.event.type === "run.updated" &&
+            item.event.payload.userMessageId === "message-a" &&
+            item.event.payload.queueHeld === true,
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "event" }> =>
+            item.kind === "event" &&
+            item.event.type === "run.updated" &&
+            item.event.payload.id === running.id &&
+            item.event.payload.status === "interrupted",
+        );
+        assert.deepStrictEqual(turnInputs(mend), []);
+
+        const notWaiting = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "queued-run.start",
+            commandId: commandId(),
+            threadId: THREAD,
+            runId: running.id,
+          }),
+        );
+        assert.include(
+          Exit.isFailure(notWaiting) ? String(Cause.squash(notWaiting.cause)) : "",
+          "A queued user message can only be sent now while the thread is stopped.",
+        );
+
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          type: "queued-run.start",
+          commandId: commandId(),
+          threadId: THREAD,
+          runId: runOf("message-c"),
+        });
+        yield* eventually(() => turnInputs(mend).length === 1, "the message sent now");
+        assert.deepStrictEqual(turnInputs(mend), ["Third"]);
+
+        const again = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "queued-run.start",
+            commandId: commandId(),
+            threadId: THREAD,
+            runId: runOf("message-c"),
+          }),
+        );
+        assert.strictEqual(errorTag(again), "OrchestrationV2DispatchCommandError");
+
+        for (const expected of [
+          ["Third", "First"],
+          ["Third", "First", "Second"],
+        ]) {
+          const last = (mend.workbench.turns.get("session-1") ?? []).at(-1);
+          if (last !== undefined && last.status === "running")
+            mend.workbench.setTurn(last, "completed");
+          yield* eventually(() => turnInputs(mend).length === expected.length, "the next message");
+          assert.deepStrictEqual(turnInputs(mend), expected);
+        }
+      }),
+    ),
+  );
+});
+
+/** The messages still waiting, in the order the client shows them. */
+const queuedOrder = (runs: ReadonlyArray<OrchestrationV2Run>) =>
+  runs
+    .filter((run) => run.status === "queued")
+    .toSorted((left, right) => (left.queuePosition ?? 0) - (right.queuePosition ?? 0))
+    .map((run) => run.userMessageId);
+
+describe("sending a queued message now while a turn runs", () => {
+  it.live("refuses it as t3code's server does, and the queue keeps its order", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const open = mend.workbench.addTurn("session-1", "A long job");
+        const { rpc } = yield* pairAndConnect(mend, "SEND-NOW-BUSY");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](message("message-a", "First"));
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](message("message-b", "Second"));
+        const before = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        assert.deepStrictEqual(queuedOrder(before.runs), ["message-a", "message-b"]);
+        const second = before.runs.find((run) => run.userMessageId === "message-b");
+        assert.isDefined(second);
+        if (second === undefined) return;
+
+        const refused = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "queued-run.start",
+            commandId: commandId(),
+            threadId: THREAD,
+            runId: second.id,
+          }),
+        );
+        assert.strictEqual(errorTag(refused), "OrchestrationV2DispatchCommandError");
+        assert.include(
+          Exit.isFailure(refused) ? String(Cause.squash(refused.cause)) : "",
+          "A queued user message can only be sent now while the thread is stopped.",
+        );
+        const after = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        assert.deepStrictEqual(queuedOrder(after.runs), ["message-a", "message-b"]);
+
+        mend.workbench.setTurn(open, "completed");
+        yield* eventually(() => turnInputs(mend).length === 1, "the first queued message");
+        assert.deepStrictEqual(turnInputs(mend), ["First"]);
+      }),
+    ),
+  );
+
+  it.live("refuses it on a queue kept across a restart until Mend's first read says", () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-send-now-")), "state.sqlite");
+    const onGateway = <A, E, R>(mend: FakeMend, test: Effect.Effect<A, E, R>) =>
+      Effect.scoped(test).pipe(Effect.provide(gatewayTestLayer(mend.url, statePath)));
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      mend.workbench.addProject("project-1", "mend");
+      mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+      const open = mend.workbench.addTurn("session-1", "A long job");
+      const second = yield* onGateway(
+        mend,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "SEND-NOW-KEPT");
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](message("message-a", "First"));
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](message("message-b", "Second"));
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "run.interrupt",
+            commandId: commandId(),
+            threadId: THREAD,
+            runId: RunId.make(open.id),
+            holdQueue: true,
+          });
+          const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+            threadId: THREAD,
+          });
+          const run = projection.runs.find((candidate) => candidate.userMessageId === "message-b");
+          if (run === undefined) throw new Error("no run for message-b");
+          return run.id;
+        }),
+      );
+      mend.workbench.addTurn("session-1", "Another job");
+      const firstRead = mend.workbench.holdNextRequestsRead("session-1");
+
+      yield* onGateway(
+        mend,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "SEND-NOW-KEPT-AFTER");
+          yield* Effect.promise(() => firstRead.entered);
+          const sendNow = yield* Effect.forkChild(
+            Effect.exit(
+              rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+                type: "queued-run.start",
+                commandId: commandId(),
+                threadId: THREAD,
+                runId: second,
+              }),
+            ),
+          );
+          // Real time: lets a send-now that does not wait for Mend's first read answer first.
+          yield* Effect.sleep("300 millis");
+          firstRead.release();
+          const refused = yield* Fiber.join(sendNow);
+          assert.include(
+            Exit.isFailure(refused) ? String(Cause.squash(refused.cause)) : "",
+            "A queued user message can only be sent now while the thread is stopped.",
+          );
+          const after = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+            threadId: THREAD,
+          });
+          assert.deepStrictEqual(queuedOrder(after.runs), ["message-a", "message-b"]);
+          assert.isTrue(
+            after.runs.filter((run) => run.status === "queued").every((run) => run.queueHeld),
+          );
+          assert.deepStrictEqual(turnInputs(mend), []);
+        }),
+      );
+    });
+  });
+});
+
 describe("an edit is kept before it is acknowledged (594-R2-1)", () => {
   it.live(
     "refuses an edit the state file will not keep: the old text stays, live and after a restart",
@@ -283,6 +526,56 @@ describe("the queue's own rules", () => {
     assert.deepStrictEqual(order(queue), ["run-0", "run-3", "run-1", "run-2"]);
     assert.isTrue(reorder(queue, "run-3", null));
     assert.deepStrictEqual(order(queue), ["run-0", "run-1", "run-2", "run-3"]);
+  });
+
+  it("sends a waiting message first, and only once the thread is stopped", () => {
+    const idle: SessionView = {
+      known: true,
+      agentLive: true,
+      turnOpen: false,
+      status: "running",
+      updatedAt: null,
+      summary: null,
+      evidence: 1,
+    };
+    const queue = queueOf("queued", "queued", "queued");
+    queue.held = true;
+    assert.strictEqual(startQueued(queue, { ...idle, turnOpen: true }, "run-2"), "busy");
+    assert.strictEqual(startQueued(queue, { ...idle, known: false }, "run-2"), "unknown");
+    assert.strictEqual(startQueued(queue, idle, "run-9"), "gone");
+    assert.deepStrictEqual(order(queue), ["run-0", "run-1", "run-2"]);
+    assert.isTrue(queue.held);
+    assert.strictEqual(startQueued(queue, idle, "run-2"), "started");
+    assert.deepStrictEqual(order(queue), ["run-2", "run-0", "run-1"]);
+    assert.isFalse(queue.held);
+    for (const onItsWay of ["launching", "sending"] as const) {
+      const busy = queueOf(onItsWay, "queued");
+      assert.strictEqual(startQueued(busy, idle, "run-1"), "busy");
+      assert.strictEqual(startQueued(busy, idle, "run-0"), "gone");
+    }
+  });
+
+  it("sends a message waiting out a retry's backoff at once when asked to send it now", () => {
+    const idle: SessionView = {
+      known: true,
+      agentLive: true,
+      turnOpen: false,
+      status: "running",
+      updatedAt: null,
+      summary: null,
+      evidence: 4,
+    };
+    const queue = queueOf("queued", "queued");
+    const backingOff = queue.entries[1];
+    assert.isDefined(backingOff);
+    if (backingOff === undefined) return;
+    backingOff.retryAt = 10_000;
+    backingOff.retryEvidence = 4;
+    backingOff.sendDeadline = 60_000;
+    assert.strictEqual(startQueued(queue, idle, "run-1"), "started");
+    const step = nextStep(queue, idle, 1_000, DEFAULT_QUEUE_TIMINGS);
+    assert.strictEqual(step?.kind, "send");
+    assert.strictEqual(step?.entry.runId, "run-1");
   });
 
   it("never moves or rewrites a message on its way, nor puts one before it", () => {

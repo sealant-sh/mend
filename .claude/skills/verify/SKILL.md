@@ -777,6 +777,11 @@ Keep the fields a step reads, never a whole answer: `server.getConfig` carries
 `"sessionCookieName":"t3_mend_gateway_session"`, which the evidence scan reads as a credential
 field, and Cleanup then deletes the file and fails the run.
 
+A real t3code client drives the same gateway: `serve-t3-client.mjs` serves the hosted web build of
+the pinned tag for the gateway (it refuses one not started against the run's tunnel, and records
+itself in `$P/t3-client.json`), and `drive-web.mjs` drives that page with `recipes/t3-client.mjs`.
+The map's **Driving the t3code client** says how to build it and what each step observed.
+
 `drive-t3.mjs` makes one call of t3code's RPC per run, as a t3code client does: a fresh socket
 ticket from the bearer, `/ws` with protocol 2 and `clientAppVersion` 0.1.0
 (`--client-app-version none` leaves it out), then one `{"chunk":…}` line per streamed value

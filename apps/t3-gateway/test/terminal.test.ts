@@ -150,6 +150,119 @@ describe("the terminal", () => {
   );
 
   it.live(
+    "keeps a stopped terminal stopped when a client subscribes again, and restarts it when asked",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          setup(mend);
+          const { rpc } = yield* pairAndConnect(mend, "TTY-RESUME");
+          yield* rpc[WS_METHODS.terminalOpen]({
+            threadId: "session-1",
+            terminalId: "term",
+            cwd: CWD,
+            cols: 80,
+            rows: 24,
+          });
+          yield* eventually(() => mend.tty.resizes.length === 1, "the shell connected");
+          const first = yield* feed(
+            rpc[WS_METHODS.terminalAttach]({ threadId: "session-1", terminalId: "term" }),
+          );
+          yield* first.next(
+            (event): event is Extract<Attach, { type: "snapshot" }> => event.type === "snapshot",
+          );
+          mend.tty.end("shell-1");
+          yield* first.next(
+            (event): event is Extract<Attach, { type: "exited" }> => event.type === "exited",
+          );
+          const attach = { threadId: "session-1", terminalId: "term", cwd: CWD };
+
+          const resumed = yield* feed(
+            rpc[WS_METHODS.terminalAttach]({ ...attach, restartIfNotRunning: true, resume: true }),
+          );
+          const kept = yield* resumed.next(
+            (event): event is Extract<Attach, { type: "snapshot" }> => event.type === "snapshot",
+          );
+          assert.strictEqual(kept.snapshot.status, "exited");
+          assert.strictEqual(mend.tty.shells.size, 1);
+
+          const restarted = yield* feed(
+            rpc[WS_METHODS.terminalAttach]({ ...attach, restartIfNotRunning: true }),
+          );
+          const fresh = yield* restarted.next(
+            (event): event is Extract<Attach, { type: "snapshot" }> => event.type === "snapshot",
+          );
+          assert.strictEqual(fresh.snapshot.status, "running");
+          assert.strictEqual(mend.tty.shells.size, 2);
+        }),
+      ),
+  );
+
+  it.live(
+    "says a closed terminal is closed when a client subscribes again, and opens no shell",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          setup(mend);
+          const { rpc } = yield* pairAndConnect(mend, "TTY-CLOSED");
+          yield* rpc[WS_METHODS.terminalOpen]({
+            threadId: "session-1",
+            terminalId: "term",
+            cwd: CWD,
+          });
+          yield* rpc[WS_METHODS.terminalClose]({
+            threadId: "session-1",
+            terminalId: "term",
+            deleteHistory: true,
+          });
+          yield* rpc[WS_METHODS.terminalClose]({
+            threadId: "session-1",
+            terminalId: "never",
+            deleteHistory: true,
+          });
+          assert.strictEqual(mend.tty.shells.size, 1);
+
+          for (const terminalId of ["term", "never"]) {
+            const resumed = yield* feed(
+              rpc[WS_METHODS.terminalAttach]({
+                threadId: "session-1",
+                terminalId,
+                cwd: CWD,
+                restartIfNotRunning: true,
+                resume: true,
+              }),
+            );
+            const first = yield* resumed.next((_event): _event is Attach => true);
+            assert.strictEqual(first.type, "closed");
+          }
+          assert.strictEqual(mend.tty.shells.size, 1);
+
+          const reopened = yield* feed(
+            rpc[WS_METHODS.terminalAttach]({ threadId: "session-1", terminalId: "term", cwd: CWD }),
+          );
+          const fresh = yield* reopened.next(
+            (event): event is Extract<Attach, { type: "snapshot" }> => event.type === "snapshot",
+          );
+          assert.strictEqual(fresh.snapshot.status, "running");
+          assert.strictEqual(mend.tty.shells.size, 2);
+
+          const unknown = yield* feed(
+            rpc[WS_METHODS.terminalAttach]({
+              threadId: "session-1",
+              terminalId: "other",
+              cwd: CWD,
+              resume: true,
+            }),
+          );
+          const opened = yield* unknown.next(
+            (event): event is Extract<Attach, { type: "snapshot" }> => event.type === "snapshot",
+          );
+          assert.strictEqual(opened.snapshot.status, "running");
+          assert.strictEqual(mend.tty.shells.size, 3);
+        }),
+      ),
+  );
+
+  it.live(
     "opens one shell for two opens of one terminal at once, and close ends it (607-R2-1)",
     () =>
       withGateway((mend) =>

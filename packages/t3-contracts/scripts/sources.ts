@@ -28,6 +28,7 @@ const T3_SHARED_FILES = [
   "serverSettings",
   "sourceControl",
   "Struct",
+  "t3McpToolPresentation",
   "threadFindText",
   "threadLinks",
   "threadPullRequests",

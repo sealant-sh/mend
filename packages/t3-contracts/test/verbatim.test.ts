@@ -64,9 +64,9 @@ const gitBlobId = (bytes: Buffer): string =>
 const pin = readPin();
 
 describe("vendored t3code contracts", () => {
-  it("records a nightly or preview tag and its full commit", () => {
+  it("records a release, nightly or preview tag and its full commit", () => {
     expect(pin.repository).toBe("https://github.com/pingdotgg/t3code.git");
-    expect(pin.tag).toMatch(/^v\d+\.\d+\.\d+-(nightly|preview)\.\d{8}\.\d+$/);
+    expect(pin.tag).toMatch(/^v\d+\.\d+\.\d+(-(nightly|preview)\.\d{8}\.\d+)?$/);
     expect(pin.commit).toMatch(/^[0-9a-f]{40}$/);
   });
 

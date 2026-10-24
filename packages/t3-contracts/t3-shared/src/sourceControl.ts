@@ -99,7 +99,7 @@ const GENERIC_CHANGE_REQUEST_PRESENTATION: ChangeRequestPresentation = {
   urlExample: "#42",
 };
 
-export function resolveChangeRequestPresentation(
+function resolveChangeRequestPresentation(
   provider: SourceControlProviderInfo | null | undefined,
 ): ChangeRequestPresentation {
   switch (provider?.kind) {
@@ -179,8 +179,9 @@ function hasDnsLabel(host: string, label: string): boolean {
   return host.split(".").includes(label);
 }
 
+/** `*.ghe.com` is GitHub Enterprise Cloud with data residency, one subdomain per enterprise. */
 function isGitHubHost(host: string): boolean {
-  return host === "github.com" || hasDnsLabel(host, "github");
+  return host === "github.com" || host.endsWith(".ghe.com") || hasDnsLabel(host, "github");
 }
 
 function isGitLabHost(host: string): boolean {
@@ -277,11 +278,21 @@ export function detectSourceControlProviderFromRemoteUrl(
   };
 }
 
+function decodeUrlPathSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 /**
  * Azure DevOps is the exception: `az repos pr list --repository` takes a repository name, and
  * takes the organisation and project from the checkout it detects — so the recorded
  * `org/project/_git/repo` path is refused outright and the whole repository reads as
- * unavailable. Its name is the last segment, which is what this hands over.
+ * unavailable. Its name is the last segment, which is what this hands over. The segment comes
+ * from the remote URL, where a name with a space reads `my%20repo`; `az` looks that up literally
+ * and answers 404, so it goes out decoded.
  */
 export function sourceControlRepositorySelector(
   identity:
@@ -292,7 +303,8 @@ export function sourceControlRepositorySelector(
   if (!identity) return null;
   if (identity.provider === "azure-devops") {
     const segments = (identity.displayName ?? "").split("/").filter((part) => part !== "_git");
-    return identity.name || segments.at(-1) || null;
+    const name = identity.name || segments.at(-1);
+    return name ? decodeUrlPathSegment(name) : null;
   }
   if (identity.displayName) return identity.displayName;
   return identity.owner && identity.name ? `${identity.owner}/${identity.name}` : null;

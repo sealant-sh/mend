@@ -264,14 +264,51 @@ describe("reading and searching a worktree's files", () => {
           ),
           "path_not_file",
         );
+        const absent = yield* rpc[WS_METHODS.projectsReadFile]({
+          cwd: WORKTREE,
+          relativePath: "t3.json",
+          allowMissing: true,
+        });
+        assert.deepStrictEqual(absent, {
+          relativePath: "t3.json",
+          contents: "",
+          byteLength: 0,
+          truncated: false,
+          exists: false,
+        });
+        const present = yield* rpc[WS_METHODS.projectsReadFile]({
+          cwd: WORKTREE,
+          relativePath: "README.md",
+          allowMissing: true,
+        });
+        assert.strictEqual(present.contents, "How to parse things\n");
+        assert.notStrictEqual(present.exists, false);
         assert.strictEqual(
           failureOf(
             yield* Effect.exit(
-              rpc[WS_METHODS.projectsReadFile]({ cwd: WORKTREE, relativePath: "../secret" }),
+              rpc[WS_METHODS.projectsReadFile]({
+                cwd: WORKTREE,
+                relativePath: "../secret",
+                allowMissing: true,
+              }),
             ),
           ),
           "workspace_path_outside_root",
         );
+        mend.workbench.goneWorktrees.add(session.worktreeId);
+        assert.strictEqual(
+          failureOf(
+            yield* Effect.exit(
+              rpc[WS_METHODS.projectsReadFile]({
+                cwd: WORKTREE,
+                relativePath: "t3.json",
+                allowMissing: true,
+              }),
+            ),
+          ),
+          "path_not_file",
+        );
+        mend.workbench.goneWorktrees.delete(session.worktreeId);
         assert.strictEqual(
           failureOf(
             yield* Effect.exit(

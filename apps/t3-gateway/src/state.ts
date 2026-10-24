@@ -146,6 +146,20 @@ export interface ThreadLifecycle {
   readonly autoSettleDisabledAt: string | null;
 }
 
+/**
+ * How a person's settle, snooze, pin or order command was answered, kept by its command id as
+ * t3code's own server keeps a command receipt: a client sending the command again (a retry of one
+ * it saw no answer to) gets the same answer, and the command is never applied twice.
+ */
+export interface LifecycleReceipt {
+  readonly commandId: string;
+  /** The session whose thread the command was for. */
+  readonly sessionId: string;
+  readonly answer:
+    | { readonly _tag: "Applied"; readonly sequence: number }
+    | { readonly _tag: "Refused"; readonly reason: string };
+}
+
 /** An image as a sent message carried it: the selection and the path its turn named. */
 export interface SentImage {
   readonly imageId: string;
@@ -203,7 +217,10 @@ export class GatewayState extends Context.Service<
     readonly listThreads: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyArray<LaunchedThread>, GatewayStateError>;
-    /** Forgets a person's launched thread whose session Mend removed. */
+    /**
+     * Forgets a thread a person deleted: its client id, when they launched it, and the receipts of
+     * their commands for it.
+     */
     readonly forgetThread: (
       mendUserId: string,
       sessionId: string,
@@ -320,12 +337,27 @@ export class GatewayState extends Context.Service<
     readonly listArchived: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
-    /** Keeps a person's settle, snooze, pin and order of a thread, or, for null, lets go of all. */
+    /**
+     * Keeps a person's settle, snooze, pin and order of a thread, or, for null, lets go of all; with
+     * a receipt, keeps the command that changed them in the same transaction, so neither is kept
+     * without the other.
+     */
     readonly setLifecycle: (
       mendUserId: string,
       sessionId: string,
       lifecycle: ThreadLifecycle | null,
+      receipt?: LifecycleReceipt,
     ) => Effect.Effect<void, GatewayStateError>;
+    /** Keeps how a person's settle, snooze, pin or order command was answered, by its id. */
+    readonly keepLifecycleReceipt: (
+      mendUserId: string,
+      receipt: LifecycleReceipt,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** How a person's settle, snooze, pin or order command was answered, if it was. */
+    readonly lifecycleReceipt: (
+      mendUserId: string,
+      commandId: string,
+    ) => Effect.Effect<Option.Option<LifecycleReceipt>, GatewayStateError>;
     /** Session id → the person's settle, snooze, pin and order of its thread. */
     readonly listLifecycles: (
       mendUserId: string,
@@ -426,6 +458,11 @@ export class GatewayState extends Context.Service<
  * its setup script runs in (migration 17), so a restart keeps t3code's retry and the retry can stop
  * that shell. `project_scripts` keeps the project actions a person saved in t3code (migration 17):
  * the only setup scripts the gateway runs.
+ * `thread_lifecycles` gained the id of the client command that last changed each row (migration 18),
+ * which kept only the latest: an older command sent again after a newer one applied again.
+ * `lifecycle_receipts` replaces it (migration 19): how each of a person's settle, snooze, pin and
+ * order commands was answered, by command id, kept as t3code keeps its command receipts and let go
+ * of with the thread.
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -655,6 +692,22 @@ const MIGRATIONS: ReadonlyArray<string> = [
     PRIMARY KEY (mend_user_id, mend_project_id)
   );
   `,
+  `
+  ALTER TABLE thread_lifecycles ADD COLUMN last_command_id TEXT;
+  `,
+  `
+  ALTER TABLE thread_lifecycles DROP COLUMN last_command_id;
+  CREATE TABLE lifecycle_receipts (
+    mend_user_id TEXT NOT NULL,
+    command_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    sequence INTEGER,
+    refusal TEXT,
+    PRIMARY KEY (mend_user_id, command_id),
+    CHECK ((sequence IS NULL) <> (refusal IS NULL))
+  );
+  CREATE INDEX lifecycle_receipts_by_session ON lifecycle_receipts (mend_user_id, mend_session_id);
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -782,6 +835,21 @@ const LifecycleRow = Schema.Struct({
   last_snooze_wake_at: Schema.NullOr(Schema.String),
 });
 const decodeLifecycleRows = Schema.decodeUnknownEffect(Schema.Array(LifecycleRow));
+const LifecycleReceiptRow = Schema.Union([
+  Schema.Struct({
+    command_id: Schema.String,
+    mend_session_id: Schema.String,
+    sequence: Schema.Number,
+    refusal: Schema.Null,
+  }),
+  Schema.Struct({
+    command_id: Schema.String,
+    mend_session_id: Schema.String,
+    sequence: Schema.Null,
+    refusal: Schema.String,
+  }),
+]);
+const decodeLifecycleReceiptRow = Schema.decodeUnknownEffect(LifecycleReceiptRow);
 const ModelPreferencesRow = Schema.Struct({
   favorites: Schema.NullOr(Schema.fromJsonString(ModelFavorites)),
   provider_model_preferences: Schema.NullOr(Schema.fromJsonString(ProviderModelPreferences)),
@@ -920,6 +988,18 @@ export const openGatewayState = (
 
     const run = <A>(operation: string, f: () => A): Effect.Effect<A, GatewayStateError> =>
       Effect.try({ try: f, catch: (cause) => new GatewayStateError({ operation, cause }) });
+
+    const transaction = (operation: string, f: () => void) =>
+      run(operation, () => {
+        database.exec("BEGIN");
+        try {
+          f();
+          database.exec("COMMIT");
+        } catch (error) {
+          database.exec("ROLLBACK");
+          throw error;
+        }
+      });
 
     const insertSession = (session: BearerSession) =>
       run("insertSession", () => {
@@ -1080,10 +1160,12 @@ export const openGatewayState = (
       );
 
     const forgetThread = (mendUserId: string, sessionId: string) =>
-      run("forgetThread", () => {
-        database
-          .prepare("DELETE FROM thread_ids WHERE mend_user_id = ? AND mend_session_id = ?")
-          .run(mendUserId, sessionId);
+      transaction("forgetThread", () => {
+        for (const table of ["thread_ids", "lifecycle_receipts"]) {
+          database
+            .prepare(`DELETE FROM ${table} WHERE mend_user_id = ? AND mend_session_id = ?`)
+            .run(mendUserId, sessionId);
+        }
       });
 
     const keepRemoval = (mendUserId: string, sessionId: string, at: number) =>
@@ -1115,18 +1197,6 @@ export const openGatewayState = (
         database
           .prepare("DELETE FROM pending_removals WHERE mend_user_id = ? AND mend_session_id = ?")
           .run(mendUserId, sessionId);
-      });
-
-    const transaction = (operation: string, f: () => void) =>
-      run(operation, () => {
-        database.exec("BEGIN");
-        try {
-          f();
-          database.exec("COMMIT");
-        } catch (error) {
-          database.exec("ROLLBACK");
-          throw error;
-        }
       });
 
     const saveQueue = (mendUserId: string, sessionId: string, queue: StoredQueue) =>
@@ -1485,12 +1555,30 @@ export const openGatewayState = (
         ),
       );
 
+    const writeLifecycleReceipt = (mendUserId: string, receipt: LifecycleReceipt) => {
+      database
+        .prepare(
+          `INSERT OR REPLACE INTO lifecycle_receipts
+            (mend_user_id, command_id, mend_session_id, sequence, refusal)
+            VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(
+          mendUserId,
+          receipt.commandId,
+          receipt.sessionId,
+          receipt.answer._tag === "Applied" ? receipt.answer.sequence : null,
+          receipt.answer._tag === "Refused" ? receipt.answer.reason : null,
+        );
+    };
+
     const setLifecycle = (
       mendUserId: string,
       sessionId: string,
       lifecycle: ThreadLifecycle | null,
+      receipt?: LifecycleReceipt,
     ) =>
-      run("setLifecycle", () => {
+      transaction("setLifecycle", () => {
+        if (receipt !== undefined) writeLifecycleReceipt(mendUserId, receipt);
         if (lifecycle === null) {
           database
             .prepare("DELETE FROM thread_lifecycles WHERE mend_user_id = ? AND mend_session_id = ?")
@@ -1520,6 +1608,40 @@ export const openGatewayState = (
             lifecycle.lastSnoozeWakeAt,
           );
       });
+
+    const keepLifecycleReceipt = (mendUserId: string, receipt: LifecycleReceipt) =>
+      run("keepLifecycleReceipt", () => writeLifecycleReceipt(mendUserId, receipt));
+
+    const lifecycleReceipt = (mendUserId: string, commandId: string) =>
+      run("lifecycleReceipt", () =>
+        database
+          .prepare(
+            `SELECT command_id, mend_session_id, sequence, refusal
+              FROM lifecycle_receipts WHERE mend_user_id = ? AND command_id = ?`,
+          )
+          .get(mendUserId, commandId),
+      ).pipe(
+        Effect.flatMap((row) =>
+          row === undefined
+            ? Effect.succeedNone
+            : decodeLifecycleReceiptRow(row).pipe(
+                Effect.mapError(
+                  (cause) => new GatewayStateError({ operation: "lifecycleReceipt", cause }),
+                ),
+                Effect.map(
+                  (receipt): Option.Option<LifecycleReceipt> =>
+                    Option.some({
+                      commandId: receipt.command_id,
+                      sessionId: receipt.mend_session_id,
+                      answer:
+                        receipt.refusal === null
+                          ? { _tag: "Applied", sequence: receipt.sequence }
+                          : { _tag: "Refused", reason: receipt.refusal },
+                    }),
+                ),
+              ),
+        ),
+      );
 
     const listLifecycles = (mendUserId: string) =>
       run("listLifecycles", () =>
@@ -1778,6 +1900,8 @@ export const openGatewayState = (
       setArchived,
       listArchived,
       setLifecycle,
+      keepLifecycleReceipt,
+      lifecycleReceipt,
       listLifecycles,
       setVisited,
       listVisited,

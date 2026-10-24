@@ -1,4 +1,4 @@
-import { SshDeviceHostConfigs } from "./device.ts";
+import { EasDeviceHostConfigs, SshDeviceHostConfigs } from "./device.ts";
 import {
   AuthOrchestrationOperateScope,
   AuthSettingsWriteScope,
@@ -6,6 +6,7 @@ import {
   type AuthEnvironmentScope,
 } from "./auth.ts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -263,6 +264,25 @@ export const DEFAULT_BROWSER_RECORDING_FRAME_RATE: BrowserRecordingFrameRate = 3
 export const BrowserLinkTarget = Schema.Literals(["system", "app"]);
 export type BrowserLinkTarget = typeof BrowserLinkTarget.Type;
 export const DEFAULT_BROWSER_LINK_TARGET: BrowserLinkTarget = "system";
+/**
+ * What the address bar searches with when the input is not an address.
+ * "custom" uses `browserCustomSearchUrl`, a template with `%s` for the query.
+ */
+export const BrowserSearchEngine = Schema.Literals([
+  "duckduckgo",
+  "google",
+  "bing",
+  "brave",
+  "kagi",
+  "ecosia",
+  "custom",
+]);
+export type BrowserSearchEngine = typeof BrowserSearchEngine.Type;
+export const DEFAULT_BROWSER_SEARCH_ENGINE: BrowserSearchEngine = "duckduckgo";
+export const BROWSER_CUSTOM_SEARCH_URL_MAX_LENGTH = 2048;
+export const BrowserCustomSearchUrl = Schema.String.check(
+  Schema.isMaxLength(BROWSER_CUSTOM_SEARCH_URL_MAX_LENGTH),
+);
 
 export const LoadBalancingWeights = Schema.Record(
   TrimmedNonEmptyString,
@@ -331,6 +351,15 @@ export const ClientSettingsSchema = Schema.Struct({
 
   browserLinkTarget: BrowserLinkTarget.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_LINK_TARGET)),
+  ),
+
+  browserSearchEngine: BrowserSearchEngine.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_SEARCH_ENGINE)),
+  ),
+
+  // Kept when the engine is switched away from "custom" so switching back restores it.
+  browserCustomSearchUrl: BrowserCustomSearchUrl.pipe(
+    Schema.withDecodingDefault(Effect.succeed("")),
   ),
 
   browserAutoShowFloatingPreview: Schema.Boolean.pipe(
@@ -451,6 +480,9 @@ export const ClientSettingsSchema = Schema.Struct({
   snapShotFlash: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   snapShotAnimations: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // Opt-in TeX typesetting in rendered Markdown. Off keeps math parsing and
+  // KaTeX out of the render path entirely.
+  mathRenderingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
 
@@ -612,6 +644,29 @@ export type CodexSettings = typeof CodexSettings.Type;
 
 const CLAUDE_AUTO_COMPACT_WINDOW_PATTERN = /^(?:|[1-9]\d{5}|1000000)$/;
 
+export const IDLE_COMPACTION_MODES = [
+  { value: "onReturn", label: "When you return" },
+  { value: "beforeCacheExpires", label: "Before the cache expires (beta)" },
+  { value: "off", label: "Never" },
+] as const;
+export const IdleCompactionMode = Schema.Literals(IDLE_COMPACTION_MODES.map((mode) => mode.value));
+export type IdleCompactionMode = typeof IdleCompactionMode.Type;
+
+// `compactIdleThreads` was a beta on/off switch for compacting before the cache
+// expires. Shipped clients decode it as a boolean and drop the whole server config
+// otherwise, so it stays a boolean on the wire and the mode lives in
+// `idleCompaction`. Servers before that split sent the mode here, so a string is
+// still read.
+const LegacyCompactIdleThreads = Schema.Union([Schema.Boolean, IdleCompactionMode]);
+
+const INSTANCE_IDLE_COMPACTION_MODES = [
+  { value: "default", label: "Use default" },
+  ...IDLE_COMPACTION_MODES,
+] as const;
+const InstanceIdleCompaction = Schema.Literals(
+  INSTANCE_IDLE_COMPACTION_MODES.map((mode) => mode.value),
+);
+
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
     enabled: Schema.Boolean.pipe(
@@ -663,9 +718,22 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    idleCompaction: InstanceIdleCompaction.pipe(
+      Schema.withDecodingDefault(Effect.succeed("default" as const)),
+      Schema.annotateKey({
+        title: "Compact idle threads",
+        description:
+          "When to compact an idle thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Overrides the default in General settings.",
+        providerSettingsForm: {
+          control: "select",
+          options: INSTANCE_IDLE_COMPACTION_MODES,
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "launchArgs"],
+    order: ["binaryPath", "homePath", "autoCompactWindow", "idleCompaction", "launchArgs"],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
@@ -787,6 +855,27 @@ export const SourceControlWritingStyleSettings = Schema.Struct({
   ),
 });
 export type SourceControlWritingStyleSettings = typeof SourceControlWritingStyleSettings.Type;
+
+const LegacySourceControlWritingStyle = TrimmedString.pipe(
+  Schema.decodeTo(
+    Schema.toType(SourceControlWritingStyleSettings),
+    SchemaTransformation.transform({
+      decode: (value): SourceControlWritingStyleSettings => ({
+        mode: value.length > 0 ? "custom" : "repo_conventions",
+        customInstructions: value,
+        followChangeRequestTemplates: true,
+      }),
+      encode: (value) => value.customInstructions,
+    }),
+  ),
+);
+
+// The struct member comes first so encoding uses its defaulted fields: the server strips
+// default sub-fields before writing settings.json, and a toType target would reject them.
+const SourceControlWritingStyleSetting = Schema.Union([
+  SourceControlWritingStyleSettings,
+  LegacySourceControlWritingStyle,
+]);
 
 export const BranchNamingMode = Schema.Literals(["static", "semantic", "custom"]);
 export type BranchNamingMode = typeof BranchNamingMode.Type;
@@ -936,7 +1025,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   reviewGuideModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   reviewGuideInstructions: Schema.optionalKey(TrimmedString),
-  sourceControlWritingStyle: Schema.optionalKey(SourceControlWritingStyleSettings),
+  sourceControlWritingStyle: Schema.optionalKey(SourceControlWritingStyleSetting),
   removeAgentCreditsOnMerge: Schema.optionalKey(Schema.Boolean),
   branchNamingMode: Schema.optionalKey(BranchNamingMode),
   branchNamePrefix: Schema.optionalKey(TrimmedString),
@@ -1002,6 +1091,7 @@ export const StorageCleanupReportEntry = Schema.Struct({
   outcome: Schema.Literals(["removed", "kept", "failed"]),
   reason: Schema.String,
   path: Schema.NullOr(Schema.String),
+  projectPath: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   threadId: Schema.NullOr(ThreadId),
   threadTitle: Schema.NullOr(Schema.String),
   bytes: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -1103,9 +1193,14 @@ export const ServerSettings = Schema.Struct({
   enableDeviceSupport: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   deviceOnboardingCompleted: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   deviceHosts: SshDeviceHostConfigs.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  easDeviceHosts: EasDeviceHostConfigs.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   sidebarAutoSettleAfterDays: Schema.NullOr(SidebarAutoSettleAfterDays).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
+  compactIdleThreads: LegacyCompactIdleThreads.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  idleCompaction: Schema.optionalKey(IdleCompactionMode),
   snoozeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   autoResumeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   sidebarAutoSettleKeepPullRequests: Schema.Boolean.pipe(
@@ -1176,7 +1271,7 @@ export const ServerSettings = Schema.Struct({
   branchNamePrefix: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed("t3"))),
   branchNameInstructions: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   removeAgentCreditsOnMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  sourceControlWritingStyle: SourceControlWritingStyleSettings.pipe(
+  sourceControlWritingStyle: SourceControlWritingStyleSetting.pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   sourceControlWriterModelSelection: Schema.NullOr(ModelSelection).pipe(
@@ -1277,6 +1372,55 @@ export const resolveProjectProviderInstanceEnabled = (
   return instanceConfig !== undefined
     ? resolveProviderInstanceEnabled(instanceConfig)
     : isUnconfiguredDefaultInstanceEnabled(instanceId);
+};
+
+const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
+
+type IdleCompactionSettings = Pick<ServerSettings, "compactIdleThreads" | "idleCompaction">;
+
+/** The environment-wide idle compaction mode, from whichever field the settings carry. */
+export const globalIdleCompaction = (settings: IdleCompactionSettings): IdleCompactionMode =>
+  settings.idleCompaction ??
+  (typeof settings.compactIdleThreads === "string"
+    ? settings.compactIdleThreads
+    : settings.compactIdleThreads
+      ? "beforeCacheExpires"
+      : "onReturn");
+
+/** Sets the mode, and the legacy switch shipped clients still read alongside it. */
+export const withIdleCompaction = <S extends IdleCompactionSettings>(
+  settings: S,
+  mode: IdleCompactionMode,
+): S => ({ ...settings, idleCompaction: mode, compactIdleThreads: mode === "beforeCacheExpires" });
+
+/** Whether a server reads modes, rather than only the boolean switch from before them. */
+export const readsIdleCompactionModes = (settings: IdleCompactionSettings) =>
+  settings.idleCompaction !== undefined || typeof settings.compactIdleThreads === "string";
+
+/**
+ * The patch that sets `mode` in the form the server's settings show it reads:
+ * the mode for a server that has `idleCompaction` or kept the mode in the legacy
+ * field, the boolean switch for a server from before modes.
+ */
+export const idleCompactionPatch = (settings: IdleCompactionSettings, mode: IdleCompactionMode) =>
+  settings.idleCompaction !== undefined
+    ? { idleCompaction: mode }
+    : readsIdleCompactionModes(settings)
+      ? { compactIdleThreads: mode }
+      : { compactIdleThreads: mode === "beforeCacheExpires" };
+
+export const resolveIdleCompaction = (
+  settings: Pick<ServerSettings, "providerInstances" | "compactIdleThreads" | "idleCompaction">,
+  instanceId: ProviderInstanceId,
+): IdleCompactionMode => {
+  const instance = Object.hasOwn(settings.providerInstances, instanceId)
+    ? settings.providerInstances[instanceId]
+    : undefined;
+  const override = decodeClaudeSettings(instance?.config ?? {}).pipe(
+    Option.map((config) => config.idleCompaction),
+    Option.getOrElse(() => "default" as const),
+  );
+  return override === "default" ? globalIdleCompaction(settings) : override;
 };
 
 export const ServerSettingsOperation = Schema.Literals([
@@ -1404,13 +1548,24 @@ export const ServerSettingsPatch = Schema.Struct({
    * field existed cannot wipe it by editing another key.
    */
   projectSettingsOverrides: Schema.optionalKey(
-    Schema.Record(ProjectId, Schema.NullOr(ProjectSettingsOverrides)),
+    Schema.Record(
+      ProjectId,
+      Schema.NullOr(
+        Schema.Struct({
+          ...ProjectSettingsOverrides.fields,
+          sourceControlWritingStyle: Schema.optionalKey(SourceControlWritingStyleSettings),
+        }),
+      ),
+    ),
   ),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
   deviceOnboardingCompleted: Schema.optionalKey(Schema.Boolean),
   deviceHosts: Schema.optionalKey(SshDeviceHostConfigs),
+  easDeviceHosts: Schema.optionalKey(EasDeviceHostConfigs),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
+  compactIdleThreads: Schema.optionalKey(LegacyCompactIdleThreads),
+  idleCompaction: Schema.optionalKey(IdleCompactionMode),
   sidebarAutoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
   autoResumeLimitedThreads: Schema.optionalKey(Schema.Boolean),
@@ -1535,6 +1690,8 @@ export const ClientSettingsPatch = Schema.Struct({
   browserRecordingShowKeyPresses: Schema.optionalKey(Schema.Boolean),
   browserRecordingShowMousePresses: Schema.optionalKey(Schema.Boolean),
   browserLinkTarget: Schema.optionalKey(BrowserLinkTarget),
+  browserSearchEngine: Schema.optionalKey(BrowserSearchEngine),
+  browserCustomSearchUrl: Schema.optionalKey(BrowserCustomSearchUrl),
   browserAutoShowFloatingPreview: Schema.optionalKey(Schema.Boolean),
   browserProfiles: Schema.optionalKey(Schema.Array(BrowserProfile)),
   browserDefaultProfileId: Schema.optionalKey(BrowserProfileId),
@@ -1590,5 +1747,6 @@ export const ClientSettingsPatch = Schema.Struct({
   snapShotFlash: Schema.optionalKey(Schema.Boolean),
   snapShotAnimations: Schema.optionalKey(Schema.Boolean),
   wordWrap: Schema.optionalKey(Schema.Boolean),
+  mathRenderingEnabled: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
