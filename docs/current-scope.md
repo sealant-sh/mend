@@ -88,7 +88,12 @@ EKS cluster taken down (`cluster_enabled = false`). What the first day found:
       `web → http://localhost:<port>` and the page loads through it (HMR included), stopping the
       Service closes the tunnel, and the web's Services card shows `mend service connect web`
       instead of a dead Open link. Only alpha can prove the executor-side read and the tunnel
-      through the MicroVM forward.
+      through the MicroVM forward. Part of it ran on the box, a Docker install, on 2026-10-24 (ADR
+      0017 step 2, `docs/experiments/services-on-the-box.md`): the worktree's recipe started, and
+      `mend service connect web` carried requests from a laptop. A stop did not close that tunnel:
+      its listener stayed open and gave an empty reply with no message. Still open: which path read
+      the recipe, the MicroVM forward, capture mode, `mend attach` and hot reload, an agent's own
+      `--http` Service, and the web card.
 - [ ] The `reassessment` exposure item is open until someone records a reassessment of 0.29.0.
 - [ ] Remove the setup SSH key from the instance once the next pin bump has landed there.
 - [ ] Tailnet: remove the cluster's Tailscale operator device and OAuth client. Orphan captures from

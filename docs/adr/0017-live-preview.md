@@ -786,7 +786,7 @@ This PR adds five entries to `PLATFORM-FEEDBACK.md`:
   ships on the instance a reader uses.
 - Services prove themselves first. Yiannis made "services work properly in alpha" the gate for Slack
   work (2026-09-23). That proof was never recorded before alpha was torn down
-  (`docs/current-scope.md:84-91`), so it is recorded on the box.
+  (`docs/current-scope.md`, "Services on alpha"), so it is recorded on the box.
 
 ## Delivery
 
