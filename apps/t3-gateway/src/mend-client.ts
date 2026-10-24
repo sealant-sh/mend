@@ -386,7 +386,7 @@ export class MendClient extends Context.Service<
       deviceToken: Redacted.Redacted<string>,
       worktreeId: string,
       input: MendRawFileRequest,
-    ) => Effect.Effect<MendRawFile, MendRawFileUnavailable, Scope.Scope>;
+    ) => Effect.Effect<MendRawFile, MendRawFileUnavailable | MendDeviceRefused, Scope.Scope>;
     /**
      * `GET /api/worktrees/:id/contents`: one file (as it stands, or at a checkpoint) or the lines a
      * search matches. A path Mend refuses (outside the worktree) is its 422, a refusal. A path with
@@ -937,6 +937,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
               }),
             );
           const status = response.status;
+          if (status === 401) return yield* new MendDeviceRefused({ operation: "worktree raw" });
           if (status !== 200 && status !== 206 && status !== 416)
             return yield* new MendRawFileUnavailable({ status });
           const canonicalPath = yield* Effect.try({

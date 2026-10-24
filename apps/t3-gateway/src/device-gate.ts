@@ -1,10 +1,11 @@
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 
 import { MendDeviceRefused, type MendClient } from "./mend-client.ts";
 
 /**
- * The one way a person's hub (and their sockets) reach Mend with a device token. Every call that
+ * The one way a person's hub, their sockets and their asset reads reach Mend with a device token. Every call that
  * carries a token goes through `gateDeviceCalls`: when Mend answers 401 (`MendDeviceRefused`: the
  * device was revoked or its person deactivated), the token is refused, which closes its sockets
  * and revokes its bearers, whatever path made the call. A 403 is not a revocation in Mend: it is
@@ -15,7 +16,7 @@ import { MendDeviceRefused, type MendClient } from "./mend-client.ts";
  */
 
 /** Mend's client minus pairing, which carries no device token. */
-export type DeviceCalls = Omit<MendClient["Service"], "claimPairing" | "openRawFile">;
+export type DeviceCalls = Omit<MendClient["Service"], "claimPairing">;
 
 class GatedMendClient {
   readonly #gated = true;
@@ -45,6 +46,7 @@ class GatedMendClient {
   readonly worktreeCheckpoints: DeviceCalls["worktreeCheckpoints"];
   readonly worktreeDiff: DeviceCalls["worktreeDiff"];
   readonly worktreeContents: DeviceCalls["worktreeContents"];
+  readonly openRawFile: DeviceCalls["openRawFile"];
   readonly createSession: DeviceCalls["createSession"];
   readonly joinWorktree: DeviceCalls["joinWorktree"];
   readonly labelSession: DeviceCalls["labelSession"];
@@ -87,6 +89,7 @@ class GatedMendClient {
     this.worktreeCheckpoints = calls.worktreeCheckpoints;
     this.worktreeDiff = calls.worktreeDiff;
     this.worktreeContents = calls.worktreeContents;
+    this.openRawFile = calls.openRawFile;
     this.createSession = calls.createSession;
     this.joinWorktree = calls.joinWorktree;
     this.labelSession = calls.labelSession;
@@ -116,7 +119,7 @@ export const gateDeviceCalls = (
   mend: MendClient["Service"],
   onRefused: (token: string) => Effect.Effect<void>,
 ): GatedMend => {
-  const guard = <A, E>(token: string, call: Effect.Effect<A, E>): Effect.Effect<A, E> =>
+  const guard = <A, E, R>(token: string, call: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
     call.pipe(
       Effect.tapError((error) =>
         error instanceof MendDeviceRefused ? onRefused(token) : Effect.void,
@@ -155,6 +158,8 @@ export const gateDeviceCalls = (
       guard(token, mend.worktreeDiff(token, worktreeId, range)),
     worktreeContents: (token, worktreeId, question) =>
       guard(token, mend.worktreeContents(token, worktreeId, question)),
+    openRawFile: (token, worktreeId, input) =>
+      guard(Redacted.value(token), mend.openRawFile(token, worktreeId, input)),
     projectFiles: (token, projectId, sessionId) =>
       guard(token, mend.projectFiles(token, projectId, sessionId)),
     listSkills: (token) => guard(token, mend.listSkills(token)),

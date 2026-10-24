@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 
 import { gateDeviceCalls, type DeviceCalls } from "../src/device-gate.ts";
@@ -42,6 +43,7 @@ const revokedMend: DeviceCalls = {
   worktreeCheckpoints: () => refused("checkpoints"),
   worktreeDiff: () => refused("range"),
   worktreeContents: () => refused("contents"),
+  openRawFile: () => refused("raw"),
   createSession: () => refused("create"),
   joinWorktree: () => refused("join"),
   labelSession: () => refused("label"),
@@ -112,6 +114,13 @@ describe("the device gate", () => {
           path: "a.ts",
           at: null,
         }),
+        openRawFile: Effect.scoped(
+          gated.openRawFile(Redacted.make("t-openRawFile"), "w", {
+            path: Redacted.make("a.png"),
+            within: Redacted.make(""),
+            method: "HEAD",
+          }),
+        ),
         worktreeDiff: gated.worktreeDiff("t-worktreeDiff", "w", {
           from: null,
           to: "c",
