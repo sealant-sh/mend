@@ -356,7 +356,7 @@ describe("raw reads of captured worktrees", () => {
     const good = await register(fallback, 1, (dir) => {
       fs.writeFileSync(path.join(dir, "good.bin"), clip.slice(0, 300));
     });
-    await register(
+    const bad = await register(
       fallback,
       2,
       (dir) => {
@@ -367,6 +367,36 @@ describe("raw reads of captured worktrees", () => {
     const current = await read({ kind: "current" }, "good.bin", undefined, fallback);
     expect(current.captureId).toBe(good);
     expect(current.bytes).toEqual(clip.slice(0, 300));
+    expect(await refusal({ kind: "capture", captureId: bad }, "good.bin", fallback)).toBe(
+      "missing",
+    );
+  });
+
+  it("reads a failed head as the JSON read does when no capture below it verified, and pins the URL to it", async () => {
+    const failing = newWorktreeId();
+    await attach(failing);
+    const first = world.memory.chains.get(failing)?.headCapture ?? "";
+    await run(Effect.flatMap(CaptureStoreRepo, (repo) => repo.setGitFsck(first, "unverified")));
+    const head = await register(
+      failing,
+      1,
+      (dir) => {
+        fs.writeFileSync(path.join(dir, "head.bin"), clip.slice(0, 600));
+      },
+      "failed",
+    );
+    const json = await run(
+      Effect.flatMap(WorktreeReads, (reads) =>
+        reads.readFile(world.project.id, failing, "head.bin", null, 10_000),
+      ),
+    );
+    expect(json.stamp.captureId).toBe(head);
+    expect(json.value?.bytes).toEqual(clip.slice(0, 600));
+    const current = await read({ kind: "current" }, "head.bin", undefined, failing);
+    expect(current.captureId).toBe(head);
+    expect(current.bytes).toEqual(clip.slice(0, 600));
+    const pinned = await read({ kind: "capture", captureId: head }, "head.bin", undefined, failing);
+    expect(pinned.bytes).toEqual(clip.slice(0, 600));
   });
 
   it("says nothing of a file's path in logs or traces", () => {
