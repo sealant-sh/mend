@@ -2887,3 +2887,80 @@ describe.skipIf(postgres.skip)("0130 claude's own default", () => {
     expect(defaults.after).toEqual([["codex", "gpt-6.1-sol"]]);
   });
 });
+
+describe.skipIf(postgres.skip)("0138 kubernetes person layout", () => {
+  const DB = `${SCRATCH_DB}_kubernetes_person_layout`;
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  const KUBERNETES = "Kubernetes workspaces cannot run per-person users: no one's sudo works there";
+  const NO_NEW_PRIVILEGES = "no-new-privileges is set, so no one's sudo works";
+  const OWNER_MAP = "its sealantd does not restore files per person";
+
+  it("takes the reasons only Kubernetes or an unprobed image caused out of every no, drops a no left with none, and runs twice the same", async () => {
+    const result = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0137_preview_grants");
+        const rows: ReadonlyArray<readonly [string, string, boolean, ReadonlyArray<string>]> = [
+          ["k8s-nnp", "k8s", false, [NO_NEW_PRIVILEGES]],
+          ["unknown-kubernetes", "unknown", false, [KUBERNETES]],
+          ["k3s-owner-map", "k3s", false, [OWNER_MAP]],
+          ["docker-owner-map", "docker", false, [OWNER_MAP]],
+          ["k8s-nnp-kubernetes", "k8s", false, [NO_NEW_PRIVILEGES, KUBERNETES]],
+          ["k8s-setfacl-nnp-sudo", "k8s", false, ["no setfacl", NO_NEW_PRIVILEGES, "no sudo"]],
+          ["docker-owner-map-acl", "docker", false, [OWNER_MAP, "no ACLs on /workspace"]],
+          ["docker-nnp", "docker", false, [NO_NEW_PRIVILEGES]],
+          ["docker-nnp-kubernetes", "docker", false, [NO_NEW_PRIVILEGES, KUBERNETES]],
+          ["k8s-yes", "k8s", true, []],
+          ["k8s-no-sudo", "k8s", false, ["no sudo"]],
+        ];
+        for (const [imageKey, runtime, person, missing] of rows) {
+          yield* sql`
+            INSERT INTO image_layout_capabilities (image_key, runtime, person, missing, confirmed)
+            VALUES (${imageKey}, ${runtime}, ${person}, ${JSON.stringify(missing)}::jsonb, true)`;
+        }
+        const read = sql<{ readonly imageKey: string; readonly missing: ReadonlyArray<string> }>`
+          SELECT image_key AS "imageKey", missing FROM image_layout_capabilities
+          ORDER BY image_key`;
+        yield* migrations["0138_kubernetes_person_layout"];
+        const once = yield* read;
+        yield* migrations["0138_kubernetes_person_layout"];
+        const twice = yield* read;
+        return { once, twice };
+      }),
+    );
+    const kept = [
+      { imageKey: "docker-nnp", missing: [NO_NEW_PRIVILEGES] },
+      { imageKey: "docker-nnp-kubernetes", missing: [NO_NEW_PRIVILEGES] },
+      { imageKey: "docker-owner-map-acl", missing: ["no ACLs on /workspace"] },
+      { imageKey: "k8s-no-sudo", missing: ["no sudo"] },
+      { imageKey: "k8s-setfacl-nnp-sudo", missing: ["no setfacl", "no sudo"] },
+      { imageKey: "k8s-yes", missing: [] },
+    ];
+    expect(result.once).toEqual(kept);
+    expect(result.twice).toEqual(kept);
+  });
+});
