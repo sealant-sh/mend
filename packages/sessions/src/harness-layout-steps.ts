@@ -54,6 +54,7 @@ import {
   ownerMapRefusal,
   parseLayoutReport,
   personLayoutRefusal,
+  UNCHECKED_IMAGE_REFUSAL,
   personHomeEnsureScript,
   personHomeScript,
   personPrepareScript,
@@ -601,10 +602,11 @@ export interface HarnessLayoutSteps {
   }) => Effect.Effect<PrepareOutcome, SealantPlatformError>;
   /**
    * A person launch's create, refused for its owner map (decision 13's words): Core's
-   * `owner-map-unsupported` (the image's sealantd does not restore files per person) or a
-   * runtime where no person's sudo works (Kubernetes, Cloudflare). What it found is recorded
-   * against the image, so the next launch of a fresh worktree decides shared before create; a
-   * worktree already person stays person and is refused. Null for any other failure.
+   * `owner-map-unsupported` (the image's sealantd does not restore files per person),
+   * `owner-map-unverified` (Core could not check the image) or a runtime where no person's sudo
+   * works (Kubernetes, Cloudflare). What it found is recorded against the image, so the next
+   * launch of a fresh worktree decides shared before create; a worktree already person stays
+   * person and is refused. Null for any other failure.
    */
   readonly refusedOwnerMap: (input: {
     readonly layout: LaunchLayout;
@@ -795,6 +797,8 @@ const bounded = <K, V>() => {
  * the failure is not about the owner map (sealant#333's words and code).
  */
 export const ownerMapRefusalOf = (error: SealantPlatformError): string | null => {
+  // Core's guard keeps its words when it could not read the image's probe: the code tells them apart.
+  if (error.code === "owner-map-unverified") return "the image could not be checked";
   if (error.message.includes("is not available on Kubernetes")) {
     return KUBERNETES_LAYOUT_OBSTACLE;
   }
@@ -1544,12 +1548,14 @@ export const makeHarnessLayoutSteps = (deps: {
     if (layout.layout !== "person") return null;
     const lacks = ownerMapRefusalOf(input.error);
     if (lacks === null) return null;
+    const unchecked = input.error.code === "owner-map-unverified";
     yield* repo.recordCapability({
       imageKey: layout.imageKey,
       runtime: layout.runtime,
       person: false,
       missing: [lacks],
-      confirmed: true,
+      confirmed: !unchecked,
+      ...(unchecked ? { replacing: "unconfirmed" as const } : {}),
     });
     const refused = (message: string) =>
       new SealantPlatformError({
@@ -1560,9 +1566,11 @@ export const makeHarnessLayoutSteps = (deps: {
       });
     if (layout.onMissing === "refuse") {
       return refused(
-        layout.source === "operator"
-          ? operatorPersonRefusal([lacks])
-          : personLayoutRefusal([lacks]),
+        unchecked
+          ? UNCHECKED_IMAGE_REFUSAL
+          : layout.source === "operator"
+            ? operatorPersonRefusal([lacks])
+            : personLayoutRefusal([lacks]),
       );
     }
     // A fresh worktree: nothing ran, and it stays without a layout; the image is known now.
@@ -1574,7 +1582,9 @@ export const makeHarnessLayoutSteps = (deps: {
       layoutByLaunch.set(input.launchId, "shared");
     }
     return refused(
-      `This workspace cannot run per-person users (${lacks}), so nothing was started. The next launch here runs as one person.`,
+      unchecked
+        ? UNCHECKED_IMAGE_REFUSAL
+        : `This workspace cannot run per-person users (${lacks}), so nothing was started. The next launch here runs as one person.`,
     );
   });
 

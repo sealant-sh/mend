@@ -128,6 +128,10 @@ export const ownerMapRefusal = (found: string): string =>
 export const identityRefusal = (failed: ReadonlyArray<string>): string =>
   `This workspace could not give each person their Mend identity (${failed.join("; ")}). Nothing was started; the next launch tries again.`;
 
+/** A person launch Core refused because it could not check the image (`owner-map-unverified`). */
+export const UNCHECKED_IMAGE_REFUSAL =
+  "Sealant could not check whether this workspace's image runs per-person users, so nothing was started; the next launch tries again.";
+
 /** The operator asked for person on an image that cannot run it (decision 14, the benchmark). */
 export const operatorPersonRefusal = (missing: ReadonlyArray<string>): string =>
   `harnessLayout person was asked for, and this image cannot run per-person users` +
@@ -142,7 +146,7 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
   const { capability } = input;
   // There is no way back from person: whatever the flag, the operator or the image says.
   if (input.worktree.layout === "person" || input.headHasPeople) {
-    if (capability.person === false) {
+    if (capability.person === false && !passingOnly(capability.missing)) {
       return { kind: "refuse", message: personLayoutRefusal(capability.missing) };
     }
     return { kind: "launch", layout: "person", source: "worktree", onMissing: "refuse" };
@@ -263,6 +267,9 @@ const PASSING: ReadonlyArray<RegExp> = [
   // A person who could not be made (`parseLayoutReport`): `<name> could not be made`, `<name>: …`.
   /^m[a-z2-7]{8}(:| |$)/,
 ];
+
+const passingOnly = (missing: ReadonlyArray<string>): boolean =>
+  missing.length > 0 && missing.every((word) => PASSING.some((pattern) => pattern.test(word)));
 
 /** How long a "no" made of passing failures is kept before a shared launch checks again. */
 export const PASSING_NO_KEPT_MS = 24 * 60 * 60 * 1000;

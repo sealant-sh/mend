@@ -317,6 +317,50 @@ describe.skipIf(postgres.skip)("per-person harness homes, in Postgres", () => {
       }),
     );
   });
+
+  it("lets an image that could not be checked replace an unconfirmed answer, never a confirmed one", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* HarnessLayoutsRepo;
+        const write = (imageKey: string, person: boolean, confirmed: boolean) =>
+          repo.recordCapability({
+            imageKey,
+            runtime: "docker",
+            person,
+            missing: person ? [] : ["no sudo"],
+            confirmed,
+          });
+        const unchecked = (imageKey: string) =>
+          repo.recordCapability({
+            imageKey,
+            runtime: "docker",
+            person: false,
+            missing: ["the image could not be checked"],
+            confirmed: false,
+            replacing: "unconfirmed",
+          });
+        yield* write("probed-yes", true, false);
+        yield* write("confirmed-yes", true, true);
+        yield* write("confirmed-no", false, true);
+        for (const key of ["probed-yes", "confirmed-yes", "confirmed-no", "nothing"]) {
+          yield* unchecked(key);
+        }
+        const read = (key: string) =>
+          repo
+            .capabilityOf(key, "docker")
+            .pipe(
+              Effect.map((found) =>
+                found === null ? null : { person: found.person, missing: found.missing },
+              ),
+            );
+        const unknown = { person: false, missing: ["the image could not be checked"] };
+        expect(yield* read("probed-yes")).toEqual(unknown);
+        expect(yield* read("nothing")).toEqual(unknown);
+        expect(yield* read("confirmed-yes")).toEqual({ person: true, missing: [] });
+        expect(yield* read("confirmed-no")).toEqual({ person: false, missing: ["no sudo"] });
+      }),
+    );
+  });
 });
 
 describe.skipIf(postgres.skip)(

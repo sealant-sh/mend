@@ -16,11 +16,14 @@ import {
   type LoginSkip,
   PersonLayoutPlatform,
   SealantPlatformError,
+  imageBuildFailure,
+  toPlatformError,
 } from "@mend/sealant";
 import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
 import {
   claudeCode,
   type Run,
+  SealantError,
   type Workspace,
   type WorkspaceCredentialsOptions,
 } from "@sealant/sdk";
@@ -53,6 +56,7 @@ import {
   NO_NEW_PRIVILEGES_MISSING,
   PASSING_NO_KEPT_MS,
   STANDBY_REASON,
+  UNCHECKED_IMAGE_REFUSAL,
   imageLayoutKeyOf,
   personHomeEnsureScript,
 } from "./harness-layout.ts";
@@ -358,6 +362,20 @@ const stepsWith = (
         harnessLayoutsRepoMemory(state),
         options.platform ?? platformLayer,
         organizationsLayer,
+      ),
+    ),
+  );
+
+/**
+ * A create Core's owner-map guard refused, as Mend's client receives it: the error the SDK's
+ * `ready()` throws for the failed workspace, mapped as `createWorkspace` maps it.
+ */
+const coreRefused = (code: string) =>
+  imageBuildFailure(
+    toPlatformError(
+      new SealantError(
+        'Workspace ws-1 reached terminal status "failed" before becoming ready: The workspace was not launched: its capture source names an owner map, and its image\'s sealantd does not report restore.owner_map.',
+        { code },
       ),
     ),
   );
@@ -744,6 +762,120 @@ describe("a recorded no, checked again or kept (review 2 of mend#582)", () => {
       first: { layout: "shared", probe: true },
       second: "person",
       record: { person: true, confirmed: false },
+    });
+  });
+
+  it("an image Core could not check replaces an unconfirmed answer: a fresh worktree's next launch runs shared, and a day on one checks again", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    state.capabilities.set(IMAGE, {
+      imageKey: "digest:sha256:img",
+      runtime: "docker",
+      person: true,
+      missing: [],
+      confirmed: false,
+      observedAt: new Date(),
+    });
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", state, {
+          platform: platformOf(coreCalls(), { report: unknown }),
+        });
+        const first = yield* steps.decide(decideInput("launch-1", "wt-1"));
+        const refused = yield* steps.refusedOwnerMap({
+          layout: first,
+          launchId: "launch-1",
+          error: coreRefused("owner-map-unverified"),
+        });
+        const next = yield* steps.decide(decideInput("launch-2", "wt-2"));
+        const recorded = state.capabilities.get(IMAGE);
+        if (recorded !== undefined) {
+          state.capabilities.set(IMAGE, {
+            ...recorded,
+            observedAt: new Date(Date.now() - PASSING_NO_KEPT_MS),
+          });
+        }
+        const dayOn = yield* steps.decide(decideInput("launch-3", "wt-3"));
+        return { first: first.layout, refused: refused?.message ?? null, next, dayOn, recorded };
+      }),
+    );
+    expect(result.first).toBe("person");
+    expect(result.refused).toBe(UNCHECKED_IMAGE_REFUSAL);
+    expect(result.recorded).toMatchObject({
+      person: false,
+      missing: ["the image could not be checked"],
+      confirmed: false,
+    });
+    expect(result.next).toMatchObject({ layout: "shared", probe: false });
+    expect(result.dayOn).toMatchObject({ layout: "shared", probe: true });
+  });
+
+  it("an image Core could not check never replaces a confirmed yes: the next launch runs person", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    state.capabilities.set(IMAGE, {
+      imageKey: "digest:sha256:img",
+      runtime: "docker",
+      person: true,
+      missing: [],
+      confirmed: true,
+      observedAt: new Date(),
+    });
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", state, {
+          platform: platformOf(coreCalls(), { report: unknown }),
+        });
+        const first = yield* steps.decide(decideInput("launch-1", "wt-1"));
+        const refused = yield* steps.refusedOwnerMap({
+          layout: first,
+          launchId: "launch-1",
+          error: coreRefused("owner-map-unverified"),
+        });
+        const next = yield* steps.decide(decideInput("launch-2", "wt-2"));
+        return { refused: refused?.message ?? null, next: next.layout };
+      }),
+    );
+    expect(result.refused).toBe(UNCHECKED_IMAGE_REFUSAL);
+    expect(state.capabilities.get(IMAGE)).toMatchObject({ person: true, confirmed: true });
+    expect(result.next).toBe("person");
+  });
+
+  it("a no made only of passing failures does not refuse a worktree already person: it launches person, and Core decides", async () => {
+    const launch = (missing: ReadonlyArray<string>) => {
+      const state = makeHarnessLayoutsMemoryState();
+      state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
+      recordNo(state, missing);
+      return Effect.runPromise(
+        Effect.gen(function* () {
+          const { steps } = yield* stepsWith("person", state, {
+            platform: platformOf(coreCalls(), { report: unknown }),
+          });
+          const decided = yield* Effect.exit(steps.decide(decideInput("launch-1", "wt-1")));
+          if (decided._tag === "Failure") return { decided: "refused" } as const;
+          const refused = yield* steps.refusedOwnerMap({
+            layout: decided.value,
+            launchId: "launch-1",
+            error: coreRefused("owner-map-unverified"),
+          });
+          return {
+            decided: decided.value.layout,
+            refused: refused?.message ?? null,
+            worktree: state.worktrees.get(WorktreeId.make("wt-1"))?.layout ?? null,
+          };
+        }),
+      );
+    };
+    for (const missing of [
+      ["the image could not be checked"],
+      ["the users could not be made", "mb6r4kq2d: useradd: cannot lock /etc/passwd"],
+    ]) {
+      expect(await launch(missing)).toEqual({
+        decided: "person",
+        refused: UNCHECKED_IMAGE_REFUSAL,
+        worktree: "person",
+      });
+    }
+    expect(await launch(["no sudo", "the image could not be checked"])).toEqual({
+      decided: "refused",
     });
   });
 
@@ -2418,13 +2550,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
         const state = makeHarnessLayoutsMemoryState();
         const { steps } = yield* stepsWith("person", state);
         const layout = yield* steps.decide(decideInput("launch-fresh"));
-        const unsupported = new SealantPlatformError({
-          code: "owner-map-unsupported",
-          status: null,
-          message:
-            "The workspace was not launched: its capture source names an owner map, and its image's sealantd does not report restore.owner_map.",
-          cause: null,
-        });
+        const unsupported = coreRefused("owner-map-unsupported");
         const fresh = yield* steps.refusedOwnerMap({
           layout,
           launchId: "launch-fresh",
