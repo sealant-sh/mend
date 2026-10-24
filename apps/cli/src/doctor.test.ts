@@ -38,10 +38,18 @@ const startFakeMend = async (handle: Handler) => {
   };
 };
 
-const account = (provider: string, login: string) => ({
-  id: `account-${provider}`,
+const account = (
+  provider: string,
+  login: string,
+  held: { readonly name: string; readonly isDefault: boolean } = {
+    name: "default",
+    isDefault: true,
+  },
+) => ({
+  id: `account-${provider}-${held.name}`,
   provider,
-  name: "default",
+  name: held.name,
+  isDefault: held.isDefault,
   kind: "oauth",
   status: "active",
   metadata: { login },
@@ -385,6 +393,55 @@ describe("the claude grant line", () => {
   /** Someone who connected with --use-my-login has no grant of Mend's own: say nothing. */
   it("prints no line at all when Mend keeps no grant", async () => {
     expect(await grantLine(null)).toBeNull();
+  });
+});
+
+describe("the provider lines", () => {
+  const providerLines = async (accounts: ReadonlyArray<ReturnType<typeof account>>) => {
+    const fake = await startFakeMend((request, response) => {
+      if (request.url === "/api/me/sealant") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ sealantUserId: "user-1", accounts }));
+        return;
+      }
+      greenServer(request, response);
+    });
+    try {
+      const checks = await runChecks(
+        { url: fake.url, token: "test-token" },
+        { localCredential: () => null, claudeGrant: () => null, onPath: () => false },
+      );
+      return checks
+        .filter((check) => ["claude", "codex"].includes(check.label))
+        .map((check) => formatCheck(check));
+    } finally {
+      await fake.close();
+    }
+  };
+
+  it("shows the chosen default, whatever its name", async () => {
+    expect(
+      await providerLines([
+        account("claude", "old@example.com", { name: "default", isDefault: false }),
+        account("claude", "work@example.com", { name: "work", isDefault: true }),
+        account("codex", "you@example.com"),
+      ]),
+    ).toEqual([
+      "✓ claude      connected · work@example.com",
+      "✓ codex       connected · you@example.com",
+    ]);
+  });
+
+  it("says no login is chosen when accounts are held and none is the default", async () => {
+    expect(
+      await providerLines([
+        account("claude", "work@example.com", { name: "work", isDefault: false }),
+        account("claude", "home@example.com", { name: "home", isDefault: false }),
+      ]),
+    ).toEqual([
+      "○ claude      No Claude login chosen · 2 connected",
+      "○ codex       not connected → mend connect codex",
+    ]);
   });
 });
 

@@ -6,6 +6,8 @@ import {
   claudeGrantFacts,
   HOST_USER_NAMESPACES_REFUSED,
   hostUserNamespacesFixLine,
+  loginChoiceOf,
+  noLoginChosenWords,
 } from "@mend/domain/workbench";
 
 import {
@@ -244,6 +246,7 @@ interface ConnectionDto {
 interface AccountDto {
   readonly provider: Provider;
   readonly name: string;
+  readonly isDefault: boolean;
   readonly status: string;
   readonly metadata: Readonly<Record<string, unknown>>;
 }
@@ -542,10 +545,8 @@ export const runChecks = async (
       checks.push(notChecked(provider));
       continue;
     }
-    const account =
-      platform.accounts.find((row) => row.provider === provider && row.name === "default") ??
-      platform.accounts.find((row) => row.provider === provider);
-    if (account === undefined) {
+    const choice = loginChoiceOf(platform.accounts, provider);
+    if (choice._tag === "none") {
       checks.push({
         label: provider,
         state: "todo",
@@ -554,6 +555,16 @@ export const runChecks = async (
       });
       continue;
     }
+    if (choice._tag === "unchosen") {
+      checks.push({
+        label: provider,
+        state: "todo",
+        detail: `${noLoginChosenWords(provider)} · ${choice.accounts.length} connected`,
+        fix: null,
+      });
+      continue;
+    }
+    const account = choice.account;
     const who = identityOf(account);
     checks.push(
       account.status === "active"

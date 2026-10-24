@@ -13,7 +13,10 @@ import {
   agentStartingFacts,
   type AgentStartingProcess,
   claudeGrantFacts,
+  type LoginChoice,
+  loginChoiceOf,
   narrowCredential,
+  noLoginChosenWords,
   repositoryCloneUrlIssue,
   sameGrant,
   validatePiProfile,
@@ -3257,6 +3260,7 @@ interface ConnectedAccountDto {
   readonly metadata: Readonly<Record<string, unknown>>;
   readonly connectedAt: string;
   readonly lastUsedAt: string | null;
+  readonly isDefault: boolean;
 }
 
 interface SealantIdentityDto {
@@ -3292,7 +3296,7 @@ const localCredential = (provider: ConnectedAccountProvider): string | null => {
   }
 };
 
-const accountLine = (account: ConnectedAccountDto): string => {
+const accountFacts = (account: ConnectedAccountDto): string => {
   const meta = account.metadata;
   const pick = (key: string) => (typeof meta[key] === "string" ? String(meta[key]) : null);
   const identity = pick("login") ?? pick("email") ?? pick("accountEmail") ?? pick("accountId");
@@ -3307,8 +3311,11 @@ const accountLine = (account: ConnectedAccountDto): string => {
     suffix === null ? null : `…${suffix}`,
     `since ${account.connectedAt.slice(0, 10)}`,
   ].filter((fact): fact is string => fact !== null);
-  return `${account.provider.padEnd(8)} ${facts.join(" · ")}`;
+  return facts.join(" · ");
 };
+
+const accountLine = (account: ConnectedAccountDto): string =>
+  `${account.provider.padEnd(8)} ${accountFacts(account)}`;
 
 /**
  * `mend accounts`: the signed-in user's own connected accounts on the platform — each person's
@@ -3320,10 +3327,15 @@ const accountsLines = async (config: CliConfig): Promise<ReadonlyArray<string>> 
   return [
     `platform user ${identity.sealantUserId}`,
     ...providers.map((provider) => {
-      const account =
-        identity.accounts.find((row) => row.provider === provider && row.name === "default") ??
-        identity.accounts.find((row) => row.provider === provider);
-      return `  ${account === undefined ? `${provider.padEnd(8)} not connected` : accountLine(account)}`;
+      const choice = loginChoiceOf(identity.accounts, provider);
+      switch (choice._tag) {
+        case "chosen":
+          return `  ${accountLine(choice.account)}`;
+        case "unchosen":
+          return `  ${provider.padEnd(8)} ${noLoginChosenWords(provider)} · ${choice.accounts.length} connected`;
+        case "none":
+          return `  ${provider.padEnd(8)} not connected`;
+      }
     }),
   ];
 };
@@ -3541,6 +3553,32 @@ const connectPi = async (config: CliConfig, flags: ReadonlyArray<string>) => {
   );
 };
 
+/**
+ * The account `mend connect <provider> --remove` disconnects: the chosen default, or the only one
+ * held. With several and none chosen, which one is meant is not known, so nothing is removed.
+ */
+const removableAccount = (
+  provider: ConnectedAccountProvider,
+  choice: LoginChoice<ConnectedAccountDto>,
+): ConnectedAccountDto => {
+  switch (choice._tag) {
+    case "chosen":
+      return choice.account;
+    case "none":
+      return fail(`${provider}: nothing connected`);
+    case "unchosen": {
+      const [only, ...others] = choice.accounts;
+      if (others.length === 0) return only;
+      return fail(
+        [
+          `${provider}: ${noLoginChosenWords(provider)}, so which one to remove is not known · nothing removed`,
+          ...choice.accounts.map((account) => `  ${account.name} · ${accountFacts(account)}`),
+        ].join("\n"),
+      );
+    }
+  }
+};
+
 const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const [providerArg, ...flags] = args;
   if (providerArg === "pi") return connectPi(config, flags);
@@ -3550,8 +3588,7 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
   const provider = providerArg;
   if (flags.includes("--remove")) {
     const identity = await api<SealantIdentityDto>(config, "GET", "/me/sealant");
-    const account = identity.accounts.find((row) => row.provider === provider);
-    if (account === undefined) return fail(`${provider}: nothing connected`);
+    const account = removableAccount(provider, loginChoiceOf(identity.accounts, provider));
     await api<ConnectedAccountDto>(config, "DELETE", `/me/sealant/accounts/${account.id}`);
     process.stdout.write(`${provider}: disconnected\n`);
     return;
