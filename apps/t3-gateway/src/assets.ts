@@ -500,9 +500,22 @@ export const AssetRouteLive: Layer.Layer<never, never, HttpRouter.HttpRouter | A
     }),
   );
 
-/** Match before URL parsing, including malformed targets and preflight requests. */
-export const isAssetRequest = (request: HttpServerRequest.HttpServerRequest): boolean =>
-  request.url.startsWith(`${ASSET_ROUTE_PREFIX}/`);
+/**
+ * Match before URL parsing, including malformed targets and preflight requests, in every spelling
+ * the router sends to the asset route: it drops an absolute URL's origin, ends the path at `?`, `;`
+ * or `#`, and ignores case, escapes and repeated slashes.
+ */
+export const isAssetRequest = (request: HttpServerRequest.HttpServerRequest): boolean => {
+  const target = request.url.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, "");
+  const path = target.split(/[?;#]/, 1)[0] ?? "";
+  let decoded = path;
+  try {
+    decoded = decodeURIComponent(path);
+  } catch {
+    // The router matches no route for invalid escapes; the raw spelling is checked instead.
+  }
+  return /^\/+api\/+assets(\/|$)/i.test(decoded) || path.startsWith(`${ASSET_ROUTE_PREFIX}/`);
+};
 export const AssetTracingDisabledLive: Layer.Layer<never> = Layer.succeed(
   HttpMiddleware.TracerDisabledWhen,
 )(isAssetRequest);
