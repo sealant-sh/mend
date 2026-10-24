@@ -225,7 +225,13 @@ const verifyOpencodeHarvest = (kind: "own" | "none" | "unattributed" | "unprompt
           const resumedAgent = [...world.processes.values()].findLast(
             (process) => process.kind === "agent-pty" && process.exitedAt === null,
           );
-          expect(resumedAgent?.argv).toEqual(["opencode", "--session", "ses_own"]);
+          expect(resumedAgent?.argv).toEqual([
+            "env",
+            'OPENCODE_PERMISSION={"*":"allow"}',
+            "opencode",
+            "--session",
+            "ses_own",
+          ]);
           // Both capture launches run behind the seed that keeps MCP logins out of saved state:
           // decided by Mend, not by an environment sealantd never passes on.
           expect(spawned.length).toBe(2);

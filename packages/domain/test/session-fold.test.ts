@@ -7,6 +7,7 @@ import {
   foldSessionLiveness,
   lastPermissionMode,
   liveAgentsReading,
+  nextTerminalLaunch,
   servicesHoldLine,
 } from "../src/workbench/session-fold.ts";
 import { SessionProcess } from "../src/workbench/session-process.ts";
@@ -273,5 +274,93 @@ describe("lastPermissionMode", () => {
   it("is undefined for a session no agent of which says", () => {
     expect(lastPermissionMode([])).toBeUndefined();
     expect(lastPermissionMode([process("shell"), terminal(1, "pi", ["pi"])])).toBeUndefined();
+  });
+});
+
+describe("nextTerminalLaunch", () => {
+  const terminal = (time: number, harness: string, argv: ReadonlyArray<string>) =>
+    process("agent-pty", { createdAt: new Date(time), ...ended, harness, argv });
+  const plan = terminal(1, "claude", ["claude", "--permission-mode", "plan", "--model", "m"]);
+  const ask = terminal(1, "claude", ["claude", "--permission-mode", "auto"]);
+  const opencodeAsk = 'OPENCODE_PERMISSION={"*":"ask"}';
+  const opencodeAllow = 'OPENCODE_PERMISSION={"*":"allow"}';
+
+  it.each<[string, ReadonlyArray<SessionProcess>, string, "ask" | "bypass" | undefined, string[]]>([
+    [
+      "keeps the same harness's own flags",
+      [plan],
+      "claude",
+      undefined,
+      ["claude", "--permission-mode", "plan"],
+    ],
+    [
+      "keeps codex's read-only sandbox",
+      [terminal(1, "codex", ["codex", "--sandbox", "read-only", "-a", "never"])],
+      "codex",
+      undefined,
+      ["codex", "--sandbox", "read-only", "-a", "never"],
+    ],
+    [
+      "names bypass for a bare terminal",
+      [terminal(1, "claude", ["claude"])],
+      "claude",
+      undefined,
+      ["claude", "--dangerously-skip-permissions"],
+    ],
+    [
+      "names bypass for a session with no agent",
+      [],
+      "codex",
+      undefined,
+      ["codex", "--dangerously-bypass-approvals-and-sandbox"],
+    ],
+    [
+      "maps ask to another harness's flags",
+      [ask],
+      "codex",
+      undefined,
+      ["codex", "--sandbox", "danger-full-access", "--ask-for-approval", "on-request"],
+    ],
+    [
+      "lets a request win over the flags",
+      [plan],
+      "claude",
+      "bypass",
+      ["claude", "--dangerously-skip-permissions"],
+    ],
+    [
+      "lets an ask request name the harness's ask",
+      [plan],
+      "claude",
+      "ask",
+      ["claude", "--permission-mode", "auto"],
+    ],
+    [
+      "reads past a follow-up's script",
+      [
+        plan,
+        terminal(2, "claude", ["sh", "-c", "exec claude --dangerously-skip-permissions", "sh"]),
+      ],
+      "claude",
+      undefined,
+      ["claude", "--permission-mode", "plan"],
+    ],
+    [
+      "gives opencode ask in its environment",
+      [ask],
+      "opencode",
+      undefined,
+      ["env", opencodeAsk, "opencode"],
+    ],
+    [
+      "gives opencode bypass in its environment",
+      [],
+      "opencode",
+      undefined,
+      ["env", opencodeAllow, "opencode"],
+    ],
+    ["approves pi's resources", [ask], "pi", undefined, ["pi", "--approve"]],
+  ])("%s", (_, processes, harness, requested, argv) => {
+    expect(nextTerminalLaunch(processes, harness, requested)).toEqual({ harness, argv });
   });
 });

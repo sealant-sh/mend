@@ -218,7 +218,7 @@ const PERMISSION_ARGS: {
  * assignment for `env` to set ahead of it. Typed per harness, so the assignment is never spliced
  * into an argv as a flag.
  */
-export const permissionArgs = <Harness extends keyof PermissionArgsOf>(
+const permissionArgs = <Harness extends keyof PermissionArgsOf>(
   harness: Harness,
   mode: PermissionMode,
 ): PermissionArgsOf[Harness] => PERMISSION_ARGS[harness][mode];

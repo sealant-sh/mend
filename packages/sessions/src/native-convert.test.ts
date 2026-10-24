@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { nativeResumeArgv } from "./harness-state.ts";
 import { convertNativeSession } from "./native-convert.ts";
 
 const claudeJsonl = [
@@ -93,7 +94,12 @@ describe("native session conversion", () => {
     const call = lines.find((line) => line.payload?.type === "function_call");
     expect(call.payload.name).toBe("exec_command");
     expect(JSON.parse(call.payload.arguments).cmd).toBe("pnpm test");
-    expect(converted?.resumeArgv[1]).toBe("resume");
+    expect(file?.path).toContain(`-${lines[0].payload.id}.jsonl`);
+    expect(nativeResumeArgv("codex", converted?.providerSessionId ?? null, ["codex"])).toEqual([
+      "codex",
+      "resume",
+      lines[0].payload.id,
+    ]);
   });
 
   it("round-trips codex → claude with text and shell fidelity", () => {
@@ -112,7 +118,12 @@ describe("native session conversion", () => {
     expect(content).toContain('"name":"Bash"');
     expect(content).toContain("pnpm test");
     expect(back?.files[0]?.path).toMatch(/^\.claude\/projects\/-workspace-repo\/.*\.jsonl$/);
-    expect(back?.resumeArgv[1]).toBe("--resume");
+    expect(back?.files[0]?.path).toContain(`/${back?.providerSessionId}.jsonl`);
+    expect(nativeResumeArgv("claude", back?.providerSessionId ?? null, ["claude"])).toEqual([
+      "claude",
+      "--resume",
+      back?.providerSessionId,
+    ]);
   });
 
   it("unsupported pairs return null (fallback to distilled prompt)", () => {

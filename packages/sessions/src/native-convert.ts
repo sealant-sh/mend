@@ -47,7 +47,6 @@ export type CanonicalEvent =
 export interface ConvertedNativeSession {
   readonly providerSessionId: string;
   readonly files: ReadonlyArray<{ readonly path: string; readonly content: string }>;
-  readonly resumeArgv: ReadonlyArray<string>;
 }
 
 const asText = (content: unknown): string => {
@@ -409,7 +408,6 @@ const emitCodex = (session: CanonicalSession, now: string): ConvertedNativeSessi
         content: `${lines.join("\n")}\n`,
       },
     ],
-    resumeArgv: ["codex", "resume", sessionId],
   };
 };
 
@@ -518,7 +516,6 @@ const emitClaude = (session: CanonicalSession, now: string): ConvertedNativeSess
         content: `${lines.join("\n")}\n`,
       },
     ],
-    resumeArgv: ["claude", "--resume", sessionId],
   };
 };
 
