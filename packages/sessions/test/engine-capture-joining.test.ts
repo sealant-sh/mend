@@ -458,7 +458,11 @@ describe("SessionEngine capture mode", () => {
   it.each([
     ["claude", "11111111-2222-3333-4444-555555555555", ["claude", "--resume"]],
     ["codex", "66666666-7777-8888-9999-aaaaaaaaaaaa", ["codex", "resume"]],
-    ["opencode", "ses_joined", ["opencode", "--session"]],
+    [
+      "opencode",
+      "ses_joined",
+      ["env", 'OPENCODE_PERMISSION={"*":"allow"}', "opencode", "--session"],
+    ],
     ["pi", "bbbbbbbb-cccc-dddd-eeee-ffffffffffff", ["pi", "--session"]],
   ] as const)(
     "a %s resume that joins the lease holder's executor opens the conversation its saved state names",
@@ -508,7 +512,10 @@ describe("SessionEngine capture mode", () => {
             const resumed = agentOf();
             expect(created).toHaveLength(1);
             expect(resumed?.sealantWorkspaceId).toBe("workspace-1");
-            expect(resumed?.argv.slice(0, 3)).toEqual([...resumeFlags, providerSessionId]);
+            expect(resumed?.argv.slice(0, resumeFlags.length + 1)).toEqual([
+              ...resumeFlags,
+              providerSessionId,
+            ]);
             expect(resumed?.providerSessionId).toBe(providerSessionId);
           }),
         {

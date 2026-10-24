@@ -1,5 +1,11 @@
 import { type AgentWait, agentWaitStatus, agentWaitWords } from "./agent-wait.ts";
-import { type PermissionMode, terminalPermissionMode } from "./harness-launch.ts";
+import {
+  composeLaunchArgv,
+  type PermissionMode,
+  permissionFlagsIn,
+  terminalPermissionMode,
+  withPermissionDefaults,
+} from "./harness-launch.ts";
 import {
   isAgentProcessKind,
   LIVE_PROCESS_STATUSES,
@@ -126,7 +132,7 @@ export const currentAgentProcess = (
  * does not say (a shell, pi, an argv another program heads) is passed over, so it never undoes an
  * ask.
  */
-export const lastPermission = (
+const lastPermission = (
   processes: ReadonlyArray<SessionProcess>,
 ): { readonly process: SessionProcess; readonly mode: PermissionMode } | undefined => {
   for (const process of agentProcessesOf(processes).toReversed()) {
@@ -145,6 +151,28 @@ export const lastPermission = (
 export const lastPermissionMode = (
   processes: ReadonlyArray<SessionProcess>,
 ): PermissionMode | undefined => lastPermission(processes)?.mode;
+
+export interface TerminalLaunch {
+  readonly harness: string;
+  readonly argv: ReadonlyArray<string>;
+}
+
+export const nextTerminalLaunch = (
+  processes: ReadonlyArray<SessionProcess>,
+  harness: string,
+  requested?: PermissionMode,
+): TerminalLaunch => {
+  const recorded = lastPermission(processes);
+  const source = recorded?.process;
+  const argv =
+    requested === undefined &&
+    source?.kind === "agent-pty" &&
+    source.harness === harness &&
+    (harness === "claude" || harness === "codex")
+      ? [harness, ...permissionFlagsIn(harness, source.argv)]
+      : composeLaunchArgv(harness, { permissionMode: requested ?? recorded?.mode });
+  return { harness, argv: withPermissionDefaults(harness, argv) };
+};
 
 /** The live terminal agents of one harness: the processes a hook report may be about. */
 export const liveTerminalAgentsOf = (

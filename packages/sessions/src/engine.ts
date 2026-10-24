@@ -118,11 +118,9 @@ import {
   type LaunchStart,
   PERMISSION_MODES,
   type PermissionMode,
-  composeLaunchArgv,
-  lastPermission,
   lastPermissionMode,
-  permissionArgs,
-  permissionFlagsIn,
+  nextTerminalLaunch,
+  type TerminalLaunch,
   withPermissionDefaults,
   SPEED_MODES,
   ProtocolHarnessUnsupportedError,
@@ -647,21 +645,14 @@ import { makeWriteTokens } from "./write-tokens.ts";
 const pushedBranches = (refUpdates: ReadonlyArray<string> | null): boolean =>
   agentPushedBranches(refUpdates ?? []).length > 0;
 
-/**
- * How a harness takes an opening prompt. The exact user-approved bytes travel as bounded base64
- * chunks and are decoded in the workspace: a prompt can outgrow one argv word (Core's
- * `SESSION_ARGV_MAX_WORD_BYTES`), and a control plane before 0.39.0-next.712 refused arguments with
- * outer whitespace. The sentinel preserves trailing newlines through POSIX command substitution.
- */
 /** A word for `sh -c`, in single quotes, whatever it holds. */
 const shellWord = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
-/**
- * A harness opened on a prompt, with the model and effort the session was started with
- * (docs/models-audit.md): the follow-up a stopped PTY session gets runs on the model the session
- * reports, not on whatever the harness would pick today. Flags the harness does not take are left
- * out, as `composeLaunchArgv` leaves them out.
- */
+const shellCommand = (argv: ReadonlyArray<string>): string =>
+  argv
+    .map((token) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(token) ? token : shellWord(token)))
+    .join(" ");
+
 /**
  * opencode's database in a capture: absent, torn (sealantd read it changing every time), or
  * the conversations it lists (null: it does not open as opencode's).
@@ -716,39 +707,55 @@ const secretFilesNotSetAside = (why: string) =>
     cause: null,
   });
 
+/**
+ * A harness opened on a prompt, with the model and effort the session was started with
+ * (docs/models-audit.md): the follow-up a stopped PTY session gets runs on the model the session
+ * reports, not on whatever the harness would pick today. Flags the harness does not take are left
+ * out, as `composeLaunchArgv` leaves them out.
+ *
+ * How a harness takes an opening prompt. The exact user-approved bytes travel as bounded base64
+ * chunks and are decoded in the workspace: a prompt can outgrow one argv word (Core's
+ * `SESSION_ARGV_MAX_WORD_BYTES`), and a control plane before 0.39.0-next.712 refused arguments with
+ * outer whitespace. The sentinel preserves trailing newlines through POSIX command substitution.
+ */
 const promptArgv = (
-  harness: string,
+  launch: TerminalLaunch,
   prompt: string,
   options: {
     readonly model: string | null;
     readonly effort: EffortLevel | null;
-    readonly permissionMode?: PermissionMode | undefined;
-  } = {
-    model: null,
-    effort: null,
   },
 ): ReadonlyArray<string> | null => {
-  const model = options.model === null ? "" : ` --model ${shellWord(options.model)}`;
+  const model = options.model === null ? [] : ["--model", options.model];
   const effort =
-    options.effort === null || !(HARNESS_EFFORTS[harness] ?? []).includes(options.effort)
+    options.effort === null || !(HARNESS_EFFORTS[launch.harness] ?? []).includes(options.effort)
       ? null
       : options.effort;
-  const permission = options.permissionMode ?? "bypass";
-  const command = (() => {
-    switch (harness) {
+  const tokens = (() => {
+    switch (launch.harness) {
       case "claude":
-        return `exec claude ${permissionArgs("claude", permission).flags.join(" ")}${model}${effort === null ? "" : ` --effort ${effort}`} "$prompt"`;
+        return [...launch.argv, ...model, ...(effort === null ? [] : ["--effort", effort])];
       case "codex":
-        return `exec codex ${CODEX_SHELL_SNAPSHOT_OFF.join(" ")} ${CODEX_DAEMON_OFF.join(" ")} -c features.memories=true ${permissionArgs("codex", permission).flags.join(" ")}${model}${effort === null ? "" : ` -c model_reasoning_effort=${effort}`} "$prompt"`;
+        return [
+          "codex",
+          ...CODEX_SHELL_SNAPSHOT_OFF,
+          ...CODEX_DAEMON_OFF,
+          "-c",
+          "features.memories=true",
+          ...launch.argv.slice(1),
+          ...model,
+          ...(effort === null ? [] : ["-c", `model_reasoning_effort=${effort}`]),
+        ];
       case "opencode":
-        return `exec env ${shellWord(permissionArgs("opencode", permission).env)} opencode${model} --prompt "$prompt"`;
+        return [...launch.argv, ...model, "--prompt"];
       case "pi":
-        return `exec pi --approve${model}${effort === null ? "" : ` --thinking ${effort}`} "$prompt"`;
+        return [...launch.argv, ...model, ...(effort === null ? [] : ["--thinking", effort])];
       default:
         return null;
     }
   })();
-  if (command === null) return null;
+  if (tokens === null) return null;
+  const command = `exec ${shellCommand(tokens)} "$prompt"`;
 
   const encoded = Buffer.from(prompt, "utf8").toString("base64");
   const chunks: string[] = [];
@@ -20235,7 +20242,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             cause: null,
           });
         }
-        const priorAgent = currentAgentProcess(yield* processes.listForSession(sessionId));
+        const rows = yield* processes.listForSession(sessionId);
+        const priorAgent = currentAgentProcess(rows);
         if (priorAgent?.kind === "agent-protocol") {
           return yield* launchProtocol(
             sessionId,
@@ -20267,7 +20275,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             cause: null,
           });
         }
-        const argv = promptArgv(session.harness, instruction, {
+        const argv = promptArgv(nextTerminalLaunch(rows, session.harness), instruction, {
           model: session.model,
           effort: session.effort,
         });
@@ -20435,18 +20443,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
         const { stateDir, manifest } = located;
-        const recorded = lastPermission(rows);
-        const permissionMode = requestedPermissionMode ?? recorded?.mode;
-        const source = recorded?.process;
-        // The same harness's terminal comes back with the permission it ran with, verbatim: a
-        // `plan` or `read-only` is more than ask or bypass can say.
-        let argv =
-          requestedPermissionMode === undefined &&
-          source?.kind === "agent-pty" &&
-          source.harness === target &&
-          (target === "claude" || target === "codex")
-            ? [target, ...permissionFlagsIn(target, source.argv)]
-            : composeLaunchArgv(target, { permissionMode });
+        const terminal = nextTerminalLaunch(rows, target, requestedPermissionMode);
+        let argv = terminal.argv;
         let nativeImport: ConvertedNativeSession | null = null;
         if (
           manifest.harness === target &&
@@ -20498,11 +20496,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 cause: new Error("no convertible transcript turns"),
               });
             }
-            const openingArgv = promptArgv(target, distillOpeningPrompt(manifest.harness, turns), {
-              model: null,
-              effort: null,
-              permissionMode,
-            });
+            const openingArgv = promptArgv(
+              terminal,
+              distillOpeningPrompt(manifest.harness, turns),
+              {
+                model: null,
+                effort: null,
+              },
+            );
             if (openingArgv === null) {
               return yield* new HarnessStateInvalidError({
                 sessionId,
@@ -20513,10 +20514,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             argv = openingArgv;
           } else {
-            argv =
-              permissionMode === "ask" && (target === "claude" || target === "codex")
-                ? [...nativeImport.resumeArgv, ...permissionArgs(target, "ask").flags]
-                : nativeImport.resumeArgv;
+            argv = nativeResumeArgv(target, nativeImport.providerSessionId, terminal.argv);
             yield* sessions.setProviderSessionId(sessionId, nativeImport.providerSessionId);
           }
         }
