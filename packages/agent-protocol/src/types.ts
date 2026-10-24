@@ -92,6 +92,11 @@ export interface AgentControlCheckpoint {
 export interface AgentControlJournal {
   /** Fails, and the control's wire write does not happen. */
   readonly record: (checkpoint: AgentControlCheckpoint) => Effect.Effect<void, AgentProtocolError>;
+  /**
+   * What `record` stored for this process before a restart, in any order; empty for a new
+   * process. A rehydrate folds them at their output lines, and new ordinals continue above them.
+   */
+  readonly recorded: ReadonlyArray<AgentControlCheckpoint>;
 }
 
 /** Byte transport supplied by the session engine from one Sealant pipe session. */
@@ -123,8 +128,6 @@ export interface AgentRehydrateOptions {
    * re-answer them.
    */
   readonly resolvedProviderRequestIds: ReadonlySet<string>;
-  /** The control journal the previous adapter recorded for this process, in any order. */
-  readonly controlReplay?: ReadonlyArray<AgentControlCheckpoint> | undefined;
 }
 
 /** Shared options used when a provider conversation starts or resumes. */

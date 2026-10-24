@@ -37,10 +37,11 @@ type Step =
 
 type Outcome = { readonly step: number; readonly result: unknown };
 
-const memoryJournal = () => {
+const memoryJournal = (recorded: ReadonlyArray<AgentControlCheckpoint> = []) => {
   const records: Array<AgentControlCheckpoint> = [];
   const journal: AgentControlJournal = {
     record: (checkpoint) => Effect.sync(() => records.push(checkpoint)),
+    recorded,
   };
   return { records, journal };
 };
@@ -174,16 +175,11 @@ const runCrashed = Effect.fn("test.runCrashed")(function* (
 ) {
   const before = yield* Effect.scoped(runSteps(steps.slice(0, cut)));
   const replayProviderTurnIds = startedTurnIds(before.events);
-  const journal = memoryJournal();
   const after = yield* runSteps(steps.slice(cut), {
     first: cut,
-    journal,
+    journal: memoryJournal(before.journal.toReversed()),
     replayBytes: chunking(concatBytes(before.lines)),
-    rehydrate: {
-      replayProviderTurnIds,
-      resolvedProviderRequestIds: new Set(),
-      controlReplay: before.journal.toReversed(),
-    },
+    rehydrate: { replayProviderTurnIds, resolvedProviderRequestIds: new Set() },
   });
   return {
     after,
@@ -726,6 +722,7 @@ describe("Claude steering, synthetic", () => {
                   cause: null,
                 }),
               ),
+            recorded: [],
           },
         };
         const run = yield* runSteps(
@@ -772,6 +769,7 @@ describe("Claude steering, synthetic", () => {
                         : Effect.void,
                     ),
                   ),
+                recorded: [],
               },
             });
             const turnId = yield* session.sendTurn("first");
@@ -803,10 +801,10 @@ describe("Claude steering, synthetic", () => {
                 encodeLine({ type: "result", subtype: "success", uuid: "r", session_id: SESSION }),
               ]),
             ],
+            journal: memoryJournal(recorded),
             rehydrate: {
               replayProviderTurnIds: [live.turnId],
               resolvedProviderRequestIds: new Set(),
-              controlReplay: recorded,
             },
           }),
         );

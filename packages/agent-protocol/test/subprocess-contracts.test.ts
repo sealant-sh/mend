@@ -314,6 +314,7 @@ describe("provider adapter subprocess contracts (synthetic peers)", () => {
                 ...peer.options,
                 controlJournal: {
                   record: (checkpoint) => Effect.sync(() => journal.push(checkpoint)),
+                  recorded: [],
                 },
                 onEvent: (event) =>
                   Effect.gen(function* () {

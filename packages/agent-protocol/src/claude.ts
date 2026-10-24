@@ -220,7 +220,7 @@ export const ClaudeAdapter: AgentAdapter = {
       const activeTurnId = (): string | null => claudeTurnId(turns.turn);
       // Steer and interrupt decisions are replayed at the output line they were made after, so
       // a rehydrate folds the same results the same way whatever the chunking.
-      const replayControls = (rehydrate?.controlReplay ?? []).toSorted(byOrdinal);
+      const replayControls = (journal?.recorded ?? []).toSorted(byOrdinal);
       let replayCursor = 0;
       let nextOrdinal =
         replayControls.reduce((highest, control) => Math.max(highest, control.ordinal), -1) + 1;
