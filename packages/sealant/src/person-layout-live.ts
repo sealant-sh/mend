@@ -7,6 +7,7 @@
  * answers from Mend's own table.
  */
 import type { WorkspaceImage } from "@mend/domain";
+import { loginChoiceOf } from "@mend/domain/workbench";
 import type {
   CreateOptions,
   Harness,
@@ -412,14 +413,11 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
             .list()
             .pipe(
               Effect.map((accounts) => {
-                const account = accounts.find(
-                  (candidate) =>
-                    candidate.provider === provider &&
-                    candidate.name === "default" &&
-                    candidate.status !== "archived",
-                );
-                if (account === undefined) return "missing" as const;
-                return account.status === "active" ? ("active" as const) : ("invalid" as const);
+                const choice = loginChoiceOf(accounts, provider);
+                if (choice._tag !== "chosen") return "missing" as const;
+                return choice.account.status === "active"
+                  ? ("active" as const)
+                  : ("invalid" as const);
               }),
               Effect.orElseSucceed(() => "unknown" as const),
             ),

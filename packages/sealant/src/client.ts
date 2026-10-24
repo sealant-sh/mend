@@ -1394,6 +1394,7 @@ const toConnectedAccount = (wire: {
   readonly connectedAt: string;
   readonly updatedAt: string;
   readonly lastUsedAt: string | null;
+  readonly isDefault?: boolean | undefined;
 }) =>
   new ConnectedAccount({
     id: wire.connectedAccountId,
@@ -1405,6 +1406,9 @@ const toConnectedAccount = (wire: {
     connectedAt: new Date(wire.connectedAt),
     updatedAt: new Date(wire.updatedAt),
     lastUsedAt: wire.lastUsedAt === null ? null : new Date(wire.lastUsedAt),
+    // A control plane without `connectedAccountDefaults` sends no isDefault: its default is the
+    // account named `default`.
+    isDefault: wire.isDefault ?? wire.name === "default",
   });
 
 const platformFailure = (code: string, message: string) =>

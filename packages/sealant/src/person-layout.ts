@@ -252,8 +252,9 @@ export class PersonLayoutPlatform extends Context.Service<
       input: { readonly home: string },
     ) => Effect.Effect<void, SealantPlatformError>;
     /**
-     * A person's own login for a provider, as Core says it stands (their account named
-     * `default`): `active`, `invalid` (it needs reconnecting), `missing`, or `unknown` when Core
+     * A person's own login for a provider, as Core says it stands (their chosen default
+     * account): `active`, `invalid` (it needs reconnecting), `missing` (none, or none chosen), or
+     * `unknown` when Core
      * could not be asked. What a steerer's turn is refused for at submit (docs/adr/0016, decision
      * 6; ADR 0013): "Connect Claude to steer this session."
      */

@@ -220,17 +220,25 @@ const slackWorkspace: FakeSlackWorkspace = {
   threads,
 };
 
-const account = (provider: "claude" | "codex", status: "active" | "invalid" = "active") =>
-  new ConnectedAccount({
-    id: `acct-${provider}`,
-    provider,
+const account = (
+  provider: "claude" | "codex",
+  status: "active" | "invalid" = "active",
+  held: { readonly name: string; readonly isDefault: boolean } = {
     name: "default",
+    isDefault: true,
+  },
+) =>
+  new ConnectedAccount({
+    id: `acct-${provider}-${held.name}`,
+    provider,
+    name: held.name,
     kind: "oauth-token",
     status,
     metadata: {},
     connectedAt: NOW,
     updatedAt: NOW,
     lastUsedAt: null,
+    isDefault: held.isDefault,
   });
 
 interface WorldOptions {
@@ -1335,6 +1343,47 @@ describe("the Slack runner, before anything starts", () => {
 
   it("says so in the thread when the owner has no account for the harness, and starts nothing", async () => {
     const w = world({ accounts: [account("claude", "invalid")] });
+    await w.deliver(
+      w.mention("Ev1", {
+        user: "U-alice",
+        text: "<@U-bot> fix the flaky login test",
+        ts: MENTION,
+        thread_ts: THREAD,
+      }),
+    );
+
+    expect(posts(w, "postMessage").map((post) => post.text)).toEqual([
+      "not started · no active claude account is connected to your Mend account · connect one in Mend under Settings → Connected accounts",
+    ]);
+    expect(w.effects.some((entry) => entry.startsWith("start."))).toBe(false);
+  });
+
+  it("starts on the owner's chosen default when it is not named default", async () => {
+    const w = world({
+      accounts: [
+        account("claude", "invalid", { name: "default", isDefault: false }),
+        account("claude", "active", { name: "work", isDefault: true }),
+      ],
+    });
+    await w.deliver(
+      w.mention("Ev1", {
+        user: "U-alice",
+        text: "<@U-bot> fix the flaky login test",
+        ts: MENTION,
+        thread_ts: THREAD,
+      }),
+    );
+
+    expect(w.effects.filter((entry) => entry.startsWith("start.createAs"))).toHaveLength(1);
+  });
+
+  it("starts nothing when the owner holds Claude accounts and none is chosen", async () => {
+    const w = world({
+      accounts: [
+        account("claude", "active", { name: "work", isDefault: false }),
+        account("claude", "active", { name: "home", isDefault: false }),
+      ],
+    });
     await w.deliver(
       w.mention("Ev1", {
         user: "U-alice",

@@ -36,9 +36,41 @@ const PERSON_LAYOUT = {
   acl: "supported",
 } as const;
 
+/** The connected accounts Core lists for every owner, as wire items. */
+let connectedAccounts: ReadonlyArray<Record<string, unknown>> = [];
+
+const wireAccount = (
+  provider: "claude" | "codex",
+  name: string,
+  status: "active" | "invalid",
+  isDefault?: boolean,
+) => ({
+  connectedAccountId: `cacc_${provider}_${name}`,
+  ownerUserId: "su-maria",
+  provider,
+  name,
+  kind: "oauth-token",
+  status,
+  metadata: {},
+  connectedAt: "2026-10-08T00:00:00.000Z",
+  updatedAt: "2026-10-08T00:00:00.000Z",
+  lastUsedAt: null,
+  lastSyncedAt: null,
+  credential: {
+    accessExpiresAt: null,
+    refreshExpiresAt: null,
+    lastRefreshAt: null,
+    lastRefreshOutcome: null,
+  },
+  ...(isDefault === undefined ? {} : { isDefault }),
+});
+
 /** What Core answers for each call the person layout makes. */
 const answer = (request: Received): { readonly status: number; readonly body: unknown } => {
   const { method, path } = request;
+  if (method === "GET" && path === "/v1/connected-accounts") {
+    return { status: 200, body: { items: connectedAccounts } };
+  }
   if (method === "POST" && path === "/v1/workspaces/image") {
     return {
       status: 200,
@@ -338,5 +370,37 @@ describe("a person's logins, through the real SDK's workspace handle", () => {
     expect(homes).toEqual([
       { home: "/home/mxyz2345a", onBehalfOf: "su-maria", providers: ["codex"] },
     ]);
+  });
+});
+
+describe("a person's login for a provider, as Core lists their accounts", () => {
+  const loginOf = (provider: "claude" | "codex") =>
+    withPlatform((platform) => platform.loginOf("maria", provider));
+
+  it("reads the chosen default, whatever its name", async () => {
+    connectedAccounts = [
+      wireAccount("claude", "default", "active", false),
+      wireAccount("claude", "work", "invalid", true),
+    ];
+    expect(await loginOf("claude")).toBe("invalid");
+    expect(received.at(-1)?.query.get("ownerUserId")).toBe("su-maria");
+  });
+
+  it("is missing when the person holds accounts and none is chosen", async () => {
+    connectedAccounts = [
+      wireAccount("codex", "work", "active", false),
+      wireAccount("codex", "home", "active", false),
+    ];
+    expect(await loginOf("codex")).toBe("missing");
+  });
+
+  it("takes the account named default from a Core that reports no default", async () => {
+    connectedAccounts = [
+      wireAccount("claude", "backup", "invalid"),
+      wireAccount("claude", "default", "active"),
+    ];
+    expect(await loginOf("claude")).toBe("active");
+    connectedAccounts = [wireAccount("claude", "backup", "active")];
+    expect(await loginOf("claude")).toBe("missing");
   });
 });

@@ -32,6 +32,8 @@ export class ConnectedAccount extends Schema.Class<ConnectedAccount>("ConnectedA
   connectedAt: Timestamp,
   updatedAt: Timestamp,
   lastUsedAt: Schema.NullOr(Timestamp),
+  /** Whether this is the person's chosen default for its provider, the one sessions use. */
+  isDefault: Schema.Boolean,
 }) {}
 
 export class ConnectAccountInput extends Schema.Class<ConnectAccountInput>("ConnectAccountInput")({
