@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import type { AgentEvent } from "@mend/domain/workbench";
 import { describe, expect, it, TestClock } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Fiber } from "effect";
@@ -35,12 +37,8 @@ const matchCodex = (expected: TranscriptStep, actual: JsonObject): ReadonlyArray
   if (method === "turn/start" && textOf(actual["params"]) !== textOf(expected.frame["params"])) {
     return ["turn/start input differs from the recording"];
   }
-  if (method === "turn/steer") {
-    try {
-      expect(actual["params"]).toStrictEqual(expected.frame["params"]);
-    } catch {
-      return [`params ${JSON.stringify(actual["params"])}`];
-    }
+  if (method === "turn/steer" && !isDeepStrictEqual(actual["params"], expected.frame["params"])) {
+    return [`params ${JSON.stringify(actual["params"])}`];
   }
   return [];
 };

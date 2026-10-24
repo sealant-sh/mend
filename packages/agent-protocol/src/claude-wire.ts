@@ -13,7 +13,6 @@ export interface ClaudeUserMessage {
   };
   /** `now` aborts the running turn's current step and answers these words next. */
   readonly priority?: "now" | "next" | "later";
-  /** The client's id for this message. */
   readonly uuid?: string;
 }
 
