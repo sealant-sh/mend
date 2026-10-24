@@ -13,14 +13,15 @@ Live preview (ADR 0017, proposed) would put an HTTP gateway in Mend's API proces
 `workspace.forward`. Each upstream connection to a dev server would be one forward.
 
 - **Today:** the SDK's forward appends every inbound frame to an array with no bound
-  (`facade/workspace.js:833`, `:859`), and `send` gives no signal that the socket is full. Mend's
-  `ServiceHost` waits on its own socket's `drain`, but that cannot slow the frames the SDK has
-  already read. A dev server that writes faster than a slow phone reads grows Mend's memory without
-  a limit.
+  (`facade/workspace.js:833`, `:859`), and `send` calls `ws.send` with no check on the socket's
+  buffer (`:885`), so it gives no signal that the socket is full. Mend's `ServiceHost` waits on its
+  own socket's `drain`, but that cannot slow the frames the SDK has already read. A dev server that
+  writes faster than a slow phone reads grows Mend's memory without a limit.
 - **Mend today:** Services and the CLI tunnel carry this risk for each open connection. ADR 0017
   proposes that the preview gateway not start without a bounded forward, on any exposure.
 - **Needed:** receive backpressure (the SDK stops reading the WebSocket while the consumer is
-  behind) and a send-ready signal, tested with a fast producer and a slow consumer.
+  behind) and a send-ready signal, tested with a fast producer and a slow consumer. ADR 0017
+  delivers a held upload through `send`, so without the signal Mend would buffer the whole upload.
 
 ## 2026-10-24 · 0.39.0 · Dial errors a caller can tell apart
 

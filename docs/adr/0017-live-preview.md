@@ -2,11 +2,11 @@
 
 Status: proposed 2026-10-24. Commits Mend to a preview gateway, an HTTP listener on an origin of its
 own that opens a worktree's dev server inside its workspace. The link appears in the Slack thread,
-on the phone and in the web app after a turn changes the app. Six decisions stay open: the domain,
-public links (who opens a link), a shared database, the setup cache, idle defaults, and the gateway
-on a private instance. Each is Yiannis's. This ADR gives the options, their consequences and a
-recommendation for each, and decides none. It merges once he has decided and his answers are written
-into it.
+on the phone and in the web app after a turn changes the app. Yiannis decided its six decisions on
+2026-10-24: the domain, public links (who opens a link), a shared database, the setup cache, idle
+defaults, and the gateway on a private instance. He also decided how Mend's cookies change on a
+tailnet, how app cookies are kept apart, and what happens to a write that reaches a stopped preview.
+Each section quotes him. The other choices in the decision log are proposals he may overturn.
 
 **What this ADR does not claim.** A preview is not a deployment, and it does not say that a change
 works. It shows what the dev server answered when someone asked
@@ -151,6 +151,8 @@ export type PreviewBinding =
     };
 ```
 
+- On a preview domain, the label picks the preview. On a tailnet's `ts.net` default (decision 6),
+  the port does, and the label still names the preview in its cookies.
 - The label names nothing: no organization, project, branch, person, session, port or id. Hostnames
   reach DNS resolvers, Certificate Transparency logs, Slack's unfurler and browser history. The
   label is a locator, not a credential, and knowing it opens nothing.
@@ -160,8 +162,9 @@ export type PreviewBinding =
   when the attempt exits or the binding changes. A late dial from an old epoch never reaches a new
   one. A forward names a port, not a process, so another process that takes the port after the
   attempt exits and before Mend sees the exit would receive traffic. Platform feedback asks for a
-  forward bound to a process (below). Before a start, Mend refuses a port that already answers, so
-  readiness never accepts a listener that the attempt did not open.
+  forward bound to a process (below). Before a start, Mend refuses a port that already answers. That
+  shows the port was free at that moment, and so narrows the gap. It cannot show which process
+  answers afterwards, and only a forward bound to a process closes the gap.
 - A second session in the worktree that runs the same name does not take the host over. A
   managed-port claim on (workspace, port) turns that into a named conflict.
 
@@ -240,21 +243,50 @@ GET  https://k7f2….<preview domain>/pricing                 no grant cookie, a
   its hashing, its single spend and its credential checks are ADR 0004's, unchanged.
 - The grant is a separate stored credential, hashed and bound to one host:
   `__Host-mend-preview=<grant>; Secure; HttpOnly; SameSite=Lax; Path=/`. The `__Host-` prefix
-  forbids a `Domain` attribute, so no sibling preview can set or replace it. Each admitted request
-  moves its expiry 12 hours ahead, so a person who is using a preview is never signed out of it in
-  the middle of their work. It ends with the credential that minted it: signing out, a revoked
-  device, or removal from the organization ends it.
+  forbids a `Domain` attribute, so no sibling preview can set or replace it. The grant lives as long
+  as the sign-in that minted it, so a person who is signed in to Mend never meets an expired grant
+  in the middle of their work. It ends with that credential: signing out, a revoked device, or
+  removal from the organization ends it.
 - Every request is checked against the grant and the binding, including a request on a reused
   connection. Open WebSockets and SSE streams are checked again whenever visibility changes, and in
   a sweep every 60 seconds that also covers missed events. A viewer who can no longer open the
   preview loses its open streams, including after a project becomes private.
-- **A write is never dropped.** A request that is not a top-level navigation and has no valid grant
-  gets 401, never a sign-in page, because a module fetch cannot follow a redirect. A write that the
-  gateway cannot deliver (an expired or missing grant, a stopped preview, a restart in progress) is
-  kept. The gateway holds its body, up to the request-body budget, for 10 minutes, behind a
-  single-use id bound to the same person. It answers with a page that says what was kept and offers
-  **Send again** once the person has signed in or the preview has started. Mend never replays a
-  write by itself. A body over the budget is not kept, and the page says so.
+- **A grant that is missing or revoked is refused.** A request that is not a top-level navigation
+  and has no valid grant gets 401, never a sign-in page, because a module fetch cannot follow a
+  redirect. A write without a valid grant is refused on purpose. It is not a loss.
+- **A write to a stopped preview starts it.** Decided by Yiannis, 2026-10-24: "let's have it get the
+  preview up again and accept it". When a write (`POST`, `PUT`, `PATCH`, `DELETE`) from a person
+  with a valid grant reaches a preview that is stopped or restarting, the gateway starts the
+  preview, holds the request until the preview is ready, and then delivers it. Mend stores nothing.
+  - **The body stays in the browser.** While it holds, the gateway reads only the request head and
+    does not read the body. TCP backpressure then leaves the body with the browser, past a few
+    socket buffers, so an upload over any size is held without buffering it in Mend. Delivery then
+    streams the body into the forward. That needs the send-ready half of the bounded forward:
+    today's forward calls `ws.send` with no check on the socket's buffer (SDK
+    `facade/workspace.js:885`), so Mend would read the whole upload into the forward's buffer
+    (platform feedback 1).
+  - **The body budget is the gateway's own.** ADR 0004's body budget refuses an API request whose
+    declared `Content-Length` passes the route's limit (1 MiB by default) before reading, and cuts a
+    chunked body at the same point (`apps/api/src/request-budgets.ts:122-123`). That budget guards
+    bodies the API decodes. The gateway never decodes an app's body, so it is not under that budget.
+    It gets a streaming cap per request, configurable and off by default, and the per-account
+    connection budget counts a held request as an open connection.
+  - **The hold is bounded.** A start timeout (`MEND_PREVIEW_WRITE_HOLD`, proposed default 3 minutes,
+    not measured) bounds the hold. It covers acquiring the workspace, setup, `depends`, the Service
+    and the readiness check. The edge in front must not cut the request sooner: Caddy's defaults do
+    not, an Ingress controller may, and an edge that buffers request bodies (nginx ingress's
+    default) holds the upload itself and applies its own size limit. Delivery step 7 checks each
+    shape.
+  - **What is lost when the start fails.** If the preview fails to start, or does not answer within
+    the timeout, the gateway answers 503 with a page that says what happened
+    (`preview · web · did not start in 3 min · setup failed · your request was not delivered`). The
+    body was never read, so Mend has none of it. It is lost unless the browser kept it: Back may
+    restore a form's fields, and an app's own `fetch` sees the 503 and decides for itself. This is
+    the one remaining case in which a write is lost, and the page says so plainly.
+  - **Who it runs as.** A start from a held write runs the approved recipe digest as its last
+    starter, exactly as an owner's **Start** does, and one start runs however many writes arrive. A
+    preview the owner stopped with **Stop** is not started by a write. That stop is the owner's
+    choice, so the write gets a page that says the owner stopped the preview.
 - **The phone.** The Mend app mints the ticket with its device token and opens the preview host in
   an in-app browser (`expo-web-browser`), so the person does not sign in again. The `/tty-embed`
   ticket flow is the precedent (`apps/mobile/src/components/ghostty-terminal.tsx:232-298`). A link
@@ -376,36 +408,34 @@ guessing presence from bytes.
   the streams, and stops the Service. Then the existing `stopWorkspaceIfUnleased` decides about the
   workspace. The protocol idle stop is unchanged. It holds while the preview runs, and once the
   preview stops, its next pass may stop the agent through `engine.stop`.
-- **After a stop.** The preview keeps its host and answers a stopped page. Starting it again, by the
-  owner or by a request, needs a new engine entry that acquires a workspace for Services with no
-  agent process. Today's Service start needs a live workspace (`engine.ts:21149`). The duration, and
-  whether a request wakes the preview, are decision 5.
+- **After a stop.** The preview keeps its host and answers a stopped page. Starting it again needs a
+  new engine entry that acquires a workspace for Services with no agent process, whether the owner
+  presses **Start** or a write arrives. Today's Service start needs a live workspace
+  (`engine.ts:21149`). Decision 5 sets the duration and when a visit wakes a preview.
 
 ### Exposure
 
 A new gate item, **15. preview-gateway**, is listed only while a preview domain is set. It follows
 item 14:
 
-- **observed:** APP_URL's host is neither the preview domain nor under it, the scheme is `https:`,
-  the SDK in use has the bounded forward, and the listener's bind matches what setup published.
+- **observed:** APP_URL's host is neither the preview domain nor under it, the scheme is `https:`
+  (or plain HTTP on loopback), the SDK in use has the bounded forward, and the listener's bind
+  matches what setup published.
 - **open until declared:** the wildcard DNS and certificate, and who can reach the published
   listener. Only a check from another network sees those. An open item refuses a `public` start, as
   item 14 does.
-- **observed, under decision 1's subdomain option only:** every Mend cookie carries `__Host-`.
+- **observed, on the tailnet default (decision 6) and under decision 1's subdomain option:** every
+  Mend cookie carries `__Host-`.
 
 `raw-service-ports` stays as it is. A preview never needs a raw port off loopback.
 
 ### Services shared between worktrees
 
-A preview depends on a shared service only through a binding. `depends = ["db"]` resolves to an
-address and credentials in the Service's env. What a project service is, how it lives and where it
-runs belongs to P-SLNT-46 and its own ADR. This ADR records the state model as decision 3 and fixes
-one boundary. Mend does not carry a database's bytes over the session channel, or over any other
-relay of its own, to make up for the missing workspace links. AGENTS.md forbids that kind of
-workaround, so this ADR withdraws the earlier plan's bridge. Until the SDK has workspace-to-service
-connectivity and durable service storage, a project service is either an endpoint the operator
-provisions, which the workspace reaches over its ordinary egress, or a per-session Compose service
-as today. The UI says which.
+A preview reaches a shared service only through a binding (decision 3). What a project service is,
+how it lives and where it runs belongs to P-SLNT-46 and its own ADR. This ADR fixes one boundary.
+Mend does not carry a service's bytes over the session channel, or over any other relay of its own,
+to make up for the missing workspace links. AGENTS.md forbids that kind of workaround, so this ADR
+withdraws the earlier plan's bridge. Platform feedback 4 and 5 record what the SDK lacks.
 
 ### What it does not do
 
@@ -413,14 +443,35 @@ as today. The UI says which.
 - It never discovers listeners. A preview exists only for a declared browser Service.
 - It never publishes a raw port off loopback for a preview.
 - It never makes the label a credential, and never puts a name in a hostname.
-- It never keeps a workspace up because a tab is open, and never drops a write.
+- It never keeps a workspace up because a tab is open, and never reads a held write into memory.
 
-## Open decisions
+## Decisions
 
-Each decision is Yiannis's. The design above holds under every option, and each section says what
-moves.
+Each decision is Yiannis's. He decided all six on 2026-10-24, and each section quotes him. Each
+keeps the options it weighed, so a later change can start from them.
 
 ### 1. The domain
+
+**Decided by Yiannis, 2026-10-24: a separate registrable domain.** He asked, "I suppose the users
+setup matters?" It does. The operator brings the preview domain and its DNS provider, and Mend
+assumes neither. Each setup needs this:
+
+- **Public, behind an edge.** A registrable domain of the operator's own, apart from Mend's, with a
+  wildcard record `*.<preview domain>` that points at the edge. A wildcard certificate over DNS-01,
+  from a Caddy build with the operator's DNS provider module, or a certificate the operator
+  supplies. The DNS token stays in the edge's secrets. `MEND_PREVIEW_DOMAIN` names the domain, and
+  gate item 15 is declared after a check from another network.
+- **Private (a tailnet or a LAN).** Decision 6.
+- **Loopback.** No domain. The preview domain is `localhost`, so a preview is
+  `http://<label>.localhost:<port>`. Chrome and Firefox resolve every name under `localhost` to the
+  loopback address. Whether Safari does, and whether each browser keeps the grant cookie there over
+  plain HTTP, is unverified, and delivery step 8 checks it in all three. Over plain HTTP the grant
+  cannot carry `Secure`, so its name drops the `__Host-` prefix. A loopback instance is one person's
+  machine. Under the Public Suffix List's default rule, a name directly under an unlisted top-level
+  label such as `localhost` is a site of its own, so each preview is its own site there (inferred
+  from the list's algorithm, not observed in a browser).
+
+The options weighed:
 
 | Option                                                  | For a person                                                                                                     | For the operator                                                                                                       | In the code                                                                                                                                                                                     |
 | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -429,15 +480,15 @@ moves.
 | A subdomain of Mend's domain (`*.preview.mend.example`) | A familiar URL. Previews and Mend are cross-origin but **same-site**.                                            | No second domain. A wildcard certificate over DNS-01 is still needed.                                                  | Mend's own cookies move to `__Host-` names, the old names stop authenticating, every state-changing route is checked against requests from sibling sites, and gate item 15 observes the prefix. |
 | Hosts the operator assigns, no wildcard                 | A fixed set of names.                                                                                            | DNS and a certificate per host, and a pool that runs out.                                                              | A table from host to preview replaces the suffix. A host is never reused, so a full pool answers "no host free".                                                                                |
 
-**Recommendation:** a separate registrable domain. ADR 0004 asks only for a separate origin
-(`:363-364`), so the subdomain option is allowed. Its cost is what a sibling host can do. A page on
-a same-site host can set a cookie for the parent domain from its own JavaScript, and a same-site
-request back to Mend carries Mend's `SameSite=Lax` cookie. Mend's cookie is `__Secure-` today, not
-`__Host-` (`packages/auth/src/auth.ts:119-149`). The separate domain keeps preview pages away from
-Mend, but not from each other. The Public Suffix List entry closes that gap, and it is how
-`vercel.app` and `github.io` give each customer a site of its own. Without the entry, a page on one
-preview can set cookies that another preview's app reads, and the gateway's `Origin` rule above is
-what stops one preview acting as a viewer of another.
+**Why the separate domain.** ADR 0004 asks only for a separate origin (`:363-364`), so the subdomain
+option is allowed. Its cost is what a sibling host can do. A page on a same-site host can set a
+cookie for the parent domain from its own JavaScript, and a same-site request back to Mend carries
+Mend's `SameSite=Lax` cookie. Mend's cookie is `__Secure-` today, not `__Host-`
+(`packages/auth/src/auth.ts:119-149`). The separate domain keeps preview pages away from Mend, but
+not from each other. The Public Suffix List entry closes that gap, and it is how `vercel.app` and
+`github.io` give each customer a site of its own. Without the entry, a page on one preview can set
+cookies that another preview's app reads, and the gateway's `Origin` rule above is what stops one
+preview acting as a viewer of another.
 
 **Evidence and costs shared by every wildcard option.** Let's Encrypt issues a wildcard only over
 DNS-01, and the packaged edge is stock `caddy:2.10-alpine`, which has no DNS provider module
@@ -450,6 +501,9 @@ week.
 
 ### 2. Public links: who opens a link
 
+**Decided by Yiannis, 2026-10-24: anyone who can see the session, signed in to Mend** ("Sure").
+Share links that the owner makes are a later slice. The options weighed:
+
 | Option                                                                          | For a person                                                                                                                                                | For the operator                                                                                      | In the code                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Anyone who can see the session, signed in to Mend                               | A teammate opens the link from Slack after one sign-in. They can use whatever the dev server serves, as its starter, and their writes land in the worktree. | One identity model, already in place.                                                                 | Project visibility through `ProjectAccess` and the lending rule.                                                                                                                                                                                                                                                                                                                                                                              |
@@ -457,12 +511,11 @@ week.
 | The first option, plus share links the owner makes: stored, expiring, revocable | A client opens the link without an account. Anyone with a forwarded copy can too, until it ends.                                                            | A maximum lifetime, a list of open shares, a budget for guest traffic, and a switch for the instance. | A `preview_shares` table. A share is redeemed into a guest grant on the same host. The secret travels in the URL fragment, which a gateway page reads and posts, so request logs do not hold it. The gateway dials for a guest as the share's issuer, under a lending rule for previews only: the issuer must still see the project and the creator must still be a member. A share never wakes a preview and opens nothing but that preview. |
 | Invited guests for previews only                                                | A client signs in and can be revoked alone. More friction than a link.                                                                                      | A guest directory or a restricted member class.                                                       | A tenancy amendment (ADR 0003) for a role that can open previews and read nothing else, and the guest lending rule above.                                                                                                                                                                                                                                                                                                                     |
 
-**Recommendation:** anyone who can see the session, for the first slice, and share links as an
-explicit later slice if Yiannis wants clients to review a site, as the WordPress target suggests. He
-asked for Slack and the phone. A client without an account is the earlier plan's idea, not his. Plan
-§2.7 calls the running app "another authenticated view of the session", which matches visibility.
-The steering-only option is the cautious one. It takes the preview away from teammates who only
-watch, because the dev server acts as its starter.
+**Why visibility.** Share links stay a later slice, for when clients review a site, as the WordPress
+target suggests. He asked for Slack and the phone. A client without an account is the earlier plan's
+idea, not his. Plan §2.7 calls the running app "another authenticated view of the session", which
+matches visibility. The steering-only option is the cautious one. It takes the preview away from
+teammates who only watch, because the dev server acts as its starter.
 
 **Evidence.** Plan §4.10 says a preview "must not become public by default" (`:189-193`). ADR 0004
 decision 4 rejected signed stateless tokens because they "cannot be single use without state anyway"
@@ -473,28 +526,29 @@ never a default.
 
 ### 3. A shared database
 
-| Option                                                                  | For a person                                                                                 | For the operator                                                                                      | In the code                                                                                             |
-| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| One server per project, one database per worktree from a versioned seed | Two worktrees migrate and edit separately. Data entered in one preview is absent in another. | One durable server, seeds, credentials per worktree, backups, and cleanup when a worktree is removed. | A binding keyed by the worktree. It is created once and resumed, and a restart never seeds it again.    |
-| One database shared by every worktree                                   | Everyone sees the same data. One branch's migration or reset reaches every preview.          | Simpler allocation. Migrations and resets need the project's agreement.                               | A binding keyed by the project service. A reset is a project action that lists the previews it reaches. |
-| A database service per worktree                                         | Stronger separation, slower starts, more resources.                                          | More instances to keep and back up.                                                                   | The same binding keyed by the worktree, with a different provisioner.                                   |
+**Decided by Yiannis, 2026-10-24: the preview ADR does not own the database model.** His words:
 
-**Recommendation:** one server per project with a separately credentialed database per worktree,
-from a versioned seed, and truly shared state as an explicit choice per service. Worktrees exist so
-that branches do not interfere. With one mutable database, branch A's migration breaks branch B's
-preview, and review evidence then depends on another session's state.
+> Don't we have the whole shared resources thing? ... It should be part of the shared resources
+> thing. Ofc a session can spin up any infra, but in general if the user wants they should be able
+> to get the shared ones instead.
 
-**Evidence, including against the recommendation.** Yiannis's words lean toward shared state: "long
-running services that are used between worktrees" (2026-09-26) and "Long running services across
-multiple worktrees/sessions (dbs/redis/message brokers etc)" (2026-10-17). P-SLNT-46's done-when
-reads "Two sessions in different worktrees use the same project Postgres and Redis, and the data
-survives both sessions stopping". He also said he is "open to ideas/feedback". Both readings need
-data to survive executor replacement, and a seed does not give that, because a seed is only the
-initial state. Postgres `CREATE DATABASE … TEMPLATE` needs a template with no connected sessions, so
-a seed is a versioned, disconnected template or dump, never a copy of the running database. Where
-the server runs, and how a workspace reaches it, is P-SLNT-46's work, within the boundary above.
+A preview uses the project's shared long-running services (P-SLNT-46) when the person chooses them,
+and a session can still run its own, such as a Compose database inside its workspace. The service
+and database model belongs to P-SLNT-46's ADR: what a shared service is, whether its data is shared
+by every worktree or split per worktree, and how it survives executor replacement. So does the way a
+recipe names a shared service. This ADR keeps two things:
+
+- **The binding.** A preview's `depends` names either a Service of its own session or a shared
+  service of the project. Either one resolves to an address and credentials in the preview Service's
+  env.
+- **The boundary.** Mend never relays a service's bytes over the session channel (below).
+
+The per-worktree database that an earlier draft of this ADR recommended is withdrawn.
 
 ### 4. The setup cache
+
+**Decided by Yiannis, 2026-10-24: once per site and fingerprint, and measure before sharing anything
+across workspaces.** The options weighed:
 
 | Option                                     | For a person                                                                | For the operator                                      | In the code                                                                                                                                                                                           |
 | ------------------------------------------ | --------------------------------------------------------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -502,9 +556,9 @@ the server runs, and how a workspace reaches it, is P-SLNT-46's work, within the
 | Dependency output shared across workspaces | Faster only when restoring beats installing.                                | Storage, quotas, retention, and entries per platform. | The existing project dependency cache gains complete immutable keys (inputs, command, image, OS, architecture, libc, layout) and a trusted writer. Setup's other effects still run in each workspace. |
 | A package download mirror only             | Installs still run, with fewer downloads.                                   | The existing npm mirror.                              | No new cache. The image digest joins the fingerprint.                                                                                                                                                 |
 
-**Recommendation:** once per site and fingerprint first. Share output across workspaces only after
-measuring the project's own restore against its install. A lockfile hash alone is not a key, because
-scripts, the platform, the runtime, the image and the person's layout change the result.
+**Why.** Share output across workspaces only after measuring the project's own restore against its
+install. A lockfile hash alone is not a key, because scripts, the platform, the runtime, the image
+and the person's layout change the result.
 
 **Evidence.** Mend already has a project dependency cache in the capture store, with one writer (the
 install job that Mend runs) and one reader (standby preparation). Its own comment records why a cold
@@ -516,19 +570,25 @@ streamline setup "later anyhow With the live preview services".
 
 ### 5. Idle defaults
 
+**Decided by Yiannis, 2026-10-24.** A preview stops after 30 minutes without admitted requests, with
+a visible "keep running" hold. The owner's **Start** comes first, and a signed-in visit wakes a
+stopped preview later in 0.37. A write wakes it now, by his later decision on lost writes (Signing
+in, above). The same start, single-flight per preview, would also serve a signed-in top-level `GET`,
+which would wait on a "starting preview" page and reload when the preview answers. That costs no new
+mechanism. It does cost what decision 5 weighed, because any viewer who opens an old Slack link then
+launches a workspace. It is proposed in the decision log (item 10), and Yiannis has not decided it.
+The options weighed:
+
 | Option                                                                    | For a person                                                                                               | For the operator                                                                    | In the code                                                                                                                                                        |
 | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | No preview stop                                                           | A forgotten preview runs until someone stops it, or until the platform's own limits do.                    | Today's cost: a Service holds its workspace indefinitely.                           | The clock exists and never fires.                                                                                                                                  |
 | Stop after N minutes without admitted requests; the owner starts it again | A Slack link opened the next day shows a stopped page with **Start** for the owner.                        | Workspaces come back. A visit never launches one.                                   | The clock fires. A stopped page. The service-only workspace start, on the owner's press.                                                                           |
 | Stop after N minutes; a signed-in navigation wakes it                     | A return visit waits for the workspace, setup and the dev server (tens of seconds to minutes), then opens. | A visitor can cause billable work, so wakes need caps, backoff and failure reports. | The service-only start, as a durable wake per preview that runs once however many visits arrive. A wake runs only the approved recipe digest, as its last starter. |
 
-**Recommendation:** 30 minutes without admitted requests, with a visible "keep running" hold, and
-the owner's Start first. Navigation wake follows later in 0.37, once replacement, setup and the
-clock have been observed on a real instance. Thirty minutes is a proposed default, not a measured
-one. One runner of the design panel recommended shipping wake together with the stop, because a
-stopped Slack link is a dead link. The recommendation stages wake because it adds lifecycle work
-that the stop does not need: concurrent visits, a crash in the middle of a wake, and failure
-reports.
+**Why this order.** Thirty minutes is a proposed default, not a measured one. Wake comes after the
+stop because it adds lifecycle work that the stop does not need: concurrent visits, a crash in the
+middle of a wake, and failure reports. One runner of the design panel recommended shipping wake
+together with the stop, because a stopped Slack link is a dead link.
 
 **Evidence.** A live Service holds the protocol idle stop (`protocol-idle.ts:81`), and its lease is
 renewed every 10 minutes (`engine.ts:9848-9920`), so nothing reclaims a forgotten dev server today.
@@ -538,24 +598,100 @@ server.
 
 ### 6. The private-instance gateway
 
-| Option                                                                 | For a person                                                                                                                                                                                     | For the operator                                                                                                          | In the code                                                                                        |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| The gateway on private instances too, whenever a preview domain is set | The same **Open** on the phone and in Slack, from inside the admitted network.                                                                                                                   | DNS for the preview domain that resolves to the private edge on every device, and a certificate that those devices trust. | The same gateway and grants. Item 15 reports the private publication.                              |
-| Private instances keep raw ports and the CLI tunnel                    | Today's workflow. A browser on the private network can open a Service's raw URL, without Mend sign-in, when the operator bound Services to a private interface. Slack and the phone get no link. | Nothing new.                                                                                                              | No preview host is made. The UI says "browser preview not configured" and never shows a dead link. |
-| Opt-in on private instances, raw ports until then                      | The link appears once the operator sets it up.                                                                                                                                                   | The first option's work, when the operator chooses.                                                                       | Setup turns the gateway on. Recipes and Services work either way.                                  |
+**Decided by Yiannis, 2026-10-24:** "Have that tailscale domains by default with the option to add a
+domain." On a private instance on a tailnet, the gateway gets one dedicated `ts.net` name by
+default, and each preview gets a port of its own on that name. The operator can add a preview domain
+of their own, and it then takes over from the `ts.net` name. A public instance still needs a
+registrable domain of its own (decision 1).
 
-**Recommendation:** the third option. Private instances get the same gateway once the operator
-configures a preview domain with trusted TLS, and raw ports and the tunnel stay for protocols other
-than HTTP. A remote preview over plain HTTP is out, because the grant cookie is `Secure` and ADR
-0004 requires `https:` for Mend beyond the machine (`:85`).
+**The default on a tailnet.** One Tailscale Service, such as `svc:mend-preview`, is the gateway's
+name: `https://mend-preview.<tailnet>.ts.net:<port>`. It is never Mend's own machine name. Mend runs
+`tailscale serve --service=svc:mend-preview --https=<port> http://127.0.0.1:<gateway port>` for each
+preview's port, so TLS ends at `tailscaled` on the Mend host, which is this setup's edge. The
+gateway maps the port to the preview, where elsewhere it maps the label. Everything else in the
+gateway is unchanged.
 
-**Evidence.** ADR 0004 decision 21 published the t3code gateway where Mend's web port is, because a
-gateway on loopback only made every T3 Code client keep an SSH tunnel open. On a tailnet, the
-operator's domain can resolve to a private address through public DNS or split DNS, and DNS-01
-issues a wildcard from a public root without publishing the listener. Tailscale's own certificates
-cover machine names only, so `*.machine.tailnet.ts.net` is not available. The bounded forward
-(platform feedback 1) gates the gateway on every exposure, so under the second option the headline
-has no Slack or phone link on any instance until the SDK ships it.
+**What the tailnet default costs.**
+
+- **Previews are the same site as Mend.** The Public Suffix List lists `ts.net` itself, so the
+  registrable domain is `<tailnet>.ts.net` and every name in one tailnet is one site (the list's
+  PRIVATE section, `ts.net` and `*.c.ts.net`). So Mend's own cookies move to `__Host-` names, the
+  old names stop authenticating, and everyone signs in once more. Decided by Yiannis, 2026-10-24: "I
+  don't mind the logout thing after update." Gate item 15 observes the prefix, and every
+  state-changing Mend route is checked against requests from sibling sites, as in decision 1's
+  subdomain row.
+- **The grant cookie's name carries the port**, as `__Host-mend-preview-<port>`. Cookies ignore the
+  port ("Cookies do not provide isolation by port", RFC 6265 §8.5), so one name would be overwritten
+  by every preview. A grant still names its preview, so a grant for a port's earlier preview opens
+  nothing on its next one.
+- **App cookies are namespaced per preview.** Decided by Yiannis, 2026-10-24: "The cookie name thing
+  is a very good way to deal with this." All previews share one host's cookie jar, so without this
+  two apps that both set `next-auth.session-token` overwrite each other. On the way out, the gateway
+  renames each `HttpOnly` cookie that the app sets with `Set-Cookie`, adding the preview's label
+  after any `__Host-` or `__Secure-` prefix, which must stay first (`p-<label>.<name>`). On the way
+  in, it passes the app only the cookies that carry that preview's prefix, with the prefix removed.
+  A cookie from another preview, or from a removed preview whose port was reused, never reaches the
+  app. The rename covers only `HttpOnly` cookies, because page JavaScript cannot read those, so no
+  app code ever sees a renamed name.
+- **The limit of the cookie rename.** The gateway sees only the `Set-Cookie` and `Cookie` headers.
+  It never sees a cookie that page JavaScript writes with `document.cookie`, so those cookies are
+  not namespaced. They collide between previews on the tailnet default, as they would on
+  `localhost:3000` beside `localhost:3001`. The same holds for a server-set cookie without
+  `HttpOnly`, such as a CSRF token that the app's JavaScript reads, which the gateway leaves alone
+  so that the app can still read it. An app that keeps its sign-in in such a cookie signs its user
+  out when another preview on the same tailnet sets the same name. The prefix also counts against
+  the browser's limit of 4096 bytes per cookie. An operator's own preview domain gives each preview
+  a host of its own, and the limit goes away.
+- **Ports are finite, and they get reused.** A port is reused only after its preview is removed, and
+  the least recently used free port goes first. A link to a removed preview's port can then open
+  another preview, still behind that preview's own sign-in and visibility check.
+- **How many previews fit.** The `tailscale serve` CLI accepts any `--https` port up to 65535, and
+  only Funnel restricts ports (Tailscale `cmd/tailscale/cli/serve_v2.go` and `ipn/serve.go` at
+  `a6cffd0a6d11`). A Tailscale Service advertises only the endpoints its definition in the admin
+  console lists, such as `tcp:443` (https://tailscale.com/kb/1552/tailscale-services), and grants
+  must allow those ports. So the real cap is the set of endpoints the operator defines. Whether a
+  definition takes a range, such as `tcp:20000-20999`, is not documented. Delivery step 8 checks it
+  before Mend relies on a range. Until then, setup asks for an explicit list.
+
+**What the operator turns on in Tailscale.**
+
+1. **MagicDNS**, so the Service's name resolves on every device.
+2. **HTTPS certificates.** Turning them on means accepting that "your machine names and your tailnet
+   DNS name will be published on a public ledger" (https://tailscale.com/kb/1153/enabling-https).
+3. **The Service** `svc:mend-preview`, defined in the admin console with the endpoints (ports) for
+   previews.
+4. **A tag on the Mend host.** A host serves a Service only with a tag-based identity
+   (https://tailscale.com/kb/1552/tailscale-services).
+5. **Approval of the host** for the Service, by an Owner, an Admin or a Network admin, or an
+   auto-approval policy that covers the tag.
+6. **Grants** that let the people who use previews reach the Service on those ports.
+
+Setup prints each of these, and gate item 15 reports them as declared, because Mend cannot observe
+the tailnet's policy.
+
+**With the operator's own domain.** The operator adds `MEND_PREVIEW_DOMAIN`, and it takes over from
+the `ts.net` name. That needs DNS for the domain that resolves to the private edge on every device,
+through public DNS or split DNS, and a wildcard certificate over DNS-01, which issues from a public
+root without publishing the listener. Previews then get a label each and leave Mend's site, as
+decision 1 describes.
+
+The options weighed:
+
+| Option                                                              | For a person                                                                                                                       | For the operator                                                                      | In the code                                                                                                    |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| One `ts.net` name for the gateway, a port per preview (the default) | **Open** works on the phone and in Slack inside the tailnet, with no domain. Previews are the same site as Mend and as each other. | The six Tailscale steps above.                                                        | Port routing, a port pool, `__Host-` Mend cookies, a grant name per port, and app cookies renamed per preview. |
+| The operator's own preview domain (takes over when set)             | Previews leave Mend's site.                                                                                                        | A domain, DNS to the private edge on every device, and a DNS-01 wildcard certificate. | Label routing, as on a public instance.                                                                        |
+| One Tailscale Service per preview                                   | A name per preview.                                                                                                                | "Up to 10 services" per tailnet (https://tailscale.com/blog/services-ga).             | Ten names cannot hold one preview each.                                                                        |
+| One tsnet node per preview                                          | A name per preview, still the same site as Mend.                                                                                   | A device per preview, an auth key that Mend holds, and one shared certificate budget. | A Go sidecar, because tsnet is a Go library.                                                                   |
+| Raw ports and the CLI tunnel only                                   | A browser on the private network opens a raw URL without Mend sign-in. Slack and the phone get no link.                            | Nothing new.                                                                          | No preview host.                                                                                               |
+
+**Evidence.** Let's Encrypt counts certificates per registered domain, which it takes from the
+Public Suffix List (https://letsencrypt.org/docs/rate-limits/), so every certificate in one tailnet
+shares a budget of 50 a week. That rules out a certificate per preview. Wildcard names and wildcard
+certificates under a machine name are not available: Tailscale's issue #7081 for subdomain or
+wildcard certificates is open. ADR 0004 decision 21 published the t3code gateway where Mend's web
+port is, because a gateway on loopback only made every T3 Code client keep an SSH tunnel open. The
+bounded forward (platform feedback 1) gates the gateway on every exposure.
 
 ## Amendments
 
@@ -585,6 +721,9 @@ on the private network being the boundary.
 - Decision 4, only if decision 2 takes share links: "Preview shares are stored, expiring, revocable
   capabilities that open one preview. They are not upgrade tickets and do not change the single-use
   rule."
+- Budgets (`:218-221`), "Bodies, before decode": the rule governs bodies the API decodes. The
+  preview gateway never decodes an app's body. It streams it under a cap of its own, and it holds a
+  write to a stopped preview without reading its body.
 - The public exposure gate gains item 15.
 
 **AGENTS.md**, when this ADR is accepted: the Product Language Contract gains `preview`,
@@ -629,7 +768,9 @@ This PR adds five entries to `PLATFORM-FEEDBACK.md`:
 - The product language gains `preview`, `preview host`, `preview domain`, `preview gateway` and
   `preview grant`. "Preview" also names a `next` docs build and t3code's embedded browser. Those
   keep their own words.
-- An instance without a preview domain behaves as it does today.
+- An instance without a preview domain, and not on a tailnet, behaves as it does today.
+- On a tailnet, the `ts.net` default moves Mend's own cookies to `__Host-` names, so everyone signs
+  in to Mend once more when it ships.
 - The gateway waits for a Sealant release with the bounded forward, on every exposure.
 - A stateful dependency keeps its workspace up after the preview stops, until P-SLNT-46 gives it
   durable storage.
@@ -655,22 +796,27 @@ One ready-for-review PR per step. Each ends in something a person can check.
 6. The `preview` ticket and the grant, against an HTTP fixture. One ticket opens once. A wrong host,
    a wrong target or a repeated parameter fails. Signing out, a revoked device and removal from the
    organization end access, and so does a project made private, for open streams too.
-7. The gateway: HTTP, keep-alive, WebSockets, SSE, the `Origin` rule and kept writes. A Vite app's
+7. The gateway: HTTP, keep-alive, WebSockets, SSE, the `Origin` rule and held writes. A Vite app's
    page, its assets and hot reload work through it. A page on another preview cannot post to it or
-   open its socket. A slow-reader test holds Mend's memory under a stated ceiling. An expired grant
-   keeps a submitted form for **Send again**.
+   open its socket. A slow-reader test holds Mend's memory under a stated ceiling. A form post and
+   an upload larger than 1 GiB to a stopped preview start it and arrive whole, with Mend's memory
+   flat while it holds them, behind Caddy, behind an nginx ingress, and through `tailscale serve`. A
+   start that times out answers the stated 503 page.
 8. The edge site with its log filter, DNS-01 or a supplied certificate, the Helm equivalent, and
    gate item 15. A phone opens a preview over an issued certificate, and the edge log holds no
-   ticket.
+   ticket. On loopback, a `*.localhost` preview opens in Chrome, Firefox and Safari with its grant
+   cookie, or the step records which browser refuses and why. On a tailnet, the `ts.net` default
+   opens a preview on its port from a phone, and the step records whether a Service definition takes
+   a port range.
 9. Recipe fields: per-recipe parsing, `cwd`, `env`, `MEND_PREVIEW_URL`, `ready`, `depends`,
    `[setup]` and the recipe digest.
 10. Start after a changed turn in a protocol session, the web **Open** and the phone button.
 11. Slack: the button and the review line.
-12. The service-only workspace start, the idle clock per decision 5, and wake if it is chosen.
-13. Terminal sessions' trigger. Shares if decision 2 takes them. The setup cache if decision 4 takes
-    it.
-14. WordPress: a seeded site with a theme and plugins, `host = "preserve"`, and its database per
-    decision 3, through P-SLNT-46.
+12. The service-only workspace start and the idle clock (decision 5): the owner's **Start**, then a
+    wake on a signed-in visit, later in 0.37.
+13. Terminal sessions' trigger, and owner share links (decision 2's later slice).
+14. WordPress: a seeded site with a theme and plugins, `host = "preserve"`, and its database from
+    the project's shared services (P-SLNT-46).
 
 ## Decision log
 
@@ -689,11 +835,16 @@ may overturn any of them without touching the rest.
    turn.
 5. **A stop ends the preview's Service, never its stateful dependencies.** Taken, so that what a
    reviewer typed into the app survives.
-6. **A write the gateway cannot deliver is kept, and only the person sends it again.** Taken, so
-   that an expired grant or a stopped preview never loses what someone submitted.
+6. **A preview the owner stopped is not started by a write.** Taken, because **Stop** is the owner's
+   choice, and the write's page says so. Rejected: letting any write undo it.
 7. **No relay for shared services.** Taken, per AGENTS.md. Rejected: the earlier plan's bridge.
 8. **A durable preparation job with a periodic sweep, not a turn callback.** Taken, because the
    event bus drops events and a checkpoint can fail.
 9. **The gateway waits for a bounded forward on every exposure.** Taken, because the gateway runs in
    the API process, and an unbounded queue per connection can exhaust the memory of Mend's control
    plane.
+10. **A signed-in top-level `GET` wakes a stopped preview too, with the same start.** Proposed, not
+    decided. It adds no mechanism to the write wake, and it brings decision 5's later wake into the
+    first slice. The cost is that any viewer who opens an old link launches a workspace, so the same
+    caps apply: one start per preview, and a wake budget per account. Rejected for now: waiting for
+    decision 5's later wake.
