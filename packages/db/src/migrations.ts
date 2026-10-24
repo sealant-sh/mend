@@ -3576,6 +3576,20 @@ const worktreeHandoffMigration = Effect.gen(function* () {
       ON worktrees (project_id, (handoff->>'checkpoint'))`;
 });
 
+const previewsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE previews (
+    id text PRIMARY KEY,
+    project_id text REFERENCES projects(id) ON DELETE SET NULL,
+    worktree_id text REFERENCES worktrees(id) ON DELETE SET NULL,
+    service_name text NOT NULL,
+    label text NOT NULL,
+    CONSTRAINT previews_label_key UNIQUE (label),
+    CONSTRAINT previews_worktree_service_key UNIQUE (worktree_id, service_name)
+  )`;
+  yield* sql`CREATE INDEX previews_project_idx ON previews (project_id)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3713,4 +3727,5 @@ export const migrations = {
   "0133_change_review_preps": changeReviewPrepsMigration,
   "0134_session_live_marks": sessionLiveMarksMigration,
   "0135_worktree_handoff": worktreeHandoffMigration,
+  "0136_previews": previewsMigration,
 };

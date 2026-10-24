@@ -4,6 +4,7 @@ import {
   Change as SessionChange,
   Checkpoint,
   PreReleaseMemory,
+  PreviewView,
   Session,
   Worktree,
   WorktreeName,
@@ -204,6 +205,13 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
     HttpApiEndpoint.get("detail", "/worktrees/:id", {
       params: { id: WorktreeId },
       success: WorktreeDetail,
+      error: WorktreeNotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("previews", "/worktrees/:id/previews", {
+      params: { id: WorktreeId },
+      success: Schema.Array(PreviewView),
       error: WorktreeNotFound,
     }),
   )

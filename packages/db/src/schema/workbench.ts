@@ -38,6 +38,8 @@ import type {
   ProjectClusterBindingId,
   ProjectEnvironmentVariableId,
   ProjectId,
+  PreviewId,
+  PreviewLabel,
   ProjectSecretId,
   ProjectMountId,
   ReferenceId,
@@ -529,6 +531,26 @@ export const worktrees = pgTable(
       table.projectId,
       sql`(${table.handoff}->>'checkpoint')`,
     ),
+  ],
+);
+
+export const previews = pgTable(
+  "previews",
+  {
+    id: text().$type<PreviewId>().primaryKey(),
+    projectId: text()
+      .$type<ProjectId>()
+      .references(() => projects.id, { onDelete: "set null" }),
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .references(() => worktrees.id, { onDelete: "set null" }),
+    serviceName: text().notNull(),
+    label: text().$type<PreviewLabel>().notNull(),
+  },
+  (table) => [
+    unique("previews_label_key").on(table.label),
+    unique("previews_worktree_service_key").on(table.worktreeId, table.serviceName),
+    index("previews_project_idx").on(table.projectId),
   ],
 );
 

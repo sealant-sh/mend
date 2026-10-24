@@ -563,6 +563,7 @@ const CASES: ReadonlyArray<AccessCase> = [
   project("project-read", "POST", "/worktrees", { name: null, base: null })("worktrees.create"),
   project("project-read", "GET", "/worktrees")("worktrees.list"),
   child("project-read", "worktree", "GET", "/api/worktrees", "")("worktrees.detail"),
+  child("project-read", "worktree", "GET", "/api/worktrees", "/previews")("worktrees.previews"),
   child("worktree-remove", "worktree", "DELETE", "/api/worktrees", "")("worktrees.remove"),
   child("project-read", "worktree", "POST", "/api/worktrees", "/sessions", {
     harness: "shell",
@@ -890,6 +891,7 @@ const ADMITTED: Readonly<
   "worktrees.create": { status: 500, calls: ["engine.ensureWorktree"] },
   "worktrees.list": { status: 500, calls: ["worktrees.listForProject", "sessions.listForProject"] },
   "worktrees.detail": { status: 500, calls: ["changes.byWorktree", "checkpoints.listForWorktree"] },
+  "worktrees.previews": { status: 500, calls: ["previews.ensureForWorktree"] },
   // Open-forward check masks capture/unlanded/disk/row removal.
   "worktrees.remove": { status: 500, calls: ["forwards.listOpen"] },
   "worktrees.createSession": { status: 500, calls: ["engine.provisionSessionIn"] },

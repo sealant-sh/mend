@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 
-import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
+import { NodeCrypto, NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import type { PgClient } from "@effect/sql-pg";
 import { Auth, AuthLive } from "@mend/auth";
 import {
@@ -60,6 +60,7 @@ import {
   ServiceForwardsRepoLive,
   ServiceObservationsRepoLive,
   ServicesRepoLive,
+  PreviewsRepoLive,
   SkillsRepoLive,
   SlackDefaultsRepoLive,
   SlackEventClaimsRepoLive,
@@ -269,6 +270,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SessionGitOpsRepoLive,
   SessionProcessesRepoLive,
   ServicesRepoLive,
+  PreviewsRepoLive.pipe(Layer.provide(NodeCrypto.layer)),
   ServiceForwardsRepoLive,
   ServiceObservationsRepoLive,
   SessionRunsRepoLive,
