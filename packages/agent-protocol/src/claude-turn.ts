@@ -18,6 +18,8 @@ export interface ClaudeSegment {
   /** The result line's `uuid`: a result seen twice is one segment, and its repeat ends nothing. */
   readonly resultId: string | null;
   readonly usage: AgentTurnUsage | null;
+  readonly status: ClaudeTurnStatus;
+  readonly error: string | null;
 }
 
 export type ClaudeTurnState =
@@ -26,8 +28,14 @@ export type ClaudeTurnState =
       readonly _tag: "Running";
       readonly turnId: string;
       readonly segments: ReadonlyArray<ClaudeSegment>;
-      /** A person's interrupt was written: the next result ends the turn, and nothing steers it. */
-      readonly interrupting: boolean;
+    }
+  /** A person's interrupt was written: the next result ends the turn, and nothing steers it. */
+  | {
+      readonly _tag: "Stopping";
+      readonly turnId: string;
+      readonly segments: ReadonlyArray<ClaudeSegment>;
+      /** A written steer the Stop did not consume: Claude may still answer it after the turn. */
+      readonly steerId: string | null;
     }
   /** A steer was journaled: the next result closes a segment instead of the turn. */
   | {
@@ -42,7 +50,12 @@ export type ClaudeTurnState =
       readonly turnId: string;
       readonly controlId: string;
       readonly segments: ReadonlyArray<ClaudeSegment>;
-    };
+    }
+  /**
+   * A Stop ended the turn while Claude may still answer a steer it was written: no turn is open,
+   * and none is sent until Claude opens one for the steer or reports idle.
+   */
+  | { readonly _tag: "Draining"; readonly stoppedTurnId: string; readonly steerId: string };
 
 export interface ClaudeTurns {
   readonly turn: ClaudeTurnState;
@@ -61,6 +74,8 @@ export type ClaudeTurnInput =
       readonly error: string | null;
     }
   | { readonly _tag: "OutputEnded" }
+  /** Claude's `session_state_changed: idle`: it runs nothing and has nothing queued. */
+  | { readonly _tag: "SessionIdle" }
   | { readonly _tag: "TurnSent"; readonly turnId: string }
   /** The turn's user frame failed to write: the turn never ran, unless output says it did. */
   | { readonly _tag: "TurnNotSent"; readonly turnId: string }
@@ -94,16 +109,13 @@ export const CLAUDE_CONTINUATION_MISSING =
 export const initialClaudeTurns = (replayProviderTurnIds: ReadonlyArray<string>): ClaudeTurns => {
   const [first, ...rest] = replayProviderTurnIds;
   return {
-    turn:
-      first === undefined
-        ? { _tag: "Idle" }
-        : { _tag: "Running", turnId: first, segments: [], interrupting: false },
+    turn: first === undefined ? { _tag: "Idle" } : { _tag: "Running", turnId: first, segments: [] },
     replayQueue: rest,
   };
 };
 
 export const claudeTurnId = (turn: ClaudeTurnState): string | null =>
-  turn._tag === "Idle" ? null : turn.turnId;
+  turn._tag === "Idle" || turn._tag === "Draining" ? null : turn.turnId;
 
 const unchanged = (state: ClaudeTurns): ClaudeTurnFold => ({ state, effects: [] });
 
@@ -141,13 +153,17 @@ export const claudeTurnUsage = (segments: ReadonlyArray<ClaudeSegment>): AgentTu
   return COUNTERS.every((key) => usage[key] === null) && contextWindow === null ? null : usage;
 };
 
-/** End the logical turn once, then open the next one a rehydrate already knows started. */
+/**
+ * End the logical turn once, then open the next one a rehydrate already knows started, or drain
+ * the steer `unanswered` names.
+ */
 const complete = (
   state: ClaudeTurns,
   turnId: string,
   segments: ReadonlyArray<ClaudeSegment>,
   status: ClaudeTurnStatus,
   error: string | null,
+  unanswered: string | null = null,
 ): ClaudeTurnFold => {
   const completed: ClaudeTurnEffect = {
     _tag: "TurnCompleted",
@@ -157,11 +173,16 @@ const complete = (
     error,
   };
   const [next, ...rest] = state.replayQueue;
-  if (next === undefined)
-    return { state: { ...state, turn: { _tag: "Idle" } }, effects: [completed] };
+  if (next === undefined) {
+    const turn: ClaudeTurnState =
+      unanswered === null
+        ? { _tag: "Idle" }
+        : { _tag: "Draining", stoppedTurnId: turnId, steerId: unanswered };
+    return { state: { ...state, turn }, effects: [completed] };
+  }
   return {
     state: {
-      turn: { _tag: "Running", turnId: next, segments: [], interrupting: false },
+      turn: { _tag: "Running", turnId: next, segments: [] },
       replayQueue: rest,
     },
     effects: [completed, { _tag: "TurnOpened", turnId: next, cause: "replay" }],
@@ -170,10 +191,10 @@ const complete = (
 
 const foldControl = (state: ClaudeTurns, control: AgentControlCheckpoint): ClaudeTurnFold => {
   const turn = state.turn;
-  if (turn._tag === "Idle" || turn.turnId !== control.providerTurnId) return unchanged(state);
+  if (claudeTurnId(turn) !== control.providerTurnId) return unchanged(state);
   switch (control.action) {
     case "steer-now":
-      return turn._tag === "Running" && !turn.interrupting
+      return turn._tag === "Running"
         ? {
             state: {
               ...state,
@@ -192,33 +213,34 @@ const foldControl = (state: ClaudeTurns, control: AgentControlCheckpoint): Claud
         ? {
             state: {
               ...state,
-              turn: {
-                _tag: "Running",
-                turnId: turn.turnId,
-                segments: turn.segments,
-                interrupting: false,
-              },
+              turn: { _tag: "Running", turnId: turn.turnId, segments: turn.segments },
             },
             effects: [],
           }
         : unchanged(state);
     case "interrupt":
-      // A person's Stop wins over a steer: the segment it ends is the turn's last, and a gap
-      // between segments ends now rather than waiting for a continuation the Stop cancels.
-      return turn._tag === "AwaitingContinuation"
-        ? complete(state, turn.turnId, turn.segments, "interrupted", null)
-        : {
+      switch (turn._tag) {
+        // A person's Stop wins over a steer: the segment it ends is the turn's last, and a gap
+        // between segments ends now rather than waiting for a continuation the Stop cancels.
+        case "AwaitingContinuation":
+          return complete(state, turn.turnId, turn.segments, "interrupted", null, turn.controlId);
+        case "Running":
+        case "SteerArmed":
+          return {
             state: {
               ...state,
               turn: {
-                _tag: "Running",
+                _tag: "Stopping",
                 turnId: turn.turnId,
                 segments: turn.segments,
-                interrupting: true,
+                steerId: turn._tag === "SteerArmed" ? turn.controlId : null,
               },
             },
             effects: [],
           };
+        default:
+          return unchanged(state);
+      }
   }
 };
 
@@ -228,15 +250,14 @@ export const foldClaudeTurn = (state: ClaudeTurns, input: ClaudeTurnInput): Clau
     case "TurnSent":
       return turn._tag === "Idle"
         ? {
-            state: {
-              ...state,
-              turn: { _tag: "Running", turnId: input.turnId, segments: [], interrupting: false },
-            },
+            state: { ...state, turn: { _tag: "Running", turnId: input.turnId, segments: [] } },
             effects: [{ _tag: "TurnOpened", turnId: input.turnId, cause: "sent" }],
           }
         : unchanged(state);
     case "TurnNotSent":
-      return turn._tag === "Running" && turn.turnId === input.turnId && turn.segments.length === 0
+      return (turn._tag === "Running" || turn._tag === "Stopping") &&
+        turn.turnId === input.turnId &&
+        turn.segments.length === 0
         ? { state: { ...state, turn: { _tag: "Idle" } }, effects: [] }
         : unchanged(state);
     case "Init":
@@ -244,37 +265,34 @@ export const foldClaudeTurn = (state: ClaudeTurns, input: ClaudeTurnInput): Clau
         return {
           state: {
             ...state,
-            turn: {
-              _tag: "Running",
-              turnId: turn.turnId,
-              segments: turn.segments,
-              interrupting: false,
-            },
+            turn: { _tag: "Running", turnId: turn.turnId, segments: turn.segments },
           },
           effects: [],
         };
       }
-      if (turn._tag !== "Idle" || input.harnessTurnId === null) return unchanged(state);
+      if ((turn._tag !== "Idle" && turn._tag !== "Draining") || input.harnessTurnId === null) {
+        return unchanged(state);
+      }
       return {
-        state: {
-          ...state,
-          turn: {
-            _tag: "Running",
-            turnId: input.harnessTurnId,
-            segments: [],
-            interrupting: false,
-          },
-        },
+        state: { ...state, turn: { _tag: "Running", turnId: input.harnessTurnId, segments: [] } },
         effects: [{ _tag: "TurnOpened", turnId: input.harnessTurnId, cause: "harness" }],
       };
     case "Result": {
-      if (turn._tag === "Idle") return unchanged(state);
+      if (turn._tag === "Idle" || turn._tag === "Draining") return unchanged(state);
       if (
         input.resultId !== null &&
         turn.segments.some((segment) => segment.resultId === input.resultId)
       )
         return unchanged(state);
-      const segments = [...turn.segments, { resultId: input.resultId, usage: input.usage }];
+      const segments = [
+        ...turn.segments,
+        {
+          resultId: input.resultId,
+          usage: input.usage,
+          status: input.status,
+          error: input.error,
+        },
+      ];
       if (turn._tag === "SteerArmed") {
         return {
           state: {
@@ -289,10 +307,34 @@ export const foldClaudeTurn = (state: ClaudeTurns, input: ClaudeTurnInput): Clau
           effects: [{ _tag: "SegmentClosed", turnId: turn.turnId }],
         };
       }
-      return complete(state, turn.turnId, segments, input.status, input.error);
+      return complete(
+        state,
+        turn.turnId,
+        segments,
+        input.status,
+        input.error,
+        turn._tag === "Stopping" ? turn.steerId : null,
+      );
+    }
+    case "SessionIdle": {
+      if (turn._tag === "Draining")
+        return { state: { ...state, turn: { _tag: "Idle" } }, effects: [] };
+      if (turn._tag !== "AwaitingContinuation") return unchanged(state);
+      // Claude went idle without continuing: the steer never reached it, or it took the words
+      // into the segment that just ended. That segment was the turn's last.
+      const last = turn.segments.at(-1);
+      return complete(
+        state,
+        turn.turnId,
+        turn.segments,
+        last?.status ?? "completed",
+        last?.error ?? null,
+      );
     }
     case "OutputEnded":
       if (turn._tag === "Idle") return unchanged(state);
+      if (turn._tag === "Draining")
+        return { state: { turn: { _tag: "Idle" }, replayQueue: [] }, effects: [] };
       return {
         state: { turn: { _tag: "Idle" }, replayQueue: [] },
         effects: [

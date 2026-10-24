@@ -30,6 +30,8 @@ type Step =
   | { readonly line: JsonObject }
   | { readonly text: string }
   | { readonly send: string }
+  /** A turn the host may be refused: its outcome is kept. */
+  | { readonly trySend: string }
   | { readonly steer: string; readonly id: string; readonly target?: string }
   | { readonly interrupt: true }
   | { readonly respond: string }
@@ -113,6 +115,9 @@ const runSteps = Effect.fn("test.runSteps")(function* (
       yield* wire.drain;
     } else if ("send" in step) {
       yield* session.sendTurn(step.send);
+    } else if ("trySend" in step) {
+      const exit = yield* session.sendTurn(step.trySend).pipe(Effect.exit);
+      outcomes.push({ step: index, result: outcomeOf(exit) });
     } else if ("steer" in step) {
       const exit = yield* session
         .steer({ id: step.id, expectedTurnId: step.target ?? target(), input: step.steer })
@@ -246,6 +251,12 @@ const aborted = (
     usage: tokens,
     errors: ["Error: Request was aborted."],
   });
+const idle: Step = line({
+  type: "system",
+  subtype: "session_state_changed",
+  state: "idle",
+  session_id: SESSION,
+});
 const assistant = (id: string, text: string): Step =>
   line({
     type: "assistant",
@@ -582,6 +593,154 @@ describe("Claude steering, synthetic", () => {
         }),
         expect.objectContaining({ providerTurnId: "harness:init-2", status: "completed" }),
       ]);
+      yield* expectDeterministicReplay(steps);
+    }),
+  );
+
+  it.effect("a Stop between segments is on the wire before its turn completes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const wire = yield* makeWire();
+        const { journal } = memoryJournal();
+        const frameName = (frame: JsonObject): unknown =>
+          frame["type"] === "user"
+            ? promptOf(frame)["text"]
+            : isObject(frame["request"])
+              ? frame["request"]["subtype"]
+              : frame["type"];
+        const seenAtCompletion: Array<ReadonlyArray<unknown>> = [];
+        const submitted: Array<unknown> = [];
+        let next: Effect.Effect<void> = Effect.void;
+        const session = yield* ClaudeAdapter.start(wire.transport, {
+          cwd: "/workspace/repo",
+          providerSessionId: SESSION,
+          permissionMode: "bypass",
+          controlJournal: journal,
+          onEvent: (event) =>
+            event._tag === "turn.completed"
+              ? Effect.suspend(() => {
+                  seenAtCompletion.push(wire.sent.map(frameName));
+                  return next;
+                })
+              : Effect.void,
+        });
+        next = session.sendTurn("next").pipe(
+          Effect.exit,
+          Effect.map((exit) => submitted.push(outcomeOf(exit))),
+        );
+        const turnId = yield* session.sendTurn("first");
+        wire.push({ type: "system", subtype: "init", uuid: "init-1", session_id: SESSION });
+        yield* wire.drain;
+        yield* session.steer({ id: STEER_ID, expectedTurnId: turnId, input: "second" });
+        wire.push({
+          type: "result",
+          subtype: "error_during_execution",
+          terminal_reason: "aborted_streaming",
+          uuid: "result-1",
+          session_id: SESSION,
+        });
+        yield* wire.drain;
+        yield* session.interrupt();
+        expect(seenAtCompletion).toEqual([["first", "second", "interrupt"]]);
+        expect(submitted).toEqual([[{ _tag: "AgentTurnBusyError", reason: null }]]);
+
+        wire.push({ type: "system", subtype: "init", uuid: "init-2", session_id: SESSION });
+        wire.push({ type: "result", subtype: "success", uuid: "result-2", session_id: SESSION });
+        yield* wire.drain;
+        expect(submitted).toEqual([
+          [{ _tag: "AgentTurnBusyError", reason: null }],
+          expect.any(String),
+        ]);
+        expect(wire.sent.map(frameName)).toEqual(["first", "second", "interrupt", "next"]);
+      }),
+    ),
+  );
+
+  it.effect("a Stop with a steer unanswered refuses the next turn until Claude answers it", () =>
+    Effect.gen(function* () {
+      const steps: ReadonlyArray<Step> = [
+        { send: "first" },
+        init("init-1"),
+        { steer: "second", id: STEER_ID },
+        { interrupt: true },
+        aborted("result-1"),
+        { trySend: "next" },
+        init("init-2"),
+        assistant("msg-2", "answer to second"),
+        result("result-2"),
+        { trySend: "next" },
+        { end: true },
+      ];
+      const run = yield* Effect.scoped(runSteps(steps));
+      const [first, , next] = startedTurnIds(run.events);
+      expect(run.outcomes.map((outcome) => outcome.result)).toEqual([
+        expect.objectContaining({ _tag: "TransportWritten" }),
+        [{ _tag: "AgentTurnBusyError", reason: null }],
+        next,
+      ]);
+      expect(completions(run)).toEqual([
+        expect.objectContaining({ providerTurnId: first, status: "interrupted" }),
+        expect.objectContaining({ providerTurnId: "harness:init-2", status: "completed" }),
+        expect.objectContaining({ providerTurnId: next, status: "failed" }),
+      ]);
+      yield* expectDeterministicReplay(steps);
+    }),
+  );
+
+  it.effect("a Stop with a steer unanswered ends its wait when Claude reports idle", () =>
+    Effect.gen(function* () {
+      const steps: ReadonlyArray<Step> = [
+        { send: "first" },
+        init("init-1"),
+        { steer: "second", id: STEER_ID },
+        { interrupt: true },
+        aborted("result-1"),
+        { trySend: "next" },
+        idle,
+        { trySend: "next" },
+        { end: true },
+      ];
+      const run = yield* Effect.scoped(runSteps(steps));
+      expect(run.outcomes.map((outcome) => outcome.result)).toEqual([
+        expect.objectContaining({ _tag: "TransportWritten" }),
+        [{ _tag: "AgentTurnBusyError", reason: null }],
+        startedTurnIds(run.events)[1],
+      ]);
+      expect(run.events.some((event) => event._tag === "harness-turn.started")).toBe(false);
+      yield* expectDeterministicReplay(steps);
+    }),
+  );
+
+  it.effect("idle while awaiting a continuation ends the turn with its last segment", () =>
+    Effect.gen(function* () {
+      const steps: ReadonlyArray<Step> = [
+        { send: "first" },
+        init("init-1"),
+        { steer: "second", id: STEER_ID },
+        result("result-1", usage(4, 2)),
+        idle,
+        { trySend: "next" },
+        { end: true },
+      ];
+      const run = yield* Effect.scoped(runSteps(steps));
+      const [first, next] = startedTurnIds(run.events);
+      expect(completions(run)).toEqual([
+        {
+          _tag: "turn.completed",
+          providerTurnId: first,
+          status: "completed",
+          usage: {
+            inputTokens: 4,
+            outputTokens: 2,
+            cachedInputTokens: 0,
+            totalTokens: 6,
+            contextWindow: null,
+          },
+          error: null,
+        },
+        expect.objectContaining({ providerTurnId: next, status: "failed" }),
+      ]);
+      expect(run.outcomes.at(-1)?.result).toEqual(next);
       yield* expectDeterministicReplay(steps);
     }),
   );

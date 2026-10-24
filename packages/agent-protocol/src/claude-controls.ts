@@ -121,8 +121,12 @@ export const makeClaudeControls = Effect.fnUntraced(function* (context: ClaudeCo
       request: { subtype: "interrupt" },
     };
     const control = yield* record(request.request_id, currentTurnId, "interrupt");
+    // Written before the fold: a Stop can complete the turn, and whatever that completion
+    // dispatches next must reach Claude after the interrupt, which names no turn. The fold
+    // happens even when the write fails, as a rehydrate folds the journaled interrupt.
+    const written = yield* Effect.exit(send(request));
     yield* fold({ _tag: "Control", control });
-    yield* send(request);
+    return yield* written;
   });
 
   // Only a journaled interrupt needs the lane: its record is asynchronous, and the line it
@@ -161,11 +165,14 @@ export const makeClaudeControls = Effect.fnUntraced(function* (context: ClaudeCo
     return yield* lane.withPermits(1)(
       Effect.gen(function* () {
         const turn = context.turn();
-        if (turn._tag === "Idle") {
+        if (turn._tag === "Idle" || turn._tag === "Draining") {
           return yield* refused(input, "no-active-turn", "Claude has no running turn.");
         }
         if (turn.turnId !== input.expectedTurnId) {
           return yield* refused(input, "target-changed", "Claude is running another turn.");
+        }
+        if (turn._tag === "Stopping") {
+          return yield* refused(input, "no-active-turn", "Claude's turn is being stopped.");
         }
         if (turn._tag !== "Running") {
           return yield* refused(
@@ -173,9 +180,6 @@ export const makeClaudeControls = Effect.fnUntraced(function* (context: ClaudeCo
             "in-continuation",
             "Claude has not yet continued after the last steer.",
           );
-        }
-        if (turn.interrupting) {
-          return yield* refused(input, "no-active-turn", "Claude's turn is being stopped.");
         }
         if (context.closed()) {
           return yield* undelivered("not-written", "The Claude session is closed.", null);

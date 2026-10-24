@@ -629,7 +629,9 @@ export const ClaudeAdapter: AgentAdapter = {
             if (subtype === "session_state_changed") {
               sessionState = stringField(value, "state");
               idleSinceTurn = sessionState === "idle";
-              return ready;
+              return idleSinceTurn
+                ? ready.pipe(Effect.andThen(fold({ _tag: "SessionIdle" })))
+                : ready;
             }
             if (subtype === "background_tasks_changed") {
               const listed = value["tasks"];
@@ -729,6 +731,11 @@ export const ClaudeAdapter: AgentAdapter = {
       // Not on the lane: the host's projection of a line can wait on a submission that sends a
       // turn (a harness turn's admission does), and the turn opens without awaiting anything.
       const sendTurn = Effect.fn("ClaudeAdapter.sendTurn")(function* (input: string) {
+        // Claude may still answer the steer a Stop left unconsumed: the turn waits for that
+        // answer's turn to end, or for Claude to report idle.
+        if (turns.turn._tag === "Draining") {
+          return yield* new AgentTurnBusyError({ providerTurnId: turns.turn.stoppedTurnId });
+        }
         const currentTurnId = activeTurnId();
         if (currentTurnId?.startsWith(CLAUDE_HARNESS_TURN_PREFIX) === true) {
           return yield* new AgentTurnBusyError({ providerTurnId: currentTurnId });
