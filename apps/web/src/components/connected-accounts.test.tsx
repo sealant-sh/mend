@@ -24,7 +24,6 @@ const account = (
   lastUsedAt: null,
 });
 
-/** The panel's text per provider row, as the page renders it from what Mend listed. */
 const rows = (accounts: ReadonlyArray<ConnectedAccountDto>) => {
   const queryClient = new QueryClient();
   const trpc = makeTrpcProxy(queryClient);

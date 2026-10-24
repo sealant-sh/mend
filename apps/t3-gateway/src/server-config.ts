@@ -208,11 +208,10 @@ const numberAt = (metadata: Readonly<Record<string, unknown>> | undefined, key: 
 };
 
 /**
- * A person's logins as their sessions will meet them (reviews R650-1 and R650-2): only the chosen
- * default account of each harness counts, as Mend's sessions select it; an active one observed
- * expired with its refresh failed or its refresh grant expired, or with its last refresh failed,
- * is `unsure`, with what was observed. Never "signed in" on a stored status alone when expiry or
- * a failed refresh says otherwise.
+ * A person's logins as their sessions will meet them (reviews R650-1 and R650-2): an active one
+ * observed expired with its refresh failed or its refresh grant expired, or with its last refresh
+ * failed, is `unsure`, with what was observed. Never "signed in" on a stored status alone when
+ * expiry or a failed refresh says otherwise.
  */
 export const loginsOf = (
   accounts: ReadonlyArray<MendConnectedAccount>,

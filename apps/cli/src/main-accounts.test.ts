@@ -24,7 +24,6 @@ const account = (
 
 type Account = ReturnType<typeof account>;
 
-/** A Mend that lists `accounts` and records every account `DELETE` it receives. */
 const startAccountsFake = (accounts: ReadonlyArray<Account>) => {
   const deleted: Array<string> = [];
   const fake = startFakeMend((request, response) => {

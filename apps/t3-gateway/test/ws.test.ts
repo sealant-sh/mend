@@ -248,7 +248,6 @@ describe("GET /ws", () => {
           "unauthenticated",
           "No Codex login chosen: Mend holds 1 of yours, and sessions use only the chosen one. Connect one with mend connect codex.",
         ]);
-        // The default is the one chosen, not the one named `default`.
         mend.setAccounts([
           { provider: "claude", status: "active" },
           { provider: "codex", status: "invalid", name: "default", isDefault: false },

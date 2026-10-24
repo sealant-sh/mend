@@ -115,7 +115,6 @@ export interface FakeAccount {
   readonly provider: string;
   readonly status: string;
   readonly name?: string;
-  /** Whether it is the person's chosen default; unset, an account given no name is. */
   readonly isDefault?: boolean;
   readonly metadata?: Readonly<Record<string, unknown>>;
 }

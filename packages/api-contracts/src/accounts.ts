@@ -44,7 +44,6 @@ export class ConnectAccountInput extends Schema.Class<ConnectAccountInput>("Conn
    * `~/.codex/auth.json`; a GitHub token (`gh auth token`).
    */
   secret: Schema.String.check(Schema.isNonEmpty()),
-  /** Account name under the provider. */
   name: Schema.optional(Schema.String),
 }) {}
 

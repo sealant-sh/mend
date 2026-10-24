@@ -36,7 +36,6 @@ const PERSON_LAYOUT = {
   acl: "supported",
 } as const;
 
-/** The connected accounts Core lists for every owner, as wire items. */
 let connectedAccounts: ReadonlyArray<Record<string, unknown>> = [];
 
 const wireAccount = (

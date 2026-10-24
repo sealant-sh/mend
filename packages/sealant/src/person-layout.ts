@@ -254,9 +254,8 @@ export class PersonLayoutPlatform extends Context.Service<
     /**
      * A person's own login for a provider, as Core says it stands (their chosen default
      * account): `active`, `invalid` (it needs reconnecting), `missing` (none, or none chosen), or
-     * `unknown` when Core
-     * could not be asked. What a steerer's turn is refused for at submit (docs/adr/0016, decision
-     * 6; ADR 0013): "Connect Claude to steer this session."
+     * `unknown` when Core could not be asked. What a steerer's turn is refused for at submit
+     * (docs/adr/0016, decision 6; ADR 0013): "Connect Claude to steer this session."
      */
     readonly loginOf: (
       accountId: string,

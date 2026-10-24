@@ -1,6 +1,5 @@
 import type { CredentialProvider } from "./connected-credential.ts";
 
-/** The fields of a connected account this choice reads, whichever surface decoded it. */
 export interface ProviderAccount {
   readonly provider: string;
   readonly isDefault: boolean;
@@ -9,14 +8,9 @@ export interface ProviderAccount {
 
 export type LoginChoice<A extends ProviderAccount> =
   | { readonly _tag: "chosen"; readonly account: A }
-  /** Accounts for the provider exist, and none is the default: sessions have no login to use. */
   | { readonly _tag: "unchosen"; readonly accounts: readonly [A, ...Array<A>] }
   | { readonly _tag: "none" };
 
-/**
- * Which of a person's connected accounts their sessions use for one provider: the one Core marks
- * as the person's chosen default (`isDefault`), never one picked by name or by list order.
- */
 export const loginChoiceOf = <A extends ProviderAccount>(
   accounts: ReadonlyArray<A>,
   provider: string,

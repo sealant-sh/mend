@@ -3553,10 +3553,6 @@ const connectPi = async (config: CliConfig, flags: ReadonlyArray<string>) => {
   );
 };
 
-/**
- * The account `mend connect <provider> --remove` disconnects: the chosen default, or the only one
- * held. With several and none chosen, which one is meant is not known, so nothing is removed.
- */
 const removableAccount = (
   provider: ConnectedAccountProvider,
   choice: LoginChoice<ConnectedAccountDto>,
