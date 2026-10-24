@@ -66,12 +66,11 @@ uses).
 
 ## Pair a t3code client
 
-The gateway speaks t3code's orchestration protocol 2, built against the t3code preview
-`v0.1.1-preview.20261017.3254`. Use a client of that preview; one of the previous pin,
-`v0.0.46-nightly.20261010.2922`, still pairs and works. A protocol-1 client, such as the stable
-`v0.0.45`, is refused when it connects. A later nightly that still speaks protocol 2 may have
-changed what it sends: the gateway follows newer clients only when its pinned contracts are moved to
-them, deliberately.
+The gateway speaks t3code's orchestration protocol 2, built against the t3code release `v0.1.2`. Use
+a client of that release. A client of the previous pin, `v0.1.1-preview.20261017.3254`, speaks the
+same protocol 2. A protocol-1 client, such as the stable `v0.0.45`, is refused when it connects. A
+later nightly that still speaks protocol 2 may have changed what it sends: the gateway follows newer
+clients only when its pinned contracts are moved to them, deliberately.
 
 1. Run `mend pair`. It prints a pairing code, good for one device for ten minutes, and the gateway's
    address:

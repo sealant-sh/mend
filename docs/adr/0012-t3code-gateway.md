@@ -84,8 +84,8 @@ moves.
 
 `packages/t3-contracts` (`@mend/t3-contracts`) is a verbatim, MIT-attributed copy of
 `t3:packages/contracts/src` (99 files, depends on `effect` only), plus t3code's default keybindings.
-A copy script writes it from a pinned nightly tag and records the tag and SHA. It is never edited by
-hand. The first pin was `v0.0.46-nightly.20261003.2623`; the current one is in
+A copy script writes it from a pinned tag and records the tag and SHA. It is never edited by hand.
+The first pin was `v0.0.46-nightly.20261003.2623`; the current one is in
 `packages/t3-contracts/t3code.pin.json`.
 
 ### Concepts
@@ -286,6 +286,10 @@ its own pull request.
   folded its administrative scopes into the standard client grant; the gateway's grant does not
   change. Its 11 new RPCs and the thread transcript route are registered, and the vendored client
   state now brings the `@t3tools/shared` files it imports, under `t3-shared/`.
+- 2026-10-24: the pin moves to the release `v0.1.2` (044f07257c96). The orchestration protocol is
+  still 2. t3code removed the four `peerLinks.*` RPCs and added `pullRequests.changeBreakdown`,
+  `device.easAccount` and `projects.listIgnoredFiles`. `docs/t3code-support-matrix.md` grades the
+  gateway against it.
 - 2026-10-11: the gateway follows the web port's exposure instead of loopback only, which needed a
   tunnel per client (owner's call). Private installs publish it on the web port's address; behind
   the edge it is served on a host of its own, since t3code forces a server's base path to `/`.

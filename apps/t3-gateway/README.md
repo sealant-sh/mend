@@ -7,8 +7,9 @@ token of the person who paired. Mend stays the only source of truth and its acce
 unchanged.
 
 It runs on Effect `4.0.5` from the `t3` catalog and speaks t3code's contracts from
-`@mend/t3-contracts`, pinned to one t3code nightly or preview tag. It does not import
-`@mend/api-contracts`: it decodes only the Mend fields it reads.
+`@mend/t3-contracts`, pinned to one t3code tag (`v0.1.2` today,
+`packages/t3-contracts/t3code.pin.json`). It does not import `@mend/api-contracts`: it decodes only
+the Mend fields it reads.
 
 ## Phase 0: HTTP
 

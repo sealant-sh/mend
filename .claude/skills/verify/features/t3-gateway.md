@@ -120,7 +120,7 @@ a checkout beside a Mend server.
   `http://127.0.0.1:3101`, Mend's API), `MEND_T3_GATEWAY_HOST` (`127.0.0.1`), `MEND_T3_GATEWAY_PORT`
   (`3120`), `MEND_T3_GATEWAY_STATE_PATH` (`$XDG_STATE_HOME/mend/t3-gateway/state.sqlite`),
   `MEND_T3_GATEWAY_LABEL` (`Mend`) (`apps/t3-gateway/src/config.ts`).
-- t3code clients (desktop, mobile, web): a client of the pinned tag `v0.1.1-preview.20261017.3254`
+- t3code clients (desktop, mobile, web): a client of the pinned tag `v0.1.2`
   (`packages/t3-contracts/t3code.pin.json`). Add a remote environment with the gateway's host and a
   Mend pairing code, or paste `http://<gateway>/pair#token=<code>` into t3code's pairing input. The
   URL is pairing input for t3code; the gateway serves no `/pair` page.
