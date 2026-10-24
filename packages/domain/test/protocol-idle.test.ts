@@ -128,6 +128,17 @@ describe("protocolIdleReading", () => {
     ).toEqual({ kind: "held", by: "capture" });
   });
 
+  it("never makes a session due while an older terminal agent is still live beside the protocol agent", () => {
+    // The stop is session-wide: it would end the terminal agent with the idle protocol one.
+    const facts = idleFacts({
+      processes: [
+        process("agent-pty", true, { id: "pty-1", createdAt: at(0) }),
+        process("agent-protocol", true, { id: "protocol-1", createdAt: at(1) }),
+      ],
+    });
+    expect(protocolIdleStopDue(protocolIdleReading(facts), at(60).getTime(), 15)).toBe(false);
+  });
+
   it("stops nothing but a live protocol agent of an unsettled session", () => {
     expect(protocolIdleReading(idleFacts({ processes: [process("agent-pty", true)] }))).toEqual({
       kind: "not-protocol",
