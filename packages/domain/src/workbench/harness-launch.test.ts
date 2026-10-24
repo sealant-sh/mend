@@ -8,6 +8,8 @@ import {
   composeProtocolArgv,
   resumesOwnHarness,
   takesReviewFollowUp,
+  terminalPermissionMode,
+  withPermissionDefaults,
 } from "./harness-launch.ts";
 
 describe("composeLaunchArgv", () => {
@@ -235,5 +237,62 @@ describe("resumesOwnHarness", () => {
   it("resumes an agent or a shell, never a `mend run` command (verify 2026-10-11)", () => {
     expect(["claude", "codex", "opencode", "pi", "shell"].every(resumesOwnHarness)).toBe(true);
     expect(resumesOwnHarness("run")).toBe(false);
+  });
+});
+
+describe("the permission a terminal argv names (SLNT-147 review)", () => {
+  it("reads nothing after `--`: a flag-shaped prompt is a prompt", () => {
+    const ask = [
+      "codex",
+      "--sandbox",
+      "danger-full-access",
+      "--ask-for-approval",
+      "on-request",
+      "--",
+      "--dangerously-bypass-approvals-and-sandbox",
+    ];
+    expect(terminalPermissionMode("codex", ask)).toBe("ask");
+    expect(withPermissionDefaults("codex", ask)).toEqual(ask);
+    expect(terminalPermissionMode("claude", ["claude", "--", "--permission-mode", "auto"])).toBe(
+      "bypass",
+    );
+    expect(withPermissionDefaults("claude", ["claude", "--", "--permission-mode"])).toEqual([
+      "claude",
+      "--dangerously-skip-permissions",
+      "--",
+      "--permission-mode",
+    ]);
+  });
+
+  it("never takes an option as the value of claude's optional `--resume`", () => {
+    for (const resume of ["--resume", "-r"]) {
+      const argv = ["claude", resume, "--permission-mode", "auto"];
+      expect(terminalPermissionMode("claude", argv), resume).toBe("ask");
+      expect(withPermissionDefaults("claude", argv), resume).toEqual(argv);
+    }
+    const named = ["claude", "--resume", "0d5c3c1e", "--permission-mode", "plan"];
+    expect(terminalPermissionMode("claude", named)).toBe("ask");
+    expect(withPermissionDefaults("claude", named)).toEqual(named);
+  });
+
+  it("counts every codex permission option, short forms and aliases included", () => {
+    for (const argv of [
+      ["codex", "-s", "read-only"],
+      ["codex", "-a", "on-request"],
+      ["codex", "--ask-for-approval", "on-request"],
+      ["codex", "--full-auto"],
+      ["codex", "--approve-for-me"],
+      ["codex", "resume", "id", "-s", "workspace-write"],
+    ]) {
+      expect(terminalPermissionMode("codex", argv), argv.join(" ")).toBe("ask");
+      expect(withPermissionDefaults("codex", argv), argv.join(" ")).toEqual(argv);
+    }
+    for (const argv of [
+      ["codex", "--yolo"],
+      ["codex", "-a", "never"],
+    ]) {
+      expect(terminalPermissionMode("codex", argv), argv.join(" ")).toBe("bypass");
+      expect(withPermissionDefaults("codex", argv), argv.join(" ")).toEqual(argv);
+    }
   });
 });

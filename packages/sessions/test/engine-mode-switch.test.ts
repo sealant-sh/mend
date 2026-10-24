@@ -413,3 +413,119 @@ describe("a Resume keeps the session's permission mode (SLNT-147)", () => {
     30_000,
   );
 });
+
+const providerSessionId = "0d5c3c1e-7a51-4f0e-9c69-6a1d2b7e4f10";
+
+describe("a mode switch to the terminal takes the permission mode it names (SLNT-147 review)", () => {
+  it.each([
+    ["ask", "bypass"],
+    ["bypass", "ask"],
+  ] as const)(
+    "a claude conversation on %s switched to the terminal with %s runs it",
+    async (ran, requested) => {
+      const created: CreateOptions[] = [];
+      const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+      const spawned: Array<ReadonlyArray<string>> = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              start: { kind: "base", base: null },
+            });
+            yield* engine.launchProtocol(
+              session.id,
+              { mode: "protocol", prompt: "say hi", permissionMode: ran },
+              "user-fixture",
+            );
+            const conversation = attached.at(-1)?.process;
+            if (conversation === undefined) return yield* Effect.die("no conversation");
+            world.processes.set(
+              conversation.id,
+              new SessionProcess({ ...conversation, providerSessionId }),
+            );
+            const stateDir = sessionStatePathOf(project.storePath, session.id);
+            fs.mkdirSync(stateDir, { recursive: true });
+            fs.writeFileSync(
+              path.join(stateDir, "manifest.json"),
+              JSON.stringify({
+                harness: "claude",
+                providerSessionId,
+                capturedAt: new Date().toISOString(),
+              }),
+            );
+            yield* engine.switchMode(
+              session.id,
+              "pty",
+              { mode: "pty", permissionMode: requested },
+              null,
+            );
+          }),
+        {
+          sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned),
+          protocolHostLayer: recordingProtocolHostLayer(attached, []),
+        },
+      );
+      const terminal = ranFrom(spawned, "claude");
+      if (requested === "bypass") {
+        expect(terminal).toContain("--dangerously-skip-permissions");
+        expect(terminal).not.toContain("--permission-mode");
+      } else {
+        expect(terminal).not.toContain("--dangerously-skip-permissions");
+        expect(terminal.join(" ")).toContain(askFlags("claude").join(" "));
+      }
+    },
+    30_000,
+  );
+});
+
+describe("a Resume on the same harness keeps the permission the terminal ran with (SLNT-147 review)", () => {
+  it.each<readonly ["claude" | "codex", ReadonlyArray<string>]>([
+    ["claude", ["--permission-mode", "plan"]],
+    ["codex", ["--sandbox", "read-only", "-a", "never"]],
+  ])(
+    "a stopped %s terminal launched with %j resumes with it",
+    async (harness, permission) => {
+      const created: CreateOptions[] = [];
+      const spawned: Array<ReadonlyArray<string>> = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness,
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              start: { kind: "base", base: null },
+            });
+            yield* engine.launch(session.id, [harness, ...permission]);
+            const stateDir = sessionStatePathOf(project.storePath, session.id);
+            fs.mkdirSync(stateDir, { recursive: true });
+            fs.writeFileSync(
+              path.join(stateDir, "manifest.json"),
+              JSON.stringify({ harness, providerSessionId, capturedAt: new Date().toISOString() }),
+            );
+            fs.writeFileSync(path.join(stateDir, "harness-state.tar.gz"), "fake-archive");
+            stopped(world, session.id);
+            yield* engine.resumeSession(session.id, null);
+          }),
+        { sealantLayer: resumingLayer(created, spawned) },
+      );
+      const ran = ranFrom(spawned, harness);
+      expect(ran.join(" ")).toContain(providerSessionId);
+      expect(ran.join(" ")).toContain(permission.join(" "));
+      const composedAsk = askFlags(harness).filter((token) => !permission.includes(token));
+      for (const token of [...BYPASS_FLAGS, ...composedAsk]) expect(ran).not.toContain(token);
+    },
+    30_000,
+  );
+});
