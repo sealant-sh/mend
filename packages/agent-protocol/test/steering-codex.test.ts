@@ -113,7 +113,6 @@ describe("Codex steering, recorded (fixtures/steering/codex_transcript.ndjson)",
   );
 });
 
-/** A Codex peer with one running turn, `turn-1`, whose `turn/steer` answer each test chooses. */
 const startCodex = Effect.fn("test.startCodex")(function* (
   answerSteer: (id: unknown, push: (value: unknown) => void) => void,
 ) {

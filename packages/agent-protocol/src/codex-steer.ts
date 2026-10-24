@@ -7,19 +7,16 @@ import {
   type AgentSteerInput,
 } from "./types.ts";
 
-/** Codex answered a request with a JSON-RPC error object. */
 export class CodexRpcRejected extends Data.TaggedError("CodexRpcRejected")<{
   readonly code: number | null;
   readonly message: string;
   readonly error: Readonly<Record<string, unknown>>;
 }> {}
 
-/** The request never left: the pipe was already known dead. */
 export class CodexRpcNotSent extends Data.TaggedError("CodexRpcNotSent")<{
   readonly error: AgentProtocolError;
 }> {}
 
-/** The request may have left, and no answer came: a failed write, a dead pipe, or the timeout. */
 export class CodexRpcUnanswered extends Data.TaggedError("CodexRpcUnanswered")<{
   readonly error: AgentProtocolError;
 }> {}
@@ -46,11 +43,6 @@ const STEER_TARGET_CHANGED = /^expected active turn id `(.+)` but found `(.+)`$/
 const INVALID_REQUEST = -32600;
 const METHOD_NOT_FOUND = -32601;
 
-/**
- * What a `turn/steer` error says, when it says something Mend knows: a refusal means Codex did
- * not submit the input. Anything else (another code, other words, a mismatch about a turn this
- * request did not name) is not known to be a refusal.
- */
 const steerRefusal = (
   rejected: CodexRpcRejected,
   expectedTurnId: string,
@@ -84,7 +76,6 @@ export const undelivered = (
   cause: unknown,
 ) => new AgentSteerDeliveryError({ adapter: "codex", certainty, message, cause });
 
-/** A failed `turn/steer` call: a refusal when Codex said so, otherwise whether it was written. */
 export const steerFailure = (
   input: AgentSteerInput,
   failure: CodexRpcFailure,

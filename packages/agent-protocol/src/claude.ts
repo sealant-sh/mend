@@ -46,7 +46,6 @@ interface PendingControl {
   readonly input: JsonObject;
   readonly suggestions: ReadonlyArray<unknown>;
   readonly kind: "approval" | "input";
-  /** Asked by a sub-agent (`agent_id`), whose work a steer does not abort. */
   readonly subAgent: boolean;
 }
 
@@ -175,7 +174,6 @@ const controlResponse = (requestId: string, response: JsonObject): ClaudeControl
   response: { subtype: "success", request_id: requestId, response },
 });
 
-/** A result line's turn status: an abort is an interruption even when Claude says `success`. */
 const resultStatus = (message: JsonObject): ClaudeTurnStatus => {
   const terminalReason = stringField(message, "terminal_reason");
   if (terminalReason === "aborted_tools" || terminalReason === "aborted_streaming") {
@@ -202,9 +200,6 @@ export const ClaudeAdapter: AgentAdapter = {
       const sessionId = options.providerSessionId ?? crypto.randomUUID();
       const rehydrate = options.rehydrate;
       const journal = options.controlJournal;
-      // Rehydrate correlation: claude turn ids are client-minted, so replayed
-      // output is attributed to the dispatched turns in order — each replayed
-      // final `result` advances the queue exactly where sendTurn would have minted.
       let turns = initialClaudeTurns(rehydrate?.replayProviderTurnIds ?? []);
       const activeTurnId = (): string | null => claudeTurnId(turns.turn);
       // Anthropic streaming resets content-block indexes to 0 on every message_start, and one
@@ -434,8 +429,6 @@ export const ClaudeAdapter: AgentAdapter = {
               reason,
             });
           }
-          // The steer aborted the main thread's step, and with it the tool asking. Claude is told
-          // so (no interrupt: the continuation runs), in case it still waits on the answer.
           case "SegmentClosed":
             return Effect.forEach(
               [...pending].filter(
@@ -493,8 +486,7 @@ export const ClaudeAdapter: AgentAdapter = {
        * Claude announces every turn with a `system init` line. One that arrives while no turn is
        * open is a turn Claude started on its own — after a background task or workflow ended, it
        * reads the notification and answers it. Its id comes from the line, so a replay of the
-       * same output opens the same turn. One after a steer closed a segment is that turn's
-       * continuation.
+       * same output opens the same turn.
        */
       const handleInit = (message: JsonObject): Effect.Effect<void> => {
         idleSinceTurn = false;
@@ -746,11 +738,7 @@ export const ClaudeAdapter: AgentAdapter = {
         ...(steer === undefined ? {} : { priority: "now", uuid: steer.uuid }),
       });
 
-      // Not on the lane: the host's projection of a line can wait on a submission that sends a
-      // turn (a harness turn's admission does), and the turn opens without awaiting anything.
       const sendTurn = Effect.fn("ClaudeAdapter.sendTurn")(function* (input: string) {
-        // Claude may still answer the steer a Stop left unconsumed: the turn waits for that
-        // answer's turn to end, or for Claude to report idle.
         if (turns.turn._tag === "Draining") {
           return yield* new AgentTurnBusyError({ providerTurnId: turns.turn.stoppedTurnId });
         }

@@ -25,12 +25,10 @@ import {
 const SESSION = "05f72f7d-81d5-4db9-a3cf-234191cf79f9";
 const STEER_ID = "6f1d2c3b-9a8e-4f70-8d61-5c4b3a291807";
 
-/** One step of a Claude scenario: a line Claude prints, or a call Mend makes. */
 type Step =
   | { readonly line: JsonObject }
   | { readonly text: string }
   | { readonly send: string }
-  /** A turn the host may be refused: its outcome is kept. */
   | { readonly trySend: string }
   | { readonly steer: string; readonly id: string; readonly target?: string }
   | { readonly interrupt: true }
@@ -48,7 +46,6 @@ const memoryJournal = (recorded: ReadonlyArray<AgentControlCheckpoint> = []) => 
   return { records, journal };
 };
 
-/** What a caller sees of a steer or respond: its value, or its error's tag and reason. */
 const outcomeOf = (exit: Exit.Exit<unknown, unknown>): unknown =>
   Exit.isSuccess(exit)
     ? exit.value
@@ -68,10 +65,6 @@ const startedTurnIds = (events: ReadonlyArray<AgentEvent>): ReadonlyArray<string
       : [],
   );
 
-/**
- * Run steps on one adapter. Steers aim at the last turn opened (or `target`). Output lines are
- * pushed one per chunk and drained, so each step happens after the previous one is reduced.
- */
 const runSteps = Effect.fn("test.runSteps")(function* (
   steps: ReadonlyArray<Step>,
   options: {
@@ -149,12 +142,6 @@ const runSteps = Effect.fn("test.runSteps")(function* (
 
 type Run = Effect.Success<ReturnType<typeof runSteps>>;
 
-/**
- * Events as the host keeps them, with turn ids named by the order turns started. Start
- * announcements are left out: a rehydrate takes turns the host already knows from its replay
- * queue and announces none of them again. So are the requests `settled` names: the host resolved
- * them before a restart, and a rehydrate skips them.
- */
 const projection = (
   run: Pick<Run, "events" | "outcomes">,
   replayed: ReadonlyArray<string> = [],
@@ -179,10 +166,6 @@ const projection = (
   return { events: named(kept), outcomes: named(run.outcomes) };
 };
 
-/**
- * Mend restarts after `cut` steps: a second adapter replays everything the first one read,
- * chunked as given, with the first one's journal, then takes the remaining steps live.
- */
 const runCrashed = Effect.fn("test.runCrashed")(function* (
   steps: ReadonlyArray<Step>,
   cut: number,
@@ -215,10 +198,6 @@ const runCrashed = Effect.fn("test.runCrashed")(function* (
   };
 });
 
-/**
- * Every crash point and chunking replays to what the uninterrupted run showed, writes nothing to
- * stdin while replaying, and journals only the controls made after the restart.
- */
 const expectDeterministicReplay = (steps: ReadonlyArray<Step>) =>
   Effect.gen(function* () {
     const uninterrupted = yield* Effect.scoped(runSteps(steps));
@@ -931,8 +910,6 @@ describe("Claude steering, synthetic", () => {
         { end: true },
       ];
       const run = yield* Effect.scoped(runSteps(steps));
-      // The parser reports the first segment as { input: null, output: 4, cached: 0, total: 4 },
-      // its total counting only the counters present, and the second as { 3, 6, 0, 9 }.
       expect(completions(run)[0]).toMatchObject({
         usage: {
           inputTokens: null,
@@ -1000,10 +977,6 @@ describe("Claude steering, synthetic", () => {
     }),
   );
 
-  /**
-   * The caller of a steer or Stop is interrupted while the journal holds a record it already
-   * persisted. Live and a rehydrate from the journal must still fold the same turns.
-   */
   const cancelledWhileRecording = (
     control: "steer-now" | "interrupt",
     journalBlocks: "interruptibly" | "uninterruptibly",

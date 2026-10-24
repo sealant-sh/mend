@@ -716,11 +716,6 @@ export const CodexAdapter: AgentAdapter = {
         yield* request("turn/interrupt", { threadId, turnId: currentTurnId });
       });
 
-      /**
-       * `turn/steer` on the turn the caller names. The local checks only spare a round trip;
-       * Codex's own `expectedTurnId` precondition decides. The reply never moves `currentTurnId`:
-       * it can arrive after the turn completed.
-       */
       const steer = Effect.fn("CodexAdapter.steer")(function* (input: AgentSteerInput) {
         if (currentTurnId === null) {
           return yield* refused(input, "no-active-turn", null, "Codex has no running turn.");

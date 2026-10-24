@@ -20,14 +20,12 @@ const decodeFrame = (bytes: Uint8Array): JsonObject => {
   return value;
 };
 
-/** One recorded step: a frame the harness wrote, or one the client wrote. */
 export interface TranscriptStep {
   readonly type: "emit_inbound" | "expect_outbound";
   readonly label: string;
   readonly frame: JsonObject;
 }
 
-/** The vendored recording's steps, in recorded order (fixtures/steering/README.md). */
 export const readTranscript = (name: string): ReadonlyArray<TranscriptStep> =>
   fs
     .readFileSync(new URL(`./fixtures/steering/${name}`, import.meta.url), "utf8")
@@ -43,10 +41,6 @@ export const readTranscript = (name: string): ReadonlyArray<TranscriptStep> =>
       return [{ type, label: typeof label === "string" ? label : "", frame }];
     });
 
-/**
- * A byte transport the test feeds. `drain` waits until the adapter has handled every chunk that
- * ended on a line boundary: it acknowledges output only there, after projecting the lines.
- */
 export const makeWire = Effect.fn("test.makeWire")(function* (
   onSend: (frame: JsonObject) => void = () => undefined,
 ) {
@@ -96,7 +90,6 @@ const chunksOf =
     return chunks;
   };
 
-/** Byte chunkings a rehydrate may receive the same recorded output in. */
 export const CHUNKINGS = {
   whole: (bytes: Uint8Array): ReadonlyArray<Uint8Array> => [bytes],
   lines: (bytes: Uint8Array): ReadonlyArray<Uint8Array> => {
@@ -129,11 +122,6 @@ export const concatBytes = (chunks: ReadonlyArray<Uint8Array>): Uint8Array => {
   return bytes;
 };
 
-/**
- * Plays a recording against a live adapter: each frame the adapter writes is matched with the
- * next recorded outbound frame, then the recorded inbound frames up to the next outbound one are
- * emitted. Recorded JSON-RPC ids are mapped onto the ids the adapter chose.
- */
 export const makeRecordingPeer = (
   steps: ReadonlyArray<TranscriptStep>,
   options: {

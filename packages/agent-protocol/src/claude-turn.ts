@@ -6,16 +6,11 @@ import type { AgentControlCheckpoint } from "./types.ts";
  * Claude's logical turn: one Mend turn (or one Claude opened itself) across every result Claude
  * prints for it. A `priority: "now"` steer makes Claude end the running segment with a result and
  * open a continuation with a fresh `system init`; both stay inside the turn Mend sent.
- *
- * `foldClaudeTurn` is the only writer of this state and does no I/O, so the live adapter and a
- * rehydrate that replays the same lines and the same journaled controls reach the same state.
  */
 
 export type ClaudeTurnStatus = "completed" | "interrupted" | "failed";
 
-/** One result Claude printed inside a logical turn. */
 export interface ClaudeSegment {
-  /** The result line's `uuid`: a result seen twice is one segment, and its repeat ends nothing. */
   readonly resultId: string | null;
   readonly usage: AgentTurnUsage | null;
   readonly status: ClaudeTurnStatus;
@@ -29,42 +24,32 @@ export type ClaudeTurnState =
       readonly turnId: string;
       readonly segments: ReadonlyArray<ClaudeSegment>;
     }
-  /** A person's interrupt was written: the next result ends the turn, and nothing steers it. */
   | {
       readonly _tag: "Stopping";
       readonly turnId: string;
       readonly segments: ReadonlyArray<ClaudeSegment>;
-      /** A written steer the Stop did not consume: Claude may still answer it after the turn. */
       readonly steerId: string | null;
     }
-  /** A steer was journaled: the next result closes a segment instead of the turn. */
   | {
       readonly _tag: "SteerArmed";
       readonly turnId: string;
       readonly controlId: string;
       readonly segments: ReadonlyArray<ClaudeSegment>;
     }
-  /** A segment closed for a steer; the next `system init` opens its continuation. */
   | {
       readonly _tag: "AwaitingContinuation";
       readonly turnId: string;
       readonly controlId: string;
       readonly segments: ReadonlyArray<ClaudeSegment>;
     }
-  /**
-   * A Stop ended the turn while Claude may still answer a steer it was written: no turn is open,
-   * and none is sent until Claude opens one for the steer or reports idle.
-   */
   | { readonly _tag: "Draining"; readonly stoppedTurnId: string };
 
 export interface ClaudeTurns {
   readonly turn: ClaudeTurnState;
-  /** Rehydrate: turns already started, in order, that later final results complete. */
   readonly replayQueue: ReadonlyArray<string>;
 }
 
 export type ClaudeTurnInput =
-  /** A `system init`; `harnessTurnId` names the turn it opens when none is open. */
   | { readonly _tag: "Init"; readonly harnessTurnId: string | null }
   | {
       readonly _tag: "Result";
@@ -74,10 +59,8 @@ export type ClaudeTurnInput =
       readonly error: string | null;
     }
   | { readonly _tag: "OutputEnded" }
-  /** Claude's `session_state_changed: idle`: it runs nothing and has nothing queued. */
   | { readonly _tag: "SessionIdle" }
   | { readonly _tag: "TurnSent"; readonly turnId: string }
-  /** The turn's user frame failed to write: the turn never ran, unless output says it did. */
   | { readonly _tag: "TurnNotSent"; readonly turnId: string }
   | { readonly _tag: "Control"; readonly control: AgentControlCheckpoint };
 
@@ -87,7 +70,6 @@ export type ClaudeTurnEffect =
       readonly turnId: string;
       readonly cause: "sent" | "harness" | "replay";
     }
-  /** A steer closed a segment: requests it held will not be answered. */
   | { readonly _tag: "SegmentClosed"; readonly turnId: string }
   | {
       readonly _tag: "TurnCompleted";
@@ -127,11 +109,6 @@ const COUNTERS: ReadonlyArray<Counter> = [
   "totalTokens",
 ];
 
-/**
- * A logical turn's usage: each additive counter summed over its segments, unknown when any
- * segment lacks it (a known subtotal is not a total); the context window is a capacity, so the
- * last one known.
- */
 export const claudeTurnUsage = (segments: ReadonlyArray<ClaudeSegment>): AgentTurnUsage | null => {
   if (segments.length === 0) return null;
   const counter = (key: Counter): number | null =>
@@ -153,10 +130,6 @@ export const claudeTurnUsage = (segments: ReadonlyArray<ClaudeSegment>): AgentTu
   return COUNTERS.every((key) => usage[key] === null) && contextWindow === null ? null : usage;
 };
 
-/**
- * End the logical turn once, then open the next one a rehydrate already knows started, or drain
- * a steer Claude may still answer.
- */
 const complete = (
   state: ClaudeTurns,
   turnId: string,
@@ -219,8 +192,6 @@ const foldControl = (state: ClaudeTurns, control: AgentControlCheckpoint): Claud
         : unchanged(state);
     case "interrupt":
       switch (turn._tag) {
-        // A person's Stop wins over a steer: the segment it ends is the turn's last, and a gap
-        // between segments ends now rather than waiting for a continuation the Stop cancels.
         case "AwaitingContinuation":
           return complete(state, turn.turnId, turn.segments, "interrupted", null, true);
         case "Running":
@@ -319,8 +290,6 @@ export const foldClaudeTurn = (state: ClaudeTurns, input: ClaudeTurnInput): Clau
       if (turn._tag === "Draining")
         return { state: { ...state, turn: { _tag: "Idle" } }, effects: [] };
       if (turn._tag !== "AwaitingContinuation") return unchanged(state);
-      // Claude went idle without continuing: the steer never reached it, or it took the words
-      // into the segment that just ended. That segment was the turn's last.
       const last = turn.segments.at(-1);
       return complete(
         state,

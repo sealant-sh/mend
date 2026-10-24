@@ -12,13 +12,6 @@ import {
   type AgentSteerInput,
 } from "./types.ts";
 
-/**
- * Claude's steers and Stops, placed in its output. Each control is journaled with the number of
- * output lines reduced before it, and a rehydrate folds the recorded ones after the same lines,
- * so a replayed turn folds as the live one did whatever the chunking. A lane orders a control's
- * record, fold and write against line reduction.
- */
-
 export interface ClaudeControlsContext {
   readonly journal: AgentControlJournal | undefined;
   readonly turn: () => ClaudeTurnState;
@@ -31,11 +24,8 @@ export interface ClaudeControlsContext {
 }
 
 export interface ClaudeControls {
-  /** Fold the recorded controls due before any output line. */
   readonly replayDue: Effect.Effect<void>;
-  /** Reduce one output line on the lane, then fold the recorded controls due after it. */
   readonly line: (reduce: Effect.Effect<void>) => Effect.Effect<void>;
-  /** Run reduction that is not a line (the end of output) on the lane. */
   readonly exclusive: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E>;
   readonly steer: (
     input: AgentSteerInput,
@@ -76,9 +66,7 @@ export const makeClaudeControls = Effect.fnUntraced(function* (context: ClaudeCo
     });
   });
 
-  // The lane is taken per line, not per chunk: a control waits for at most one line's
-  // projection, and positions count lines either way. The yield lets a waiting control in
-  // before the next line takes the lane back.
+  // The yield lets a waiting control in before the next line takes the lane back.
   const line = (reduce: Effect.Effect<void>): Effect.Effect<void> =>
     lane
       .withPermits(1)(
@@ -93,7 +81,6 @@ export const makeClaudeControls = Effect.fnUntraced(function* (context: ClaudeCo
       )
       .pipe(Effect.andThen(journal === undefined ? Effect.void : Effect.yieldNow));
 
-  /** Journal a control before it changes the turn or reaches the wire. */
   const record = (
     controlId: string,
     providerTurnId: string,
@@ -122,17 +109,11 @@ export const makeClaudeControls = Effect.fnUntraced(function* (context: ClaudeCo
       request: { subtype: "interrupt" },
     };
     const control = yield* record(request.request_id, currentTurnId, "interrupt");
-    // Written before the fold: a Stop can complete the turn, and whatever that completion
-    // dispatches next must reach Claude after the interrupt, which names no turn. The fold
-    // happens even when the write fails, as a rehydrate folds the journaled interrupt.
     const written = yield* Effect.exit(send(request));
     yield* fold({ _tag: "Control", control });
     return yield* written;
   });
 
-  // Only a journaled interrupt needs the lane, and to finish once journaled: its record is
-  // asynchronous, and a rehydrate folds it after the line it names. Without a journal nothing is
-  // replayed, and a Stop never waits behind a line's projection.
   const interrupt = Effect.fn("ClaudeAdapter.interrupt")(function* () {
     yield* journal === undefined
       ? interruptNow
@@ -165,8 +146,6 @@ export const makeClaudeControls = Effect.fnUntraced(function* (context: ClaudeCo
         "Claude is steered only with a control journal to replay it from.",
       );
     }
-    // A journaled control is folded and written, or rolled back, before the lane is released,
-    // whatever happens to its caller: otherwise a rehydrate folds a control live never did.
     return yield* lane.withPermits(1)(
       Effect.uninterruptible(
         Effect.gen(function* () {
@@ -194,8 +173,6 @@ export const makeClaudeControls = Effect.fnUntraced(function* (context: ClaudeCo
             Effect.mapError((error) => undelivered("not-written", error.message, error)),
           );
           yield* fold({ _tag: "Control", control: armed });
-          // Closed while the journal was writing: nothing is sent, and the journal says so, so
-          // a rehydrate disarms at the same line.
           if (context.closed()) {
             const disarmed = yield* record(input.id, turn.turnId, "not-written").pipe(
               Effect.option,

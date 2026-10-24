@@ -21,7 +21,6 @@ export class AgentTurnBusyError extends Schema.TaggedError<AgentTurnBusyError>()
   { providerTurnId: Schema.String },
 ) {}
 
-/** Words for the running turn, delivered into it without starting another. */
 export interface AgentSteerInput {
   /** Mend's steer id; Claude puts it on the wire as `uuid`. */
   readonly id: string;
