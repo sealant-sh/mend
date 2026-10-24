@@ -1,3 +1,6 @@
+import { createServer } from "node:http";
+
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { AuthSessionId, EnvironmentId } from "@mend/t3-contracts";
 import { Clock, Context, Effect, Layer, Logger, Tracer } from "effect";
 import { HttpClient, HttpClientResponse, HttpRouter, HttpServer } from "effect/http";
@@ -30,7 +33,7 @@ interface RawFixture {
   cancelled?: boolean;
 }
 
-/** Real grants, auth, SQLite, Mend HTTP decoding and asset HTTP responses without listening sockets. */
+/** Real grants, auth, SQLite, Mend HTTP decoding and asset HTTP responses, served in memory and on Node. */
 export const withAssetHarness = <A, E, R>(
   test: (fixture: AssetHarness, logs: string[]) => Effect.Effect<A, E, R>,
 ) =>
@@ -177,19 +180,25 @@ export const withAssetHarness = <A, E, R>(
         ),
       );
       const urls = Context.get(services, AssetUrls);
-      const app = HttpRouter.toWebHandler(
-        Layer.mergeAll(AssetRouteLive, GatewayCorsLive).pipe(
-          Layer.provide(Layer.succeedContext(services)),
-          Layer.provideMerge(AssetTracingDisabledLive),
-          Layer.provideMerge(Layer.succeed(Tracer.Tracer, tracer)),
-          Layer.provide(HttpServer.layerServices),
-          Layer.provide(Layer.succeed(Clock.Clock, clock)),
-          Layer.provideMerge(
-            Logger.layer([
-              Logger.make((options) => logs.push(String(Logger.formatJson.log(options)))),
-            ]),
-          ),
+      const routes = Layer.mergeAll(AssetRouteLive, GatewayCorsLive).pipe(
+        Layer.provide(Layer.succeedContext(services)),
+        Layer.provideMerge(AssetTracingDisabledLive),
+        Layer.provideMerge(Layer.succeed(Tracer.Tracer, tracer)),
+        Layer.provide(Layer.succeed(Clock.Clock, clock)),
+        Layer.provideMerge(
+          Logger.layer([
+            Logger.make((options) => logs.push(String(Logger.formatJson.log(options)))),
+          ]),
         ),
+      );
+      const app = HttpRouter.toWebHandler(routes.pipe(Layer.provide(HttpServer.layerServices)));
+      const served = yield* Layer.build(
+        HttpRouter.serve(routes, { disableListenLog: true }).pipe(
+          Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+        ),
+      ).pipe(Effect.orDie);
+      const nodeOrigin = HttpServer.formatAddress(
+        Context.get(served, HttpServer.HttpServer).address,
       );
       yield* Effect.addFinalizer(() => Effect.promise(app.dispose));
       const http = HttpClient.make((request, url) =>
@@ -287,6 +296,7 @@ export const withAssetHarness = <A, E, R>(
         beforeRaw: (action) => {
           beforeRaw = action;
         },
+        nodeOrigin,
         fetch: (url, init) =>
           Effect.promise(() =>
             app.handler(
@@ -325,5 +335,7 @@ export interface AssetHarness {
   readonly spans: readonly Tracer.Span[];
   readonly beforeRaw: (action: () => Effect.Effect<void>) => void;
   readonly fetch: (url: string, init?: RequestInit) => Effect.Effect<Response>;
+  /** The same routes behind the Node HTTP adapter the gateway serves with, on a loopback port. */
+  readonly nodeOrigin: string;
 }
 export const pairAssetClient = (fixture: AssetHarness, code: string) => fixture.pair(code);

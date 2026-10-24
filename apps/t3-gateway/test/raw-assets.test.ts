@@ -1,3 +1,5 @@
+import { Agent, get } from "node:http";
+
 import { MessageId, ThreadId, WS_METHODS } from "@mend/t3-contracts";
 import { Deferred, Effect, Exit, Fiber } from "effect";
 import * as HttpClient from "effect/http/HttpClient";
@@ -294,6 +296,68 @@ describe("worktree asset URLs", () => {
       ),
   );
 });
+
+/** What a browser on a real socket sees of one response: its end, a reset, or no end at all. */
+export const readOverSocket = (url: string) =>
+  Effect.callback<{
+    readonly status: number;
+    readonly length: number;
+    readonly received: number;
+    readonly outcome: "end" | "reset" | "hang";
+  }>((resume) => {
+    let status = 0;
+    let length = 0;
+    let received = 0;
+    let settled = false;
+    const finish = (outcome: "end" | "reset" | "hang") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      request.destroy();
+      agent.destroy();
+      resume(Effect.succeed({ status, length, received, outcome }));
+    };
+    const timer = setTimeout(() => finish("hang"), 3000);
+    // A browser keeps the connection open, so only a reset tells it the body stopped short.
+    const agent = new Agent({ keepAlive: true });
+    const request = get(url, { agent }, (response) => {
+      status = response.statusCode ?? 0;
+      length = Number(response.headers["content-length"]);
+      response.on("data", (chunk: Buffer) => (received += chunk.length));
+      response.on("end", () => finish("end"));
+      response.on("close", () => finish("reset"));
+      response.on("error", () => finish("reset"));
+    });
+    request.on("error", () => finish("reset"));
+  });
+
+it.live("resets the socket when Mend's body fails after the gateway sent its headers", () =>
+  withGateway((mend) =>
+    Effect.gen(function* () {
+      const { rpc } = yield* pairAndConnect(mend, "RESET");
+      for (const [name, kind] of [
+        ["broken.mp4", "media-file"],
+        ["broken.png", "workspace-file"],
+      ] as const) {
+        mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+          bytes: BYTES,
+          canonicalPath: name,
+          size: 1024 * 1024,
+          failAfter: 64 * 1024,
+        });
+        const url = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(name, kind) });
+        const seen = yield* readOverSocket(`${mend.nodeOrigin}${url.relativeUrl}`);
+        assert.strictEqual(seen.status, 200, name);
+        assert.strictEqual(seen.length, 1024 * 1024, name);
+        assert.isBelow(seen.received, 1024 * 1024, name);
+        assert.strictEqual(seen.outcome, "reset", name);
+      }
+      const whole = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") });
+      const seen = yield* readOverSocket(`${mend.nodeOrigin}${whole.relativeUrl}`);
+      assert.deepStrictEqual(seen, { status: 200, length: 256, received: 256, outcome: "end" });
+    }),
+  ),
+);
 
 it.live("streams large files under backpressure, cancels upstream and aborts late failures", () =>
   withGateway((mend) =>

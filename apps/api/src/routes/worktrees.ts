@@ -1,3 +1,6 @@
+import { IncomingMessage } from "node:http";
+
+import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import {
   CurrentUser,
   RawFileUnavailable,
@@ -34,7 +37,7 @@ import {
 import { currentAgentProcess, heldRepositoriesRefusal } from "@mend/domain/workbench";
 import { captureHoldWords, SessionEngine, startFromBase, WorktreeReads } from "@mend/sessions";
 import { type DiffFileFact, DeploymentConfig, isWorktreeRelativePath, Store } from "@mend/store";
-import { Clock, Duration, Effect } from "effect";
+import { Clock, Duration, Effect, Stream } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
@@ -119,7 +122,18 @@ const rawFile = (
     }
     return request.method === "HEAD"
       ? HttpServerResponse.empty({ status, headers })
-      : HttpServerResponse.stream(file.read(offset, length), { status, headers });
+      : HttpServerResponse.stream(
+          file.read(offset, length).pipe(
+            Stream.onError(() =>
+              Effect.sync(() => {
+                // Node's adapter ends a short fixed-length body; a keep-alive client then waits.
+                if (request.source instanceof IncomingMessage)
+                  NodeHttpServerRequest.toServerResponse(request).destroy();
+              }),
+            ),
+          ),
+          { status, headers },
+        );
   });
 
 /** How much of one file a read answers: enough to show it, never a large artifact whole. */
