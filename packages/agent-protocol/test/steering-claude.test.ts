@@ -151,7 +151,10 @@ type Run = Effect.Success<ReturnType<typeof runSteps>>;
  * announcements are left out: a rehydrate takes turns the host already knows from its replay
  * queue and announces none of them again.
  */
-const projection = (run: Run, replayed: ReadonlyArray<string> = []) => {
+const projection = (
+  run: Pick<Run, "events" | "outcomes">,
+  replayed: ReadonlyArray<string> = [],
+) => {
   const kept = run.events.filter(
     (event) =>
       event._tag !== "session.ready" &&
@@ -274,7 +277,10 @@ const permission = (requestId: string): Step =>
     },
   });
 
-const completions = (run: Run) => run.events.filter((event) => event._tag === "turn.completed");
+const bytesOf = (steps: ReadonlyArray<Step>): ReadonlyArray<Uint8Array> =>
+  steps.flatMap((step) => ("line" in step ? [encodeLine(step.line)] : []));
+const completions = (run: Pick<Run, "events">) =>
+  run.events.filter((event) => event._tag === "turn.completed");
 const userFrames = (run: Run) => run.sent.filter((frame) => frame["type"] === "user");
 
 const recordedSteps = (): ReadonlyArray<Step> => {
@@ -947,6 +953,122 @@ describe("Claude steering, synthetic", () => {
       expect(run.events.some((event) => event._tag === "harness-turn.started")).toBe(false);
     }),
   );
+
+  /**
+   * The caller of a steer or Stop is interrupted while the journal holds a record it already
+   * persisted. Live and a rehydrate from the journal must still fold the same turns.
+   */
+  const cancelledWhileRecording = (
+    control: "steer-now" | "interrupt",
+    journalBlocks: "interruptibly" | "uninterruptibly",
+  ) =>
+    Effect.gen(function* () {
+      const recorded: Array<AgentControlCheckpoint> = [];
+      const persisted = yield* Deferred.make<void>();
+      const released = yield* Deferred.make<void>();
+      const before: ReadonlyArray<Step> =
+        control === "steer-now"
+          ? [init("init-1")]
+          : [init("init-1"), aborted("result-1", "aborted_streaming", usage(5, 1))];
+      const after: ReadonlyArray<Step> =
+        control === "steer-now"
+          ? [aborted("result-1"), init("init-2"), result("result-2")]
+          : [idle];
+      const live = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const wire = yield* makeWire();
+          const events: Array<AgentEvent> = [];
+          const ended = yield* Deferred.make<void>();
+          const session = yield* ClaudeAdapter.start(wire.transport, {
+            cwd: "/workspace/repo",
+            providerSessionId: SESSION,
+            permissionMode: "bypass",
+            controlJournal: {
+              record: (checkpoint) => {
+                const persist = Effect.sync(() => recorded.push(checkpoint)).pipe(
+                  Effect.andThen(
+                    checkpoint.action === control
+                      ? Deferred.succeed(persisted, undefined).pipe(
+                          Effect.andThen(Deferred.await(released)),
+                        )
+                      : Effect.void,
+                  ),
+                );
+                return journalBlocks === "uninterruptibly"
+                  ? Effect.uninterruptible(persist)
+                  : persist;
+              },
+              recorded: [],
+            },
+            onEvent: (event) =>
+              Effect.sync(() => events.push(event)).pipe(
+                Effect.andThen(
+                  event._tag === "runtime.error" ? Deferred.succeed(ended, undefined) : Effect.void,
+                ),
+              ),
+          });
+          const turnId = yield* session.sendTurn("first");
+          const steer = session.steer({ id: STEER_ID, expectedTurnId: turnId, input: "second" });
+          wire.push({ type: "system", subtype: "init", uuid: "init-1", session_id: SESSION });
+          yield* wire.drain;
+          if (control === "interrupt") {
+            yield* steer;
+            wire.pushBytes(concatBytes(bytesOf(before.slice(1))));
+            yield* wire.drain;
+          }
+          const caller = yield* Effect.forkChild(
+            control === "steer-now" ? Effect.asVoid(steer) : session.interrupt(),
+          );
+          yield* Deferred.await(persisted);
+          const cancelling = yield* Effect.forkChild(Fiber.interrupt(caller), {
+            startImmediately: true,
+          });
+          yield* Deferred.succeed(released, undefined);
+          yield* Fiber.join(cancelling);
+          wire.pushBytes(concatBytes(bytesOf(after)));
+          yield* wire.end;
+          yield* Deferred.await(ended);
+          return { events, outcomes: [], sent: wire.sent };
+        }),
+      );
+      const replayProviderTurnIds = startedTurnIds(live.events);
+      const replayed = yield* Effect.scoped(
+        runSteps([{ end: true }], {
+          journal: memoryJournal(recorded),
+          replayBytes: [concatBytes(bytesOf([...before, ...after]))],
+          rehydrate: { replayProviderTurnIds, resolvedProviderRequestIds: new Set() },
+        }),
+      );
+      return {
+        live,
+        recorded,
+        liveProjection: projection(live),
+        replayedProjection: projection(replayed, replayProviderTurnIds),
+      };
+    });
+
+  for (const journalBlocks of ["interruptibly", "uninterruptibly"] as const) {
+    it.effect(`a steer cancelled while the journal records ${journalBlocks} still lands`, () =>
+      Effect.gen(function* () {
+        const run = yield* cancelledWhileRecording("steer-now", journalBlocks);
+        expect(run.live.sent.filter((frame) => frame["type"] === "user")).toEqual([
+          expect.anything(),
+          expect.objectContaining({ priority: "now", uuid: STEER_ID }),
+        ]);
+        expect(run.recorded.map((checkpoint) => checkpoint.action)).toEqual(["steer-now"]);
+        expect(completions(run.live)).toEqual([expect.objectContaining({ status: "completed" })]);
+        expect(run.replayedProjection).toEqual(run.liveProjection);
+      }),
+    );
+
+    it.effect(`a Stop cancelled while the journal records ${journalBlocks} still lands`, () =>
+      Effect.gen(function* () {
+        const run = yield* cancelledWhileRecording("interrupt", journalBlocks);
+        expect(run.live.sent.at(-1)).toMatchObject({ request: { subtype: "interrupt" } });
+        expect(run.replayedProjection).toEqual(run.liveProjection);
+      }),
+    );
+  }
 
   it.effect("a journal that cannot record leaves nothing written and nothing armed", () =>
     Effect.scoped(
