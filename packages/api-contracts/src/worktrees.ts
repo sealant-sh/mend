@@ -63,7 +63,10 @@ const rawMetadata = {
   "accept-ranges": Schema.Literal("bytes"),
   /** Percent-encoded canonical worktree-relative path of the opened descriptor. */
   "x-mend-file-path": Schema.String,
+  /** Changes with the file's contents or identity (device, inode, size, times). */
   "x-mend-file-revision": Schema.String,
+  /** The file's device and inode: kept through an in-place edit, new for a replacement. */
+  "x-mend-file-identity": Schema.String,
 };
 const rawErrors = [WorktreeNotFound, RawFileNotFound, RawFileUnavailable, RawFileTooLarge] as const;
 

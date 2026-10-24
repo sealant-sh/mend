@@ -170,7 +170,8 @@ type Source =
       readonly suffix: Redacted.Redacted<string>;
       readonly preview: "workspace" | "media";
       readonly extent: "exact" | "directory";
-      readonly revision: string | null;
+      /** A media-file grant follows its file's device and inode, as t3code's does. */
+      readonly identity: string | null;
     };
 interface Grant {
   readonly sessionId: AuthSessionId;
@@ -280,6 +281,7 @@ export const AssetUrlsLive: Layer.Layer<
             )
               return yield* new AssetUnavailable({});
             let source: Source;
+            let fileRevision: string | undefined;
             if (subject.kind === "image") {
               const name = Redacted.value(subject.fileName);
               if (!validPath(name) || name.includes("/")) return yield* new AssetUnavailable({});
@@ -308,8 +310,9 @@ export const AssetUrlsLive: Layer.Layer<
                 suffix: Redacted.make(posix.basename(name)),
                 preview: subject.preview,
                 extent: type.directory ? "directory" : "exact",
-                revision: type.ranges ? file.revision : null,
+                identity: subject.preview === "media" ? file.identity : null,
               };
+              if (subject.preview === "media") fileRevision = file.revision;
             }
             const suffix = Redacted.value(source.suffix);
             const cost =
@@ -351,9 +354,7 @@ export const AssetUrlsLive: Layer.Layer<
             return {
               relativeUrl: `${ASSET_ROUTE_PREFIX}/${token}/${encodeURIComponent(suffix)}`,
               expiresAt,
-              ...(source.kind === "file" && source.revision !== null
-                ? { fileRevision: source.revision }
-                : {}),
+              ...(fileRevision === undefined ? {} : { fileRevision }),
             };
           }),
         ),
@@ -426,7 +427,7 @@ export const AssetUrlsLive: Layer.Layer<
           if (
             !withinDirectory(canonical, directory) ||
             (!child && canonical !== name) ||
-            (source.revision !== null && source.revision !== file.revision)
+            (!child && source.identity !== null && source.identity !== file.identity)
           )
             return yield* new AssetUnavailable({});
           const actual = classify(canonical, source.preview, child);

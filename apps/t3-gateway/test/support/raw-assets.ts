@@ -26,6 +26,7 @@ interface RawFixture {
   bytes: Uint8Array;
   canonicalPath: string;
   revision?: string;
+  identity?: string;
   status?: number;
   size?: number;
   failAfter?: number;
@@ -97,6 +98,7 @@ export const withAssetHarness = <A, E, R>(
               "content-type": "application/octet-stream",
               "x-mend-file-path": encodeURIComponent(file.canonicalPath),
               "x-mend-file-revision": file.revision ?? "a".repeat(64),
+              "x-mend-file-identity": file.identity ?? "c".repeat(64),
               "x-frame-options": "DENY",
               "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
             };

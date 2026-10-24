@@ -90,6 +90,7 @@ const rawFile = (
       "accept-ranges": "bytes",
       "x-mend-file-path": encodeURIComponent(file.canonicalPath),
       "x-mend-file-revision": file.revision,
+      "x-mend-file-identity": file.identity,
       "content-length": String(file.size),
     };
     let offset = 0;
