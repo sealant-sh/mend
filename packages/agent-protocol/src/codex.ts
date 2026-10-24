@@ -9,13 +9,20 @@ import type {
   AgentRequestKind,
   AgentTurnUsage,
 } from "@mend/domain/workbench";
-import { Data, Effect, Deferred, PubSub, Stream } from "effect";
+import { Effect, Deferred, PubSub, Stream } from "effect";
 
+import {
+  CodexRpcNotSent,
+  CodexRpcRejected,
+  CodexRpcUnanswered,
+  refused,
+  steerFailure,
+  undelivered,
+  type CodexRpcFailure,
+} from "./codex-steer.ts";
 import { createNdjsonDecoder } from "./ndjson.ts";
 import {
   AgentProtocolError,
-  AgentSteerDeliveryError,
-  AgentSteerRefusedError,
   type AgentAdapter,
   type AgentBackgroundWork,
   type AgentQuiescence,
@@ -28,25 +35,6 @@ import {
 
 type JsonObject = Readonly<Record<string, unknown>>;
 type JsonRpcId = string | number;
-
-/** Codex answered a request with a JSON-RPC error object. */
-class CodexRpcRejected extends Data.TaggedError("CodexRpcRejected")<{
-  readonly code: number | null;
-  readonly message: string;
-  readonly error: JsonObject;
-}> {}
-
-/** The request never left: the pipe was already known dead. */
-class CodexRpcNotSent extends Data.TaggedError("CodexRpcNotSent")<{
-  readonly error: AgentProtocolError;
-}> {}
-
-/** The request may have left, and no answer came: a failed write, a dead pipe, or the timeout. */
-class CodexRpcUnanswered extends Data.TaggedError("CodexRpcUnanswered")<{
-  readonly error: AgentProtocolError;
-}> {}
-
-type CodexRpcFailure = CodexRpcRejected | CodexRpcNotSent | CodexRpcUnanswered;
 
 interface PendingRpcRequest {
   readonly method: string;
@@ -276,64 +264,6 @@ const requestTitle = (params: JsonObject): string | null => {
   }
   return stringField(params, "reason") ?? stringField(params, "toolName");
 };
-
-type SteerRefusalReason = AgentSteerRefusedError["reason"];
-
-/**
- * `turn/steer` refusals by their exact app-server words (code -32600), from codex-rs
- * `app-server/src/request_processors/turn_processor.rs` (`turn_steer_inner`) and
- * `error_code.rs` (`server_draining_error`) at rust-v0.160.0.
- */
-const STEER_REFUSALS: ReadonlyMap<string, SteerRefusalReason> = new Map([
-  ["no active turn to steer", "no-active-turn"],
-  ["cannot steer a review turn", "review-turn"],
-  ["cannot steer a compact turn", "compact-turn"],
-  ["active turn uses a different output schema", "output-schema"],
-  ["input must not be empty", "invalid-input"],
-  ["expectedTurnId must not be empty", "invalid-input"],
-  ["Server is draining; retry after reconnecting", "server-draining"],
-]);
-const STEER_TARGET_CHANGED = /^expected active turn id `(.+)` but found `(.+)`$/;
-const INVALID_REQUEST = -32600;
-const METHOD_NOT_FOUND = -32601;
-
-/**
- * What a `turn/steer` error says, when it says something Mend knows: a refusal means Codex did
- * not submit the input. Anything else (another code, other words, a mismatch about a turn this
- * request did not name) is not known to be a refusal.
- */
-const steerRefusal = (
-  rejected: CodexRpcRejected,
-  expectedTurnId: string,
-): { readonly reason: SteerRefusalReason; readonly actualTurnId: string | null } | null => {
-  if (rejected.code === METHOD_NOT_FOUND) return { reason: "unsupported", actualTurnId: null };
-  if (rejected.code !== INVALID_REQUEST) return null;
-  const known = STEER_REFUSALS.get(rejected.message);
-  if (known !== undefined) return { reason: known, actualTurnId: null };
-  const changed = STEER_TARGET_CHANGED.exec(rejected.message);
-  if (changed === null || changed[1] !== expectedTurnId) return null;
-  return { reason: "target-changed", actualTurnId: changed[2] ?? null };
-};
-
-const refused = (
-  input: AgentSteerInput,
-  reason: SteerRefusalReason,
-  actualTurnId: string | null,
-  message: string,
-) =>
-  new AgentSteerRefusedError({
-    adapter: "codex",
-    reason,
-    expectedTurnId: input.expectedTurnId,
-    actualTurnId,
-    message,
-  });
-
-const undelivered = (
-  certainty: AgentSteerDeliveryError["certainty"],
-  message: string,
-  cause: unknown,
-) => new AgentSteerDeliveryError({ adapter: "codex", certainty, message, cause });
 
 /** Codex app-server JSON-RPC adapter over NDJSON stdio. */
 export const CodexAdapter: AgentAdapter = {
@@ -810,22 +740,7 @@ export const CodexAdapter: AgentAdapter = {
           threadId,
           input: [{ type: "text", text: input.input }],
           expectedTurnId: input.expectedTurnId,
-        }).pipe(
-          Effect.catchTags({
-            CodexRpcNotSent: (failure) =>
-              Effect.fail(undelivered("not-written", failure.error.message, failure.error)),
-            CodexRpcUnanswered: (failure) =>
-              Effect.fail(undelivered("uncertain", failure.error.message, failure.error)),
-            CodexRpcRejected: (failure) => {
-              const refusal = steerRefusal(failure, input.expectedTurnId);
-              return Effect.fail(
-                refusal === null
-                  ? undelivered("uncertain", failure.message, failure.error)
-                  : refused(input, refusal.reason, refusal.actualTurnId, failure.message),
-              );
-            },
-          }),
-        );
+        }).pipe(Effect.mapError((failure) => steerFailure(input, failure)));
         const acknowledged = stringField(reply, "turnId");
         if (acknowledged !== input.expectedTurnId) {
           return yield* undelivered(
