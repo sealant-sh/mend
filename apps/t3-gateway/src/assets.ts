@@ -8,6 +8,7 @@ import { Cause, Clock, Context, Effect, Layer, Redacted, Schema, type Scope, Str
 import { HttpMiddleware, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { GatewayAuth } from "./auth.ts";
+import { gateDeviceCalls } from "./device-gate.ts";
 import { Projections } from "./hub.ts";
 import { MEND_IMAGE_MAX_BYTES } from "./images.ts";
 import { MendClient, type MendRawFile, type MendRawFileRequest } from "./mend-client.ts";
@@ -262,15 +263,9 @@ export const AssetUrlsLive: Layer.Layer<
           }),
       );
     const opened = (session: BearerSession, worktreeId: string, input: MendRawFileRequest) =>
-      mend.openRawFile(Redacted.make(session.deviceToken), worktreeId, input).pipe(
-        Effect.catch((error) =>
-          Effect.gen(function* () {
-            if (error.status === 401)
-              yield* projections.refuseDevice(session.mendUser.id, session.deviceToken);
-            return yield* new AssetUnavailable({});
-          }),
-        ),
-      );
+      gateDeviceCalls(mend, (token) => projections.refuseDevice(session.mendUser.id, token))
+        .openRawFile(Redacted.make(session.deviceToken), worktreeId, input)
+        .pipe(Effect.mapError(() => new AssetUnavailable({})));
     return {
       issue: (sessionId, subject) =>
         Effect.scoped(
