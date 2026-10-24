@@ -204,9 +204,8 @@ Whose login a steered turn spends depends on the workspace:
     person;
   - the operator set `MEND_HARNESS_LAYOUT=shared`;
   - it runs a custom base without `sudo`;
-  - it runs a nix image;
   - its Docker host sets no-new-privileges;
-  - its runtime is Kubernetes.
+  - its runtime is a Cloudflare sandbox.
 
   See [What a workspace needs](/operate/per-person-workspaces/#what-a-workspace-needs).
 
