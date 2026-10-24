@@ -17,11 +17,11 @@ export class CodexRpcNotSent extends Data.TaggedError("CodexRpcNotSent")<{
   readonly error: AgentProtocolError;
 }> {}
 
-export class CodexRpcUnanswered extends Data.TaggedError("CodexRpcUnanswered")<{
+export class CodexRpcMaybeSent extends Data.TaggedError("CodexRpcMaybeSent")<{
   readonly error: AgentProtocolError;
 }> {}
 
-export type CodexRpcFailure = CodexRpcRejected | CodexRpcNotSent | CodexRpcUnanswered;
+export type CodexRpcFailure = CodexRpcRejected | CodexRpcNotSent | CodexRpcMaybeSent;
 
 type SteerRefusalReason = AgentSteerRefusedError["reason"];
 
@@ -83,7 +83,7 @@ export const steerFailure = (
   switch (failure._tag) {
     case "CodexRpcNotSent":
       return undelivered("not-written", failure.error.message, failure.error);
-    case "CodexRpcUnanswered":
+    case "CodexRpcMaybeSent":
       return undelivered("uncertain", failure.error.message, failure.error);
     case "CodexRpcRejected": {
       const refusal = steerRefusal(failure, input.expectedTurnId);

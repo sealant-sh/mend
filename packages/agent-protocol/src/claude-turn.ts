@@ -136,7 +136,7 @@ const complete = (
   segments: ReadonlyArray<ClaudeSegment>,
   status: ClaudeTurnStatus,
   error: string | null,
-  drains = false,
+  then: "idle" | "draining",
 ): ClaudeTurnFold => {
   const completed: ClaudeTurnEffect = {
     _tag: "TurnCompleted",
@@ -147,9 +147,8 @@ const complete = (
   };
   const [next, ...rest] = state.replayQueue;
   if (next === undefined) {
-    const turn: ClaudeTurnState = drains
-      ? { _tag: "Draining", stoppedTurnId: turnId }
-      : { _tag: "Idle" };
+    const turn: ClaudeTurnState =
+      then === "draining" ? { _tag: "Draining", stoppedTurnId: turnId } : { _tag: "Idle" };
     return { state: { ...state, turn }, effects: [completed] };
   }
   return {
@@ -193,7 +192,7 @@ const foldControl = (state: ClaudeTurns, control: AgentControlCheckpoint): Claud
     case "interrupt":
       switch (turn._tag) {
         case "AwaitingContinuation":
-          return complete(state, turn.turnId, turn.segments, "interrupted", null, true);
+          return complete(state, turn.turnId, turn.segments, "interrupted", null, "draining");
         case "Running":
         case "SteerArmed":
           return {
@@ -283,7 +282,7 @@ export const foldClaudeTurn = (state: ClaudeTurns, input: ClaudeTurnInput): Clau
         segments,
         input.status,
         input.error,
-        turn._tag === "Stopping" && turn.steerId !== null,
+        turn._tag === "Stopping" && turn.steerId !== null ? "draining" : "idle",
       );
     }
     case "SessionIdle": {
@@ -297,6 +296,7 @@ export const foldClaudeTurn = (state: ClaudeTurns, input: ClaudeTurnInput): Clau
         turn.segments,
         last?.status ?? "completed",
         last?.error ?? null,
+        "idle",
       );
     }
     case "OutputEnded":

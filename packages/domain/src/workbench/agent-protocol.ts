@@ -329,7 +329,7 @@ export const AgentEvent = Schema.Union([
    */
   Schema.TaggedStruct("request.resolved", {
     providerRequestId: Schema.String,
-    disposition: Schema.optional(Schema.Literals(["resolved", "cancelled"])),
+    disposition: Schema.optional(Schema.Literal("cancelled")),
   }),
   Schema.TaggedStruct("runtime.warning", { message: Schema.String }),
   Schema.TaggedStruct("runtime.error", { message: Schema.String }),

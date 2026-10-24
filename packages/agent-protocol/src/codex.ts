@@ -14,7 +14,7 @@ import { Effect, Deferred, PubSub, Stream } from "effect";
 import {
   CodexRpcNotSent,
   CodexRpcRejected,
-  CodexRpcUnanswered,
+  CodexRpcMaybeSent,
   refused,
   steerFailure,
   undelivered,
@@ -330,7 +330,7 @@ export const CodexAdapter: AgentAdapter = {
         }
         yield* send({ method, id, params }).pipe(
           Effect.tapError(() => Effect.sync(() => pendingRpc.delete(requestKey(id)))),
-          Effect.mapError((error) => new CodexRpcUnanswered({ error })),
+          Effect.mapError((error) => new CodexRpcMaybeSent({ error })),
         );
         return yield* Deferred.await(deferred).pipe(
           Effect.timeoutOrElse({
@@ -349,7 +349,7 @@ export const CodexAdapter: AgentAdapter = {
               ),
           }),
           Effect.mapError((error) =>
-            error instanceof CodexRpcRejected ? error : new CodexRpcUnanswered({ error }),
+            error instanceof CodexRpcRejected ? error : new CodexRpcMaybeSent({ error }),
           ),
         );
       });

@@ -26,7 +26,7 @@ export interface ClaudeControlsContext {
 export interface ClaudeControls {
   readonly replayDue: Effect.Effect<void>;
   readonly line: (reduce: Effect.Effect<void>) => Effect.Effect<void>;
-  readonly exclusive: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E>;
+  readonly outputEnded: Effect.Effect<void>;
   readonly steer: (
     input: AgentSteerInput,
   ) => Effect.Effect<AgentSteerAcceptance, AgentSteerRefusedError | AgentSteerDeliveryError>;
@@ -81,6 +81,9 @@ export const makeClaudeControls = Effect.fnUntraced(function* (context: ClaudeCo
       )
       .pipe(Effect.andThen(journal === undefined ? Effect.void : Effect.yieldNow));
 
+  const journaled = <A, E>(control: Effect.Effect<A, E>): Effect.Effect<A, E> =>
+    lane.withPermits(1)(Effect.uninterruptible(control));
+
   const record = (
     controlId: string,
     providerTurnId: string,
@@ -115,9 +118,7 @@ export const makeClaudeControls = Effect.fnUntraced(function* (context: ClaudeCo
   });
 
   const interrupt = Effect.fn("ClaudeAdapter.interrupt")(function* () {
-    yield* journal === undefined
-      ? interruptNow
-      : lane.withPermits(1)(Effect.uninterruptible(interruptNow));
+    yield* journal === undefined ? interruptNow : journaled(interruptNow);
   });
 
   const refused = (
@@ -133,6 +134,13 @@ export const makeClaudeControls = Effect.fnUntraced(function* (context: ClaudeCo
       message,
     });
 
+  const disarm = Effect.fnUntraced(function* (controlId: string, providerTurnId: string) {
+    const disarmed = yield* record(controlId, providerTurnId, "not-written").pipe(Effect.option);
+    if (disarmed._tag === "Some") {
+      yield* fold({ _tag: "Control", control: disarmed.value });
+    }
+  });
+
   /**
    * A `priority: "now"` user frame into the logical turn. Claude acknowledges nothing, so the
    * arm is journaled first: the result Claude prints when it aborts the running segment for
@@ -146,59 +154,52 @@ export const makeClaudeControls = Effect.fnUntraced(function* (context: ClaudeCo
         "Claude is steered only with a control journal to replay it from.",
       );
     }
-    return yield* lane.withPermits(1)(
-      Effect.uninterruptible(
-        Effect.gen(function* () {
-          const turn = context.turn();
-          if (turn._tag === "Idle" || turn._tag === "Draining") {
-            return yield* refused(input, "no-active-turn", "Claude has no running turn.");
-          }
-          if (turn.turnId !== input.expectedTurnId) {
-            return yield* refused(input, "target-changed", "Claude is running another turn.");
-          }
-          if (turn._tag === "Stopping") {
-            return yield* refused(input, "no-active-turn", "Claude's turn is being stopped.");
-          }
-          if (turn._tag !== "Running") {
-            return yield* refused(
-              input,
-              "in-continuation",
-              "Claude has not yet continued after the last steer.",
-            );
-          }
-          if (context.closed()) {
-            return yield* undelivered("not-written", "The Claude session is closed.", null);
-          }
-          const armed = yield* record(input.id, turn.turnId, "steer-now").pipe(
-            Effect.mapError((error) => undelivered("not-written", error.message, error)),
+    return yield* journaled(
+      Effect.gen(function* () {
+        const turn = context.turn();
+        if (turn._tag === "Idle" || turn._tag === "Draining") {
+          return yield* refused(input, "no-active-turn", "Claude has no running turn.");
+        }
+        if (turn.turnId !== input.expectedTurnId) {
+          return yield* refused(input, "target-changed", "Claude is running another turn.");
+        }
+        if (turn._tag === "Stopping") {
+          return yield* refused(input, "no-active-turn", "Claude's turn is being stopped.");
+        }
+        if (turn._tag !== "Running") {
+          return yield* refused(
+            input,
+            "in-continuation",
+            "Claude has not yet continued after the last steer.",
           );
-          yield* fold({ _tag: "Control", control: armed });
-          if (context.closed()) {
-            const disarmed = yield* record(input.id, turn.turnId, "not-written").pipe(
-              Effect.option,
-            );
-            if (disarmed._tag === "Some") {
-              yield* fold({ _tag: "Control", control: disarmed.value });
-            }
-            return yield* undelivered("not-written", "The Claude session is closed.", null);
-          }
-          yield* send(context.steerFrame(input)).pipe(
-            Effect.mapError((error) => undelivered("uncertain", error.message, error)),
-          );
-          const acceptance: AgentSteerAcceptance = {
-            _tag: "TransportWritten",
-            providerTurnId: turn.turnId,
-          };
-          return acceptance;
-        }),
-      ),
+        }
+        if (context.closed()) {
+          return yield* undelivered("not-written", "The Claude session is closed.", null);
+        }
+        const armed = yield* record(input.id, turn.turnId, "steer-now").pipe(
+          Effect.mapError((error) => undelivered("not-written", error.message, error)),
+        );
+        yield* fold({ _tag: "Control", control: armed });
+        if (context.closed()) {
+          yield* disarm(input.id, turn.turnId);
+          return yield* undelivered("not-written", "The Claude session is closed.", null);
+        }
+        yield* send(context.steerFrame(input)).pipe(
+          Effect.mapError((error) => undelivered("uncertain", error.message, error)),
+        );
+        const acceptance: AgentSteerAcceptance = {
+          _tag: "TransportWritten",
+          providerTurnId: turn.turnId,
+        };
+        return acceptance;
+      }),
     );
   });
 
   return {
     replayDue,
     line,
-    exclusive: lane.withPermits(1),
+    outputEnded: lane.withPermits(1)(fold({ _tag: "OutputEnded" })),
     steer,
     interrupt,
   } satisfies ClaudeControls;

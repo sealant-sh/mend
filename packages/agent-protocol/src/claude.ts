@@ -414,6 +414,29 @@ export const ClaudeAdapter: AgentAdapter = {
         });
       };
 
+      const cancelOpenRequests = (providerTurnId: string): Effect.Effect<void> =>
+        Effect.forEach(
+          [...pending].filter(
+            ([, request]) => request.providerTurnId === providerTurnId && !request.subAgent,
+          ),
+          ([providerRequestId]) => {
+            pending.delete(providerRequestId);
+            return send(
+              controlResponse(providerRequestId, {
+                behavior: "deny",
+                message: "The turn was steered before this request was answered.",
+                interrupt: false,
+              }),
+            ).pipe(
+              Effect.ignore,
+              Effect.andThen(
+                publish({ _tag: "request.resolved", providerRequestId, disposition: "cancelled" }),
+              ),
+            );
+          },
+          { discard: true },
+        );
+
       const applyEffect = (effect: ClaudeTurnEffect): Effect.Effect<void> => {
         switch (effect._tag) {
           case "TurnOpened": {
@@ -430,31 +453,7 @@ export const ClaudeAdapter: AgentAdapter = {
             });
           }
           case "SegmentClosed":
-            return Effect.forEach(
-              [...pending].filter(
-                ([, request]) => request.providerTurnId === effect.turnId && !request.subAgent,
-              ),
-              ([providerRequestId]) => {
-                pending.delete(providerRequestId);
-                return send(
-                  controlResponse(providerRequestId, {
-                    behavior: "deny",
-                    message: "The turn was steered before this request was answered.",
-                    interrupt: false,
-                  }),
-                ).pipe(
-                  Effect.ignore,
-                  Effect.andThen(
-                    publish({
-                      _tag: "request.resolved",
-                      providerRequestId,
-                      disposition: "cancelled",
-                    }),
-                  ),
-                );
-              },
-              { discard: true },
-            );
+            return cancelOpenRequests(effect.turnId);
           case "TurnCompleted":
             return publish({
               _tag: "turn.completed",
@@ -716,7 +715,7 @@ export const ClaudeAdapter: AgentAdapter = {
         Effect.andThen(
           Effect.suspend(() => Effect.forEach(decoder.finish(), handleLine, { discard: true })),
         ),
-        Effect.andThen(controls.exclusive(fold({ _tag: "OutputEnded" }))),
+        Effect.andThen(controls.outputEnded),
         Effect.tap(() =>
           publish({ _tag: "runtime.error", message: "Claude process output ended." }),
         ),
