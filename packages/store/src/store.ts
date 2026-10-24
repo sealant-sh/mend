@@ -464,6 +464,7 @@ const openRawWorktreeFile = (
       canonicalPath,
       size,
       revision,
+      identity: createHash("sha256").update(`${stat.dev}:${stat.ino}`).digest("hex"),
       read: (offset, length) => {
         if (
           !Number.isSafeInteger(offset) ||

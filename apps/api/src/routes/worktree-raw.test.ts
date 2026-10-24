@@ -74,6 +74,7 @@ it("serves exact binary bytes, full 200, empty files and HEAD metadata", async (
   expect(response.status).toBe(200);
   expect(response.headers.get("content-type")).toBe("application/octet-stream");
   expect(response.headers.get("x-mend-file-path")).toBe("data.bin");
+  expect(response.headers.get("x-mend-file-identity")).toMatch(/^[a-f0-9]{64}$/);
   expect(response.headers.get("x-frame-options")).toBe("DENY");
   expect(response.headers.get("content-security-policy")).toBe(
     "default-src 'none'; frame-ancestors 'none'",

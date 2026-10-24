@@ -430,19 +430,44 @@ it.effect(
     ),
 );
 
-it.live("refuses changed media revisions and all upstream failures as the same plain 404", () =>
+it.live("keeps a media URL through an in-place edit and refuses it once the file is replaced", () =>
+  withGateway((mend) =>
+    Effect.gen(function* () {
+      const { rpc } = yield* pairAndConnect(mend, "IDENTITY");
+      const http = yield* HttpClient.HttpClient;
+      for (const name of ["movie.mp4", "image.png"]) {
+        const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
+          resource: resource(name, "media-file"),
+        });
+        assert.strictEqual(url.fileRevision, "a".repeat(64));
+        const edited = BYTES.toReversed();
+        mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+          bytes: edited,
+          canonicalPath: name,
+          revision: "b".repeat(64),
+        });
+        const response = yield* http.get(url.relativeUrl);
+        assert.strictEqual(response.status, 200, `${name} after an edit`);
+        assert.deepStrictEqual(new Uint8Array(yield* response.arrayBuffer), edited);
+        mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+          bytes: BYTES,
+          canonicalPath: name,
+          identity: "d".repeat(64),
+        });
+        assert.strictEqual(
+          (yield* http.get(url.relativeUrl)).status,
+          404,
+          `${name} after a replacement`,
+        );
+      }
+    }),
+  ),
+);
+
+it.live("refuses all upstream failures as the same plain 404", () =>
   withGateway((mend) =>
     Effect.gen(function* () {
       const { rpc } = yield* pairAndConnect(mend, "ERRORS");
-      const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
-        resource: resource("movie.mp4", "media-file"),
-      });
-      mend.workbench.rawFiles.set("worktree-session-1/movie.mp4", {
-        bytes: BYTES,
-        canonicalPath: "movie.mp4",
-        revision: "b".repeat(64),
-      });
-      assert.strictEqual((yield* mend.fetch(url.relativeUrl)).status, 404);
       for (const status of [403, 404, 409, 413, 429, 500, 503, 401]) {
         const file = { bytes: BYTES, canonicalPath: "image.png", status };
         mend.workbench.rawFiles.set("worktree-session-1/image.png", {

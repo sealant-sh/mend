@@ -42,6 +42,20 @@ describe("raw worktree files", () => {
     expect(result.file.canonicalPath).toBe("docs/data.bin");
     expect(result.file.size).toBe(256);
   });
+  it("keeps a file's identity through an in-place edit and gives a replacement a new one", async () => {
+    const name = path.join(root, "docs/edited.bin");
+    fs.writeFileSync(name, bytes);
+    const opened = () => run(read("docs/edited.bin")).then((result) => result.file);
+    const first = await opened();
+    expect(first.identity).toMatch(/^[a-f0-9]{64}$/);
+    fs.appendFileSync(name, "more");
+    const edited = await opened();
+    expect(edited.identity).toBe(first.identity);
+    expect(edited.revision).not.toBe(first.revision);
+    fs.writeFileSync(`${name}.next`, bytes);
+    fs.renameSync(`${name}.next`, name);
+    expect((await opened()).identity).not.toBe(first.identity);
+  });
   it("refuses traversal, outside links, non-files and canonical directory escapes", async () => {
     for (const name of [
       "../etc/passwd",

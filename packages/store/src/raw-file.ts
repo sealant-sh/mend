@@ -9,6 +9,9 @@ export class RawReadError extends Schema.TaggedError<RawReadError>()("RawReadErr
 export interface OpenRawFile {
   readonly canonicalPath: string;
   readonly size: number;
+  /** Changes with the file's contents or identity. */
   readonly revision: string;
+  /** Its device and inode: the same through an in-place edit, new for a replacement. */
+  readonly identity: string;
   readonly read: (offset: number, length: number) => Stream.Stream<Uint8Array, RawReadError>;
 }

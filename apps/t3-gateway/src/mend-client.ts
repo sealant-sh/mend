@@ -52,6 +52,8 @@ export interface MendRawFile {
   readonly status: 200 | 206 | 416;
   readonly canonicalPath: Redacted.Redacted<string>;
   readonly revision: string;
+  /** The file's device and inode, hashed: kept through an in-place edit, new for a replacement. */
+  readonly identity: string;
   readonly length: number;
   readonly contentRange: string | undefined;
   readonly body: Stream.Stream<Uint8Array, MendRawFileUnavailable>;
@@ -941,12 +943,14 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           const lengthText = response.headers["content-length"] ?? "";
           const length = Number(lengthText);
           const revision = response.headers["x-mend-file-revision"] ?? "";
+          const identity = response.headers["x-mend-file-identity"] ?? "";
           const contentRange = response.headers["content-range"];
           if (
             !/^\d+$/.test(lengthText) ||
             !Number.isSafeInteger(length) ||
             length < 0 ||
             !/^[a-f0-9]{64}$/.test(revision) ||
+            !/^[a-f0-9]{64}$/.test(identity) ||
             canonicalPath === "" ||
             (status === 206 && !/^bytes \d+-\d+\/\d+$/.test(contentRange ?? "")) ||
             (status === 416 && !/^bytes \*\/\d+$/.test(contentRange ?? ""))
@@ -956,6 +960,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             status,
             canonicalPath: Redacted.make(canonicalPath),
             revision,
+            identity,
             length,
             contentRange,
             body: response.stream.pipe(
