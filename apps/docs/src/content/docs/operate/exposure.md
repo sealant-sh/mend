@@ -250,8 +250,16 @@ What the overlay does, and what it states on your behalf:
 - `MEND_EXPOSURE` (default `private`), `MEND_URL_BEARERS` (default `accept`),
   `MEND_EXPOSURE_REASSESSED` and `MEND_EXPOSURE_DECLARED` pass through from your `.env`. On the
   Docker install, `--exposure` writes the first two.
-- The edge's access log replaces the value of `ticket`, `token` and `code` in every URL and drops
-  the `Referer` header. Caddy already redacts `Authorization`, `Cookie` and `Set-Cookie`.
+- The edge logs a request's path on Mend's origin and never its query, on any route: from the first
+  `?` on, the URL reads `?REDACTED`, and so does the userinfo of an absolute-form URL. No line holds
+  a socket's single-use ticket, a pairing code or any other query value. The cost is that an access
+  line no longer shows an ordinary query either. On the t3code gateway's origin
+  (`--t3-gateway-origin`), no line holds the URL at all: an image's URL path is its token and file
+  name. Caddy's own lines about a request, such as a failed dial, follow the same rules. A response
+  cut short (`aborting with incomplete response`) holds no URL on either origin, because Caddy names
+  that line for the proxy rather than the site; the access line from the same `remote_port` holds
+  the path. The edge drops the `Referer` header, and Caddy already redacts `Authorization`, `Cookie`
+  and `Set-Cookie`.
 
 What was checked: the merged files render, and the Caddyfile validates with Caddy. What was not: a
 certificate issued and a browser session through it, end to end. Workspace SSH on port 2222 stays on
