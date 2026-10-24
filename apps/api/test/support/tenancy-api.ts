@@ -25,6 +25,7 @@ import {
   ProjectMountsRepo,
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
+  PreviewsRepo,
   PushDevice,
   PushDevicesRepo,
   ReviewCommentsRepo,
@@ -209,6 +210,7 @@ export const createTenancyApi = async (
     /** How long a request that takes a checkpoint may run (`CheckpointRequestLimit`). */
     readonly checkpointRequestLimit?: Duration.Duration;
     readonly implement?: {
+      readonly previews?: Layer.PartialEffectful<PreviewsRepo["Service"]>;
       readonly storeRefs?: Layer.PartialEffectful<StoreRefsRepo["Service"]>;
       readonly slices?: Layer.PartialEffectful<ReviewSlicesRepo["Service"]>;
       readonly workspaceCaller?: Partial<WorkspaceCaller["Service"]>;
@@ -344,6 +346,7 @@ export const createTenancyApi = async (
       ),
       recording(RunsRepo, "runs", {}, calls),
       recording(ServiceForwardsRepo, "forwards", options.implement?.forwards ?? {}, calls),
+      recording(PreviewsRepo, "previews", options.implement?.previews ?? {}, calls),
       recording(ServiceObservationsRepo, "observations", {}, calls),
       recording(SettingsRepo, "settings", {}, calls),
       recording(UserEvents, "userEvents", {}, calls),

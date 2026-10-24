@@ -141,7 +141,7 @@ export class SessionProcessesRepo extends Context.Service<
 const decodeWaiting = Schema.decodeUnknownOption(AgentWait);
 const encodeWaiting = Schema.encodeSync(AgentWait);
 
-const toSessionProcess = (row: typeof sessionProcesses.$inferSelect): SessionProcess =>
+export const toSessionProcess = (row: typeof sessionProcesses.$inferSelect): SessionProcess =>
   new SessionProcess({
     ...row,
     waiting: Option.getOrNull(decodeWaiting(row.waiting)),

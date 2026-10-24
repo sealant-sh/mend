@@ -42,6 +42,33 @@ export type SessionId = typeof SessionId.Type;
 export const WorktreeId = Schema.String.pipe(Schema.brand("WorktreeId"));
 export type WorktreeId = typeof WorktreeId.Type;
 
+export const PreviewId = Schema.String.pipe(Schema.brand("PreviewId"));
+export type PreviewId = typeof PreviewId.Type;
+
+const base32 = "abcdefghijklmnopqrstuvwxyz234567";
+const lastOf128Bits = [...base32].filter((_, value) => value % 4 === 0).join("");
+
+export const PreviewLabel = Schema.String.check(
+  Schema.isPattern(new RegExp(`^[${base32}]{25}[${lastOf128Bits}]$`)),
+).pipe(Schema.brand("PreviewLabel"));
+export type PreviewLabel = typeof PreviewLabel.Type;
+
+export const encodePreviewLabel = (bytes: Uint8Array): PreviewLabel => {
+  let bits = 0;
+  let value = 0;
+  let label = "";
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      label += base32[(value >>> bits) & 31];
+    }
+  }
+  if (bits > 0) label += base32[(value << (5 - bits)) & 31];
+  return PreviewLabel.make(label);
+};
+
 export const CheckpointId = Schema.String.pipe(Schema.brand("CheckpointId"));
 export type CheckpointId = typeof CheckpointId.Type;
 
