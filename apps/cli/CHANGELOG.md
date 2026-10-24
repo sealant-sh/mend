@@ -1,5 +1,22 @@
 # @sealant/mend
 
+## 0.36.1
+
+### Patch Changes
+
+- aa9db3a: When the T3 Code gateway's find worker exits while it waits for the next search, the
+  gateway now starts a new one and frees the old worker's slot. Before, the next find in a thread
+  could wait forever on the exited worker and keep one of the four worker slots that find and
+  highlighting share. A worker that exits as it starts, or just after it answers, no longer stalls a
+  search either.
+- fc4cf72: The T3 Code gateway speaks t3code v0.1.2. Pair a t3code v0.1.2 client with Mend. "Send
+  now" on a queued message sends it when the thread is stopped, and is refused while a turn runs, as
+  t3code's own server refuses it. Settle and snooze follow v0.1.2's rules: a turn that completes no
+  longer wakes a snoozed thread, settling ends a snooze, and a settle, snooze, pin or order sent
+  again gets the answer it first got and is never applied twice, even after other commands or a
+  restart. A terminal that was closed or stopped stays that way when a client reconnects. A missing
+  `t3.json` reads as absent, not as a failed read.
+
 ## 0.36.0
 
 ### Minor Changes
