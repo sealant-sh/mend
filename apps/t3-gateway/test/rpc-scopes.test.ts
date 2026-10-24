@@ -75,6 +75,24 @@ describe("per-RPC scopes", () => {
     ]);
     assert.deepStrictEqual(requiredScopesFor(WS_METHODS.terminalObserve, {}), ["terminal:read"]);
     assert.deepStrictEqual(requiredScopesFor("not.a.method", {}), ["access:write"]);
+    // The methods t3code v0.1.2 added, with its server's scopes.
+    assert.deepStrictEqual(requiredScopesFor(WS_METHODS.projectsListIgnoredFiles, {}), [
+      "filesystem:read",
+    ]);
+    assert.deepStrictEqual(requiredScopesFor(WS_METHODS.pullRequestsChangeBreakdown, {}), [
+      "orchestration:read",
+    ]);
+    assert.deepStrictEqual(requiredScopesFor(WS_METHODS.deviceEasAccount, {}), ["settings:write"]);
+    // Opening a pull request from a thread reads the thread too, as t3code rules at v0.1.2.
+    const stacked = { actionId: "action-1", cwd: "/repo", threadId: "thread-1" };
+    assert.deepStrictEqual(
+      requiredScopesFor(WS_METHODS.gitRunStackedAction, { ...stacked, action: "create_pr" }),
+      ["source-control:write", "orchestration:read"],
+    );
+    assert.deepStrictEqual(
+      requiredScopesFor(WS_METHODS.gitRunStackedAction, { ...stacked, action: "commit_push" }),
+      ["source-control:write"],
+    );
     // The methods whose scope depends on their input, by t3code's own rule.
     assert.deepStrictEqual(
       requiredScopesFor(WS_METHODS.assetsCreateUrl, {
