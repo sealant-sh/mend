@@ -59,7 +59,7 @@ a checkout beside a Mend server.
   (`worktreeSetup.cancel` stops it). A `t3.json` in the worktree never runs by itself
   (`apps/t3-gateway/src/worktree-setup.ts`).
 - `t3-commands` takes `message.dispatch` (queued, relaunching a stopped agent), `run.interrupt`,
-  `queued-run.cancel`, `queue.resume`, `queued-run.edit`, `queued-run.reorder`,
+  `queued-run.cancel`, `queue.resume`, `queued-run.start`, `queued-run.edit`, `queued-run.reorder`,
   `prepared-run.retry`, `runtime-request.respond`, `thread.user-input.dismiss`,
   `thread.metadata.update` (title only), `provider-session.detach`, `thread.delete`,
   `thread.archive`, `thread.unarchive`, `thread.settle`, `thread.unsettle`, `thread.snooze`,
