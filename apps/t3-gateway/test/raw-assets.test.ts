@@ -183,6 +183,35 @@ describe("worktree asset URLs", () => {
         }),
       ),
   );
+  it.live(
+    "keeps tokens and names out of logs and traces in every spelling the router accepts",
+    () =>
+      withGateway((mend, logs) =>
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "SPELLING");
+          const url = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") });
+          const token = url.relativeUrl.split("/")[3] ?? "";
+          for (const target of [
+            url.relativeUrl.replace("/api/assets", "/API/Assets"),
+            url.relativeUrl.replace("/api/assets", "/api//assets"),
+            url.relativeUrl.replace("/api/assets", "/api/%61ssets"),
+            `${url.relativeUrl}/`,
+            url.relativeUrl.replace("/image.png", ";v=1/image.png"),
+          ]) {
+            const response = yield* mend.fetch(target);
+            yield* Effect.promise(() => response.text());
+            const traces = JSON.stringify(
+              mend.spans.map((span) => [span.name, [...span.attributes]]),
+            );
+            assert.isFalse(traces.includes(token) || traces.includes("image.png"), target);
+            assert.isFalse(
+              logs.some((line) => line.includes(token) || line.includes("image.png")),
+              target,
+            );
+          }
+        }),
+      ),
+  );
   it.live("forwards media Range as 206/416, ignores If-Range and supplies HEAD and CORS", () =>
     withGateway((mend, logs) =>
       Effect.gen(function* () {
