@@ -1,7 +1,6 @@
 // A shared conversation per person (docs/adr/0016, Deliveries 16 to 18): each person's readers,
 // the conversation's home, a terminal takeover, and shared steering through the engine.
 
-import * as fs from "node:fs";
 import * as path from "node:path";
 
 import {
@@ -34,7 +33,6 @@ import {
   SessionEngine,
   WorkspaceHostUserNamespaces,
 } from "@mend/sessions";
-import { processStatePathOf } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, SessionOptions, Workspace } from "@sealant/sdk";
 import { Deferred, Effect, Fiber, Layer, Queue } from "effect";
@@ -54,17 +52,22 @@ import {
   configuredHarnessHomePath,
   headFlush,
   seedStoppedBeforeRestart,
+  shipCaptureFiles,
   shipCapturedHarnessHome,
 } from "./engine/capture-fixture.ts";
 import { signalWrites, signalled, watched } from "./engine/clock-fixture.ts";
 import {
   agentConversationStub,
   agentMemoryLayerOf,
+  completedTurnOf,
   now,
+  recordedTurnsLayer,
   recordingProtocolHostLayer,
   redeemPickupExec,
   sealantLaunchLayer,
   setup,
+  transcriptIn,
+  transcriptLine,
   type World,
   withEngine,
   withEngineEffect,
@@ -712,6 +715,8 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
     }> = [];
     const stops: Array<string> = [];
     const state = makeHarnessLayoutsMemoryState();
+    const memory = makeMemoryCaptureStore();
+    const turns: Array<AgentTurn> = [];
     const provider = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
     let sessionId: SessionId | null = null;
     let takesAtStart = 0;
@@ -756,22 +761,25 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
             alice.id,
             new SessionProcess({ ...alice, providerSessionId: provider }),
           );
-          // What the harvest leaves for the terminal to resume.
-          const stateDir = processStatePathOf(project.storePath, session.id, alice.id);
-          fs.mkdirSync(stateDir, { recursive: true });
-          fs.writeFileSync(
-            path.join(stateDir, "manifest.json"),
-            JSON.stringify({
-              harness: "claude",
-              providerSessionId: provider,
-              capturedAt: new Date().toISOString(),
-            }),
+          // Her first turn completed, and its transcript is in the conversation's place in C as
+          // the head capture holds it: what the switch checks and then harvests.
+          turns.push(completedTurnOf(alice));
+          yield* shipCaptureFiles(
+            tmp,
+            memory,
+            session.worktreeId,
+            memory.leases.get(session.worktreeId)?.epoch ?? 0,
+            {
+              [`harness/people/user-fixture/conversations/${session.id}/${transcriptIn("claude", provider)}`]:
+                transcriptLine("claude", provider),
+            },
           );
           takesAtStart = state.conversationHolders.get(session.id)?.fence ?? 0;
           yield* engine.switchMode(session.id, "pty", { mode: "pty" }, "user-fixture");
         }),
       {
-        captured: makeMemoryCaptureStore(),
+        captured: memory,
+        conversationLayer: recordedTurnsLayer(turns),
         prepareWorld: (world) => world.members.set(MARIA, "member"),
         sealantLayer: sealantLaunchLayer(
           [],
@@ -899,6 +907,8 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
     }> = [];
     const stops: Array<string> = [];
     const state = makeHarnessLayoutsMemoryState();
+    const memory = makeMemoryCaptureStore();
+    const turns: Array<AgentTurn> = [];
     const provider = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
     let sessionId: SessionId | null = null;
     let takesAtStart = 0;
@@ -944,16 +954,18 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
             alice.id,
             new SessionProcess({ ...alice, providerSessionId: provider }),
           );
-          // What the harvest leaves for the terminal to resume.
-          const stateDir = processStatePathOf(project.storePath, session.id, alice.id);
-          fs.mkdirSync(stateDir, { recursive: true });
-          fs.writeFileSync(
-            path.join(stateDir, "manifest.json"),
-            JSON.stringify({
-              harness: "claude",
-              providerSessionId: provider,
-              capturedAt: new Date().toISOString(),
-            }),
+          // Her first turn completed, and its transcript is in the conversation's place in C as
+          // the head capture holds it: what the switch checks and then harvests.
+          turns.push(completedTurnOf(alice));
+          yield* shipCaptureFiles(
+            tmp,
+            memory,
+            session.worktreeId,
+            memory.leases.get(session.worktreeId)?.epoch ?? 0,
+            {
+              [`harness/people/user-fixture/conversations/${session.id}/${transcriptIn("claude", provider)}`]:
+                transcriptLine("claude", provider),
+            },
           );
           takesAtStart = state.conversationHolders.get(session.id)?.fence ?? 0;
           // Maria's turn waits, and its hand-over takes the conversation first.
@@ -982,7 +994,8 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
           lostWith = lost.message;
         }),
       {
-        captured: makeMemoryCaptureStore(),
+        captured: memory,
+        conversationLayer: recordedTurnsLayer(turns),
         prepareWorld: (world) => world.members.set(MARIA, "member"),
         sealantLayer: sealantLaunchLayer(
           [],

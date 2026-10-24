@@ -147,6 +147,8 @@ import {
   DotfilesCloner,
   makeDotfilesClonerLayer,
   HARNESS_HOME_MOUNT_PATH,
+  HARNESS_STATE,
+  harvestHarnessStateScript,
   ProtocolHost,
   ForwardAdapter,
   ServiceHost,
@@ -179,6 +181,7 @@ import {
   Store,
   StoreConfig,
   DeploymentConfigColocated,
+  harnessHomePathOf,
   makeSourcePolicy,
   SourcePolicy,
 } from "@mend/store";
@@ -893,6 +896,94 @@ export const agentConversationStub: AgentConversationRepo["Service"] = {
   protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
   saveProtocolCursor: () => Effect.void,
 };
+
+/**
+ * The stub, with the session conversations' turns as `turns` holds them: what a mode switch to
+ * the terminal asks before it stops anything (a completed turn, SLNT-142).
+ */
+export const recordedTurnsLayer = (turns: Array<AgentTurn>) =>
+  Layer.succeed(AgentConversationRepo, {
+    ...agentConversationStub,
+    listTurns: (sessionId) =>
+      Effect.sync(() => turns.filter((turn) => turn.sessionId === sessionId)),
+  });
+
+/** A turn of `conversation` that ran and completed, as the protocol host records one. */
+export const completedTurnOf = (conversation: SessionProcess, input = "say hi") =>
+  new AgentTurn({
+    id: AgentTurnId.make(`turn-completed-${conversation.id}`),
+    sessionId: conversation.sessionId,
+    processId: conversation.id,
+    ordinal: 0,
+    author: null,
+    input,
+    status: "completed",
+    providerTurnId: `provider-turn-${conversation.id}`,
+    error: null,
+    usage: null,
+    createdAt: now(),
+    startedAt: now(),
+    endedAt: now(),
+  });
+
+/** Where a claude or codex conversation's transcript lies in a harness home. */
+export const transcriptIn = (harness: "claude" | "codex", providerSessionId: string) =>
+  harness === "claude"
+    ? `.claude/projects/-workspace-repo/${providerSessionId}.jsonl`
+    : `.codex/sessions/2026/10/24/rollout-2026-10-24T10-00-00-${providerSessionId}.jsonl`;
+
+/** One line of a conversation's transcript, in its harness's own shape. */
+export const transcriptLine = (harness: "claude" | "codex", providerSessionId: string) =>
+  `${JSON.stringify(
+    harness === "claude"
+      ? { type: "user", sessionId: providerSessionId, message: { role: "user", content: "say hi" } }
+      : {
+          type: "response_item",
+          payload: { type: "message", role: "user", content: [{ type: "text", text: "say hi" }] },
+        },
+  )}\n`;
+
+/**
+ * The conversation `providerSessionId` written into the session's durable harness home, where the
+ * co-located store's mode switch looks for it before it stops anything (SLNT-142).
+ */
+export const writeHomeTranscript = (
+  storePath: string,
+  sessionId: string,
+  harness: "claude" | "codex",
+  providerSessionId: string,
+) => {
+  const file = path.join(
+    harnessHomePathOf(storePath, sessionId),
+    transcriptIn(harness, providerSessionId),
+  );
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, transcriptLine(harness, providerSessionId));
+};
+
+/**
+ * The executor's answers to a co-located harvest of conversation `providerSessionId`: its archive,
+ * where its transcript is, and the transcript. Undefined for anything else.
+ */
+export const harvestExecOf =
+  (harness: "claude" | "codex", providerSessionId: string) => (argv: ReadonlyArray<string>) => {
+    const shape = HARNESS_STATE[harness];
+    if (shape === undefined) return undefined;
+    if (argv[2] === harvestHarnessStateScript(shape.paths)) {
+      return { exitCode: 0, stdout: "eA==", stderr: "" };
+    }
+    if (argv[2] === shape.latestTranscript) {
+      return {
+        exitCode: 0,
+        stdout: `/home/agent/${transcriptIn(harness, providerSessionId)}\n`,
+        stderr: "",
+      };
+    }
+    if (argv[3] === "mend-read") {
+      return { exitCode: 0, stdout: transcriptLine(harness, providerSessionId), stderr: "" };
+    }
+    return undefined;
+  };
 
 /** Shared agentConversationStubLayer fixture for engine scenarios. */
 export const agentConversationStubLayer = Layer.succeed(
