@@ -51,6 +51,12 @@ export const DEFAULT_RAW_CACHE_LIMITS = {
   entries: 256,
   preparations: 2,
   pending: 32,
+  /** A cache file no process refreshed for this long is idle, or abandoned by a crash. */
+  leaseMillis: 60_000,
+  /** How often a process refreshes the files it reads, writes or locks. */
+  heartbeatMillis: 10_000,
+  /** How often a process waiting on another's lock looks again. */
+  pollMillis: 50,
 };
 export const RawCacheLimits = Context.Reference<typeof DEFAULT_RAW_CACHE_LIMITS>(
   "@mend/store/RawCacheLimits",

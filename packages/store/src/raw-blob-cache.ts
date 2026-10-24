@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-import { Cache, Clock, Deferred, Effect, Exit, Fiber, Scope, Semaphore } from "effect";
+import { Cache, Deferred, Effect, Exit, Fiber, Scope, Semaphore } from "effect";
 
 import {
   parseImmutableTree,
@@ -25,10 +25,6 @@ interface Blob {
   readonly oid: BlobId;
   readonly size: number;
 }
-interface Entry {
-  readonly size: number;
-  readers: number;
-}
 interface Lookup {
   readonly repository: string;
   readonly tree: ImmutableTree;
@@ -37,6 +33,11 @@ interface Lookup {
 
 const io = <A>(body: () => A) =>
   Effect.try({ try: body, catch: () => new RawReadError({ reason: "io" }) });
+const isErrno = (error: unknown, code: string) =>
+  error instanceof Error && "code" in error && error.code === code;
+/** Cache files are shared with other processes, so their times follow the wall clock. */
+const wallClock = () => Date.now();
+const unlock = (file: string) => Effect.sync(() => fs.rmSync(file, { force: true }));
 const validPath = (path: string) =>
   path.length > 0 &&
   Buffer.byteLength(path) <= 4096 &&
@@ -118,7 +119,7 @@ const unpack = (
           pipeline(
             child.stdout,
             bounded,
-            fs.createWriteStream(temporary, { flags: "wx", mode: 0o600 }),
+            fs.createWriteStream(temporary, { flags: "r+", mode: 0o600 }),
             { signal },
           ).catch((error: unknown) => {
             child.kill();
@@ -147,6 +148,21 @@ const unpack = (
     });
   });
 
+/**
+ * The directory every process on the store shares. Its listing is the only accounting:
+ *
+ * - `<key>.blob` a published file; its mtime is its lease, refreshed while any process reads it;
+ * - `<key>.tmp-<size>-<id>` a file being unpacked, its size reserved, refreshed while it is;
+ * - `<key>.lock` the one preparation of a blob, across processes;
+ * - `<key>.evict-<id>` a file being evicted;
+ * - `admit.lock` held while one process counts the directory and reserves room.
+ *
+ * A file left behind by a crashed process stops being refreshed and goes stale after the lease.
+ */
+const BLOB = /^([a-f0-9]{64})\.blob$/;
+const TEMPORARY = /^[a-f0-9]{64}\.tmp-(\d+)-[a-f0-9-]+$/;
+const ABANDONABLE = /^[a-f0-9]{64}\.(?:lock|evict-[a-f0-9-]+)$/;
+
 interface RawBlobCache {
   readonly open: (
     repository: string,
@@ -158,66 +174,159 @@ interface RawBlobCache {
   ) => Effect.Effect<void, RawReadError>;
 }
 
-/** Store-owned disk state: byte reservations and reader leases require eviction beyond Effect Cache. */
 export const makeRawBlobCache = (root: string): Effect.Effect<RawBlobCache, never, Scope.Scope> =>
   Effect.gen(function* () {
     const lifetime = yield* Scope.Scope;
-    const clock = yield* Clock.Clock;
     const limits = yield* RawCacheLimits;
     const wait = yield* RawPreparationWait;
     const permits = yield* Semaphore.make(limits.preparations);
     const directory = join(root, "_cache/raw");
-    const entries = new Map<string, Entry>();
     const pending = new Map<string, Deferred.Deferred<void, RawReadError>>();
-    let used = 0;
     const filename = (key: string) => join(directory, `${key}.blob`);
-    const room = (size: number, count = 1) => {
-      for (const [key, entry] of entries) {
-        if (
-          used + size <= limits.totalBytes &&
-          entries.size + pending.size + count <= limits.entries
-        )
-          break;
-        if (entry.readers !== 0) continue;
-        fs.unlinkSync(filename(key));
-        entries.delete(key);
-        used -= entry.size;
-      }
-      return (
-        used + size <= limits.totalBytes && entries.size + pending.size + count <= limits.entries
-      );
+    const touch = (file: string) => {
+      const now = new Date(wallClock());
+      fs.utimesSync(file, now, now);
     };
+    const stale = (file: string) => {
+      try {
+        return wallClock() - fs.statSync(file).mtimeMs > limits.leaseMillis;
+      } catch (error) {
+        if (isErrno(error, "ENOENT")) return false;
+        throw error;
+      }
+    };
+    const removeIfStale = (file: string) => {
+      if (stale(file)) fs.rmSync(file, { force: true });
+    };
+    /** O_EXCL across processes; a holder that stops refreshing it loses it after the lease. */
+    const tryLock = (file: string) => {
+      try {
+        fs.writeFileSync(file, "", { flag: "wx", mode: 0o600 });
+        return true;
+      } catch (error) {
+        if (isErrno(error, "EEXIST")) return false;
+        throw error;
+      }
+    };
+    const lock = (file: string, until: () => boolean = () => false) =>
+      Effect.gen(function* () {
+        while (true) {
+          if (yield* io(until)) return false;
+          if (yield* io(() => tryLock(file))) return true;
+          yield* io(() => removeIfStale(file));
+          yield* Effect.sleep(limits.pollMillis);
+        }
+      });
+    /** Keeps a lease, lock or reservation fresh for as long as the caller's scope holds it. */
+    const heartbeat = (refresh: () => void) =>
+      Effect.forkScoped(
+        Effect.ignore(io(refresh)).pipe(Effect.delay(limits.heartbeatMillis), Effect.forever),
+      );
+
+    /** Moves an idle file aside, then restores it if a reader leased it in the meantime. */
+    const evict = (key: string) => {
+      const evicting = join(directory, `${key}.evict-${randomUUID()}`);
+      try {
+        fs.renameSync(filename(key), evicting);
+      } catch (error) {
+        if (isErrno(error, "ENOENT")) return true;
+        throw error;
+      }
+      if (wallClock() - fs.statSync(evicting).mtimeMs > limits.leaseMillis) {
+        fs.rmSync(evicting, { force: true });
+        return true;
+      }
+      try {
+        fs.linkSync(evicting, filename(key));
+      } catch (error) {
+        if (!isErrno(error, "EEXIST")) throw error;
+      }
+      fs.rmSync(evicting, { force: true });
+      return false;
+    };
+    /** Counts the shared directory, evicts idle files to fit, and reserves `size` bytes. */
+    const admit = (key: string, size: number) =>
+      Effect.acquireUseRelease(
+        lock(join(directory, "admit.lock")),
+        () =>
+          io(() => {
+            const now = wallClock();
+            const idle: Array<{ key: string; size: number; mtime: number }> = [];
+            let used = 0;
+            let files = 0;
+            for (const name of fs.readdirSync(directory)) {
+              const file = join(directory, name);
+              let stat: fs.Stats;
+              try {
+                stat = fs.lstatSync(file);
+              } catch (error) {
+                if (isErrno(error, "ENOENT")) continue;
+                throw error;
+              }
+              const age = now - stat.mtimeMs;
+              const blob = BLOB.exec(name);
+              const temporary = TEMPORARY.exec(name);
+              if (blob !== null) {
+                used += stat.size;
+                files++;
+                if (age > limits.leaseMillis)
+                  idle.push({ key: blob[1] ?? "", size: stat.size, mtime: stat.mtimeMs });
+              } else if (temporary !== null) {
+                if (age > limits.leaseMillis) fs.rmSync(file, { force: true });
+                else {
+                  used += Number(temporary[1]);
+                  files++;
+                }
+              } else if (ABANDONABLE.test(name) && age > limits.leaseMillis)
+                fs.rmSync(file, { force: true });
+            }
+            const fits = () => used + size <= limits.totalBytes && files + 1 <= limits.entries;
+            for (const entry of idle.toSorted((a, b) => a.mtime - b.mtime)) {
+              if (fits()) break;
+              if (evict(entry.key)) {
+                used -= entry.size;
+                files--;
+              }
+            }
+            if (!fits()) return null;
+            const temporary = join(directory, `${key}.tmp-${size}-${randomUUID()}`);
+            fs.writeFileSync(temporary, "", { flag: "wx", mode: 0o600 });
+            return temporary;
+          }),
+        (locked) => (locked ? unlock(join(directory, "admit.lock")) : Effect.void),
+      );
+    /** One unpack per blob across processes: a loser waits for the winner's published file. */
+    const publish = (repository: string, blob: Blob, key: string) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const published = filename(key);
+          const blobLock = join(directory, `${key}.lock`);
+          const exists = () => fs.existsSync(published);
+          const locked = yield* Effect.acquireRelease(lock(blobLock, exists), (held) =>
+            held ? unlock(blobLock) : Effect.void,
+          );
+          if (!locked || (yield* io(exists))) return;
+          const temporary = yield* admit(key, blob.size);
+          if (temporary === null) return yield* new RawReadError({ reason: "preparing" });
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => fs.rmSync(temporary, { force: true })),
+          );
+          yield* heartbeat(() => [blobLock, temporary].forEach(touch));
+          yield* permits.withPermits(1)(unpack(repository, blob, temporary));
+          yield* io(() => {
+            const fd = fs.openSync(temporary, "r");
+            try {
+              fs.fsyncSync(fd);
+            } finally {
+              fs.closeSync(fd);
+            }
+            fs.renameSync(temporary, published);
+          });
+        }),
+      );
     const initialize = yield* Effect.cached(
       io(() => {
         fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-        const names = fs
-          .readdirSync(directory)
-          .toSorted(
-            (a, b) =>
-              fs.lstatSync(join(directory, a)).mtimeMs - fs.lstatSync(join(directory, b)).mtimeMs,
-          );
-        for (const name of names) {
-          const temporary = /\.tmp-(\d+)-/.exec(name);
-          if (temporary !== null) {
-            let alive = true;
-            try {
-              process.kill(Number(temporary[1]), 0);
-            } catch (error) {
-              alive = !(error instanceof Error && "code" in error && error.code === "ESRCH");
-            }
-            if (!alive || Number(temporary[1]) === process.pid)
-              fs.rmSync(join(directory, name), { force: true });
-          } else if (/^[a-f0-9]{64}\.blob$/.test(name)) {
-            const stat = fs.lstatSync(join(directory, name));
-            if (!stat.isFile() || stat.size > limits.fileBytes) {
-              fs.rmSync(join(directory, name), { force: true });
-              continue;
-            }
-            entries.set(name.slice(0, -5), { size: stat.size, readers: 0 });
-            used += stat.size;
-          }
-        }
-        room(0, 0);
       }),
     );
     const metadata = yield* Cache.makeWith(
@@ -229,41 +338,13 @@ export const makeRawBlobCache = (root: string): Effect.Effect<RawBlobCache, neve
     );
     const prepare = (repository: string, blob: Blob, key: string) =>
       Effect.gen(function* () {
-        const completion = yield* Deferred.make<void, RawReadError>();
-        if (entries.has(key)) return;
+        if (yield* io(() => fs.existsSync(filename(key)))) return;
         const existing = pending.get(key);
         if (existing !== undefined) return yield* Deferred.await(existing);
         if (pending.size >= limits.pending) return yield* new RawReadError({ reason: "preparing" });
+        const completion = yield* Deferred.make<void, RawReadError>();
         pending.set(key, completion);
-        const write = Effect.gen(function* () {
-          const admitted = yield* io(() => room(blob.size, 0));
-          if (!admitted) return yield* new RawReadError({ reason: "preparing" });
-          used += blob.size;
-          let published = false;
-          const temporary = join(directory, `${key}.tmp-${process.pid}-${randomUUID()}`);
-          yield* Effect.gen(function* () {
-            yield* unpack(repository, blob, temporary);
-            yield* io(() => {
-              const fd = fs.openSync(temporary, "r");
-              try {
-                fs.fsyncSync(fd);
-              } finally {
-                fs.closeSync(fd);
-              }
-              fs.renameSync(temporary, filename(key));
-              entries.set(key, { size: blob.size, readers: 0 });
-              published = true;
-            });
-          }).pipe(
-            Effect.ensuring(
-              io(() => {
-                fs.rmSync(temporary, { force: true });
-                if (!published) used -= blob.size;
-              }).pipe(Effect.orDie),
-            ),
-          );
-        }).pipe(permits.withPermits(1));
-        yield* write.pipe(
+        yield* publish(repository, blob, key).pipe(
           Effect.exit,
           Effect.flatMap((exit) => Deferred.done(completion, exit)),
           Effect.ensuring(
@@ -294,49 +375,74 @@ export const makeRawBlobCache = (root: string): Effect.Effect<RawBlobCache, neve
         if (blob.size > limits.fileBytes) return yield* new RawReadError({ reason: "too-large" });
         const key = createHash("sha256").update(`${location}\0${blob.oid}`).digest("hex");
         yield* prepare(location, blob, key);
-        return { blob, key };
+        return { blob, key, location };
       });
+    /**
+     * A descriptor of the published file, leased by its refreshed mtime; null when another process
+     * evicted it first. The path is checked after the lease, so an eviction that moved the file
+     * aside before the lease landed is seen here, not served.
+     */
+    const lease = (key: string, size: number) =>
+      Effect.acquireRelease(
+        io(() => {
+          let fd: number;
+          try {
+            fd = fs.openSync(filename(key), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+          } catch (error) {
+            if (isErrno(error, "ENOENT")) return null;
+            throw error;
+          }
+          try {
+            const stat = fs.fstatSync(fd);
+            const now = new Date(wallClock());
+            fs.futimesSync(fd, now, now);
+            const named = fs.statSync(filename(key), { throwIfNoEntry: false });
+            if (
+              stat.isFile() &&
+              stat.size === size &&
+              named?.ino === stat.ino &&
+              named.dev === stat.dev
+            )
+              return fd;
+          } catch (error) {
+            fs.closeSync(fd);
+            throw error;
+          }
+          fs.closeSync(fd);
+          return null;
+        }),
+        (fd) =>
+          Effect.sync(() => {
+            if (fd !== null) fs.closeSync(fd);
+          }),
+      );
     const open: RawBlobCache["open"] = (repository, target) =>
       Effect.gen(function* () {
         const fiber = yield* Effect.forkIn(load(repository, target), lifetime);
-        const { blob, key } = yield* Fiber.join(fiber).pipe(
+        const { blob, key, location } = yield* Fiber.join(fiber).pipe(
           Effect.timeoutOrElse({
             duration: wait,
             orElse: () => Effect.fail(new RawReadError({ reason: "preparing" })),
           }),
         );
-        const held = yield* Effect.acquireRelease(
-          io(() => {
-            const entry = entries.get(key);
-            if (entry === undefined) throw new Error("raw entry evicted");
-            const fd = fs.openSync(filename(key), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-            try {
-              const stat = fs.fstatSync(fd);
-              if (!stat.isFile() || stat.size !== blob.size) throw new Error("raw entry changed");
-              const now = new Date(clock.currentTimeMillisUnsafe());
-              fs.futimesSync(fd, now, now);
-              entry.readers++;
-              entries.delete(key);
-              entries.set(key, entry);
-              return { fd, entry };
-            } catch (error) {
-              fs.closeSync(fd);
-              throw error;
-            }
-          }),
-          ({ fd, entry }) =>
-            Effect.sync(() => {
-              fs.closeSync(fd);
-              entry.readers--;
-            }),
-        );
+        let fd = yield* lease(key, blob.size);
+        if (fd === null) {
+          yield* prepare(location, blob, key);
+          fd = yield* lease(key, blob.size);
+        }
+        if (fd === null) return yield* new RawReadError({ reason: "preparing" });
+        const held = fd;
+        yield* heartbeat(() => {
+          const now = new Date(wallClock());
+          fs.futimesSync(held, now, now);
+        });
         const revision = revisionFingerprint({ kind: "blob", oid: blob.oid });
         return {
           canonicalPath: target.path,
           size: blob.size,
           revision,
           identity: revision,
-          read: readRawDescriptor(held.fd, blob.size),
+          read: readRawDescriptor(held, blob.size),
         };
       });
     return { open, prepare: (repository, target) => load(repository, target).pipe(Effect.asVoid) };
