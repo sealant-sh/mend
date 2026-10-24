@@ -315,7 +315,9 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
     HttpApiEndpoint.get("raw", "/worktrees/:id/raw", {
       params: { id: WorktreeId },
       query: rawQuery,
-      // Effect permits one streaming success schema. The handler also streams 206 with Content-Range.
+      // Effect 4.0.5 allows one streaming success schema, so the handler builds its range answers
+      // itself: 206 with Content-Range on this schema's body, and 416 as declared below. A typed
+      // client decodes 200 and the errors only; the t3code gateway reads this route as raw HTTP.
       success: HttpApiSchema.WithHeaders(HttpApiSchema.StreamUint8Array(), rawMetadata),
       error: [
         ...rawErrors,
