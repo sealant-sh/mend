@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import { makeReplayLog, makeSequencer } from "../src/replay.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
+import { advanceClock } from "./support/fake-workbench.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
@@ -26,7 +27,9 @@ type ShellItem = OrchestrationV2ShellStreamItem;
 type Item = OrchestrationV2ThreadStreamItem;
 const THREAD = ThreadId.make("session-1");
 
+/** A session made just now: one quiet for days would settle on its own while the test runs. */
 const setup = (mend: FakeMend) => {
+  advanceClock(Date.now());
   mend.workbench.addProject("project-1", "mend");
   mend.workbench.addSession({ id: "session-1", projectId: "project-1", label: "Before" });
 };
