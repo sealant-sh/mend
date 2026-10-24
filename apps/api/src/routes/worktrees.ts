@@ -39,12 +39,14 @@ import type { CheckpointId, WorktreeId } from "@mend/domain";
 import { currentAgentProcess, heldRepositoriesRefusal } from "@mend/domain/workbench";
 import { captureHoldWords, SessionEngine, startFromBase, WorktreeReads } from "@mend/sessions";
 import { type DiffFileFact, isWorktreeRelativePath, Store } from "@mend/store";
-import { Clock, Duration, Effect, Stream } from "effect";
+import { Clock, Context, Duration, Effect, Stream } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
+import { Budgets } from "../budgets.ts";
 import { unlandedWork } from "../landing-state.ts";
+import { budgetExceeded } from "../session-budgets.ts";
 import { LIVE_STATES, observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
 
 const rawFile = (
@@ -70,6 +72,14 @@ const rawFile = (
       return yield* new RawFileUnavailable({ mode: "checkpoint" });
     }
     const request = yield* HttpServerRequest.HttpServerRequest;
+    // The one way to end a body whose headers went out: Node's adapter would end it short, and a
+    // keep-alive client would wait for the rest.
+    const reset = () => {
+      if (request.source instanceof IncomingMessage)
+        NodeHttpServerRequest.toServerResponse(request).destroy();
+    };
+    const full = yield* (yield* Budgets).rawReadSlot((yield* CurrentUser).user.id);
+    if (full !== null) return yield* budgetExceeded(full, (yield* Budgets).limits);
     const file = yield* (yield* WorktreeReads)
       .openRawFile(worktree.projectId, worktree.id, {
         path: query.path,
@@ -122,20 +132,37 @@ const rawFile = (
         headers["content-length"] = String(length);
       }
     }
-    return request.method === "HEAD"
-      ? HttpServerResponse.empty({ status, headers })
-      : HttpServerResponse.stream(
-          file.read(offset, length).pipe(
-            Stream.onError(() =>
-              Effect.sync(() => {
-                // Node's adapter ends a short fixed-length body; a keep-alive client then waits.
-                if (request.source instanceof IncomingMessage)
-                  NodeHttpServerRequest.toServerResponse(request).destroy();
-              }),
-            ),
-          ),
-          { status, headers },
-        );
+    if (request.method === "HEAD") return HttpServerResponse.empty({ status, headers });
+    const stall = Duration.toMillis(yield* RawReadStallLimit);
+    let taken = yield* Clock.currentTimeMillis;
+    yield* Effect.forkScoped(
+      Effect.gen(function* () {
+        while ((yield* Clock.currentTimeMillis) - taken < stall) yield* Effect.sleep(stall / 4);
+        reset();
+      }),
+    );
+    return HttpServerResponse.stream(
+      file.read(offset, length).pipe(
+        Stream.tap(() =>
+          Effect.map(Clock.currentTimeMillis, (now) => {
+            taken = now;
+          }),
+        ),
+        Stream.onError(() => Effect.sync(reset)),
+      ),
+      { status, headers },
+    );
+  });
+
+/**
+ * How long a raw body waits for its reader to take the next chunk. A paused video or a sleeping
+ * laptop stops reading without closing; its connection is reset, which frees the descriptor and
+ * the read slot. Longer than a slow phone takes over one chunk. A reference so a test can shorten
+ * it.
+ */
+export const RawReadStallLimit: Context.Reference<Duration.Duration> =
+  Context.Reference<Duration.Duration>("@mend/api/RawReadStallLimit", {
+    defaultValue: () => Duration.seconds(30),
   });
 
 /** How much of one file a read answers: enough to show it, never a large artifact whole. */

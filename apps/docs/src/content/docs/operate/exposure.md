@@ -383,6 +383,8 @@ a capture.
 | `MEND_BUDGET_ACCOUNT_TERMINALS`                | `24`       | Open terminal sockets for one account.                                                                                       |
 | `MEND_BUDGET_ACCOUNT_TUNNELS`                  | `24`       | Open service tunnels for one account.                                                                                        |
 | `MEND_BUDGET_ACCOUNT_KEY_BRIDGES`              | `4`        | Open key bridges (ssh-agent shares) for one account.                                                                         |
+| `MEND_BUDGET_ACCOUNT_RAW_READS`                | `128`      | Raw file reads one account has open at once (the t3code gateway's previews and media).                                       |
+| `MEND_BUDGET_RAW_READS`                        | `512`      | Raw file reads open at once on the instance, whoever reads.                                                                  |
 
 `0` turns one budget off. The API logs at start which are off, and the `budgets` gate item is open
 while any is.
