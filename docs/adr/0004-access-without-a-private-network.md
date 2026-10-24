@@ -251,9 +251,11 @@ These are reusable bearer capabilities. A fetch checks the originating device ev
 browser sends no authorization header. A fresh mint creates a new random token; its lifetime also
 ends with the bearer session. The gateway stores only the token hash, keeps paths redacted, and
 disables access logging and tracing for asset requests, including preflights and failures. The edge
-Caddy filters the token and the file name out of its access log and its own lines, and the raw
-read's query too. Mend raw reads still authorize the account against the worktree on every request.
-This amendment does not change upgrade tickets or permit a device bearer in an asset URL.
+Caddy logs no uri on the gateway's origin and no query on Mend's origin, in its access log and its
+own lines, and every line it does not name for Mend's site holds no uri. It strips the raw route's
+`X-Mend-File-*` headers, which only the gateway reads, over loopback. Mend raw reads still authorize
+the account against the worktree on every request. This amendment does not change upgrade tickets or
+permit a device bearer in an asset URL.
 
 Observed scope of a directory grant: t3code serves an HTML preview in a sandbox that runs its
 scripts with no `connect-src` limit, as the gateway does for parity. Such a page can read its own

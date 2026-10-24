@@ -558,8 +558,10 @@ falls back to the complete response. HEAD returns metadata without reading the b
 before headers are plain 404; a failure after headers resets the connection, in the gateway and in
 Mend's raw route alike. Neither paths nor tokens enter asset access logs or traces, in any spelling
 of the route the router accepts. Mend raw reads disable access logs and traces too, and the edge
-Caddy that `mend server setup` writes filters both out of its own logs. Raw reads go through the
-device gate (`src/device-gate.ts`): a 401 refuses the device as every other device-token call does.
+Caddy that `mend server setup` writes logs asset URLs with no uri and raw reads with no query, and
+never passes the raw route's `X-Mend-File-*` headers on; the gateway reads those from Mend directly.
+Raw reads go through the device gate (`src/device-gate.ts`): a 401 refuses the device as every other
+device-token call does.
 
 Limits are sized from how t3code v0.1.2 asks: one `createUrl` per visible image, all at once and
 again every 30 minutes, and a page of images loaded in parallel. They live in `AssetLimits`. A mint

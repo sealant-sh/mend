@@ -264,7 +264,9 @@ What the overlay does, and what it states on your behalf:
   response cut short (`aborting with incomplete response`), which Caddy names for the proxy rather
   than the site; on Mend's origin the access line from the same `remote_port` holds the path.
 - The edge drops the `Referer` header, and Caddy redacts `Authorization`, `Cookie` and `Set-Cookie`.
-  The other request and response headers are logged as Caddy writes them.
+  The other request and response headers are logged as Caddy writes them, except the raw route's
+  `X-Mend-File-*` headers, which the edge strips: only the t3code gateway reads them, from Mend over
+  loopback.
 
 What was checked: the merged files render, and the Caddyfile validates with Caddy. What was not: a
 certificate issued and a browser session through it, end to end. Workspace SSH on port 2222 stays on
