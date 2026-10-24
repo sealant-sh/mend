@@ -103,6 +103,7 @@ const runSteps = Effect.fn("test.runSteps")(function* (
   const sentBeforeLive = wire.sent.length;
   const lines: Array<Uint8Array> = [];
   const outcomes: Array<Outcome> = [];
+  const answered: Array<string> = [];
   const target = (): string =>
     startedTurnIds(events).at(-1) ?? options.rehydrate?.replayProviderTurnIds.at(-1) ?? "none";
   const first = options.first ?? 0;
@@ -127,6 +128,7 @@ const runSteps = Effect.fn("test.runSteps")(function* (
       yield* session.interrupt();
     } else if ("respond" in step) {
       const exit = yield* session.respond(step.respond, "accept").pipe(Effect.exit);
+      if (Exit.isSuccess(exit)) answered.push(step.respond);
       outcomes.push({ step: index, result: outcomeOf(exit) });
     } else {
       yield* wire.end;
@@ -140,6 +142,7 @@ const runSteps = Effect.fn("test.runSteps")(function* (
     sent: wire.sent,
     sentBeforeLive,
     lines,
+    answered,
     journal: journal?.records ?? [],
   };
 });
@@ -149,17 +152,21 @@ type Run = Effect.Success<ReturnType<typeof runSteps>>;
 /**
  * Events as the host keeps them, with turn ids named by the order turns started. Start
  * announcements are left out: a rehydrate takes turns the host already knows from its replay
- * queue and announces none of them again.
+ * queue and announces none of them again. So are the requests `settled` names: the host resolved
+ * them before a restart, and a rehydrate skips them.
  */
 const projection = (
   run: Pick<Run, "events" | "outcomes">,
   replayed: ReadonlyArray<string> = [],
+  settled: ReadonlySet<string> = new Set(),
 ) => {
   const kept = run.events.filter(
     (event) =>
       event._tag !== "session.ready" &&
       event._tag !== "turn.started" &&
-      event._tag !== "harness-turn.started",
+      event._tag !== "harness-turn.started" &&
+      !(event._tag === "request.opened" && settled.has(event.request.providerRequestId)) &&
+      !(event._tag === "request.resolved" && settled.has(event.providerRequestId)),
   );
   const named = (value: unknown): unknown => {
     let text = JSON.stringify(value);
@@ -183,18 +190,26 @@ const runCrashed = Effect.fn("test.runCrashed")(function* (
 ) {
   const before = yield* Effect.scoped(runSteps(steps.slice(0, cut)));
   const replayProviderTurnIds = startedTurnIds(before.events);
+  const settled = new Set([
+    ...before.events.flatMap((event) =>
+      event._tag === "request.resolved" ? [event.providerRequestId] : [],
+    ),
+    ...before.answered,
+  ]);
   const after = yield* runSteps(steps.slice(cut), {
     first: cut,
     journal: memoryJournal(before.journal.toReversed()),
     replayBytes: chunking(concatBytes(before.lines)),
-    rehydrate: { replayProviderTurnIds, resolvedProviderRequestIds: new Set() },
+    rehydrate: { replayProviderTurnIds, resolvedProviderRequestIds: settled },
   });
   return {
     after,
     replayProviderTurnIds,
+    settled,
     projection: projection(
       { ...after, outcomes: [...before.outcomes, ...after.outcomes] },
       replayProviderTurnIds,
+      settled,
     ),
     priorJournal: before.journal,
   };
@@ -206,11 +221,12 @@ const runCrashed = Effect.fn("test.runCrashed")(function* (
  */
 const expectDeterministicReplay = (steps: ReadonlyArray<Step>) =>
   Effect.gen(function* () {
-    const whole = projection(yield* Effect.scoped(runSteps(steps)));
+    const uninterrupted = yield* Effect.scoped(runSteps(steps));
     const ends = steps.some((step) => "end" in step);
     for (let cut = 0; cut <= steps.length - (ends ? 1 : 0); cut += 1) {
       for (const [name, chunking] of Object.entries(CHUNKINGS)) {
         const crashed = yield* Effect.scoped(runCrashed(steps, cut, chunking));
+        const whole = projection(uninterrupted, [], crashed.settled);
         expect({ cut, name, ...crashed.projection }).toEqual({ cut, name, ...whole });
         expect({ cut, name, replayWrites: crashed.after.sentBeforeLive }).toEqual({
           cut,
@@ -266,14 +282,16 @@ const assistant = (id: string, text: string): Step =>
     session_id: SESSION,
     message: { id, content: [{ type: "text", text }] },
   });
-const permission = (requestId: string): Step =>
+const permission = (requestId: string, agentId?: string): Step =>
   line({
     type: "control_request",
     request_id: requestId,
     request: {
       subtype: "can_use_tool",
       tool_name: "Bash",
-      input: { command: "sleep 60", tool_use_id: "toolu_1" },
+      input: { command: "sleep 60", tool_use_id: `toolu_${requestId}` },
+      tool_use_id: `toolu_${requestId}`,
+      ...(agentId === undefined ? {} : { agent_id: agentId }),
     },
   });
 
@@ -841,36 +859,64 @@ describe("Claude steering, synthetic", () => {
     }),
   );
 
-  it.effect("a permission the aborted segment held is cancelled, and a late answer refused", () =>
-    Effect.gen(function* () {
-      const steps: ReadonlyArray<Step> = [
-        { send: "first" },
-        init("init-1"),
-        permission("permission-1"),
-        { steer: "second", id: STEER_ID },
-        aborted("result-1", "aborted_tools"),
-        { respond: "permission-1" },
-        init("init-2"),
-        result("result-2"),
-        { end: true },
-      ];
-      const run = yield* Effect.scoped(runSteps(steps));
-      expect(
-        run.events.filter(
-          (event) => event._tag === "request.opened" || event._tag === "request.resolved",
-        ),
-      ).toEqual([
-        expect.objectContaining({
-          _tag: "request.opened",
-          request: expect.objectContaining({ providerRequestId: "permission-1" }),
-        }),
-        { _tag: "request.resolved", providerRequestId: "permission-1", disposition: "cancelled" },
-      ]);
-      expect(run.outcomes.at(-1)?.result).toEqual([{ _tag: "AgentProtocolError", reason: null }]);
-      expect(run.sent.some((frame) => frame["type"] === "control_response")).toBe(false);
-      expect(completions(run)).toEqual([expect.objectContaining({ status: "completed" })]);
-      yield* expectDeterministicReplay(steps);
-    }),
+  it.effect(
+    "a segment close denies the main thread's open permission and keeps a sub-agent's",
+    () =>
+      Effect.gen(function* () {
+        const steps: ReadonlyArray<Step> = [
+          { send: "first" },
+          init("init-1"),
+          permission("permission-1"),
+          permission("permission-sub", "agent-7"),
+          { steer: "second", id: STEER_ID },
+          aborted("result-1", "aborted_tools"),
+          { respond: "permission-1" },
+          init("init-2"),
+          { respond: "permission-sub" },
+          result("result-2"),
+          { end: true },
+        ];
+        const run = yield* Effect.scoped(runSteps(steps));
+        expect(
+          run.events.filter(
+            (event) => event._tag === "request.opened" || event._tag === "request.resolved",
+          ),
+        ).toEqual([
+          expect.objectContaining({
+            _tag: "request.opened",
+            request: expect.objectContaining({ providerRequestId: "permission-1" }),
+          }),
+          expect.objectContaining({
+            _tag: "request.opened",
+            request: expect.objectContaining({ providerRequestId: "permission-sub" }),
+          }),
+          { _tag: "request.resolved", providerRequestId: "permission-1", disposition: "cancelled" },
+        ]);
+        expect(run.outcomes.slice(1).map((outcome) => outcome.result)).toEqual([
+          [{ _tag: "AgentProtocolError", reason: null }],
+          undefined,
+        ]);
+        expect(run.sent.filter((frame) => frame["type"] === "control_response")).toEqual([
+          {
+            type: "control_response",
+            response: {
+              subtype: "success",
+              request_id: "permission-1",
+              response: expect.objectContaining({ behavior: "deny", interrupt: false }),
+            },
+          },
+          {
+            type: "control_response",
+            response: {
+              subtype: "success",
+              request_id: "permission-sub",
+              response: expect.objectContaining({ behavior: "allow" }),
+            },
+          },
+        ]);
+        expect(completions(run)).toEqual([expect.objectContaining({ status: "completed" })]);
+        yield* expectDeterministicReplay(steps);
+      }),
   );
 
   it.effect("sums each parsed counter over the segments, null when a segment lacks it", () =>

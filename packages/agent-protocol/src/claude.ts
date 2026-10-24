@@ -46,6 +46,8 @@ interface PendingControl {
   readonly input: JsonObject;
   readonly suggestions: ReadonlyArray<unknown>;
   readonly kind: "approval" | "input";
+  /** Asked by a sub-agent (`agent_id`), whose work a steer does not abort. */
+  readonly subAgent: boolean;
 }
 
 const isObject = (value: unknown): value is JsonObject =>
@@ -395,6 +397,7 @@ export const ClaudeAdapter: AgentAdapter = {
           input,
           suggestions,
           kind,
+          subAgent: stringField(request, "agent_id") !== null,
         });
         if (currentTurnId === null) {
           pending.delete(requestId);
@@ -431,16 +434,31 @@ export const ClaudeAdapter: AgentAdapter = {
               reason,
             });
           }
+          // The steer aborted the main thread's step, and with it the tool asking. Claude is told
+          // so (no interrupt: the continuation runs), in case it still waits on the answer.
           case "SegmentClosed":
             return Effect.forEach(
-              [...pending].filter(([, request]) => request.providerTurnId === effect.turnId),
+              [...pending].filter(
+                ([, request]) => request.providerTurnId === effect.turnId && !request.subAgent,
+              ),
               ([providerRequestId]) => {
                 pending.delete(providerRequestId);
-                return publish({
-                  _tag: "request.resolved",
-                  providerRequestId,
-                  disposition: "cancelled",
-                });
+                return send(
+                  controlResponse(providerRequestId, {
+                    behavior: "deny",
+                    message: "The turn was steered before this request was answered.",
+                    interrupt: false,
+                  }),
+                ).pipe(
+                  Effect.ignore,
+                  Effect.andThen(
+                    publish({
+                      _tag: "request.resolved",
+                      providerRequestId,
+                      disposition: "cancelled",
+                    }),
+                  ),
+                );
               },
               { discard: true },
             );
