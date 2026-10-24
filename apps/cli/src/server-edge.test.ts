@@ -410,13 +410,66 @@ describe("where the t3code gateway is published (ADR 0012, ADR 0004)", () => {
     ).toBeUndefined();
   });
 
-  it("the edge's site proxies to the gateway on its own origin, unbuffered, with its ticket out of the log", () => {
+  it("the edge's site proxies to the gateway on its own origin, unbuffered", () => {
     expect(EDGE_CADDYFILE).toContain("import /etc/caddy/sites/*.caddy");
     expect(T3_GATEWAY_CADDYFILE).toContain("{$MEND_T3_GATEWAY_EDGE_HOST} {");
     expect(T3_GATEWAY_CADDYFILE).toContain("\treverse_proxy mend:3120 {\n");
     expect(T3_GATEWAY_CADDYFILE).toContain("\t\tflush_interval -1\n");
-    expect(T3_GATEWAY_CADDYFILE).toContain("replace wsTicket REDACTED");
     for (const line of declaredPostureLines({ bind: "100.94.101.28", t3GatewayPort: 3120 }))
       expect(line).not.toMatch(VERDICTS);
+  });
+});
+
+describe("what the edge logs (ADR 0004)", () => {
+  // What a client can send, in spellings that clean to a route of their own or to none, and what
+  // a line about it may hold: its path, and never its query or the userinfo of an absolute form.
+  const requests: ReadonlyArray<readonly [sent: string, logged: string]> = [
+    ["/api/projects", "/api/projects"],
+    ["/api/projects?raw=1", "/api/projects?REDACTED"],
+    ["/api/worktrees/w1/raw?path=private-dir%2Fprivate-name.png", "/api/worktrees/w1/raw?REDACTED"],
+    [
+      "/API//worktrees/w1/r%61w/;v=1?path=private-name.png",
+      "/API//worktrees/w1/r%61w/;v=1?REDACTED",
+    ],
+    ["/api/x/%2e%2e/pair?%63ode=SYN_CODE", "/api/x/%2e%2e/pair?REDACTED"],
+    ["/api/x/../../pair?code=SYN_CODE", "/api/x/../../pair?REDACTED"],
+    ["/?wsTicket=SYN_TICKET&token=SYN_TOKEN", "/?REDACTED"],
+    ["/api/projects?raw=SYN_RAW#SYN_FRAGMENT", "/api/projects?REDACTED"],
+    ["/api/projects#SYN_FRAGMENT?raw=SYN_RAW", "/api/projects#REDACTED"],
+    [
+      "http://SYN_USER:SYN_PASSWORD@mend.example.com/userinfo?ticket=SYN_TICKET",
+      "http://REDACTED@mend.example.com/userinfo?REDACTED",
+    ],
+    [
+      "http://mend.example.com/path@ordinary?visible=a%40b",
+      "http://mend.example.com/path@ordinary?REDACTED",
+    ],
+    ["//ordinary:label@path/nested?visible=SYN_PLAIN", "//ordinary:label@path/nested?REDACTED"],
+  ];
+
+  it("keeps the path of a request to Mend's origin and never its query, in every line Caddy writes", () => {
+    const filters = [...EDGE_CADDYFILE.matchAll(/^\t+request>uri regexp "(.+)" "(.+)"$/gm)];
+    // Caddy's own lines (a failed dial, a response cut short) and Mend's access lines.
+    expect(filters).toHaveLength(2);
+    for (const [, pattern = "", replacement = ""] of filters) {
+      // Go's ${1} is JavaScript's $1; the pattern reads the same in both.
+      const filter = (uri: string) =>
+        uri.replace(new RegExp(pattern, "g"), replacement.replaceAll(/\$\{(\d)\}/g, "$$$1"));
+      expect(requests.map(([sent]) => filter(sent))).toEqual(requests.map(([, logged]) => logged));
+    }
+  });
+
+  it("holds no uri in any line about a request to the t3code gateway's origin", () => {
+    const name = T3_GATEWAY_CADDYFILE.match(/^\tlog (\S+) \{$/m)?.[1];
+    expect(name).toBeDefined();
+    expect(T3_GATEWAY_CADDYFILE).toContain("\t\t\t\trequest>uri replace REDACTED\n");
+    // Caddy names its error lines for the site's logger, and reverse_proxy's for the handler alone:
+    // both go to a log of the Caddyfile's that holds no uri.
+    const uriFree = EDGE_CADDYFILE.match(
+      /^\tlog \S+ \{\n\t\tinclude (.+)\n(?:\t\t.*\n)*?\t\t\t\trequest>uri replace REDACTED\n/m,
+    )?.[1];
+    expect(uriFree?.split(" ").toSorted()).toEqual(
+      ["http.handlers.reverse_proxy", `http.log.error.${name}`].toSorted(),
+    );
   });
 });

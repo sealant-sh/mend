@@ -132,263 +132,286 @@ test("the edge drops privileges it does not need", { skip }, () => {
   assert.deepEqual(edge.security_opt, ["no-new-privileges:true"]);
 });
 
-test("the Caddyfile routes everything to web and declares named query credential filters", () => {
+test("the Caddyfile routes everything to web, unbuffered", () => {
   const caddyfile = readFileSync(path.join(directory, "Caddyfile"), "utf8");
   // One upstream, the web tier. Never the API (3101), the session channel (3106) or Sealant (4000).
   assert.deepEqual(caddyfile.match(/reverse_proxy\s+\S+/g), ["reverse_proxy mend:3105"]);
   for (const port of ["3101", "3106", "4000", "3900", "5432"])
     assert.ok(!caddyfile.includes(port), port);
-  for (const parameter of ["ticket", "token", "code"]) {
-    assert.match(caddyfile, new RegExp(`replace ${parameter} REDACTED`));
-  }
   assert.match(caddyfile, /flush_interval -1/);
 });
 
-for (const site of [
-  {
-    name: "Mend",
-    hostVariable: "MEND_EDGE_HOST",
-    port: 3105,
-    credentials: ["ticket", "token", "code"],
-  },
-  {
-    name: "t3code",
-    hostVariable: "MEND_T3_GATEWAY_EDGE_HOST",
-    port: 3120,
-    credentials: ["wsTicket", "token"],
-  },
-]) {
-  test(
-    `actual ${site.name} Caddy access logs redact URL credentials and headers while forwarding them`,
-    { timeout: 60_000 },
-    async (t) => {
-      if (process.env.MEND_TEST_SKIP_CADDY === "1") {
-        assert.ok(!process.env.CI, "CI must execute the actual Caddy access-log regression");
-        t.skip("explicit local opt-out: MEND_TEST_SKIP_CADDY=1");
-        return;
-      }
-      const scratch = mkdtempSync(path.join(tmpdir(), "mend-caddy-logs-"));
-      const owner = `mend-caddy-logs-${randomUUID()}`;
-      const containers = [];
-      const volumes = new Set();
-      let network;
-      const execute = promisify(execFile);
-      const docker = async (...args) =>
-        execute("docker", args, {
-          encoding: "utf8",
-          timeout: 15_000,
-          maxBuffer: 1024 * 1024,
-          env: {
-            PATH: process.env.PATH,
-            HOME: scratch,
-            DOCKER_CONFIG: path.join(scratch, "docker-config"),
-          },
-        });
-      t.after(async () => {
-        const failures = [];
+/**
+ * The edge as a packaged install runs it, on plain HTTP: the repository's Caddyfile, with the
+ * t3code gateway's site (`Caddyfile.t3`) mounted where it imports sites from, in front of a Caddy
+ * stub of Mend's web tier and the gateway. The stub answers 404 for `X-Stub: 404`, cuts a 200
+ * short for `X-Stub: abort`, and otherwise echoes what reached it.
+ */
+const startEdge = async (t) => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "mend-caddy-logs-"));
+  const owner = `mend-caddy-logs-${randomUUID()}`;
+  const containers = [];
+  const volumes = new Set();
+  let network;
+  const execute = promisify(execFile);
+  const docker = async (...args) =>
+    execute("docker", args, {
+      encoding: "utf8",
+      timeout: 15_000,
+      maxBuffer: 16 * 1024 * 1024,
+      env: {
+        PATH: process.env.PATH,
+        HOME: scratch,
+        DOCKER_CONFIG: path.join(scratch, "docker-config"),
+      },
+    });
+  t.after(async () => {
+    const failures = [];
+    try {
+      for (const container of containers.toReversed()) {
         try {
-          for (const container of containers.toReversed()) {
-            try {
-              await docker("rm", "-f", "-v", container);
-            } catch (error) {
-              failures.push(error);
-            }
-          }
-          if (volumes.size > 0) {
-            try {
-              const remaining = (
-                await docker("volume", "ls", "--format", "{{.Name}}")
-              ).stdout.split("\n");
-              for (const volume of volumes) {
-                assert.ok(!remaining.includes(volume), `owned volume ${volume} must be removed`);
-              }
-            } catch (error) {
-              failures.push(error);
-            }
-          }
-          if (network !== undefined) {
-            try {
-              await docker("network", "rm", network);
-            } catch (error) {
-              failures.push(error);
-            }
-          }
-        } finally {
-          rmSync(scratch, { recursive: true, force: true });
+          await docker("rm", "-f", "-v", container);
+        } catch (error) {
+          failures.push(error);
         }
-        if (failures.length > 0) throw new AggregateError(failures, "owned Caddy cleanup failed");
-        t.diagnostic(
-          `removed owned containers ${containers.join(", ")}; anonymous volumes: ${[...volumes].join(", ") || "none"}`,
+      }
+      if (volumes.size > 0) {
+        try {
+          const remaining = (await docker("volume", "ls", "--format", "{{.Name}}")).stdout.split(
+            "\n",
+          );
+          for (const volume of volumes) {
+            assert.ok(!remaining.includes(volume), `owned volume ${volume} must be removed`);
+          }
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (network !== undefined) {
+        try {
+          await docker("network", "rm", network);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+    if (failures.length > 0) throw new AggregateError(failures, "owned Caddy cleanup failed");
+    t.diagnostic(
+      `removed owned containers ${containers.join(", ")}; anonymous volumes: ${[...volumes].join(", ") || "none"}`,
+    );
+  });
+  const image = readFileSync(path.join(directory, "compose.edge.yaml"), "utf8").match(
+    /^\s+image: (caddy:\S+)$/m,
+  )?.[1];
+  assert.ok(image, "the edge overlay must declare its Caddy image");
+  await docker("info");
+  // CI installs the declared image first. Never silently skip an unavailable daemon or image.
+  await docker("image", "inspect", image);
+  network = (
+    await docker("network", "create", "--label", `mend.audit=${owner}`, owner)
+  ).stdout.trim();
+  const upstream = path.join(scratch, "upstream.Caddyfile");
+  writeFileSync(
+    upstream,
+    [
+      ":3105, :3120 {",
+      "\t@missing header X-Stub 404",
+      "\thandle @missing {",
+      '\t\trespond "Not Found" 404',
+      "\t}",
+      "\t@cut header X-Stub abort",
+      "\thandle @cut {",
+      "\t\theader Content-Length 100",
+      '\t\trespond "cut short" 200',
+      "\t}",
+      "\thandle {",
+      "\t\theader Set-Cookie SYN_RESPONSE_COOKIE",
+      '\t\trespond "{http.request.uri}|{http.request.header.Referer}|{http.request.header.Authorization}|{http.request.header.Cookie}" 200',
+      "\t}",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  // What the stub reloads to stop answering on 3105 and 3120: the edge's next dial is refused.
+  const idle = path.join(scratch, "idle.Caddyfile");
+  writeFileSync(idle, ":9999 {\n\trespond 204\n}\n");
+  const { T3_GATEWAY_CADDYFILE } = await import("../apps/cli/src/server-edge.ts");
+  const gatewaySite = path.join(scratch, "Caddyfile.t3");
+  writeFileSync(gatewaySite, T3_GATEWAY_CADDYFILE);
+  const create = async (name, mounts, extra) => {
+    const container = (
+      await docker(
+        "create",
+        "--pull=never",
+        "--name",
+        `${owner}-${name}`,
+        "--label",
+        `mend.audit=${owner}`,
+        "--network",
+        network,
+        ...extra,
+        ...mounts.flatMap(([source, target]) => [
+          "--mount",
+          `type=bind,source=${source},target=${target},readonly`,
+        ]),
+        image,
+      )
+    ).stdout.trim();
+    containers.push(container);
+    const inspected = JSON.parse((await docker("inspect", container)).stdout)[0].Mounts;
+    // Only implicit image volumes can exist: this fixture supplies read-only bind mounts.
+    for (const mount of inspected) if (mount.Type === "volume") volumes.add(mount.Name);
+    await docker("start", container);
+    return container;
+  };
+  const stub = await create(
+    "upstream",
+    [
+      [upstream, "/etc/caddy/Caddyfile"],
+      [idle, "/etc/caddy/idle.Caddyfile"],
+    ],
+    ["--network-alias", "mend"],
+  );
+  // HTTP on owned loopback ports exercises the edge's logging without ACME or public DNS.
+  const edge = await create(
+    "edge",
+    [
+      [path.join(directory, "Caddyfile"), "/etc/caddy/Caddyfile"],
+      [gatewaySite, "/etc/caddy/sites/t3code-gateway.caddy"],
+    ],
+    [
+      "-e",
+      "MEND_EDGE_HOST=http://:8080",
+      "-e",
+      "MEND_T3_GATEWAY_EDGE_HOST=http://:8081",
+      "-p",
+      "127.0.0.1::8080",
+      "-p",
+      "127.0.0.1::8081",
+    ],
+  );
+  const published = JSON.parse((await docker("inspect", edge)).stdout)[0].NetworkSettings.Ports;
+  const ports = {
+    mend: Number(published["8080/tcp"][0].HostPort),
+    gateway: Number(published["8081/tcp"][0].HostPort),
+  };
+  // Resolves once the response closes; `complete` is false for one cut short.
+  const request = (port, target, headers = {}) =>
+    new Promise((resolve) => {
+      const req = http.request({ host: "127.0.0.1", port, path: target, headers }, (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => (body += chunk));
+        response.on("error", () => {});
+        response.on("close", () =>
+          resolve({
+            status: response.statusCode,
+            headers: response.headers,
+            body,
+            complete: response.complete,
+          }),
         );
       });
-      const image = readFileSync(path.join(directory, "compose.edge.yaml"), "utf8").match(
-        /^\s+image: (caddy:\S+)$/m,
-      )?.[1];
-      assert.ok(image, "the edge overlay must declare its Caddy image");
-      await docker("info");
-      // CI installs the declared image first. Never silently skip an unavailable daemon or image.
-      await docker("image", "inspect", image);
-      network = (
-        await docker("network", "create", "--label", `mend.audit=${owner}`, owner)
-      ).stdout.trim();
-      const upstream = path.join(scratch, "upstream.Caddyfile");
-      writeFileSync(
-        upstream,
-        `:${site.port} {\n respond "{http.request.uri}|{http.request.header.Referer}|{http.request.header.Authorization}|{http.request.header.Cookie}" 200\n header Set-Cookie SYN_RESPONSE_COOKIE\n}\n`,
-      );
-      const create = async (name, config, extra) => {
-        const container = (
-          await docker(
-            "create",
-            "--pull=never",
-            "--name",
-            `${owner}-${name}`,
-            "--label",
-            `mend.audit=${owner}`,
-            "--network",
-            network,
-            ...extra,
-            "--mount",
-            `type=bind,source=${config},target=/etc/caddy/Caddyfile,readonly`,
-            image,
-          )
-        ).stdout.trim();
-        containers.push(container);
-        const mounts = JSON.parse((await docker("inspect", container)).stdout)[0].Mounts;
-        // Only implicit image volumes can exist: this fixture supplies one read-only bind mount.
-        for (const mount of mounts) if (mount.Type === "volume") volumes.add(mount.Name);
-        t.diagnostic(
-          `owned container mounts: ${JSON.stringify(mounts.map(({ Type, Destination, Name }) => ({ Type, Destination, Name })))}`,
-        );
-        await docker("start", container);
-        return container;
-      };
-      await create("upstream", upstream, ["--network-alias", "mend"]);
-      // HTTP on an owned loopback port exercises the unchanged filter without ACME or public DNS.
-      let config = path.join(directory, "Caddyfile");
-      if (site.name === "t3code") {
-        const { T3_GATEWAY_CADDYFILE } = await import("../apps/cli/src/server-edge.ts");
-        config = path.join(scratch, "gateway.Caddyfile");
-        writeFileSync(config, T3_GATEWAY_CADDYFILE);
-      }
-      const edge = await create("edge", config, [
-        "-e",
-        `${site.hostVariable}=http://:8080`,
-        "-p",
-        "127.0.0.1::8080",
-      ]);
-      const inspect = JSON.parse((await docker("inspect", edge)).stdout)[0];
-      const port = Number(inspect.NetworkSettings.Ports["8080/tcp"][0].HostPort);
-      const headers = {
-        Host: "edge.invalid",
-        Referer: "https://SYN_REF_USER:SYN_REF_PASSWORD@example.invalid/path?ticket=SYN_REFERER",
-        Authorization: "Bearer SYN_AUTHORIZATION",
-        Cookie: "session=SYN_COOKIE",
-      };
-      const request = (target, extraHeaders = {}) =>
-        new Promise((resolve, reject) => {
-          const req = http.request(
-            { host: "127.0.0.1", port, path: target, headers: extraHeaders },
-            (response) => {
-              let body = "";
-              response.setEncoding("utf8");
-              response.on("data", (chunk) => (body += chunk));
-              response.on("end", () =>
-                resolve({ status: response.statusCode, headers: response.headers, body }),
-              );
-              response.on("error", reject);
-            },
-          );
-          req.setTimeout(1000, () => req.destroy(new Error("owned Caddy request timed out")));
-          req.on("error", reject);
-          req.end();
+      req.setTimeout(5000, () => req.destroy(new Error("owned Caddy request timed out")));
+      req.on("error", (error) => resolve({ status: undefined, error }));
+      req.end();
+    });
+  for (const port of Object.values(ports)) {
+    let ready = false;
+    for (let attempt = 0; attempt < 100 && !ready; attempt++) {
+      ready = (await request(port, "/ready", { Host: "ready.invalid" })).status === 200;
+      if (!ready) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(ready, "owned Caddy and its upstream must become ready");
+  }
+  const logs = async () => {
+    const result = await docker("logs", edge);
+    const text = result.stdout + result.stderr;
+    return {
+      text,
+      entries: text
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    };
+  };
+  return {
+    ports,
+    request,
+    logs,
+    refuseDials: () =>
+      docker("exec", stub, "caddy", "reload", "--config", "/etc/caddy/idle.Caddyfile"),
+  };
+};
+
+const skipCaddy = (t) => {
+  if (process.env.MEND_TEST_SKIP_CADDY !== "1") return false;
+  assert.ok(!process.env.CI, "CI must execute the actual Caddy access-log regression");
+  t.skip("explicit local opt-out: MEND_TEST_SKIP_CADDY=1");
+  return true;
+};
+
+const urlOf = (uri) => new URL(uri.startsWith("/") ? `http://edge.invalid${uri}` : uri);
+
+test(
+  "actual Caddy access logs keep Mend's paths without their queries, hold no uri for the t3code gateway, and redact credential headers, while forwarding everything",
+  { timeout: 60_000 },
+  async (t) => {
+    if (skipCaddy(t)) return;
+    const edge = await startEdge(t);
+    const credentials = (suffix) =>
+      ["ticket", "token", "code", "wsTicket"].map((name) => `${name}=SYN_${suffix}`).join("&");
+    const casesFor = (host) => [
+      { target: "/ordinary" },
+      { target: "/ordinary-query?visible=SYN_VISIBLE" },
+      { target: `/named?${credentials(1)}&visible=SYN_ORDINARY` },
+      { target: "/encoded?%74icket=SYN%5FENCODED&visible=hello%20world" },
+      { target: `http://${host}/absolute?${credentials(4)}` },
+      { target: `http://${host}/path@ordinary?visible=a%40b` },
+      // HTTP treats this as an ordinary path, not as an absolute-form URL authority.
+      { target: "//ordinary:label@path/nested?visible=SYN_PLAIN" },
+      {
+        target: `http://SYN_USER:SYN_PASSWORD@${host}/userinfo?${credentials(5)}`,
+        userinfo: true,
+      },
+      {
+        target: `https://SYN%5FUSER%40NAME:SYN%5FPASSWORD%3AEXTRA@${host}/encoded-userinfo?${credentials(6)}`,
+        userinfo: true,
+      },
+      {
+        target: `HTTP://SYN_USER_ONLY@${host}/user-only?${credentials(7)}`,
+        userinfo: true,
+      },
+      {
+        target: `http://:SYN_PASSWORD_ONLY@${host}/password-only?${credentials(8)}`,
+        userinfo: true,
+      },
+      {
+        target: `ftp://SYN_FTP_USER:SYN_FTP_PASSWORD@${host}/ftp-userinfo?${credentials(9)}`,
+        userinfo: true,
+      },
+      {
+        target: `custom+audit.v1-test://SYN_CUSTOM_USER:SYN_CUSTOM_PASSWORD@${host}/custom-userinfo?${credentials(10)}`,
+        userinfo: true,
+      },
+    ];
+    const sites = [
+      { name: "mend", host: "mend.invalid", port: edge.ports.mend },
+      { name: "gateway", host: "t3.invalid", port: edge.ports.gateway },
+    ];
+    const headers = {
+      Referer: "https://SYN_REF_USER:SYN_REF_PASSWORD@example.invalid/path?ticket=SYN_REFERER",
+      Authorization: "Bearer SYN_AUTHORIZATION",
+      Cookie: "session=SYN_COOKIE",
+    };
+    for (const site of sites) {
+      for (const { target } of casesFor(site.host)) {
+        const response = await edge.request(site.port, target, {
+          ...headers,
+          Host: site.host,
         });
-      let ready = false;
-      for (let attempt = 0; attempt < 100; attempt++) {
-        try {
-          if ((await request("/ready")).status === 200) {
-            ready = true;
-            break;
-          }
-        } catch {
-          // Readiness connection failures are retried; exhausting this bounded loop fails the test.
-        }
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      assert.ok(ready, "owned Caddy and its upstream must become ready");
-      const credentialQuery = (suffix, { encoded = false, repeated = false } = {}) =>
-        site.credentials
-          .flatMap((name) => {
-            const key = encoded ? `%${name.charCodeAt(0).toString(16)}${name.slice(1)}` : name;
-            const value = `SYN_${name.toUpperCase()}_${suffix}`;
-            const pair = `${key}=${encoded ? value.replaceAll("_", "%5F") : value}`;
-            return repeated ? [pair, `${key}=SYN_SECOND_${name.toUpperCase()}_${suffix}`] : [pair];
-          })
-          .join("&");
-      const redactedQuery = (repeated = false) =>
-        site.credentials.flatMap((key) =>
-          repeated
-            ? [
-                [key, "REDACTED"],
-                [key, "REDACTED"],
-              ]
-            : [[key, "REDACTED"]],
-        );
-      const cases = [
-        { target: "/ordinary?visible=plain", query: [["visible", "plain"]] },
-        {
-          target: `/named?${credentialQuery(1)}&visible=ordinary`,
-          query: [...redactedQuery(), ["visible", "ordinary"]],
-        },
-        {
-          target: `/encoded?${credentialQuery(2, { encoded: true })}&visible=hello%20world`,
-          query: [...redactedQuery(), ["visible", "hello world"]],
-        },
-        {
-          target: `/repeated?${credentialQuery(3, { repeated: true })}`,
-          query: redactedQuery(true),
-        },
-        { target: `http://edge.invalid/absolute?${credentialQuery(4)}`, query: redactedQuery() },
-        { target: "http://edge.invalid/path@ordinary?visible=a%40b", query: [["visible", "a@b"]] },
-        {
-          // HTTP treats this as an ordinary path, not as an absolute-form URL authority.
-          target: "//ordinary:label@path/nested?visible=plain",
-          query: [["visible", "plain"]],
-        },
-        {
-          target: `http://SYN_USER:SYN_PASSWORD@edge.invalid/userinfo?${credentialQuery(5)}`,
-          query: redactedQuery(),
-          userinfo: true,
-        },
-        {
-          target: `https://SYN%5FUSER%40NAME:SYN%5FPASSWORD%3AEXTRA@edge.invalid/encoded-userinfo?${credentialQuery(6)}`,
-          query: redactedQuery(),
-          userinfo: true,
-        },
-        {
-          target: `HTTP://SYN_USER_ONLY@edge.invalid/user-only?${credentialQuery(7)}`,
-          query: redactedQuery(),
-          userinfo: true,
-        },
-        {
-          target: `http://:SYN_PASSWORD_ONLY@edge.invalid/password-only?${credentialQuery(8)}`,
-          query: redactedQuery(),
-          userinfo: true,
-        },
-        {
-          target: `ftp://SYN_FTP_USER:SYN_FTP_PASSWORD@edge.invalid/ftp-userinfo?${credentialQuery(9)}`,
-          query: redactedQuery(),
-          userinfo: true,
-        },
-        {
-          target: `custom+audit.v1-test://SYN_CUSTOM_USER:SYN_CUSTOM_PASSWORD@edge.invalid/custom-userinfo?${credentialQuery(10)}`,
-          query: redactedQuery(),
-          userinfo: true,
-        },
-      ];
-      const urlOf = (uri) => new URL(uri.startsWith("/") ? `http://edge.invalid${uri}` : uri);
-      for (const { target } of cases) {
-        const response = await request(target, headers);
         const uri = urlOf(target);
         assert.equal(response.status, 200);
         assert.equal(
@@ -397,48 +420,175 @@ for (const site of [
         );
         assert.deepEqual(response.headers["set-cookie"], ["SYN_RESPONSE_COOKIE"]);
       }
-      let logs;
-      let entries = [];
-      for (let attempt = 0; attempt < 100; attempt++) {
-        const result = await docker("logs", edge);
-        logs = result.stdout + result.stderr;
-        entries = logs
-          .split("\n")
-          .filter(Boolean)
-          .map((line) => JSON.parse(line))
-          .filter((entry) => entry.logger?.startsWith("http.log.access."));
-        if (entries.length >= cases.length + 1) break;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      assert.equal(
-        entries.length,
-        cases.length + 1,
-        "every successful request must emit an access log",
+    }
+    const accessOf = (logs, site) =>
+      logs.entries.filter(
+        (entry) => entry.logger?.startsWith("http.log.access.") && entry.request.host === site.host,
       );
-      for (const { target, query, userinfo } of cases) {
-        const pathname = urlOf(target).pathname;
-        const matches = entries.filter((entry) => urlOf(entry.request.uri).pathname === pathname);
-        assert.equal(matches.length, 1, pathname);
-        const entry = matches[0];
+    let logs;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      logs = await edge.logs();
+      if (sites.every((site) => accessOf(logs, site).length >= casesFor(site.host).length)) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    for (const site of sites) {
+      const access = accessOf(logs, site);
+      const cases = casesFor(site.host);
+      assert.equal(access.length, cases.length, `every ${site.name} request emits an access log`);
+      for (const entry of access) {
         assert.equal(entry.status, 200);
         assert.equal(entry.request.method, "GET");
-        const logged = urlOf(entry.request.uri);
-        assert.equal(logged.hostname, "edge.invalid");
-        assert.equal(logged.username, userinfo ? "REDACTED" : "");
-        assert.equal(logged.password, "");
-        assert.deepEqual(
-          [...logged.searchParams].toSorted(([a], [b]) => a.localeCompare(b)),
-          query.toSorted(([a], [b]) => a.localeCompare(b)),
-        );
         assert.ok(!Object.hasOwn(entry.request.headers, "Referer"));
         assert.deepEqual(entry.request.headers.Authorization, ["REDACTED"]);
         assert.deepEqual(entry.request.headers.Cookie, ["REDACTED"]);
         assert.deepEqual(entry.resp_headers["Set-Cookie"], ["REDACTED"]);
       }
-      assert.doesNotMatch(logs, /SYN_|SYN%5F/);
-    },
-  );
-}
+      if (site.name === "gateway") {
+        assert.deepEqual([...new Set(access.map((entry) => entry.request.uri))], ["REDACTED"]);
+        continue;
+      }
+      for (const { target, userinfo } of cases) {
+        const sent = urlOf(target);
+        const matches = access.filter(
+          (entry) => urlOf(entry.request.uri).pathname === sent.pathname,
+        );
+        assert.equal(matches.length, 1, sent.pathname);
+        const logged = urlOf(matches[0].request.uri);
+        assert.equal(logged.hostname, sent.hostname);
+        assert.equal(logged.username, userinfo ? "REDACTED" : "");
+        assert.equal(logged.password, "");
+        assert.equal(logged.search, sent.search === "" ? "" : "?REDACTED", target);
+      }
+    }
+    assert.doesNotMatch(logs.text, /SYN_|SYN%5F|hello%20world|a%40b/);
+  },
+);
+
+test(
+  "actual Caddy logs no asset token, file name or query value from either site, for a 200, a 404, a response cut short and a failed dial, in any spelling",
+  { timeout: 120_000 },
+  async (t) => {
+    if (skipCaddy(t)) return;
+    const edge = await startEdge(t);
+    const token = "ast_SYNASSETTOKENxSYNASSETTOKENxSYNASSETTOKENxx";
+    const rest = token.slice("ast_".length);
+    // Query values: a raw-like file read, the sockets' tickets, pairing's code. Each spelling
+    // cleans to a route of its own, or to none.
+    const queries = [
+      "/api/worktrees/w1/raw?path=private-dir%2Fprivate-name.png&within=private-dir",
+      "/api/worktrees/w1/r%61w?path=private-name.png",
+      "/API/worktrees/w1/RAW?path=private-name.png",
+      "/api//worktrees/w1/raw/?path=private-name.png",
+      "/api/worktrees/w1/raw;v=1?path=private-name.png",
+      "/api/worktrees/x/%2e%2e/w1/raw?path=private-name.png",
+      "/api/worktrees/w1/../../../raw?path=private-name.png",
+      "/api/sessions/s1/tty?ticket=SYNQ_TICKET&visible=SYNQ_VISIBLE",
+      "/api/pair?%63ode=SYNQ_CODE",
+      "/?wsTicket=SYNQ_WSTICKET&token=SYNQ_TOKEN",
+      "/api/projects?raw=SYNQ_RAW#SYNQ_FRAGMENT",
+    ];
+    // A t3code asset URL: its path is the token and the file name.
+    const assets = [
+      `/api/assets/${token}/private-name.png`,
+      `/api/assets/${token}/private-name.png?v=SYNQ_ASSET`,
+      `/api/assets/%61st_${rest}/private-name.png`,
+      `/api/assets/%41ST_${rest}/private-name.png`,
+      `/api/%61ssets/${token}/private-name.png`,
+      `/api//assets/${token}/private-name.png`,
+      `/API/ASSETS/${token}/private-name.png`,
+      `/api/x/../assets/%61st_${rest}/private-name.png`,
+      `/api/x/%2e%2e/assets/%61%73%74%5f${rest}/private%2dname%2epng`,
+      `/api/assets/%61st_${rest}/private-name.png/`,
+      `/api/assets/%61st_${rest}/private-name.png;v=1`,
+      `/api/assets;%76=1/%61st_${rest}/private-name.png`,
+      `/api/assets/%61st_${rest}/%2e%2e/private-name.png`,
+      `/api/assets/%61st_${rest}/..%2fprivate-name.png`,
+      `/api/assets/%61st_${rest}/%2e%2e/%2e%2e/private-name.png`,
+      `/api/assets/%61st_${rest}/../../private-name.png`,
+      `/api/assets/${token}/../../../../private-name.png`,
+      `/api/assets/%61st_${rest}/%2E%2E/%2E%2E/%2E%2E/projects/private-name.png`,
+    ];
+    const kept = ["/api/projects", "/api/worktrees/w1/contents?path=SYNQ_README"];
+    const sites = [
+      {
+        name: "mend",
+        host: "mend.invalid",
+        port: edge.ports.mend,
+        targets: [...queries, ...kept],
+      },
+      {
+        name: "gateway",
+        host: "t3.invalid",
+        port: edge.ports.gateway,
+        targets: [...queries, ...assets],
+      },
+    ];
+    const send = async (mode) => {
+      for (const site of sites) {
+        for (const target of site.targets) {
+          const response = await edge.request(site.port, target, {
+            Host: site.host,
+            ...(mode === "dial" ? {} : { "X-Stub": mode }),
+          });
+          const expected = { ok: 200, 404: 404, abort: 200, dial: 502 }[mode];
+          assert.equal(response.status, expected, `${site.name} ${mode} ${target}`);
+          assert.equal(response.complete, mode !== "abort", `${site.name} ${mode} ${target}`);
+        }
+      }
+    };
+    for (const mode of ["ok", "404", "abort"]) await send(mode);
+    await edge.refuseDials();
+    await send("dial");
+    const requests = sites.reduce((sum, site) => sum + site.targets.length, 0);
+    const of = (site) => logs.entries.filter((entry) => entry.request?.host === site.host);
+    let logs;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      logs = await edge.logs();
+      const access = sites.flatMap(of).filter((e) => e.logger.startsWith("http.log.access."));
+      if (access.length >= 4 * requests) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    for (const site of sites) {
+      const lines = of(site);
+      const count = (predicate) => lines.filter(predicate).length;
+      const n = site.targets.length;
+      // Each mode reached the log: the matrix below is about lines Caddy really wrote.
+      assert.deepEqual(
+        {
+          ok: count((e) => e.logger.startsWith("http.log.access.") && e.status === 200),
+          missing: count((e) => e.logger.startsWith("http.log.access.") && e.status === 404),
+          cut: count((e) => e.msg === "aborting with incomplete response"),
+          dial: count((e) => e.logger.startsWith("http.log.error.") && e.status === 502),
+        },
+        { ok: 2 * n, missing: n, cut: n, dial: n },
+        site.name,
+      );
+    }
+    const secret = /SYNQ|SYNASSETTOKEN|private-(name|dir)|private%2dname/i;
+    const leaks = logs.text
+      .split("\n")
+      .filter((line) => secret.test(line))
+      .map((line) => JSON.parse(line))
+      .map((entry) => `${entry.request?.host} ${entry.logger} ${entry.request?.uri ?? entry.msg}`);
+    assert.deepEqual([...new Set(leaks)], []);
+    const [mend, gateway] = sites;
+    assert.deepEqual([...new Set(of(gateway).map((entry) => entry.request.uri))], ["REDACTED"]);
+    for (const entry of of(mend)) {
+      assert.match(entry.request.uri, /^[^?#]*([?#]REDACTED)?$/, entry.logger);
+    }
+    // Mend's paths stay in its access lines and in Caddy's own error lines.
+    const logged = (predicate) =>
+      new Set(
+        of(mend)
+          .filter(predicate)
+          .map((entry) => entry.request.uri),
+      );
+    for (const uri of ["/api/projects", "/api/worktrees/w1/contents?REDACTED"]) {
+      assert.ok(logged((e) => e.logger.startsWith("http.log.access.")).has(uri), uri);
+      assert.ok(logged((e) => e.logger.startsWith("http.log.error.")).has(uri), uri);
+    }
+  },
+);
 
 test(
   "the t3code gateway behind the edge: its port stays on loopback, and the edge mounts its site only when it serves it",
