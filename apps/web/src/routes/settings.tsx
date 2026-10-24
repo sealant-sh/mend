@@ -1,3 +1,4 @@
+import { loginChoiceOf, noLoginChosenWords } from "@mend/domain/workbench";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useState } from "react";
@@ -852,7 +853,7 @@ const accountHint = (account: ConnectedAccountDto): string => {
  * person connects their own subscription; the credential goes to the platform
  * under their Sealant user and is never shown again.
  */
-function ConnectedAccountsPanel() {
+export function ConnectedAccountsPanel() {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const identity = useSuspenseQuery(trpc.platform.sealantIdentity.queryOptions()).data;
@@ -895,10 +896,8 @@ function ConnectedAccountsPanel() {
       </p>
       <div className="mt-5 space-y-5 border-t border-[var(--sw-faint-rule)] pt-5">
         {PROVIDERS.map((row) => {
-          const account =
-            identity.accounts.find(
-              (candidate) => candidate.provider === row.provider && candidate.name === "default",
-            ) ?? identity.accounts.find((candidate) => candidate.provider === row.provider);
+          const choice = loginChoiceOf(identity.accounts, row.provider);
+          const account = choice._tag === "chosen" ? choice.account : undefined;
           const isEditing = editing === row.provider;
           const busy = pending === row.provider;
           return (
@@ -908,9 +907,9 @@ function ConnectedAccountsPanel() {
                   <div className="flex items-center gap-2.5">
                     <span
                       className={`size-2 rounded-full ${
-                        account === undefined
+                        choice._tag === "none"
                           ? "bg-[var(--sw-faint-rule)]"
-                          : account.status === "active"
+                          : account?.status === "active"
                             ? "bg-success-dot"
                             : "bg-[var(--sw-amber)]"
                       }`}
@@ -918,7 +917,11 @@ function ConnectedAccountsPanel() {
                     />
                     <p className="font-sans text-sm font-medium text-foreground">{row.label}</p>
                     <span className="font-mono text-[12px] text-label">
-                      {account === undefined ? "not connected" : accountHint(account)}
+                      {account !== undefined
+                        ? accountHint(account)
+                        : choice._tag === "unchosen"
+                          ? noLoginChosenWords(row.provider)
+                          : "not connected"}
                     </span>
                   </div>
                   <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
