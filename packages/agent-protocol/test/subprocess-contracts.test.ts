@@ -17,6 +17,7 @@ import {
   AgentProtocolError,
   ClaudeAdapter,
   CodexAdapter,
+  type AgentControlCheckpoint,
   type AgentTransport,
   type AgentStartOptions,
 } from "../src/index.ts";
@@ -42,7 +43,7 @@ afterEach(() => {
 
 const peerProcess = Effect.fn("test.peerProcess")(function* (
   harness: Harness,
-  scenario: "fresh" | "resume" | "resume-refused" | "hang",
+  scenario: "fresh" | "resume" | "resume-refused" | "hang" | "steer",
 ) {
   const home = yield* Effect.acquireRelease(
     Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "mend-provider-peer-"))),
@@ -295,6 +296,74 @@ describe("provider adapter subprocess contracts (synthetic peers)", () => {
         { timeout: 15_000 },
       );
     }
+    it.live(
+      `${harness} steer: one native steer frame into the running turn, one turn`,
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const peer = yield* peerProcess(harness, "steer");
+            const completed = yield* Deferred.make<
+              Extract<AgentEvent, { readonly _tag: "turn.completed" }>,
+              AgentProtocolError
+            >();
+            const events: AgentEvent[] = [];
+            const journal: AgentControlCheckpoint[] = [];
+            const session = yield* (harness === "codex" ? CodexAdapter : ClaudeAdapter).start(
+              peer.transport,
+              {
+                ...peer.options,
+                controlJournal: {
+                  record: (checkpoint) => Effect.sync(() => journal.push(checkpoint)),
+                },
+                onEvent: (event) =>
+                  Effect.gen(function* () {
+                    events.push(event);
+                    if (event._tag === "turn.completed") yield* Deferred.succeed(completed, event);
+                    if (event._tag === "runtime.error") {
+                      yield* Deferred.fail(
+                        completed,
+                        new AgentProtocolError({
+                          adapter: harness,
+                          operation: "fixture",
+                          message: event.message,
+                          cause: peer.stderr(),
+                        }),
+                      );
+                    }
+                  }),
+              },
+            );
+            const turnId = yield* session.sendTurn("steer fixture start");
+            const acceptance = yield* session.steer({
+              id: "6f1d2c3b-9a8e-4f70-8d61-5c4b3a291807",
+              expectedTurnId: turnId,
+              input: "steer fixture",
+            });
+            expect(acceptance).toEqual({
+              _tag: harness === "codex" ? "ProviderAcknowledged" : "TransportWritten",
+              providerTurnId: turnId,
+            });
+            const done = yield* Deferred.await(completed);
+            expect(done).toMatchObject({ providerTurnId: turnId, status: "completed" });
+            expect(events.filter((event) => event._tag === "turn.completed")).toHaveLength(1);
+            expect(events.some((event) => event._tag === "harness-turn.started")).toBe(false);
+            expect(
+              events.some(
+                (event) =>
+                  event._tag === "item.updated" &&
+                  event.item.providerTurnId === turnId &&
+                  event.item.text === "steered fixture",
+              ),
+            ).toBe(true);
+            expect(journal.map((control) => control.action)).toEqual(
+              harness === "codex" ? [] : ["steer-now"],
+            );
+            yield* session.close();
+            expect(peer.stderr()).toBe("");
+          }),
+        ).pipe(Effect.timeout("5 seconds")),
+      { timeout: 15_000 },
+    );
     it.live(
       `${harness}: cancelled startup/idle scope terminates and awaits its unresponsive child`,
       () =>
