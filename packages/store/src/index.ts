@@ -26,4 +26,5 @@ export {
   type ImmutableTree,
   type OpenRawFile,
   type RawBlobTarget,
+  type RawTreeName,
 } from "./raw-file.ts";

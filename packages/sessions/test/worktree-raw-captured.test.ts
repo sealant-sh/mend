@@ -259,6 +259,40 @@ describe("raw reads of captured worktrees", () => {
     expect(ensures).toBe(0);
   });
 
+  it("serves a grant's later opens and seeks from a process with no metadata cached: no git, no restoration", async () => {
+    const captureId = captures[1] ?? "";
+    await read({ kind: "capture", captureId });
+    const fresh = await Effect.runPromise(
+      Layer.build(
+        WorktreeReadsCapturedLive.pipe(Layer.provide(counted), Layer.provide(world.layer)),
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    );
+    recorder.clear();
+    ensures = 0;
+    for (const [offset, length] of [
+      [0, 1],
+      [99_990, 10],
+    ] as const) {
+      const bytes = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const file = yield* (yield* WorktreeReads).openRawFile(world.project.id, worktreeId, {
+              path: "media/clip.mp4",
+              within: "",
+              view: { kind: "capture", captureId },
+            });
+            return new Uint8Array(
+              Buffer.concat(yield* Stream.runCollect(file.read(offset, length))),
+            );
+          }),
+        ).pipe(Effect.provide(fresh)),
+      );
+      expect(bytes).toEqual(clipNext.slice(offset, offset + length));
+    }
+    expect(recorder.runs()).toEqual([]);
+    expect(ensures).toBe(0);
+  });
+
   it("keeps a read pinned to the capture it named after the worktree moved on", async () => {
     const pinned = await read({ kind: "capture", captureId: captures[0] ?? "" });
     expect(pinned.bytes).toEqual(clip);

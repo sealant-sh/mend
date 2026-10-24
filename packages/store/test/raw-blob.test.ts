@@ -12,6 +12,8 @@ import {
   DEFAULT_RAW_CACHE_LIMITS,
   parseImmutableTree,
   RawCacheLimits,
+  type RawBlobTarget,
+  RawReadError,
   Store,
   StoreConfig,
 } from "../src/index.ts";
@@ -105,13 +107,23 @@ const cached = () =>
     : [];
 const cachedBytes = () =>
   cached().reduce((total, name) => total + fs.statSync(join(root, "_cache/raw", name)).size, 0);
+/** What the session layer does: open a prepared file, else prepare it and open it. */
 const open = (tree: string, path = "one.bin", within = "") =>
   Effect.gen(function* () {
-    return yield* (yield* Store).openRawBlobFile(repository, {
-      tree: yield* parseImmutableTree(tree),
+    const store = yield* Store;
+    const commit = yield* parseImmutableTree(tree);
+    const target: RawBlobTarget = {
+      project: "project",
+      name: { kind: "commit", commit },
       path,
       within,
-    });
+    };
+    const ready = yield* store.openRawBlobFile(target);
+    if (ready !== null) return ready;
+    yield* store.prepareRawBlobFile(target, { repository, tree: commit });
+    return (
+      (yield* store.openRawBlobFile(target)) ?? (yield* new RawReadError({ reason: "preparing" }))
+    );
   });
 const read = (tree: string, path = "one.bin") =>
   Effect.scoped(
@@ -339,6 +351,20 @@ it("prepares again a file another process evicted, instead of failing on it", as
       expect(yield* read(tree).pipe(Effect.provide(first))).toEqual(Buffer.from([0, 255, 1, 2]));
       expect(yield* read(tree).pipe(Effect.provide(first))).toEqual(Buffer.from([0, 255, 1, 2]));
       expect(unpacks()).toBe(2);
+    }),
+  );
+});
+
+it("opens a file another process prepared without running Git", async () => {
+  const tree = git("write-tree");
+  await twoProcesses((first, second) =>
+    Effect.gen(function* () {
+      yield* read(tree, "two.bin").pipe(Effect.provide(first));
+      const count = commands().length;
+      expect(yield* read(tree, "two.bin").pipe(Effect.provide(second))).toEqual(
+        Buffer.from([3, 4, 5, 6]),
+      );
+      expect(commands()).toHaveLength(count);
     }),
   );
 });

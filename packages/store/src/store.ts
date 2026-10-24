@@ -55,6 +55,7 @@ import {
   RawReadError,
   type OpenRawFile,
   type RawBlobTarget,
+  type RawTreeSource,
   readRawDescriptor,
   revisionFingerprint,
 } from "./raw-file.ts";
@@ -1248,15 +1249,15 @@ export class Store extends Context.Service<
       maxBytes: number,
     ) => Effect.Effect<FileRead | null, GitError>;
     /** Prepare immutable bytes without borrowing a response scope. */
+    /** Find a file of a named immutable tree in `source` and unpack it once, for every process. */
     readonly prepareRawBlobFile: (
-      repository: string,
       target: RawBlobTarget,
+      source: RawTreeSource,
     ) => Effect.Effect<void, RawReadError>;
-    /** Immutable Git bytes, prepared once and held by the caller's scope. */
+    /** A prepared file, held by the caller's scope; null when it is not prepared. Never runs Git. */
     readonly openRawBlobFile: (
-      repository: string,
       target: RawBlobTarget,
-    ) => Effect.Effect<OpenRawFile, RawReadError, Scope.Scope>;
+    ) => Effect.Effect<OpenRawFile | null, RawReadError, Scope.Scope>;
     /** Current bytes from a contained regular file, without buffering the whole file. */
     readonly openRawWorktreeFile: (
       worktreePath: string,

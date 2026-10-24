@@ -1,24 +1,23 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-import { Cache, Deferred, Effect, Exit, Fiber, Scope, Semaphore } from "effect";
+import { Cache, Deferred, Effect, Exit, Scope, Semaphore } from "effect";
 
 import {
-  parseImmutableTree,
   parseBlobId,
   type BlobId,
   RawCacheLimits,
-  RawPreparationWait,
   RawReadError,
   readRawDescriptor,
   revisionFingerprint,
   type ImmutableTree,
   type OpenRawFile,
   type RawBlobTarget,
+  type RawTreeSource,
 } from "./raw-file.ts";
 
 interface Blob {
@@ -155,22 +154,39 @@ const unpack = (
  * - `<key>.tmp-<size>-<id>` a file being unpacked, its size reserved, refreshed while it is;
  * - `<key>.lock` the one preparation of a blob, across processes;
  * - `<key>.evict-<id>` a file being evicted;
+ * - `<path key>.path` the blob a named tree holds at a path, so a later open needs no Git;
  * - `admit.lock` held while one process counts the directory and reserves room.
  *
  * A file left behind by a crashed process stops being refreshed and goes stale after the lease.
  */
 const BLOB = /^([a-f0-9]{64})\.blob$/;
 const TEMPORARY = /^[a-f0-9]{64}\.tmp-(\d+)-[a-f0-9-]+$/;
-const ABANDONABLE = /^[a-f0-9]{64}\.(?:lock|evict-[a-f0-9-]+)$/;
+const ABANDONABLE = /^[a-f0-9]{64}\.(?:lock|evict-[a-f0-9-]+|path-[a-f0-9-]+)$/;
+const PATH = /^[a-f0-9]{64}\.path$/;
+
+const digest = (...parts: ReadonlyArray<string>) =>
+  createHash("sha256").update(parts.join("\0")).digest("hex");
+const blobKey = (project: string, oid: BlobId) => digest(project, oid);
+const pathKey = (target: RawBlobTarget) =>
+  digest(
+    target.project,
+    target.name.kind === "capture"
+      ? `capture:${target.name.captureId}`
+      : `commit:${target.name.commit}`,
+    target.path,
+  );
+const contained = (target: RawBlobTarget) =>
+  validPath(target.path) &&
+  (target.within === "" ||
+    (validPath(target.within) && target.path.startsWith(`${target.within}/`)));
 
 interface RawBlobCache {
   readonly open: (
-    repository: string,
     target: RawBlobTarget,
-  ) => Effect.Effect<OpenRawFile, RawReadError, Scope.Scope>;
+  ) => Effect.Effect<OpenRawFile | null, RawReadError, Scope.Scope>;
   readonly prepare: (
-    repository: string,
     target: RawBlobTarget,
+    source: RawTreeSource,
   ) => Effect.Effect<void, RawReadError>;
 }
 
@@ -178,7 +194,6 @@ export const makeRawBlobCache = (root: string): Effect.Effect<RawBlobCache, neve
   Effect.gen(function* () {
     const lifetime = yield* Scope.Scope;
     const limits = yield* RawCacheLimits;
-    const wait = yield* RawPreparationWait;
     const permits = yield* Semaphore.make(limits.preparations);
     const directory = join(root, "_cache/raw");
     const pending = new Map<string, Deferred.Deferred<void, RawReadError>>();
@@ -252,6 +267,7 @@ export const makeRawBlobCache = (root: string): Effect.Effect<RawBlobCache, neve
           io(() => {
             const now = wallClock();
             const idle: Array<{ key: string; size: number; mtime: number }> = [];
+            const paths: Array<{ file: string; mtime: number }> = [];
             let used = 0;
             let files = 0;
             for (const name of fs.readdirSync(directory)) {
@@ -277,9 +293,15 @@ export const makeRawBlobCache = (root: string): Effect.Effect<RawBlobCache, neve
                   used += Number(temporary[1]);
                   files++;
                 }
-              } else if (ABANDONABLE.test(name) && age > limits.leaseMillis)
+              } else if (PATH.test(name)) paths.push({ file, mtime: stat.mtimeMs });
+              else if (ABANDONABLE.test(name) && age > limits.leaseMillis)
                 fs.rmSync(file, { force: true });
             }
+            if (paths.length > limits.paths)
+              for (const entry of paths
+                .toSorted((a, b) => a.mtime - b.mtime)
+                .slice(0, paths.length - limits.paths))
+                fs.rmSync(entry.file, { force: true });
             const fits = () => used + size <= limits.totalBytes && files + 1 <= limits.entries;
             for (const entry of idle.toSorted((a, b) => a.mtime - b.mtime)) {
               if (fits()) break;
@@ -356,26 +378,42 @@ export const makeRawBlobCache = (root: string): Effect.Effect<RawBlobCache, neve
         );
         yield* Deferred.await(completion);
       });
-    const load = (repository: string, target: RawBlobTarget) =>
+    const remember = (target: RawBlobTarget, blob: Blob) =>
+      io(() => {
+        const file = join(directory, `${pathKey(target)}.path`);
+        const written = `${file}-${randomUUID()}`;
+        fs.writeFileSync(written, `${blob.oid} ${blob.size}`, { flag: "wx", mode: 0o600 });
+        fs.renameSync(written, file);
+      });
+    const recall = (target: RawBlobTarget) =>
       Effect.gen(function* () {
-        if (
-          !validPath(target.path) ||
-          (target.within !== "" &&
-            (!validPath(target.within) || !target.path.startsWith(`${target.within}/`)))
-        )
-          return yield* new RawReadError({ reason: "missing" });
-        const immutable = yield* parseImmutableTree(target.tree);
+        const file = join(directory, `${pathKey(target)}.path`);
+        const text = yield* io(() => {
+          try {
+            return fs.readFileSync(file, "utf8");
+          } catch (error) {
+            if (isErrno(error, "ENOENT")) return null;
+            throw error;
+          }
+        });
+        const match = /^([a-f0-9]+) (\d+)$/.exec(text ?? "");
+        const size = Number(match?.[2]);
+        const oid = yield* Effect.option(parseBlobId(match?.[1] ?? ""));
+        if (oid._tag === "None" || !Number.isSafeInteger(size)) return null;
+        return { oid: oid.value, size };
+      });
+    const prepareFile: RawBlobCache["prepare"] = (target, source) =>
+      Effect.gen(function* () {
+        if (!contained(target)) return yield* new RawReadError({ reason: "missing" });
         yield* initialize;
-        const location = resolve(repository);
         const blob = yield* Cache.get(metadata, {
-          repository: location,
-          tree: immutable,
+          repository: source.repository,
+          tree: source.tree,
           path: target.path,
         });
         if (blob.size > limits.fileBytes) return yield* new RawReadError({ reason: "too-large" });
-        const key = createHash("sha256").update(`${location}\0${blob.oid}`).digest("hex");
-        yield* prepare(location, blob, key);
-        return { blob, key, location };
+        yield* prepare(source.repository, blob, blobKey(target.project, blob.oid));
+        yield* remember(target, blob);
       });
     /**
      * A descriptor of the published file, leased by its refreshed mtime; null when another process
@@ -416,25 +454,16 @@ export const makeRawBlobCache = (root: string): Effect.Effect<RawBlobCache, neve
             if (fd !== null) fs.closeSync(fd);
           }),
       );
-    const open: RawBlobCache["open"] = (repository, target) =>
+    const open: RawBlobCache["open"] = (target) =>
       Effect.gen(function* () {
-        const fiber = yield* Effect.forkIn(load(repository, target), lifetime);
-        const { blob, key, location } = yield* Fiber.join(fiber).pipe(
-          Effect.timeoutOrElse({
-            duration: wait,
-            orElse: () => Effect.fail(new RawReadError({ reason: "preparing" })),
-          }),
-        );
-        let fd = yield* lease(key, blob.size);
-        if (fd === null) {
-          yield* prepare(location, blob, key);
-          fd = yield* lease(key, blob.size);
-        }
-        if (fd === null) return yield* new RawReadError({ reason: "preparing" });
-        const held = fd;
+        if (!contained(target)) return yield* new RawReadError({ reason: "missing" });
+        const blob = yield* recall(target);
+        if (blob === null) return null;
+        const fd = yield* lease(blobKey(target.project, blob.oid), blob.size);
+        if (fd === null) return null;
         yield* heartbeat(() => {
           const now = new Date(wallClock());
-          fs.futimesSync(held, now, now);
+          fs.futimesSync(fd, now, now);
         });
         const revision = revisionFingerprint({ kind: "blob", oid: blob.oid });
         return {
@@ -442,8 +471,8 @@ export const makeRawBlobCache = (root: string): Effect.Effect<RawBlobCache, neve
           size: blob.size,
           revision,
           identity: revision,
-          read: readRawDescriptor(held, blob.size),
+          read: readRawDescriptor(fd, blob.size),
         };
       });
-    return { open, prepare: (repository, target) => load(repository, target).pipe(Effect.asVoid) };
+    return { open, prepare: prepareFile };
   });

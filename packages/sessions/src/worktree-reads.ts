@@ -20,6 +20,7 @@ import {
   type FileListing,
   type FileRead,
   type OpenRawFile,
+  type RawBlobTarget,
   RawReadError,
   RawPreparationWait,
   parseImmutableTree,
@@ -119,6 +120,29 @@ export interface RawFileObservation extends OpenRawFile {
   readonly stamp?: ReadStamp;
 }
 
+/**
+ * A prepared file opens at once, with no Git or capture. Otherwise `prepare` runs in `lifetime`,
+ * so it outlives a read that stops waiting, and the read waits `RawPreparationWait` for it.
+ */
+const openOrPrepare =
+  (lifetime: Scope.Scope) =>
+  (
+    open: Effect.Effect<OpenRawFile | null, RawReadError, Scope.Scope>,
+    prepare: Effect.Effect<void, RawReadError>,
+  ): Effect.Effect<OpenRawFile, RawReadError, Scope.Scope> =>
+    Effect.gen(function* () {
+      const ready = yield* open;
+      if (ready !== null) return ready;
+      const preparing = yield* Effect.forkIn(prepare, lifetime);
+      yield* Fiber.join(preparing).pipe(
+        Effect.timeoutOrElse({
+          duration: yield* RawPreparationWait,
+          orElse: () => Effect.fail(new RawReadError({ reason: "preparing" })),
+        }),
+      );
+      return (yield* open) ?? (yield* new RawReadError({ reason: "preparing" }));
+    });
+
 export class WorktreeReads extends Context.Service<
   WorktreeReads,
   {
@@ -215,6 +239,7 @@ export const WorktreeReadsColocatedLive: Layer.Layer<
     const store = yield* Store;
     const projects = yield* ProjectsRepo;
     const worktrees = yield* WorktreesRepo;
+    const rawFiles = openOrPrepare(yield* Scope.Scope);
     const pathOf = (projectId: ProjectId, worktreeId: WorktreeId) =>
       Effect.gen(function* () {
         const project = yield* projects.byId(projectId);
@@ -266,8 +291,17 @@ export const WorktreeReadsColocatedLive: Layer.Layer<
             const project = yield* projects
               .byId(projectId)
               .pipe(Effect.mapError(() => new RawReadError({ reason: "missing" })));
-            const tree = yield* parseImmutableTree(view.commit);
-            return yield* store.openRawBlobFile(project.storePath, { ...target, tree });
+            const commit = yield* parseImmutableTree(view.commit);
+            const file: RawBlobTarget = {
+              project: projectId,
+              name: { kind: "commit", commit },
+              path: target.path,
+              within: target.within,
+            };
+            return yield* rawFiles(
+              store.openRawBlobFile(file),
+              store.prepareRawBlobFile(file, { repository: project.storePath, tree: commit }),
+            );
           }
           const dir = yield* pathOf(projectId, worktreeId).pipe(
             Effect.mapError(() => new RawReadError({ reason: "missing" })),
@@ -455,7 +489,7 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
         Effect.provideService(GitOpsRunner, runner),
         Effect.provideService(StoreRefsRepo, refs),
       );
-    const lifetime = yield* Scope.Scope;
+    const rawFiles = openOrPrepare(yield* Scope.Scope);
     const preparationSlots = yield* Semaphore.make(2);
     const rawCaptures = yield* Cache.makeWith(
       (key: {
@@ -549,6 +583,7 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
           const captureId = view.kind === "current" ? undefined : view.captureId;
           if (captureId !== undefined && (captureId === null || !/^[a-f0-9]{64}$/.test(captureId)))
             return yield* new RawReadError({ reason: "missing" });
+          // Selected before any open, so a capture no longer retained is never served from the cache.
           const head = yield* selectedCapture(
             worktreeId,
             captureId === undefined ? undefined : { captureId },
@@ -557,34 +592,34 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
             Effect.mapError(() => new RawReadError({ reason: "missing" })),
           );
           if (head.gitFsck === "failed") return yield* new RawReadError({ reason: "missing" });
-          const loading = yield* Effect.forkIn(
+          const file: RawBlobTarget = {
+            project: projectId,
+            name:
+              view.kind === "checkpoint"
+                ? { kind: "commit", commit: yield* parseImmutableTree(view.commit) }
+                : { kind: "capture", captureId: head.id },
+            path: target.path,
+            within: target.within,
+          };
+          const opened = yield* rawFiles(
+            runner.openRawBlobFile(file),
             Effect.gen(function* () {
               const ready = yield* Cache.get(rawCaptures, {
                 projectId,
                 worktreeId,
                 captureId: head.id,
               });
-              const tree = yield* parseImmutableTree(
-                view.kind === "checkpoint" ? view.commit : ready.worktreeTree,
+              yield* runner.prepareRawBlobFile(
+                ready.cache,
+                file,
+                file.name.kind === "commit"
+                  ? file.name.commit
+                  : yield* parseImmutableTree(ready.worktreeTree),
               );
-              yield* runner.prepareRawBlobFile(ready.cache, { ...target, tree });
-              return { ready, tree };
             }),
-            lifetime,
           );
-          const { ready, tree } = yield* Fiber.join(loading);
-          const file = yield* runner.openRawBlobFile(ready.cache, { ...target, tree });
-          return { ...file, stamp: ready.stamp };
-        }).pipe((open) =>
-          Effect.flatMap(RawPreparationWait, (duration) =>
-            open.pipe(
-              Effect.timeoutOrElse({
-                duration,
-                orElse: () => Effect.fail(new RawReadError({ reason: "preparing" })),
-              }),
-            ),
-          ),
-        ),
+          return { ...opened, stamp: stampOf(head) };
+        }),
       // The worktree as it stands is the head capture's tree.
       readFile: (projectId, worktreeId, relative, at, maxBytes) =>
         prepared(projectId, worktreeId).pipe(

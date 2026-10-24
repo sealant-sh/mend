@@ -39,10 +39,23 @@ export const RawPreparationWait = Context.Reference<Duration.Duration>(
   },
 );
 
+/** Names an immutable tree before Git is consulted, so a prepared file opens without Git. */
+export type RawTreeName =
+  | { readonly kind: "capture"; readonly captureId: string }
+  | { readonly kind: "commit"; readonly commit: ImmutableTree };
+
 export interface RawBlobTarget {
-  readonly tree: ImmutableTree;
+  /** Unpacked files are shared only within one project. */
+  readonly project: string;
+  readonly name: RawTreeName;
   readonly path: string;
   readonly within: string;
+}
+
+/** Where Git reads a named tree: a prepared repository and the tree or commit itself. */
+export interface RawTreeSource {
+  readonly repository: string;
+  readonly tree: ImmutableTree;
 }
 
 export const DEFAULT_RAW_CACHE_LIMITS = {
@@ -57,6 +70,8 @@ export const DEFAULT_RAW_CACHE_LIMITS = {
   heartbeatMillis: 10_000,
   /** How often a process waiting on another's lock looks again. */
   pollMillis: 50,
+  /** Prepared paths remembered on disk; past this the oldest are forgotten and prepared again. */
+  paths: 16_384,
 };
 export const RawCacheLimits = Context.Reference<typeof DEFAULT_RAW_CACHE_LIMITS>(
   "@mend/store/RawCacheLimits",

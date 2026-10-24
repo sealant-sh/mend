@@ -6,7 +6,13 @@ import { join } from "node:path";
 
 import { CheckpointId, SequenceNumber, Sha } from "@mend/domain";
 import { Checkpoint } from "@mend/domain/workbench";
-import { parseImmutableTree, RawReadError, Store, StoreConfig } from "@mend/store";
+import {
+  parseImmutableTree,
+  type RawBlobTarget,
+  RawReadError,
+  Store,
+  StoreConfig,
+} from "@mend/store";
 import { Duration, Effect, Layer, ManagedRuntime, type Tracer } from "effect";
 import { afterAll, beforeAll, expect, it } from "vitest";
 
@@ -19,6 +25,23 @@ let root: string;
 let store: Store["Service"];
 let storeRuntime: ManagedRuntime.ManagedRuntime<Store, never>;
 const bytes = Uint8Array.from({ length: 256 }, (_, i) => i);
+const checkpointFile = (
+  commit: string,
+  target: { readonly path: string; readonly within: string },
+) =>
+  Effect.gen(function* () {
+    const tree = yield* parseImmutableTree(commit);
+    const file: RawBlobTarget = {
+      project: "project",
+      name: { kind: "commit", commit: tree },
+      path: target.path,
+      within: target.within,
+    };
+    yield* store.prepareRawBlobFile(file, { repository: root, tree });
+    return (
+      (yield* store.openRawBlobFile(file)) ?? (yield* new RawReadError({ reason: "preparing" }))
+    );
+  });
 beforeAll(async () => {
   root = fs.mkdtempSync(join(tmpdir(), "mend-raw-http-"));
   fs.writeFileSync(join(root, "data.bin"), bytes);
@@ -59,9 +82,7 @@ beforeAll(async () => {
         reads: {
           openRawFile: (_project, _worktree, target) =>
             target.view?.kind === "checkpoint"
-              ? parseImmutableTree(target.view.commit).pipe(
-                  Effect.flatMap((tree) => store.openRawBlobFile(root, { ...target, tree })),
-                )
+              ? checkpointFile(target.view.commit, target)
               : store.openRawWorktreeFile(root, target.path, target.within),
         },
         checkpoints: {
