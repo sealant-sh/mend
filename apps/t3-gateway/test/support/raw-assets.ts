@@ -18,7 +18,7 @@ import { GatewayConfig } from "../../src/config.ts";
 import { GatewayEnvironment, makeGatewayEnvironment } from "../../src/environment.ts";
 import { GatewayCorsLive } from "../../src/http.ts";
 import { Projections, type PersonHub } from "../../src/hub.ts";
-import { MendClientLive } from "../../src/mend-client.ts";
+import { MendClient, MendClientLive } from "../../src/mend-client.ts";
 import { makeGatewayRpcHandlers } from "../../src/rpc.ts";
 import {
   GatewayState,
@@ -197,6 +197,7 @@ export const withAssetHarness = <A, E, R>(
         ),
       );
       const urls = Context.get(services, AssetUrls);
+      const client = Context.get(services, MendClient);
       const routes = Layer.mergeAll(AssetRouteLive, GatewayCorsLive).pipe(
         Layer.provide(Layer.succeedContext(services)),
         Layer.provideMerge(AssetTracingDisabledLive),
@@ -236,6 +237,7 @@ export const withAssetHarness = <A, E, R>(
       );
       const fixture: AssetHarness = {
         workbench: { rawFiles, goneWorktrees },
+        client,
         claims,
         requests,
         revoke: (token) => revoked.add(token),
@@ -344,6 +346,8 @@ export interface AssetHarness {
     readonly rawFiles: Map<string, RawFixture>;
     readonly goneWorktrees: Set<string>;
   };
+  /** The gateway's own Mend client, over the in-memory Mend. */
+  readonly client: MendClient["Service"];
   readonly claims: { token: string }[];
   readonly requests: { method: string; path: string; range: string | undefined }[];
   readonly revoke: (token: string) => void;

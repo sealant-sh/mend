@@ -488,11 +488,7 @@ export const AssetUrlsLive: Layer.Layer<
               : withinDirectory(canonical, directory)
                 ? dependency(directory === "" ? canonical : canonical.slice(directory.length + 1))
                 : null;
-          if (
-            type === null ||
-            file.captureId !== source.captureId ||
-            (!ranges && file.status !== 200)
-          )
+          if (type === null || (!ranges && file.status !== 200))
             return yield* new AssetUnavailable({});
           const headers = headersFor(type.contentType, type.csp);
           headers["content-length"] = String(file.length);

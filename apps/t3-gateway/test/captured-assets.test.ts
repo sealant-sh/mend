@@ -1,5 +1,5 @@
 import { ThreadId, WS_METHODS } from "@mend/t3-contracts";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 
 import { assert, it } from "./support/effect-vitest.ts";
 import { ROOT, withAssetHarness } from "./support/raw-assets.ts";
@@ -120,4 +120,34 @@ it.live(
       {},
       false,
     ),
+);
+
+it.live("a pinned read accepts only the capture it asked Mend for", () =>
+  withAssetHarness(
+    (mend) =>
+      Effect.gen(function* () {
+        const pinned = "a".repeat(64);
+        const other = {
+          canonicalPath: "image.png",
+          bytes: Uint8Array.of(1),
+          captureId: "b".repeat(64),
+        };
+        mend.workbench.rawFiles.set(`worktree-session-1/image.png@${pinned}`, other);
+        mend.workbench.rawFiles.set("worktree-session-1/image.png", other);
+        const read = (captureId: string | null | undefined) =>
+          Effect.scoped(
+            mend.client.openRawFile(Redacted.make("TOKEN"), "worktree-session-1", {
+              path: Redacted.make("image.png"),
+              within: Redacted.make(""),
+              method: "HEAD",
+              ...(captureId === undefined ? {} : { captureId }),
+            }),
+          );
+        for (const captureId of [pinned, null])
+          assert.strictEqual((yield* Effect.flip(read(captureId)))._tag, "MendRawFileUnavailable");
+        assert.strictEqual((yield* read(undefined)).captureId, other.captureId);
+      }),
+    {},
+    false,
+  ),
 );

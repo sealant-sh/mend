@@ -62,6 +62,7 @@ export interface MendRawFile {
 }
 
 export interface MendRawFileRequest {
+  /** The capture a grant is pinned to (null: none); absent when minting accepts any. */
   readonly captureId?: string | null;
   readonly path: Redacted.Redacted<string>;
   readonly within: Redacted.Redacted<string>;
@@ -385,7 +386,7 @@ export class MendClient extends Context.Service<
         readonly ignoreWhitespace: boolean;
       },
     ) => MendRead<MendRangeDiff>;
-    /** `GET|HEAD /api/worktrees/:id/raw`: one current file's bytes, whole or one range. */
+    /** `GET|HEAD /api/worktrees/:id/raw`: one file's bytes, current or at a pinned capture, whole or one range. */
     readonly openRawFile: (
       deviceToken: Redacted.Redacted<string>,
       worktreeId: string,
@@ -966,6 +967,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           const captureId = response.headers["x-mend-capture-id"] ?? null;
           if (
             (captureId !== null && !/^[a-f0-9]{64}$/.test(captureId)) ||
+            (input.captureId !== undefined && captureId !== input.captureId) ||
             !/^\d+$/.test(lengthText) ||
             !Number.isSafeInteger(length) ||
             length < 0 ||
