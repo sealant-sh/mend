@@ -21,7 +21,9 @@
 // <port>, that drive-mobile.mjs bound it itself (`bound`), the recorded pid is still that process,
 // and the server it fronts (`web`) is this run's tunnel, alive now, or the declared outer (with
 // drive-mobile.mjs --outer: a server drive-web.mjs may drive directly anyway). drive-mobile.mjs
-// refuses any other server, and its proxy sends the API to that one and nothing else.
+// refuses any other server, and its proxy sends the API to that one and nothing else. The same
+// holds for the t3code client serve-t3-client.mjs serves ($MEND_VERIFY_PRIVATE/t3-client.json),
+// whose `web` is the Mend its T3 gateway serves: it refuses a gateway serving any other.
 //
 // The CLI check refuses (exit 97, nothing run) when:
 //   - MEND_VERIFY_OUTER_URL is not set, or is not a URL;
@@ -149,16 +151,18 @@ export const allowedTargets = (env) => {
 
 /** The file drive-mobile.mjs records its proxy in, in the private directory. */
 export const MOBILE_RECORD = "mobile.json";
+/** The file serve-t3-client.mjs records its t3code client in, in the private directory. */
+export const T3_CLIENT_RECORD = "t3-client.json";
 
 /**
- * The run's mobile proxy URLs, when drive-mobile.mjs bound it itself, its process is still the one
- * recorded, and the server it fronts is one of `targets` (the declared outer, or this run's tunnel,
- * alive now).
+ * The URLs of a client page this run serves (`record`: the mobile proxy, or the t3code client),
+ * when its server bound the port itself, its process is still the one recorded, and the server it
+ * fronts is one of `targets` (the declared outer, or this run's tunnel, alive now).
  */
-const mobileTargets = (env, targets) => {
+const clientTargets = (env, targets, record) => {
   const privateDir = env.MEND_VERIFY_PRIVATE ?? "";
   if (privateDir === "" || !isAbsolute(privateDir)) return [];
-  const file = join(privateDir, MOBILE_RECORD);
+  const file = join(privateDir, record);
   if (!existsSync(file)) return [];
   let proxy;
   try {
@@ -176,21 +180,26 @@ const mobileTargets = (env, targets) => {
   if (own.some((url) => targets.includes(url))) return [];
   const listening = listenersOn(port);
   if (listening === null || listening.some((at) => at.startsWith("[")))
-    refuse(`something listens on [::1]:${port}, where localhost goes first; not this run's proxy`);
+    refuse(`something listens on [::1]:${port}, where localhost goes first; not this run's page`);
   return own;
 };
 
 /**
- * Refuses unless `url` is one of the run's servers. `mobile` (drive-web.mjs only) also lets the
- * run's own mobile proxy through: the page drive-mobile.mjs serves, in front of the run's tunnel.
+ * Refuses unless `url` is one of the run's servers. `clients` (drive-web.mjs only) also lets the
+ * run's own client pages through: the mobile proxy drive-mobile.mjs serves in front of the run's
+ * tunnel, and the t3code client serve-t3-client.mjs serves for the run's T3 gateway.
  */
-export const checkTarget = (url, env, { mobile = false } = {}) => {
+export const checkTarget = (url, env, { clients = false } = {}) => {
   const targets = allowedTargets(env);
-  if (mobile) targets.push(...mobileTargets(env, [...targets]));
+  if (clients)
+    targets.push(
+      ...clientTargets(env, [...targets], MOBILE_RECORD),
+      ...clientTargets(env, [...targets], T3_CLIENT_RECORD),
+    );
   const wanted = normalizeUrl(url);
   if (wanted === null || !targets.includes(wanted))
     refuse(
-      `${url || "no server"} is neither the declared outer (${targets[0]}) nor this run's tunnel${mobile ? " or mobile proxy" : ""}`,
+      `${url || "no server"} is neither the declared outer (${targets[0]}) nor this run's tunnel${clients ? ", mobile proxy or t3code client" : ""}`,
     );
   return wanted;
 };

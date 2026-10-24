@@ -999,7 +999,7 @@ test("drive-web may drive the mobile proxy this run started, and no other", asyn
     MEND_VERIFY_OUTER_URL: outer,
   };
   const policyEnv = { MEND_VERIFY_OUTER_URL: outer, MEND_VERIFY_PRIVATE: w.P };
-  const target = (url, mobile) => () => checkTarget(url, policyEnv, { mobile });
+  const target = (url, mobile) => () => checkTarget(url, policyEnv, { clients: mobile });
   const driveWeb = (url) =>
     spawnSync(
       process.execPath,
@@ -1110,6 +1110,78 @@ test("drive-web may drive the mobile proxy this run started, and no other", asyn
     assert.throws(target(`http://127.0.0.1:${mobilePort}`, true), Refused);
   } finally {
     proxy?.kill("SIGKILL");
+    rmSync(w.home, { recursive: true, force: true });
+  }
+});
+
+test("drive-web may drive the t3code client served for a gateway on the run's tunnel, and no other", async () => {
+  const w = world({});
+  const dist = join(w.home, "dist");
+  mkdirSync(dist);
+  writeFileSync(join(dist, "index.html"), "<!doctype html><title>t3</title>");
+  const tunnelPort = await quietPort();
+  tunnelTo(w.P, tunnelPort);
+  const env = { ...process.env, MEND_VERIFY_PRIVATE: w.P, MEND_VERIFY_OUTER_URL: outer };
+  const policyEnv = { MEND_VERIFY_OUTER_URL: outer, MEND_VERIFY_PRIVATE: w.P };
+  const target = (url) => () => checkTarget(url, policyEnv, { clients: true });
+  const gwPort = await quietPort();
+  const clientPort = await quietPort();
+  const startGateway = (mendUrl) =>
+    new Promise((done, fail) => {
+      const gateway = spawn(
+        process.execPath,
+        [
+          "-e",
+          `require("node:http").createServer((q, s) => s.end()).listen(${gwPort}, "127.0.0.1", () => console.log("up"))`,
+        ],
+        { env: { ...process.env, MEND_T3_GATEWAY_MEND_URL: mendUrl } },
+      );
+      gateway.stdout.once("data", () => done(gateway));
+      gateway.once("exit", (status) => fail(new Error(`gateway exited ${status}`)));
+    });
+  const serveArgs = [
+    join(scripts, "serve-t3-client.mjs"),
+    "--dist",
+    dist,
+    "--port",
+    String(clientPort),
+    "--gw",
+    `http://127.0.0.1:${gwPort}`,
+  ];
+  const record = join(w.P, "t3-client.json");
+  const stopped = (child) => new Promise((done) => child.once("exit", done));
+  let gateway;
+  let client;
+  try {
+    gateway = await startGateway(owner);
+    const onOwner = spawnSync(process.execPath, serveArgs, { encoding: "utf8", env });
+    assert.equal(onOwner.status, 97, onOwner.stderr);
+    assert.match(onOwner.stderr, /not this run's tunnel/);
+    assert.ok(!existsSync(record));
+    gateway.kill("SIGTERM");
+    await stopped(gateway);
+
+    gateway = await startGateway(`http://localhost:${tunnelPort}`);
+    client = spawn(process.execPath, serveArgs, { env });
+    await new Promise((done, fail) => {
+      client.stdout.on("data", (data) => String(data).includes("serve-t3-client ·") && done());
+      client.once("exit", (status) => fail(new Error(`serve-t3-client exited ${status}`)));
+    });
+    assert.equal(JSON.parse(readFileSync(record, "utf8")).web, `http://localhost:${tunnelPort}`);
+    assert.equal(target(`http://127.0.0.1:${clientPort}`)(), `http://127.0.0.1:${clientPort}`);
+    const page = await fetch(`http://127.0.0.1:${clientPort}/env-1/thread-1`);
+    assert.equal(page.status, 200, "a client route answers index.html");
+    assert.match(await page.text(), /<title>t3<\/title>/);
+
+    const ended = stopped(client);
+    gateway.kill("SIGTERM");
+    await ended;
+    client = undefined;
+    assert.ok(!existsSync(record), "the client ends with its gateway");
+    assert.throws(target(`http://127.0.0.1:${clientPort}`), Refused);
+  } finally {
+    client?.kill("SIGKILL");
+    gateway?.kill("SIGKILL");
     rmSync(w.home, { recursive: true, force: true });
   }
 });
@@ -1229,7 +1301,7 @@ test(
         checkTarget(
           proxyUrl,
           { MEND_VERIFY_OUTER_URL: httpsOuter, MEND_VERIFY_PRIVATE: w.P },
-          { mobile: true },
+          { clients: true },
         ),
         proxyUrl,
       );

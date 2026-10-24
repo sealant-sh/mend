@@ -41,8 +41,9 @@
 // No trace, HAR or video is recorded.
 //
 // --web must be this run's own stack through its tunnel (guard/policy.mjs, with the private
-// directory's tunnel.json and MEND_VERIFY_OUTER_URL), or the mobile proxy drive-mobile.mjs started
-// in front of that tunnel (its mobile.json): the driver refuses (exit 97) any other server.
+// directory's tunnel.json and MEND_VERIFY_OUTER_URL), the mobile proxy drive-mobile.mjs started
+// in front of that tunnel (its mobile.json), or the t3code client serve-t3-client.mjs serves for
+// the run's T3 gateway (its t3-client.json): the driver refuses (exit 97) any other server.
 //
 // Playwright comes from $MEND_VERIFY_PLAYWRIGHT (default ~/.cache/mend-verify/playwright), never
 // from this repository's dependencies.
@@ -90,7 +91,7 @@ try {
   checkTarget(
     web,
     { ...process.env, MEND_VERIFY_PRIVATE: privateRoot(privateDir) },
-    { mobile: true },
+    { clients: true },
   );
 } catch (error) {
   if (!(error instanceof Refused)) throw error;
