@@ -941,8 +941,9 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
             .pipe(
               Effect.map((accounts) => {
                 const choice = loginChoiceOf(accounts, harness);
-                return choice._tag === "chosen" && choice.account.status === "active"
-                  ? null
+                if (choice._tag === "chosen" && choice.account.status === "active") return null;
+                return choice._tag === "unchosen"
+                  ? `no ${harness} login chosen · your Mend account holds ${choice.accounts.length} and sessions use only the chosen one`
                   : `no active ${harness} account is connected to your Mend account · connect one in Mend under Settings → Connected accounts`;
               }),
               Effect.catch(() => Effect.succeed(null)),
