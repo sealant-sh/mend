@@ -6,6 +6,7 @@ import {
   ProtocolHarnessUnsupportedError,
   composeLaunchArgv,
   composeProtocolArgv,
+  permissionFlagsIn,
   terminalPermissionMode,
   resumesOwnHarness,
   takesReviewFollowUp,
@@ -379,6 +380,21 @@ describe("the permission a terminal argv names (SLNT-147 review)", () => {
     const named = ["claude", "--resume", "0d5c3c1e", "--permission-mode", "plan"];
     expect(terminalPermissionMode("claude", named)).toBe("ask");
     expect(withPermissionDefaults("claude", named)).toEqual(named);
+  });
+
+  it("reads a codex short option with its value attached, as codex does", () => {
+    for (const [argv, mode] of [
+      [["codex", "resume", "id", "-sread-only", "--ask-for-approval", "on-request"], "ask"],
+      [["codex", "-s=read-only"], "ask"],
+      [["codex", "-sworkspace-write", "-anever"], "bypass"],
+      [["codex", "-a=never"], "bypass"],
+    ] as const) {
+      expect(terminalPermissionMode("codex", argv), argv.join(" ")).toBe(mode);
+      expect(withPermissionDefaults("codex", argv), argv.join(" ")).toEqual(argv);
+    }
+    expect(
+      permissionFlagsIn("codex", ["codex", "resume", "id", "-sread-only", "-a", "on-request"]),
+    ).toEqual(["-sread-only", "-a", "on-request"]);
   });
 
   it("counts every codex permission option, short forms and aliases included", () => {

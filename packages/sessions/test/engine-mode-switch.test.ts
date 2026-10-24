@@ -489,6 +489,8 @@ describe("a Resume on the same harness keeps the permission the terminal ran wit
   it.each<readonly ["claude" | "codex", ReadonlyArray<string>]>([
     ["claude", ["--permission-mode", "plan"]],
     ["codex", ["--sandbox", "read-only", "-a", "never"]],
+    ["codex", ["-sread-only", "--ask-for-approval", "on-request"]],
+    ["codex", ["-s=read-only", "-anever"]],
   ])(
     "a stopped %s terminal launched with %j resumes with it",
     async (harness, permission) => {
