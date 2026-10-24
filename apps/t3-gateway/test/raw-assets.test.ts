@@ -112,6 +112,75 @@ describe("worktree asset URLs", () => {
         }),
       ),
   );
+  it.live(
+    "serves each kind with t3code v0.1.2's content type, nosniff and sandbox, from the opened file",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "TYPES");
+          const http = yield* HttpClient.HttpClient;
+          const svg = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+          const html = "sandbox allow-scripts allow-forms allow-popups allow-downloads";
+          for (const name of ["icon.ico", "photo.avif", "Shot.JPG", "docs/font.woff2"])
+            mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+              bytes: BYTES,
+              canonicalPath: name,
+            });
+          const served = [
+            ["icon.ico", "image/x-icon", undefined],
+            ["photo.avif", "image/avif", undefined],
+            ["Shot.JPG", "image/jpeg", undefined],
+            ["image.png", "image/png", undefined],
+            ["vector.svg", "image/svg+xml", svg],
+            ["docs/index.html", "text/html; charset=utf-8", html],
+            ["docs/book.pdf", "application/pdf", undefined],
+          ] as const;
+          for (const kind of ["workspace-file", "media-file"] as const)
+            for (const [name, type, csp] of served) {
+              const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
+                resource: resource(name, kind),
+              });
+              const response = yield* http.get(url.relativeUrl);
+              assert.strictEqual(response.status, 200, `${kind} ${name}`);
+              assert.strictEqual(response.headers["content-type"], type, `${kind} ${name}`);
+              assert.strictEqual(response.headers["x-content-type-options"], "nosniff");
+              assert.strictEqual(response.headers["content-security-policy"], csp);
+            }
+          for (const [name, type] of [
+            ["movie.mp4", "video/mp4"],
+            ["song.opus", "audio/ogg"],
+          ] as const) {
+            const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
+              resource: resource(name, "media-file"),
+            });
+            assert.strictEqual(
+              (yield* http.get(url.relativeUrl)).headers["content-type"],
+              type,
+              name,
+            );
+            assert.isTrue(
+              Exit.isFailure(
+                yield* Effect.exit(rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(name) })),
+              ),
+              `workspace-file ${name}`,
+            );
+          }
+          const page = yield* rpc[WS_METHODS.assetsCreateUrl]({
+            resource: resource("docs/index.html"),
+          });
+          const directory = page.relativeUrl.slice(0, page.relativeUrl.lastIndexOf("/"));
+          for (const [suffix, type] of [
+            ["style.css", "text/css"],
+            ["nested/a.mjs", "text/javascript"],
+            ["font.woff2", "font/woff2"],
+          ] as const) {
+            const response = yield* http.get(`${directory}/${suffix}`);
+            assert.strictEqual(response.headers["content-type"], type, suffix);
+            assert.isUndefined(response.headers["content-security-policy"]);
+          }
+        }),
+      ),
+  );
   it.live("forwards media Range as 206/416, ignores If-Range and supplies HEAD and CORS", () =>
     withGateway((mend, logs) =>
       Effect.gen(function* () {
