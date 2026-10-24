@@ -20,7 +20,7 @@ export interface ConnectionInfo {
 }
 
 export interface ApiRequest {
-  readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  readonly method: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly path: string;
   readonly body?: unknown;
 }

@@ -221,6 +221,7 @@ import { TourRequestsLive } from "./landing-tours.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
 import { OwnerLandingLive } from "./owner-landing.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
+import { RawFileTracingDisabledLive } from "./raw-file-privacy.ts";
 import { RedactingConsoleLive } from "./redacting-console.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { RemoteCredentialCheckLive } from "./remote-credential-check.ts";
@@ -437,6 +438,7 @@ const ServerLive = Layer.unwrap(
       ),
     ).pipe(
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
+      Layer.provide(RawFileTracingDisabledLive),
       // Removing a member revokes, closes their connections on every process, stops their sessions.
       Layer.provide(
         MemberRemovalLive.pipe(

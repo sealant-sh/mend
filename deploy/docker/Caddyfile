@@ -3,6 +3,46 @@
 # Everything goes to Mend's web tier, which proxies /api, the event stream and every WebSocket on
 # this one origin. Nothing else is routed: not the API, not Sealant, not the session channel, not
 # the bucket.
+{
+	# Caddy's own lines (a failed dial, a response cut short) carry the request as well: the same
+	# filters as the access log below, for this site and every site imported beside it.
+	log default {
+		output stdout
+		format filter {
+			wrap filter {
+				wrap json
+				fields {
+					uri regexp "(?i:^([a-z][a-z0-9+.-]*://)[^/?#]*(@)|(/(?:r|%[57]2)(?:a|%[46]1)(?:w|%[57]7)(?:[/;][^?#]*)?[?])[^#]*|(/)ast_[a-z0-9_-]+[^?#]*)" "${1}${3}${4}REDACTED${2}"
+				}
+			}
+			fields {
+				request>uri query {
+					replace ticket REDACTED
+					replace token REDACTED
+					replace code REDACTED
+					replace wsTicket REDACTED
+				}
+				request>headers>Referer delete
+			}
+		}
+	}
+	# A raw file read and a t3code asset URL log here, their uri replaced: each site's @private
+	# matcher names them on the path Caddy cleans and unescapes. A spelling that cleans to another
+	# path still meets the uri filter above. reverse_proxy's own lines carry a request, and Caddy
+	# cannot route those by path, so they log here for every route; the access line with the same
+	# remote_port holds the uri of any other route.
+	log private {
+		include http.log.access.private http.log.error.private http.handlers.reverse_proxy
+		output stdout
+		format filter {
+			fields {
+				request>uri replace REDACTED
+				request>headers>Referer delete
+			}
+		}
+	}
+}
+
 {$MEND_EDGE_HOST} {
 	encode zstd gzip
 
@@ -14,6 +54,14 @@
 		flush_interval -1
 	}
 
+	# A raw file read names its file in the query, and a t3code asset URL's path is its credential
+	# and file name (ADR 0004): their access lines go to the private log. The raw route's file
+	# headers are for the t3code gateway, which reads Mend over loopback, never through this edge.
+	# No client here gets them, and so no log line holds them. The gateway's site does the same.
+	@private path /api/assets/* /api/worktrees/*/raw /api/worktrees/*/raw/ /api/worktrees/*/raw;*
+	log_name @private private
+	header -X-Mend-File-*
+
 	log {
 		output stdout
 		# The terminal, tunnel and key bridge sockets and the phone's embed carry a single-use
@@ -22,11 +70,14 @@
 		format filter {
 			# Absolute-form request URLs can carry userinfo before the host. Filter that separately
 			# from query parameters, retaining the scheme, host, path and ordinary query values.
+			# The same filter keeps out the query of a raw file read (`/raw?path=…&within=…`, in any
+			# spelling the API's router accepts) and a t3code asset URL's token and file name
+			# (`/ast_…`, ADR 0004's asset URLs), which no other route logs differently for.
 			wrap filter {
 				wrap json
 				fields {
 					# The query filter forwards the selected uri as a leaf to this wrapped encoder.
-					uri regexp "^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@" "${1}REDACTED@"
+					uri regexp "(?i:^([a-z][a-z0-9+.-]*://)[^/?#]*(@)|(/(?:r|%[57]2)(?:a|%[46]1)(?:w|%[57]7)(?:[/;][^?#]*)?[?])[^#]*|(/)ast_[a-z0-9_-]+[^?#]*)" "${1}${3}${4}REDACTED${2}"
 				}
 			}
 			fields {

@@ -238,11 +238,37 @@ happens before the effect it guards.
 Defaults are sized for a small team and are all configuration. Core enforces its own budgets
 (CORE-04) behind Mend's; Mend maps a Core 429 to the same refusal shape and does not retry into it.
 
+### T3 asset URLs, amendment 2026-10-24
+
+URL token rule, decision A (Yiannis, 2026-10-24): amend ADR 0004 for the T3 gateway's asset URLs
+only: each token random and not reused across files; lasts at most 1 hour; bound to one device and
+one worktree file, or the file's directory for PDF and HTML; the device confirmed on every fetch
+with the same 5-second check the bearer routes use (`apps/t3-gateway/src/auth.ts:447`); the path
+never logged; the existing `ast_` chat-image tokens move to the same rule. ONE module owns this
+policy (`apps/t3-gateway/src/assets.ts`).
+
+These are reusable bearer capabilities. A fetch checks the originating device even though the
+browser sends no authorization header. A fresh mint creates a new random token; its lifetime also
+ends with the bearer session. The gateway stores only the token hash, keeps paths redacted, and
+disables access logging and tracing for asset requests, including preflights and failures. The edge
+Caddy matches asset URLs and raw reads on the path it cleans and unescapes, and logs them with no
+uri, in its access log and its own lines. It strips the raw route's `X-Mend-File-*` headers, which
+only the gateway reads, over loopback. Mend raw reads still authorize the account against the
+worktree on every request. This amendment does not change upgrade tickets or permit a device bearer
+in an asset URL.
+
+Observed scope of a directory grant: t3code serves an HTML preview in a sandbox that runs its
+scripts with no `connect-src` limit, as the gateway does for parity. Such a page can read its own
+URL and send it anywhere, and for that hour the URL opens every previewable file below the page's
+directory: scripts, styles, fonts, images, PDF and HTML outside dot-directories. A page at the
+worktree root covers that much of the whole worktree. Image, audio and video URLs, and any
+`media-file` URL, name one file.
+
 ### Upgrade tickets (MEND-08)
 
-A browser cannot set headers on a WebSocket, and a WebView cannot set them on a page load. Those are
-the only two places a credential still has to ride a URL, so that credential becomes worthless
-anywhere else:
+A browser cannot set headers on a WebSocket, and a WebView cannot set them on a page load. These
+connections use a credential that becomes worthless anywhere else. The T3 asset exception is
+recorded above in the amendment of 2026-10-24:
 
 - `POST /api/upgrade-tickets` (authenticated by cookie or `Authorization`) mints a **ticket**: 32
   random bytes, stored hashed, single use, 30 seconds to live, bound to the account, to one target

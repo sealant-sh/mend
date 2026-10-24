@@ -252,6 +252,9 @@ What the overlay does, and what it states on your behalf:
   Docker install, `--exposure` writes the first two.
 - The edge's access log replaces the value of `ticket`, `token` and `code` in every URL and drops
   the `Referer` header. Caddy already redacts `Authorization`, `Cookie` and `Set-Cookie`.
+- A raw file read and a t3code asset URL carry a file name or a credential in the URL, so the edge
+  logs them with `uri` replaced by `REDACTED`. So does Caddy's own line about a response cut short,
+  for every route; the access line with the same `remote_port` holds that request's URL.
 
 What was checked: the merged files render, and the Caddyfile validates with Caddy. What was not: a
 certificate issued and a browser session through it, end to end. Workspace SSH on port 2222 stays on
@@ -370,6 +373,8 @@ a capture.
 | `MEND_BUDGET_ACCOUNT_TERMINALS`                | `24`       | Open terminal sockets for one account.                                                                                       |
 | `MEND_BUDGET_ACCOUNT_TUNNELS`                  | `24`       | Open service tunnels for one account.                                                                                        |
 | `MEND_BUDGET_ACCOUNT_KEY_BRIDGES`              | `4`        | Open key bridges (ssh-agent shares) for one account.                                                                         |
+| `MEND_BUDGET_ACCOUNT_RAW_READS`                | `128`      | Raw file reads one account has open at once (the t3code gateway's previews and media).                                       |
+| `MEND_BUDGET_RAW_READS`                        | `512`      | Raw file reads open at once on the instance, whoever reads.                                                                  |
 
 `0` turns one budget off. The API logs at start which are off, and the `budgets` gate item is open
 while any is.

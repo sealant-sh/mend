@@ -5,6 +5,7 @@ import type { HttpRouter } from "effect/http";
 import type { Budgets } from "./budgets.ts";
 import { errorBoundary, type ErrorDetail } from "./error-boundary.ts";
 import { publicNetworkPolicy } from "./public-network-policy.ts";
+import { rawFilePrivacy } from "./raw-file-privacy.ts";
 import { requestBudgets } from "./request-budgets.ts";
 import { apiResponseHeaders } from "./response-headers.ts";
 
@@ -31,6 +32,7 @@ export const apiMiddleware = (input: {
   readonly now?: () => number;
 }): Layer.Layer<never, never, HttpRouter.HttpRouter> =>
   Layer.mergeAll(
+    rawFilePrivacy,
     apiResponseHeaders,
     publicNetworkPolicy(input.network),
     errorBoundary(input.errorDetail),

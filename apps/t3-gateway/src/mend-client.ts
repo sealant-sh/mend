@@ -7,6 +7,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { GatewayConfig } from "./config.ts";
@@ -45,6 +46,30 @@ import {
  * (ADR 0012, "A gateway, not a provider"). It does not import `@mend/api-contracts` (Effect
  * beta.93); it decodes only the fields it reads, so Mend can add fields freely.
  */
+
+/** A scoped response from Mend's raw endpoint; no upstream request or cause escapes. */
+export interface MendRawFile {
+  readonly status: 200 | 206 | 416;
+  readonly canonicalPath: Redacted.Redacted<string>;
+  readonly revision: string;
+  /** The file's device and inode, hashed: kept through an in-place edit, new for a replacement. */
+  readonly identity: string;
+  readonly length: number;
+  readonly contentRange: string | undefined;
+  readonly body: Stream.Stream<Uint8Array, MendRawFileUnavailable>;
+}
+
+export interface MendRawFileRequest {
+  readonly path: Redacted.Redacted<string>;
+  readonly within: Redacted.Redacted<string>;
+  readonly method: "GET" | "HEAD";
+  readonly range?: string | undefined;
+}
+
+export class MendRawFileUnavailable extends Schema.TaggedError<MendRawFileUnavailable>()(
+  "MendRawFileUnavailable",
+  { status: Schema.NullOr(Schema.Number) },
+) {}
 
 /** The platforms Mend's `POST /api/pair` accepts (`DEVICE_PLATFORMS` in @mend/api-contracts). */
 export type MendDevicePlatform = "ios" | "android" | "web" | "desktop" | "other";
@@ -356,6 +381,12 @@ export class MendClient extends Context.Service<
         readonly ignoreWhitespace: boolean;
       },
     ) => MendRead<MendRangeDiff>;
+    /** `GET|HEAD /api/worktrees/:id/raw`: one current file's bytes, whole or one range. */
+    readonly openRawFile: (
+      deviceToken: Redacted.Redacted<string>,
+      worktreeId: string,
+      input: MendRawFileRequest,
+    ) => Effect.Effect<MendRawFile, MendRawFileUnavailable | MendDeviceRefused, Scope.Scope>;
     /**
      * `GET /api/worktrees/:id/contents`: one file (as it stands, or at a checkpoint) or the lines a
      * search matches. A path Mend refuses (outside the worktree) is its 422, a refusal. A path with
@@ -883,6 +914,65 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         );
       };
 
+      const openRawFile: MendClient["Service"]["openRawFile"] = (deviceToken, worktreeId, input) =>
+        Effect.gen(function* () {
+          const query = new URLSearchParams({
+            path: Redacted.value(input.path),
+            within: Redacted.value(input.within),
+          });
+          const request = HttpClientRequest.make(input.method)(
+            url(`/api/worktrees/${encodeURIComponent(worktreeId)}/raw?${query}`),
+          ).pipe(
+            HttpClientRequest.bearerToken(deviceToken),
+            HttpClientRequest.setHeaders(input.range === undefined ? {} : { range: input.range }),
+          );
+          const response = yield* HttpClient.withScope(http)
+            .execute(request)
+            .pipe(
+              Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
+              Effect.mapError(() => new MendRawFileUnavailable({ status: null })),
+              Effect.timeoutOrElse({
+                duration: "10 seconds",
+                orElse: () => Effect.fail(new MendRawFileUnavailable({ status: null })),
+              }),
+            );
+          const status = response.status;
+          if (status === 401) return yield* new MendDeviceRefused({ operation: "worktree raw" });
+          if (status !== 200 && status !== 206 && status !== 416)
+            return yield* new MendRawFileUnavailable({ status });
+          const canonicalPath = yield* Effect.try({
+            try: () => decodeURIComponent(response.headers["x-mend-file-path"] ?? ""),
+            catch: () => new MendRawFileUnavailable({ status }),
+          });
+          const lengthText = response.headers["content-length"] ?? "";
+          const length = Number(lengthText);
+          const revision = response.headers["x-mend-file-revision"] ?? "";
+          const identity = response.headers["x-mend-file-identity"] ?? "";
+          const contentRange = response.headers["content-range"];
+          if (
+            !/^\d+$/.test(lengthText) ||
+            !Number.isSafeInteger(length) ||
+            length < 0 ||
+            !/^[a-f0-9]{64}$/.test(revision) ||
+            !/^[a-f0-9]{64}$/.test(identity) ||
+            canonicalPath === "" ||
+            (status === 206 && !/^bytes \d+-\d+\/\d+$/.test(contentRange ?? "")) ||
+            (status === 416 && !/^bytes \*\/\d+$/.test(contentRange ?? ""))
+          )
+            return yield* new MendRawFileUnavailable({ status });
+          return {
+            status,
+            canonicalPath: Redacted.make(canonicalPath),
+            revision,
+            identity,
+            length,
+            contentRange,
+            body: response.stream.pipe(
+              Stream.mapError(() => new MendRawFileUnavailable({ status })),
+            ),
+          };
+        });
+
       const worktreeContents = (
         deviceToken: string,
         worktreeId: string,
@@ -1262,6 +1352,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         worktreeCheckpoints,
         worktreeDiff,
         worktreeContents,
+        openRawFile,
         projectFiles,
         listSkills,
         projectSkills,

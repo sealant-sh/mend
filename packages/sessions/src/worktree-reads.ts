@@ -19,6 +19,8 @@ import {
   type DiffRangeOptions,
   type FileListing,
   type FileRead,
+  type OpenRawFile,
+  RawReadError,
   type GrepQuery,
   type GrepResult,
   type GitError,
@@ -31,7 +33,7 @@ import {
   worktreePathOf,
   worktreeTreeOf,
 } from "@mend/store";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Schema, type Scope } from "effect";
 import * as Context from "effect/Context";
 
 /**
@@ -152,6 +154,12 @@ export class WorktreeReads extends Context.Service<
       worktreeId: WorktreeId,
       limit: number,
     ) => Effect.Effect<Stamped<FileListing>, WorktreeReadError>;
+    /** A scoped current-file descriptor; captured reads are refused without preparing a tree. */
+    readonly openRawFile: (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+      target: { readonly path: string; readonly within: string },
+    ) => Effect.Effect<OpenRawFile, RawReadError, Scope.Scope>;
     /**
      * The start of one file, at most `maxBytes`: in the worktree as it stands (`at` null), or in a
      * commit's tree (a checkpoint's sha). Null when nothing readable is there, or the path leaves
@@ -237,6 +245,11 @@ export const WorktreeReadsColocatedLive: Layer.Layer<
         pathOf(projectId, worktreeId).pipe(
           Effect.flatMap((dir) => store.listWorktreeFiles(dir, limit)),
           Effect.map(stamped),
+        ),
+      openRawFile: (projectId, worktreeId, target) =>
+        pathOf(projectId, worktreeId).pipe(
+          Effect.mapError(() => new RawReadError({ reason: "missing" })),
+          Effect.flatMap((dir) => store.openRawWorktreeFile(dir, target.path, target.within)),
         ),
       readFile: (projectId, worktreeId, relative, at, maxBytes) =>
         pathOf(projectId, worktreeId).pipe(
@@ -470,6 +483,7 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
               .pipe(Effect.map((value) => ({ value, stamp: ready.stamp }))),
           ),
         ),
+      openRawFile: () => Effect.fail(new RawReadError({ reason: "captured" })),
       // The worktree as it stands is the head capture's tree.
       readFile: (projectId, worktreeId, relative, at, maxBytes) =>
         prepared(projectId, worktreeId).pipe(

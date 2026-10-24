@@ -17,3 +17,4 @@ export * from "./runner.ts";
 export * from "./secret-cipher.ts";
 export * from "./store.ts";
 export * from "./source-policy.ts";
+export * from "./raw-file.ts";

@@ -88,10 +88,10 @@ const gatewayWithClientObservers = (observers: ClientObservers) => {
     })),
   ).pipe(Layer.provide(MendClientFetchLive));
   return GatewayRoutesLive.pipe(
+    Layer.provideMerge(AssetUrlsLive),
     Layer.provide(GatewayAuthLive),
     Layer.provide(ProjectionsLive),
     Layer.provideMerge(WebSocketTicketsLive),
-    Layer.provideMerge(AssetUrlsLive),
     Layer.provideMerge(AssetTracingDisabledLive),
     Layer.provideMerge(GatewayEnvironmentLive),
     Layer.provideMerge(client),
