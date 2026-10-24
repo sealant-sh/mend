@@ -826,6 +826,9 @@ importers:
       '@effect/platform-node':
         specifier: 'catalog:'
         version: 4.0.5(effect@4.0.5)(redis@6.3.0)
+      '@mend/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@mend/t3-contracts':
         specifier: workspace:*
         version: link:../../packages/t3-contracts

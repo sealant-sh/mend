@@ -225,8 +225,8 @@ describe("GET /ws", () => {
           ],
         ]);
 
-        // The account sessions use is `default` (R650-1): an active backup by another name does
-        // not make an invalid or missing default a working login.
+        // The account sessions use is the chosen default (R650-1): another active account does
+        // not make an invalid or unchosen default a working login.
         mend.setAccounts([
           { provider: "claude", status: "active" },
           { provider: "codex", status: "invalid" },
@@ -246,7 +246,19 @@ describe("GET /ws", () => {
           "codex",
           "warning",
           "unauthenticated",
-          "Mend holds no default Codex login of yours, the one sessions use (only others by name). Connect one with mend connect codex.",
+          "No Codex login chosen: Mend holds 1 of yours, and sessions use only the chosen one. Connect one with mend connect codex.",
+        ]);
+        // The default is the one chosen, not the one named `default`.
+        mend.setAccounts([
+          { provider: "claude", status: "active" },
+          { provider: "codex", status: "invalid", name: "default", isDefault: false },
+          { provider: "codex", status: "active", name: "work", isDefault: true },
+        ]);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({}))[1], [
+          "codex",
+          "ready",
+          "authenticated",
+          null,
         ]);
 
         // Active but observed expired with its refresh failed (R650-2): not known to work.

@@ -1,3 +1,4 @@
+import { loginChoiceOf } from "@mend/domain/workbench";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
@@ -198,9 +199,6 @@ export type Login =
 /** Each served harness's login, or null when the gateway could not read them. */
 export type PersonLogins = ReadonlyMap<string, Login> | null;
 
-/** The account Mend's sessions use for a harness: the one named `default` (review R650-1). */
-export const SESSION_ACCOUNT = "default";
-
 /** An epoch in milliseconds as an ISO time. */
 const at = (epoch: number) => new Date(epoch).toISOString();
 
@@ -210,8 +208,8 @@ const numberAt = (metadata: Readonly<Record<string, unknown>> | undefined, key: 
 };
 
 /**
- * A person's logins as their sessions will meet them (reviews R650-1 and R650-2): only the
- * `default` account of each harness counts, as Mend's sessions select it; an active one observed
+ * A person's logins as their sessions will meet them (reviews R650-1 and R650-2): only the chosen
+ * default account of each harness counts, as Mend's sessions select it; an active one observed
  * expired with its refresh failed or its refresh grant expired, or with its last refresh failed,
  * is `unsure`, with what was observed. Never "signed in" on a stored status alone when expiry or
  * a failed refresh says otherwise.
@@ -222,20 +220,20 @@ export const loginsOf = (
 ): ReadonlyMap<string, Login> => {
   const logins = new Map<string, Login>();
   for (const [harness, driver] of Object.entries(HARNESS_DRIVERS)) {
-    const account = accounts.find(
-      (candidate) => candidate.provider === harness && candidate.name === SESSION_ACCOUNT,
-    );
+    const choice = loginChoiceOf(accounts, harness);
     const name = driver.displayName;
-    if (account === undefined) {
-      const others = accounts.some((candidate) => candidate.provider === harness);
+    if (choice._tag === "none") {
+      logins.set(harness, { kind: "none", reason: `Mend holds no ${name} login of yours.` });
+      continue;
+    }
+    if (choice._tag === "unchosen") {
       logins.set(harness, {
         kind: "none",
-        reason: others
-          ? `Mend holds no default ${name} login of yours, the one sessions use (only others by name).`
-          : `Mend holds no ${name} login of yours.`,
+        reason: `No ${name} login chosen: Mend holds ${choice.accounts.length} of yours, and sessions use only the chosen one.`,
       });
       continue;
     }
+    const account = choice.account;
     if (account.status !== "active") {
       logins.set(harness, {
         kind: "none",

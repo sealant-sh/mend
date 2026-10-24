@@ -115,6 +115,8 @@ export interface FakeAccount {
   readonly provider: string;
   readonly status: string;
   readonly name?: string;
+  /** Whether it is the person's chosen default; unset, an account given no name is. */
+  readonly isDefault?: boolean;
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
@@ -194,6 +196,7 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
             id: `account-${index}`,
             provider: account.provider,
             name: account.name ?? "default",
+            isDefault: account.isDefault ?? account.name === undefined,
             kind: "oauth-token",
             status: account.status,
             metadata: account.metadata ?? {},

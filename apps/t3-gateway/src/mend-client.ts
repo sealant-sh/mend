@@ -85,13 +85,14 @@ const decodeBranches = Schema.decodeUnknownEffect(Schema.Array(MendBranch));
 
 /**
  * The person's connected accounts, from `GET /api/me/sealant` (`SealantIdentity` in
- * @mend/api-contracts): which provider each is for, its name (sessions use `default`), its status,
- * and its non-secret metadata (expiries in epoch milliseconds, the last refresh's outcome). Mend
- * never returns secret material here.
+ * @mend/api-contracts): which provider each is for, its name, whether it is the person's chosen
+ * default (the one sessions use), its status, and its non-secret metadata (expiries in epoch
+ * milliseconds, the last refresh's outcome). Mend never returns secret material here.
  */
 const MendConnectedAccount = Schema.Struct({
   provider: Schema.String,
   name: Schema.String,
+  isDefault: Schema.Boolean,
   status: Schema.String,
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 });
