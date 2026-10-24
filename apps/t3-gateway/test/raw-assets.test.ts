@@ -442,25 +442,58 @@ it.live("streams large files under backpressure, cancels upstream and aborts lat
 it.effect(
   "refuses new grants at capacity, keeps existing grants and releases expired capacity",
   () =>
+    withGateway(
+      (mend) =>
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "CAPACITY");
+          const mint = (name: string) =>
+            rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(name) });
+          const first = yield* mint("image.png");
+          yield* mint("vector.svg");
+          yield* mint("space % #.png");
+          assert.isTrue(Exit.isFailure(yield* Effect.exit(mint("docs/book.pdf"))));
+          const response = yield* mend.fetch(first.relativeUrl);
+          assert.strictEqual(response.status, 200);
+          yield* Effect.promise(() => response.arrayBuffer());
+          yield* TestClock.adjust("1 hour");
+          const fresh = yield* mint("docs/book.pdf");
+          assert.notStrictEqual(first.relativeUrl, fresh.relativeUrl);
+        }),
+      { grantsPerDevice: 3 },
+    ),
+);
+
+it.effect(
+  "keeps minting through hours of a thread's re-mints, retiring each image's oldest URLs",
+  () =>
     withGateway((mend) =>
       Effect.gen(function* () {
-        const { rpc } = yield* pairAndConnect(mend, "CAPACITY");
-        const first = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") });
-        for (let i = 1; i < 256; i++)
-          yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") });
-        assert.isTrue(
-          Exit.isFailure(
-            yield* Effect.exit(
-              rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") }),
-            ),
-          ),
+        const { rpc } = yield* pairAndConnect(mend, "LONG");
+        for (let i = 0; i < 60; i++)
+          mend.workbench.rawFiles.set(`worktree-session-1/shots/${i}.png`, {
+            bytes: BYTES,
+            canonicalPath: `shots/${i}.png`,
+          });
+        const mintAll = Effect.forEach(
+          Array.from({ length: 60 }, (_, i) => i),
+          (i) => rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(`shots/${i}.png`) }),
+          { concurrency: 8 },
         );
-        const response = yield* mend.fetch(first.relativeUrl);
-        assert.strictEqual(response.status, 200);
-        yield* Effect.promise(() => response.arrayBuffer());
-        yield* TestClock.adjust("1 hour");
-        const fresh = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") });
-        assert.notStrictEqual(first.relativeUrl, fresh.relativeUrl);
+        // A screenshot-heavy thread, open for four hours: its images minted again every ten
+        // minutes (t3code's 30-minute refresh, and a remount once a view went stale).
+        const rounds = [];
+        for (let round = 0; round < 24; round++) {
+          rounds.push(yield* mintAll);
+          yield* TestClock.adjust("10 minutes");
+        }
+        const status = (url: string) =>
+          Effect.flatMap(mend.fetch(url), (response) =>
+            Effect.promise(() => response.arrayBuffer().then(() => response.status)),
+          );
+        const last = rounds.length - 1;
+        for (const back of [0, 1, 2])
+          assert.strictEqual(yield* status(rounds[last - back]?.[7]?.relativeUrl ?? ""), 200);
+        assert.strictEqual(yield* status(rounds[last - 3]?.[7]?.relativeUrl ?? ""), 404);
       }),
     ),
 );
