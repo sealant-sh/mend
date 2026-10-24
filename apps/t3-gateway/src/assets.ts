@@ -10,8 +10,8 @@ import { HttpMiddleware, HttpRouter, HttpServerRequest, HttpServerResponse } fro
 import { GatewayAuth } from "./auth.ts";
 import { Projections } from "./hub.ts";
 import { MEND_IMAGE_MAX_BYTES } from "./images.ts";
-import { MendClient, type MendRawFile } from "./mend-client.ts";
-import { GatewayState } from "./state.ts";
+import { MendClient, type MendRawFile, type MendRawFileRequest } from "./mend-client.ts";
+import { type BearerSession, GatewayState } from "./state.ts";
 
 export const ASSET_ROUTE_PREFIX = "/api/assets";
 export const ASSET_URL_TTL_MS = 60 * 60_000;
@@ -249,11 +249,7 @@ export const AssetUrlsLive: Layer.Layer<
             }
           }),
       );
-    const opened = (
-      session: import("./state.ts").BearerSession,
-      worktreeId: string,
-      input: Parameters<MendClient["Service"]["openRawFile"]>[2],
-    ) =>
+    const opened = (session: BearerSession, worktreeId: string, input: MendRawFileRequest) =>
       mend.openRawFile(Redacted.make(session.deviceToken), worktreeId, input).pipe(
         Effect.catch((error) =>
           Effect.gen(function* () {

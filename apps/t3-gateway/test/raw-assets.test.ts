@@ -298,7 +298,7 @@ describe("worktree asset URLs", () => {
 });
 
 /** What a browser on a real socket sees of one response: its end, a reset, or no end at all. */
-export const readOverSocket = (url: string) =>
+const readOverSocket = (url: string) =>
   Effect.callback<{
     readonly status: number;
     readonly length: number;

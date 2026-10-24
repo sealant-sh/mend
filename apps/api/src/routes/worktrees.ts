@@ -35,6 +35,7 @@ import {
   WorktreeChangesRepo,
   WorktreesRepo,
 } from "@mend/db";
+import type { CheckpointId, WorktreeId } from "@mend/domain";
 import { currentAgentProcess, heldRepositoriesRefusal } from "@mend/domain/workbench";
 import { captureHoldWords, SessionEngine, startFromBase, WorktreeReads } from "@mend/sessions";
 import { type DiffFileFact, DeploymentConfig, isWorktreeRelativePath, Store } from "@mend/store";
@@ -47,11 +48,11 @@ import { unlandedWork } from "../landing-state.ts";
 import { LIVE_STATES, observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
 
 const rawFile = (
-  id: import("@mend/domain").WorktreeId,
+  id: WorktreeId,
   query: {
     readonly path: string;
     readonly within?: string | undefined;
-    readonly at?: import("@mend/domain").CheckpointId | undefined;
+    readonly at?: CheckpointId | undefined;
   },
 ) =>
   Effect.gen(function* () {
