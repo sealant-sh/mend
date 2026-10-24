@@ -530,6 +530,44 @@ the agent in the session's live workspace (`POST /api/sessions/:id/shell`), reac
   it. A terminal is kept from before Mend opens its shell: a ticket or socket that fails after, or
   an open that is interrupted, stops that shell rather than leave it running.
 
+## Current worktree previews
+
+`assets.createUrl` supports `workspace-file` and `media-file` in a visible thread's current,
+co-located worktree. Images, HTML, PDF, video and audio use Mend's authenticated raw file route.
+`projects.readFile` retains its existing text and binary-file response. Captured worktrees and
+checkpoint raw reads return typed 409 refusals from Mend and unavailable previews in t3code. Project
+favicons return t3code's `project-favicon-missing` marker until a default-branch worktree exists.
+Draft files, tool-output images, native app icons and GitHub media remain unavailable.
+
+`src/assets.ts` owns both these URLs and chat-image URLs under ADR 0004's decision A of 2026-10-24.
+Every mint returns a fresh random `ast_` token with the real filename as its last segment. Tokens
+are reusable for at most one hour and never outlive their originating bearer session. Each fetch
+confirms that device through the same five-second check as bearer routes. File reads also recheck
+Mend's project access. Restarting the gateway forgets all asset grants.
+
+A grant names one canonical file, or its directory for HTML and PDF so relative resources load. Both
+lexical traversal and descriptor-resolved directory escapes are refused. MIME and sandbox CSP follow
+the opened target's extension, including symlinks. Only audio and video forward a single `Range`;
+other previews always return the complete file. Media grants carry a revision and refuse a changed
+file, so a seek cannot silently combine versions. `If-Range` falls back to the complete response.
+HEAD returns metadata without reading the body. Responses are `private, no-store`, with `nosniff`;
+SVG and HTML use t3code v0.1.2's sandbox policies. Failures before headers are plain 404; a failure
+after headers aborts the body. Neither paths nor tokens enter asset access logs or traces. Mend raw
+reads disable access logs and traces too.
+
+Admission refuses new work without evicting usable grants or interrupting running reads. Limits are
+4,096 grants overall, 256 per device, and 8 MiB of grant metadata; eight simultaneous mints, two per
+device; 32 simultaneous reads, eight per device. Buffered chat-image reads separately reserve one
+full 8 MiB image allowance, at most two reads and 16 MiB total. Raw worktree bytes stream with
+backpressure, without a whole-file buffer. These are admission and memory limits; there is no
+raw-file size cap, disk cache or cumulative byte budget in this change.
+
+`test/raw-assets.test.ts` exercises the RPC handlers and HTTP routes in process, with real device
+authentication, SQLite grant ownership and Mend response decoding. It covers exact binary bytes,
+canonical names and CSP, media ranges, directory boundaries, revocation, expiry, admission,
+backpressure, cancellation and late failures. Store descriptor tests and Mend route tests cover
+filesystem containment and private-project access separately.
+
 ## Run it
 
 It is off unless someone turns it on. On a packaged server, `mend server setup --t3-gateway` turns
@@ -593,8 +631,9 @@ Mend's device list as `t3code · <client label>`; revoking it there ends the bea
   s, doubling, at most an hour apart) and takes any other answer than 200 or 401 as no revocation.
 - **Mend not answering.** A ticket or snapshot read Mend could not confirm is answered
   `503 Service Unavailable` with `retry-after: 5`, which t3code retries: nothing is served from the
-  hub's memory on the gateway's word alone. Every call to Mend gives up after two minutes without a
-  response.
+  hub's memory on the gateway's word alone. Ordinary calls to Mend give up after two minutes without
+  a response. Raw file reads allow ten seconds for headers and stream the body for as long as the
+  client consumes it.
 
 Mend allows ten failed pairing claims a minute per client address. The gateway sends each claim with
 `x-forwarded-for`: the client's own header, if any, then the address the gateway saw. Mend believes

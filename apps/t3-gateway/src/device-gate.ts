@@ -15,7 +15,7 @@ import { MendDeviceRefused, type MendClient } from "./mend-client.ts";
  */
 
 /** Mend's client minus pairing, which carries no device token. */
-export type DeviceCalls = Omit<MendClient["Service"], "claimPairing">;
+export type DeviceCalls = Omit<MendClient["Service"], "claimPairing" | "openRawFile">;
 
 class GatedMendClient {
   readonly #gated = true;

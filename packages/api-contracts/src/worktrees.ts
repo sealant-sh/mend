@@ -9,7 +9,7 @@ import {
   WorktreeName,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
@@ -32,6 +32,39 @@ export class WorktreeNotFound extends Schema.TaggedError<WorktreeNotFound>()(
   { id: Schema.String },
   { httpApiStatus: 404 },
 ) {}
+
+/** Raw bytes are currently available only from co-located current files. */
+export class RawFileUnavailable extends Schema.TaggedError<RawFileUnavailable>()(
+  "RawFileUnavailable",
+  { mode: Schema.Literals(["captured", "checkpoint"]) },
+  { httpApiStatus: 409 },
+) {}
+
+export class RawFileNotFound extends Schema.TaggedError<RawFileNotFound>()(
+  "RawFileNotFound",
+  {},
+  { httpApiStatus: 404 },
+) {}
+
+export class RawFileTooLarge extends Schema.TaggedError<RawFileTooLarge>()(
+  "RawFileTooLarge",
+  {},
+  { httpApiStatus: 413 },
+) {}
+
+const rawQuery = {
+  path: Schema.String,
+  within: Schema.optional(Schema.String),
+  at: Schema.optional(CheckpointId),
+};
+const rawMetadata = {
+  "content-length": Schema.String,
+  "accept-ranges": Schema.Literal("bytes"),
+  /** Percent-encoded canonical worktree-relative path of the opened descriptor. */
+  "x-mend-file-path": Schema.String,
+  "x-mend-file-revision": Schema.String,
+};
+const rawErrors = [WorktreeNotFound, RawFileNotFound, RawFileUnavailable, RawFileTooLarge] as const;
 
 /** Removing a worktree with live conversations is refused — stop them first. */
 export class WorktreeActive extends Schema.TaggedError<WorktreeActive>()(
@@ -267,6 +300,26 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
       payload: CheckpointRequest,
       success: Checkpoint,
       error: [WorktreeNotFound, StoreFailure],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("raw", "/worktrees/:id/raw", {
+      params: { id: WorktreeId },
+      query: rawQuery,
+      // Effect permits one streaming success schema. The handler also streams 206 with Content-Range.
+      success: HttpApiSchema.WithHeaders(HttpApiSchema.StreamUint8Array(), rawMetadata),
+      error: [
+        ...rawErrors,
+        HttpApiSchema.WithHeaders(HttpApiSchema.Empty(416), { "content-range": Schema.String }),
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.head("rawHead", "/worktrees/:id/raw", {
+      params: { id: WorktreeId },
+      query: rawQuery,
+      success: HttpApiSchema.WithHeaders(HttpApiSchema.Empty(200), rawMetadata),
+      error: rawErrors,
     }),
   )
   .middleware(AuthMiddleware);

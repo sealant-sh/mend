@@ -25,10 +25,10 @@ export const MendClientFetchLive = MendClientLive.pipe(Layer.provide(FetchHttpCl
  * the Mend client are built once and shared by every route.
  */
 export const GatewayAppLive = GatewayRoutesLive.pipe(
+  Layer.provideMerge(AssetUrlsLive),
   Layer.provide(GatewayAuthLive),
   Layer.provide(ProjectionsLive),
   Layer.provideMerge(WebSocketTicketsLive),
-  Layer.provideMerge(AssetUrlsLive),
   Layer.provideMerge(AssetTracingDisabledLive),
   Layer.provideMerge(GatewayEnvironmentLive),
   Layer.provideMerge(MendClientFetchLive),

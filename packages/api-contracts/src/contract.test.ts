@@ -89,6 +89,8 @@ describe("typed HTTP error contracts", () => {
       "detail",
       "diff",
       "list",
+      "raw",
+      "rawHead",
       "remove",
     ]);
     for (const [name, codes] of statuses) {
