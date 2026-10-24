@@ -4,30 +4,36 @@
 # this one origin. Nothing else is routed: not the API, not Sealant, not the session channel, not
 # the bucket.
 #
-# What a log line about a request holds: on Mend's origin, its path and never its query, whatever
-# route it names (sockets and the phone's embed carry a single-use ticket there, pairing a code);
-# on the t3code gateway's origin, no uri at all (an asset URL's path is its token and file name).
+# What a log line about a request holds. Mend's site names its log `mend`, and only that log keeps
+# a path: never a query or a fragment, whatever route it names (sockets and the phone's embed carry
+# a single-use ticket there, pairing a code), nor a target's userinfo, in the uri or a Location.
+# Every other line holds no uri and no Location: the t3code gateway's (an asset URL's path is its
+# token and file name), and every line Caddy does not name for Mend's site. Caddy names a line's
+# log by the exact Host, so a Host in another case or with a trailing dot, the port-80 redirect for
+# it, and a module's own lines (reverse_proxy's for a response cut short) fall to `default`.
 # Caddy already redacts Authorization, Cookie and Set-Cookie; Referer is dropped.
-{
-	# Caddy's own lines about a request: a failed dial on Mend's origin, among others.
-	log default {
-		output stdout
-		format filter {
-			fields {
-				request>uri regexp "^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*(@)|([?#])[\s\S]*" "${1}${3}REDACTED${2}"
-				request>headers>Referer delete
-			}
+(uri-free) {
+	format filter {
+		fields {
+			request>uri replace REDACTED
+			resp_headers>Location delete
+			request>headers>Referer delete
 		}
 	}
-	# reverse_proxy names its lines (a response cut short) for the handler, not for the site, so
-	# none holds a uri. The gateway's site names its logger t3code-gateway (Caddyfile.t3), so
-	# Caddy's error lines about its requests come here too.
-	log uri-free {
-		include http.handlers.reverse_proxy http.log.error.t3code-gateway
+}
+
+{
+	log default {
+		output stdout
+		import uri-free
+	}
+	log mend {
+		include http.log.access.mend http.log.error.mend
 		output stdout
 		format filter {
 			fields {
-				request>uri replace REDACTED
+				request>uri regexp "(^|[A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*(@)|([?#])[\s\S]*" "${1}${3}REDACTED${2}"
+				resp_headers>Location regexp "(^|[A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*(@)|([?#])[\s\S]*" "${1}${3}REDACTED${2}"
 				request>headers>Referer delete
 			}
 		}
@@ -45,17 +51,7 @@
 		flush_interval -1
 	}
 
-	log {
-		output stdout
-		# The path, never the query: an absolute-form target's userinfo and everything from its
-		# first ? or # become REDACTED.
-		format filter {
-			fields {
-				request>uri regexp "^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*(@)|([?#])[\s\S]*" "${1}${3}REDACTED${2}"
-				request>headers>Referer delete
-			}
-		}
-	}
+	log mend
 }
 
 # Sites beside Mend's own origin, one file each. `mend server setup --t3-gateway-origin <host>`
