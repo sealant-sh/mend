@@ -895,10 +895,6 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.serverRunStorageCleanup]: () => refuse(WS_METHODS.serverRunStorageCleanup),
     [WS_METHODS.serverGetDatabaseStorage]: noStatus,
     [WS_METHODS.serverCheckOtlpEndpoint]: () => refuse(WS_METHODS.serverCheckOtlpEndpoint),
-    [WS_METHODS.peerLinksList]: () => refuse(WS_METHODS.peerLinksList),
-    [WS_METHODS.peerLinksLink]: () => refuse(WS_METHODS.peerLinksLink),
-    [WS_METHODS.peerLinksUnlink]: () => refuse(WS_METHODS.peerLinksUnlink),
-    [WS_METHODS.peerLinksAnswerRequest]: () => refuse(WS_METHODS.peerLinksAnswerRequest),
     [WS_METHODS.serverRefreshUsageRates]: () => refuse(WS_METHODS.serverRefreshUsageRates),
     [WS_METHODS.serverSignalProcess]: () => refuse(WS_METHODS.serverSignalProcess),
     // Nothing in the gateway waits on a client being active: taken, and nothing done.
@@ -988,6 +984,8 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.pullRequestsDiffFileContents]: () =>
       pullRequests(WS_METHODS.pullRequestsDiffFileContents),
     [WS_METHODS.pullRequestsFilesViewed]: () => pullRequests(WS_METHODS.pullRequestsFilesViewed),
+    [WS_METHODS.pullRequestsChangeBreakdown]: () =>
+      pullRequests(WS_METHODS.pullRequestsChangeBreakdown),
     [WS_METHODS.pullRequestsSetFilesViewed]: () =>
       pullRequests(WS_METHODS.pullRequestsSetFilesViewed),
     [WS_METHODS.pullRequestsRunAction]: () => pullRequests(WS_METHODS.pullRequestsRunAction),
@@ -1035,6 +1033,9 @@ export const makeGatewayRpcHandlers = ({
     // ── Projects and files ──────────────────────────────────────────────────
     [WS_METHODS.projectsListEntries]: (input) =>
       authorize(session).pipe(Effect.andThen(files.listEntries(input))),
+    // Mend lists a worktree's files without the ones git ignores, nor their sizes, and the
+    // environment does not offer `ignoredFileListing`, so a client never asks.
+    [WS_METHODS.projectsListIgnoredFiles]: () => refuse(WS_METHODS.projectsListIgnoredFiles),
     [WS_METHODS.projectsReadFile]: (input) =>
       authorize(session).pipe(Effect.andThen(files.readFile(input))),
     [WS_METHODS.projectsSearchContents]: (input) =>
@@ -1224,6 +1225,7 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.deviceConfigure]: () => refuse(WS_METHODS.deviceConfigure),
     [WS_METHODS.deviceList]: () => refuse(WS_METHODS.deviceList),
     [WS_METHODS.deviceTestHost]: () => refuse(WS_METHODS.deviceTestHost),
+    [WS_METHODS.deviceEasAccount]: () => refuse(WS_METHODS.deviceEasAccount),
     [WS_METHODS.deviceOpen]: () => refuse(WS_METHODS.deviceOpen),
     [WS_METHODS.deviceClose]: () => refuse(WS_METHODS.deviceClose),
     [WS_METHODS.deviceShutdown]: () => refuse(WS_METHODS.deviceShutdown),
