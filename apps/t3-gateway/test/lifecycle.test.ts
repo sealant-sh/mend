@@ -107,8 +107,13 @@ const TERMINAL = new Set(["completed", "interrupted", "failed", "cancelled", "ro
  */
 const asClientSees = (thread: OrchestrationV2ThreadShell): ThreadSnoozeShell => {
   const updatedAt = DateTime.formatIso(thread.updatedAt);
-  const kind = thread.pendingRuntimeRequest?.kind;
+  const request = thread.pendingRuntimeRequest;
+  const kind = request?.kind;
+  const runtimeStatus = thread.activityRunStatus ?? thread.status;
+  const working =
+    runtimeStatus === "preparing" || runtimeStatus === "starting" || runtimeStatus === "running";
   return {
+    source: { pendingRuntimeRequest: request },
     latestUserMessageAt: iso(thread.latestUserMessageAt),
     latestRun:
       thread.latestRunId === null
@@ -124,9 +129,9 @@ const asClientSees = (thread: OrchestrationV2ThreadShell): ThreadSnoozeShell => 
                   : null
                 : iso(thread.latestRunCompletedAt),
           },
-    runtime: { status: thread.activityRunStatus ?? thread.status, updatedAt },
+    runtime: { status: runtimeStatus, updatedAt },
     hasPendingApprovals: kind !== undefined && kind !== "user_input" && kind !== "auth_refresh",
-    hasPendingUserInput: kind === "user_input",
+    hasPendingUserInput: kind === "user_input" && (request?.blocking !== false || !working),
     snoozedUntil: iso(thread.snoozedUntil),
     snoozedAt: iso(thread.snoozedAt),
   };
@@ -193,6 +198,32 @@ describe("settle", () => {
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
     });
   });
+
+  it.live("settling a snoozed thread ends its snooze", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      mend.workbench.addTurn("session-1", "Done already", "completed");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SETTLE-SNOOZED");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.latestRunId !== null, "the thread");
+        yield* dispatch(rpc, {
+          type: "thread.snooze",
+          snoozedUntil: new Date(Date.now() + HOUR).toISOString(),
+        });
+        yield* shell.until((thread) => thread.snoozedUntil != null, "the snooze");
+        yield* dispatch(rpc, { type: "thread.settle" });
+        const settled = yield* shell.until(
+          (thread) => thread.settledOverride === "settled",
+          "the settle",
+        );
+        assert.isNull(settled.snoozedUntil ?? null);
+        assert.isNull(settled.snoozedAt ?? null);
+        assert.isFalse(snoozedNow(settled));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
 
   it.live("refuses to settle a thread with a turn running or a question waiting", () =>
     Effect.gen(function* () {
@@ -357,31 +388,81 @@ describe("snooze", () => {
     }),
   );
 
-  for (const ending of ["failed", "completed"] as const) {
-    it.live(`wakes early when the turn running under the snooze ${ending}`, () =>
-      Effect.gen(function* () {
-        const mend = yield* startFakeMend;
-        withSession(mend);
-        const turn = mend.workbench.addTurn("session-1", "A long job");
-        yield* Effect.gen(function* () {
-          const { rpc } = yield* pairAndConnect(mend, `SNOOZE-${ending.toUpperCase()}`);
-          const shell = yield* watchShell(rpc);
-          yield* shell.until((thread) => thread.status === "running", "the running turn");
-          yield* dispatch(rpc, {
-            type: "thread.snooze",
-            snoozedUntil: new Date(Date.now() + HOUR).toISOString(),
-          });
-          const snoozed = yield* shell.until((thread) => thread.snoozedUntil != null, "the snooze");
-          assert.isTrue(snoozedNow(snoozed));
+  it.live("wakes early when the turn running under the snooze fails", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      const turn = mend.workbench.addTurn("session-1", "A long job");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SNOOZE-FAILED");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.status === "running", "the running turn");
+        yield* dispatch(rpc, {
+          type: "thread.snooze",
+          snoozedUntil: new Date(Date.now() + HOUR).toISOString(),
+        });
+        const snoozed = yield* shell.until((thread) => thread.snoozedUntil != null, "the snooze");
+        assert.isTrue(snoozedNow(snoozed));
 
-          mend.workbench.setTurn(turn, ending, ending === "failed" ? "The agent crashed." : null);
-          const ended = yield* shell.until((thread) => thread.status === ending, `the ${ending}`);
-          assert.isFalse(snoozedNow(ended));
-          assert.isNotNull(threadWokeAt(asClientSees(ended), { now: new Date().toISOString() }));
-        }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
-      }),
-    );
-  }
+        mend.workbench.setTurn(turn, "failed", "The agent crashed.");
+        const ended = yield* shell.until((thread) => thread.status === "failed", "the failure");
+        assert.isFalse(snoozedNow(ended));
+        assert.isNotNull(threadWokeAt(asClientSees(ended), { now: new Date().toISOString() }));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
+
+  it.live("stays snoozed when the turn running under the snooze completes", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      const turn = mend.workbench.addTurn("session-1", "A long job");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SNOOZE-COMPLETED");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.status === "running", "the running turn");
+        yield* dispatch(rpc, {
+          type: "thread.snooze",
+          snoozedUntil: new Date(Date.now() + HOUR).toISOString(),
+        });
+        yield* shell.until((thread) => thread.snoozedUntil != null, "the snooze");
+
+        mend.workbench.setTurn(turn, "completed", null);
+        const ended = yield* shell.until(
+          (thread) => thread.status === "completed",
+          "the completion",
+        );
+        assert.isTrue(snoozedNow(ended));
+        assert.isNull(threadWokeAt(asClientSees(ended), { now: new Date().toISOString() }));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
+
+  it.live("snoozing again for the same time stamps the snooze again", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      mend.workbench.addTurn("session-1", "Done already", "completed");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SNOOZE-AGAIN");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.latestRunId !== null, "the thread");
+        const snoozedUntil = new Date(Date.now() + HOUR).toISOString();
+        yield* dispatch(rpc, { type: "thread.snooze", snoozedUntil });
+        const first = yield* shell.until((thread) => thread.snoozedAt != null, "the snooze");
+        const firstAt = iso(first.snoozedAt);
+        // A snooze is never dated before Mend's latest time for the thread, which runs ahead here.
+        yield* Effect.sleep(Math.max(0, Date.parse(firstAt ?? "") - Date.now()) + 20);
+        yield* dispatch(rpc, { type: "thread.snooze", snoozedUntil });
+        const again = yield* shell.until(
+          (thread) => iso(thread.snoozedAt) !== firstAt,
+          "the snooze stamped again",
+        );
+        assert.strictEqual(iso(again.snoozedUntil), snoozedUntil);
+        assert.isTrue(Date.parse(iso(again.snoozedAt) ?? "") > Date.parse(firstAt ?? ""));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
 
   it.live("a thread that had failed before the snooze stays snoozed", () =>
     Effect.gen(function* () {

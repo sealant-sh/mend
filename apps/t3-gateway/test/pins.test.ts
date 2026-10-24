@@ -356,6 +356,33 @@ describe("automatic settlement", () => {
       }),
   );
 
+  it.live(
+    "a thread with no turn settles once quiet for the days since it was made, dated then",
+    () =>
+      Effect.gen(function* () {
+        const mend = yield* startFakeMend;
+        advanceClock(Date.now());
+        mend.workbench.addProject("project-1", "mend");
+        const session = mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const quietSince = new Date(Date.now() - (AUTO_SETTLE_AFTER_DAYS ?? 0) * DAY - HOUR);
+        mend.workbench.sessions.set("session-1", {
+          ...session,
+          createdAt: quietSince.toISOString(),
+        });
+        yield* Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "AUTO-NO-TURN");
+          const shell = yield* watchShell(rpc);
+          const settled = yield* shell.until(
+            "session-1",
+            (thread) => thread.settledOverride === "settled",
+            "the automatic settle",
+          );
+          assert.isNull(settled.latestRunId);
+          assert.strictEqual(iso(settled.settledAt), quietSince.toISOString());
+        }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+      }),
+  );
+
   it.effect("a quiet thread settles on the sweep's timer, with no read of the person's", () =>
     Effect.gen(function* () {
       const mend = yield* startFakeMend;

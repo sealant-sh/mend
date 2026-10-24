@@ -24,8 +24,9 @@ import type { ThreadLifecycle } from "./state.ts";
  *
  * The gateway keeps a snooze as set and wakes it early in one case only: something asked the
  * thread for work. Every other wake is the t3code client's own, read from the shell
- * (`threadSettled.ts` in its client runtime): the snooze's time passing, a pending approval or
- * question, a turn that failed or completed after the snooze. The shell carries what those read.
+ * (`threadSettled.ts` in its client runtime): the snooze's time passing, a pending request, a turn
+ * that failed after the snooze. A turn that completes leaves the snooze as it is. The shell
+ * carries what those read.
  */
 
 export const NO_LIFECYCLE: ThreadLifecycle = {
@@ -145,6 +146,8 @@ export const changeLifecycle = (
     pinnedAt: null,
     pinOrderKey: null,
     activeOrderKey: null,
+    snoozedUntil: null,
+    snoozedAt: null,
   });
   // A snooze ended by hand restarts the quiet clock, as t3code's own server dates it.
   const woken = {
@@ -199,13 +202,8 @@ export const changeLifecycle = (
       ) {
         return refused("A message is waiting to be sent, which a snooze would hide.");
       }
-      const snoozedUntil = new Date(until).toISOString();
-      const same = current.snoozedUntil !== null && Date.parse(current.snoozedUntil) === until;
-      return changed({
-        ...current,
-        snoozedUntil,
-        snoozedAt: same ? (current.snoozedAt ?? at) : at,
-      });
+      // Stamped again for the same time too: snoozing a thread that woke says "seen, not now".
+      return changed({ ...current, snoozedUntil: new Date(until).toISOString(), snoozedAt: at });
     }
     case "unsnooze":
       return changed({ ...current, ...woken });
@@ -292,12 +290,10 @@ const isAutoSettlementCandidate = (thread: SettlementCandidate, nowMs: number): 
   if (snoozedUntilMs === null || snoozedUntilMs <= nowMs) return true;
   const snoozedAtMs = millisOf(thread.snoozedAt);
   const completedAtMs = millisOf(thread.latestRunCompletedAt);
-  const wokeOnError =
+  return (
     thread.status === "failed" &&
-    (snoozedAtMs === null || (completedAtMs !== null && completedAtMs > snoozedAtMs));
-  const wokeOnCompletion =
-    snoozedAtMs !== null && completedAtMs !== null && completedAtMs > snoozedAtMs;
-  return wokeOnError || wokeOnCompletion;
+    (snoozedAtMs === null || (completedAtMs !== null && completedAtMs > snoozedAtMs))
+  );
 };
 
 /** When the thread last saw a message or a turn (epoch ms); null when it never has. */
@@ -312,8 +308,7 @@ export const activityAtOf = (thread: SettlementCandidate): number | null =>
 /** t3code's `resolveAutoSettlementAt` without a pull request. */
 export const autoSettledAt = (thread: SettlementCandidate, nowMs: number): string | null => {
   if (AUTO_SETTLE_AFTER_DAYS === null || !isAutoSettlementCandidate(thread, nowMs)) return null;
-  const activityAtMs = activityAtOf(thread);
-  if (activityAtMs === null) return null;
+  const activityAtMs = activityAtOf(thread) ?? DateTime.toEpochMillis(thread.createdAt);
   const snoozedUntilMs = millisOf(thread.snoozedUntil);
   const timerWakeAtMs = snoozedUntilMs !== null && snoozedUntilMs <= nowMs ? snoozedUntilMs : null;
   const quietSinceMs =
