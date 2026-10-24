@@ -88,6 +88,8 @@ export interface AssetLimits {
   readonly stall: Duration.Duration;
   readonly grants: number;
   readonly grantsPerDevice: number;
+  /** URLs kept for one device's one file or image; a newer mint retires the oldest past it. */
+  readonly grantsPerSubject: number;
   readonly metadataBytes: number;
 }
 
@@ -108,9 +110,13 @@ export const DEFAULT_ASSET_LIMITS: AssetLimits = {
   wait: Duration.seconds(30),
   // Longer than a slow phone takes over one 64 KiB chunk; a paused video frees its slot.
   stall: Duration.seconds(30),
-  grants: 4096,
-  grantsPerDevice: 256,
-  metadataBytes: 8 * 1024 * 1024,
+  // Re-mints retire their subject's oldest URL, so a device holds about three per file it showed
+  // within the hour: a few hundred-image threads. A grant is a few hundred bytes.
+  grants: 16_384,
+  grantsPerDevice: 4096,
+  // The current URL, the one it replaced while a view swaps over, and one more for a remount.
+  grantsPerSubject: 3,
+  metadataBytes: 16 * 1024 * 1024,
 };
 
 /** A reference so a test can shrink the limits. */
@@ -241,6 +247,8 @@ interface Grant {
   readonly deviceId: string;
   readonly expiresAt: number;
   readonly source: Source;
+  /** The device's session and the file or image it names, which re-mints share. */
+  readonly subject: string;
   readonly cost: number;
 }
 
@@ -257,6 +265,8 @@ export const AssetUrlsLive: Layer.Layer<
     const projections = yield* Projections;
     const grants = new Map<string, Grant>();
     const counts = new Map<string, number>();
+    /** Each subject's grants by digest, oldest first. */
+    const subjects = new Map<string, Array<string>>();
     let metadataBytes = 0;
     const limits = yield* AssetLimits;
     const mints = makeAdmission(limits.mints, limits.wait);
@@ -265,15 +275,20 @@ export const AssetUrlsLive: Layer.Layer<
       { total: limits.imageBytes, perKey: Number.POSITIVE_INFINITY, queue: limits.reads.queue },
       limits.wait,
     );
+    const drop = (key: string) => {
+      const grant = grants.get(key);
+      if (grant === undefined) return;
+      grants.delete(key);
+      metadataBytes -= grant.cost;
+      const remaining = (counts.get(grant.deviceId) ?? 1) - 1;
+      if (remaining === 0) counts.delete(grant.deviceId);
+      else counts.set(grant.deviceId, remaining);
+      const siblings = (subjects.get(grant.subject) ?? []).filter((sibling) => sibling !== key);
+      if (siblings.length === 0) subjects.delete(grant.subject);
+      else subjects.set(grant.subject, siblings);
+    };
     const sweep = (now: number) => {
-      for (const [key, grant] of grants) {
-        if (grant.expiresAt > now) continue;
-        grants.delete(key);
-        metadataBytes -= grant.cost;
-        const remaining = (counts.get(grant.deviceId) ?? 1) - 1;
-        if (remaining === 0) counts.delete(grant.deviceId);
-        else counts.set(grant.deviceId, remaining);
-      }
+      for (const [key, grant] of grants) if (grant.expiresAt <= now) drop(key);
     };
     const opened = (session: BearerSession, worktreeId: string, input: MendRawFileRequest) =>
       gateDeviceCalls(mend, (token) => projections.refuseDevice(session.mendUser.id, token))
@@ -290,12 +305,6 @@ export const AssetUrlsLive: Layer.Layer<
             if (!(yield* mints(session.mendDeviceId))) return yield* new AssetUnavailable({});
             yield* auth.confirmDevice(bearer).pipe(Effect.mapError(() => new AssetUnavailable({})));
             const now = yield* Clock.currentTimeMillis;
-            sweep(now);
-            if (
-              grants.size >= limits.grants ||
-              (counts.get(session.mendDeviceId) ?? 0) >= limits.grantsPerDevice
-            )
-              return yield* new AssetUnavailable({});
             let source: Source;
             let fileRevision: string | undefined;
             if (subject.kind === "image") {
@@ -349,35 +358,40 @@ export const AssetUrlsLive: Layer.Layer<
             const suffix = posix.basename(
               Redacted.value(source.kind === "image" ? source.name : source.path),
             );
-            const cost =
-              Buffer.byteLength(
-                JSON.stringify({
-                  sessionId,
-                  deviceId: session.mendDeviceId,
-                  userId: session.mendUser.id,
-                  source:
-                    source.kind === "image"
-                      ? { imageId: source.imageId, suffix }
-                      : { ...source, path: Redacted.value(source.path) },
-                }),
-              ) + 128;
-            // Other mints may have published while this one waited for descriptor metadata.
+            const subjectKey = [
+              session.mendDeviceId,
+              sessionId,
+              ...(source.kind === "image"
+                ? ["image", source.imageId, Redacted.value(source.name)]
+                : ["file", source.worktreeId, source.preview, Redacted.value(source.path)]),
+            ].join("\0");
+            // The subject twice (its index and the grant's source), the digest and the fields.
+            const cost = 2 * Buffer.byteLength(subjectKey) + 256;
+            sweep(now);
+            const siblings = subjects.get(subjectKey) ?? [];
+            const retired = siblings.length >= limits.grantsPerSubject ? siblings[0] : undefined;
+            const freed = retired === undefined ? undefined : grants.get(retired);
+            const room = freed === undefined ? 0 : 1;
             if (
-              grants.size >= limits.grants ||
-              (counts.get(session.mendDeviceId) ?? 0) >= limits.grantsPerDevice ||
-              metadataBytes + cost > limits.metadataBytes
+              grants.size - room >= limits.grants ||
+              (counts.get(session.mendDeviceId) ?? 0) - room >= limits.grantsPerDevice ||
+              metadataBytes - (freed?.cost ?? 0) + cost > limits.metadataBytes
             )
               return yield* new AssetUnavailable({});
+            if (retired !== undefined) drop(retired);
             const token = `ast_${randomBytes(32).toString("base64url")}`;
+            const key = digest(token);
             const expiresAt = Math.min(now + ASSET_URL_TTL_MS, session.expiresAt);
-            grants.set(digest(token), {
+            grants.set(key, {
               sessionId,
               userId: session.mendUser.id,
               deviceId: session.mendDeviceId,
               expiresAt,
               source,
+              subject: subjectKey,
               cost,
             });
+            subjects.set(subjectKey, [...(subjects.get(subjectKey) ?? []), key]);
             counts.set(session.mendDeviceId, (counts.get(session.mendDeviceId) ?? 0) + 1);
             metadataBytes += cost;
             return {
