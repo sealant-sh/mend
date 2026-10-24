@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 import { SealantWorkspaceId, SessionProcessId, type SessionId } from "@mend/domain";
@@ -22,6 +24,8 @@ const ASK_FLAGS = {
   codex: "--sandbox danger-full-access --ask-for-approval on-request",
 } as const;
 
+type Harness = "claude" | "codex" | "opencode";
+
 const providerSessionId = "0d5c3c1e-7a51-4f0e-9c69-6a1d2b7e4f10";
 
 const launchLayer = (created: CreateOptions[], spawned: Array<ReadonlyArray<string>>) =>
@@ -40,13 +44,13 @@ const launchLayer = (created: CreateOptions[], spawned: Array<ReadonlyArray<stri
 
 const followUpCommand = (
   spawned: ReadonlyArray<ReadonlyArray<string>>,
-  harness: "claude" | "codex",
+  harness: Harness,
 ): string => {
   const script = spawned
     .flat()
-    .findLast((token) => token.includes(`exec ${harness} `) && token.includes('"$prompt"'));
+    .findLast((token) => token.includes(` ${harness} `) && token.includes('"$prompt"'));
   if (script === undefined) throw new Error(`no follow-up exec of ${harness} was spawned`);
-  const start = script.lastIndexOf(`exec ${harness} `);
+  const start = script.lastIndexOf("exec ");
   return script.slice(start, script.indexOf('"$prompt"', start));
 };
 
@@ -116,7 +120,7 @@ const openShell = (world: World, sessionId: SessionId) => {
   world.processes.set(shell.id, shell);
 };
 
-const keepState = (storePath: string, sessionId: SessionId, harness: "claude" | "codex") => {
+const keepState = (storePath: string, sessionId: SessionId, harness: Harness) => {
   const stateDir = sessionStatePathOf(storePath, sessionId);
   fs.mkdirSync(stateDir, { recursive: true });
   fs.writeFileSync(
@@ -133,7 +137,7 @@ const keepState = (storePath: string, sessionId: SessionId, harness: "claude" | 
 type Workspace = "a new workspace" | "the workspace a shell kept";
 
 const followUpAfter = async (
-  harness: "claude" | "codex",
+  harness: Harness,
   argv: ReadonlyArray<string>,
   workspace: Workspace,
 ) => {
@@ -202,9 +206,38 @@ describe("a follow-up into a terminal session keeps its permission mode (SLNT-23
     30_000,
   );
 
+  it.each(["a new workspace", "the workspace a shell kept"] as const)(
+    "an opencode terminal launched with ask still asks when a follow-up starts it in %s",
+    async (workspace) => {
+      const { spawned } = await followUpAfter(
+        "opencode",
+        composeLaunchArgv("opencode", { mode: "pty", permissionMode: "ask" }),
+        workspace,
+      );
+      expect(followUpCommand(spawned, "opencode")).toContain(
+        `exec env 'OPENCODE_PERMISSION={"*":"ask"}' opencode `,
+      );
+    },
+    30_000,
+  );
+
+  it.each(["a new workspace", "the workspace a shell kept"] as const)(
+    "an opencode terminal launched in bypass still allows when a follow-up starts it in %s",
+    async (workspace) => {
+      const { spawned } = await followUpAfter("opencode", ["opencode"], workspace);
+      expect(followUpCommand(spawned, "opencode")).toContain(
+        `exec env 'OPENCODE_PERMISSION={"*":"allow"}' opencode `,
+      );
+    },
+    30_000,
+  );
+
   it.each<readonly ["claude" | "codex", ReadonlyArray<string>]>([
     ["claude", ["--permission-mode", "plan"]],
     ["codex", ["--sandbox", "read-only", "-a", "never"]],
+    ["codex", ["--sandbox", "read-only"]],
+    ["codex", ["-sread-only"]],
+    ["codex", ["-s=read-only", "-anever"]],
   ])(
     "a %s terminal launched with %j keeps it when a follow-up starts it",
     async (harness, permission) => {
@@ -270,4 +303,37 @@ describe("a follow-up into a terminal session keeps its permission mode (SLNT-23
     },
     30_000,
   );
+
+  it("runs a follow-up with the copied flags as the very words the terminal had", async () => {
+    const values = ["$(touch pwned)", "a b", "'", "*", "~", "", "x\ny", "`id`", ";", "\\"];
+    const permission = values.flatMap((value) => ["--permission-mode", value]);
+    const { spawned } = await followUpAfter(
+      "claude",
+      ["claude", ...permission],
+      "the workspace a shell kept",
+    );
+    const argv = spawned.find((tokens) =>
+      tokens.some((token) => token.includes("exec claude ") && token.includes('"$prompt"')),
+    );
+    if (argv === undefined) throw new Error("no follow-up exec of claude was spawned");
+    const script = argv.findIndex((token) => token.includes("exec claude "));
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "mend-follow-up-words-"));
+    fs.writeFileSync(
+      path.join(bin, "claude"),
+      "#!/bin/sh\nfor arg; do printf '%s\\0' \"$arg\"; done\n",
+      {
+        mode: 0o755,
+      },
+    );
+    const printed = execFileSync("sh", argv.slice(script - 1), {
+      cwd: bin,
+      env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}` },
+      encoding: "utf8",
+    });
+    expect(printed.split("\0").slice(0, -1)).toEqual([
+      ...permission,
+      "Address the review comments.",
+    ]);
+    expect(fs.existsSync(path.join(bin, "pwned"))).toBe(false);
+  }, 30_000);
 });
