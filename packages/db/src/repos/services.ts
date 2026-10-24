@@ -139,8 +139,10 @@ export class ServiceObservationsRepo extends Context.Service<
   }
 >()("@mend/db/ServiceObservationsRepo") {}
 
-const toService = ({ startedBy: _startedBy, ...row }: typeof services.$inferSelect): Service =>
-  new Service(row);
+export const toService = ({
+  startedBy: _startedBy,
+  ...row
+}: typeof services.$inferSelect): Service => new Service(row);
 const toForward = (row: typeof serviceForwards.$inferSelect): ServiceForward =>
   new ServiceForward(row);
 const toObservation = (row: typeof serviceObservations.$inferSelect): ServiceObservation =>
