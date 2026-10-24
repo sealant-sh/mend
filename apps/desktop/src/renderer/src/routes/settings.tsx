@@ -1,3 +1,4 @@
+import { loginChoiceOf, noLoginChosenWords } from "@mend/domain/workbench";
 import { Button, buttonVariants } from "@mend/ui/components/ui/button";
 import { Input } from "@mend/ui/components/ui/input";
 import { ToggleGroup, ToggleGroupItem } from "@mend/ui/components/ui/toggle-group";
@@ -388,18 +389,21 @@ function ConnectedAccountsSection() {
         </RowShell>
       ) : (
         PROVIDERS.map((row) => {
-          const accounts = identity.data.accounts;
-          const account =
-            accounts.find(
-              (candidate) => candidate.provider === row.provider && candidate.name === "default",
-            ) ?? accounts.find((candidate) => candidate.provider === row.provider);
+          const choice = loginChoiceOf(identity.data.accounts, row.provider);
+          const account = choice._tag === "chosen" ? choice.account : undefined;
           const isEditing = editing === row.provider;
           const busy = pending === row.provider;
           return (
             <div key={row.provider}>
               <RowShell
                 label={row.label}
-                hint={account === undefined ? row.hint : accountHint(account)}
+                hint={
+                  account !== undefined
+                    ? accountHint(account)
+                    : choice._tag === "unchosen"
+                      ? noLoginChosenWords(row.provider)
+                      : row.hint
+                }
               >
                 <Button
                   type="button"
