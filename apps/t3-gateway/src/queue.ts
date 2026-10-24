@@ -360,7 +360,8 @@ export type StartQueued = "started" | "unknown" | "busy" | "gone";
 
 /**
  * `queued-run.start` (t3code's "Send now"), as t3code's server takes it: only on a stopped thread,
- * the waiting message goes first among those still waiting and the queue resumes.
+ * the waiting message goes first among those still waiting and the queue resumes. A person's "now"
+ * is new evidence: a message waiting out a retry's backoff goes at once.
  */
 export const startQueued = (queue: ThreadQueue, view: SessionView, runId: string): StartQueued => {
   if (!view.known) return "unknown";
@@ -370,6 +371,8 @@ export const startQueued = (queue: ThreadQueue, view: SessionView, runId: string
   if (view.turnOpen || onItsWay) return "busy";
   const first = queue.entries.find((candidate) => candidate.state === "queued");
   if (first !== undefined && first !== entry) reorder(queue, runId, first.runId);
+  entry.retryAt = null;
+  entry.retryEvidence = 0;
   resume(queue);
   return "started";
 };

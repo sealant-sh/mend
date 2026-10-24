@@ -19,8 +19,10 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 
 import {
+  DEFAULT_QUEUE_TIMINGS,
   emptyQueue,
   newEntry,
+  nextStep,
   reorder,
   edit,
   startQueued,
@@ -555,6 +557,29 @@ describe("the queue's own rules", () => {
       assert.strictEqual(startQueued(busy, idle, "run-1"), "busy");
       assert.strictEqual(startQueued(busy, idle, "run-0"), "gone");
     }
+  });
+
+  it("sends a message waiting out a retry's backoff at once when asked to send it now", () => {
+    const idle: SessionView = {
+      known: true,
+      agentLive: true,
+      turnOpen: false,
+      status: "running",
+      updatedAt: null,
+      summary: null,
+      evidence: 4,
+    };
+    const queue = queueOf("queued", "queued");
+    const backingOff = queue.entries[1];
+    assert.isDefined(backingOff);
+    if (backingOff === undefined) return;
+    backingOff.retryAt = 10_000;
+    backingOff.retryEvidence = 4;
+    backingOff.sendDeadline = 60_000;
+    assert.strictEqual(startQueued(queue, idle, "run-1"), "started");
+    const step = nextStep(queue, idle, 1_000, DEFAULT_QUEUE_TIMINGS);
+    assert.strictEqual(step?.kind, "send");
+    assert.strictEqual(step?.entry.runId, "run-1");
   });
 
   it("never moves or rewrites a message on its way, nor puts one before it", () => {
