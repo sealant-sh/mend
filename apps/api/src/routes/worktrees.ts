@@ -19,6 +19,7 @@ import {
 } from "@mend/api-contracts";
 import {
   ProjectsRepo,
+  PreviewsRepo,
   SessionsRepo,
   ServiceForwardsRepo,
   ServicesRepo,
@@ -457,6 +458,20 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
                 }),
             ),
         });
+      }),
+    )
+    .handle("previews", ({ params }) =>
+      Effect.gen(function* () {
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
+          .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
+        return yield* (yield* PreviewsRepo)
+          .ensureForWorktree(worktree.id)
+          .pipe(
+            Effect.catchTag("WorktreeNotFoundError", () =>
+              Effect.fail(new WorktreeNotFound({ id: params.id })),
+            ),
+          );
       }),
     )
     .handle("remove", ({ params, query }) =>
