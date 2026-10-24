@@ -156,8 +156,6 @@ export interface DotfilesApplied {
 export class PersonLayoutPlatform extends Context.Service<
   PersonLayoutPlatform,
   {
-    /** Sessions and exec can start a process as a given user (`ProcessUserOption`). */
-    readonly processUser: boolean;
     /**
      * Why the control plane cannot run the person layout, in the words a refusal names, or null
      * when it can: read from what Core itself reports (`sealant.features()`: its as-user routes,
@@ -299,15 +297,15 @@ export const personLayoutUnsupported = (what: string, delivery: string) =>
   });
 
 /**
- * A platform with none of the person layout: `processUser` false, so no launch is ever decided
- * `person`, and every call fails. For compositions and tests that never run the person layout.
+ * A platform with none of the person layout: its control plane obstacle rules out every person
+ * launch before create, and every call fails. For compositions and tests that never run the
+ * person layout.
  */
 export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer.succeed(
   PersonLayoutPlatform,
   {
-    processUser: false,
     dotfilesUser: false,
-    controlPlaneObstacle: Effect.succeed(null),
+    controlPlaneObstacle: Effect.succeed("this Mend's platform cannot start processes as a user"),
     sshUser: Effect.succeed(false),
     sshAsOwnerFor: () => Effect.succeed("not-taken"),
     sshAsRoot: () => Effect.succeed(true),

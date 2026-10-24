@@ -218,14 +218,6 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
   };
 };
 
-/**
- * Why no executor of a Kubernetes workspace runtime runs per person: workspace Pods run with
- * `allowPrivilegeEscalation: false` (no-new-privileges), where no one's sudo works. The same
- * words Core's create refusal is read as (`ownerMapRefusalOf`).
- */
-export const KUBERNETES_LAYOUT_OBSTACLE =
-  "Kubernetes workspaces cannot run per-person users: no one's sudo works there";
-
 /** Why a session served by a standby runs shared (`decideHarnessLayout`'s `standby`). */
 export const STANDBY_REASON =
   "a standby workspace serves this session, and a standby takes one person";
@@ -235,15 +227,11 @@ export const CLOUDFLARE_LAYOUT_OBSTACLE = "Cloudflare sandboxes cannot run per-p
 
 /**
  * Core's workspace runtimes where per-person homes cannot run, whatever the image (Core's
- * no-new-privileges and no-process-user runtimes): ruled out before any launch, so no launch is
- * refused at create to learn it (review 2 of mend#582, N3).
+ * no-process-user runtimes): ruled out before any launch, so no launch is refused at create to
+ * learn it (review 2 of mend#582, N3).
  */
 export const runtimeLayoutObstacle = (runtime: string | null): string | null =>
-  runtime === "k8s" || runtime === "k3s"
-    ? KUBERNETES_LAYOUT_OBSTACLE
-    : runtime === "cloudflare"
-      ? CLOUDFLARE_LAYOUT_OBSTACLE
-      : null;
+  runtime === "cloudflare" ? CLOUDFLARE_LAYOUT_OBSTACLE : null;
 
 /**
  * The reasons a shared workspace's probe sees for itself (`layoutProbeScript` without the
@@ -292,20 +280,6 @@ export const recheckOf = (missing: ReadonlyArray<string>, ageMs: number): boolea
 /** Why a fresh worktree whose launcher has dotfiles runs shared until the verb ships. */
 export const DOTFILES_BLOCK_REASON =
   "dotfiles cannot be applied as each person on this platform yet, so this workspace takes one person and applies them at boot";
-
-/**
- * What Mend knows without asking anyone: nix images keep their passwd in the read-only store
- * (decision 3), and a platform that cannot start a process as a user cannot run the layout at
- * all. Null when nothing static rules it out.
- */
-export const staticLayoutObstacle = (
-  image: WorkspaceImage,
-  platform: { readonly processUser: boolean },
-): string | null => {
-  if (!platform.processUser) return "this Mend's platform cannot start processes as a user";
-  if (image.mode === "family" && image.os === "nix") return "nix images run one person";
-  return null;
-};
 
 /**
  * The key Mend records an image's capability under: Core's digest when it reports one, else the
@@ -567,7 +541,8 @@ export const layoutProbeScript = (
   return [
     `layout_missing=0`,
     `missing() { printf '%s missing %s\\n' ${LAYOUT_LINE} "$1"; layout_missing=1; }`,
-    `command -v sudo >/dev/null 2>&1 || missing "no sudo"`,
+    // A sudo without its setuid bit raises no one (a nix store copy is never setuid).
+    `s=$(command -v sudo 2>/dev/null) && [ -u "$s" ] || missing "no sudo"`,
     `command -v useradd >/dev/null 2>&1 || missing "no useradd"`,
     `command -v setfacl >/dev/null 2>&1 || missing "no setfacl"`,
     `command -v setpriv >/dev/null 2>&1 || missing "no setpriv"`,

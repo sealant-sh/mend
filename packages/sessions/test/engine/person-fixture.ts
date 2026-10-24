@@ -54,7 +54,6 @@ export const personPlatform = (
   personBound = true,
 ): Layer.Layer<PersonLayoutPlatform> =>
   Layer.succeed(PersonLayoutPlatform, {
-    processUser: true,
     dotfilesUser: dotfiles !== undefined,
     controlPlaneObstacle: Effect.sync(() => controlPlane?.() ?? null),
     sshUser: Effect.succeed(sshUserReported),

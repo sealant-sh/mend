@@ -384,7 +384,6 @@ import {
 import {
   gitAuthorConfigText,
   identityFilesOf,
-  KUBERNETES_LAYOUT_OBSTACLE,
   PEOPLE_DIR,
   processUserOf,
 } from "./harness-layout.ts";
@@ -8281,9 +8280,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         organizations,
         sealant: yield* SealantClient,
         harnessHome: HARNESS_HOME_MOUNT_PATH,
-        // Kubernetes workspaces run under `allowPrivilegeEscalation: false`, where no one's sudo
-        // works: shared, with the reason, and nothing probed (review of mend#582, finding 1).
-        runtimeObstacle: deployment.mode === "kubernetes" ? KUBERNETES_LAYOUT_OBSTACLE : null,
         fork: (effect) => effect.pipe(Effect.forkIn(scope), Effect.asVoid),
         anyRecorded: yield* harnessLayouts.anyRecorded(),
         identityTicket: (input) => mintIdentityTicket(input),

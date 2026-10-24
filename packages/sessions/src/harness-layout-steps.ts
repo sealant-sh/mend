@@ -38,7 +38,6 @@ import * as Semaphore from "effect/Semaphore";
 
 import { CONVERSATION_HOMES } from "./conversation-home.ts";
 import {
-  KUBERNETES_LAYOUT_OBSTACLE,
   type LayoutCapability,
   type PrepareFinding,
   UNKNOWN_CAPABILITY,
@@ -62,7 +61,6 @@ import {
   processUserOf,
   recheckOf,
   runtimeLayoutObstacle,
-  staticLayoutObstacle,
   worktreeRepairScript,
 } from "./harness-layout.ts";
 import { DOTFILES_NOT_TO_ROOT } from "./person-deliveries.ts";
@@ -602,11 +600,11 @@ export interface HarnessLayoutSteps {
   }) => Effect.Effect<PrepareOutcome, SealantPlatformError>;
   /**
    * A person launch's create, refused for its owner map (decision 13's words): Core's
-   * `owner-map-unsupported` (the image's sealantd does not restore files per person),
-   * `owner-map-unverified` (Core could not check the image) or a runtime where no person's sudo
-   * works (Kubernetes, Cloudflare). What it found is recorded against the image, so the next
-   * launch of a fresh worktree decides shared before create; a worktree already person stays
-   * person and is refused. Null for any other failure.
+   * `owner-map-unsupported` (the image's sealantd does not restore files per person) or
+   * `owner-map-unverified` (Core could not check the image, recorded only over an unconfirmed
+   * answer). What it found is recorded against the image, so the next launch of a fresh worktree
+   * decides shared before create; a worktree already person stays person and is refused. Null for
+   * any other failure.
    */
   readonly refusedOwnerMap: (input: {
     readonly layout: LaunchLayout;
@@ -793,23 +791,15 @@ const bounded = <K, V>() => {
 };
 
 /**
- * What a create refused for its owner map lacks, in the words a refusal line names, or null when
- * the failure is not about the owner map (sealant#333's words and code).
+ * What a create refused for its owner map lacks, by Core's code, or null when the failure is not
+ * about the owner map.
  */
-export const ownerMapRefusalOf = (error: SealantPlatformError): string | null => {
-  // Core's guard keeps its words when it could not read the image's probe: the code tells them apart.
-  if (error.code === "owner-map-unverified") return "the image could not be checked";
-  if (error.message.includes("is not available on Kubernetes")) {
-    return KUBERNETES_LAYOUT_OBSTACLE;
-  }
-  if (error.message.includes("is not available in Cloudflare")) {
-    return "Cloudflare sandboxes cannot run per-person users";
-  }
-  if (error.code === "owner-map-unsupported" || error.message.includes("names an owner map")) {
-    return "its sealantd does not restore files per person";
-  }
-  return null;
-};
+export const ownerMapRefusalOf = (error: SealantPlatformError): string | null =>
+  error.code === "owner-map-unsupported"
+    ? "its sealantd does not restore files per person"
+    : error.code === "owner-map-unverified"
+      ? "the image could not be checked"
+      : null;
 
 /** What a POST names for the launcher's create-time logins, put elsewhere (decision 1's fallback). */
 const homeLoginsOf = (credentials: WorkspaceCredentialsOptions | undefined): HomeLogins => {
@@ -893,12 +883,6 @@ export const makeHarnessLayoutSteps = (deps: {
   readonly organizations: OrganizationsRepo["Service"];
   readonly sealant: Pick<SealantClientShape, "exec">;
   readonly harnessHome: string;
-  /**
-   * Why no executor of this deployment can run per person, known without asking (a Kubernetes
-   * workspace runtime: no one's sudo works under `allowPrivilegeEscalation: false`); null when
-   * nothing rules it out. Its launches run shared and probe nothing.
-   */
-  readonly runtimeObstacle?: string | null;
   /**
    * An identity pickup ticket (purpose `session-token`) for `person` in `launchId`, bound to them:
    * redeemed, it answers their Mend token, minted then, and their git author.
@@ -1042,12 +1026,7 @@ export const makeHarnessLayoutSteps = (deps: {
     ownerUserId: string,
     harness: Harness,
   ) {
-    // What Mend knows without asking, then what the control plane says of itself (one cached
-    // read): a Core that cannot run a process as a person is refused here, before create.
-    const obstacle =
-      staticLayoutObstacle(image, { processUser: platform.processUser }) ??
-      deps.runtimeObstacle ??
-      (yield* platform.controlPlaneObstacle);
+    const obstacle = yield* platform.controlPlaneObstacle;
     if (obstacle !== null) {
       return {
         capability: { person: false, missing: [obstacle], source: "static" } as const,
@@ -1059,8 +1038,6 @@ export const makeHarnessLayoutSteps = (deps: {
     const report = yield* platform.imageReport({ ownerUserId, image, harness });
     const imageKey = imageLayoutKeyOf(image, report.digest);
     const runtime = report.runtime ?? "unknown";
-    // A runtime Core runs no person on (Kubernetes, Cloudflare): ruled out before any launch, so
-    // none is refused at create to learn it (review 2 of mend#582, N3).
     const ruledOut = runtimeLayoutObstacle(report.runtime);
     if (ruledOut !== null) {
       return {
