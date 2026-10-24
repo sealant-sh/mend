@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { Agent, get as httpGet } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -40,6 +41,7 @@ beforeAll(async () => {
     {
       sessionStore: "colocated",
       browserHeaders: true,
+      node: true,
       implement: {
         reads: {
           openRawFile: (_project, _worktree, target) =>
@@ -192,4 +194,64 @@ it("does not log or trace raw paths, even when query decoding fails", async () =
   } finally {
     await logged.dispose();
   }
+});
+
+/** What a browser on a keep-alive socket sees of a body: its end, a reset, or no end at all. */
+const readOverSocket = (url: string, onFirstChunk: () => void) => {
+  // The first of end, reset or hang is the answer; a promise settles once.
+  const seen = Promise.withResolvers<{
+    status: number;
+    length: number;
+    received: number;
+    outcome: string;
+  }>();
+  const agent = new Agent({ keepAlive: true });
+  let status = 0;
+  let length = 0;
+  let received = 0;
+  const finish = (outcome: string) => {
+    clearTimeout(timer);
+    request.destroy();
+    agent.destroy();
+    seen.resolve({ status, length, received, outcome });
+  };
+  const timer = setTimeout(() => finish("hang"), 3000);
+  const request = httpGet(url, { agent, headers: { authorization: "Bearer alice" } }, (res) => {
+    status = res.statusCode ?? 0;
+    length = Number(res.headers["content-length"]);
+    res.on("data", (chunk: Buffer) => {
+      if (received === 0) {
+        res.pause();
+        onFirstChunk();
+        setTimeout(() => res.resume(), 50);
+      }
+      received += chunk.length;
+    });
+    res.on("end", () => finish("end"));
+    res.on("close", () => finish("reset"));
+    res.on("error", () => finish("reset"));
+  });
+  request.on("error", () => finish("reset"));
+  return seen.promise;
+};
+
+it("resets the socket when the file stops short after the headers went out", async () => {
+  const size = 64 * 1024 * 1024;
+  const shrinking = join(root, "shrinking.bin");
+  fs.writeFileSync(shrinking, "");
+  fs.truncateSync(shrinking, size);
+  const seen = await readOverSocket(
+    `${api.nodeOrigin}/api/worktrees/${worktree}/raw?path=shrinking.bin`,
+    () => fs.truncateSync(shrinking, 0),
+  );
+  expect(seen.status).toBe(200);
+  expect(seen.length).toBe(size);
+  expect(seen.received).toBeLessThan(size);
+  expect(seen.outcome).toBe("reset");
+  const whole = await readOverSocket(
+    `${api.nodeOrigin}/api/worktrees/${worktree}/raw?path=data.bin`,
+    () => undefined,
+  );
+  expect(whole).toEqual({ status: 200, length: 256, received: 256, outcome: "end" });
+  fs.rmSync(shrinking);
 });

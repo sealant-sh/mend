@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
+import { IncomingMessage } from "node:http";
 import { posix } from "node:path";
 
+import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import type { AuthSessionId } from "@mend/t3-contracts";
 import { Cause, Clock, Context, Effect, Layer, Redacted, Schema, type Scope, Stream } from "effect";
 import { HttpMiddleware, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -454,7 +456,7 @@ export const AssetUrlsLive: Layer.Layer<
 const notFound = () =>
   HttpServerResponse.text("Not Found", { status: 404, headers: { "cache-control": cacheControl } });
 
-/** Asset failures before headers are indistinguishable; stream errors propagate to the server. */
+/** Asset failures before headers are indistinguishable; a failure after them resets the socket. */
 export const AssetRouteLive: Layer.Layer<never, never, HttpRouter.HttpRouter | AssetUrls> =
   Layer.unwrap(
     Effect.gen(function* () {
@@ -470,10 +472,18 @@ export const AssetRouteLive: Layer.Layer<never, never, HttpRouter.HttpRouter | A
           });
           return request.method === "HEAD" || asset.status === 416
             ? HttpServerResponse.empty({ status: asset.status, headers: asset.headers })
-            : HttpServerResponse.stream(asset.body, {
-                status: asset.status,
-                headers: asset.headers,
-              });
+            : HttpServerResponse.stream(
+                asset.body.pipe(
+                  Stream.onError(() =>
+                    Effect.sync(() => {
+                      // Node's adapter ends a short fixed-length body; a keep-alive client then waits.
+                      if (request.source instanceof IncomingMessage)
+                        NodeHttpServerRequest.toServerResponse(request).destroy();
+                    }),
+                  ),
+                ),
+                { status: asset.status, headers: asset.headers },
+              );
         }).pipe(
           Effect.catchCause((cause) =>
             Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(notFound()),

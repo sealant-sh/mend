@@ -1,3 +1,6 @@
+import { createServer } from "node:http";
+
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import {
   AuditEventsRepo,
   MemberRevocationsRepo,
@@ -89,12 +92,14 @@ import {
   Context,
   Duration,
   Effect,
+  Exit,
   Layer,
   ManagedRuntime,
   Logger,
   Tracer,
   Queue,
   Schema,
+  Scope,
   Stream,
 } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
@@ -167,6 +172,8 @@ export interface TenancyApi {
   readonly closeConnectionsOf: (user: HarnessUser) => Promise<number>;
   /** Push-device writes as `method:userId:token`, to prove the caller's id reaches the repo. */
   readonly deviceWrites: ReadonlyArray<string>;
+  /** Where the Node-served API listens on loopback, with the `node` option. */
+  readonly nodeOrigin: string | undefined;
   readonly dispose: () => Promise<void>;
 }
 
@@ -187,6 +194,8 @@ export const createTenancyApi = async (
     readonly logs?: string[];
     readonly spans?: Tracer.Span[];
     readonly browserHeaders?: boolean;
+    /** Also serve the API behind the Node HTTP adapter Mend runs on, at `nodeOrigin`. */
+    readonly node?: boolean;
     readonly urlBearers?: "accept" | "refuse";
     readonly clock?: () => number;
     /** Effect-owned request deadlines, when a test drives them with TestClock. */
@@ -560,6 +569,22 @@ export const createTenancyApi = async (
     ),
     { disableLogger: options.logs === undefined },
   );
+  const nodeScope = Effect.runSync(Scope.make());
+  const nodeOrigin = options.node
+    ? await Effect.runPromise(
+        Layer.buildWithScope(
+          HttpRouter.serve(apiLayer, { disableLogger: true, disableListenLog: true }).pipe(
+            Layer.provide(Layer.succeedContext(context)),
+            Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+          ),
+          nodeScope,
+        ).pipe(
+          Effect.map((built) =>
+            HttpServer.formatAddress(Context.get(built, HttpServer.HttpServer).address),
+          ),
+        ),
+      )
+    : undefined;
   const rawLayer = Layer.merge(TtyRoutes, ServiceTunnelRoutes).pipe(
     Layer.provide(HttpServer.layerServices),
     Layer.provide(authorization),
@@ -711,7 +736,9 @@ export const createTenancyApi = async (
         }),
         context,
       ),
+    nodeOrigin,
     dispose: async () => {
+      await Effect.runPromise(Scope.close(nodeScope, Exit.void));
       await dispose();
       await raw.dispose();
       await eventRoutes.dispose();
