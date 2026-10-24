@@ -48,8 +48,9 @@ The marketing site already describes the feature as shipped: "A live link to eve
 
 ### What exists
 
-A **Service** is the only way into a workspace today. It is a declared port with an optional
-command, and it belongs to one session: `services.sessionId` is non-null and cascades
+Mend represents a workspace's application ports as **Services** today. Workspace SSH is a separate
+path for editors (`docs/WORKSPACE-SSH.md`). A Service is a declared port with an optional command,
+and it belongs to one session: `services.sessionId` is non-null and cascades
 (`packages/db/src/schema/workbench.ts:1546-1573`).
 
 - `mend.toml` takes `[service.<name>]` tables with four keys: `port`, `command`, `protocol` and
@@ -57,8 +58,8 @@ command, and it belongs to one session: `services.sessionId` is non-null and cas
   without a word (`packages/sessions/src/recipes.ts:95-153`).
 - A recipe runs as `sh -c <command>` with no cwd and no env of its own
   (`packages/sessions/src/engine.ts:22076-22086`). Ready means that the port accepts a TCP
-  connection, probed every 500 ms for up to 60 s (`engine.ts:1311`). Only the session's owner runs a
-  recipe, because "the worktree's copy (which a turn may edit) wins"
+  connection, probed every 500 ms for up to 60 s (`engine.ts:1311`, `:21871`). Only the session's
+  owner runs a recipe, because "the worktree's copy (which a turn may edit) wins"
   (`apps/api/src/routes/workbench.ts:2830-2832`). A steerer may restart a Service, and a restart
   reuses the recorded command (`engine.ts:22098-22131`).
 - Bytes go through the SDK's `workspace.forward(port, { host, protocol })`, a raw duplex pipe with
@@ -78,8 +79,8 @@ command, and it belongs to one session: `services.sessionId` is non-null and cas
 - A live Service keeps its workspace up indefinitely. The protocol idle stop answers
   `{ kind: "held", by: "services" }` while one runs
   (`packages/domain/src/workbench/protocol-idle.ts:81`), and the engine renews the workspace's 12 h
-  lease every 10 minutes (`engine.ts:9848-9920`). Nothing measures traffic, and nothing wakes a
-  stopped session on a request.
+  lease every 10 minutes (`engine.ts:9848-9920`, scheduled at `:24106-24115`). Nothing measures
+  traffic, and nothing wakes a stopped session on a request.
 
 Mend serves one browser origin, `APP_URL`. The web front on :3105 routes by path, never reads
 `Host`, and destroys any upgrade outside `/api` (`apps/web/src/entry/main.ts:146-150`, `:169-174`).
@@ -115,7 +116,7 @@ own log filter, and exposure gate item 14 (`apps/cli/src/server-edge.ts:287-360`
   process's env is not, and the engine already passes one to `openSession`
   (`engine.ts:21945-21960`). The forward appends inbound frames to an array that has no bound, so a
   slow reader grows Mend's memory instead of slowing the dev server (SDK `facade/workspace.js:833`,
-  `:858`). Core's 409, 502, 404 and 403 all reach Mend as the same WebSocket error.
+  `:859`). Core's 409, 502, 404 and 403 all reach Mend as the same WebSocket error.
 
 ## Decision
 
@@ -196,13 +197,13 @@ browser ──TLS──▶ edge: a site for *.<preview domain>          new site
   an SDK whose forward is bounded (platform feedback 1). It runs in the API process, so one slow
   phone on today's forward could exhaust the memory of Mend's control plane, on any exposure.
 - **Only the preview's own pages can act with its grant.** Previews share a site with each other
-  under every option of decision 1, so a page on preview A can send a request to preview B, and the
-  browser attaches B's grant. The gateway admits a request that carries a grant only when its
-  `Origin` is the preview's own origin. A request without `Origin` is admitted only when it is a
-  safe method (`GET`, `HEAD`). A request whose `Sec-Fetch-Site` is `same-site` or `cross-site` is
-  refused unless it is a top-level `GET` navigation. WebSocket upgrades follow the same rule. Mend's
-  own API already refuses upgrades from a foreign origin
-  (`apps/api/src/public-network-policy.ts:22-33`).
+  unless the preview domain is on the Public Suffix List (decision 1). On a shared site, a page on
+  preview A can send a request to preview B, and the browser attaches B's grant. Under every option,
+  the gateway admits a request that carries a grant only when its `Origin` is the preview's own
+  origin. A request without `Origin` is admitted only when it is a safe method (`GET`, `HEAD`). A
+  request whose `Sec-Fetch-Site` is `same-site` or `cross-site` is refused unless it is a top-level
+  `GET` navigation. WebSocket upgrades follow the same rule. Mend's own API already refuses upgrades
+  from a foreign origin (`apps/api/src/public-network-policy.ts:22-33`).
 - **Host policy, per recipe.** `host = "rewrite"` (the default) sends `Host: localhost:<port>` with
   `X-Forwarded-Host` and `X-Forwarded-Proto`, which Vite's `server.allowedHosts` and Next's dev
   server expect. `host = "preserve"` sends the preview host. WordPress needs that, because it builds
@@ -210,12 +211,12 @@ browser ──TLS──▶ edge: a site for *.<preview domain>          new site
 - **What the gateway strips and refuses.** Before forwarding, it removes its own cookie, every Mend
   credential, inbound `Forwarded` and `X-Forwarded-*`, and hop-by-hop headers. It refuses `CONNECT`,
   a request with two `Host` fields, and an unknown port. On the way back it removes the `Domain`
-  attribute from every `Set-Cookie` and drops any cookie named like the grant. A page's own
-  JavaScript can still set a cookie for the whole preview domain, which reaches sibling previews.
-  Header stripping cannot stop that, so decision 1 names it as a cost. The gateway sets
-  `Cache-Control: private`, so an edge cache cannot serve one viewer's page to another, and
-  `X-Robots-Tag: noindex`. It injects nothing into pages and sets no CSP on them, which would break
-  apps.
+  attribute from every `Set-Cookie` and drops any cookie named like the grant. Unless the preview
+  domain is on the Public Suffix List, a page's own JavaScript can still set a cookie for the whole
+  preview domain, which reaches sibling previews. Header stripping cannot stop that, so decision 1
+  names it as a cost. The gateway sets `Cache-Control: private`, so an edge cache cannot serve one
+  viewer's page to another, and `X-Robots-Tag: noindex`. It injects nothing into pages and sets no
+  CSP on them, which would break apps.
 - **Refused for now.** A service-worker script gets 403, because a service worker scoped to the root
   could answer the gateway's `/__mend/` routes from the browser's cache. An `https` Service gets a
   stated refusal, because the first slice speaks plain HTTP to the dev server inside the workspace.
@@ -280,7 +281,7 @@ Review shows them. Decision 2 weighs that.
 part of a change. The additions, as a proposal:
 
 ```toml
-[setup]                                     # once per site and fingerprint (decision 4)
+[setup]                                     # shown with decision 4's recommendation
 run = ["pnpm install --frozen-lockfile"]
 inputs = ["pnpm-lock.yaml"]                 # hashed with `run` into the fingerprint
 
@@ -682,7 +683,7 @@ may overturn any of them without touching the rest.
    grant is a stored cookie bound to one host, renewed while it is used, that ends with its
    credential. Rejected: a signed stateless cookie, for decision 4's reason.
 3. **Only the preview's own origin acts with its grant.** Taken, because previews share a site under
-   every domain option.
+   most domain options, and the rule costs nothing under the rest.
 4. **Automatic runs only of a recipe digest the owner approved.** Taken, to keep ADR 0013's command
    rule while any turn can edit `mend.toml`. Rejected: running the edited recipe on a steerer's
    turn.
