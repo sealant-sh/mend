@@ -197,6 +197,40 @@ it("does not log or trace raw paths, even when query decoding fails", async () =
   }
 });
 
+const descriptors = () => fs.readdirSync("/proc/self/fd").length;
+
+it("streams a large file without holding it, and lets go of it when the reader goes", async () => {
+  const large = join(root, "large.bin");
+  const size = 1024 * 1024 * 1024;
+  fs.writeFileSync(large, "");
+  fs.truncateSync(large, size);
+  const before = descriptors();
+  const memoryBefore = process.memoryUsage().arrayBuffers;
+  let peak = 0;
+  let total = 0;
+  const whole = await get("path=large.bin");
+  expect(whole.headers.get("content-length")).toBe(String(size));
+  const reader = whole.body?.getReader();
+  for (;;) {
+    const chunk = await reader?.read();
+    if (chunk === undefined || chunk.done) break;
+    total += chunk.value.byteLength;
+    peak = Math.max(peak, process.memoryUsage().arrayBuffers - memoryBefore);
+  }
+  expect(total).toBe(size);
+  // Bytes in flight, plus what the collector has not caught up with: never the file whole.
+  expect(peak).toBeLessThan(size / 4);
+
+  const abandoned = await get("path=large.bin");
+  const partial = abandoned.body?.getReader();
+  await partial?.read();
+  await partial?.cancel();
+  for (let attempt = 0; attempt < 50 && descriptors() > before; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(descriptors()).toBe(before);
+  fs.rmSync(large);
+}, 60_000);
+
 /** What a browser on a keep-alive socket sees of a body: its end, a reset, or no end at all. */
 const readOverSocket = (url: string, onFirstChunk: () => void) => {
   // The first of end, reset or hang is the answer; a promise settles once.
