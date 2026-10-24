@@ -52,10 +52,10 @@ export type SpeedMode = (typeof SPEED_MODES)[number];
 export const FAST_CAPABLE_HARNESSES: ReadonlySet<string> = new Set(["codex"]);
 
 /**
- * `bypass` (and absent) is today's behavior: the engine's
- * `withPermissionDefaults` injects the harness's bypass flag. `ask` opts back
- * into the harness's ordinary approval prompts — the composed argv names a
- * permission flag itself, which suppresses the engine's injection.
+ * `bypass` (and absent) is today's behavior: `withPermissionDefaults` injects
+ * the harness's bypass flag. `ask` opts back into the harness's ordinary
+ * approval prompts — the composed argv names a permission flag itself, which
+ * suppresses the injection.
  */
 export const PERMISSION_MODES = ["bypass", "ask"] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
@@ -180,8 +180,197 @@ export const noResumeLine = (harness: string): string =>
  * stance as for every harness (the workspace is the sandbox), `ask` restores its prompts. Set in
  * the environment, so the user's own opencode config is never written.
  */
-export const OPENCODE_PERMISSION_ALLOW = 'OPENCODE_PERMISSION={"*":"allow"}';
+const OPENCODE_PERMISSION_ALLOW = 'OPENCODE_PERMISSION={"*":"allow"}';
 const OPENCODE_PERMISSION_ASK = 'OPENCODE_PERMISSION={"*":"ask"}';
+
+interface PermissionArgsOf {
+  readonly claude: { readonly flags: ReadonlyArray<string> };
+  readonly codex: { readonly flags: ReadonlyArray<string> };
+  readonly opencode: { readonly env: string };
+}
+
+/**
+ * Each harness's own permission for a mode. `ask` restores approval prompts; the container is the
+ * real sandbox, so codex's `ask` keeps full access. `bypass` is the default `withPermissionDefaults`
+ * gives a launch that names none. opencode reads its permission from the environment.
+ */
+const PERMISSION_ARGS: {
+  readonly [Harness in keyof PermissionArgsOf]: Readonly<
+    Record<PermissionMode, PermissionArgsOf[Harness]>
+  >;
+} = {
+  claude: {
+    ask: { flags: ["--permission-mode", "auto"] },
+    bypass: { flags: ["--dangerously-skip-permissions"] },
+  },
+  codex: {
+    ask: { flags: ["--sandbox", "danger-full-access", "--ask-for-approval", "on-request"] },
+    bypass: { flags: ["--dangerously-bypass-approvals-and-sandbox"] },
+  },
+  opencode: {
+    ask: { env: OPENCODE_PERMISSION_ASK },
+    bypass: { env: OPENCODE_PERMISSION_ALLOW },
+  },
+};
+
+/**
+ * A harness's own permission for `mode`: the flags it reads after its name, or opencode's
+ * assignment for `env` to set ahead of it. Typed per harness, so the assignment is never spliced
+ * into an argv as a flag.
+ */
+export const permissionArgs = <Harness extends keyof PermissionArgsOf>(
+  harness: Harness,
+  mode: PermissionMode,
+): PermissionArgsOf[Harness] => PERMISSION_ARGS[harness][mode];
+
+/** The options a permission is named by. codex's `--yolo` is its bypass flag's alias. */
+const PERMISSION_OPTIONS = {
+  claude: new Set(["--permission-mode", "--dangerously-skip-permissions"]),
+  codex: new Set([
+    "--sandbox",
+    "-s",
+    "--ask-for-approval",
+    "-a",
+    "--full-auto",
+    "--approve-for-me",
+    "--yolo",
+    "--dangerously-bypass-approvals-and-sandbox",
+  ]),
+} as const;
+
+/**
+ * The options that take a value. Claude's `--resume`/`-r` take an optional one, so they are read
+ * as flags here: an option after them is never their value.
+ */
+const VALUE_OPTIONS: Readonly<Record<"claude" | "codex", ReadonlySet<string>>> = {
+  claude: new Set(["--model", "--effort", "--permission-mode", "--session-id"]),
+  codex: new Set([
+    "--model",
+    "-m",
+    "-c",
+    "--config",
+    "--sandbox",
+    "-s",
+    "--ask-for-approval",
+    "-a",
+    "--profile",
+    "-p",
+    "--cd",
+    "-C",
+  ]),
+};
+
+interface ArgvOption {
+  readonly name: string;
+  readonly value: string | null;
+  readonly tokens: ReadonlyArray<string>;
+}
+
+/** The options of `argv` after its head, up to `--`: what follows that is a prompt. */
+const optionsIn = (harness: "claude" | "codex", argv: ReadonlyArray<string>) => {
+  const options: ArgvOption[] = [];
+  for (let index = 1; index < argv.length; index += 1) {
+    const token = argv[index] ?? "";
+    if (token === "--") break;
+    if (!token.startsWith("-")) continue;
+    const equals = token.startsWith("--") ? token.indexOf("=") : -1;
+    if (equals > 0) {
+      options.push({
+        name: token.slice(0, equals),
+        value: token.slice(equals + 1),
+        tokens: [token],
+      });
+    } else if (VALUE_OPTIONS[harness].has(token) && index + 1 < argv.length) {
+      const value = argv[index + 1] ?? "";
+      options.push({ name: token, value, tokens: [token, value] });
+      index += 1;
+    } else {
+      options.push({ name: token, value: null, tokens: [token] });
+    }
+  }
+  return options;
+};
+
+const permissionOptionsIn = (harness: "claude" | "codex", argv: ReadonlyArray<string>) =>
+  optionsIn(harness, argv).filter((option) => PERMISSION_OPTIONS[harness].has(option.name));
+
+/**
+ * The tokens by which `argv` names the harness's own permission, verbatim and in order: what a
+ * Resume on the same harness carries over.
+ */
+export const permissionFlagsIn = (
+  harness: "claude" | "codex",
+  argv: ReadonlyArray<string>,
+): ReadonlyArray<string> => permissionOptionsIn(harness, argv).flatMap((option) => option.tokens);
+
+/**
+ * A terminal launch's argv with Mend's permission where it names none: the harness's bypass (the
+ * workspace is the sandbox).
+ */
+export const withPermissionDefaults = (
+  harness: string,
+  argv: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
+  const [head, ...rest] = argv;
+  if (
+    (harness === "claude" || harness === "codex") &&
+    head === harness &&
+    permissionOptionsIn(harness, argv).length === 0
+  ) {
+    return [head, ...PERMISSION_ARGS[harness].bypass.flags, ...rest];
+  }
+  // opencode reads its permissions from the environment; an argv that sets them itself (`env …`,
+  // the composed `ask`) is left alone.
+  if (harness === "opencode" && head === "opencode") {
+    return ["env", PERMISSION_ARGS.opencode.bypass.env, ...argv];
+  }
+  // pi asks nothing per tool call; it does ask whether to trust the repository's own `.pi`
+  // resources, which the user decided when they adopted it.
+  if (
+    harness === "pi" &&
+    head === "pi" &&
+    !argv.includes("--approve") &&
+    !argv.includes("--no-approve")
+  ) {
+    return ["pi", "--approve", ...rest];
+  }
+  return argv;
+};
+
+export const terminalPermissionMode = (
+  harness: string,
+  argv: ReadonlyArray<string>,
+): PermissionMode | null => {
+  switch (harness) {
+    case "claude":
+    case "codex": {
+      if (argv[0] !== harness) return null;
+      const named = new Map(
+        permissionOptionsIn(harness, argv).map((option) => [option.name, option.value]),
+      );
+      if (named.size === 0) return "bypass";
+      if (harness === "claude") {
+        return named.has("--dangerously-skip-permissions") ||
+          named.get("--permission-mode") === "bypassPermissions"
+          ? "bypass"
+          : "ask";
+      }
+      if (named.has("--dangerously-bypass-approvals-and-sandbox") || named.has("--yolo")) {
+        return "bypass";
+      }
+      return (named.get("--ask-for-approval") ?? named.get("-a")) === "never" ? "bypass" : "ask";
+    }
+    case "opencode": {
+      if (argv[0] === "opencode") return "bypass";
+      if (argv[0] !== "env" || !argv.includes("opencode")) return null;
+      const assignments = argv.slice(1, argv.indexOf("opencode"));
+      if (assignments.includes(OPENCODE_PERMISSION_ASK)) return "ask";
+      return assignments.includes(OPENCODE_PERMISSION_ALLOW) ? "bypass" : null;
+    }
+    default:
+      return null;
+  }
+};
 
 /** A structured start; every field optional — all-absent composes the bare harness. */
 export interface LaunchStart {
@@ -201,7 +390,7 @@ const trimmed = (value: string | undefined): string | null => {
 /**
  * Compose the PTY argv for a structured start. The prompt rides as the last
  * positional (the harness opens with it as the first user message); permission
- * `bypass`/absent emits nothing so the engine's `withPermissionDefaults`
+ * `bypass`/absent emits nothing so `withPermissionDefaults`
  * injects the bypass flag exactly as for a bare launch.
  */
 export const composeLaunchArgv = (harness: string, start: LaunchStart): ReadonlyArray<string> => {
@@ -213,7 +402,7 @@ export const composeLaunchArgv = (harness: string, start: LaunchStart): Readonly
       if (model !== null) argv.push("--model", model);
       const effort = effortFor("claude", start.effort);
       if (effort !== undefined) argv.push("--effort", effort);
-      if (start.permissionMode === "ask") argv.push("--permission-mode", "auto");
+      if (start.permissionMode === "ask") argv.push(...permissionArgs("claude", "ask").flags);
       if (prompt !== null) argv.push(prompt);
       return argv;
     }
@@ -225,10 +414,7 @@ export const composeLaunchArgv = (harness: string, start: LaunchStart): Readonly
       // Priority processing; codex warns and omits the tier when the model
       // doesn't advertise it, so this degrades harmlessly.
       if (start.speed === "fast") argv.push("-c", "service_tier=priority");
-      // The container is the real sandbox; `ask` only restores approval
-      // prompts. Naming `--sandbox` suppresses the engine's bypass injection.
-      if (start.permissionMode === "ask")
-        argv.push("--sandbox", "danger-full-access", "--ask-for-approval", "on-request");
+      if (start.permissionMode === "ask") argv.push(...permissionArgs("codex", "ask").flags);
       if (prompt !== null) argv.push(prompt);
       return argv;
     }
@@ -237,8 +423,10 @@ export const composeLaunchArgv = (harness: string, start: LaunchStart): Readonly
       const argv = ["opencode"];
       if (model !== null) argv.push("--model", model);
       if (prompt !== null) argv.push("--prompt", prompt);
-      // `ask` names the permission itself, which suppresses the engine's `allow` default.
-      return start.permissionMode === "ask" ? ["env", OPENCODE_PERMISSION_ASK, ...argv] : argv;
+      // `ask` names the permission itself, which suppresses the `allow` default.
+      return start.permissionMode === "ask"
+        ? ["env", permissionArgs("opencode", "ask").env, ...argv]
+        : argv;
     }
     case "pi": {
       // pi has no approval prompts to bypass (it relies on the sandbox, which the workspace is);

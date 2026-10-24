@@ -528,4 +528,44 @@ describe("a Resume on the same harness keeps the permission the terminal ran wit
     },
     30_000,
   );
+
+  it("a claude terminal launched with plan resumed as codex asks in codex's own flags", async () => {
+    const created: CreateOptions[] = [];
+    const spawned: Array<ReadonlyArray<string>> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["claude", "--permission-mode", "plan"]);
+          const stateDir = sessionStatePathOf(project.storePath, session.id);
+          fs.mkdirSync(stateDir, { recursive: true });
+          fs.writeFileSync(
+            path.join(stateDir, "manifest.json"),
+            JSON.stringify({
+              harness: "claude",
+              providerSessionId,
+              capturedAt: new Date().toISOString(),
+            }),
+          );
+          fs.writeFileSync(path.join(stateDir, "transcript.native"), claudeTranscript);
+          fs.writeFileSync(path.join(stateDir, "harness-state.tar.gz"), "fake-archive");
+          stopped(world, session.id);
+          yield* engine.resumeSession(session.id, "codex");
+        }),
+      { sealantLayer: resumingLayer(created, spawned) },
+    );
+    const ran = ranFrom(spawned, "codex");
+    expect(ran).not.toContain("--permission-mode");
+    for (const flag of BYPASS_FLAGS) expect(ran).not.toContain(flag);
+    expect(ran.join(" ")).toContain(askFlags("codex").join(" "));
+  }, 30_000);
 });

@@ -1,4 +1,5 @@
 import { type AgentWait, agentWaitStatus, agentWaitWords } from "./agent-wait.ts";
+import { type PermissionMode, terminalPermissionMode } from "./harness-launch.ts";
 import {
   isAgentProcessKind,
   LIVE_PROCESS_STATUSES,
@@ -119,6 +120,31 @@ export const currentAgentProcess = (
   const agents = agentProcessesOf(processes);
   return agents.findLast(isLiveProcess) ?? agents.at(-1) ?? null;
 };
+
+/**
+ * The newest agent whose row says which permission mode it ran with, and that mode. A row that
+ * does not say (a shell, pi, an argv another program heads) is passed over, so it never undoes an
+ * ask.
+ */
+export const lastPermission = (
+  processes: ReadonlyArray<SessionProcess>,
+): { readonly process: SessionProcess; readonly mode: PermissionMode } | undefined => {
+  for (const process of agentProcessesOf(processes).toReversed()) {
+    const mode =
+      process.kind === "agent-protocol"
+        ? (process.protocolOptions?.permissionMode ?? null)
+        : process.kind === "agent-pty"
+          ? terminalPermissionMode(process.harness ?? "", process.argv)
+          : null;
+    if (mode !== null) return { process, mode };
+  }
+  return undefined;
+};
+
+/** A terminal follow-up's `sh -c` row says nothing, so the mode before it stays in force. */
+export const lastPermissionMode = (
+  processes: ReadonlyArray<SessionProcess>,
+): PermissionMode | undefined => lastPermission(processes)?.mode;
 
 /** The live terminal agents of one harness: the processes a hook report may be about. */
 export const liveTerminalAgentsOf = (

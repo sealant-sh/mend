@@ -6,9 +6,9 @@ import {
   ProtocolHarnessUnsupportedError,
   composeLaunchArgv,
   composeProtocolArgv,
+  terminalPermissionMode,
   resumesOwnHarness,
   takesReviewFollowUp,
-  terminalPermissionMode,
   withPermissionDefaults,
 } from "./harness-launch.ts";
 
@@ -55,7 +55,7 @@ describe("composeLaunchArgv", () => {
   });
 
   it("emits no permission flag for bypass so the engine injects its default", () => {
-    // withPermissionDefaults (engine) keys on --permission-mode / --sandbox.
+    // withPermissionDefaults keys on --permission-mode / --sandbox.
     expect(composeLaunchArgv("claude", { permissionMode: "bypass" })).toEqual(["claude"]);
     expect(composeLaunchArgv("codex", { permissionMode: "bypass" })).toEqual(["codex"]);
   });
@@ -237,6 +237,112 @@ describe("resumesOwnHarness", () => {
   it("resumes an agent or a shell, never a `mend run` command (verify 2026-10-11)", () => {
     expect(["claude", "codex", "opencode", "pi", "shell"].every(resumesOwnHarness)).toBe(true);
     expect(resumesOwnHarness("run")).toBe(false);
+  });
+});
+
+describe("terminalPermissionMode", () => {
+  it("reads back the permission mode every composed terminal launch names", () => {
+    for (const harness of ["claude", "codex", "opencode"]) {
+      for (const permissionMode of ["ask", "bypass", undefined] as const) {
+        const argv = composeLaunchArgv(harness, {
+          prompt: "fix the auth test",
+          model: "some-model",
+          effort: "high",
+          permissionMode,
+        });
+        expect(terminalPermissionMode(harness, argv), `${harness} ${permissionMode}`).toBe(
+          permissionMode ?? "bypass",
+        );
+      }
+    }
+  });
+
+  it("reads the flags the harness reads, never prompt words", () => {
+    expect(
+      terminalPermissionMode("claude", ["claude", "--permission-mode bypassPermissions please"]),
+    ).toBe("bypass");
+    expect(
+      terminalPermissionMode("claude", [
+        "claude",
+        "--permission-mode",
+        "auto",
+        "run with --dangerously-skip-permissions",
+      ]),
+    ).toBe("ask");
+    expect(terminalPermissionMode("codex", ["codex", "use --sandbox danger-full-access"])).toBe(
+      "bypass",
+    );
+    expect(terminalPermissionMode("claude", ["claude", "--model", "--permission-mode"])).toBe(
+      "bypass",
+    );
+    expect(terminalPermissionMode("claude", ["claude", "--permission-mode=plan"])).toBe("ask");
+    expect(
+      terminalPermissionMode("claude", ["claude", "--permission-mode", "bypassPermissions"]),
+    ).toBe("bypass");
+    expect(
+      terminalPermissionMode("codex", ["codex", "--sandbox", "workspace-write", "-a", "never"]),
+    ).toBe("bypass");
+    expect(
+      terminalPermissionMode("codex", ["codex", "--sandbox", "workspace-write", "-a", "untrusted"]),
+    ).toBe("ask");
+    expect(
+      terminalPermissionMode("codex", [
+        "codex",
+        "--sandbox",
+        "danger-full-access",
+        "--ask-for-approval",
+        "never",
+      ]),
+    ).toBe("bypass");
+    expect(
+      terminalPermissionMode("codex", ["codex", "--dangerously-bypass-approvals-and-sandbox"]),
+    ).toBe("bypass");
+  });
+
+  it("says nothing where the argv does not: a script, a shell, pi, another head", () => {
+    expect(
+      terminalPermissionMode("claude", [
+        "sh",
+        "-c",
+        "exec claude --permission-mode auto",
+        "sh",
+        "chunk",
+      ]),
+    ).toBeNull();
+    expect(terminalPermissionMode("shell", ["bash"])).toBeNull();
+    expect(terminalPermissionMode("pi", composeLaunchArgv("pi", { permissionMode: "ask" }))).toBe(
+      null,
+    );
+    expect(terminalPermissionMode("codex", ["claude", "--permission-mode", "auto"])).toBeNull();
+    expect(terminalPermissionMode("opencode", ["env", "FOO=1", "opencode"])).toBeNull();
+  });
+});
+
+describe("withPermissionDefaults", () => {
+  it("gives the bypass default only to a launch that names no permission of its own", () => {
+    expect(withPermissionDefaults("claude", ["claude"])).toEqual([
+      "claude",
+      "--dangerously-skip-permissions",
+    ]);
+    const named = ["claude", "--dangerously-skip-permissions", "--resume", "id"];
+    expect(withPermissionDefaults("claude", named)).toEqual(named);
+    const ask = composeLaunchArgv("codex", { permissionMode: "ask" });
+    expect(withPermissionDefaults("codex", ask)).toEqual(ask);
+    expect(withPermissionDefaults("codex", ["codex", "--sandbox"])).toEqual(["codex", "--sandbox"]);
+    expect(
+      withPermissionDefaults("codex", ["codex", "resume", "id", "--sandbox is a word"]),
+    ).toEqual([
+      "codex",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "resume",
+      "id",
+      "--sandbox is a word",
+    ]);
+    expect(withPermissionDefaults("opencode", ["opencode"])).toEqual([
+      "env",
+      'OPENCODE_PERMISSION={"*":"allow"}',
+      "opencode",
+    ]);
   });
 });
 

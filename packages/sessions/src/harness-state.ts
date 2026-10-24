@@ -831,14 +831,14 @@ export const nativeResumeArgv = (
   // held. A launch that brings a prompt opens on it instead: opencode submits `--prompt` only from
   // its home screen, which opening a conversation skips.
   if (harness === "opencode") {
+    const at = argv[0] === "env" ? argv.indexOf("opencode") : 0;
     if (
-      argv[0] !== "opencode" ||
+      argv[at] !== "opencode" ||
       ["--continue", "-c", "--session", "-s", "--prompt"].some((flag) => argv.includes(flag))
     ) {
       return argv;
     }
-    const [, ...tail] = argv;
-    return ["opencode", "--session", providerSessionId, ...tail];
+    return [...argv.slice(0, at + 1), "--session", providerSessionId, ...argv.slice(at + 1)];
   }
   switch (harness) {
     case "claude": {

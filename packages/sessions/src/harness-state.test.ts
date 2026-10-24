@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { composeLaunchArgv, terminalPermissionMode } from "@mend/domain/workbench";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -333,6 +334,30 @@ describe("transcript adapters", () => {
       ["sh", "-c", "exec opencode", "sh"],
     ]) {
       expect(nativeResumeArgv("opencode", "ses_a", argv)).toEqual(argv);
+    }
+  });
+
+  it("keeps an ask launch's permission when it resumes, so the next resume reads it again", () => {
+    expect(
+      nativeResumeArgv(
+        "opencode",
+        "ses_a",
+        composeLaunchArgv("opencode", { permissionMode: "ask" }),
+      ),
+    ).toEqual(["env", 'OPENCODE_PERMISSION={"*":"ask"}', "opencode", "--session", "ses_a"]);
+    for (const harness of ["claude", "codex", "opencode"]) {
+      for (const permissionMode of ["ask", "bypass"] as const) {
+        const launched = composeLaunchArgv(harness, { model: "some-model", permissionMode });
+        const once = nativeResumeArgv(harness, "first-id", launched);
+        const twice = nativeResumeArgv(harness, "second-id", once);
+        expect(once.join(" "), harness).toContain("first-id");
+        expect(terminalPermissionMode(harness, once), `${harness} ${permissionMode}`).toBe(
+          permissionMode,
+        );
+        expect(terminalPermissionMode(harness, twice), `${harness} ${permissionMode}`).toBe(
+          permissionMode,
+        );
+      }
     }
   });
 

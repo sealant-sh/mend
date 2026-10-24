@@ -5,15 +5,26 @@ import { AgentWait } from "../src/workbench/agent-wait.ts";
 import {
   agentWaitLine,
   foldSessionLiveness,
+  lastPermissionMode,
   liveAgentsReading,
   servicesHoldLine,
 } from "../src/workbench/session-fold.ts";
 import { SessionProcess } from "../src/workbench/session-process.ts";
 
 const process = (
-  kind: "agent-protocol" | "agent-pty" | "shell",
+  kind: "agent-protocol" | "agent-pty" | "agent-external" | "shell",
   extra: Partial<
-    Pick<SessionProcess, "id" | "waiting" | "exitedAt" | "status" | "createdAt" | "harness">
+    Pick<
+      SessionProcess,
+      | "id"
+      | "waiting"
+      | "exitedAt"
+      | "status"
+      | "createdAt"
+      | "harness"
+      | "argv"
+      | "protocolOptions"
+    >
   > = {},
 ) =>
   new SessionProcess({
@@ -214,5 +225,53 @@ describe("servicesHoldLine", () => {
     expect(
       servicesHoldLine({ agentLive: false, agentOutcome: "stopped", liveServices: 0 }),
     ).toBeNull();
+  });
+});
+
+describe("lastPermissionMode", () => {
+  const at = (time: number) => ({ createdAt: new Date(time), ...ended });
+  const conversation = (time: number, permissionMode: "ask" | "bypass") =>
+    process("agent-protocol", {
+      ...at(time),
+      protocolOptions: { model: null, effort: null, permissionMode },
+    });
+  const terminal = (time: number, harness: string, argv: ReadonlyArray<string>) =>
+    process("agent-pty", { ...at(time), harness, argv });
+
+  it("reads the newest agent, a conversation or a terminal, whatever order the rows come in", () => {
+    const askTerminal = terminal(2, "codex", [
+      "codex",
+      "resume",
+      "id",
+      "--sandbox",
+      "danger-full-access",
+      "--ask-for-approval",
+      "on-request",
+    ]);
+    expect(lastPermissionMode([askTerminal, conversation(1, "bypass")])).toBe("ask");
+    expect(lastPermissionMode([conversation(3, "bypass"), askTerminal])).toBe("bypass");
+    expect(lastPermissionMode([conversation(1, "ask"), terminal(2, "claude", ["claude"])])).toBe(
+      "bypass",
+    );
+  });
+
+  it("passes over rows that do not say, so they never undo an ask", () => {
+    const ask = terminal(1, "claude", ["claude", "--permission-mode", "auto"]);
+    expect(
+      lastPermissionMode([
+        ask,
+        process("shell", at(2)),
+        terminal(3, "shell", ["bash"]),
+        terminal(4, "pi", ["pi"]),
+        terminal(5, "claude", ["sh", "-c", "exec claude --dangerously-skip-permissions", "sh"]),
+        process("agent-external", { ...at(6), harness: "claude", argv: ["claude"] }),
+        process("agent-protocol", at(7)),
+      ]),
+    ).toBe("ask");
+  });
+
+  it("is undefined for a session no agent of which says", () => {
+    expect(lastPermissionMode([])).toBeUndefined();
+    expect(lastPermissionMode([process("shell"), terminal(1, "pi", ["pi"])])).toBeUndefined();
   });
 });
