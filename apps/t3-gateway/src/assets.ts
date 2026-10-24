@@ -2,25 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { posix } from "node:path";
 
 import type { AuthSessionId } from "@mend/t3-contracts";
-import {
-  Cause,
-  Clock,
-  Context,
-  Effect,
-  Layer,
-  Option,
-  Redacted,
-  Schema,
-  type Scope,
-  Stream,
-} from "effect";
-import {
-  HttpMiddleware,
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse,
-  Mime,
-} from "effect/http";
+import { Cause, Clock, Context, Effect, Layer, Redacted, Schema, type Scope, Stream } from "effect";
+import { HttpMiddleware, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { GatewayAuth } from "./auth.ts";
 import { Projections } from "./hub.ts";
@@ -98,55 +81,73 @@ const validPath = (value: string) =>
 const withinDirectory = (name: string, directory: string) =>
   directory === "" || name.startsWith(`${directory}/`);
 
-// t3code v0.1.2: shared/filePreview.ts, shared/video.ts and server/assets/AssetAccess.ts.
-const images = new Set([".avif", ".gif", ".ico", ".jpeg", ".jpg", ".png", ".svg", ".webp"]);
-const documents = new Set([".htm", ".html", ".pdf"]);
-const dependencies = new Set([".css", ".js", ".mjs", ".otf", ".ttf", ".woff", ".woff2"]);
-const media: Readonly<Record<string, string>> = {
-  ".avi": "video/x-msvideo",
-  ".m4v": "video/mp4",
-  ".mp4": "video/mp4",
-  ".mkv": "video/x-matroska",
-  ".mov": "video/quicktime",
-  ".ogv": "video/ogg",
-  ".webm": "video/webm",
-  ".mp3": "audio/mpeg",
-  ".wav": "audio/wav",
-  ".ogg": "audio/ogg",
-  ".oga": "audio/ogg",
-  ".opus": "audio/ogg",
-  ".flac": "audio/flac",
-  ".aac": "audio/aac",
-  ".m4a": "audio/mp4",
-  ".aiff": "audio/aiff",
-};
+const svgPolicy = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+// An opaque origin: the page's scripts run, the gateway's storage and credentials stay out of reach.
+const htmlPolicy = "sandbox allow-scripts allow-forms allow-popups allow-downloads";
+type Family = "image" | "video" | "audio" | "document" | "dependency";
+/**
+ * How t3code v0.1.2 serves each previewable extension (shared/filePreview.ts, shared/video.ts,
+ * server/http.ts assetResponseHeaders, server/assets/AssetAccess.ts). A pin update checks it.
+ */
+const served: ReadonlyMap<
+  string,
+  { readonly family: Family; readonly contentType: string; readonly csp: string | null }
+> = new Map(
+  (
+    [
+      [".avif", "image", "image/avif"],
+      [".gif", "image", "image/gif"],
+      [".ico", "image", "image/x-icon"],
+      [".jpeg", "image", "image/jpeg"],
+      [".jpg", "image", "image/jpeg"],
+      [".png", "image", "image/png"],
+      [".svg", "image", "image/svg+xml", svgPolicy],
+      [".webp", "image", "image/webp"],
+      [".avi", "video", "video/x-msvideo"],
+      [".m4v", "video", "video/mp4"],
+      [".mkv", "video", "video/x-matroska"],
+      [".mov", "video", "video/quicktime"],
+      [".mp4", "video", "video/mp4"],
+      [".ogv", "video", "video/ogg"],
+      [".webm", "video", "video/webm"],
+      [".mp3", "audio", "audio/mpeg"],
+      [".wav", "audio", "audio/wav"],
+      [".ogg", "audio", "audio/ogg"],
+      [".oga", "audio", "audio/ogg"],
+      [".flac", "audio", "audio/flac"],
+      [".aac", "audio", "audio/aac"],
+      [".m4a", "audio", "audio/mp4"],
+      [".opus", "audio", "audio/ogg"],
+      [".aiff", "audio", "audio/aiff"],
+      [".pdf", "document", "application/pdf"],
+      [".htm", "document", "text/html; charset=utf-8", htmlPolicy],
+      [".html", "document", "text/html; charset=utf-8", htmlPolicy],
+      [".css", "dependency", "text/css"],
+      [".js", "dependency", "text/javascript"],
+      [".mjs", "dependency", "text/javascript"],
+      [".otf", "dependency", "font/otf"],
+      [".ttf", "dependency", "font/ttf"],
+      [".woff", "dependency", "font/woff"],
+      [".woff2", "dependency", "font/woff2"],
+    ] satisfies ReadonlyArray<readonly [string, Family, string, string?]>
+  ).map(([extension, family, contentType, csp]) => [
+    extension,
+    { family, contentType, csp: csp ?? null },
+  ]),
+);
+/** A document's directory also serves its dependencies; only media-file URLs name audio or video. */
 const classify = (name: string, preview: "workspace" | "media", child: boolean) => {
-  const extension = posix.extname(name).toLowerCase();
   if (!validPath(name) || (child && name.split("/").some((s) => s.startsWith(".")))) return null;
-  const mediaType = preview === "media" && !child ? media[extension] : undefined;
-  if (
-    !images.has(extension) &&
-    !documents.has(extension) &&
-    !(child && dependencies.has(extension)) &&
-    mediaType === undefined
-  )
-    return null;
-  const contentType =
-    extension === ".html" || extension === ".htm"
-      ? "text/html; charset=utf-8"
-      : extension === ".pdf"
-        ? "application/pdf"
-        : (mediaType ??
-          (preview === "media" && extension === ".ico"
-            ? "image/x-icon"
-            : Option.getOrElse(Mime.getType(name), () => "application/octet-stream")));
-  const csp =
-    extension === ".svg"
-      ? "default-src 'none'; style-src 'unsafe-inline'; sandbox"
-      : extension === ".html" || extension === ".htm"
-        ? "sandbox allow-scripts allow-forms allow-popups allow-downloads"
-        : null;
-  return { contentType, csp, ranges: mediaType !== undefined, directory: documents.has(extension) };
+  const type = served.get(posix.extname(name).toLowerCase());
+  if (type === undefined) return null;
+  const ranges = type.family === "video" || type.family === "audio";
+  if (child ? ranges : type.family === "dependency" || (ranges && preview !== "media")) return null;
+  return {
+    contentType: type.contentType,
+    csp: type.csp,
+    ranges,
+    directory: type.family === "document",
+  };
 };
 const headersFor = (contentType: string, csp: string | null): Record<string, string> => ({
   "content-type": contentType,
