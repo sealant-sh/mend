@@ -26,6 +26,21 @@
 			}
 		}
 	}
+	# A raw file read and a t3code asset URL log here, their uri replaced: each site's @private
+	# matcher names them on the path Caddy cleans and unescapes. A spelling that cleans to another
+	# path still meets the uri filter above. reverse_proxy's own lines carry a request, and Caddy
+	# cannot route those by path, so they log here for every route; the access line with the same
+	# remote_port holds the uri of any other route.
+	log private {
+		include http.log.access.private http.log.error.private http.handlers.reverse_proxy
+		output stdout
+		format filter {
+			fields {
+				request>uri replace REDACTED
+				request>headers>Referer delete
+			}
+		}
+	}
 }
 
 {$MEND_EDGE_HOST} {
@@ -38,6 +53,14 @@
 		# Terminals and the event stream are long-lived: never buffer, never time them out.
 		flush_interval -1
 	}
+
+	# A raw file read names its file in the query, and a t3code asset URL's path is its credential
+	# and file name (ADR 0004): their access lines go to the private log. The raw route's file
+	# headers are for the t3code gateway, which reads Mend over loopback, never through this edge.
+	# No client here gets them, and so no log line holds them. The gateway's site does the same.
+	@private path /api/assets/* /api/worktrees/*/raw /api/worktrees/*/raw/ /api/worktrees/*/raw;*
+	log_name @private private
+	header -X-Mend-File-*
 
 	log {
 		output stdout

@@ -135,7 +135,7 @@ test("the edge drops privileges it does not need", { skip }, () => {
 test("the Caddyfile routes everything to web and declares named query credential filters", () => {
   const caddyfile = readFileSync(path.join(directory, "Caddyfile"), "utf8");
   // One upstream, the web tier. Never the API (3101), the session channel (3106) or Sealant (4000).
-  assert.deepEqual(caddyfile.match(/reverse_proxy\s+\S+/g), ["reverse_proxy mend:3105"]);
+  assert.deepEqual(caddyfile.match(/^\s*reverse_proxy\s+\S+/gm), ["\treverse_proxy mend:3105"]);
   for (const port of ["3101", "3106", "4000", "3900", "5432"])
     assert.ok(!caddyfile.includes(port), port);
   for (const parameter of ["ticket", "token", "code"]) {
@@ -234,7 +234,7 @@ for (const site of [
       const upstream = path.join(scratch, "upstream.Caddyfile");
       writeFileSync(
         upstream,
-        `:${site.port} {\n respond "{http.request.uri}|{http.request.header.Referer}|{http.request.header.Authorization}|{http.request.header.Cookie}" 200\n header Set-Cookie SYN_RESPONSE_COOKIE\n}\n`,
+        `:${site.port} {\n respond "{http.request.uri}|{http.request.header.Referer}|{http.request.header.Authorization}|{http.request.header.Cookie}" 200\n header Set-Cookie SYN_RESPONSE_COOKIE\n header X-Mend-File-Path SYN_FILE_HEADER\n}\n`,
       );
       const create = async (name, config, extra) => {
         const container = (
@@ -266,14 +266,22 @@ for (const site of [
       await create("upstream", upstream, ["--network-alias", "mend"]);
       // HTTP on an owned loopback port exercises the unchanged filter without ACME or public DNS.
       let config = path.join(directory, "Caddyfile");
+      const hosts = [`${site.hostVariable}=http://:8080`];
       if (site.name === "t3code") {
+        // As setup mounts it: imported by Mend's Caddyfile, whose global block holds its loggers.
         const { T3_GATEWAY_CADDYFILE } = await import("../apps/cli/src/server-edge.ts");
         config = path.join(scratch, "gateway.Caddyfile");
-        writeFileSync(config, T3_GATEWAY_CADDYFILE);
+        writeFileSync(
+          config,
+          readFileSync(path.join(directory, "Caddyfile"), "utf8").replace(
+            "import /etc/caddy/sites/*.caddy",
+            T3_GATEWAY_CADDYFILE,
+          ),
+        );
+        hosts.push("MEND_EDGE_HOST=http://:8081");
       }
       const edge = await create("edge", config, [
-        "-e",
-        `${site.hostVariable}=http://:8080`,
+        ...hosts.flatMap((host) => ["-e", host]),
         "-p",
         "127.0.0.1::8080",
       ]);
@@ -386,7 +394,24 @@ for (const site of [
           userinfo: true,
         },
       ];
+      // A raw read's file name and an asset URL's token, in spellings Caddy cleans to their routes.
+      const privateTargets = [
+        "/api/worktrees/w/raw?path=SYN_FILE_1.png&within=SYN_DIR_1",
+        "/api/worktrees/w/r%61w?path=SYN_FILE_2.png",
+        "/API/worktrees/w/RAW/?path=SYN_FILE_3.png",
+        "/api/worktrees/w/raw;v=1?path=SYN_FILE_4.png",
+        "/api/assets/ast_SYN_TOKEN_5/SYN_FILE_5.png",
+        "/api/assets/%61st_SYN_TOKEN_6/SYN_FILE_6.png",
+        "/api/%61ssets/ast_SYN_TOKEN_7/SYN_FILE_7.png",
+        "/API//assets/ast_SYN_TOKEN_8/SYN_FILE_8.png",
+        "/api/x/../assets/%61st_SYN_TOKEN_9/SYN_FILE_9.png",
+      ];
       const urlOf = (uri) => new URL(uri.startsWith("/") ? `http://edge.invalid${uri}` : uri);
+      for (const target of privateTargets) {
+        const response = await request(target, headers);
+        assert.equal(response.status, 200, target);
+        assert.ok(!Object.hasOwn(response.headers, "x-mend-file-path"), target);
+      }
       for (const { target } of cases) {
         const response = await request(target, headers);
         const uri = urlOf(target);
@@ -407,14 +432,21 @@ for (const site of [
           .filter(Boolean)
           .map((line) => JSON.parse(line))
           .filter((entry) => entry.logger?.startsWith("http.log.access."));
-        if (entries.length >= cases.length + 1) break;
+        if (entries.length >= cases.length + privateTargets.length + 1) break;
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       assert.equal(
         entries.length,
-        cases.length + 1,
+        cases.length + privateTargets.length + 1,
         "every successful request must emit an access log",
       );
+      const privateEntries = entries.filter((entry) => entry.logger === "http.log.access.private");
+      assert.equal(privateEntries.length, privateTargets.length);
+      for (const entry of privateEntries) {
+        assert.equal(entry.request.uri, "REDACTED");
+        assert.equal(entry.status, 200);
+      }
+      entries = entries.filter((entry) => entry.logger !== "http.log.access.private");
       for (const { target, query, userinfo } of cases) {
         const pathname = urlOf(target).pathname;
         const matches = entries.filter((entry) => urlOf(entry.request.uri).pathname === pathname);

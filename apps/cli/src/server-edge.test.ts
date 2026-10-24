@@ -31,6 +31,28 @@ const loggedUri = (caddyfile: string, uri: string) => {
   return uri.replace(new RegExp(pattern, "g"), replacement.replace(/\$\{(\d+)\}/g, "$$$1"));
 };
 
+/**
+ * Whether a site's `@private` path matcher takes a request, the way Caddy's path matcher does: on
+ * the unescaped, lower-cased path with slashes merged and dot segments resolved, a pattern with
+ * one trailing `*` as a prefix, and any other `*` as one path segment's glob.
+ */
+const privateRoute = (site: string, uri: string): boolean => {
+  const patterns = /^\t@private path (.+)$/m.exec(site)?.[1]?.split(" ") ?? [];
+  const segments: Array<string> = [];
+  const raw = decodeURIComponent(uri.split("?")[0] ?? "").toLowerCase();
+  for (const segment of raw.split("/").slice(1))
+    if (segment === "..") segments.pop();
+    else if (segment !== "." && segment !== "") segments.push(segment);
+  const path = `/${segments.join("/")}${raw.endsWith("/") && segments.length > 0 ? "/" : ""}`;
+  return patterns.some((pattern) =>
+    pattern.indexOf("*") === pattern.length - 1
+      ? path.startsWith(pattern.slice(0, -1))
+      : new RegExp(
+          `^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")}$`,
+        ).test(path),
+  );
+};
+
 /** What a status line must never say: the report is facts beside a declaration, not a verdict. */
 const VERDICTS = /\bsafe\b|gate passed|passed\b|ready to expose|fit to expose|✓/i;
 
@@ -457,6 +479,41 @@ describe("where the t3code gateway is published (ADR 0012, ADR 0004)", () => {
         "https://REDACTED@host/api/projects",
       );
     }
+  });
+
+  it("logs asset URLs and raw reads in any spelling Caddy cleans to them with no uri at all", () => {
+    const token = `ast_${"a1_-".repeat(10)}xyz`;
+    for (const caddyfile of [EDGE_CADDYFILE, T3_GATEWAY_CADDYFILE]) {
+      expect(caddyfile).toContain("\tlog_name @private private\n");
+      // The gateway reads the raw route's file headers from Mend directly; no edge client gets them.
+      expect(caddyfile).toContain("\theader -X-Mend-File-*\n");
+      for (const uri of [
+        `/api/assets/${token}/private-name.png`,
+        `/api/assets/%61st_${token.slice(4)}/private-name.png`,
+        `/api/%61ssets/${token}/private-name.png`,
+        `/API//ASSETS/${token}/private-name.png`,
+        `/api/x/../assets/${token}/private-name.png`,
+        "/api/worktrees/w/raw?path=private-name.png",
+        "/api/worktrees/w/r%61w?path=private-name.png",
+        "/API/worktrees/w/RAW/?path=private-name.png",
+        "/api/worktrees/w/raw;v=1?path=private-name.png",
+      ])
+        expect(privateRoute(caddyfile, uri), uri).toBe(true);
+      for (const uri of [
+        "/api/worktrees/w/contents?path=README.md",
+        "/api/worktrees/w/rawdata",
+        "/api/projects?raw=1",
+        "/assets/app.js",
+      ])
+        expect(privateRoute(caddyfile, uri), uri).toBe(false);
+    }
+    const global = /^\{\n([\s\S]*?)\n\}\n/m.exec(EDGE_CADDYFILE)?.[1] ?? "";
+    const privateLog = /\tlog private \{\n([\s\S]*?)\n\t\}/.exec(global)?.[1] ?? "";
+    expect(privateLog).toContain(
+      "include http.log.access.private http.log.error.private http.handlers.reverse_proxy",
+    );
+    expect(privateLog).toContain("request>uri replace REDACTED");
+    expect(privateLog).toContain("request>headers>Referer delete");
   });
 
   it("filters Caddy's own lines (a failed dial, a response cut short) like the access logs", () => {

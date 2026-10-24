@@ -324,7 +324,8 @@ export const renderT3GatewayOverlay = (posture: ServerPosture): string | undefin
  * `Caddyfile.t3`: the edge's site for the gateway, which the Caddyfile imports. TLS ends here, as
  * for Mend's own origin; the gateway's sockets and streams are long-lived. Its socket carries a
  * single-use ticket in the query (`wsTicket`), and an asset URL its token and file name in the
- * path; no log holds either. Its uri filter is the one Mend's own Caddyfile carries.
+ * path; no log holds either. Asset URLs and raw reads log to the Caddyfile's `private` log, and its
+ * uri filter is the one Mend's own Caddyfile carries.
  */
 export const T3_GATEWAY_CADDYFILE = [
   "# Written by mend server setup --t3-gateway-origin: the t3code gateway (docs/adr/0012) on an",
@@ -336,6 +337,12 @@ export const T3_GATEWAY_CADDYFILE = [
   "\t\t# The gateway's socket and its streams are long-lived: never buffer them.",
   "\t\tflush_interval -1",
   "\t}",
+  "",
+  "\t# As on Mend's own origin: an asset URL and a raw read log to the Caddyfile's private log, and",
+  "\t# the raw route's file headers never leave the edge.",
+  "\t@private path /api/assets/* /api/worktrees/*/raw /api/worktrees/*/raw/ /api/worktrees/*/raw;*",
+  "\tlog_name @private private",
+  "\theader -X-Mend-File-*",
   "",
   "\tlog {",
   "\t\toutput stdout",
