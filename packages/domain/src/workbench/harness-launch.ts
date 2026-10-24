@@ -280,6 +280,18 @@ const optionsIn = (harness: "claude" | "codex", argv: ReadonlyArray<string>) => 
         value: token.slice(equals + 1),
         tokens: [token],
       });
+    } else if (
+      !token.startsWith("--") &&
+      VALUE_OPTIONS[harness].has(token.slice(0, 2)) &&
+      token.length > 2
+    ) {
+      // codex reads `-sread-only` and `-s=read-only` as `-s read-only`.
+      const value = token.slice(2);
+      options.push({
+        name: token.slice(0, 2),
+        value: value.startsWith("=") ? value.slice(1) : value,
+        tokens: [token],
+      });
     } else if (VALUE_OPTIONS[harness].has(token) && index + 1 < argv.length) {
       const value = argv[index + 1] ?? "";
       options.push({ name: token, value, tokens: [token, value] });
