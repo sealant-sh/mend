@@ -90,7 +90,6 @@ export const lifecycleOf = (
   return { ...kept, ...settlement, ...snooze };
 };
 
-/** What the person sees: the command that last changed it is not part of their view. */
 const LIFECYCLE_FIELDS = Object.keys(NO_LIFECYCLE).filter(
   (key): key is Exclude<keyof ThreadLifecycle, "lastCommandId"> =>
     key in NO_LIFECYCLE && key !== "lastCommandId",
@@ -205,7 +204,6 @@ export const changeLifecycle = (
       ) {
         return refused("A message is waiting to be sent, which a snooze would hide.");
       }
-      // Stamped again for the same time too: snoozing a thread that woke says "seen, not now".
       return changed({ ...current, snoozedUntil: new Date(until).toISOString(), snoozedAt: at });
     }
     case "unsnooze":

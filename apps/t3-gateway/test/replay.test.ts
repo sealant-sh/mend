@@ -27,8 +27,7 @@ type ShellItem = OrchestrationV2ShellStreamItem;
 type Item = OrchestrationV2ThreadStreamItem;
 const THREAD = ThreadId.make("session-1");
 
-/** A session made just now: one quiet for days would settle on its own while the test runs. */
-const setup = (mend: FakeMend) => {
+const addFreshSession = (mend: FakeMend) => {
   advanceClock(Date.now());
   mend.workbench.addProject("project-1", "mend");
   mend.workbench.addSession({ id: "session-1", projectId: "project-1", label: "Before" });
@@ -48,7 +47,7 @@ describe("replay after a sequence", () => {
     () =>
       Effect.gen(function* () {
         const mend = yield* startFakeMend;
-        setup(mend);
+        addFreshSession(mend);
         yield* Effect.gen(function* () {
           const { rpc } = yield* pairAndConnect(mend, "SHELL");
           const before = yield* Effect.scoped(
@@ -102,7 +101,7 @@ describe("replay after a sequence", () => {
   it.live("resumes a thread with the events it missed while its client reconnected", () =>
     Effect.gen(function* () {
       const mend = yield* startFakeMend;
-      setup(mend);
+      addFreshSession(mend);
       const turn = mend.workbench.addTurn("session-1", "Explain the parser");
       yield* Effect.gen(function* () {
         const { rpc } = yield* pairAndConnect(mend, "THREAD");
@@ -142,7 +141,7 @@ describe("replay after a sequence", () => {
       const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-replay-")), "state.sqlite");
       return Effect.gen(function* () {
         const mend = yield* startFakeMend;
-        setup(mend);
+        addFreshSession(mend);
         const shellOnce = (code: string, afterSequence?: number) =>
           Effect.gen(function* () {
             const { rpc } = yield* pairAndConnect(mend, code);
@@ -168,7 +167,7 @@ describe("replay sizes as they go out (595-R2-N1)", () => {
   it.live("answers a snapshot for a change past 1 MiB in UTF-8, short as it is in characters", () =>
     Effect.gen(function* () {
       const mend = yield* startFakeMend;
-      setup(mend);
+      addFreshSession(mend);
       const turn = mend.workbench.addTurn("session-1", "Explain it");
       yield* Effect.gen(function* () {
         const { rpc } = yield* pairAndConnect(mend, "UTF8-BYTES");

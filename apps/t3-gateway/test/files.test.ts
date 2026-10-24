@@ -264,7 +264,6 @@ describe("reading and searching a worktree's files", () => {
           ),
           "path_not_file",
         );
-        // An optional file that is not there is an answer, as on t3code's own server.
         const absent = yield* rpc[WS_METHODS.projectsReadFile]({
           cwd: WORKTREE,
           relativePath: "t3.json",
@@ -296,7 +295,6 @@ describe("reading and searching a worktree's files", () => {
           ),
           "workspace_path_outside_root",
         );
-        // A worktree Mend no longer has is a failure, optional file or not.
         mend.workbench.goneWorktrees.add(session.worktreeId);
         assert.strictEqual(
           failureOf(

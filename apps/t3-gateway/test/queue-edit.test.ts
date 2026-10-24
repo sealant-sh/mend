@@ -251,7 +251,6 @@ describe("sending a held message now", () => {
             item.event.payload.userMessageId === "message-a" &&
             item.event.payload.queueHeld === true,
         );
-        // Sent now only once the gateway has seen the turn stop, as t3code's server takes it.
         yield* thread.next(
           (item): item is Extract<Item, { kind: "event" }> =>
             item.kind === "event" &&
@@ -261,7 +260,6 @@ describe("sending a held message now", () => {
         );
         assert.deepStrictEqual(turnInputs(mend), []);
 
-        // A run that is not waiting in the queue is refused in t3code's words.
         const notWaiting = yield* Effect.exit(
           rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
             type: "queued-run.start",
@@ -284,7 +282,6 @@ describe("sending a held message now", () => {
         yield* eventually(() => turnInputs(mend).length === 1, "the message sent now");
         assert.deepStrictEqual(turnInputs(mend), ["Third"]);
 
-        // On its way to Mend, it is not sent again.
         const again = yield* Effect.exit(
           rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
             type: "queued-run.start",
@@ -396,7 +393,6 @@ describe("sending a queued message now while a turn runs", () => {
           return run.id;
         }),
       );
-      // Someone else's turn runs in Mend while the gateway is down.
       mend.workbench.addTurn("session-1", "Another job");
       const firstRead = mend.workbench.holdNextRequestsRead("session-1");
 

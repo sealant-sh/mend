@@ -214,7 +214,6 @@ describe("the terminal", () => {
             terminalId: "term",
             deleteHistory: true,
           });
-          // Never opened here at all, then closed.
           yield* rpc[WS_METHODS.terminalClose]({
             threadId: "session-1",
             terminalId: "never",
@@ -237,7 +236,6 @@ describe("the terminal", () => {
           }
           assert.strictEqual(mend.tty.shells.size, 1);
 
-          // An explicit open brings it back.
           const reopened = yield* feed(
             rpc[WS_METHODS.terminalAttach]({ threadId: "session-1", terminalId: "term", cwd: CWD }),
           );
@@ -247,7 +245,6 @@ describe("the terminal", () => {
           assert.strictEqual(fresh.snapshot.status, "running");
           assert.strictEqual(mend.tty.shells.size, 2);
 
-          // A terminal this gateway never knew of is still opened on resubscription.
           const unknown = yield* feed(
             rpc[WS_METHODS.terminalAttach]({
               threadId: "session-1",

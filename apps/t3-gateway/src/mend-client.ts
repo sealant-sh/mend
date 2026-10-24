@@ -528,8 +528,10 @@ const MendErrorBody = Schema.Struct({
   message: Schema.optional(Schema.String),
 });
 const decodeErrorBody = Schema.decodeUnknownOption(MendErrorBody);
-/** Mend's 404 body: `NotFound` names what it has nothing at, `WorktreeNotFound` the worktree. */
-const MendNotFoundBody = Schema.Struct({ _tag: Schema.String, id: Schema.String });
+const MendNotFoundBody = Schema.Struct({
+  _tag: Schema.Literals(["NotFound", "WorktreeNotFound"]),
+  id: Schema.String,
+});
 const decodeNotFoundBody = Schema.decodeUnknownOption(MendNotFoundBody);
 const decodePointer = Schema.decodeUnknownOption(Schema.fromJsonString(MendEventPointer));
 

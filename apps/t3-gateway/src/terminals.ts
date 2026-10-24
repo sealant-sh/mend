@@ -452,7 +452,6 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
           };
           return Stream.make(gone).pipe(Stream.concat(liveOf(changes, input)));
         }
-        // A client's resubscription (`resume`) keeps a terminal that stopped as it is.
         const restart =
           input.restartIfNotRunning === true &&
           input.resume !== true &&
@@ -565,7 +564,6 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
           (input.terminalId === undefined || key === keyOf(input.threadId, input.terminalId)),
       );
       yield* Effect.forEach(pending, settled, { discard: true });
-      // Closed even when it was never opened here: a resubscription does not bring it up.
       if (input.terminalId !== undefined) closed.add(keyOf(input.threadId, input.terminalId));
       yield* closeNow(session, input);
     });

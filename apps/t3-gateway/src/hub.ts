@@ -3209,7 +3209,6 @@ export const makePersonHub = (input: {
 
     const startQueued: ThreadCommands["startQueued"] = (threadId, runId) =>
       Effect.gen(function* () {
-        // Mend's state first: a queue kept across a restart is there before Mend's first read.
         yield* ensureLoaded;
         return yield* locked(
           Effect.gen(function* () {
@@ -4002,8 +4001,6 @@ export const makePersonHub = (input: {
             if (source === null) {
               return yield* refused(`Thread ${command.threadId} is not in this environment.`);
             }
-            // A replay of the command that changed it last: a snooze restamped again would move
-            // past a failure that arrived since and hide it, so it is answered as it was.
             if (source.lifecycle.lastCommandId === command.commandId) return sequence;
             if (source.archivedAt !== null) {
               return yield* refused("The thread is archived. Unarchive it first.");
