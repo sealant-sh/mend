@@ -547,13 +547,14 @@ Mend's project access. Restarting the gateway forgets all asset grants.
 
 A grant names one canonical file, or its directory for HTML and PDF so relative resources load. Both
 lexical traversal and descriptor-resolved directory escapes are refused. MIME and sandbox CSP follow
-the opened target's extension, including symlinks. Only audio and video forward a single `Range`;
-other previews always return the complete file. Media grants carry a revision and refuse a changed
-file, so a seek cannot silently combine versions. `If-Range` falls back to the complete response.
-HEAD returns metadata without reading the body. Responses are `private, no-store`, with `nosniff`;
-SVG and HTML use t3code v0.1.2's sandbox policies. Failures before headers are plain 404; a failure
-after headers aborts the body. Neither paths nor tokens enter asset access logs or traces. Mend raw
-reads disable access logs and traces too.
+the opened target's extension, including symlinks, from one table pinned to t3code v0.1.2. Only
+audio and video forward a single `Range`; other previews always return the complete file. A
+`media-file` grant follows its file's device and inode, as t3code's does: an in-place edit keeps the
+URL working, and a replaced file is refused. `If-Range` falls back to the complete response. HEAD
+returns metadata without reading the body. Responses are `private, no-store`, with `nosniff`; SVG
+and HTML use t3code v0.1.2's sandbox policies. Failures before headers are plain 404; a failure
+after headers resets the connection, in the gateway and in Mend's raw route alike. Neither paths nor
+tokens enter asset access logs or traces. Mend raw reads disable access logs and traces too.
 
 Admission refuses new work without evicting usable grants or interrupting running reads. Limits are
 4,096 grants overall, 256 per device, and 8 MiB of grant metadata; eight simultaneous mints, two per
