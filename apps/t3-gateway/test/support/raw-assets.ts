@@ -35,6 +35,7 @@ interface RawFixture {
   revision?: string;
   identity?: string;
   status?: number;
+  captureId?: string;
   size?: number;
   failAfter?: number;
   pulled?: number;
@@ -45,6 +46,7 @@ interface RawFixture {
 export const withAssetHarness = <A, E, R>(
   test: (fixture: AssetHarness, logs: string[]) => Effect.Effect<A, E, R>,
   limits: Partial<AssetLimits> = {},
+  node = true,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -91,7 +93,10 @@ export const withAssetHarness = <A, E, R>(
             const worktree = url.pathname.split("/")[3] ?? "";
             const path = url.searchParams.get("path") ?? "";
             requests.push({ method: request.method, path, range: request.headers.range });
-            const file = rawFiles.get(`${worktree}/${path}`);
+            const capture = url.searchParams.get("capture");
+            const file = rawFiles.get(
+              `${worktree}/${path}${capture === null ? "" : `@${capture}`}`,
+            );
             const within = url.searchParams.get("within") ?? "";
             if (
               file === undefined ||
@@ -107,6 +112,7 @@ export const withAssetHarness = <A, E, R>(
               "x-mend-file-path": encodeURIComponent(file.canonicalPath),
               "x-mend-file-revision": file.revision ?? "a".repeat(64),
               "x-mend-file-identity": file.identity ?? "c".repeat(64),
+              ...(file.captureId === undefined ? {} : { "x-mend-capture-id": file.captureId }),
               "x-frame-options": "DENY",
               "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
             };
@@ -203,14 +209,19 @@ export const withAssetHarness = <A, E, R>(
         ),
       );
       const app = HttpRouter.toWebHandler(routes.pipe(Layer.provide(HttpServer.layerServices)));
-      const served = yield* Layer.build(
-        HttpRouter.serve(routes, { disableListenLog: true }).pipe(
-          Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
-        ),
-      ).pipe(Effect.orDie);
-      const nodeOrigin = HttpServer.formatAddress(
-        Context.get(served, HttpServer.HttpServer).address,
-      );
+      const served = node
+        ? yield* Layer.build(
+            HttpRouter.serve(routes, { disableListenLog: true }).pipe(
+              Layer.provideMerge(
+                NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }),
+              ),
+            ),
+          ).pipe(Effect.orDie)
+        : undefined;
+      const nodeOrigin =
+        served === undefined
+          ? ""
+          : HttpServer.formatAddress(Context.get(served, HttpServer.HttpServer).address);
       yield* Effect.addFinalizer(() => Effect.promise(app.dispose));
       const http = HttpClient.make((request, url) =>
         Effect.promise(() =>

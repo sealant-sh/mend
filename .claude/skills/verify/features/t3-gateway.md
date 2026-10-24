@@ -407,28 +407,14 @@ machine's `PATH`, and the run ends by revoking every `t3code · T3 Code Web` dev
   `verify-terminal.txt`; `README.md` opens with `# Verify fixture`, under the line
   `Read-only connection. Unsaved edits are kept until write access returns.` **Add panel surface** →
   **Diff**: `Changes` against `main`, `1 additions, 0 deletions`, `verify-terminal.txt +1`.
-- **Previews need a co-located Mend.** The verify stack runs the capture store (the default), and
-  Mend answers every raw read there with `409` `{"_tag":"RawFileUnavailable","mode":"captured"}`:
-  `assets.createUrl` fails with `AssetWorkspaceAssetNotFoundError` and the panel reads
-  `Unable to load workspace image.` (observed 2026-10-24, `captured/`). So the run recreates the
-  inner `mend-mend-1` from setup's own Compose files (its labels name them and `server.env`) with
-  one more file setting `MEND_SESSION_STORE=colocated`, through a sibling `mend run` on the
-  session's Docker; Mend then logs `sessionStore: 'colocated'` and its deprecation warning. The
-  sibling's command, with `<label>` read by `docker inspect mend-mend-1` from
-  `com.docker.compose.project.<label>` and `<cli>` the image of `verify-stack-relay`:
-
-  ```sh
-  docker run --rm -v verify-stack-state:<mountpoint> -v <docker socket>:/var/run/docker.sock \
-    --workdir <working_dir> --entrypoint sh <cli> -c "printf 'services:\n  mend:\n    environment:\n      MEND_SESSION_STORE: colocated\n' > <mountpoint>/server/st-verify-session-store.yaml \
-    && docker compose -p mend --project-directory <working_dir> --env-file <environment_file> \
-       -f <each of config_files> -f <mountpoint>/server/st-verify-session-store.yaml up -d --no-deps mend"
-  ```
-
-  `<mountpoint>` is `docker volume inspect -f '{{.Mountpoint}}' verify-stack-state`, and
-  `<docker socket>` the source of `mend-mend-1`'s `/var/run/docker.sock` mount. Threads launched
-  before the restart keep answering `subscribeVcsStatus` with
-  `Mend answered GET /api/changes/:id/stats with 422.` A captured or checkpoint raw read past that
-  refusal is part 1b; nothing more of it is drivable here.
+- **Captured previews.** Use the default captured store. Wait until the fixture files appear in a
+  registered capture, then open each preview below. The first mint prepares its bytes on Mend; if it
+  takes longer than ten seconds the preview is unavailable. Reopen after preparation finishes. Later
+  opens and media seeks use the disk cache. Record the raw HEAD response's `x-mend-capture-id` and
+  `x-mend-observation`. After a newer capture changes a file, the old URL and its document children
+  must still return the old bytes; a new mint selects the new capture. A raw read with
+  `at=<checkpoint id>` must return that checkpoint's bytes. A foreign checkpoint or missing
+  historical evidence returns 404. There is no co-located restart in this procedure.
 
 - **The fixtures, pasted into the terminal.** The recipe makes a PNG (64 × 64), an SVG, a one-page
   PDF, a 10-second VP9 MP4 (Playwright's Chromium decodes no H.264), `site/index.html` with a

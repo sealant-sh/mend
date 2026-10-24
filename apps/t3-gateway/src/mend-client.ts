@@ -50,6 +50,7 @@ import {
 
 /** A scoped response from Mend's raw endpoint; no upstream request or cause escapes. */
 export interface MendRawFile {
+  readonly captureId: string | null;
   readonly status: 200 | 206 | 416;
   readonly canonicalPath: Redacted.Redacted<string>;
   readonly revision: string;
@@ -61,6 +62,7 @@ export interface MendRawFile {
 }
 
 export interface MendRawFileRequest {
+  readonly captureId?: string | null;
   readonly path: Redacted.Redacted<string>;
   readonly within: Redacted.Redacted<string>;
   readonly method: "GET" | "HEAD";
@@ -929,6 +931,8 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             path: Redacted.value(input.path),
             within: Redacted.value(input.within),
           });
+          if (input.captureId !== undefined && input.captureId !== null)
+            query.set("capture", input.captureId);
           const request = HttpClientRequest.make(input.method)(
             url(`/api/worktrees/${encodeURIComponent(worktreeId)}/raw?${query}`),
           ).pipe(
@@ -940,8 +944,9 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             .pipe(
               Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
               Effect.mapError(() => new MendRawFileUnavailable({ status: null })),
+              // Mend's ten-second preparation window must finish before this transport deadline.
               Effect.timeoutOrElse({
-                duration: "10 seconds",
+                duration: "11 seconds",
                 orElse: () => Effect.fail(new MendRawFileUnavailable({ status: null })),
               }),
             );
@@ -958,7 +963,9 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           const revision = response.headers["x-mend-file-revision"] ?? "";
           const identity = response.headers["x-mend-file-identity"] ?? "";
           const contentRange = response.headers["content-range"];
+          const captureId = response.headers["x-mend-capture-id"] ?? null;
           if (
+            (captureId !== null && !/^[a-f0-9]{64}$/.test(captureId)) ||
             !/^\d+$/.test(lengthText) ||
             !Number.isSafeInteger(length) ||
             length < 0 ||
@@ -972,6 +979,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           return {
             status,
             canonicalPath: Redacted.make(canonicalPath),
+            captureId,
             revision,
             identity,
             length,

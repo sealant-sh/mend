@@ -16,10 +16,10 @@
 // stack: the skill's fake one (`mend connect claude --from-stdin` with FAKES.claude), on which each
 // turn starts and ends at once with Claude's own refusal. The browser starts empty: the client keeps
 // its environments in IndexedDB, which --state does not carry, so the recipe pairs every run, and
-// each run is a new `t3code · …` device in Mend. The previews need a co-located Mend
-// (MEND_SESSION_STORE=colocated): the capture store answers every raw read with its 409 refusal,
-// which the client shows as `Unable to load workspace image.` The fixtures are made here (ffmpeg on
-// PATH for the MP4) and pasted into Mend's shell in the worktree. Revoking the device ends the run:
+// each run is a new `t3code · …` device in Mend. Previews use the default captured store; the Files
+// refresh below waits for the fixtures to reach a capture. A cold mint that exceeds ten seconds
+// must be reopened after preparation finishes. Fixtures are made here (ffmpeg on PATH for the MP4)
+// and pasted into Mend's shell in the worktree. Revoking the device ends the run:
 // every `t3code · T3 Code Web` device in Settings → Devices is revoked.
 //
 // Every `ok ·` line in steps.log is a step's observed end state; a line that does not hold fails

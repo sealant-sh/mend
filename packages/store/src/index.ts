@@ -17,4 +17,13 @@ export * from "./runner.ts";
 export * from "./secret-cipher.ts";
 export * from "./store.ts";
 export * from "./source-policy.ts";
-export * from "./raw-file.ts";
+export {
+  RawReadError,
+  RawCacheLimits,
+  RawPreparationWait,
+  DEFAULT_RAW_CACHE_LIMITS,
+  parseImmutableTree,
+  type ImmutableTree,
+  type OpenRawFile,
+  type RawBlobTarget,
+} from "./raw-file.ts";

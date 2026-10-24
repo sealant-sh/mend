@@ -3,7 +3,7 @@ import { IncomingMessage } from "node:http";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import {
   CurrentUser,
-  RawFileUnavailable,
+  RawFilePreparing,
   RawFileNotFound,
   RawFileTooLarge,
   MendApi,
@@ -37,7 +37,14 @@ import {
 } from "@mend/db";
 import type { CheckpointId, WorktreeId } from "@mend/domain";
 import { currentAgentProcess, heldRepositoriesRefusal } from "@mend/domain/workbench";
-import { captureHoldWords, SessionEngine, startFromBase, WorktreeReads } from "@mend/sessions";
+import {
+  captureHoldWords,
+  SessionEngine,
+  startFromBase,
+  WorktreeReads,
+  stampLabel,
+  type RawView,
+} from "@mend/sessions";
 import { type DiffFileFact, isWorktreeRelativePath, Store } from "@mend/store";
 import { Clock, Context, Duration, Effect, Stream } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -55,21 +62,31 @@ const rawFile = (
     readonly path: string;
     readonly within?: string | undefined;
     readonly at?: CheckpointId | undefined;
+    readonly capture?: string | undefined;
   },
 ) =>
   Effect.gen(function* () {
     const worktree = yield* (yield* ProjectAccess)
       .worktree(id)
       .pipe(Effect.mapError(() => new WorktreeNotFound({ id })));
+    if (query.at !== undefined && query.capture !== undefined)
+      return yield* new RawFileNotFound({});
+    let view: RawView =
+      query.capture === undefined
+        ? { kind: "current" }
+        : { kind: "capture", captureId: query.capture };
     if (query.at !== undefined) {
-      const chain = yield* (yield* CheckpointsRepo).listForWorktree(worktree.id);
-      if (
-        !chain.some(
-          (checkpoint) => checkpoint.id === query.at && checkpoint.worktreeId === worktree.id,
-        )
-      )
-        return yield* new RawFileNotFound({});
-      return yield* new RawFileUnavailable({ mode: "checkpoint" });
+      const checkpoints = yield* CheckpointsRepo;
+      const chain = yield* checkpoints.listForWorktree(worktree.id);
+      const checkpoint = chain.find(
+        (item) => item.id === query.at && item.worktreeId === worktree.id,
+      );
+      if (checkpoint === undefined) return yield* new RawFileNotFound({});
+      view = {
+        kind: "checkpoint",
+        commit: checkpoint.sha,
+        captureId: yield* checkpoints.captureIdOf(checkpoint.id, worktree.id),
+      };
     }
     const request = yield* HttpServerRequest.HttpServerRequest;
     // The one way to end a body whose headers went out: Node's adapter would end it short, and a
@@ -84,11 +101,12 @@ const rawFile = (
       .openRawFile(worktree.projectId, worktree.id, {
         path: query.path,
         within: query.within ?? "",
+        view,
       })
       .pipe(
         Effect.mapError((error) =>
-          error.reason === "captured"
-            ? new RawFileUnavailable({ mode: "captured" })
+          error.reason === "preparing"
+            ? new RawFilePreparing({})
             : error.reason === "too-large"
               ? new RawFileTooLarge({})
               : new RawFileNotFound({}),
@@ -102,6 +120,12 @@ const rawFile = (
       "x-mend-file-revision": file.revision,
       "x-mend-file-identity": file.identity,
       "content-length": String(file.size),
+      ...(file.stamp?.source === "capture" && file.stamp.captureId !== null
+        ? {
+            "x-mend-capture-id": file.stamp.captureId,
+            "x-mend-observation": stampLabel(file.stamp),
+          }
+        : {}),
     };
     let offset = 0;
     let length = file.size;

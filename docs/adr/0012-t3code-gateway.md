@@ -174,11 +174,15 @@ Three additive read endpoints:
 - `GET /api/worktrees/:id/diff?from=&to=`, a checkpoint-range diff over the existing
   `WorktreeReads.diffRange` and `diffFileFacts` (`packages/sessions/src/worktree-reads.ts:115-128`).
 - A worktree file read for `projects.readFile` and content search.
-- Added 2026-10-24, decision 6: `GET|HEAD /api/worktrees/:id/raw?path=&within=&at=` streams current
-  co-located worktree files, including single byte ranges. The store opens a contained descriptor
-  and applies `within` to its resolved path. Captured worktrees and known checkpoints return typed
-  409 refusals until their raw reads exist; unknown or foreign checkpoints return 404. The gateway
-  owns asset grants under ADR 0004's dated decision A, including chat images.
+- Added 2026-10-24, decision 6: `GET|HEAD /api/worktrees/:id/raw?path=&within=&at=&capture=` streams
+  worktree files, including single byte ranges. Co-located current reads use a contained descriptor.
+  Part 1b serves captured and checkpoint files from an immutable disk cache. `capture` pins an
+  observation and is mutually exclusive with `at`; checkpoints use their retained historical
+  capture. Unknown or foreign checkpoints, and missing historical evidence, return 404. Response
+  headers identify the capture and its observation. Minting waits about ten seconds, then
+  `RawFilePreparing` returns 503 while preparation continues. Unpacked files are capped at 2 GiB,
+  with an 8 GiB cache that never evicts open files. No byte budget is added. The gateway owns asset
+  grants under ADR 0004's dated decision A, including chat images.
 
 Checkpoints stay unlinked to turns; the gateway correlates them by session and time, and says so
 when sessions share a worktree.
@@ -239,7 +243,7 @@ and keeps the device token it gets back.
 ## Consequences
 
 - t3code users can use Mend without a fork, through t3code's own remote-environment flow.
-- Mend core is untouched through phase 2. Phase 3 adds two read endpoints.
+- Mend core is untouched through phase 2. Phase 3 adds three read endpoints.
 - Mid-turn steering, per-turn model changes, rollback and fork are off in t3code because Mend has no
   equivalent; the capability flags say so instead of failing. A model or reasoning effort waits for
   the launch a message makes once the agent has stopped.

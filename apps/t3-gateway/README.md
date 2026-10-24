@@ -532,12 +532,19 @@ the agent in the session's live workspace (`POST /api/sessions/:id/shell`), reac
 
 ## Current worktree previews
 
-`assets.createUrl` supports `workspace-file` and `media-file` in a visible thread's current,
-co-located worktree. Images, HTML, PDF, video and audio use Mend's authenticated raw file route.
-`projects.readFile` retains its existing text and binary-file response. Captured worktrees and
-checkpoint raw reads return typed 409 refusals from Mend and unavailable previews in t3code. Project
-favicons return t3code's `project-favicon-missing` marker until a default-branch worktree exists.
-Draft files, tool-output images, native app icons and GitHub media remain unavailable.
+`assets.createUrl` supports `workspace-file` and `media-file` in a visible thread's worktree,
+including the default captured store. Images, HTML, PDF, video and audio use Mend's authenticated
+raw file route. A captured mint selects the effective capture, including the verified-head fallback,
+and pins that capture for every fetch, seek and document dependency. Mend returns its capture ID and
+an "observed at capture n" stamp. Files omitted by the capture, including gitignored files,
+return 404. `projects.readFile` retains its existing text and binary-file response. Project favicons
+return t3code's `project-favicon-missing` marker until a default-branch worktree exists.
+
+`GET|HEAD /api/worktrees/:id/raw?path=&within=&at=` also reads checkpoints. Captured checkpoints
+require their retained historical capture; missing evidence never selects current bytes. The
+`capture` selector pins a registered capture of this worktree and cannot be combined with `at`.
+Unknown or foreign checkpoints and unavailable historical evidence return 404. Draft files,
+tool-output images, native app icons and GitHub media remain unavailable.
 
 `src/assets.ts` owns both these URLs and chat-image URLs under ADR 0004's decision A of 2026-10-24.
 Every mint returns a fresh random `ast_` token with the real filename as its last segment. Tokens
@@ -572,9 +579,22 @@ body whose reader takes no chunk for 30 seconds, such as a paused video, has its
 which stops Mend's read and frees the slot; a player that resumes asks for its range again. A
 device's session keeps the three newest URLs of each file or image, and a newer mint retires the
 oldest, so a thread's re-mints never fill the device's 4,096 grants (16,384 in all, 16 MiB of grant
-records). Raw worktree bytes stream with backpressure, without a whole-file buffer. There is no
-raw-file size cap, disk cache or cumulative byte budget in this change. Mend bounds raw reads on its
-side too (`accountRawReads`, `rawReads`, docs/operations/budgets.md).
+records). Raw worktree bytes stream with backpressure, without a whole-file buffer. There is no byte
+budget. Mend bounds raw reads on its side too (`accountRawReads`, `rawReads`,
+docs/operations/budgets.md).
+
+For captured and checkpoint files, Mend unpacks at most 2 GiB per file into
+`<MEND_STORE_ROOT>/_cache/raw`. The disk cache holds at most 8 GiB, including write reservations,
+and evicts the least recently used files that no stream holds open. It admits two unpackers at a
+time, deduplicates by repository and blob ID, and publishes verified bytes by atomic rename from
+unique temporary files. Startup removes crashed temporary files. Warm opens and seeks use the cached
+descriptor without Git, capture preparation or a project lock.
+
+Minting waits about ten seconds for preparation. Mend then answers `RawFilePreparing` with 503, and
+t3code shows an unavailable preview while preparation continues. Opening again once ready succeeds
+without repeating the unpack. Oversized files answer `RawFileTooLarge` with 413. Neither refusal
+changes the gateway's plain 404 response for failed asset fetches. Co-located current files retain
+their live descriptor reads without an unpacked-file size cap.
 
 `test/raw-assets.test.ts` exercises the RPC handlers and HTTP routes in process, with real device
 authentication, SQLite grant ownership and Mend response decoding. It covers exact binary bytes,

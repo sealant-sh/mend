@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { pipeline } from "node:stream/promises";
 
 import { Sha } from "@mend/domain";
+import type { Scope } from "effect";
 import { Clock, Effect, Layer, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
@@ -41,6 +42,7 @@ import {
   type RemoteBranchState,
   writeLandingCommit,
 } from "./landing.ts";
+import type { OpenRawFile, RawReadError, RawBlobTarget } from "./raw-file.ts";
 import {
   type ChangedFile,
   type DiffFileFact,
@@ -187,6 +189,15 @@ export class GitOpsRunner extends Context.Service<
       ref: string,
       limit: number,
     ) => Effect.Effect<FileListing, GitError>;
+    readonly prepareRawBlobFile: (
+      cache: RunnerCache,
+      target: RawBlobTarget,
+    ) => Effect.Effect<void, RawReadError>;
+    /** Immutable raw bytes from the prepared repository, without taking the project lock. */
+    readonly openRawBlobFile: (
+      cache: RunnerCache,
+      target: RawBlobTarget,
+    ) => Effect.Effect<OpenRawFile, RawReadError, Scope.Scope>;
     /** The start of one file of `ref`'s tree (`Store.readBlob`); null when none is there. */
     readonly readBlob: (
       cache: RunnerCache,
@@ -833,6 +844,8 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         changedFiles,
         listTreeFiles,
         readBlob,
+        prepareRawBlobFile: (cache, target) => store.prepareRawBlobFile(cache.path, target),
+        openRawBlobFile: (cache, target) => store.openRawBlobFile(cache.path, target),
         grep,
         headSha,
         listBranches,

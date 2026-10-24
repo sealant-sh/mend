@@ -34,11 +34,11 @@ export class WorktreeNotFound extends Schema.TaggedError<WorktreeNotFound>()(
   { httpApiStatus: 404 },
 ) {}
 
-/** Raw bytes are currently available only from co-located current files. */
-export class RawFileUnavailable extends Schema.TaggedError<RawFileUnavailable>()(
-  "RawFileUnavailable",
-  { mode: Schema.Literals(["captured", "checkpoint"]) },
-  { httpApiStatus: 409 },
+/** The bounded preparation wait elapsed; preparation continues for the next open. */
+export class RawFilePreparing extends Schema.TaggedError<RawFilePreparing>()(
+  "RawFilePreparing",
+  {},
+  { httpApiStatus: 503 },
 ) {}
 
 export class RawFileNotFound extends Schema.TaggedError<RawFileNotFound>()(
@@ -57,21 +57,24 @@ const rawQuery = {
   path: Schema.String,
   within: Schema.optional(Schema.String),
   at: Schema.optional(CheckpointId),
+  capture: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))),
 };
 const rawMetadata = {
+  "x-mend-capture-id": Schema.optional(Schema.String),
+  "x-mend-observation": Schema.optional(Schema.String),
   "content-length": Schema.String,
   "accept-ranges": Schema.Literal("bytes"),
   /** Percent-encoded canonical worktree-relative path of the opened descriptor. */
   "x-mend-file-path": Schema.String,
-  /** Changes with the file's contents or identity (device, inode, size, times). */
+  /** Opaque content revision: blob identity for immutable reads, stat fingerprint for live files. */
   "x-mend-file-revision": Schema.String,
-  /** The file's device and inode: kept through an in-place edit, new for a replacement. */
+  /** Live device/inode identity, or the immutable blob revision. */
   "x-mend-file-identity": Schema.String,
 };
 const rawErrors = [
   WorktreeNotFound,
   RawFileNotFound,
-  RawFileUnavailable,
+  RawFilePreparing,
   RawFileTooLarge,
   BudgetExceeded,
 ] as const;

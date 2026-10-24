@@ -229,6 +229,7 @@ type Source =
   | {
       readonly kind: "file";
       readonly worktreeId: string;
+      readonly captureId: string | null;
       /** The canonical worktree-relative path the grant was minted for. */
       readonly path: Redacted.Redacted<string>;
       readonly preview: "workspace" | "media";
@@ -343,6 +344,7 @@ export const AssetUrlsLive: Layer.Layer<
                 kind: "file",
                 worktreeId: subject.worktreeId,
                 path: file.canonicalPath,
+                captureId: file.captureId,
                 preview: subject.preview,
                 // As t3code: only a workspace document opens its directory; a media file is exact.
                 extent:
@@ -469,6 +471,7 @@ export const AssetUrlsLive: Layer.Layer<
           const file: MendRawFile = yield* opened(session, source.worktreeId, {
             path: Redacted.make(name),
             within: Redacted.make(directory),
+            captureId: source.captureId,
             method: input.method,
             range:
               ranges && input.method === "GET" && input.ifRange === undefined
@@ -485,7 +488,11 @@ export const AssetUrlsLive: Layer.Layer<
               : withinDirectory(canonical, directory)
                 ? dependency(directory === "" ? canonical : canonical.slice(directory.length + 1))
                 : null;
-          if (type === null || (!ranges && file.status !== 200))
+          if (
+            type === null ||
+            file.captureId !== source.captureId ||
+            (!ranges && file.status !== 200)
+          )
             return yield* new AssetUnavailable({});
           const headers = headersFor(type.contentType, type.csp);
           headers["content-length"] = String(file.length);

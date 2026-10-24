@@ -18,6 +18,7 @@ const BYTES = Uint8Array.from({ length: 256 }, (_, i) => i);
 const withGateway = <A, E, R>(
   test: (mend: FakeMend, logs: string[]) => Effect.Effect<A, E, R>,
   limits: Partial<AssetLimits> = {},
+  node = false,
 ) =>
   withAssetHarness(
     (mend, logs) =>
@@ -50,6 +51,7 @@ const withGateway = <A, E, R>(
         return yield* test(mend, logs);
       }),
     limits,
+    node,
   );
 const resource = (name: string, kind: "workspace-file" | "media-file" = "workspace-file") => ({
   _tag: kind,
@@ -367,30 +369,33 @@ const readOverSocket = (url: string) =>
   });
 
 it.live("resets the socket when Mend's body fails after the gateway sent its headers", () =>
-  withGateway((mend) =>
-    Effect.gen(function* () {
-      const { rpc } = yield* pairAndConnect(mend, "RESET");
-      for (const [name, kind] of [
-        ["broken.mp4", "media-file"],
-        ["broken.png", "workspace-file"],
-      ] as const) {
-        mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
-          bytes: BYTES,
-          canonicalPath: name,
-          size: 1024 * 1024,
-          failAfter: 64 * 1024,
-        });
-        const url = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(name, kind) });
-        const seen = yield* readOverSocket(`${mend.nodeOrigin}${url.relativeUrl}`);
-        assert.strictEqual(seen.status, 200, name);
-        assert.strictEqual(seen.length, 1024 * 1024, name);
-        assert.isBelow(seen.received, 1024 * 1024, name);
-        assert.strictEqual(seen.outcome, "reset", name);
-      }
-      const whole = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") });
-      const seen = yield* readOverSocket(`${mend.nodeOrigin}${whole.relativeUrl}`);
-      assert.deepStrictEqual(seen, { status: 200, length: 256, received: 256, outcome: "end" });
-    }),
+  withGateway(
+    (mend) =>
+      Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "RESET");
+        for (const [name, kind] of [
+          ["broken.mp4", "media-file"],
+          ["broken.png", "workspace-file"],
+        ] as const) {
+          mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+            bytes: BYTES,
+            canonicalPath: name,
+            size: 1024 * 1024,
+            failAfter: 64 * 1024,
+          });
+          const url = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(name, kind) });
+          const seen = yield* readOverSocket(`${mend.nodeOrigin}${url.relativeUrl}`);
+          assert.strictEqual(seen.status, 200, name);
+          assert.strictEqual(seen.length, 1024 * 1024, name);
+          assert.isBelow(seen.received, 1024 * 1024, name);
+          assert.strictEqual(seen.outcome, "reset", name);
+        }
+        const whole = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") });
+        const seen = yield* readOverSocket(`${mend.nodeOrigin}${whole.relativeUrl}`);
+        assert.deepStrictEqual(seen, { status: 200, length: 256, received: 256, outcome: "end" });
+      }),
+    {},
+    true,
   ),
 );
 
@@ -795,5 +800,6 @@ it.live("resets a reader that stops taking bytes, which stops Mend's read and fr
         agent.destroy();
       }),
     { reads: { total: 4, perKey: 1, queue: 4 }, stall: Duration.millis(300) },
+    true,
   ),
 );
