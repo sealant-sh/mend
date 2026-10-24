@@ -483,7 +483,7 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
               .pipe(Effect.map((value) => ({ value, stamp: ready.stamp }))),
           ),
         ),
-      openRawFile: () => Effect.fail(new RawReadError({ reason: "missing" })),
+      openRawFile: () => Effect.fail(new RawReadError({ reason: "captured" })),
       // The worktree as it stands is the head capture's tree.
       readFile: (projectId, worktreeId, relative, at, maxBytes) =>
         prepared(projectId, worktreeId).pipe(

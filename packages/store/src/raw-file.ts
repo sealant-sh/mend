@@ -1,8 +1,11 @@
 import { Schema, type Stream } from "effect";
 
-/** Raw reads report no filesystem paths or underlying I/O errors. */
+/**
+ * Raw reads report no filesystem paths or underlying I/O errors. `captured`: the worktree's
+ * files live in captures, which raw reads do not open yet.
+ */
 export class RawReadError extends Schema.TaggedError<RawReadError>()("RawReadError", {
-  reason: Schema.Literals(["missing", "io", "too-large"]),
+  reason: Schema.Literals(["missing", "io", "too-large", "captured"]),
 }) {}
 
 /** One descriptor, held by the caller's scope through body consumption. */

@@ -37,7 +37,7 @@ import {
 import type { CheckpointId, WorktreeId } from "@mend/domain";
 import { currentAgentProcess, heldRepositoriesRefusal } from "@mend/domain/workbench";
 import { captureHoldWords, SessionEngine, startFromBase, WorktreeReads } from "@mend/sessions";
-import { type DiffFileFact, DeploymentConfig, isWorktreeRelativePath, Store } from "@mend/store";
+import { type DiffFileFact, isWorktreeRelativePath, Store } from "@mend/store";
 import { Clock, Duration, Effect, Stream } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
@@ -68,8 +68,6 @@ const rawFile = (
         return yield* new RawFileNotFound({});
       return yield* new RawFileUnavailable({ mode: "checkpoint" });
     }
-    if ((yield* DeploymentConfig).sessionStore === "captured")
-      return yield* new RawFileUnavailable({ mode: "captured" });
     const request = yield* HttpServerRequest.HttpServerRequest;
     const params = new URL(request.url, "http://mend.internal").searchParams;
     if (["path", "within", "at"].some((key) => params.getAll(key).length > 1))
@@ -81,7 +79,11 @@ const rawFile = (
       })
       .pipe(
         Effect.mapError((error) =>
-          error.reason === "too-large" ? new RawFileTooLarge({}) : new RawFileNotFound({}),
+          error.reason === "captured"
+            ? new RawFileUnavailable({ mode: "captured" })
+            : error.reason === "too-large"
+              ? new RawFileTooLarge({})
+              : new RawFileNotFound({}),
         ),
       );
     const headers: Record<string, string> = {

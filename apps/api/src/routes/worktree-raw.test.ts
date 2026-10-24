@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { CheckpointId, SequenceNumber, Sha } from "@mend/domain";
 import { Checkpoint } from "@mend/domain/workbench";
-import { Store, StoreConfig } from "@mend/store";
+import { RawReadError, Store, StoreConfig } from "@mend/store";
 import { Effect, Layer, type Tracer } from "effect";
 import { afterAll, beforeAll, expect, it } from "vitest";
 
@@ -161,8 +161,16 @@ it("refuses a known checkpoint with typed 409 and hides unknown or foreign check
   expect((await get("path=data.bin&at=unknown")).status).toBe(404);
   expect((await get("path=data.bin&at=checkpoint-foreign")).status).toBe(404);
 });
-it("refuses captured reads immediately with typed 409 without preparing a capture", async () => {
-  const captured = await createTenancyApi({}, { sessionStore: "captured" });
+it("answers the captured layer's refusal as a typed 409", async () => {
+  const captured = await createTenancyApi(
+    {},
+    {
+      sessionStore: "captured",
+      implement: {
+        reads: { openRawFile: () => Effect.fail(new RawReadError({ reason: "captured" })) },
+      },
+    },
+  );
   try {
     const response = await captured.request(
       "alice",
@@ -171,7 +179,6 @@ it("refuses captured reads immediately with typed 409 without preparing a captur
     );
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ _tag: "RawFileUnavailable", mode: "captured" });
-    expect(captured.world.calls.filter((call) => call.startsWith("reads."))).toEqual([]);
   } finally {
     await captured.dispose();
   }
