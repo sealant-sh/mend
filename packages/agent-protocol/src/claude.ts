@@ -846,7 +846,7 @@ export const ClaudeAdapter: AgentAdapter = {
       // A Mend that restarted re-asks Claude for its background tasks (decision 6): a repeated
       // `initialize` is answered with the current set, which the replay of the recorded output
       // has already rebuilt for a CLI that does not send it.
-      if (rehydrate !== undefined && options.steering === true) {
+      if (rehydrate !== undefined && options.sharedControl === true) {
         const reinitialize: ClaudeControlRequest = {
           type: "control_request",
           request_id: crypto.randomUUID(),

@@ -70,7 +70,7 @@ export interface AgentStartOptions {
    * Codex asks for the experimental API (`thread/resume { path }`, background terminals, goals),
    * and a Claude rehydrated after a restart is asked for its live background tasks again.
    */
-  readonly steering?: boolean | undefined;
+  readonly sharedControl?: boolean | undefined;
   /** Synchronous event projection hook; completion means the event is durable. */
   readonly onEvent?: ((event: AgentEvent) => Effect.Effect<void>) | undefined;
   /** Present only when re-attaching to a surviving pipe after a Mend restart. */

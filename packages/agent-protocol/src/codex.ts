@@ -609,7 +609,7 @@ export const CodexAdapter: AgentAdapter = {
         // it (docs/adr/0016, decision 6); asked for only where a person's process needs them.
         yield* request("initialize", {
           clientInfo: { name: "mend", version: "0.0.0" },
-          ...(options.steering === true || options.providerSessionPath !== undefined
+          ...(options.sharedControl === true || options.providerSessionPath !== undefined
             ? { capabilities: { experimentalApi: true } }
             : {}),
         });
@@ -814,7 +814,7 @@ export const CodexAdapter: AgentAdapter = {
        */
       let reports: boolean | null =
         rehydrate === undefined
-          ? options.steering === true || options.providerSessionPath !== undefined
+          ? options.sharedControl === true || options.providerSessionPath !== undefined
           : null;
       const reportsBackgroundWork = (): Effect.Effect<boolean> =>
         Effect.suspend(() => {
