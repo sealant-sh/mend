@@ -15,13 +15,14 @@ import { ids } from "../../test/support/tenancy-harness.ts";
 const worktree = ids("private-alice").worktree;
 let api: TenancyApi;
 let root: string;
+let store: Store["Service"];
 const bytes = Uint8Array.from({ length: 256 }, (_, i) => i);
 beforeAll(async () => {
   root = fs.mkdtempSync(join(tmpdir(), "mend-raw-http-"));
   fs.writeFileSync(join(root, "data.bin"), bytes);
   fs.writeFileSync(join(root, "empty.bin"), "");
   fs.symlinkSync("/etc/passwd", join(root, "escape.bin"));
-  const store = await Effect.runPromise(
+  store = await Effect.runPromise(
     Effect.provide(Store, Store.layer.pipe(Layer.provide(StoreConfig.layerFor(root)))),
   );
   const checkpoint = new Checkpoint({
@@ -176,16 +177,49 @@ it("refuses captured reads immediately with typed 409 without preparing a captur
   }
 });
 
-it("does not log or trace raw paths, even when query decoding fails", async () => {
+it("does not log or trace raw paths, in any spelling the router accepts, even when query decoding fails", async () => {
   const logs: string[] = [];
   const spans: Tracer.Span[] = [];
-  const logged = await createTenancyApi({}, { logs, spans, sessionStore: "colocated" });
+  fs.writeFileSync(join(root, "private-file-needle.png"), bytes);
+  const logged = await createTenancyApi(
+    {},
+    {
+      logs,
+      spans,
+      sessionStore: "colocated",
+      implement: {
+        reads: {
+          openRawFile: (_project, _worktree, target) =>
+            store.openRawWorktreeFile(root, target.path, target.within),
+        },
+      },
+    },
+  );
   try {
-    await logged.request(
+    for (const route of [
+      `/api/worktrees/${worktree}/raw`,
+      `/api/worktrees/${worktree}/raw/`,
+      `/api//worktrees/${worktree}/raw`,
+      `/API/Worktrees/${worktree}/RAW`,
+      `/api/worktrees/${worktree}/r%61w`,
+    ]) {
+      const found = await logged.request("alice", "GET", `${route}?path=private-file-needle.png`);
+      expect(found.status, route).toBe(200);
+      await found.arrayBuffer();
+      const missing = await logged.request(
+        "alice",
+        "GET",
+        `${route}?path=private-file-needle.gif&within=private-directory-needle`,
+      );
+      expect(missing.status, route).toBe(404);
+    }
+    // The router ends the path at `;`; the query no longer decodes, but the route still matched.
+    const parameter = await logged.request(
       "alice",
       "GET",
-      `/api/worktrees/${worktree}/raw?path=private-file-needle.png`,
+      `/api/worktrees/${worktree}/raw;v=1?path=private-file-needle.png`,
     );
+    expect(parameter.status).toBe(400);
     await logged.request(
       "alice",
       "HEAD",
@@ -197,17 +231,18 @@ it("does not log or trace raw paths, even when query decoding fails", async () =
     const traces = JSON.stringify(spans.map((span) => [span.name, [...span.attributes]]));
     expect(traces).not.toContain("private-file-needle");
     expect(traces).not.toContain("private-directory-needle");
-    expect(traces).not.toContain("/raw");
+    expect(traces.toLowerCase()).not.toMatch(/\/r(aw|%61w)/);
     expect(
       logs.filter(
         (line) =>
           line.includes("private-file-needle") ||
           line.includes("private-directory-needle") ||
-          line.includes("/raw"),
+          /\/r(aw|%61w)/i.test(line),
       ),
     ).toEqual([]);
   } finally {
     await logged.dispose();
+    fs.rmSync(join(root, "private-file-needle.png"));
   }
 });
 
