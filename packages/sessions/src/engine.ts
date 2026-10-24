@@ -117,6 +117,13 @@ import {
   type EffortLevel,
   type LaunchStart,
   PERMISSION_MODES,
+  type PermissionMode,
+  composeLaunchArgv,
+  lastPermission,
+  lastPermissionMode,
+  permissionArgs,
+  permissionFlagsIn,
+  withPermissionDefaults,
   SPEED_MODES,
   ProtocolHarnessUnsupportedError,
   composeProtocolArgv,
@@ -174,7 +181,6 @@ import {
   executorHostStoppedWords,
   HOST_DOCKER_STOPPED,
   observeCaptureThroughput,
-  OPENCODE_PERMISSION_ALLOW,
   planExecutorCap,
   AGENT_MEMORY_FILES,
   AGENT_MEMORY_ROOTS,
@@ -194,6 +200,7 @@ import {
   WorkspaceRetirement,
   WorkspaceRetirementStop,
   noResumeLine,
+  PROMPTABLE_HARNESSES,
   resumesOwnHarness,
 } from "@mend/domain/workbench";
 import { makeWindowLimiter } from "@mend/network";
@@ -712,7 +719,11 @@ const secretFilesNotSetAside = (why: string) =>
 const promptArgv = (
   harness: string,
   prompt: string,
-  options: { readonly model: string | null; readonly effort: EffortLevel | null } = {
+  options: {
+    readonly model: string | null;
+    readonly effort: EffortLevel | null;
+    readonly permissionMode?: PermissionMode | undefined;
+  } = {
     model: null,
     effort: null,
   },
@@ -722,14 +733,15 @@ const promptArgv = (
     options.effort === null || !(HARNESS_EFFORTS[harness] ?? []).includes(options.effort)
       ? null
       : options.effort;
+  const permission = options.permissionMode ?? "bypass";
   const command = (() => {
     switch (harness) {
       case "claude":
-        return `exec claude --dangerously-skip-permissions${model}${effort === null ? "" : ` --effort ${effort}`} "$prompt"`;
+        return `exec claude ${permissionArgs("claude", permission).flags.join(" ")}${model}${effort === null ? "" : ` --effort ${effort}`} "$prompt"`;
       case "codex":
-        return `exec codex ${CODEX_SHELL_SNAPSHOT_OFF.join(" ")} ${CODEX_DAEMON_OFF.join(" ")} -c features.memories=true --dangerously-bypass-approvals-and-sandbox${model}${effort === null ? "" : ` -c model_reasoning_effort=${effort}`} "$prompt"`;
+        return `exec codex ${CODEX_SHELL_SNAPSHOT_OFF.join(" ")} ${CODEX_DAEMON_OFF.join(" ")} -c features.memories=true ${permissionArgs("codex", permission).flags.join(" ")}${model}${effort === null ? "" : ` -c model_reasoning_effort=${effort}`} "$prompt"`;
       case "opencode":
-        return `exec env '${OPENCODE_PERMISSION_ALLOW}' opencode${model} --prompt "$prompt"`;
+        return `exec env ${shellWord(permissionArgs("opencode", permission).env)} opencode${model} --prompt "$prompt"`;
       case "pi":
         return `exec pi --approve${model}${effort === null ? "" : ` --thinking ${effort}`} "$prompt"`;
       default:
@@ -1024,39 +1036,6 @@ const launchEndWords = (error: unknown): string =>
 /** A steerer's refusal, in a steerer's words ("Connect Claude to steer this session."). */
 const steerWords = (message: string) =>
   message.replace("to start a session here.", "to steer this session.");
-
-const withPermissionDefaults = (
-  harness: string,
-  argv: ReadonlyArray<string>,
-): ReadonlyArray<string> => {
-  const [head, ...rest] = argv;
-  if (harness === "claude" && head === "claude" && !argv.includes("--permission-mode")) {
-    return argv.includes("--dangerously-skip-permissions")
-      ? argv
-      : ["claude", "--dangerously-skip-permissions", ...rest];
-  }
-  if (harness === "codex" && head === "codex" && !argv.includes("--sandbox")) {
-    return argv.includes("--dangerously-bypass-approvals-and-sandbox")
-      ? argv
-      : ["codex", "--dangerously-bypass-approvals-and-sandbox", ...rest];
-  }
-  // opencode reads its permissions from the environment; an argv that sets them itself (`env …`,
-  // the composed `ask`) is left alone.
-  if (harness === "opencode" && head === "opencode") {
-    return ["env", OPENCODE_PERMISSION_ALLOW, ...argv];
-  }
-  // pi asks nothing per tool call; it does ask whether to trust the repository's own `.pi`
-  // resources, which the user decided when they adopted it.
-  if (
-    harness === "pi" &&
-    head === "pi" &&
-    !argv.includes("--approve") &&
-    !argv.includes("--no-approve")
-  ) {
-    return ["pi", "--approve", ...rest];
-  }
-  return argv;
-};
 
 /**
  * The harness's argv with its permission defaults, behind its first-run seed (`harness-seeds.ts`:
@@ -18999,13 +18978,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ...(session.effort === null ? {} : { effort: session.effort }),
               }
             : requested;
-        // A continuation that names no permission mode keeps the one its last protocol agent
-        // recorded: a session that asked for approval comes back asking. A first launch, or one
-        // after a terminal agent, has none recorded and runs on the default.
-        const recordedPermissionMode =
-          previous?.kind === "agent-protocol"
-            ? previous.protocolOptions?.permissionMode
-            : undefined;
+        const recordedPermissionMode = lastPermissionMode(rows);
         const start: LaunchStart =
           requested.permissionMode === undefined && recordedPermissionMode !== undefined
             ? { ...withModel, permissionMode: recordedPermissionMode }
@@ -19358,14 +19331,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* refreshChangeHead(session).pipe(Effect.ignore);
         return checkpoint;
       });
-
-      /** Default argv per harness — what a resume launches. */
-      const HARNESS_ARGV: Record<string, ReadonlyArray<string>> = {
-        claude: ["claude"],
-        codex: ["codex"],
-        opencode: ["opencode"],
-        pi: ["pi"],
-      };
 
       const ACTIVE_STATUSES = new Set(["starting", "running", "waiting", "idle"]);
 
@@ -20329,6 +20294,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         forcePty = false,
         // Mode switch: the agent it ended held the current workspace; the TUI starts there.
         handedOver = false,
+        // Mode switch: a permission mode it names wins over the one the session last ran with.
+        requestedPermissionMode: PermissionMode | undefined = undefined,
       ) {
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
@@ -20396,7 +20363,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
         }
         const target = harness ?? session.harness;
-        const priorAgent = currentAgentProcess(yield* processes.listForSession(sessionId));
+        const rows = yield* processes.listForSession(sessionId);
+        const priorAgent = currentAgentProcess(rows);
         if (!forcePty && priorAgent?.kind === "agent-protocol" && target === session.harness) {
           return yield* launchProtocol(
             sessionId,
@@ -20442,12 +20410,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? launchInRetainedWorkspace(sessionId, agentLaunch(["bash"]))
             : launchInternal(sessionId, agentLaunch(["bash"], { state: located }));
         }
-        const defaultArgv = HARNESS_ARGV[target];
-        if (defaultArgv === undefined) {
+        if (!PROMPTABLE_HARNESSES.has(target)) {
           return yield* new SealantPlatformError({
             code: "unknown_harness",
             status: null,
-            message: `Unknown harness "${target}" — resumable harnesses: ${Object.keys(HARNESS_ARGV).join(", ")}, shell.`,
+            message: `Unknown harness "${target}" — resumable harnesses: ${[...PROMPTABLE_HARNESSES].join(", ")}, shell.`,
             cause: null,
           });
         }
@@ -20468,7 +20435,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
         const { stateDir, manifest } = located;
-        let argv = defaultArgv;
+        const recorded = lastPermission(rows);
+        const permissionMode = requestedPermissionMode ?? recorded?.mode;
+        const source = recorded?.process;
+        // The same harness's terminal comes back with the permission it ran with, verbatim: a
+        // `plan` or `read-only` is more than ask or bypass can say.
+        let argv =
+          requestedPermissionMode === undefined &&
+          source?.kind === "agent-pty" &&
+          source.harness === target &&
+          (target === "claude" || target === "codex")
+            ? [target, ...permissionFlagsIn(target, source.argv)]
+            : composeLaunchArgv(target, { permissionMode });
         let nativeImport: ConvertedNativeSession | null = null;
         if (
           manifest.harness === target &&
@@ -20520,7 +20498,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 cause: new Error("no convertible transcript turns"),
               });
             }
-            const openingArgv = promptArgv(target, distillOpeningPrompt(manifest.harness, turns));
+            const openingArgv = promptArgv(target, distillOpeningPrompt(manifest.harness, turns), {
+              model: null,
+              effort: null,
+              permissionMode,
+            });
             if (openingArgv === null) {
               return yield* new HarnessStateInvalidError({
                 sessionId,
@@ -20531,7 +20513,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             argv = openingArgv;
           } else {
-            argv = nativeImport.resumeArgv;
+            argv =
+              permissionMode === "ask" && (target === "claude" || target === "codex")
+                ? [...nativeImport.resumeArgv, ...permissionArgs(target, "ask").flags]
+                : nativeImport.resumeArgv;
             yield* sessions.setProviderSessionId(sessionId, nativeImport.providerSessionId);
           }
         }
@@ -21131,6 +21116,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           false,
           true,
           handedOver !== null && handedOver.sealantWorkspaceId === session.sealantWorkspaceId,
+          start.permissionMode,
         ).pipe(
           Effect.catchTag("HarnessStateNotFoundError", () =>
             Effect.fail(
