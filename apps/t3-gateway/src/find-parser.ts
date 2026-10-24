@@ -1,6 +1,7 @@
 import { extname } from "node:path";
 import { Worker } from "node:worker_threads";
 
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -46,9 +47,21 @@ const WORKER_ENTRY = new URL(
 
 const asWritten = ({ text }: ParseRequest): ReadonlyArray<string> => [text];
 
+type Answer = (exit: Exit.Exit<ReadonlyArray<string>, unknown>) => void;
+
+/** Idle in the pool, taken by a parse, waiting for that parse's answer, or gone for good. */
+type PooledState =
+  | { readonly _tag: "idle"; readonly timer: ReturnType<typeof setTimeout> }
+  | { readonly _tag: "taken" }
+  | { readonly _tag: "waiting"; readonly answer: Answer }
+  | { readonly _tag: "gone" };
+
 interface PooledWorker extends GatewayWorker {
-  idle: ReturnType<typeof setTimeout> | undefined;
+  state: PooledState;
 }
+
+const taken: PooledState = { _tag: "taken" };
+const gone: PooledState = { _tag: "gone" };
 
 export const findParserLayer = (
   pool: FindParserPool = DEFAULT_FIND_PARSER_POOL,
@@ -59,80 +72,103 @@ export const findParserLayer = (
       const permits = yield* Semaphore.make(pool.workers);
       const idle: Array<PooledWorker> = [];
       const running = new Set<PooledWorker>();
-      const discard = (pooled: PooledWorker): Effect.Effect<void> =>
-        Effect.sync(() => {
-          clearTimeout(pooled.idle);
-          const at = idle.indexOf(pooled);
-          if (at !== -1) idle.splice(at, 1);
-        }).pipe(
-          Effect.andThen(pooled.stop),
-          Effect.andThen(Effect.sync(() => running.delete(pooled))),
-          Effect.asVoid,
-        );
+      /** The only way to `gone`: it leaves the pool, fails a waiting parse, and stops once. */
+      const retire = (pooled: PooledWorker, cause: unknown): Effect.Effect<void> =>
+        Effect.suspend(() => {
+          const was = pooled.state;
+          pooled.state = gone;
+          if (was._tag === "idle") {
+            clearTimeout(was.timer);
+            const at = idle.indexOf(pooled);
+            if (at !== -1) idle.splice(at, 1);
+          } else if (was._tag === "waiting") {
+            was.answer(Exit.fail(cause));
+          }
+          return pooled.stop.pipe(Effect.andThen(Effect.sync(() => running.delete(pooled))));
+        });
+      const answer = (pooled: PooledWorker, exit: Exit.Exit<ReadonlyArray<string>, unknown>) => {
+        const state = pooled.state;
+        if (state._tag !== "waiting") return;
+        pooled.state = taken;
+        state.answer(exit);
+      };
       yield* Effect.addFinalizer(() =>
-        Effect.forEach(running, discard, { concurrency: "unbounded", discard: true }),
+        Effect.forEach(running, (pooled) => retire(pooled, new Error("find closed")), {
+          concurrency: "unbounded",
+          discard: true,
+        }),
       );
-      const take = Effect.suspend((): Effect.Effect<PooledWorker> => {
-        const available = idle.pop();
-        if (available !== undefined) {
-          clearTimeout(available.idle);
-          return Effect.succeed(available);
-        }
-        return startGatewayWorker(
-          () =>
-            new Worker(WORKER_ENTRY, {
-              resourceLimits: { maxOldGenerationSizeMb: pool.heapMiB, codeRangeSizeMb: 64 },
-            }),
-        ).pipe(
-          Effect.map((lease) => {
-            lease.worker.unref();
-            const pooled: PooledWorker = { ...lease, idle: undefined };
-            running.add(pooled);
-            return pooled;
+      const start = Effect.suspend((): Effect.Effect<PooledWorker> => {
+        // Node emits a worker's events from its event loop, so listeners attached beside the
+        // constructor miss none. An exit before the lease is handed out is kept until it is.
+        let pooled: PooledWorker | undefined;
+        let endedEarly: { readonly cause: unknown } | undefined;
+        const ended = (cause: unknown) => {
+          if (pooled === undefined) endedEarly ??= { cause };
+          else Effect.runFork(retire(pooled, cause));
+        };
+        return startGatewayWorker(() => {
+          const worker = new Worker(WORKER_ENTRY, {
+            resourceLimits: { maxOldGenerationSizeMb: pool.heapMiB, codeRangeSizeMb: 64 },
+          });
+          worker.unref();
+          worker.on("message", (segments: ReadonlyArray<string>) => {
+            if (pooled !== undefined) answer(pooled, Exit.succeed(segments));
+          });
+          worker.on("error", ended);
+          worker.on("exit", (code) => ended(new Error(`find's parse worker exited (${code})`)));
+          return worker;
+        }).pipe(
+          Effect.flatMap((lease) => {
+            const leased: PooledWorker = { ...lease, state: taken };
+            pooled = leased;
+            running.add(leased);
+            return endedEarly === undefined
+              ? Effect.succeed(leased)
+              : retire(leased, endedEarly.cause).pipe(Effect.as(leased));
           }),
         );
       });
-      const putBack = (pooled: PooledWorker) => {
-        pooled.idle = setTimeout(() => {
-          Effect.runFork(discard(pooled));
-        }, pool.idleMs);
-        pooled.idle.unref();
-        idle.push(pooled);
-      };
+      const take = Effect.suspend((): Effect.Effect<PooledWorker> => {
+        const available = idle.pop();
+        if (available?.state._tag !== "idle") return start;
+        clearTimeout(available.state.timer);
+        available.state = taken;
+        return Effect.succeed(available);
+      });
+      const putBack = (pooled: PooledWorker) =>
+        Effect.sync(() => {
+          if (pooled.state._tag !== "taken") return;
+          const timer = setTimeout(() => {
+            Effect.runFork(retire(pooled, new Error("find's parse worker idled out")));
+          }, pool.idleMs);
+          timer.unref();
+          pooled.state = { _tag: "idle", timer };
+          idle.push(pooled);
+        });
 
       const parse = (request: ParseRequest) =>
         Effect.acquireUseRelease(
           take,
           (pooled) =>
             Effect.callback<ReadonlyArray<string>, unknown>((resume) => {
-              const settle = () => {
-                pooled.worker.off("message", parsed);
-                pooled.worker.off("error", failed);
-                pooled.worker.off("exit", exited);
-              };
-              const parsed = (segments: ReadonlyArray<string>) => {
-                settle();
-                resume(Effect.succeed(segments));
-              };
-              const failed = (cause: unknown) => {
-                settle();
-                resume(Effect.fail(cause));
-              };
-              const exited = (code: number) =>
-                failed(new Error(`find's parse worker exited (${code})`));
-              pooled.worker.on("message", parsed);
-              pooled.worker.on("error", failed);
-              pooled.worker.on("exit", exited);
+              if (pooled.state._tag !== "taken") {
+                resume(Effect.fail(new Error("find's parse worker exited")));
+                return;
+              }
+              pooled.state = { _tag: "waiting", answer: resume };
               try {
                 // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a worker's port, which has no origin.
                 pooled.worker.postMessage(request);
               } catch (cause) {
-                failed(cause);
+                answer(pooled, Exit.fail(cause));
               }
-              return Effect.sync(settle);
+              return Effect.sync(() => {
+                if (pooled.state._tag === "waiting") pooled.state = taken;
+              });
             }),
           (pooled, exit) =>
-            Exit.isSuccess(exit) ? Effect.sync(() => putBack(pooled)) : discard(pooled),
+            Exit.isSuccess(exit) ? putBack(pooled) : retire(pooled, Cause.squash(exit.cause)),
         ).pipe(
           Effect.catch((cause) =>
             Effect.logWarning("find read a message as written: its parse failed", { cause }).pipe(
