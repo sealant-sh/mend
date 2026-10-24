@@ -132,23 +132,15 @@ const goldenRecords = [
     threadId: "thread_1",
     title: "Fix login",
   },
-  {
-    version: 1,
-    contextId: "ctx_environment",
-    kind: "environment",
-    label: "Build box",
-    environmentId: "environment_2",
-  },
 ];
 const codec = Schema.toCodecJson(ComposerContextRecord);
 const decode = Schema.decodeUnknownSync(codec);
 const encode = Schema.encodeSync(codec);
 
 describe("local composer JSON wire oracles", () => {
-  it("has an independent golden for all ten pinned known kinds", () => {
+  it("has an independent golden for all nine pinned known kinds", () => {
     expect(goldenRecords.map((record) => record.kind).toSorted()).toEqual([
       "element",
-      "environment",
       "file",
       "image",
       "mention",
@@ -176,6 +168,29 @@ describe("local composer JSON wire oracles", () => {
     const decoded = Schema.decodeUnknownSync(contextCodec)(wire);
     expect(decoded).toEqual(wire);
     expect(Schema.encodeSync(contextCodec)(decoded)).toEqual(wire);
+  });
+
+  it("drops an environment mention from a client of an earlier pin, keeping the rest", () => {
+    const environment = {
+      version: 1,
+      contextId: "ctx_environment",
+      kind: "environment",
+      label: "Build box",
+      environmentId: "environment_2",
+    };
+    const skill = {
+      version: 1,
+      contextId: "ctx_skill",
+      kind: "skill",
+      label: "$review",
+      name: "review",
+    };
+    const contextCodec = Schema.toCodecJson(OrchestrationMessageContext);
+    const decoded = Schema.decodeUnknownSync(contextCodec)({
+      version: 1,
+      records: [environment, skill],
+    });
+    expect(decoded).toEqual({ version: 1, records: [skill] });
   });
 
   it.prop(

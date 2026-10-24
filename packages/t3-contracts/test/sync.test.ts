@@ -35,6 +35,7 @@ const shared = [
   "serverSettings",
   "sourceControl",
   "Struct",
+  "t3McpToolPresentation",
   "threadFindText",
   "threadLinks",
   "threadPullRequests",

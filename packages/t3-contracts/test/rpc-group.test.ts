@@ -24,10 +24,10 @@ const rpc = (tag: string) => {
 };
 
 describe("WsRpcGroup", () => {
-  it("has the pinned tag's 199 methods, 31 of them streams", () => {
-    // ADR 0012 counts these at v0.1.1-preview.20261017.3254. A pin bump that moves them is a
-    // protocol change the gateway has to follow.
-    expect(rpcs.length).toBe(199);
+  it("has the pinned tag's 198 methods, 31 of them streams", () => {
+    // ADR 0012 counts these at v0.1.2. A pin bump that moves them is a protocol change the gateway
+    // has to follow.
+    expect(rpcs.length).toBe(198);
     expect(rpcs.filter((r) => RpcSchema.isStreamSchema(r.successSchema)).length).toBe(31);
   });
 

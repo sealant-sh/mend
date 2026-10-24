@@ -32,7 +32,7 @@ License in `LICENSE` (t3code's own, copied with the files):
   compiler options so they typecheck as upstream does.
 - The package runs on Effect `4.0.5` from the `t3` catalog in `pnpm-workspace.yaml`, apart from the
   rest of the monorepo.
-- To move the pin, run the copy script with a nightly or preview tag, never `main`:
+- To move the pin, run the copy script with a release, nightly or preview tag, never `main`:
 
   ```sh
   pnpm --filter @mend/t3-contracts sync --tag <t3code tag> [--source <t3code checkout>]
