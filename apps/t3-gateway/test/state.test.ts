@@ -155,11 +155,11 @@ describe("stored grants", () => {
           }
         }),
       );
-      // Back to migration 15, so the widening (16) runs on the next open; what migrations 17 and 18
+      // Back to migration 15, so the widening (16) runs on the next open; what migrations 17 to 19
       // added goes too, since they run again after it.
       const old = new DatabaseSync(path);
       old.exec(`
-        ALTER TABLE thread_lifecycles DROP COLUMN last_command_id;
+        DROP TABLE lifecycle_receipts;
         ALTER TABLE queued_messages DROP COLUMN workspace_preparation;
         ALTER TABLE queued_messages DROP COLUMN preparation_failed;
         DROP TABLE queue_preparations;
@@ -243,6 +243,91 @@ const modeOf = (path: string) => statSync(path).mode & 0o777;
  * Spec divergence 1 (t3code-gateway.md): the state file holds every paired person's Mend device
  * token, so only the gateway's own user may read it.
  */
+describe("lifecycle receipts", () => {
+  const snoozed = {
+    settledOverride: null,
+    settledAt: null,
+    unsettledAt: null,
+    snoozedUntil: "2026-10-24T20:00:00.000Z",
+    snoozedAt: "2026-10-24T19:00:00.000Z",
+    lastSnoozeWakeAt: null,
+    pinnedAt: null,
+    pinOrderKey: null,
+    activeOrderKey: null,
+    autoSettleDisabledAt: null,
+  } as const;
+
+  it.effect("keeps a lifecycle a state file kept at migration 18 as it was", () =>
+    Effect.gen(function* () {
+      const path = join(mkdtempSync(join(tmpdir(), "t3-gateway-receipts-")), "state.sqlite");
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const state = yield* openGatewayState(path);
+          yield* state.setLifecycle("user-1", "session-1", snoozed);
+        }),
+      );
+      const old = new DatabaseSync(path);
+      old.exec(`
+        DROP TABLE lifecycle_receipts;
+        ALTER TABLE thread_lifecycles ADD COLUMN last_command_id TEXT;
+        UPDATE thread_lifecycles SET last_command_id = 'command-1';
+        PRAGMA user_version = 18;
+      `);
+      old.close();
+
+      const read = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const state = yield* openGatewayState(path);
+          yield* state.keepLifecycleReceipt("user-1", {
+            commandId: "command-2",
+            sessionId: "session-1",
+            answer: { _tag: "Applied", sequence: 7 },
+          });
+          return {
+            lifecycles: yield* state.listLifecycles("user-1"),
+            receipt: yield* state.lifecycleReceipt("user-1", "command-2"),
+          };
+        }),
+      );
+      assert.deepStrictEqual(read.lifecycles.get("session-1"), snoozed);
+      assert.deepStrictEqual(Option.getOrThrow(read.receipt).answer, {
+        _tag: "Applied",
+        sequence: 7,
+      });
+    }),
+  );
+
+  it.effect("are a person's own, and go with the thread they were for", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const state = yield* openGatewayState(":memory:");
+        yield* state.setLifecycle("user-1", "session-1", snoozed, {
+          commandId: "snooze",
+          sessionId: "session-1",
+          answer: { _tag: "Applied", sequence: 3 },
+        });
+        yield* state.keepLifecycleReceipt("user-1", {
+          commandId: "settle",
+          sessionId: "session-2",
+          answer: { _tag: "Refused", reason: "The thread is archived. Unarchive it first." },
+        });
+        assert.isTrue(Option.isNone(yield* state.lifecycleReceipt("user-2", "snooze")));
+        assert.deepStrictEqual(
+          Option.getOrThrow(yield* state.lifecycleReceipt("user-1", "settle")).answer,
+          { _tag: "Refused", reason: "The thread is archived. Unarchive it first." },
+        );
+
+        // Letting go of the lifecycle keeps its receipts; deleting the thread lets go of them.
+        yield* state.setLifecycle("user-1", "session-1", null);
+        assert.isTrue(Option.isSome(yield* state.lifecycleReceipt("user-1", "snooze")));
+        yield* state.forgetThread("user-1", "session-1");
+        assert.isTrue(Option.isNone(yield* state.lifecycleReceipt("user-1", "snooze")));
+        assert.isTrue(Option.isSome(yield* state.lifecycleReceipt("user-1", "settle")));
+      }),
+    ),
+  );
+});
+
 describe("the state file's permissions", () => {
   it.effect("creates the file 0600 in a directory of its own 0700, WAL files included", () =>
     Effect.scoped(

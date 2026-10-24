@@ -471,11 +471,16 @@ the state file, `src/lifecycle.ts`), and the session in Mend is not touched.
   with `settledAt` and `unsettledAt`, and ends a snooze. A settle is refused while a turn runs, a
   message waits in the queue or a request is open, as t3code's own server refuses it.
 - `thread.snooze` sets `snoozedUntil` and stamps `snoozedAt` again for each new command, the same
-  time too; `thread.unsnooze` clears them. A command the client sends again with the same
-  `commandId` (a retry of one it saw no answer to) is not applied twice, across a restart too: the
-  state file keeps the id of the command that last changed the thread, so a retried snooze never
-  moves `snoozedAt` past a failure that came after it. A snooze ends in the future, and is refused
-  while a request is open or a message waits to be sent. A running thread can be snoozed.
+  time too; `thread.unsnooze` clears them. A snooze ends in the future, and is refused while a
+  request is open or a message waits to be sent. A running thread can be snoozed.
+- Each settle, snooze, pin and order command keeps a receipt by its `commandId`
+  (`lifecycle_receipts` in the state file), as t3code's own server does. A command the client sends
+  again (a retry of one it saw no answer to) gets the answer it first got, its sequence or its
+  refusal, and is not applied again, after other commands and across a restart too. So a retried
+  snooze never moves `snoozedAt` past a failure that came after it. A `commandId` already used for
+  another thread is refused. A receipt is written in the same transaction as the change it answers.
+  Receipts are kept for as long as the thread is, as t3code keeps its own, and go when the thread is
+  deleted through the gateway.
 - A turn opened, or a message queued, after a settle or a snooze ends both, as a new run does on
   t3code's own server; the state file lets go of them too.
 - t3code's client decides when a snooze has woken, from the shell (`threadSettled.ts` in its client

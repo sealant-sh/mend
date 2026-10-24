@@ -33,6 +33,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as RcMap from "effect/RcMap";
 import * as Schedule from "effect/Schedule";
@@ -140,6 +141,7 @@ import {
   type GatewayStateError,
   type BearerSession,
   type LaunchedThread,
+  type LifecycleReceipt,
   type ImagePlacement,
   type SentImage,
   type StoredImage,
@@ -425,6 +427,23 @@ export class ThreadCommandRefused extends Schema.TaggedError<ThreadCommandRefuse
 
 export type ThreadCommandFailure = ThreadCommandRefused | HubReadError;
 
+/** A settle, snooze, pin or order the state file failed on: logged, and refused as not applied. */
+const lifecycleKept = <A>(effect: Effect.Effect<A, GatewayStateError>) =>
+  effect.pipe(
+    Effect.tapError((error) =>
+      Effect.logError("t3 gateway could not keep a settle, snooze, pin or order", {
+        cause: error.message,
+      }),
+    ),
+    Effect.mapError(
+      () =>
+        new ThreadCommandRefused({
+          reason: "The gateway could not keep this, so nothing changed. Try again.",
+          authorization: false,
+        }),
+    ),
+  );
+
 export interface ThreadCommands {
   /**
    * A message for the thread. The gateway queues it and sends it once no turn is open: as a turn
@@ -557,7 +576,10 @@ export interface ThreadCommands {
    * not touched.
    */
   readonly setLifecycle: (input: {
-    /** The client's command: one applied last is not applied again (a client's replay). */
+    /**
+     * The client's command: one sent again (a retry of one it saw no answer to) is answered as it
+     * first was, never applied twice, as t3code's own server answers from its command receipts.
+     */
     readonly commandId: string;
     readonly threadId: string;
     readonly change: LifecycleChange;
@@ -3997,37 +4019,69 @@ export const makePersonHub = (input: {
         const sessionId = sessionIdOf(command.threadId);
         return yield* locked(
           Effect.gen(function* () {
+            // Applied again, a snooze would be stamped past a failure that arrived since and hide
+            // it: a command already answered is answered the same way.
+            const kept = yield* state
+              .lifecycleReceipt(keeper.id, command.commandId)
+              .pipe(lifecycleKept);
+            if (Option.isSome(kept)) {
+              const { sessionId: keptFor, answer } = kept.value;
+              if (keptFor !== sessionId) {
+                return yield* refused(
+                  `Command ${command.commandId} was already handled for another thread and cannot be replayed for ${command.threadId}.`,
+                );
+              }
+              return answer._tag === "Applied" ? answer.sequence : yield* refused(answer.reason);
+            }
+            const receiptOf = (answer: LifecycleReceipt["answer"]): LifecycleReceipt => ({
+              commandId: command.commandId,
+              sessionId,
+              answer,
+            });
+            const refuse = (reason: string) =>
+              state.keepLifecycleReceipt(keeper.id, receiptOf({ _tag: "Refused", reason })).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("t3 gateway could not keep a refused settle or snooze", {
+                    cause: error.message,
+                  }),
+                ),
+                Effect.andThen(refused(reason)),
+              );
             const source = sourceOf(sessionId);
             if (source === null) {
-              return yield* refused(`Thread ${command.threadId} is not in this environment.`);
+              return yield* refuse(`Thread ${command.threadId} is not in this environment.`);
             }
-            if (source.lifecycle.lastCommandId === command.commandId) return sequence;
             if (source.archivedAt !== null) {
-              return yield* refused("The thread is archived. Unarchive it first.");
+              return yield* refuse("The thread is archived. Unarchive it first.");
             }
             const result = changeLifecycle(source, command.change, yield* DateTime.nowAsDate);
-            if (result._tag === "Refused") return yield* refused(result.reason);
-            const next = { ...result.lifecycle, lastCommandId: command.commandId };
-            if (!sameLifecycle(next, source.lifecycle)) {
+            if (result._tag === "Refused") return yield* refuse(result.reason);
+            const next = result.lifecycle;
+            const before = sequence;
+            const applied = receiptOf({ _tag: "Applied", sequence: before });
+            if (sameLifecycle(next, source.lifecycle)) {
+              yield* state.keepLifecycleReceipt(keeper.id, applied).pipe(lifecycleKept);
+              return sequence;
+            }
+            yield* state
+              .setLifecycle(keeper.id, sessionId, isLifecycleEmpty(next) ? null : next, applied)
+              .pipe(lifecycleKept);
+            if (isLifecycleEmpty(next)) lifecycles.delete(sessionId);
+            else lifecycles.set(sessionId, next);
+            yield* publishAll;
+            // The receipt was kept with the change, before the sequence that published it was
+            // known. Should this second write fail, a replay is answered with the earlier one, and
+            // the client's shell has carried the change since.
+            if (sequence !== before) {
               yield* state
-                .setLifecycle(keeper.id, sessionId, isLifecycleEmpty(next) ? null : next)
+                .keepLifecycleReceipt(keeper.id, receiptOf({ _tag: "Applied", sequence }))
                 .pipe(
-                  Effect.tapError((error) =>
-                    Effect.logError("t3 gateway could not keep a settle, snooze, pin or order", {
+                  Effect.catch((error) =>
+                    Effect.logWarning("t3 gateway could not update a settle or snooze receipt", {
                       cause: error.message,
                     }),
                   ),
-                  Effect.mapError(
-                    () =>
-                      new ThreadCommandRefused({
-                        reason: "The gateway could not keep this, so nothing changed. Try again.",
-                        authorization: false,
-                      }),
-                  ),
                 );
-              if (isLifecycleEmpty(next)) lifecycles.delete(sessionId);
-              else lifecycles.set(sessionId, next);
-              yield* publishAll;
             }
             return sequence;
           }),
