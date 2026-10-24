@@ -12,7 +12,7 @@ import { Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
-import { AuthMiddleware } from "./common.ts";
+import { AuthMiddleware, BudgetExceeded } from "./common.ts";
 import { CheckpointRequest } from "./project-environment.ts";
 import {
   ObservationStamp,
@@ -67,7 +67,13 @@ const rawMetadata = {
   /** The file's device and inode: kept through an in-place edit, new for a replacement. */
   "x-mend-file-identity": Schema.String,
 };
-const rawErrors = [WorktreeNotFound, RawFileNotFound, RawFileUnavailable, RawFileTooLarge] as const;
+const rawErrors = [
+  WorktreeNotFound,
+  RawFileNotFound,
+  RawFileUnavailable,
+  RawFileTooLarge,
+  BudgetExceeded,
+] as const;
 
 /** Removing a worktree with live conversations is refused — stop them first. */
 export class WorktreeActive extends Schema.TaggedError<WorktreeActive>()(

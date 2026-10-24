@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { HANDOFF_FILE_BYTES_DEFAULT } from "@mend/domain/workbench";
 import { makeWindowLimiter, type WindowLimiter } from "@mend/network";
-import { Config, Effect, Layer } from "effect";
+import { Config, Effect, Layer, type Scope } from "effect";
 import * as Context from "effect/Context";
 
 /**
@@ -46,6 +46,10 @@ export interface BudgetLimits {
   readonly accountTerminals: number;
   readonly accountTunnels: number;
   readonly accountKeyBridges: number;
+  /** Raw file reads one account may have open at once; each holds a descriptor until it ends. */
+  readonly accountRawReads: number;
+  /** Raw file reads open at once on this instance, whoever reads. */
+  readonly rawReads: number;
 }
 
 export type BudgetName = keyof BudgetLimits;
@@ -69,6 +73,10 @@ export const DEFAULT_BUDGET_LIMITS: BudgetLimits = {
   accountTerminals: 24,
   accountTunnels: 24,
   accountKeyBridges: 4,
+  // Above all the t3code gateway reads at once (96), so a person meets its wait, never this.
+  accountRawReads: 128,
+  // Two descriptors each (the file and the socket): bounded well inside the process's table.
+  rawReads: 512,
 };
 
 const ENV: Readonly<Record<BudgetName, string>> = {
@@ -89,6 +97,8 @@ const ENV: Readonly<Record<BudgetName, string>> = {
   accountTerminals: "MEND_BUDGET_ACCOUNT_TERMINALS",
   accountTunnels: "MEND_BUDGET_ACCOUNT_TUNNELS",
   accountKeyBridges: "MEND_BUDGET_ACCOUNT_KEY_BRIDGES",
+  accountRawReads: "MEND_BUDGET_ACCOUNT_RAW_READS",
+  rawReads: "MEND_BUDGET_RAW_READS",
 };
 
 export const budgetEnvName = (name: BudgetName): string => ENV[name];
@@ -111,6 +121,8 @@ const WORDS: Readonly<Record<BudgetName, string>> = {
   accountTerminals: "open terminals for one account",
   accountTunnels: "open service tunnels for one account",
   accountKeyBridges: "open key bridges for one account",
+  accountRawReads: "open raw file reads for one account",
+  rawReads: "open raw file reads on this instance",
 };
 
 /** What a refusal says. Plain facts: which budget, its limit, and that nothing running was touched. */
@@ -151,6 +163,13 @@ export class Budgets extends Context.Service<
       userId: string,
       effect: Effect.Effect<A, E, R>,
     ) => Effect.Effect<A | null, E, R>;
+    /**
+     * Hold a raw read slot of the account and of the instance until the scope closes, or name
+     * the budget that is full.
+     */
+    readonly rawReadSlot: (
+      userId: string,
+    ) => Effect.Effect<"accountRawReads" | "rawReads" | null, never, Scope.Scope>;
   }
 >()("@mend/api/Budgets") {}
 
@@ -173,6 +192,33 @@ const makeSlots = (ceiling: number) => {
     });
 };
 
+const makeRawReadSlots = (limits: BudgetLimits) => {
+  const held = new Map<string, number>();
+  let open = 0;
+  return (userId: string) =>
+    Effect.uninterruptible(
+      Effect.suspend(() => {
+        const current = held.get(userId) ?? 0;
+        if (overCeiling(current, limits.accountRawReads))
+          return Effect.succeed("accountRawReads" as const);
+        if (overCeiling(open, limits.rawReads)) return Effect.succeed("rawReads" as const);
+        held.set(userId, current + 1);
+        open++;
+        return Effect.as(
+          Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              open--;
+              const now = (held.get(userId) ?? 1) - 1;
+              if (now <= 0) held.delete(userId);
+              else held.set(userId, now);
+            }),
+          ),
+          null,
+        );
+      }),
+    );
+};
+
 export const makeBudgets = (limits: BudgetLimits) => ({
   limits,
   addresses: makeWindowLimiter(),
@@ -181,6 +227,7 @@ export const makeBudgets = (limits: BudgetLimits) => ({
   originChecks: makeWindowLimiter(),
   withLaunchSlot: makeSlots(limits.accountLaunchesInFlight),
   withHandoffSlot: makeSlots(limits.accountHandoffsInFlight),
+  rawReadSlot: makeRawReadSlots(limits),
 });
 
 const limit = (name: BudgetName) =>
@@ -204,6 +251,8 @@ export const budgetLimitsConfig = Config.all({
   accountTerminals: limit("accountTerminals"),
   accountTunnels: limit("accountTunnels"),
   accountKeyBridges: limit("accountKeyBridges"),
+  accountRawReads: limit("accountRawReads"),
+  rawReads: limit("rawReads"),
 });
 
 export const BudgetsLive: Layer.Layer<Budgets, Config.ConfigError> = Layer.effect(

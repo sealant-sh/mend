@@ -127,6 +127,7 @@ import { ServiceTunnelRoutes } from "../../src/routes/service-tunnel.ts";
 import { TtyRoutes } from "../../src/routes/tty.ts";
 import { UrlBearers } from "../../src/routes/upgrade-tickets.ts";
 import { CheckpointRequestLimit } from "../../src/routes/workbench.ts";
+import { RawReadStallLimit } from "../../src/routes/worktrees.ts";
 import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
 import { SshKeyRevoker } from "../../src/ssh-key-revocation.ts";
@@ -225,6 +226,8 @@ export const createTenancyApi = async (
      */
     /** How long a request that takes a checkpoint may run (`CheckpointRequestLimit`). */
     readonly checkpointRequestLimit?: Duration.Duration;
+    /** How long a raw body waits for its reader (`RawReadStallLimit`). */
+    readonly rawReadStall?: Duration.Duration;
     readonly implement?: {
       readonly storeRefs?: Layer.PartialEffectful<StoreRefsRepo["Service"]>;
       readonly slices?: Layer.PartialEffectful<ReviewSlicesRepo["Service"]>;
@@ -497,6 +500,9 @@ export const createTenancyApi = async (
     options.checkpointRequestLimit === undefined
       ? Layer.empty
       : Layer.succeed(CheckpointRequestLimit, options.checkpointRequestLimit),
+    options.rawReadStall === undefined
+      ? Layer.empty
+      : Layer.succeed(RawReadStallLimit, options.rawReadStall),
   );
   // One registry for the whole world. The API, the socket routes and the event route are separate
   // web handlers here, each building its own layers; they must still see each other's connections,

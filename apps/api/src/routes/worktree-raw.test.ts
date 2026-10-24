@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { CheckpointId, SequenceNumber, Sha } from "@mend/domain";
 import { Checkpoint } from "@mend/domain/workbench";
 import { RawReadError, Store, StoreConfig } from "@mend/store";
-import { Effect, Layer, type Tracer } from "effect";
+import { Duration, Effect, Layer, type Tracer } from "effect";
 import { afterAll, beforeAll, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
@@ -349,3 +349,105 @@ it("resets the socket when the file stops short after the headers went out", asy
   expect(whole).toEqual({ status: 200, length: 256, received: 256, outcome: "end" });
   fs.rmSync(shrinking);
 });
+
+it("bounds open raw reads per account and in all, and frees a slot when its reader goes", async () => {
+  const large = join(root, "slots.bin");
+  fs.writeFileSync(large, "");
+  fs.truncateSync(large, 64 * 1024 * 1024);
+  const bounded = await createTenancyApi(
+    { accountRawReads: 2, rawReads: 3 },
+    {
+      sessionStore: "colocated",
+      implement: {
+        reads: {
+          openRawFile: (_project, _worktree, target) =>
+            store.openRawWorktreeFile(root, target.path, target.within),
+        },
+      },
+    },
+  );
+  const read = (user: "alice" | "carol") =>
+    bounded.request(
+      user,
+      "GET",
+      `/api/worktrees/${user === "alice" ? worktree : ids("shared-a").worktree}/raw?path=slots.bin`,
+    );
+  try {
+    const held = [await read("alice"), await read("alice")];
+    for (const response of held) expect(response.status).toBe(200);
+    const account = await read("alice");
+    expect(account.status).toBe(429);
+    expect(await account.json()).toMatchObject({
+      _tag: "BudgetExceeded",
+      budget: "accountRawReads",
+      limit: 2,
+    });
+    const other = await read("carol");
+    expect(other.status).toBe(200);
+    const instance = await read("carol");
+    expect(instance.status).toBe(429);
+    expect(await instance.json()).toMatchObject({ budget: "rawReads", limit: 3 });
+    await held[0]?.body?.cancel();
+    const admitted = await read("alice");
+    expect(admitted.status).toBe(200);
+    for (const response of [held[1], other, admitted]) await response?.body?.cancel();
+  } finally {
+    await bounded.dispose();
+    fs.rmSync(large);
+  }
+});
+
+it("resets a reader that stops taking bytes, and frees its slot and descriptor", async () => {
+  const large = join(root, "stalled.bin");
+  fs.writeFileSync(large, "");
+  fs.truncateSync(large, 256 * 1024 * 1024);
+  const stalling = await createTenancyApi(
+    { accountRawReads: 1 },
+    {
+      sessionStore: "colocated",
+      node: true,
+      rawReadStall: Duration.millis(300),
+      implement: {
+        reads: {
+          openRawFile: (_project, _worktree, target) =>
+            store.openRawWorktreeFile(root, target.path, target.within),
+        },
+      },
+    },
+  );
+  try {
+    const before = descriptors();
+    const first = Promise.withResolvers<void>();
+    const agent = new Agent({ keepAlive: true });
+    const request = httpGet(
+      `${stalling.nodeOrigin}/api/worktrees/${worktree}/raw?path=stalled.bin`,
+      { agent, headers: { authorization: "Bearer alice" } },
+      (res) => {
+        // A paused video: the reader takes one chunk, then nothing, and never closes.
+        res.once("data", () => {
+          res.pause();
+          first.resolve();
+        });
+      },
+    );
+    request.on("error", () => undefined);
+    await first.promise;
+    const head = () =>
+      stalling.request("alice", "HEAD", `/api/worktrees/${worktree}/raw?path=data.bin`);
+    expect((await head()).status).toBe(429);
+    let status = 429;
+    for (let attempt = 0; attempt < 60 && status !== 200; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      status = (await head()).status;
+    }
+    expect(status).toBe(200);
+    // The reader's own socket lives in this process too.
+    agent.destroy();
+    for (let attempt = 0; attempt < 50 && descriptors() > before; attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(descriptors()).toBeLessThanOrEqual(before);
+  } finally {
+    await stalling.dispose();
+    fs.rmSync(large);
+  }
+}, 20_000);
