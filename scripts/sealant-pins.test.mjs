@@ -152,7 +152,11 @@ test("rewriting moves every pin file to a prerelease's -next names and digests, 
     const before = await read(file);
     rewritten[file] = rewritePins(before, from, to);
     assert.notEqual(rewritten[file], before, `${file} names the pinned version or a digest`);
-    assert.ok(!rewritten[file].includes(from.version), `${file} still names ${from.version}`);
+    // A stable pin's version is a prefix of the prerelease's (0.39.0 in 0.39.0-next.12).
+    assert.ok(
+      !rewritten[file].replaceAll(to.version, "").includes(from.version),
+      `${file} still names ${from.version}`,
+    );
     const [beforeLines, afterLines] = [before.split("\n"), rewritten[file].split("\n")];
     assert.equal(afterLines.length, beforeLines.length, file);
     afterLines.forEach((line, index) => {
