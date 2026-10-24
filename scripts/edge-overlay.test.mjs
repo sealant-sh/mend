@@ -135,7 +135,7 @@ test("the edge drops privileges it does not need", { skip }, () => {
 test("the Caddyfile routes everything to web, unbuffered", () => {
   const caddyfile = readFileSync(path.join(directory, "Caddyfile"), "utf8");
   // One upstream, the web tier. Never the API (3101), the session channel (3106) or Sealant (4000).
-  assert.deepEqual(caddyfile.match(/reverse_proxy\s+\S+/g), ["reverse_proxy mend:3105"]);
+  assert.deepEqual(caddyfile.match(/^\t*reverse_proxy\s+\S+/gm), ["\treverse_proxy mend:3105"]);
   for (const port of ["3101", "3106", "4000", "3900", "5432"])
     assert.ok(!caddyfile.includes(port), port);
   assert.match(caddyfile, /flush_interval -1/);
