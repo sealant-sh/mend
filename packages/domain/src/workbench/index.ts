@@ -57,6 +57,7 @@ export * from "./project-cluster-binding.ts";
 export * from "./project-environment.ts";
 export * from "./project-secret.ts";
 export * from "./protocol-idle.ts";
+export * from "./preview.ts";
 export * from "./reference.ts";
 export * from "./repository.ts";
 export * from "./review-comment.ts";
