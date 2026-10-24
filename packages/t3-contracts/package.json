@@ -44,6 +44,7 @@
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@mend/test-ci": "workspace:*",
+    "@types/mdast": "catalog:t3",
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

@@ -125,6 +125,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadVisitedTracking: Schema.optionalKey(Schema.Boolean),
   threadPullRequestLinking: Schema.optionalKey(Schema.Boolean),
   serverResolvedCommandContext: Schema.optionalKey(Schema.Boolean),
+  threadStop: Schema.optionalKey(Schema.Boolean),
   threadPullRequests: Schema.optionalKey(Schema.Boolean),
   threadPullRequestWatch: Schema.optionalKey(Schema.Boolean),
   pullRequestStackActions: Schema.optionalKey(Schema.Boolean),
@@ -140,6 +141,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    */
   agentActivityPublishing: Schema.optionalKey(Schema.Boolean),
   projectCloneTracking: Schema.optionalKey(Schema.Boolean),
+  /** Server answers projects.listIgnoredFiles. */
+  ignoredFileListing: Schema.optionalKey(Schema.Boolean),
   environmentIcon: Schema.optionalKey(Schema.Boolean),
   desktopAppUpdate: Schema.optionalKey(Schema.Boolean),
   /** Server answers orchestration.subscribeCommandOutput. Absent on older servers,
@@ -149,18 +152,6 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       "server"`) and streams them over `/api/preview-stream`. Clients
       without a local browser runtime open server tabs here. */
   serverBrowser: Schema.optionalKey(Schema.Boolean),
-  /** Server links to other environments (`PeerLink`) and its agents can work
-      in them. Absent on servers from before linking, which clients must not
-      offer linking for. */
-  peerLinks: Schema.optionalKey(Schema.Boolean),
-  /** Server's `/mcp` narrows an OAuth client's modes from `T3-Mode-Limit`, so
-      a linked environment's calls keep its agent's limits. Another environment
-      links to this one only when it is set. */
-  mcpModeLimitHeader: Schema.optionalKey(Schema.Boolean),
-  /** Work a linked environment starts here stays within its link
-      (`linkOrigin`). Another environment links to this one only when it is
-      set, since without it that work could change the user's own threads. */
-  linkFence: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 
@@ -183,6 +174,7 @@ export type RepositoryIdentityLocator = typeof RepositoryIdentityLocator.Type;
 
 export const RepositoryOrigin = Schema.Struct({
   canonicalKey: TrimmedNonEmptyString,
+  remoteUrl: Schema.optionalKey(TrimmedNonEmptyString),
   displayName: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type RepositoryOrigin = typeof RepositoryOrigin.Type;
@@ -191,6 +183,7 @@ export const RepositoryIdentity = Schema.Struct({
   canonicalKey: TrimmedNonEmptyString,
   locator: RepositoryIdentityLocator,
   webUrl: Schema.optionalKey(TrimmedNonEmptyString),
+  /** Work tree root, or the git dir for a bare repository. */
   rootPath: Schema.optionalKey(TrimmedNonEmptyString),
   displayName: Schema.optionalKey(TrimmedNonEmptyString),
   provider: Schema.optionalKey(TrimmedNonEmptyString),
