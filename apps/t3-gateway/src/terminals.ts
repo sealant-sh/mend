@@ -194,6 +194,12 @@ const notRunning = (threadId: string, terminalId: string) =>
 export const makeTerminals = (host: TerminalHost): Terminals => {
   const { mend } = host;
   const terminals = new Map<string, Terminal>();
+  /**
+   * Terminals a person closed, for the hub's life: a client resubscribing (`resume`) to one is
+   * told it is closed rather than opening a new shell, as t3code's server does. An explicit open
+   * forgets it again.
+   */
+  const closed = new Set<string>();
   const events = makeFanout<TerminalEvent>();
   const metadata = makeFanout<TerminalMetadataStreamEvent>();
 
@@ -399,6 +405,7 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
       const key = keyOf(input.threadId, input.terminalId);
       const previous = terminals.get(key);
       terminals.set(key, terminal);
+      closed.delete(key);
       yield* connect(session, terminal, sessionId, input).pipe(
         Effect.onError(() =>
           disconnect(session, terminal).pipe(
@@ -435,7 +442,16 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
         const changes = yield* events.subscribe(
           (event) => event.threadId === input.threadId && event.terminalId === input.terminalId,
         );
-        let terminal = terminals.get(keyOf(input.threadId, input.terminalId));
+        const key = keyOf(input.threadId, input.terminalId);
+        let terminal = terminals.get(key);
+        if (terminal === undefined && input.resume === true && closed.has(key)) {
+          const gone: TerminalAttachStreamEvent = {
+            type: "closed",
+            threadId: input.threadId,
+            terminalId: input.terminalId,
+          };
+          return Stream.make(gone).pipe(Stream.concat(liveOf(changes, input)));
+        }
         // A client's resubscription (`resume`) keeps a terminal that stopped as it is.
         const restart =
           input.restartIfNotRunning === true &&
@@ -450,16 +466,21 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
           type: "snapshot",
           snapshot: snapshotOf(terminal),
         };
-        const live: Stream.Stream<TerminalAttachStreamEvent, TerminalFailure> = changes.pipe(
-          // A client too slow to keep up resubscribes: t3code retries a typed failure.
-          Stream.mapError(() => notRunning(input.threadId, input.terminalId)),
-          Stream.filter(
-            (event): event is Exclude<TerminalEvent, { readonly type: "started" }> =>
-              event.type !== "started",
-          ),
-        );
-        return Stream.make(snapshot).pipe(Stream.concat(live));
+        return Stream.make(snapshot).pipe(Stream.concat(liveOf(changes, input)));
       }),
+    );
+
+  const liveOf = (
+    changes: Stream.Stream<TerminalEvent, SubscriberFellBehind>,
+    input: TerminalAttachInput,
+  ): Stream.Stream<TerminalAttachStreamEvent, TerminalFailure> =>
+    changes.pipe(
+      // A client too slow to keep up resubscribes: t3code retries a typed failure.
+      Stream.mapError(() => notRunning(input.threadId, input.terminalId)),
+      Stream.filter(
+        (event): event is Exclude<TerminalEvent, { readonly type: "started" }> =>
+          event.type !== "started",
+      ),
     );
 
   const running = (
@@ -544,6 +565,8 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
           (input.terminalId === undefined || key === keyOf(input.threadId, input.terminalId)),
       );
       yield* Effect.forEach(pending, settled, { discard: true });
+      // Closed even when it was never opened here: a resubscription does not bring it up.
+      if (input.terminalId !== undefined) closed.add(keyOf(input.threadId, input.terminalId));
       yield* closeNow(session, input);
     });
 
@@ -556,6 +579,7 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
       ),
       (terminal) =>
         Effect.gen(function* () {
+          closed.add(keyOf(terminal.threadId, terminal.terminalId));
           yield* disconnect(session, terminal);
           terminal.status = "exited";
           yield* publish(terminal, (base) => ({ ...base, type: "closed" }));

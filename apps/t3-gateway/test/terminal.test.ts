@@ -198,6 +198,74 @@ describe("the terminal", () => {
   );
 
   it.live(
+    "says a closed terminal is closed when a client subscribes again, and opens no shell",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          setup(mend);
+          const { rpc } = yield* pairAndConnect(mend, "TTY-CLOSED");
+          yield* rpc[WS_METHODS.terminalOpen]({
+            threadId: "session-1",
+            terminalId: "term",
+            cwd: CWD,
+          });
+          yield* rpc[WS_METHODS.terminalClose]({
+            threadId: "session-1",
+            terminalId: "term",
+            deleteHistory: true,
+          });
+          // Never opened here at all, then closed.
+          yield* rpc[WS_METHODS.terminalClose]({
+            threadId: "session-1",
+            terminalId: "never",
+            deleteHistory: true,
+          });
+          assert.strictEqual(mend.tty.shells.size, 1);
+
+          for (const terminalId of ["term", "never"]) {
+            const resumed = yield* feed(
+              rpc[WS_METHODS.terminalAttach]({
+                threadId: "session-1",
+                terminalId,
+                cwd: CWD,
+                restartIfNotRunning: true,
+                resume: true,
+              }),
+            );
+            const first = yield* resumed.next((_event): _event is Attach => true);
+            assert.strictEqual(first.type, "closed");
+          }
+          assert.strictEqual(mend.tty.shells.size, 1);
+
+          // An explicit open brings it back.
+          const reopened = yield* feed(
+            rpc[WS_METHODS.terminalAttach]({ threadId: "session-1", terminalId: "term", cwd: CWD }),
+          );
+          const fresh = yield* reopened.next(
+            (event): event is Extract<Attach, { type: "snapshot" }> => event.type === "snapshot",
+          );
+          assert.strictEqual(fresh.snapshot.status, "running");
+          assert.strictEqual(mend.tty.shells.size, 2);
+
+          // A terminal this gateway never knew of is still opened on resubscription.
+          const unknown = yield* feed(
+            rpc[WS_METHODS.terminalAttach]({
+              threadId: "session-1",
+              terminalId: "other",
+              cwd: CWD,
+              resume: true,
+            }),
+          );
+          const opened = yield* unknown.next(
+            (event): event is Extract<Attach, { type: "snapshot" }> => event.type === "snapshot",
+          );
+          assert.strictEqual(opened.snapshot.status, "running");
+          assert.strictEqual(mend.tty.shells.size, 3);
+        }),
+      ),
+  );
+
+  it.live(
     "opens one shell for two opens of one terminal at once, and close ends it (607-R2-1)",
     () =>
       withGateway((mend) =>
