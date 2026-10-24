@@ -262,37 +262,56 @@ export const dispatchCommand = (
       return answered(hub.commands.setArchived({ threadId: command.threadId, archived: false }));
     case "thread.settle":
       return answered(
-        hub.commands.setLifecycle({ threadId: command.threadId, change: { kind: "settle" } }),
+        hub.commands.setLifecycle({
+          commandId: command.commandId,
+          threadId: command.threadId,
+          change: { kind: "settle" },
+        }),
       );
     case "thread.unsettle":
       return answered(
-        hub.commands.setLifecycle({ threadId: command.threadId, change: { kind: "unsettle" } }),
+        hub.commands.setLifecycle({
+          commandId: command.commandId,
+          threadId: command.threadId,
+          change: { kind: "unsettle" },
+        }),
       );
     case "thread.snooze":
       return answered(
         hub.commands.setLifecycle({
+          commandId: command.commandId,
           threadId: command.threadId,
           change: { kind: "snooze", until: command.snoozedUntil },
         }),
       );
     case "thread.unsnooze":
       return answered(
-        hub.commands.setLifecycle({ threadId: command.threadId, change: { kind: "unsnooze" } }),
+        hub.commands.setLifecycle({
+          commandId: command.commandId,
+          threadId: command.threadId,
+          change: { kind: "unsnooze" },
+        }),
       );
     case "thread.pin":
       return answered(
         hub.commands.setLifecycle({
+          commandId: command.commandId,
           threadId: command.threadId,
           change: { kind: "pin", orderKey: command.orderKey },
         }),
       );
     case "thread.unpin":
       return answered(
-        hub.commands.setLifecycle({ threadId: command.threadId, change: { kind: "unpin" } }),
+        hub.commands.setLifecycle({
+          commandId: command.commandId,
+          threadId: command.threadId,
+          change: { kind: "unpin" },
+        }),
       );
     case "thread.pin.reorder":
       return answered(
         hub.commands.setLifecycle({
+          commandId: command.commandId,
           threadId: command.threadId,
           change: { kind: "reorder-pinned", orderKey: command.orderKey },
         }),
@@ -300,6 +319,7 @@ export const dispatchCommand = (
     case "thread.active.reorder":
       return answered(
         hub.commands.setLifecycle({
+          commandId: command.commandId,
           threadId: command.threadId,
           change: { kind: "reorder-active", orderKey: command.orderKey },
         }),
@@ -307,6 +327,7 @@ export const dispatchCommand = (
     case "thread.auto-settle.set":
       return answered(
         hub.commands.setLifecycle({
+          commandId: command.commandId,
           threadId: command.threadId,
           change: { kind: "auto-settle-set", enabled: command.enabled },
         }),

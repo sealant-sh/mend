@@ -557,6 +557,8 @@ export interface ThreadCommands {
    * not touched.
    */
   readonly setLifecycle: (input: {
+    /** The client's command: one applied last is not applied again (a client's replay). */
+    readonly commandId: string;
     readonly threadId: string;
     readonly change: LifecycleChange;
   }) => Effect.Effect<number, ThreadCommandFailure>;
@@ -4000,12 +4002,15 @@ export const makePersonHub = (input: {
             if (source === null) {
               return yield* refused(`Thread ${command.threadId} is not in this environment.`);
             }
+            // A replay of the command that changed it last: a snooze restamped again would move
+            // past a failure that arrived since and hide it, so it is answered as it was.
+            if (source.lifecycle.lastCommandId === command.commandId) return sequence;
             if (source.archivedAt !== null) {
               return yield* refused("The thread is archived. Unarchive it first.");
             }
             const result = changeLifecycle(source, command.change, yield* DateTime.nowAsDate);
             if (result._tag === "Refused") return yield* refused(result.reason);
-            const next = result.lifecycle;
+            const next = { ...result.lifecycle, lastCommandId: command.commandId };
             if (!sameLifecycle(next, source.lifecycle)) {
               yield* state
                 .setLifecycle(keeper.id, sessionId, isLifecycleEmpty(next) ? null : next)

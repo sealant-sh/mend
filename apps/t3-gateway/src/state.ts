@@ -144,6 +144,11 @@ export interface ThreadLifecycle {
   readonly pinOrderKey: string | null;
   readonly activeOrderKey: string | null;
   readonly autoSettleDisabledAt: string | null;
+  /**
+   * The client command that last changed it: a replay of that command (a client resending what it
+   * saw no answer to) is answered without applying it twice. Not part of the person's view.
+   */
+  readonly lastCommandId: string | null;
 }
 
 /** An image as a sent message carried it: the selection and the path its turn named. */
@@ -426,6 +431,8 @@ export class GatewayState extends Context.Service<
  * its setup script runs in (migration 17), so a restart keeps t3code's retry and the retry can stop
  * that shell. `project_scripts` keeps the project actions a person saved in t3code (migration 17):
  * the only setup scripts the gateway runs.
+ * `thread_lifecycles` gains the id of the client command that last changed each row (migration 18),
+ * so a replayed command is not applied twice, across a restart too.
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -655,6 +662,9 @@ const MIGRATIONS: ReadonlyArray<string> = [
     PRIMARY KEY (mend_user_id, mend_project_id)
   );
   `,
+  `
+  ALTER TABLE thread_lifecycles ADD COLUMN last_command_id TEXT;
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -780,6 +790,7 @@ const LifecycleRow = Schema.Struct({
   active_order_key: Schema.NullOr(Schema.String),
   auto_settle_disabled_at: Schema.NullOr(Schema.String),
   last_snooze_wake_at: Schema.NullOr(Schema.String),
+  last_command_id: Schema.NullOr(Schema.String),
 });
 const decodeLifecycleRows = Schema.decodeUnknownEffect(Schema.Array(LifecycleRow));
 const ModelPreferencesRow = Schema.Struct({
@@ -1502,8 +1513,8 @@ export const openGatewayState = (
             `INSERT OR REPLACE INTO thread_lifecycles
               (mend_user_id, mend_session_id, settled_override, settled_at, unsettled_at, snoozed_until,
                 snoozed_at, pinned_at, pin_order_key, active_order_key, auto_settle_disabled_at,
-                last_snooze_wake_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                last_snooze_wake_at, last_command_id)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             mendUserId,
@@ -1518,6 +1529,7 @@ export const openGatewayState = (
             lifecycle.activeOrderKey,
             lifecycle.autoSettleDisabledAt,
             lifecycle.lastSnoozeWakeAt,
+            lifecycle.lastCommandId,
           );
       });
 
@@ -1526,7 +1538,8 @@ export const openGatewayState = (
         database
           .prepare(
             `SELECT mend_session_id, settled_override, settled_at, unsettled_at, snoozed_until, snoozed_at,
-                pinned_at, pin_order_key, active_order_key, auto_settle_disabled_at, last_snooze_wake_at
+                pinned_at, pin_order_key, active_order_key, auto_settle_disabled_at, last_snooze_wake_at,
+                last_command_id
               FROM thread_lifecycles WHERE mend_user_id = ?`,
           )
           .all(mendUserId),
@@ -1550,6 +1563,7 @@ export const openGatewayState = (
                       activeOrderKey: row.active_order_key,
                       autoSettleDisabledAt: row.auto_settle_disabled_at,
                       lastSnoozeWakeAt: row.last_snooze_wake_at,
+                      lastCommandId: row.last_command_id,
                     },
                   ] as const,
               ),

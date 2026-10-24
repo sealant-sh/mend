@@ -464,6 +464,49 @@ describe("snooze", () => {
     }),
   );
 
+  it.live("a snooze the client sends again is not stamped again, across a restart too", () => {
+    const statePath = statePathOf();
+    const snooze = {
+      type: "thread.snooze",
+      commandId: commandId(),
+      threadId: THREAD,
+      snoozedUntil: new Date(Date.now() + HOUR).toISOString(),
+    } as const;
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      const turn = mend.workbench.addTurn("session-1", "A long job");
+      const snoozedAt = yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SNOOZE-REPLAY");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.status === "running", "the running turn");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](snooze);
+        const snoozed = yield* shell.until((thread) => thread.snoozedAt != null, "the snooze");
+
+        mend.workbench.setTurn(turn, "failed", "The agent crashed.");
+        yield* shell.until((thread) => thread.status === "failed", "the failure");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](snooze);
+        // Real time: a restamp the replay made would be published within this.
+        yield* Effect.sleep("300 millis");
+        const replayed = yield* shell.until(() => true, "the thread");
+        assert.strictEqual(iso(replayed.snoozedAt), iso(snoozed.snoozedAt));
+        assert.isFalse(snoozedNow(replayed));
+        return iso(snoozed.snoozedAt);
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SNOOZE-REPLAY-AFTER");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.status === "failed", "the failed thread");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](snooze);
+        yield* Effect.sleep("300 millis");
+        const replayed = yield* shell.until(() => true, "the thread");
+        assert.strictEqual(iso(replayed.snoozedAt), snoozedAt);
+        assert.isFalse(snoozedNow(replayed));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+    });
+  });
+
   it.live("a thread that had failed before the snooze stays snoozed", () =>
     Effect.gen(function* () {
       const mend = yield* startFakeMend;

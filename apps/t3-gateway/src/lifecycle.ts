@@ -40,6 +40,7 @@ export const NO_LIFECYCLE: ThreadLifecycle = {
   pinOrderKey: null,
   activeOrderKey: null,
   autoSettleDisabledAt: null,
+  lastCommandId: null,
 };
 
 export const MAX_ORDER_KEY_LENGTH = 1_024;
@@ -89,8 +90,10 @@ export const lifecycleOf = (
   return { ...kept, ...settlement, ...snooze };
 };
 
+/** What the person sees: the command that last changed it is not part of their view. */
 const LIFECYCLE_FIELDS = Object.keys(NO_LIFECYCLE).filter(
-  (key): key is keyof ThreadLifecycle => key in NO_LIFECYCLE,
+  (key): key is Exclude<keyof ThreadLifecycle, "lastCommandId"> =>
+    key in NO_LIFECYCLE && key !== "lastCommandId",
 );
 
 export const sameLifecycle = (left: ThreadLifecycle, right: ThreadLifecycle): boolean =>
