@@ -456,7 +456,10 @@ export interface ThreadCommands {
     threadId: string,
     runId: string,
   ) => Effect.Effect<number, ThreadCommandFailure>;
-  /** Resumes a held queue (`queue.resume`), or with `runId` sends that message first (`queued-run.start`). */
+  /**
+   * Resumes a held queue (`queue.resume`), or with `runId` sends that message first
+   * (`queued-run.start`), refused unless the thread is stopped, as on t3code's server.
+   */
   readonly resumeQueue: (
     threadId: string,
     runId?: string,
@@ -3190,6 +3193,9 @@ export const makePersonHub = (input: {
             return yield* refused(
               "The thread is archived: nothing in its queue is sent until it is unarchived. Unarchive it, then resume.",
             );
+          }
+          if (runId !== undefined && !Queueing.stopped(queueOf(threadId), viewOf(threadId))) {
+            return yield* refused(Queueing.SEND_NOW_WHILE_RUNNING);
           }
           const resumed = yield* changeKept(threadId, (queue) => {
             if (runId !== undefined) return Queueing.sendNow(queue, runId);

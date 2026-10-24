@@ -351,9 +351,20 @@ export const reorder = (queue: ThreadQueue, runId: string, beforeRunId: string |
   return true;
 };
 
+/** t3code's refusal of `queued-run.start` while a run is active (`Orchestrator.ts`, v0.1.2). */
+export const SEND_NOW_WHILE_RUNNING =
+  "A queued user message can only be sent now while the thread is stopped.";
+
 /**
- * `queued-run.start`: a waiting message goes first among those still waiting, and the queue
- * resumes. False once it is on its way or settled.
+ * The thread is stopped, as t3code's server takes `queued-run.start`: no Mend turn is open and no
+ * message is on its way to Mend.
+ */
+export const stopped = (queue: ThreadQueue, view: SessionView): boolean =>
+  !view.turnOpen && !queue.entries.some((entry) => canProgress(entry) && entry.state !== "queued");
+
+/**
+ * `queued-run.start` on a stopped thread (`stopped`): a waiting message goes first among those
+ * still waiting, and the queue resumes. False once it is on its way or settled.
  */
 export const sendNow = (queue: ThreadQueue, runId: string): boolean => {
   const entry = waiting(queue, runId);

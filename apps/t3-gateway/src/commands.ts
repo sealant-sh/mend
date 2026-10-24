@@ -23,7 +23,8 @@ import type { BearerSession } from "./state.ts";
  *   changed on the picker applies from the agent's next start; the Fast tier or another provider
  *   is refused (`model-options.ts`).
  * - `run.interrupt`, `queued-run.cancel`, `queue.resume`: Mend's interrupt and the gateway's queue.
- * - `queued-run.start`: a waiting message sent first, and the queue resumed behind it.
+ * - `queued-run.start`: on a stopped thread, a waiting message sent first and the queue resumed
+ *   behind it; refused while a turn runs or a message is on its way, as t3code's server refuses it.
  * - `queued-run.edit`, `queued-run.reorder`: a message still waiting in the gateway's queue; one on
  *   its way to Mend is never rewritten.
  * - `runtime-request.respond`, `thread.user-input.dismiss`: Mend's request answers; a dismissal

@@ -205,8 +205,9 @@ agent up) is taken as under way, and the message waits for the agent. Every wait
 `queued-run.edit` rewrites a message still waiting (t3code sees a `message.updated`), and
 `queued-run.reorder` moves one before another waiting message, or after the last one, as t3code's
 own server places it. `queued-run.start` (t3code's "Send now" on a held queue) moves one waiting
-message first and resumes the queue. A message on its way to Mend, or settled, is neither rewritten,
-moved nor sent first.
+message first and resumes the queue. As on t3code's server, it is refused while a turn runs or a
+message is on its way to Mend, and the queue stays as it was. A message on its way to Mend, or
+settled, is neither rewritten, moved nor sent first.
 
 Steering mid-turn and holding a message for later are refused.
 
