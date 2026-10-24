@@ -8,8 +8,9 @@ import type {
   AgentTaskData,
   AgentTurnUsage,
 } from "@mend/domain/workbench";
-import { PubSub, Effect, Semaphore, Stream } from "effect";
+import { PubSub, Effect, Stream } from "effect";
 
+import { makeClaudeControls } from "./claude-controls.ts";
 import { contentBlockKind } from "./claude-items.ts";
 import { foldTaskLine, isTaskSubtype, taskItem } from "./claude-tasks.ts";
 import {
@@ -28,17 +29,12 @@ import type {
 import { createNdjsonDecoder } from "./ndjson.ts";
 import {
   AgentProtocolError,
-  AgentSteerDeliveryError,
-  AgentSteerRefusedError,
   AgentTurnBusyError,
   type AgentAdapter,
   type AgentBackgroundWork,
-  type AgentControlCheckpoint,
   type AgentQuiescence,
   type AgentSession,
   type AgentStartOptions,
-  type AgentSteerAcceptance,
-  type AgentSteerInput,
   type AgentTransport,
 } from "./types.ts";
 
@@ -193,15 +189,6 @@ const resultError = (message: JsonObject): string | null => {
     : null;
 };
 
-const byOrdinal = (left: AgentControlCheckpoint, right: AgentControlCheckpoint): number =>
-  left.afterOutputLine - right.afterOutputLine || left.ordinal - right.ordinal;
-
-const undelivered = (
-  certainty: AgentSteerDeliveryError["certainty"],
-  message: string,
-  cause: unknown,
-) => new AgentSteerDeliveryError({ adapter: "claude", certainty, message, cause });
-
 /** Claude Code private stream-json adapter pinned by CLAUDE_CODE_PROTOCOL_VERSION. */
 export const ClaudeAdapter: AgentAdapter = {
   start: (transport: AgentTransport, options: AgentStartOptions) =>
@@ -218,15 +205,6 @@ export const ClaudeAdapter: AgentAdapter = {
       // final `result` advances the queue exactly where sendTurn would have minted.
       let turns = initialClaudeTurns(rehydrate?.replayProviderTurnIds ?? []);
       const activeTurnId = (): string | null => claudeTurnId(turns.turn);
-      // Steer and interrupt decisions are replayed at the output line they were made after, so
-      // a rehydrate folds the same results the same way whatever the chunking.
-      const replayControls = (journal?.recorded ?? []).toSorted(byOrdinal);
-      let replayCursor = 0;
-      let nextOrdinal =
-        replayControls.reduce((highest, control) => Math.max(highest, control.ordinal), -1) + 1;
-      let outputLines = 0;
-      // Orders a control's journal record, state change and write against line reduction.
-      const lane = yield* Semaphore.make(1);
       // Anthropic streaming resets content-block indexes to 0 on every message_start, and one
       // turn holds many assistant messages (each tool round trip starts a new one). Item
       // identity therefore needs the message ordinal, and deltas need the id minted at
@@ -484,23 +462,14 @@ export const ClaudeAdapter: AgentAdapter = {
           return Effect.forEach(folded.effects, applyEffect, { discard: true });
         });
 
-      /** Journaled controls from before a restart, applied once their output line is reduced. */
-      const replayControlsDue = (): Effect.Effect<void> =>
-        Effect.suspend(() => {
-          const due: Array<AgentControlCheckpoint> = [];
-          while (
-            replayCursor < replayControls.length &&
-            (replayControls[replayCursor]?.afterOutputLine ?? Number.POSITIVE_INFINITY) <=
-              outputLines
-          ) {
-            const control = replayControls[replayCursor];
-            replayCursor += 1;
-            if (control !== undefined) due.push(control);
-          }
-          return Effect.forEach(due, (control) => fold({ _tag: "Control", control }), {
-            discard: true,
-          });
-        });
+      const controls = yield* makeClaudeControls({
+        journal,
+        turn: () => turns.turn,
+        fold,
+        send,
+        steerFrame: (input) => userMessage(input.input, { uuid: input.id }),
+        closed: () => closed,
+      });
 
       /**
        * Claude announces every turn with a `system init` line. One that arrives while no turn is
@@ -714,22 +683,7 @@ export const ClaudeAdapter: AgentAdapter = {
         }
       };
 
-      // The lane is taken per line, not per chunk: a control waits for at most one line's
-      // projection, and positions count lines either way. The yield lets a waiting control in
-      // before the next line takes the lane back.
-      const handleLine = (line: string): Effect.Effect<void> =>
-        lane
-          .withPermits(1)(
-            parseLine(line).pipe(
-              Effect.andThen(
-                Effect.suspend(() => {
-                  outputLines += 1;
-                  return replayControlsDue();
-                }),
-              ),
-            ),
-          )
-          .pipe(Effect.andThen(journal === undefined ? Effect.void : Effect.yieldNow));
+      const handleLine = (line: string): Effect.Effect<void> => controls.line(parseLine(line));
 
       const handleBytes = (bytes: Uint8Array): Effect.Effect<void, AgentProtocolError> =>
         Effect.suspend(() =>
@@ -744,13 +698,13 @@ export const ClaudeAdapter: AgentAdapter = {
           ),
         );
 
-      yield* replayControlsDue();
+      yield* controls.replayDue;
       yield* transport.output.pipe(
         Stream.runForEach(handleBytes),
         Effect.andThen(
           Effect.suspend(() => Effect.forEach(decoder.finish(), handleLine, { discard: true })),
         ),
-        Effect.andThen(lane.withPermits(1)(fold({ _tag: "OutputEnded" }))),
+        Effect.andThen(controls.exclusive(fold({ _tag: "OutputEnded" }))),
         Effect.tap(() =>
           publish({ _tag: "runtime.error", message: "Claude process output ended." }),
         ),
@@ -795,121 +749,6 @@ export const ClaudeAdapter: AgentAdapter = {
         );
         yield* publish({ _tag: "turn.started", providerTurnId });
         return providerTurnId;
-      });
-
-      /** Journal a control before it changes the turn or reaches the wire. */
-      const recordControl = (
-        controlId: string,
-        providerTurnId: string,
-        action: AgentControlCheckpoint["action"],
-      ): Effect.Effect<AgentControlCheckpoint, AgentProtocolError> =>
-        Effect.suspend(() => {
-          const control: AgentControlCheckpoint = {
-            ordinal: nextOrdinal,
-            controlId,
-            providerTurnId,
-            afterOutputLine: outputLines,
-            action,
-          };
-          nextOrdinal += 1;
-          return journal === undefined
-            ? Effect.succeed(control)
-            : journal.record(control).pipe(Effect.as(control));
-        });
-
-      const interruptNow = Effect.gen(function* () {
-        const currentTurnId = activeTurnId();
-        if (currentTurnId === null) return;
-        const request: ClaudeControlRequest = {
-          type: "control_request",
-          request_id: crypto.randomUUID(),
-          request: { subtype: "interrupt" },
-        };
-        const control = yield* recordControl(request.request_id, currentTurnId, "interrupt");
-        yield* fold({ _tag: "Control", control });
-        yield* send(request);
-      });
-
-      // Only a journaled interrupt needs the lane: its record is asynchronous, and the line it
-      // names must be the line the fold happened after. Without a journal nothing is replayed,
-      // and a Stop never waits behind a line's projection.
-      const interrupt = Effect.fn("ClaudeAdapter.interrupt")(function* () {
-        yield* journal === undefined ? interruptNow : lane.withPermits(1)(interruptNow);
-      });
-
-      const refused = (
-        input: AgentSteerInput,
-        reason: AgentSteerRefusedError["reason"],
-        message: string,
-      ) =>
-        new AgentSteerRefusedError({
-          adapter: "claude",
-          reason,
-          expectedTurnId: input.expectedTurnId,
-          actualTurnId: activeTurnId(),
-          message,
-        });
-
-      /**
-       * A `priority: "now"` user frame into the logical turn. Claude acknowledges nothing, so the
-       * arm is journaled first: the result Claude prints when it aborts the running segment for
-       * these words must not end the turn, live or replayed.
-       */
-      const steer = Effect.fn("ClaudeAdapter.steer")(function* (input: AgentSteerInput) {
-        if (journal === undefined) {
-          return yield* refused(
-            input,
-            "unsupported",
-            "Claude is steered only with a control journal to replay it from.",
-          );
-        }
-        return yield* lane.withPermits(1)(
-          Effect.gen(function* () {
-            const turn = turns.turn;
-            if (turn._tag === "Idle") {
-              return yield* refused(input, "no-active-turn", "Claude has no running turn.");
-            }
-            if (turn.turnId !== input.expectedTurnId) {
-              return yield* refused(input, "target-changed", "Claude is running another turn.");
-            }
-            if (turn._tag !== "Running") {
-              return yield* refused(
-                input,
-                "in-continuation",
-                "Claude has not yet continued after the last steer.",
-              );
-            }
-            if (turn.interrupting) {
-              return yield* refused(input, "no-active-turn", "Claude's turn is being stopped.");
-            }
-            if (closed) {
-              return yield* undelivered("not-written", "The Claude session is closed.", null);
-            }
-            const armed = yield* recordControl(input.id, turn.turnId, "steer-now").pipe(
-              Effect.mapError((error) => undelivered("not-written", error.message, error)),
-            );
-            yield* fold({ _tag: "Control", control: armed });
-            // Closed while the journal was writing: nothing is sent, and the journal says so, so
-            // a rehydrate disarms at the same line.
-            if (closed) {
-              const disarmed = yield* recordControl(input.id, turn.turnId, "not-written").pipe(
-                Effect.option,
-              );
-              if (disarmed._tag === "Some") {
-                yield* fold({ _tag: "Control", control: disarmed.value });
-              }
-              return yield* undelivered("not-written", "The Claude session is closed.", null);
-            }
-            yield* send(userMessage(input.input, { uuid: input.id })).pipe(
-              Effect.mapError((error) => undelivered("uncertain", error.message, error)),
-            );
-            const acceptance: AgentSteerAcceptance = {
-              _tag: "TransportWritten",
-              providerTurnId: turn.turnId,
-            };
-            return acceptance;
-          }),
-        );
       });
 
       const respond = Effect.fn("ClaudeAdapter.respond")(function* (
@@ -1077,9 +916,9 @@ export const ClaudeAdapter: AgentAdapter = {
 
       return {
         sendTurn,
-        interrupt,
+        interrupt: controls.interrupt,
         activeSteering: { supported: journal !== undefined, interruptsTools: true },
-        steer,
+        steer: controls.steer,
         respond,
         respondInput,
         events: Stream.fromPubSub(events),
