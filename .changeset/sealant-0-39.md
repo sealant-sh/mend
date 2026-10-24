@@ -29,3 +29,5 @@ digest. Its workspaces run sealantd 0.20.
 - A workspace's SSH sessions, VS Code Remote-SSH included, can run as its owner's own Linux user,
   the person their Sealant user is bound to. SFTP runs as that user too. The Fedora and Ubuntu
   images carry an `sftp-server`, with every sshd unit masked.
+- A terminal's file descriptors stay out of the programs it starts, which get only their standard
+  input and output, and a directory a dotfiles copy makes takes the copied tree's mode.
