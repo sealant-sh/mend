@@ -534,11 +534,15 @@ the agent in the session's live workspace (`POST /api/sessions/:id/shell`), reac
 
 `assets.createUrl` supports `workspace-file` and `media-file` in a visible thread's worktree,
 including the default captured store. Images, HTML, PDF, video and audio use Mend's authenticated
-raw file route. A captured mint selects the effective capture, including the verified-head fallback,
-and pins that capture for every fetch, seek and document dependency. Mend returns its capture ID and
-an "observed at capture n" stamp. Files omitted by the capture, including gitignored files,
-return 404. `projects.readFile` retains its existing text and binary-file response. Project favicons
-return t3code's `project-favicon-missing` marker until a default-branch worktree exists.
+raw file route. A captured mint selects the capture the JSON read selects, including the
+verified-head fallback; a head that failed verification with no verified capture below it is read as
+it is. The mint pins that capture for every fetch, seek and document dependency, and the gateway
+refuses an answer from any other capture. Mend returns its capture ID and an "observed at capture n"
+stamp. Files omitted by the capture, including gitignored files, return 404. Raw reads serve regular
+files only: a captured or checkpoint Git symlink entry returns 404, though `projects.readFile`
+returns its target text. `projects.readFile` retains its existing text and binary-file response.
+Project favicons return t3code's `project-favicon-missing` marker until a default-branch worktree
+exists.
 
 `GET|HEAD /api/worktrees/:id/raw?path=&within=&at=` also reads checkpoints. Captured checkpoints
 require their retained historical capture; missing evidence never selects current bytes. The
@@ -584,11 +588,15 @@ budget. Mend bounds raw reads on its side too (`accountRawReads`, `rawReads`,
 docs/operations/budgets.md).
 
 For captured and checkpoint files, Mend unpacks at most 2 GiB per file into
-`<MEND_STORE_ROOT>/_cache/raw`. The disk cache holds at most 8 GiB, including write reservations,
-and evicts the least recently used files that no stream holds open. It admits two unpackers at a
-time, deduplicates by repository and blob ID, and publishes verified bytes by atomic rename from
-unique temporary files. Startup removes crashed temporary files. Warm opens and seeks use the cached
-descriptor without Git, capture preparation or a project lock.
+`<MEND_STORE_ROOT>/_cache/raw`, one directory every Mend process on the store shares. The cache
+holds at most 8 GiB, counted from the directory itself, write reservations included. It evicts the
+least recently used files that no process has read for a minute; a process refreshes the lease of
+every file a stream holds open. Each process admits two unpackers at a time, each blob is unpacked
+once across processes, files are shared by project and blob ID, and verified bytes are published by
+atomic rename from unique temporary files. Files a crashed process left behind go stale and are
+removed. Preparation records which blob a capture or checkpoint holds at each path, so later opens
+and seeks, in any process, use the cached file without Git, capture restoration or a project lock. A
+cached file another process removed is prepared again.
 
 Minting waits about ten seconds for preparation. Mend then answers `RawFilePreparing` with 503, and
 t3code shows an unavailable preview while preparation continues. Opening again once ready succeeds
