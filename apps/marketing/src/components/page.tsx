@@ -163,10 +163,7 @@ export function MarketingPage() {
               className={`grid border-t ${RULE} lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]`}
             >
               <div className={`px-5 pt-8 sm:px-8 lg:border-r ${RULE} lg:py-10`}>
-                <p className="font-mono text-[11.5px] tracking-[0.08em] text-muted-foreground uppercase">
-                  {feature.kicker}
-                </p>
-                <h3 className="mt-3 max-w-[14ch] font-display text-[2.5rem] leading-[0.98] font-bold tracking-[-0.035em] text-balance lg:text-[3rem]">
+                <h3 className="max-w-[14ch] font-display text-[2.5rem] leading-[0.98] font-bold tracking-[-0.035em] text-balance lg:text-[3rem]">
                   {feature.title}
                 </h3>
               </div>
@@ -191,9 +188,6 @@ export function MarketingPage() {
                 <h3 className="font-mono text-[12px] font-medium tracking-[0.08em] uppercase">
                   {group.label}
                 </h3>
-                <p className="mt-2 text-[13.5px] leading-relaxed text-muted-foreground">
-                  {group.note}
-                </p>
               </div>
               <div
                 className={`grid gap-px bg-[var(--sw-ink)] max-lg:border-t max-lg:border-[var(--sw-ink)] ${
