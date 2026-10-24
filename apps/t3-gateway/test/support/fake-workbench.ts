@@ -675,6 +675,7 @@ export class FakeWorkbench {
       return json(200, { checkpoints: this.checkpoints.get(id) ?? [] });
     }
     if (method === "GET" && collection === "worktrees" && sub === "contents") {
+      if (this.goneWorktrees.has(id)) return json(404, { _tag: "WorktreeNotFound", id });
       const asked = url.searchParams.get("path");
       const query = url.searchParams.get("query");
       if (asked !== null) {
@@ -1331,6 +1332,8 @@ export class FakeWorkbench {
    * or at a checkpoint (keyed by checkpoint id).
    */
   readonly fileContents = new Map<string, Map<string, string>>();
+  /** Worktrees `GET /api/worktrees/:id/contents` answers 404 `WorktreeNotFound` for. */
+  readonly goneWorktrees = new Set<string>();
   /** Files every new worktree starts with (its t3.json, say), by path. */
   readonly newWorktreeFiles = new Map<string, string>();
   /** `GET /api/changes/:id/stats`, by change id. */

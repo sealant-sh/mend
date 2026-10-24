@@ -298,7 +298,18 @@ export const makeFileHandlers = (input: {
           ),
         );
       const file = answer.file;
-      if (file === null) return yield* failed("path_not_file");
+      if (file === null) {
+        if (request.allowMissing !== true) return yield* failed("path_not_file");
+        // An optional file (`t3.json`) that is not there, as t3code's own server answers it.
+        const absent: ProjectReadFileResult = {
+          relativePath: request.relativePath,
+          contents: "",
+          byteLength: 0,
+          truncated: false,
+          exists: false,
+        };
+        return absent;
+      }
       if (file.binary || file.contents === null) return yield* failed("binary_file");
       const result: ProjectReadFileResult = {
         relativePath: request.relativePath,

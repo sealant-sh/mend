@@ -383,7 +383,9 @@ thread's worktree as it stands through Mend's `GET /api/worktrees/:id/contents`,
 
 - A file comes back as text, at most 1 MiB of it (`truncated` says so); a binary file answers
   `binary_file`, a missing one `path_not_file`, a path Mend refuses (outside the worktree, `.git`)
-  `workspace_path_outside_root`.
+  `workspace_path_outside_root`. A read with `allowMissing` (the client's read of `t3.json`) answers
+  a missing file as t3code's own server does: empty contents with `exists: false`. A worktree Mend
+  no longer has still fails.
 - A search matches across the worktree, untracked files included and ignored ones not, up to 500
   lines. The gateway marks where each line matched, as t3code highlights it: a literal with
   `indexOf`, a regex in a worker stopped after 250 ms (`src/highlight.ts`), so the client's regex

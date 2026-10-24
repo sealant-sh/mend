@@ -358,7 +358,9 @@ export class MendClient extends Context.Service<
     ) => MendRead<MendRangeDiff>;
     /**
      * `GET /api/worktrees/:id/contents`: one file (as it stands, or at a checkpoint) or the lines a
-     * search matches. A path Mend refuses (outside the worktree) is its 422, a refusal.
+     * search matches. A path Mend refuses (outside the worktree) is its 422, a refusal. A path with
+     * no readable file is `file: null` (Mend's 404 `NotFound` naming the path); a worktree or
+     * checkpoint Mend does not have is `MendNotFound`.
      */
     readonly worktreeContents: (
       deviceToken: string,
@@ -526,6 +528,9 @@ const MendErrorBody = Schema.Struct({
   message: Schema.optional(Schema.String),
 });
 const decodeErrorBody = Schema.decodeUnknownOption(MendErrorBody);
+/** Mend's 404 body: `NotFound` names what it has nothing at, `WorktreeNotFound` the worktree. */
+const MendNotFoundBody = Schema.Struct({ _tag: Schema.String, id: Schema.String });
+const decodeNotFoundBody = Schema.decodeUnknownOption(MendNotFoundBody);
 const decodePointer = Schema.decodeUnknownOption(Schema.fromJsonString(MendEventPointer));
 
 /** The pointer an SSE `data:` line carries, or null for a heartbeat, a blank or a stray line. */
@@ -909,7 +914,18 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             ).pipe(HttpClientRequest.acceptJson, HttpClientRequest.bearerToken(deviceToken)),
           );
           if (response.status === 401) return yield* new MendDeviceRefused({ operation });
-          if (response.status === 404) return yield* new MendNotFound({ operation });
+          if (response.status === 404) {
+            const missing = decodeNotFoundBody(
+              yield* response.json.pipe(Effect.orElseSucceed((): unknown => null)),
+            );
+            const noFile =
+              "path" in question &&
+              missing._tag === "Some" &&
+              missing.value._tag === "NotFound" &&
+              missing.value.id === question.path;
+            if (noFile) return { file: null, search: null };
+            return yield* new MendNotFound({ operation });
+          }
           if (response.status >= 400 && response.status < 500) {
             const refusal = decodeErrorBody(
               yield* response.json.pipe(Effect.orElseSucceed((): unknown => null)),
