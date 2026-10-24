@@ -1,5 +1,8 @@
 import {
   CurrentUser,
+  RawFileUnavailable,
+  RawFileNotFound,
+  RawFileTooLarge,
   MendApi,
   NotFound,
   RemovalReport,
@@ -31,13 +34,94 @@ import {
 } from "@mend/db";
 import { currentAgentProcess, heldRepositoriesRefusal } from "@mend/domain/workbench";
 import { captureHoldWords, SessionEngine, startFromBase, WorktreeReads } from "@mend/sessions";
-import { type DiffFileFact, isWorktreeRelativePath, Store } from "@mend/store";
+import { type DiffFileFact, DeploymentConfig, isWorktreeRelativePath, Store } from "@mend/store";
 import { Clock, Duration, Effect } from "effect";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 import { unlandedWork } from "../landing-state.ts";
 import { LIVE_STATES, observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
+
+const rawFile = (
+  id: import("@mend/domain").WorktreeId,
+  query: {
+    readonly path: string;
+    readonly within?: string | undefined;
+    readonly at?: import("@mend/domain").CheckpointId | undefined;
+  },
+) =>
+  Effect.gen(function* () {
+    const worktree = yield* (yield* ProjectAccess)
+      .worktree(id)
+      .pipe(Effect.mapError(() => new WorktreeNotFound({ id })));
+    if (query.at !== undefined) {
+      const chain = yield* (yield* CheckpointsRepo).listForWorktree(worktree.id);
+      if (
+        !chain.some(
+          (checkpoint) => checkpoint.id === query.at && checkpoint.worktreeId === worktree.id,
+        )
+      )
+        return yield* new RawFileNotFound({});
+      return yield* new RawFileUnavailable({ mode: "checkpoint" });
+    }
+    if ((yield* DeploymentConfig).sessionStore === "captured")
+      return yield* new RawFileUnavailable({ mode: "captured" });
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const params = new URL(request.url, "http://mend.internal").searchParams;
+    if (["path", "within", "at"].some((key) => params.getAll(key).length > 1))
+      return yield* new RawFileNotFound({});
+    const file = yield* (yield* WorktreeReads)
+      .openRawFile(worktree.projectId, worktree.id, {
+        path: query.path,
+        within: query.within ?? "",
+      })
+      .pipe(
+        Effect.mapError((error) =>
+          error.reason === "too-large" ? new RawFileTooLarge({}) : new RawFileNotFound({}),
+        ),
+      );
+    const headers: Record<string, string> = {
+      "content-type": "application/octet-stream",
+      "cache-control": "private, no-store",
+      "accept-ranges": "bytes",
+      "x-mend-file-path": encodeURIComponent(file.canonicalPath),
+      "x-mend-file-revision": file.revision,
+      "content-length": String(file.size),
+    };
+    let offset = 0;
+    let length = file.size;
+    let status = 200;
+    const range =
+      request.method === "HEAD" || request.headers["if-range"] !== undefined
+        ? undefined
+        : request.headers.range;
+    const match =
+      range === undefined || range.length > 1024 ? null : /^bytes=(\d*)-(\d*)$/i.exec(range.trim());
+    if (match !== null && (match[1] || match[2])) {
+      const first = match[1] ? BigInt(match[1]) : null;
+      const last = match[2] ? BigInt(match[2]) : null;
+      const size = BigInt(file.size);
+      if (!(first !== null && last !== null && last < first)) {
+        if (size === 0n || (first !== null && first >= size) || (first === null && last === 0n)) {
+          return HttpServerResponse.empty({
+            status: 416,
+            headers: { ...headers, "content-length": "0", "content-range": `bytes */${size}` },
+          });
+        }
+        const start = first ?? (last === null || last >= size ? 0n : size - last);
+        const end = first === null || last === null || last >= size ? size - 1n : last;
+        offset = Number(start);
+        length = Number(end - start + 1n);
+        status = 206;
+        headers["content-range"] = `bytes ${start}-${end}/${size}`;
+        headers["content-length"] = String(length);
+      }
+    }
+    return request.method === "HEAD"
+      ? HttpServerResponse.empty({ status, headers })
+      : HttpServerResponse.stream(file.read(offset, length), { status, headers });
+  });
 
 /** How much of one file a read answers: enough to show it, never a large artifact whole. */
 const FILE_READ_LIMIT = 1024 * 1024;
@@ -188,6 +272,8 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
           );
       }),
     )
+    .handle("raw", ({ params, query }) => rawFile(params.id, query))
+    .handle("rawHead", ({ params, query }) => rawFile(params.id, query))
     .handle("list", ({ params }) =>
       Effect.gen(function* () {
         const worktrees = yield* WorktreesRepo;

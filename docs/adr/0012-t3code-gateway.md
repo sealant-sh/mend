@@ -169,11 +169,16 @@ vendored group.
 
 ### Additive reads in Mend (phase 3)
 
-Two read endpoints, neither changing behaviour:
+Three additive read endpoints:
 
 - `GET /api/worktrees/:id/diff?from=&to=`, a checkpoint-range diff over the existing
   `WorktreeReads.diffRange` and `diffFileFacts` (`packages/sessions/src/worktree-reads.ts:115-128`).
 - A worktree file read for `projects.readFile` and content search.
+- Added 2026-10-24, decision 6: `GET|HEAD /api/worktrees/:id/raw?path=&within=&at=` streams current
+  co-located worktree files, including single byte ranges. The store opens a contained descriptor
+  and applies `within` to its resolved path. Captured worktrees and known checkpoints return typed
+  409 refusals until their raw reads exist; unknown or foreign checkpoints return 404. The gateway
+  owns asset grants under ADR 0004's dated decision A, including chat images.
 
 Checkpoints stay unlinked to turns; the gateway correlates them by session and time, and says so
 when sessions share a worktree.

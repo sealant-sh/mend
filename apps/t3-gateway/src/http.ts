@@ -414,15 +414,18 @@ export const OrchestrationGroupLive = HttpApiBuilder.group(
  * call the environment cross-origin.
  */
 export const GatewayCorsLive: Layer.Layer<never, never, HttpRouter.HttpRouter> = HttpRouter.cors({
-  allowedMethods: ["GET", "POST", "OPTIONS"],
+  allowedMethods: ["GET", "HEAD", "POST", "OPTIONS"],
   allowedHeaders: [
     "authorization",
     "b3",
     "traceparent",
     "content-type",
     "dpop",
+    "range",
+    "if-range",
     ORCHESTRATION_PROTOCOL_HEADER,
   ],
+  exposedHeaders: ["content-length", "content-range", "accept-ranges"],
   maxAge: 600,
 });
 

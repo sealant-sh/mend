@@ -91,6 +91,8 @@ import {
   Effect,
   Layer,
   ManagedRuntime,
+  Logger,
+  Tracer,
   Queue,
   Schema,
   Stream,
@@ -114,6 +116,8 @@ import { ExposureConfig, type ExposureOutcome } from "../../src/exposure.ts";
 import { GithubIdentityLive } from "../../src/github-identity.ts";
 import { HandoffStartLive } from "../../src/handoff-start.ts";
 import { MemberRemovalLive } from "../../src/member-removal.ts";
+import { rawFilePrivacy, RawFileTracingDisabledLive } from "../../src/raw-file-privacy.ts";
+import { apiResponseHeaders } from "../../src/response-headers.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
 import { Gh } from "../../src/routes/github.ts";
@@ -136,6 +140,7 @@ export interface TenancyApi {
     method: string,
     path: string,
     body?: unknown,
+    headers?: Readonly<Record<string, string>>,
   ) => Promise<Response>;
   readonly postBytes: (
     user: HarnessUser | null,
@@ -179,6 +184,9 @@ export const createTenancyApi = async (
   /** Budgets for this world; the defaults unless a test wants one tight enough to reach. */
   limits: Partial<BudgetLimits> = {},
   options: {
+    readonly logs?: string[];
+    readonly spans?: Tracer.Span[];
+    readonly browserHeaders?: boolean;
     readonly urlBearers?: "accept" | "refuse";
     readonly clock?: () => number;
     /** Effect-owned request deadlines, when a test drives them with TestClock. */
@@ -513,7 +521,12 @@ export const createTenancyApi = async (
     Layer.provideMerge(ticketsLayer),
     Layer.provideMerge(dependencies),
   );
-  const apiLayer = MendApiLive.pipe(
+  const apiLayer = Layer.mergeAll(
+    MendApiLive,
+    rawFilePrivacy,
+    options.browserHeaders ? apiResponseHeaders : Layer.empty,
+  ).pipe(
+    Layer.provideMerge(RawFileTracingDisabledLive),
     Layer.provide(authorization),
     Layer.provide(HttpServer.layerServices),
   );
@@ -523,7 +536,30 @@ export const createTenancyApi = async (
     options.effectClock === undefined
       ? services
       : Context.add(services, Clock.Clock, options.effectClock);
-  const { handler, dispose } = HttpRouter.toWebHandler(apiLayer, { disableLogger: true });
+  const { handler, dispose } = HttpRouter.toWebHandler(
+    apiLayer.pipe(
+      Layer.provideMerge(
+        Layer.succeed(
+          Tracer.Tracer,
+          Tracer.make({
+            span(spanOptions) {
+              const span = Tracer.nativeTracer.span(spanOptions);
+              options.spans?.push(span);
+              return span;
+            },
+          }),
+        ),
+      ),
+      Layer.provideMerge(
+        options.logs === undefined
+          ? Layer.empty
+          : Logger.layer([
+              Logger.make((entry) => options.logs?.push(String(Logger.formatJson.log(entry)))),
+            ]),
+      ),
+    ),
+    { disableLogger: options.logs === undefined },
+  );
   const rawLayer = Layer.merge(TtyRoutes, ServiceTunnelRoutes).pipe(
     Layer.provide(HttpServer.layerServices),
     Layer.provide(authorization),
@@ -578,8 +614,8 @@ export const createTenancyApi = async (
 
   return {
     world,
-    request: (user, method, path, body) => {
-      const headers = new Headers();
+    request: (user, method, path, body, extraHeaders) => {
+      const headers = new Headers(extraHeaders);
       if (user !== null) headers.set("authorization", `Bearer ${user}`);
       if (body !== undefined) headers.set("content-type", "application/json");
       return handler(
