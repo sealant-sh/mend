@@ -55,7 +55,7 @@ export type ClaudeTurnState =
    * A Stop ended the turn while Claude may still answer a steer it was written: no turn is open,
    * and none is sent until Claude opens one for the steer or reports idle.
    */
-  | { readonly _tag: "Draining"; readonly stoppedTurnId: string; readonly steerId: string };
+  | { readonly _tag: "Draining"; readonly stoppedTurnId: string };
 
 export interface ClaudeTurns {
   readonly turn: ClaudeTurnState;
@@ -155,7 +155,7 @@ export const claudeTurnUsage = (segments: ReadonlyArray<ClaudeSegment>): AgentTu
 
 /**
  * End the logical turn once, then open the next one a rehydrate already knows started, or drain
- * the steer `unanswered` names.
+ * a steer Claude may still answer.
  */
 const complete = (
   state: ClaudeTurns,
@@ -163,7 +163,7 @@ const complete = (
   segments: ReadonlyArray<ClaudeSegment>,
   status: ClaudeTurnStatus,
   error: string | null,
-  unanswered: string | null = null,
+  drains = false,
 ): ClaudeTurnFold => {
   const completed: ClaudeTurnEffect = {
     _tag: "TurnCompleted",
@@ -174,10 +174,9 @@ const complete = (
   };
   const [next, ...rest] = state.replayQueue;
   if (next === undefined) {
-    const turn: ClaudeTurnState =
-      unanswered === null
-        ? { _tag: "Idle" }
-        : { _tag: "Draining", stoppedTurnId: turnId, steerId: unanswered };
+    const turn: ClaudeTurnState = drains
+      ? { _tag: "Draining", stoppedTurnId: turnId }
+      : { _tag: "Idle" };
     return { state: { ...state, turn }, effects: [completed] };
   }
   return {
@@ -223,7 +222,7 @@ const foldControl = (state: ClaudeTurns, control: AgentControlCheckpoint): Claud
         // A person's Stop wins over a steer: the segment it ends is the turn's last, and a gap
         // between segments ends now rather than waiting for a continuation the Stop cancels.
         case "AwaitingContinuation":
-          return complete(state, turn.turnId, turn.segments, "interrupted", null, turn.controlId);
+          return complete(state, turn.turnId, turn.segments, "interrupted", null, true);
         case "Running":
         case "SteerArmed":
           return {
@@ -313,7 +312,7 @@ export const foldClaudeTurn = (state: ClaudeTurns, input: ClaudeTurnInput): Clau
         segments,
         input.status,
         input.error,
-        turn._tag === "Stopping" ? turn.steerId : null,
+        turn._tag === "Stopping" && turn.steerId !== null,
       );
     }
     case "SessionIdle": {

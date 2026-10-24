@@ -35,6 +35,7 @@ export interface ClaudeControls {
   readonly replayDue: Effect.Effect<void>;
   /** Reduce one output line on the lane, then fold the recorded controls due after it. */
   readonly line: (reduce: Effect.Effect<void>) => Effect.Effect<void>;
+  /** Run reduction that is not a line (the end of output) on the lane. */
   readonly exclusive: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E>;
   readonly steer: (
     input: AgentSteerInput,
