@@ -250,9 +250,17 @@ policy (`apps/t3-gateway/src/assets.ts`).
 These are reusable bearer capabilities. A fetch checks the originating device even though the
 browser sends no authorization header. A fresh mint creates a new random token; its lifetime also
 ends with the bearer session. The gateway stores only the token hash, keeps paths redacted, and
-disables access logging and tracing for asset requests, including preflights and failures. Mend raw
-reads still authorize the account against the worktree on every request. This amendment does not
-change upgrade tickets or permit a device bearer in an asset URL.
+disables access logging and tracing for asset requests, including preflights and failures. The edge
+Caddy filters the token and the file name out of its access log and its own lines, and the raw
+read's query too. Mend raw reads still authorize the account against the worktree on every request.
+This amendment does not change upgrade tickets or permit a device bearer in an asset URL.
+
+Observed scope of a directory grant: t3code serves an HTML preview in a sandbox that runs its
+scripts with no `connect-src` limit, as the gateway does for parity. Such a page can read its own
+URL and send it anywhere, and for that hour the URL opens every previewable file below the page's
+directory: scripts, styles, fonts, images, PDF and HTML outside dot-directories. A page at the
+worktree root covers that much of the whole worktree. Image, audio and video URLs, and any
+`media-file` URL, name one file.
 
 ### Upgrade tickets (MEND-08)
 

@@ -545,29 +545,40 @@ are reusable for at most one hour and never outlive their originating bearer ses
 confirms that device through the same five-second check as bearer routes. File reads also recheck
 Mend's project access. Restarting the gateway forgets all asset grants.
 
-A grant names one canonical file, or its directory for HTML and PDF so relative resources load. Both
-lexical traversal and descriptor-resolved directory escapes are refused. MIME and sandbox CSP follow
-the opened target's extension, including symlinks, from one table pinned to t3code v0.1.2. Only
-audio and video forward a single `Range`; other previews always return the complete file. A
-`media-file` grant follows its file's device and inode, as t3code's does: an in-place edit keeps the
-URL working, and a replaced file is refused. `If-Range` falls back to the complete response. HEAD
-returns metadata without reading the body. Responses are `private, no-store`, with `nosniff`; SVG
-and HTML use t3code v0.1.2's sandbox policies. Failures before headers are plain 404; a failure
-after headers resets the connection, in the gateway and in Mend's raw route alike. Neither paths nor
-tokens enter asset access logs or traces. Mend raw reads disable access logs and traces too.
+A grant names one canonical file. A `workspace-file` HTML or PDF grant names its directory instead,
+so relative resources load; below that directory, as in t3code, no dot-segment and no audio or video
+is served, while the directory itself may sit inside one (`.reports/index.html`). Both lexical
+traversal and descriptor-resolved directory escapes are refused. MIME and sandbox CSP follow the
+opened target's extension, including symlinks, from one table pinned to t3code v0.1.2. Only audio
+and video forward a single `Range`; other previews always return the complete file. A `media-file`
+grant is always exact, whatever the file's type, and follows its file's device and inode, as
+t3code's does: an in-place edit keeps the URL working, and a replaced file is refused. `If-Range`
+falls back to the complete response. HEAD returns metadata without reading the body. Responses are
+`private, no-store`, with `nosniff`; SVG and HTML use t3code v0.1.2's sandbox policies. Failures
+before headers are plain 404; a failure after headers resets the connection, in the gateway and in
+Mend's raw route alike. Neither paths nor tokens enter asset access logs or traces, in any spelling
+of the route the router accepts. Mend raw reads disable access logs and traces too, and the edge
+Caddy that `mend server setup` writes filters both out of its own logs. Raw reads go through the
+device gate (`src/device-gate.ts`): a 401 refuses the device as every other device-token call does.
 
-Admission refuses new work without evicting usable grants or interrupting running reads. Limits are
-4,096 grants overall, 256 per device, and 8 MiB of grant metadata; eight simultaneous mints, two per
-device; 32 simultaneous reads, eight per device. Buffered chat-image reads separately reserve one
-full 8 MiB image allowance, at most two reads and 16 MiB total. Raw worktree bytes stream with
-backpressure, without a whole-file buffer. These are admission and memory limits; there is no
-raw-file size cap, disk cache or cumulative byte budget in this change.
+Limits are sized from how t3code v0.1.2 asks: one `createUrl` per visible image, all at once and
+again every 30 minutes, and a page of images loaded in parallel. They live in `AssetLimits`. A mint
+or a read past its share waits its turn for up to 30 seconds rather than failing: 8 mints at once
+per device (32 in all), 24 reads per device (96 in all, each holding the client's socket and one to
+Mend). Chat images are buffered whole, so reads also hold their image's size of a 64 MiB budget. A
+body whose reader takes no chunk for 30 seconds, such as a paused video, has its connection reset,
+which stops Mend's read and frees the slot; a player that resumes asks for its range again. A
+device's session keeps the three newest URLs of each file or image, and a newer mint retires the
+oldest, so a thread's re-mints never fill the device's 4,096 grants (16,384 in all, 16 MiB of grant
+records). Raw worktree bytes stream with backpressure, without a whole-file buffer. There is no
+raw-file size cap, disk cache or cumulative byte budget in this change. Mend bounds raw reads on its
+side too (`accountRawReads`, `rawReads`, docs/operations/budgets.md).
 
 `test/raw-assets.test.ts` exercises the RPC handlers and HTTP routes in process, with real device
 authentication, SQLite grant ownership and Mend response decoding. It covers exact binary bytes,
-canonical names and CSP, media ranges, directory boundaries, revocation, expiry, admission,
-backpressure, cancellation and late failures. Store descriptor tests and Mend route tests cover
-filesystem containment and private-project access separately.
+canonical names and CSP, media ranges, directory boundaries, revocation, expiry, waiting admission,
+stalled readers, re-mints over hours, backpressure, cancellation and late failures. Store descriptor
+tests and Mend route tests cover filesystem containment and private-project access separately.
 
 ## Run it
 
