@@ -323,7 +323,8 @@ export const renderT3GatewayOverlay = (posture: ServerPosture): string | undefin
 /**
  * `Caddyfile.t3`: the edge's site for the gateway, which the Caddyfile imports. TLS ends here, as
  * for Mend's own origin; the gateway's sockets and streams are long-lived. Its socket carries a
- * single-use ticket in the query (`wsTicket`), which no log holds.
+ * single-use ticket in the query (`wsTicket`), and an asset URL its token and file name in the
+ * path; no log holds either. Its uri filter is the one Mend's own Caddyfile carries.
  */
 export const T3_GATEWAY_CADDYFILE = [
   "# Written by mend server setup --t3-gateway-origin: the t3code gateway (docs/adr/0012) on an",
@@ -339,12 +340,13 @@ export const T3_GATEWAY_CADDYFILE = [
   "\tlog {",
   "\t\toutput stdout",
   "\t\tformat filter {",
-  "\t\t\t# Keep absolute URL userinfo out of access logs, alongside the query filter below.",
+  "\t\t\t# Keep absolute URL userinfo out of access logs, alongside the query filter below, and",
+  "\t\t\t# an asset URL's token and file name (`/ast_…`, the path is the credential: ADR 0004).",
   "\t\t\twrap filter {",
   "\t\t\t\twrap json",
   "\t\t\t\tfields {",
   "\t\t\t\t\t# The query filter forwards the selected uri as a leaf to this wrapped encoder.",
-  '\t\t\t\t\turi regexp "^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@" "${1}REDACTED@"',
+  '\t\t\t\t\turi regexp "(?i:^([a-z][a-z0-9+.-]*://)[^/?#]*(@)|(/(?:r|%[57]2)(?:a|%[46]1)(?:w|%[57]7)(?:[/;][^?#]*)?[?])[^#]*|(/)ast_[a-z0-9_-]+[^?#]*)" "${1}${3}${4}REDACTED${2}"',
   "\t\t\t\t}",
   "\t\t\t}",
   "\t\t\tfields {",

@@ -24,6 +24,13 @@ import {
 const repositoryFile = (name: string): string =>
   fs.readFileSync(new URL(`../../../deploy/docker/${name}`, import.meta.url), "utf8");
 
+/** The access log's uri filter, applied the way Caddy's regexp filter does (Go's ReplaceAll). */
+const loggedUri = (caddyfile: string, uri: string) => {
+  const [, pattern = "", replacement = ""] =
+    /\buri regexp "([^"]+)" "([^"]*)"/.exec(caddyfile) ?? [];
+  return uri.replace(new RegExp(pattern, "g"), replacement.replace(/\$\{(\d+)\}/g, "$$$1"));
+};
+
 /** What a status line must never say: the report is facts beside a declaration, not a verdict. */
 const VERDICTS = /\bsafe\b|gate passed|passed\b|ready to expose|fit to expose|✓/i;
 
@@ -418,5 +425,50 @@ describe("where the t3code gateway is published (ADR 0012, ADR 0004)", () => {
     expect(T3_GATEWAY_CADDYFILE).toContain("replace wsTicket REDACTED");
     for (const line of declaredPostureLines({ bind: "100.94.101.28", t3GatewayPort: 3120 }))
       expect(line).not.toMatch(VERDICTS);
+  });
+
+  it("keeps asset tokens, file names and raw read paths out of both edges' access logs", () => {
+    const token = `ast_${"a1_-".repeat(10)}xyz`;
+    for (const caddyfile of [EDGE_CADDYFILE, T3_GATEWAY_CADDYFILE]) {
+      for (const uri of [
+        `/api/assets/${token}/private-name.png`,
+        `/api/assets/${token}/nested/private-name.css`,
+        `/API//assets/${token}/private-name.png`,
+        "/api/worktrees/w/raw?path=private-name.png&within=private-dir",
+        "/api/worktrees/w/raw/?path=private-name.png",
+        "/API/worktrees/w/RAW?path=private-name.png",
+        "/api/worktrees/w/r%61w?within=private-dir&path=x",
+        "/api/worktrees/w/raw;v=1?path=private-name.png",
+        "https://user:secret@host/api/worktrees/w/raw?path=private-name.png",
+      ]) {
+        const logged = loggedUri(caddyfile, uri);
+        for (const secret of [token, "private-name", "private-dir", "secret"])
+          expect(logged, uri).not.toContain(secret);
+      }
+      // Every other route logs as before.
+      for (const uri of [
+        "/api/worktrees/w/contents?path=README.md",
+        "/api/projects?raw=1",
+        "/api/forecast_x/y",
+        "/drawing/raw-notes",
+      ])
+        expect(loggedUri(caddyfile, uri)).toBe(uri);
+      expect(loggedUri(caddyfile, "https://user:secret@host/api/projects")).toBe(
+        "https://REDACTED@host/api/projects",
+      );
+    }
+  });
+
+  it("filters Caddy's own lines (a failed dial, a response cut short) like the access logs", () => {
+    const filters = [...EDGE_CADDYFILE.matchAll(/\buri regexp .*$/gm)].map(([line]) => line);
+    expect(filters).toHaveLength(2);
+    expect(
+      new Set([...filters, ...T3_GATEWAY_CADDYFILE.matchAll(/\buri regexp .*$/gm)].map(String))
+        .size,
+    ).toBe(1);
+    const global = /^\{\n([\s\S]*?)\n\}\n/m.exec(EDGE_CADDYFILE)?.[1] ?? "";
+    expect(global).toContain("\tlog default {");
+    for (const key of ["ticket", "token", "code", "wsTicket"])
+      expect(global).toContain(`replace ${key} REDACTED`);
   });
 });
