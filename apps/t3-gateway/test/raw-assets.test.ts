@@ -498,6 +498,43 @@ it.live(
     ),
 );
 
+it.live("serves documents and their dependencies from inside a dot-directory", () =>
+  withGateway((mend) =>
+    Effect.gen(function* () {
+      const { rpc } = yield* pairAndConnect(mend, "DOT");
+      const http = yield* HttpClient.HttpClient;
+      for (const name of [
+        ".reports/index.html",
+        ".reports/book.pdf",
+        ".reports/style.css",
+        ".reports/.cache/hidden.css",
+        "docs/.vitepress/dist/index.html",
+      ])
+        mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+          bytes: BYTES,
+          canonicalPath: name,
+        });
+      for (const name of [
+        ".reports/index.html",
+        ".reports/book.pdf",
+        "docs/.vitepress/dist/index.html",
+      ]) {
+        const url = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(name) });
+        const response = yield* http.get(url.relativeUrl);
+        assert.strictEqual(response.status, 200, name);
+        assert.deepStrictEqual(new Uint8Array(yield* response.arrayBuffer), BYTES);
+      }
+      const page = yield* rpc[WS_METHODS.assetsCreateUrl]({
+        resource: resource(".reports/index.html"),
+      });
+      const directory = page.relativeUrl.slice(0, page.relativeUrl.lastIndexOf("/"));
+      assert.strictEqual((yield* http.get(`${directory}/style.css`)).status, 200);
+      // Below the granted directory, a dot-segment stays hidden, as t3code's rule has it.
+      assert.strictEqual((yield* http.get(`${directory}/.cache/hidden.css`)).status, 404);
+    }),
+  ),
+);
+
 it.live("answers 416 only for the granted file itself, never for a replacement or an alias", () =>
   withGateway((mend) =>
     Effect.gen(function* () {
