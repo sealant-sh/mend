@@ -69,9 +69,6 @@ const rawFile = (
       return yield* new RawFileUnavailable({ mode: "checkpoint" });
     }
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const params = new URL(request.url, "http://mend.internal").searchParams;
-    if (["path", "within", "at"].some((key) => params.getAll(key).length > 1))
-      return yield* new RawFileNotFound({});
     const file = yield* (yield* WorktreeReads)
       .openRawFile(worktree.projectId, worktree.id, {
         path: query.path,

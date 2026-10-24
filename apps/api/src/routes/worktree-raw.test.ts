@@ -121,6 +121,9 @@ it("hides inaccessible files and refuses traversal and symlink escapes", async (
           .status,
       ).toBe(404);
   expect((await get("path=data.bin&within=docs", { range: "bytes=999999-" })).status).toBe(404);
+  // A repeated parameter fails query decoding before the handler runs.
+  for (const query of ["path=data.bin&path=empty.bin", "path=data.bin&within=&within=docs"])
+    expect((await get(query)).status).toBe(400);
   for (const user of ["carol", "bob"] as const)
     for (const headers of [{}, { range: "bytes=999999-" }])
       expect(
