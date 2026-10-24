@@ -5,6 +5,7 @@ import {
   AppWindow,
   Boxes,
   FolderSync,
+  MessagesSquare,
   Network,
   Pi,
   Smartphone,
@@ -46,14 +47,12 @@ export const START_STEPS: ReadonlyArray<{ command: string; text: string }> = [
 // ── capabilities ────────────────────────────────────────────────────────────
 
 export interface Feature {
-  readonly kicker: string;
   readonly title: string;
   readonly body: ReactNode;
 }
 
 export const FEATURES: ReadonlyArray<Feature> = [
   {
-    kicker: "one machine · all your projects",
     title: "All your sessions and worktrees in one place",
     body: (
       <>
@@ -72,7 +71,6 @@ export const FEATURES: ReadonlyArray<Feature> = [
     ),
   },
   {
-    kicker: "cloud agents · your hardware",
     title: "Cloud agents on your own hardware",
     body: (
       <>
@@ -94,7 +92,6 @@ export const FEATURES: ReadonlyArray<Feature> = [
     ),
   },
   {
-    kicker: "team · shared projects · shared control",
     title: "One server for your whole team",
     body: (
       <>
@@ -113,7 +110,6 @@ export const FEATURES: ReadonlyArray<Feature> = [
     ),
   },
   {
-    kicker: "preview · live link",
     title: "A live link to every change",
     body: (
       <>
@@ -130,7 +126,6 @@ export const FEATURES: ReadonlyArray<Feature> = [
     ),
   },
   {
-    kicker: "review · full record",
     title: "Code review that knows more than the diff",
     body: (
       <>
@@ -149,7 +144,6 @@ export const FEATURES: ReadonlyArray<Feature> = [
     ),
   },
   {
-    kicker: "one session store · any harness",
     title: "Harness agnostic",
     body: (
       <>
@@ -166,7 +160,6 @@ export const FEATURES: ReadonlyArray<Feature> = [
     ),
   },
   {
-    kicker: "slack · github",
     title: "Ask in Slack, get a live preview and a pull request",
     body: (
       <p>
@@ -191,7 +184,6 @@ export interface Integration {
 
 export interface IntegrationGroup {
   readonly label: string;
-  readonly note: string;
   readonly items: ReadonlyArray<Integration>;
 }
 
@@ -203,7 +195,6 @@ const glyph = (Icon: typeof Terminal) => <Icon className="size-[18px]" aria-hidd
 export const INTEGRATION_GROUPS: ReadonlyArray<IntegrationGroup> = [
   {
     label: "Agents",
-    note: "Each person signs in once with their own subscription.",
     items: [
       {
         name: "Claude Code",
@@ -233,7 +224,6 @@ export const INTEGRATION_GROUPS: ReadonlyArray<IntegrationGroup> = [
   },
   {
     label: "Where you work from",
-    note: "Attach to the same session from several places at once.",
     items: [
       {
         name: "Terminal",
@@ -246,6 +236,12 @@ export const INTEGRATION_GROUPS: ReadonlyArray<IntegrationGroup> = [
         icon: brand("vscode"),
         body: "Our extension, published on the VS Code Marketplace. Open any session's workspace over Remote-SSH, and a claude or codex you start in its terminal is recorded.",
         fact: "VS Code Marketplace · Remote-SSH",
+      },
+      {
+        name: "T3 Code",
+        icon: glyph(MessagesSquare),
+        body: "Keep T3 Code as your interface. Its threads, queue, approvals, diffs and terminal work against sessions on your Mend server.",
+        fact: "mend server setup --t3-gateway",
       },
       {
         name: "Browser",
@@ -263,7 +259,6 @@ export const INTEGRATION_GROUPS: ReadonlyArray<IntegrationGroup> = [
   },
   {
     label: "Team and shipping",
-    note: "Optional. Review works before anything is committed.",
     items: [
       {
         name: "Slack",
@@ -287,7 +282,6 @@ export const INTEGRATION_GROUPS: ReadonlyArray<IntegrationGroup> = [
   },
   {
     label: "Your environment",
-    note: "Sessions start with your setup already in place.",
     items: [
       {
         name: "Dotfiles",
@@ -311,7 +305,6 @@ export const INTEGRATION_GROUPS: ReadonlyArray<IntegrationGroup> = [
   },
   {
     label: "Where it runs",
-    note: "Your own hardware, reached over your own network.",
     items: [
       {
         name: "Docker",
