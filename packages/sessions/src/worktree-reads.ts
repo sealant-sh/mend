@@ -456,7 +456,6 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
         Effect.provideService(StoreRefsRepo, refs),
       );
     const lifetime = yield* Scope.Scope;
-    const preparationWait = yield* RawPreparationWait;
     const preparationSlots = yield* Semaphore.make(2);
     const rawCaptures = yield* Cache.makeWith(
       (key: {
@@ -576,11 +575,15 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
           const { ready, tree } = yield* Fiber.join(loading);
           const file = yield* runner.openRawBlobFile(ready.cache, { ...target, tree });
           return { ...file, stamp: ready.stamp };
-        }).pipe(
-          Effect.timeoutOrElse({
-            duration: preparationWait,
-            orElse: () => Effect.fail(new RawReadError({ reason: "preparing" })),
-          }),
+        }).pipe((open) =>
+          Effect.flatMap(RawPreparationWait, (duration) =>
+            open.pipe(
+              Effect.timeoutOrElse({
+                duration,
+                orElse: () => Effect.fail(new RawReadError({ reason: "preparing" })),
+              }),
+            ),
+          ),
         ),
       // The worktree as it stands is the head capture's tree.
       readFile: (projectId, worktreeId, relative, at, maxBytes) =>
