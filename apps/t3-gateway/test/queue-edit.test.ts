@@ -22,8 +22,7 @@ import {
   newEntry,
   reorder,
   edit,
-  sendNow,
-  stopped,
+  startQueued,
   type SessionView,
   type ThreadQueue,
 } from "../src/queue.ts";
@@ -259,6 +258,20 @@ describe("sending a held message now", () => {
         );
         assert.deepStrictEqual(turnInputs(mend), []);
 
+        // A run that is not waiting in the queue is refused in t3code's words.
+        const notWaiting = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "queued-run.start",
+            commandId: commandId(),
+            threadId: THREAD,
+            runId: running.id,
+          }),
+        );
+        assert.include(
+          Exit.isFailure(notWaiting) ? String(Cause.squash(notWaiting.cause)) : "",
+          "A queued user message can only be sent now while the thread is stopped.",
+        );
+
         yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
           type: "queued-run.start",
           commandId: commandId(),
@@ -458,13 +471,17 @@ describe("the queue's own rules", () => {
     };
     const queue = queueOf("queued", "queued", "queued");
     queue.held = true;
-    assert.isTrue(stopped(queue, idle));
-    assert.isFalse(stopped(queue, { ...idle, turnOpen: true }));
-    assert.isTrue(sendNow(queue, "run-2"));
+    assert.strictEqual(startQueued(queue, { ...idle, turnOpen: true }, "run-2"), "busy");
+    assert.strictEqual(startQueued(queue, idle, "run-9"), "gone");
+    assert.deepStrictEqual(order(queue), ["run-0", "run-1", "run-2"]);
+    assert.isTrue(queue.held);
+    assert.strictEqual(startQueued(queue, idle, "run-2"), "started");
     assert.deepStrictEqual(order(queue), ["run-2", "run-0", "run-1"]);
     assert.isFalse(queue.held);
     for (const onItsWay of ["launching", "sending"] as const) {
-      assert.isFalse(stopped(queueOf(onItsWay, "queued"), idle));
+      const busy = queueOf(onItsWay, "queued");
+      assert.strictEqual(startQueued(busy, idle, "run-1"), "busy");
+      assert.strictEqual(startQueued(busy, idle, "run-0"), "gone");
     }
   });
 

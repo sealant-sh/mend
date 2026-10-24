@@ -198,7 +198,7 @@ export const dispatchCommand = (
     case "queue.resume":
       return answered(hub.commands.resumeQueue(command.threadId));
     case "queued-run.start":
-      return answered(hub.commands.resumeQueue(command.threadId, command.runId));
+      return answered(hub.commands.startQueued(command.threadId, command.runId));
     case "queued-run.edit": {
       const attachments = command.attachments;
       if (attachments?.some((attachment) => attachment.type !== "image") === true) {

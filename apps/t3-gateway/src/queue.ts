@@ -351,28 +351,26 @@ export const reorder = (queue: ThreadQueue, runId: string, beforeRunId: string |
   return true;
 };
 
-/** t3code's refusal of `queued-run.start` while a run is active (`Orchestrator.ts`, v0.1.2). */
-export const SEND_NOW_WHILE_RUNNING =
-  "A queued user message can only be sent now while the thread is stopped.";
+/**
+ * What `queued-run.start` did: the message went first, or why it did not. `busy` is a thread that
+ * is not stopped (a Mend turn open, or a message on its way to Mend); `gone` a message no longer
+ * waiting.
+ */
+export type StartQueued = "started" | "busy" | "gone";
 
 /**
- * The thread is stopped, as t3code's server takes `queued-run.start`: no Mend turn is open and no
- * message is on its way to Mend.
+ * `queued-run.start` (t3code's "Send now"), as t3code's server takes it: only on a stopped thread,
+ * the waiting message goes first among those still waiting and the queue resumes.
  */
-export const stopped = (queue: ThreadQueue, view: SessionView): boolean =>
-  !view.turnOpen && !queue.entries.some((entry) => canProgress(entry) && entry.state !== "queued");
-
-/**
- * `queued-run.start` on a stopped thread (`stopped`): a waiting message goes first among those
- * still waiting, and the queue resumes. False once it is on its way or settled.
- */
-export const sendNow = (queue: ThreadQueue, runId: string): boolean => {
+export const startQueued = (queue: ThreadQueue, view: SessionView, runId: string): StartQueued => {
   const entry = waiting(queue, runId);
-  if (entry === undefined) return false;
+  if (entry === undefined) return "gone";
+  const onItsWay = queue.entries.some((other) => canProgress(other) && other.state !== "queued");
+  if (view.turnOpen || onItsWay) return "busy";
   const first = queue.entries.find((candidate) => candidate.state === "queued");
   if (first !== undefined && first !== entry) reorder(queue, runId, first.runId);
   resume(queue);
-  return true;
+  return "started";
 };
 
 /**

@@ -456,13 +456,15 @@ export interface ThreadCommands {
     threadId: string,
     runId: string,
   ) => Effect.Effect<number, ThreadCommandFailure>;
+  /** Resumes a held queue (`queue.resume`). */
+  readonly resumeQueue: (threadId: string) => Effect.Effect<number, ThreadCommandFailure>;
   /**
-   * Resumes a held queue (`queue.resume`), or with `runId` sends that message first
-   * (`queued-run.start`), refused unless the thread is stopped, as on t3code's server.
+   * Sends a waiting message first and resumes the queue (`queued-run.start`), refused unless the
+   * thread is stopped, as on t3code's server.
    */
-  readonly resumeQueue: (
+  readonly startQueued: (
     threadId: string,
-    runId?: string,
+    runId: string,
   ) => Effect.Effect<number, ThreadCommandFailure>;
   /** New text for a message still waiting in the gateway's queue (`queued-run.edit`). */
   readonly editQueued: (
@@ -3186,7 +3188,7 @@ export const makePersonHub = (input: {
         return yield* locked(Effect.sync(() => sequence));
       });
 
-    const resumeQueue: ThreadCommands["resumeQueue"] = (threadId, runId) =>
+    const resumeQueue: ThreadCommands["resumeQueue"] = (threadId) =>
       locked(
         Effect.gen(function* () {
           if (archived.has(threadId)) {
@@ -3194,19 +3196,35 @@ export const makePersonHub = (input: {
               "The thread is archived: nothing in its queue is sent until it is unarchived. Unarchive it, then resume.",
             );
           }
-          if (runId !== undefined && !Queueing.stopped(queueOf(threadId), viewOf(threadId))) {
-            return yield* refused(Queueing.SEND_NOW_WHILE_RUNNING);
-          }
-          const resumed = yield* changeKept(threadId, (queue) => {
-            if (runId !== undefined) return Queueing.sendNow(queue, runId);
+          yield* changeKept(threadId, (queue) => {
             Queueing.resume(queue);
             return true;
           });
-          if (!resumed) return yield* refused("That message is not waiting in the queue any more.");
           yield* publishAll;
           return sequence;
         }),
       );
+
+    const startQueued: ThreadCommands["startQueued"] = (threadId, runId) =>
+      Effect.gen(function* () {
+        return yield* locked(
+          Effect.gen(function* () {
+            if (archived.has(threadId)) {
+              return yield* refused(
+                "The thread is archived: nothing in its queue is sent until it is unarchived. Unarchive it, then send the message.",
+              );
+            }
+            let outcome: Queueing.StartQueued = "gone";
+            const started = yield* changeKept(threadId, (queue) => {
+              outcome = Queueing.startQueued(queue, viewOf(threadId), runId);
+              return outcome === "started";
+            });
+            if (!started) return yield* refused(START_QUEUED_REFUSALS[outcome]);
+            yield* publishAll;
+            return sequence;
+          }),
+        );
+      });
 
     /** A change to what is still waiting in a thread's queue, published at once. */
     /** An edit or a reorder, kept before it is acknowledged (594-R2-1): refused, nothing changed. */
@@ -4060,7 +4078,8 @@ export const makePersonHub = (input: {
       send: (command) => send({ ...command, threadId: sessionIdOf(command.threadId) }),
       interrupt: (command) => interrupt({ ...command, threadId: sessionIdOf(command.threadId) }),
       cancelQueued: (threadId, runId) => cancelQueued(sessionIdOf(threadId), runId),
-      resumeQueue: (threadId, runId) => resumeQueue(sessionIdOf(threadId), runId),
+      resumeQueue: (threadId) => resumeQueue(sessionIdOf(threadId)),
+      startQueued: (threadId, runId) => startQueued(sessionIdOf(threadId), runId),
       editQueued: (threadId, runId, text, imageIds) => {
         const sessionId = sessionIdOf(threadId);
         const selection =
@@ -4536,6 +4555,12 @@ const isOutage = (error: MendUnavailable): boolean => error.status === null || e
 /** Why a change to a queue the state file could not keep was refused: nothing changed. */
 const QUEUE_NOT_KEPT =
   "The gateway could not write this to its state file, so nothing changed. Try again.";
+
+/** t3code's refusal of `queued-run.start` (`Orchestrator.ts`, v0.1.2). */
+const START_QUEUED_REFUSALS: Record<Exclude<Queueing.StartQueued, "started">, string> = {
+  busy: "A queued user message can only be sent now while the thread is stopped.",
+  gone: "A queued user message can only be sent now while the thread is stopped.",
+};
 
 /** The queue's clock (`queue.ts`): monotonic milliseconds, never wall time. */
 const queueNow = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos) / 1_000_000);

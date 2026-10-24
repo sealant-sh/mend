@@ -130,6 +130,7 @@ export const emptyHub: PersonHub = {
     interrupt: () => refused,
     cancelQueued: () => refused,
     resumeQueue: () => refused,
+    startQueued: () => refused,
     editQueued: () => refused,
     reorderQueued: () => refused,
     respond: () => refused,
