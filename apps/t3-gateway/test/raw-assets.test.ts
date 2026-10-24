@@ -459,38 +459,43 @@ it.effect(
     ),
 );
 
-it.live("keeps a media URL through an in-place edit and refuses it once the file is replaced", () =>
-  withGateway((mend) =>
-    Effect.gen(function* () {
-      const { rpc } = yield* pairAndConnect(mend, "IDENTITY");
-      const http = yield* HttpClient.HttpClient;
-      for (const name of ["movie.mp4", "image.png"]) {
-        const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
-          resource: resource(name, "media-file"),
-        });
-        assert.strictEqual(url.fileRevision, "a".repeat(64));
-        const edited = BYTES.toReversed();
-        mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
-          bytes: edited,
-          canonicalPath: name,
-          revision: "b".repeat(64),
-        });
-        const response = yield* http.get(url.relativeUrl);
-        assert.strictEqual(response.status, 200, `${name} after an edit`);
-        assert.deepStrictEqual(new Uint8Array(yield* response.arrayBuffer), edited);
-        mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
-          bytes: BYTES,
-          canonicalPath: name,
-          identity: "d".repeat(64),
-        });
-        assert.strictEqual(
-          (yield* http.get(url.relativeUrl)).status,
-          404,
-          `${name} after a replacement`,
-        );
-      }
-    }),
-  ),
+it.live(
+  "binds a media URL of any kind to its file: kept through an edit, refused once replaced",
+  () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "IDENTITY");
+        const http = yield* HttpClient.HttpClient;
+        for (const name of ["movie.mp4", "image.png", "docs/index.html", "docs/book.pdf"]) {
+          const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
+            resource: resource(name, "media-file"),
+          });
+          assert.strictEqual(url.fileRevision, "a".repeat(64));
+          // As t3code's media-file-exact claim: the file itself, never its directory.
+          const sibling = url.relativeUrl.replace(/\/[^/]+$/, "/style.css");
+          assert.strictEqual((yield* http.get(sibling)).status, 404, `${name} sibling`);
+          const edited = BYTES.toReversed();
+          mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+            bytes: edited,
+            canonicalPath: name,
+            revision: "b".repeat(64),
+          });
+          const response = yield* http.get(url.relativeUrl);
+          assert.strictEqual(response.status, 200, `${name} after an edit`);
+          assert.deepStrictEqual(new Uint8Array(yield* response.arrayBuffer), edited);
+          mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+            bytes: BYTES,
+            canonicalPath: name,
+            identity: "d".repeat(64),
+          });
+          assert.strictEqual(
+            (yield* http.get(url.relativeUrl)).status,
+            404,
+            `${name} after a replacement`,
+          );
+        }
+      }),
+    ),
 );
 
 it.live("answers 416 only for the granted file itself, never for a replacement or an alias", () =>

@@ -305,7 +305,8 @@ export const AssetUrlsLive: Layer.Layer<
                 directory: Redacted.make(directory === "." ? "" : directory),
                 suffix: Redacted.make(posix.basename(name)),
                 preview: subject.preview,
-                extent: type.directory ? "directory" : "exact",
+                // As t3code: only a workspace document opens its directory; a media file is exact.
+                extent: type.directory && subject.preview === "workspace" ? "directory" : "exact",
                 identity: subject.preview === "media" ? file.identity : null,
               };
               if (subject.preview === "media") fileRevision = file.revision;
