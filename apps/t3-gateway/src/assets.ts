@@ -4,9 +4,21 @@ import { posix } from "node:path";
 
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import type { AuthSessionId } from "@mend/t3-contracts";
-import { Cause, Clock, Context, Effect, Layer, Redacted, Schema, type Scope, Stream } from "effect";
+import {
+  Cause,
+  Clock,
+  Context,
+  Duration,
+  Effect,
+  Layer,
+  Redacted,
+  Schema,
+  type Scope,
+  Stream,
+} from "effect";
 import { HttpMiddleware, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
+import { type AdmissionLimits, makeAdmission } from "./admission.ts";
 import { GatewayAuth } from "./auth.ts";
 import { gateDeviceCalls } from "./device-gate.ts";
 import { Projections } from "./hub.ts";
@@ -33,6 +45,8 @@ export type AssetSubject =
       readonly kind: "image";
       readonly imageId: string;
       readonly fileName: Redacted.Redacted<string>;
+      /** Its size as kept, which a read holds of the image budget while it is sent. */
+      readonly sizeBytes: number;
     };
 
 interface IssuedAsset {
@@ -63,17 +77,47 @@ export class AssetUrls extends Context.Service<
   }
 >()("@mend/t3-gateway/AssetUrls") {}
 
-const policy = {
+export interface AssetLimits {
+  readonly mints: AdmissionLimits;
+  readonly reads: AdmissionLimits;
+  /** Bytes of chat images held in memory at once while they are sent. */
+  readonly imageBytes: number;
+  /** How long a mint or a read waits for room before it is refused. */
+  readonly wait: Duration.Duration;
+  /** How long a body waits for its reader to take the next chunk before the socket is reset. */
+  readonly stall: Duration.Duration;
+  readonly grants: number;
+  readonly grantsPerDevice: number;
+  readonly metadataBytes: number;
+}
+
+/**
+ * Sized from how t3code v0.1.2 asks (client-runtime state/assets.ts): one createUrl per visible
+ * image or preview, all at once and again every 30 minutes; a page of images loaded in parallel;
+ * a video that stops reading when paused. Under the gateway's 256 MiB heap and 1,024 descriptors
+ * (scripts/bundle-supervisor.mjs).
+ */
+export const DEFAULT_ASSET_LIMITS: AssetLimits = {
+  // A thread can show ~100 images; they queue for 8 Mend round trips at a time per device.
+  mints: { total: 32, perKey: 8, queue: 1024 },
+  // A read holds the client's socket and one to Mend: 96 × 2 plus 384 waiting sockets.
+  reads: { total: 96, perKey: 24, queue: 384 },
+  // A quarter of the heap: eight images at the 8 MiB maximum, far more at a screenshot's size.
+  imageBytes: 64 * 1024 * 1024,
+  // A stalled reader frees its slot within `stall`, so a waiter outlasts one.
+  wait: Duration.seconds(30),
+  // Longer than a slow phone takes over one 64 KiB chunk; a paused video frees its slot.
+  stall: Duration.seconds(30),
   grants: 4096,
   grantsPerDevice: 256,
   metadataBytes: 8 * 1024 * 1024,
-  mints: 8,
-  mintsPerDevice: 2,
-  reads: 32,
-  readsPerDevice: 8,
-  imageReads: 2,
-  imageBytes: 2 * MEND_IMAGE_MAX_BYTES,
 };
+
+/** A reference so a test can shrink the limits. */
+export const AssetLimits: Context.Reference<AssetLimits> = Context.Reference<AssetLimits>(
+  "@mend/t3-gateway/AssetLimits",
+  { defaultValue: () => DEFAULT_ASSET_LIMITS },
+);
 const cacheControl = "private, no-store";
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const validPath = (value: string) =>
@@ -170,7 +214,12 @@ const headersFor = (contentType: string, csp: string | null): Record<string, str
 });
 
 type Source =
-  | { readonly kind: "image"; readonly imageId: string; readonly name: Redacted.Redacted<string> }
+  | {
+      readonly kind: "image";
+      readonly imageId: string;
+      readonly name: Redacted.Redacted<string>;
+      readonly sizeBytes: number;
+    }
   | {
       readonly kind: "file";
       readonly worktreeId: string;
@@ -209,12 +258,13 @@ export const AssetUrlsLive: Layer.Layer<
     const grants = new Map<string, Grant>();
     const counts = new Map<string, number>();
     let metadataBytes = 0;
-    const activeMints = new Map<string, number>();
-    const activeReads = new Map<string, number>();
-    let mints = 0;
-    let reads = 0;
-    let imageReads = 0;
-    let imageBytes = 0;
+    const limits = yield* AssetLimits;
+    const mints = makeAdmission(limits.mints, limits.wait);
+    const reads = makeAdmission(limits.reads, limits.wait);
+    const imageBytes = makeAdmission(
+      { total: limits.imageBytes, perKey: Number.POSITIVE_INFINITY, queue: limits.reads.queue },
+      limits.wait,
+    );
     const sweep = (now: number) => {
       for (const [key, grant] of grants) {
         if (grant.expiresAt > now) continue;
@@ -225,43 +275,6 @@ export const AssetUrlsLive: Layer.Layer<
         else counts.set(grant.deviceId, remaining);
       }
     };
-    const reserve = (device: string, mint: boolean, image: boolean) =>
-      Effect.acquireRelease(
-        Effect.suspend(() => {
-          const map = mint ? activeMints : activeReads;
-          const count = map.get(device) ?? 0;
-          if (
-            (mint
-              ? mints >= policy.mints || count >= policy.mintsPerDevice
-              : reads >= policy.reads || count >= policy.readsPerDevice) ||
-            (image &&
-              (imageReads >= policy.imageReads ||
-                imageBytes + MEND_IMAGE_MAX_BYTES > policy.imageBytes))
-          )
-            return Effect.fail(new AssetUnavailable({}));
-          map.set(device, count + 1);
-          if (mint) mints++;
-          else reads++;
-          if (image) {
-            imageReads++;
-            imageBytes += MEND_IMAGE_MAX_BYTES;
-          }
-          return Effect.void;
-        }),
-        () =>
-          Effect.sync(() => {
-            const map = mint ? activeMints : activeReads;
-            const count = (map.get(device) ?? 1) - 1;
-            if (count === 0) map.delete(device);
-            else map.set(device, count);
-            if (mint) mints--;
-            else reads--;
-            if (image) {
-              imageReads--;
-              imageBytes -= MEND_IMAGE_MAX_BYTES;
-            }
-          }),
-      );
     const opened = (session: BearerSession, worktreeId: string, input: MendRawFileRequest) =>
       gateDeviceCalls(mend, (token) => projections.refuseDevice(session.mendUser.id, token))
         .openRawFile(Redacted.make(session.deviceToken), worktreeId, input)
@@ -274,21 +287,33 @@ export const AssetUrlsLive: Layer.Layer<
               .authenticateSession(sessionId)
               .pipe(Effect.mapError(() => new AssetUnavailable({})));
             const session = bearer.session;
-            yield* reserve(session.mendDeviceId, true, false);
+            if (!(yield* mints(session.mendDeviceId))) return yield* new AssetUnavailable({});
             yield* auth.confirmDevice(bearer).pipe(Effect.mapError(() => new AssetUnavailable({})));
             const now = yield* Clock.currentTimeMillis;
             sweep(now);
             if (
-              grants.size >= policy.grants ||
-              (counts.get(session.mendDeviceId) ?? 0) >= policy.grantsPerDevice
+              grants.size >= limits.grants ||
+              (counts.get(session.mendDeviceId) ?? 0) >= limits.grantsPerDevice
             )
               return yield* new AssetUnavailable({});
             let source: Source;
             let fileRevision: string | undefined;
             if (subject.kind === "image") {
               const name = Redacted.value(subject.fileName);
-              if (!validPath(name) || name.includes("/")) return yield* new AssetUnavailable({});
-              source = { kind: "image", imageId: subject.imageId, name: subject.fileName };
+              if (
+                !validPath(name) ||
+                name.includes("/") ||
+                !Number.isSafeInteger(subject.sizeBytes) ||
+                subject.sizeBytes < 0 ||
+                subject.sizeBytes > MEND_IMAGE_MAX_BYTES
+              )
+                return yield* new AssetUnavailable({});
+              source = {
+                kind: "image",
+                imageId: subject.imageId,
+                name: subject.fileName,
+                sizeBytes: subject.sizeBytes,
+              };
             } else {
               if (
                 !session.scopes.includes("filesystem:read") ||
@@ -338,9 +363,9 @@ export const AssetUrlsLive: Layer.Layer<
               ) + 128;
             // Other mints may have published while this one waited for descriptor metadata.
             if (
-              grants.size >= policy.grants ||
-              (counts.get(session.mendDeviceId) ?? 0) >= policy.grantsPerDevice ||
-              metadataBytes + cost > policy.metadataBytes
+              grants.size >= limits.grants ||
+              (counts.get(session.mendDeviceId) ?? 0) >= limits.grantsPerDevice ||
+              metadataBytes + cost > limits.metadataBytes
             )
               return yield* new AssetUnavailable({});
             const token = `ast_${randomBytes(32).toString("base64url")}`;
@@ -386,7 +411,11 @@ export const AssetUrlsLive: Layer.Layer<
               posix.basename(Redacted.value(source.kind === "image" ? source.name : source.path))
           )
             return yield* new AssetUnavailable({});
-          yield* reserve(grant.deviceId, false, source.kind === "image");
+          if (
+            !(yield* reads(grant.deviceId)) ||
+            (source.kind === "image" && !(yield* imageBytes(grant.deviceId, source.sizeBytes)))
+          )
+            return yield* new AssetUnavailable({});
           const bearer = yield* auth
             .authenticateSession(grant.sessionId)
             .pipe(Effect.mapError(() => new AssetUnavailable({})));
@@ -398,7 +427,7 @@ export const AssetUrlsLive: Layer.Layer<
             const kept = yield* state
               .imageBytes(grant.userId, source.imageId)
               .pipe(Effect.mapError(() => new AssetUnavailable({})));
-            if (kept === null || kept.bytes.byteLength > MEND_IMAGE_MAX_BYTES)
+            if (kept === null || kept.bytes.byteLength > source.sizeBytes)
               return yield* new AssetUnavailable({});
             return {
               status: 200,
@@ -406,7 +435,7 @@ export const AssetUrlsLive: Layer.Layer<
                 ...headersFor(kept.image.mimeType, null),
                 "content-length": String(kept.bytes.length),
               },
-              body: input.method === "HEAD" ? Stream.empty : Stream.make(kept.bytes),
+              body: input.method === "HEAD" ? Stream.empty : chunked(kept.bytes),
             };
           }
           if (!session.scopes.includes("filesystem:read")) return yield* new AssetUnavailable({});
@@ -461,6 +490,15 @@ export const AssetUrlsLive: Layer.Layer<
   }),
 );
 
+const CHUNK_BYTES = 64 * 1024;
+/** In pieces, so a stalled reader shows as one that stopped taking chunks. */
+const chunked = (bytes: Uint8Array) =>
+  Stream.fromIterable(
+    Array.from({ length: Math.ceil(bytes.byteLength / CHUNK_BYTES) }, (_, index) =>
+      bytes.subarray(index * CHUNK_BYTES, (index + 1) * CHUNK_BYTES),
+    ),
+  );
+
 const notFound = () =>
   HttpServerResponse.text("Not Found", { status: 404, headers: { "cache-control": cacheControl } });
 
@@ -469,6 +507,7 @@ export const AssetRouteLive: Layer.Layer<never, never, HttpRouter.HttpRouter | A
   Layer.unwrap(
     Effect.gen(function* () {
       const urls = yield* AssetUrls;
+      const stall = Duration.toMillis((yield* AssetLimits).stall);
       const handler = HttpMiddleware.withLoggerDisabled(
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
@@ -478,20 +517,33 @@ export const AssetRouteLive: Layer.Layer<never, never, HttpRouter.HttpRouter | A
             range: request.headers.range,
             ifRange: request.headers["if-range"],
           });
-          return request.method === "HEAD" || asset.status === 416
-            ? HttpServerResponse.empty({ status: asset.status, headers: asset.headers })
-            : HttpServerResponse.stream(
-                asset.body.pipe(
-                  Stream.onError(() =>
-                    Effect.sync(() => {
-                      // Node's adapter ends a short fixed-length body; a keep-alive client then waits.
-                      if (request.source instanceof IncomingMessage)
-                        NodeHttpServerRequest.toServerResponse(request).destroy();
-                    }),
-                  ),
-                ),
-                { status: asset.status, headers: asset.headers },
-              );
+          if (request.method === "HEAD" || asset.status === 416)
+            return HttpServerResponse.empty({ status: asset.status, headers: asset.headers });
+          // The one way to end a body whose headers went out: Node's adapter would end it short,
+          // and a keep-alive client would wait for the rest.
+          const reset = () => {
+            if (request.source instanceof IncomingMessage)
+              NodeHttpServerRequest.toServerResponse(request).destroy();
+          };
+          let taken = yield* Clock.currentTimeMillis;
+          yield* Effect.forkScoped(
+            Effect.gen(function* () {
+              while ((yield* Clock.currentTimeMillis) - taken < stall)
+                yield* Effect.sleep(stall / 4);
+              reset();
+            }),
+          );
+          return HttpServerResponse.stream(
+            asset.body.pipe(
+              Stream.tap(() =>
+                Effect.map(Clock.currentTimeMillis, (now) => {
+                  taken = now;
+                }),
+              ),
+              Stream.onError(() => Effect.sync(reset)),
+            ),
+            { status: asset.status, headers: asset.headers },
+          );
         }).pipe(
           Effect.catchCause((cause) =>
             Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(notFound()),
