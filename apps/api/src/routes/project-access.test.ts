@@ -912,13 +912,9 @@ const ADMITTED: Readonly<
   // Chain listing masks diff generation.
   "worktrees.diff": { status: 500, calls: ["checkpoints.listForWorktree"] },
   "worktrees.contents": { status: 500, calls: ["reads.readFile"] },
-  // This world is captured: an admitted raw read is refused as not available yet, before any read.
-  "worktrees.raw": {
-    status: 409,
-    calls: [],
-    body: { _tag: "RawFileUnavailable", mode: "captured" },
-  },
-  "worktrees.rawHead": { status: 409, calls: [], body: "" },
+  // The reads layer decides a raw read (the captured layer refuses it); this world has none.
+  "worktrees.raw": { status: 500, calls: ["reads.openRawFile"] },
+  "worktrees.rawHead": { status: 500, calls: ["reads.openRawFile"], body: "" },
   // newestLiveSessionId masks engine checkpoint after change lookup.
   "worktrees.checkpoint": {
     status: 500,
