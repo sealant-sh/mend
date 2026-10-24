@@ -449,4 +449,32 @@ describe("keys in a terminal agent's terminal (G4)", () => {
       await server.close();
     }
   });
+
+  it("does not read VS Code's replies to claude's replayed screen, its colour-scheme report included, as the person typing", async () => {
+    const vscode1142ThemeRefreshReplies = [
+      "\x1b[O",
+      "\x1bP>|xterm.js(6.1.0-beta.304)\x1b\\",
+      "\x1b[?1;2c",
+      "\x1b[?997;1n",
+    ];
+    const server = await startServer("process", false, CAROL_AGENT_IN_SHARED_A, false);
+    try {
+      const socket = await server.connect("carol");
+      for (const reply of vscode1142ThemeRefreshReplies)
+        socket.client.send(new TextEncoder().encode(reply));
+      socket.client.send(JSON.stringify({ t: "resize", cols: 132, rows: 47 }));
+      await wait(server.pty.written);
+      server.pty.output(LIVE_OUTPUT);
+      await wait(socket.live);
+      await socket.close();
+      expect(
+        server.pty.inputs.map((input) =>
+          typeof input === "string" ? input : new TextDecoder().decode(input),
+        ),
+      ).toEqual(vscode1142ThemeRefreshReplies);
+      expect(server.typed).toEqual([]);
+    } finally {
+      await server.close();
+    }
+  });
 });

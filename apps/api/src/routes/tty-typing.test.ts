@@ -16,6 +16,7 @@ describe("isTyping", () => {
     ["XTVERSION reply", `${ESC}P>|xterm.js(5.5.0)${ST}`],
     ["DSR cursor position report (CPR)", `${ESC}[24;1R`],
     ["DSR status report", `${ESC}[0n`],
+    ["colour-scheme report (DSR 997, VS Code)", `${ESC}[?997;1n`],
     ["DECRQM reply (DECRPM)", `${ESC}[?2004;1$y`],
     ["kitty keyboard flags reply", `${ESC}[?0u`],
     ["focus in", `${ESC}[I`],
