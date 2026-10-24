@@ -422,6 +422,88 @@ describe("Claude steering, synthetic", () => {
     ),
   );
 
+  it.effect("a journaled Stop waits for one line's projection, not the whole chunk's", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const wire = yield* makeWire();
+        const { records, journal } = memoryJournal();
+        const projecting = yield* Deferred.make<void>();
+        const released = yield* Deferred.make<void>();
+        const session = yield* ClaudeAdapter.start(wire.transport, {
+          cwd: "/workspace/repo",
+          providerSessionId: SESSION,
+          permissionMode: "bypass",
+          controlJournal: journal,
+          onEvent: (event) =>
+            event._tag === "item.updated" && event.item.text === "first line"
+              ? Deferred.succeed(projecting, undefined).pipe(
+                  Effect.andThen(Deferred.await(released)),
+                )
+              : Effect.void,
+        });
+        yield* session.sendTurn("first");
+        wire.push({ type: "system", subtype: "init", uuid: "init-1", session_id: SESSION });
+        yield* wire.drain;
+        wire.pushBytes(
+          concatBytes([
+            encodeLine({
+              type: "assistant",
+              session_id: SESSION,
+              message: { id: "msg-1", content: [{ type: "text", text: "first line" }] },
+            }),
+            encodeLine({
+              type: "assistant",
+              session_id: SESSION,
+              message: { id: "msg-2", content: [{ type: "text", text: "second line" }] },
+            }),
+          ]),
+        );
+        yield* Deferred.await(projecting);
+        const stopping = yield* Effect.forkChild(session.interrupt(), { startImmediately: true });
+        yield* Deferred.succeed(released, undefined);
+        yield* Fiber.join(stopping);
+        yield* wire.drain;
+        expect(records.map((control) => [control.action, control.afterOutputLine])).toEqual([
+          ["interrupt", 2],
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("an unjournaled steer is refused without waiting behind a line's projection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const wire = yield* makeWire();
+        const projecting = yield* Deferred.make<void>();
+        const released = yield* Deferred.make<void>();
+        const session = yield* ClaudeAdapter.start(wire.transport, {
+          cwd: "/workspace/repo",
+          providerSessionId: SESSION,
+          permissionMode: "bypass",
+          onEvent: (event) =>
+            event._tag === "item.updated"
+              ? Deferred.succeed(projecting, undefined).pipe(
+                  Effect.andThen(Deferred.await(released)),
+                )
+              : Effect.void,
+        });
+        const turnId = yield* session.sendTurn("first");
+        wire.push({
+          type: "assistant",
+          session_id: SESSION,
+          message: { id: "msg-1", content: [{ type: "text", text: "held" }] },
+        });
+        yield* Deferred.await(projecting);
+        const refusal = yield* session
+          .steer({ id: STEER_ID, expectedTurnId: turnId, input: "second" })
+          .pipe(Effect.flip);
+        expect(refusal).toMatchObject({ _tag: "AgentSteerRefusedError", reason: "unsupported" });
+        yield* Deferred.succeed(released, undefined);
+        yield* wire.drain;
+      }),
+    ),
+  );
+
   it.effect("a normal result that wins the race is an earlier segment, not the turn's end", () =>
     Effect.gen(function* () {
       const steps: ReadonlyArray<Step> = [

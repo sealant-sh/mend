@@ -714,45 +714,43 @@ export const ClaudeAdapter: AgentAdapter = {
         }
       };
 
+      // The lane is taken per line, not per chunk: a control waits for at most one line's
+      // projection, and positions count lines either way. The yield lets a waiting control in
+      // before the next line takes the lane back.
       const handleLine = (line: string): Effect.Effect<void> =>
-        parseLine(line).pipe(
-          Effect.andThen(
-            Effect.suspend(() => {
-              outputLines += 1;
-              return replayControlsDue();
-            }),
-          ),
-        );
-
-      const handleBytes = (bytes: Uint8Array): Effect.Effect<void, AgentProtocolError> =>
         lane
           .withPermits(1)(
-            Effect.suspend(() =>
-              Effect.forEach(decoder.push(bytes), handleLine, { discard: true }),
-            ),
-          )
-          .pipe(
-            Effect.andThen(
-              Effect.suspend(() =>
-                decoder.atLineBoundary() && transport.acknowledgeOutput !== undefined
-                  ? transport.acknowledgeOutput()
-                  : Effect.void,
+            parseLine(line).pipe(
+              Effect.andThen(
+                Effect.suspend(() => {
+                  outputLines += 1;
+                  return replayControlsDue();
+                }),
               ),
             ),
-          );
+          )
+          .pipe(Effect.andThen(journal === undefined ? Effect.void : Effect.yieldNow));
+
+      const handleBytes = (bytes: Uint8Array): Effect.Effect<void, AgentProtocolError> =>
+        Effect.suspend(() =>
+          Effect.forEach(decoder.push(bytes), handleLine, { discard: true }),
+        ).pipe(
+          Effect.andThen(
+            Effect.suspend(() =>
+              decoder.atLineBoundary() && transport.acknowledgeOutput !== undefined
+                ? transport.acknowledgeOutput()
+                : Effect.void,
+            ),
+          ),
+        );
 
       yield* replayControlsDue();
       yield* transport.output.pipe(
         Stream.runForEach(handleBytes),
         Effect.andThen(
-          lane.withPermits(1)(
-            Effect.suspend(() =>
-              Effect.forEach(decoder.finish(), handleLine, { discard: true }).pipe(
-                Effect.andThen(fold({ _tag: "OutputEnded" })),
-              ),
-            ),
-          ),
+          Effect.suspend(() => Effect.forEach(decoder.finish(), handleLine, { discard: true })),
         ),
+        Effect.andThen(lane.withPermits(1)(fold({ _tag: "OutputEnded" }))),
         Effect.tap(() =>
           publish({ _tag: "runtime.error", message: "Claude process output ended." }),
         ),
@@ -858,16 +856,16 @@ export const ClaudeAdapter: AgentAdapter = {
        * these words must not end the turn, live or replayed.
        */
       const steer = Effect.fn("ClaudeAdapter.steer")(function* (input: AgentSteerInput) {
+        if (journal === undefined) {
+          return yield* refused(
+            input,
+            "unsupported",
+            "Claude is steered only with a control journal to replay it from.",
+          );
+        }
         return yield* lane.withPermits(1)(
           Effect.gen(function* () {
             const turn = turns.turn;
-            if (journal === undefined) {
-              return yield* refused(
-                input,
-                "unsupported",
-                "Claude is steered only with a control journal to replay it from.",
-              );
-            }
             if (turn._tag === "Idle") {
               return yield* refused(input, "no-active-turn", "Claude has no running turn.");
             }
