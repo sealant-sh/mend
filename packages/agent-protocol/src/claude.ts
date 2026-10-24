@@ -8,10 +8,18 @@ import type {
   AgentTaskData,
   AgentTurnUsage,
 } from "@mend/domain/workbench";
-import { PubSub, Effect, Stream } from "effect";
+import { PubSub, Effect, Semaphore, Stream } from "effect";
 
 import { contentBlockKind } from "./claude-items.ts";
 import { foldTaskLine, isTaskSubtype, taskItem } from "./claude-tasks.ts";
+import {
+  claudeTurnId,
+  foldClaudeTurn,
+  initialClaudeTurns,
+  type ClaudeTurnEffect,
+  type ClaudeTurnInput,
+  type ClaudeTurnStatus,
+} from "./claude-turn.ts";
 import type {
   ClaudeControlRequest,
   ClaudeControlResponse,
@@ -20,18 +28,24 @@ import type {
 import { createNdjsonDecoder } from "./ndjson.ts";
 import {
   AgentProtocolError,
+  AgentSteerDeliveryError,
+  AgentSteerRefusedError,
   AgentTurnBusyError,
   type AgentAdapter,
   type AgentBackgroundWork,
+  type AgentControlCheckpoint,
   type AgentQuiescence,
   type AgentSession,
   type AgentStartOptions,
+  type AgentSteerAcceptance,
+  type AgentSteerInput,
   type AgentTransport,
 } from "./types.ts";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
 interface PendingControl {
+  readonly providerTurnId: string | null;
   readonly toolName: string;
   readonly input: JsonObject;
   readonly suggestions: ReadonlyArray<unknown>;
@@ -163,6 +177,31 @@ const controlResponse = (requestId: string, response: JsonObject): ClaudeControl
   response: { subtype: "success", request_id: requestId, response },
 });
 
+/** A result line's turn status: an abort is an interruption even when Claude says `success`. */
+const resultStatus = (message: JsonObject): ClaudeTurnStatus => {
+  const terminalReason = stringField(message, "terminal_reason");
+  if (terminalReason === "aborted_tools" || terminalReason === "aborted_streaming") {
+    return "interrupted";
+  }
+  return stringField(message, "subtype") === "success" ? "completed" : "failed";
+};
+
+const resultError = (message: JsonObject): string | null => {
+  const errors = message["errors"];
+  return Array.isArray(errors)
+    ? (errors.find((candidate): candidate is string => typeof candidate === "string") ?? null)
+    : null;
+};
+
+const byOrdinal = (left: AgentControlCheckpoint, right: AgentControlCheckpoint): number =>
+  left.afterOutputLine - right.afterOutputLine || left.ordinal - right.ordinal;
+
+const undelivered = (
+  certainty: AgentSteerDeliveryError["certainty"],
+  message: string,
+  cause: unknown,
+) => new AgentSteerDeliveryError({ adapter: "claude", certainty, message, cause });
+
 /** Claude Code private stream-json adapter pinned by CLAUDE_CODE_PROTOCOL_VERSION. */
 export const ClaudeAdapter: AgentAdapter = {
   start: (transport: AgentTransport, options: AgentStartOptions) =>
@@ -173,11 +212,21 @@ export const ClaudeAdapter: AgentAdapter = {
       const items = new Map<string, AgentEventItem>();
       const sessionId = options.providerSessionId ?? crypto.randomUUID();
       const rehydrate = options.rehydrate;
+      const journal = options.controlJournal;
       // Rehydrate correlation: claude turn ids are client-minted, so replayed
       // output is attributed to the dispatched turns in order — each replayed
-      // `result` advances the queue exactly where sendTurn would have minted.
-      const replayQueue = rehydrate === undefined ? [] : [...rehydrate.replayProviderTurnIds];
-      let currentTurnId: string | null = replayQueue.shift() ?? null;
+      // final `result` advances the queue exactly where sendTurn would have minted.
+      let turns = initialClaudeTurns(rehydrate?.replayProviderTurnIds ?? []);
+      const activeTurnId = (): string | null => claudeTurnId(turns.turn);
+      // Steer and interrupt decisions are replayed at the output line they were made after, so
+      // a rehydrate folds the same results the same way whatever the chunking.
+      const replayControls = (rehydrate?.controlReplay ?? []).toSorted(byOrdinal);
+      let replayCursor = 0;
+      let nextOrdinal =
+        replayControls.reduce((highest, control) => Math.max(highest, control.ordinal), -1) + 1;
+      let outputLines = 0;
+      // Orders a control's journal record, state change and write against line reduction.
+      const lane = yield* Semaphore.make(1);
       // Anthropic streaming resets content-block indexes to 0 on every message_start, and one
       // turn holds many assistant messages (each tool round trip starts a new one). Item
       // identity therefore needs the message ordinal, and deltas need the id minted at
@@ -210,7 +259,7 @@ export const ClaudeAdapter: AgentAdapter = {
       let idleSinceTurn = false;
       let lastResultAt: number | null = null;
       /** The last turn any line ran in: where a task first reported outside a turn sits. */
-      let lastTurnId: string | null = currentTurnId;
+      let lastTurnId: string | null = activeTurnId();
       const background = new Map<
         string,
         { readonly type: string | null; readonly description: string; readonly ambient: boolean }
@@ -234,6 +283,7 @@ export const ClaudeAdapter: AgentAdapter = {
       };
 
       const completeContentBlocks = (envelope: JsonObject): Effect.Effect<void> => {
+        const currentTurnId = activeTurnId();
         if (currentTurnId === null) return Effect.void;
         const message = objectField(envelope, "message");
         const content = message?.["content"];
@@ -261,7 +311,7 @@ export const ClaudeAdapter: AgentAdapter = {
             const kind: AgentItemKind = contentBlockKind(type, stringField(block, "name"));
             return updateItem({
               providerItemId: id,
-              providerTurnId: currentTurnId ?? "",
+              providerTurnId: currentTurnId,
               kind,
               status: "completed",
               title: type === "tool_use" ? stringField(block, "name") : null,
@@ -274,6 +324,7 @@ export const ClaudeAdapter: AgentAdapter = {
       };
 
       const handleStreamEvent = (message: JsonObject): Effect.Effect<void> => {
+        const currentTurnId = activeTurnId();
         if (currentTurnId === null) return Effect.void;
         const event = objectField(message, "event");
         if (event === null) return Effect.void;
@@ -359,7 +410,14 @@ export const ClaudeAdapter: AgentAdapter = {
         const rawSuggestions = request["permission_suggestions"];
         const suggestions = Array.isArray(rawSuggestions) ? rawSuggestions : [];
         const kind = toolName === "AskUserQuestion" ? "input" : "approval";
-        pending.set(requestId, { toolName, input, suggestions, kind });
+        const currentTurnId = activeTurnId();
+        pending.set(requestId, {
+          providerTurnId: currentTurnId,
+          toolName,
+          input,
+          suggestions,
+          kind,
+        });
         if (currentTurnId === null) {
           pending.delete(requestId);
           return send(
@@ -380,28 +438,89 @@ export const ClaudeAdapter: AgentAdapter = {
         });
       };
 
+      const applyEffect = (effect: ClaudeTurnEffect): Effect.Effect<void> => {
+        switch (effect._tag) {
+          case "TurnOpened": {
+            messageOrdinal = 0;
+            blockIds.clear();
+            if (effect.cause !== "harness") return Effect.void;
+            lastTurnId = effect.turnId;
+            const reason = notificationReason ?? HARNESS_TURN_REASON;
+            notificationReason = null;
+            return publish({
+              _tag: "harness-turn.started",
+              providerTurnId: effect.turnId,
+              reason,
+            });
+          }
+          case "SegmentClosed":
+            return Effect.forEach(
+              [...pending].filter(([, request]) => request.providerTurnId === effect.turnId),
+              ([providerRequestId]) => {
+                pending.delete(providerRequestId);
+                return publish({
+                  _tag: "request.resolved",
+                  providerRequestId,
+                  disposition: "cancelled",
+                });
+              },
+              { discard: true },
+            );
+          case "TurnCompleted":
+            return publish({
+              _tag: "turn.completed",
+              providerTurnId: effect.turnId,
+              status: effect.status,
+              usage: effect.usage,
+              error: effect.error,
+            });
+        }
+      };
+
+      const fold = (input: ClaudeTurnInput): Effect.Effect<void> =>
+        Effect.suspend(() => {
+          const folded = foldClaudeTurn(turns, input);
+          turns = folded.state;
+          return Effect.forEach(folded.effects, applyEffect, { discard: true });
+        });
+
+      /** Journaled controls from before a restart, applied once their output line is reduced. */
+      const replayControlsDue = (): Effect.Effect<void> =>
+        Effect.suspend(() => {
+          const due: Array<AgentControlCheckpoint> = [];
+          while (
+            replayCursor < replayControls.length &&
+            (replayControls[replayCursor]?.afterOutputLine ?? Number.POSITIVE_INFINITY) <=
+              outputLines
+          ) {
+            const control = replayControls[replayCursor];
+            replayCursor += 1;
+            if (control !== undefined) due.push(control);
+          }
+          return Effect.forEach(due, (control) => fold({ _tag: "Control", control }), {
+            discard: true,
+          });
+        });
+
       /**
        * Claude announces every turn with a `system init` line. One that arrives while no turn is
        * open is a turn Claude started on its own — after a background task or workflow ended, it
        * reads the notification and answers it. Its id comes from the line, so a replay of the
-       * same output opens the same turn.
+       * same output opens the same turn. One after a steer closed a segment is that turn's
+       * continuation.
        */
       const handleInit = (message: JsonObject): Effect.Effect<void> => {
         idleSinceTurn = false;
-        if (currentTurnId !== null) return Effect.void;
-        // A turn Claude starts on its own after a wakeup was due is that wakeup firing.
-        const now = Date.now();
-        for (const [id, due] of wakeups) if (due <= now + 60_000) wakeups.delete(id);
+        if (turns.turn._tag === "Idle") {
+          // A turn Claude starts on its own after a wakeup was due is that wakeup firing.
+          const now = Date.now();
+          for (const [id, due] of wakeups) if (due <= now + 60_000) wakeups.delete(id);
+        }
         const uuid = stringField(message, "uuid");
-        if (uuid === null) return Effect.void;
-        const providerTurnId = `${CLAUDE_HARNESS_TURN_PREFIX}${uuid}`;
-        currentTurnId = providerTurnId;
-        lastTurnId = providerTurnId;
-        messageOrdinal = 0;
-        blockIds.clear();
-        const reason = notificationReason ?? HARNESS_TURN_REASON;
-        notificationReason = null;
-        return publish({ _tag: "harness-turn.started", providerTurnId, reason });
+        return fold({
+          _tag: "Init",
+          harnessTurnId: uuid === null ? null : `${CLAUDE_HARNESS_TURN_PREFIX}${uuid}`,
+        });
       };
 
       const handleTaskLine = (subtype: string, message: JsonObject): Effect.Effect<void> => {
@@ -430,7 +549,7 @@ export const ClaudeAdapter: AgentAdapter = {
         // A task Claude reports outside any turn (one a resumed conversation left running, or one
         // that outlived the turn that started it before Mend attached) sits on the last turn the
         // conversation ran; with none at all it is only counted as background work.
-        const providerTurnId = tracked?.providerTurnId ?? currentTurnId ?? lastTurnId;
+        const providerTurnId = tracked?.providerTurnId ?? activeTurnId() ?? lastTurnId;
         if (providerTurnId === null) return Effect.void;
         const data = foldTaskLine(tracked?.data, subtype, message);
         if (data === null) return Effect.void;
@@ -442,34 +561,13 @@ export const ClaudeAdapter: AgentAdapter = {
       };
 
       const handleResult = (message: JsonObject): Effect.Effect<void> => {
-        if (currentTurnId === null) return Effect.void;
-        const providerTurnId = currentTurnId;
-        const subtype = stringField(message, "subtype");
-        const terminalReason = stringField(message, "terminal_reason");
-        const errors = message["errors"];
-        const error = Array.isArray(errors)
-          ? (errors.find((candidate): candidate is string => typeof candidate === "string") ?? null)
-          : null;
-        const status =
-          terminalReason === "aborted_tools" || terminalReason === "aborted_streaming"
-            ? "interrupted"
-            : subtype === "success"
-              ? "completed"
-              : "failed";
-        lastResultAt = Date.now();
-        // Replay: advance to the next dispatched turn, replicating the resets
-        // sendTurn performed live so fallback item ids replay byte-identical.
-        currentTurnId = replayQueue.shift() ?? null;
-        if (currentTurnId !== null) {
-          messageOrdinal = 0;
-          blockIds.clear();
-        }
-        return publish({
-          _tag: "turn.completed",
-          providerTurnId,
-          status,
+        if (activeTurnId() !== null) lastResultAt = Date.now();
+        return fold({
+          _tag: "Result",
+          resultId: stringField(message, "uuid"),
+          status: resultStatus(message),
           usage: usageFrom(message["usage"]),
-          error,
+          error: resultError(message),
         });
       };
 
@@ -606,7 +704,7 @@ export const ClaudeAdapter: AgentAdapter = {
         }
       };
 
-      const handleLine = (line: string): Effect.Effect<void> => {
+      const parseLine = (line: string): Effect.Effect<void> => {
         try {
           const value: unknown = JSON.parse(line);
           return handleMessage(value);
@@ -616,30 +714,44 @@ export const ClaudeAdapter: AgentAdapter = {
         }
       };
 
-      const handleBytes = (bytes: Uint8Array): Effect.Effect<void, AgentProtocolError> =>
-        Effect.forEach(decoder.push(bytes), handleLine, { discard: true }).pipe(
+      const handleLine = (line: string): Effect.Effect<void> =>
+        parseLine(line).pipe(
           Effect.andThen(
-            decoder.atLineBoundary() && transport.acknowledgeOutput !== undefined
-              ? transport.acknowledgeOutput()
-              : Effect.void,
+            Effect.suspend(() => {
+              outputLines += 1;
+              return replayControlsDue();
+            }),
           ),
         );
 
+      const handleBytes = (bytes: Uint8Array): Effect.Effect<void, AgentProtocolError> =>
+        lane
+          .withPermits(1)(
+            Effect.suspend(() =>
+              Effect.forEach(decoder.push(bytes), handleLine, { discard: true }),
+            ),
+          )
+          .pipe(
+            Effect.andThen(
+              Effect.suspend(() =>
+                decoder.atLineBoundary() && transport.acknowledgeOutput !== undefined
+                  ? transport.acknowledgeOutput()
+                  : Effect.void,
+              ),
+            ),
+          );
+
+      yield* replayControlsDue();
       yield* transport.output.pipe(
         Stream.runForEach(handleBytes),
         Effect.andThen(
-          Effect.suspend(() => Effect.forEach(decoder.finish(), handleLine, { discard: true })),
-        ),
-        Effect.tap(() =>
-          currentTurnId === null
-            ? Effect.void
-            : publish({
-                _tag: "turn.completed",
-                providerTurnId: currentTurnId,
-                status: "failed",
-                usage: null,
-                error: "Claude process ended during the turn.",
-              }),
+          lane.withPermits(1)(
+            Effect.suspend(() =>
+              Effect.forEach(decoder.finish(), handleLine, { discard: true }).pipe(
+                Effect.andThen(fold({ _tag: "OutputEnded" })),
+              ),
+            ),
+          ),
         ),
         Effect.tap(() =>
           publish({ _tag: "runtime.error", message: "Claude process output ended." }),
@@ -653,7 +765,19 @@ export const ClaudeAdapter: AgentAdapter = {
       announcedSessionId = sessionId;
       yield* publish({ _tag: "session.ready", providerSessionId: sessionId });
 
+      const userMessage = (text: string, steer?: { readonly uuid: string }): ClaudeUserMessage => ({
+        type: "user",
+        session_id: sessionId,
+        parent_tool_use_id: null,
+        origin: { kind: "human" },
+        message: { role: "user", content: [{ type: "text", text }] },
+        ...(steer === undefined ? {} : { priority: "now", uuid: steer.uuid }),
+      });
+
+      // Not on the lane: the host's projection of a line can wait on a submission that sends a
+      // turn (a harness turn's admission does), and the turn opens without awaiting anything.
       const sendTurn = Effect.fn("ClaudeAdapter.sendTurn")(function* (input: string) {
+        const currentTurnId = activeTurnId();
         if (currentTurnId?.startsWith(CLAUDE_HARNESS_TURN_PREFIX) === true) {
           return yield* new AgentTurnBusyError({ providerTurnId: currentTurnId });
         }
@@ -665,31 +789,129 @@ export const ClaudeAdapter: AgentAdapter = {
           );
         }
         const providerTurnId = crypto.randomUUID();
-        currentTurnId = providerTurnId;
+        yield* fold({ _tag: "TurnSent", turnId: providerTurnId });
         lastTurnId = providerTurnId;
         idleSinceTurn = false;
-        messageOrdinal = 0;
-        blockIds.clear();
-        const message: ClaudeUserMessage = {
-          type: "user",
-          session_id: sessionId,
-          parent_tool_use_id: null,
-          origin: { kind: "human" },
-          message: { role: "user", content: [{ type: "text", text: input }] },
-        };
-        yield* send(message).pipe(Effect.tapError(() => Effect.sync(() => (currentTurnId = null))));
+        yield* send(userMessage(input)).pipe(
+          Effect.tapError(() => fold({ _tag: "TurnNotSent", turnId: providerTurnId })),
+        );
         yield* publish({ _tag: "turn.started", providerTurnId });
         return providerTurnId;
       });
 
-      const interrupt = Effect.fn("ClaudeAdapter.interrupt")(function* () {
+      /** Journal a control before it changes the turn or reaches the wire. */
+      const recordControl = (
+        controlId: string,
+        providerTurnId: string,
+        action: AgentControlCheckpoint["action"],
+      ): Effect.Effect<AgentControlCheckpoint, AgentProtocolError> =>
+        Effect.suspend(() => {
+          const control: AgentControlCheckpoint = {
+            ordinal: nextOrdinal,
+            controlId,
+            providerTurnId,
+            afterOutputLine: outputLines,
+            action,
+          };
+          nextOrdinal += 1;
+          return journal === undefined
+            ? Effect.succeed(control)
+            : journal.record(control).pipe(Effect.as(control));
+        });
+
+      const interruptNow = Effect.gen(function* () {
+        const currentTurnId = activeTurnId();
         if (currentTurnId === null) return;
         const request: ClaudeControlRequest = {
           type: "control_request",
           request_id: crypto.randomUUID(),
           request: { subtype: "interrupt" },
         };
+        const control = yield* recordControl(request.request_id, currentTurnId, "interrupt");
+        yield* fold({ _tag: "Control", control });
         yield* send(request);
+      });
+
+      // Only a journaled interrupt needs the lane: its record is asynchronous, and the line it
+      // names must be the line the fold happened after. Without a journal nothing is replayed,
+      // and a Stop never waits behind a line's projection.
+      const interrupt = Effect.fn("ClaudeAdapter.interrupt")(function* () {
+        yield* journal === undefined ? interruptNow : lane.withPermits(1)(interruptNow);
+      });
+
+      const refused = (
+        input: AgentSteerInput,
+        reason: AgentSteerRefusedError["reason"],
+        message: string,
+      ) =>
+        new AgentSteerRefusedError({
+          adapter: "claude",
+          reason,
+          expectedTurnId: input.expectedTurnId,
+          actualTurnId: activeTurnId(),
+          message,
+        });
+
+      /**
+       * A `priority: "now"` user frame into the logical turn. Claude acknowledges nothing, so the
+       * arm is journaled first: the result Claude prints when it aborts the running segment for
+       * these words must not end the turn, live or replayed.
+       */
+      const steer = Effect.fn("ClaudeAdapter.steer")(function* (input: AgentSteerInput) {
+        return yield* lane.withPermits(1)(
+          Effect.gen(function* () {
+            const turn = turns.turn;
+            if (journal === undefined) {
+              return yield* refused(
+                input,
+                "unsupported",
+                "Claude is steered only with a control journal to replay it from.",
+              );
+            }
+            if (turn._tag === "Idle") {
+              return yield* refused(input, "no-active-turn", "Claude has no running turn.");
+            }
+            if (turn.turnId !== input.expectedTurnId) {
+              return yield* refused(input, "target-changed", "Claude is running another turn.");
+            }
+            if (turn._tag !== "Running") {
+              return yield* refused(
+                input,
+                "in-continuation",
+                "Claude has not yet continued after the last steer.",
+              );
+            }
+            if (turn.interrupting) {
+              return yield* refused(input, "no-active-turn", "Claude's turn is being stopped.");
+            }
+            if (closed) {
+              return yield* undelivered("not-written", "The Claude session is closed.", null);
+            }
+            const armed = yield* recordControl(input.id, turn.turnId, "steer-now").pipe(
+              Effect.mapError((error) => undelivered("not-written", error.message, error)),
+            );
+            yield* fold({ _tag: "Control", control: armed });
+            // Closed while the journal was writing: nothing is sent, and the journal says so, so
+            // a rehydrate disarms at the same line.
+            if (closed) {
+              const disarmed = yield* recordControl(input.id, turn.turnId, "not-written").pipe(
+                Effect.option,
+              );
+              if (disarmed._tag === "Some") {
+                yield* fold({ _tag: "Control", control: disarmed.value });
+              }
+              return yield* undelivered("not-written", "The Claude session is closed.", null);
+            }
+            yield* send(userMessage(input.input, { uuid: input.id })).pipe(
+              Effect.mapError((error) => undelivered("uncertain", error.message, error)),
+            );
+            const acceptance: AgentSteerAcceptance = {
+              _tag: "TransportWritten",
+              providerTurnId: turn.turnId,
+            };
+            return acceptance;
+          }),
+        );
       });
 
       const respond = Effect.fn("ClaudeAdapter.respond")(function* (
@@ -784,7 +1006,7 @@ export const ClaudeAdapter: AgentAdapter = {
             work.push({ kind: "cron", id, description: null, endable: false });
           }
           const openTurn =
-            currentTurnId !== null ||
+            activeTurnId() !== null ||
             sessionState === "running" ||
             sessionState === "requires_action";
           const sinceResult = lastResultAt === null ? Number.POSITIVE_INFINITY : now - lastResultAt;
@@ -858,6 +1080,8 @@ export const ClaudeAdapter: AgentAdapter = {
       return {
         sendTurn,
         interrupt,
+        activeSteering: { supported: journal !== undefined, interruptsTools: true },
+        steer,
         respond,
         respondInput,
         events: Stream.fromPubSub(events),

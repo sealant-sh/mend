@@ -11,6 +11,10 @@ export interface ClaudeUserMessage {
     readonly role: "user";
     readonly content: ReadonlyArray<{ readonly type: "text"; readonly text: string }>;
   };
+  /** `now` aborts the running turn's current step and answers these words next. */
+  readonly priority?: "now" | "next" | "later";
+  /** The client's id for this message. */
+  readonly uuid?: string;
 }
 
 /** Private CLI request used for permissions and interrupt control. */

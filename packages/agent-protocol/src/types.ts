@@ -21,6 +21,79 @@ export class AgentTurnBusyError extends Schema.TaggedError<AgentTurnBusyError>()
   { providerTurnId: Schema.String },
 ) {}
 
+/** Words for the running turn, delivered into it without starting another. */
+export interface AgentSteerInput {
+  /** Mend's steer id; Claude puts it on the wire as `uuid`. */
+  readonly id: string;
+  /** Codex: the provider turn id. Claude: the adapter-minted logical turn id. */
+  readonly expectedTurnId: string;
+  readonly input: string;
+}
+
+/** Delivery evidence, never proof the model read it. */
+export type AgentSteerAcceptance =
+  /** Codex answered `turn/steer` with the expected turn id. */
+  | { readonly _tag: "ProviderAcknowledged"; readonly providerTurnId: string }
+  /** Claude acknowledges nothing: the frame reached its stdin. */
+  | { readonly _tag: "TransportWritten"; readonly providerTurnId: string };
+
+/** The harness would not take the words; nothing reached the running turn. */
+export class AgentSteerRefusedError extends Schema.TaggedError<AgentSteerRefusedError>()(
+  "AgentSteerRefusedError",
+  {
+    adapter: Schema.Literals(["codex", "claude"]),
+    reason: Schema.Literals([
+      "no-active-turn",
+      "target-changed",
+      "review-turn",
+      "compact-turn",
+      "output-schema",
+      "invalid-input",
+      "server-draining",
+      "unsupported",
+      "in-continuation",
+    ]),
+    expectedTurnId: Schema.String,
+    actualTurnId: Schema.NullOr(Schema.String),
+    message: Schema.String,
+  },
+) {}
+
+/** Delivery failed; `certainty` says whether any byte may have reached the harness. */
+export class AgentSteerDeliveryError extends Schema.TaggedError<AgentSteerDeliveryError>()(
+  "AgentSteerDeliveryError",
+  {
+    adapter: Schema.Literals(["codex", "claude"]),
+    certainty: Schema.Literals(["not-written", "uncertain"]),
+    message: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
+/**
+ * One steer or interrupt a Claude adapter wrote, or decided not to write, at a point in its
+ * output. Rehydrate replays these at the same points, so the replayed turn folds the same way.
+ */
+export interface AgentControlCheckpoint {
+  /** Orders the controls of one process; several can share an output line. */
+  readonly ordinal: number;
+  /** The steer id, or an adapter-minted id for an interrupt. */
+  readonly controlId: string;
+  readonly providerTurnId: string;
+  /**
+   * Non-empty complete NDJSON output lines fully reduced before this control. The output decoder
+   * skips blank lines, and live and replay share it, so a position names the same line in both.
+   */
+  readonly afterOutputLine: number;
+  readonly action: "steer-now" | "interrupt" | "not-written";
+}
+
+/** Claude recovery data. One writer (the host callback), one reader (adapter rehydrate). */
+export interface AgentControlJournal {
+  /** Fails, and the control's wire write does not happen. */
+  readonly record: (checkpoint: AgentControlCheckpoint) => Effect.Effect<void, AgentProtocolError>;
+}
+
 /** Byte transport supplied by the session engine from one Sealant pipe session. */
 export interface AgentTransport {
   readonly send: (bytes: Uint8Array) => Effect.Effect<void, AgentProtocolError>;
@@ -50,6 +123,8 @@ export interface AgentRehydrateOptions {
    * re-answer them.
    */
   readonly resolvedProviderRequestIds: ReadonlySet<string>;
+  /** The control journal the previous adapter recorded for this process, in any order. */
+  readonly controlReplay?: ReadonlyArray<AgentControlCheckpoint> | undefined;
 }
 
 /** Shared options used when a provider conversation starts or resumes. */
@@ -71,6 +146,8 @@ export interface AgentStartOptions {
    * and a Claude rehydrated after a restart is asked for its live background tasks again.
    */
   readonly sharedControl?: boolean | undefined;
+  /** Where a Claude adapter records its controls; without one, Claude cannot be steered. */
+  readonly controlJournal?: AgentControlJournal | undefined;
   /** Synchronous event projection hook; completion means the event is durable. */
   readonly onEvent?: ((event: AgentEvent) => Effect.Effect<void>) | undefined;
   /** Present only when re-attaching to a surviving pipe after a Mend restart. */
@@ -127,6 +204,15 @@ export interface AgentSession {
     input: string,
   ) => Effect.Effect<string, AgentProtocolError | AgentTurnBusyError>;
   readonly interrupt: () => Effect.Effect<void, AgentProtocolError>;
+  /**
+   * Whether `steer` can deliver into a running turn, and whether doing so cancels the tools that
+   * turn is running (Claude's `priority: "now"` does; Codex queues the words for its next step).
+   */
+  readonly activeSteering: { readonly supported: boolean; readonly interruptsTools: boolean };
+  /** Deliver words into the running turn `expectedTurnId` names, never starting another. */
+  readonly steer: (
+    input: AgentSteerInput,
+  ) => Effect.Effect<AgentSteerAcceptance, AgentSteerRefusedError | AgentSteerDeliveryError>;
   readonly respond: (
     providerRequestId: string,
     decision: AgentApprovalDecision,

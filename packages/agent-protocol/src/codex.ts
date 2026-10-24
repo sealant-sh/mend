@@ -9,25 +9,48 @@ import type {
   AgentRequestKind,
   AgentTurnUsage,
 } from "@mend/domain/workbench";
-import { Effect, Deferred, PubSub, Stream } from "effect";
+import { Data, Effect, Deferred, PubSub, Stream } from "effect";
 
 import { createNdjsonDecoder } from "./ndjson.ts";
 import {
   AgentProtocolError,
+  AgentSteerDeliveryError,
+  AgentSteerRefusedError,
   type AgentAdapter,
   type AgentBackgroundWork,
   type AgentQuiescence,
   type AgentSession,
   type AgentStartOptions,
+  type AgentSteerAcceptance,
+  type AgentSteerInput,
   type AgentTransport,
 } from "./types.ts";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 type JsonRpcId = string | number;
 
+/** Codex answered a request with a JSON-RPC error object. */
+class CodexRpcRejected extends Data.TaggedError("CodexRpcRejected")<{
+  readonly code: number | null;
+  readonly message: string;
+  readonly error: JsonObject;
+}> {}
+
+/** The request never left: the pipe was already known dead. */
+class CodexRpcNotSent extends Data.TaggedError("CodexRpcNotSent")<{
+  readonly error: AgentProtocolError;
+}> {}
+
+/** The request may have left, and no answer came: a failed write, a dead pipe, or the timeout. */
+class CodexRpcUnanswered extends Data.TaggedError("CodexRpcUnanswered")<{
+  readonly error: AgentProtocolError;
+}> {}
+
+type CodexRpcFailure = CodexRpcRejected | CodexRpcNotSent | CodexRpcUnanswered;
+
 interface PendingRpcRequest {
   readonly method: string;
-  readonly deferred: Deferred.Deferred<unknown, AgentProtocolError>;
+  readonly deferred: Deferred.Deferred<unknown, CodexRpcRejected | AgentProtocolError>;
 }
 
 interface PendingServerRequest {
@@ -254,6 +277,64 @@ const requestTitle = (params: JsonObject): string | null => {
   return stringField(params, "reason") ?? stringField(params, "toolName");
 };
 
+type SteerRefusalReason = AgentSteerRefusedError["reason"];
+
+/**
+ * `turn/steer` refusals by their exact app-server words (code -32600), from codex-rs
+ * `app-server/src/request_processors/turn_processor.rs` (`turn_steer_inner`) and
+ * `error_code.rs` (`server_draining_error`) at rust-v0.160.0.
+ */
+const STEER_REFUSALS: ReadonlyMap<string, SteerRefusalReason> = new Map([
+  ["no active turn to steer", "no-active-turn"],
+  ["cannot steer a review turn", "review-turn"],
+  ["cannot steer a compact turn", "compact-turn"],
+  ["active turn uses a different output schema", "output-schema"],
+  ["input must not be empty", "invalid-input"],
+  ["expectedTurnId must not be empty", "invalid-input"],
+  ["Server is draining; retry after reconnecting", "server-draining"],
+]);
+const STEER_TARGET_CHANGED = /^expected active turn id `(.+)` but found `(.+)`$/;
+const INVALID_REQUEST = -32600;
+const METHOD_NOT_FOUND = -32601;
+
+/**
+ * What a `turn/steer` error says, when it says something Mend knows: a refusal means Codex did
+ * not submit the input. Anything else (another code, other words, a mismatch about a turn this
+ * request did not name) is not known to be a refusal.
+ */
+const steerRefusal = (
+  rejected: CodexRpcRejected,
+  expectedTurnId: string,
+): { readonly reason: SteerRefusalReason; readonly actualTurnId: string | null } | null => {
+  if (rejected.code === METHOD_NOT_FOUND) return { reason: "unsupported", actualTurnId: null };
+  if (rejected.code !== INVALID_REQUEST) return null;
+  const known = STEER_REFUSALS.get(rejected.message);
+  if (known !== undefined) return { reason: known, actualTurnId: null };
+  const changed = STEER_TARGET_CHANGED.exec(rejected.message);
+  if (changed === null || changed[1] !== expectedTurnId) return null;
+  return { reason: "target-changed", actualTurnId: changed[2] ?? null };
+};
+
+const refused = (
+  input: AgentSteerInput,
+  reason: SteerRefusalReason,
+  actualTurnId: string | null,
+  message: string,
+) =>
+  new AgentSteerRefusedError({
+    adapter: "codex",
+    reason,
+    expectedTurnId: input.expectedTurnId,
+    actualTurnId,
+    message,
+  });
+
+const undelivered = (
+  certainty: AgentSteerDeliveryError["certainty"],
+  message: string,
+  cause: unknown,
+) => new AgentSteerDeliveryError({ adapter: "codex", certainty, message, cause });
+
 /** Codex app-server JSON-RPC adapter over NDJSON stdio. */
 export const CodexAdapter: AgentAdapter = {
   start: (transport: AgentTransport, options: AgentStartOptions) =>
@@ -302,13 +383,12 @@ export const CodexAdapter: AgentAdapter = {
        */
       const REQUEST_TIMEOUT = "60 seconds";
 
-      const request = Effect.fn("CodexAdapter.request")(function* (
-        method: string,
-        params: JsonObject,
-      ) {
-        if (transportFailure !== null) return yield* transportFailure;
+      const call = Effect.fn("CodexAdapter.call")(function* (method: string, params: JsonObject) {
+        if (transportFailure !== null) {
+          return yield* new CodexRpcNotSent({ error: transportFailure });
+        }
         const id = mintRpcId();
-        const deferred = yield* Deferred.make<unknown, AgentProtocolError>();
+        const deferred = yield* Deferred.make<unknown, CodexRpcRejected | AgentProtocolError>();
         pendingRpc.set(requestKey(id), { method, deferred });
         // Re-check after registering: a transport failure that swept pendingRpc between the
         // first check and the set would otherwise leave this deferred waiting forever. Read
@@ -316,10 +396,11 @@ export const CodexAdapter: AgentAdapter = {
         const sweptFailure = readTransportFailure();
         if (sweptFailure !== null) {
           pendingRpc.delete(requestKey(id));
-          return yield* sweptFailure;
+          return yield* new CodexRpcNotSent({ error: sweptFailure });
         }
         yield* send({ method, id, params }).pipe(
           Effect.tapError(() => Effect.sync(() => pendingRpc.delete(requestKey(id)))),
+          Effect.mapError((error) => new CodexRpcUnanswered({ error })),
         );
         return yield* Deferred.await(deferred).pipe(
           Effect.timeoutOrElse({
@@ -337,8 +418,20 @@ export const CodexAdapter: AgentAdapter = {
                 ),
               ),
           }),
+          Effect.mapError((error) =>
+            error instanceof CodexRpcRejected ? error : new CodexRpcUnanswered({ error }),
+          ),
         );
       });
+
+      const request = (method: string, params: JsonObject) =>
+        call(method, params).pipe(
+          Effect.mapError((failure: CodexRpcFailure) =>
+            failure._tag === "CodexRpcRejected"
+              ? protocolError("response", failure.message, failure.error)
+              : failure.error,
+          ),
+        );
 
       const sendResponse = (
         id: JsonRpcId,
@@ -523,13 +616,14 @@ export const CodexAdapter: AgentAdapter = {
           pendingRpc.delete(requestKey(id));
           const error = objectField(value, "error");
           if (error !== null) {
+            const code = error["code"];
             return Deferred.fail(
               pending.deferred,
-              protocolError(
-                "response",
-                stringField(error, "message") ?? "Codex request failed.",
+              new CodexRpcRejected({
+                code: typeof code === "number" && Number.isSafeInteger(code) ? code : null,
+                message: stringField(error, "message") ?? "Codex request failed.",
                 error,
-              ),
+              }),
             ).pipe(Effect.asVoid);
           }
           const result = value["result"];
@@ -690,6 +784,63 @@ export const CodexAdapter: AgentAdapter = {
       const interrupt = Effect.fn("CodexAdapter.interrupt")(function* () {
         if (threadId === null || currentTurnId === null) return;
         yield* request("turn/interrupt", { threadId, turnId: currentTurnId });
+      });
+
+      /**
+       * `turn/steer` on the turn the caller names. The local checks only spare a round trip;
+       * Codex's own `expectedTurnId` precondition decides. The reply never moves `currentTurnId`:
+       * it can arrive after the turn completed.
+       */
+      const steer = Effect.fn("CodexAdapter.steer")(function* (input: AgentSteerInput) {
+        if (currentTurnId === null) {
+          return yield* refused(input, "no-active-turn", null, "Codex has no running turn.");
+        }
+        if (currentTurnId !== input.expectedTurnId) {
+          return yield* refused(
+            input,
+            "target-changed",
+            currentTurnId,
+            "Codex is running another turn.",
+          );
+        }
+        if (threadId === null || closed) {
+          return yield* undelivered("not-written", "The Codex session is closed.", null);
+        }
+        const reply = yield* call("turn/steer", {
+          threadId,
+          input: [{ type: "text", text: input.input }],
+          expectedTurnId: input.expectedTurnId,
+        }).pipe(
+          Effect.catchTags({
+            CodexRpcNotSent: (failure) =>
+              Effect.fail(undelivered("not-written", failure.error.message, failure.error)),
+            CodexRpcUnanswered: (failure) =>
+              Effect.fail(undelivered("uncertain", failure.error.message, failure.error)),
+            CodexRpcRejected: (failure) => {
+              const refusal = steerRefusal(failure, input.expectedTurnId);
+              return Effect.fail(
+                refusal === null
+                  ? undelivered("uncertain", failure.message, failure.error)
+                  : refused(input, refusal.reason, refusal.actualTurnId, failure.message),
+              );
+            },
+          }),
+        );
+        const acknowledged = stringField(reply, "turnId");
+        if (acknowledged !== input.expectedTurnId) {
+          return yield* undelivered(
+            "uncertain",
+            acknowledged === null
+              ? "Codex answered turn/steer without a turn id."
+              : `Codex answered turn/steer for turn ${acknowledged}.`,
+            reply,
+          );
+        }
+        const acceptance: AgentSteerAcceptance = {
+          _tag: "ProviderAcknowledged",
+          providerTurnId: acknowledged,
+        };
+        return acceptance;
       });
 
       const respond = Effect.fn("CodexAdapter.respond")(function* (
@@ -877,6 +1028,8 @@ export const CodexAdapter: AgentAdapter = {
       return {
         sendTurn,
         interrupt,
+        activeSteering: { supported: true, interruptsTools: false },
+        steer,
         respond,
         respondInput,
         events: Stream.fromPubSub(events),
