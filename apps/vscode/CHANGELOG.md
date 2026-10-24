@@ -3,7 +3,10 @@
 The extension's version follows the Mend release it needs: 0.36.x works with a Mend 0.36 server. The
 patch number is the extension's own.
 
-## Unreleased
+## 0.36.2
+
+It needs a Mend 0.36 server. The extension is redesigned around sessions and review; 0.36.1 shipped
+the same code under an "Unreleased" heading.
 
 - Review happens in VS Code. Selecting a session's row shows its **Change** section: the header
   `main → now · 4 files · +120 −18 · observed · 40 s ago`, a row per file with its letter, Comments
