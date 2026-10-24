@@ -15,6 +15,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 
 import {
@@ -362,6 +363,76 @@ describe("sending a queued message now while a turn runs", () => {
       }),
     ),
   );
+
+  it.live("refuses it on a queue kept across a restart until Mend's first read says", () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-send-now-")), "state.sqlite");
+    const onGateway = <A, E, R>(mend: FakeMend, test: Effect.Effect<A, E, R>) =>
+      Effect.scoped(test).pipe(Effect.provide(gatewayTestLayer(mend.url, statePath)));
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      mend.workbench.addProject("project-1", "mend");
+      mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+      const open = mend.workbench.addTurn("session-1", "A long job");
+      const second = yield* onGateway(
+        mend,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "SEND-NOW-KEPT");
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](message("message-a", "First"));
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](message("message-b", "Second"));
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "run.interrupt",
+            commandId: commandId(),
+            threadId: THREAD,
+            runId: RunId.make(open.id),
+            holdQueue: true,
+          });
+          const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+            threadId: THREAD,
+          });
+          const run = projection.runs.find((candidate) => candidate.userMessageId === "message-b");
+          if (run === undefined) throw new Error("no run for message-b");
+          return run.id;
+        }),
+      );
+      // Someone else's turn runs in Mend while the gateway is down.
+      mend.workbench.addTurn("session-1", "Another job");
+      const firstRead = mend.workbench.holdNextRequestsRead("session-1");
+
+      yield* onGateway(
+        mend,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "SEND-NOW-KEPT-AFTER");
+          yield* Effect.promise(() => firstRead.entered);
+          const sendNow = yield* Effect.forkChild(
+            Effect.exit(
+              rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+                type: "queued-run.start",
+                commandId: commandId(),
+                threadId: THREAD,
+                runId: second,
+              }),
+            ),
+          );
+          // Real time: lets a send-now that does not wait for Mend's first read answer first.
+          yield* Effect.sleep("300 millis");
+          firstRead.release();
+          const refused = yield* Fiber.join(sendNow);
+          assert.include(
+            Exit.isFailure(refused) ? String(Cause.squash(refused.cause)) : "",
+            "A queued user message can only be sent now while the thread is stopped.",
+          );
+          const after = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+            threadId: THREAD,
+          });
+          assert.deepStrictEqual(queuedOrder(after.runs), ["message-a", "message-b"]);
+          assert.isTrue(
+            after.runs.filter((run) => run.status === "queued").every((run) => run.queueHeld),
+          );
+          assert.deepStrictEqual(turnInputs(mend), []);
+        }),
+      );
+    });
+  });
 });
 
 describe("an edit is kept before it is acknowledged (594-R2-1)", () => {
@@ -472,6 +543,7 @@ describe("the queue's own rules", () => {
     const queue = queueOf("queued", "queued", "queued");
     queue.held = true;
     assert.strictEqual(startQueued(queue, { ...idle, turnOpen: true }, "run-2"), "busy");
+    assert.strictEqual(startQueued(queue, { ...idle, known: false }, "run-2"), "unknown");
     assert.strictEqual(startQueued(queue, idle, "run-9"), "gone");
     assert.deepStrictEqual(order(queue), ["run-0", "run-1", "run-2"]);
     assert.isTrue(queue.held);

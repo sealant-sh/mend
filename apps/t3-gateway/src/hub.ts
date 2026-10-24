@@ -3207,6 +3207,8 @@ export const makePersonHub = (input: {
 
     const startQueued: ThreadCommands["startQueued"] = (threadId, runId) =>
       Effect.gen(function* () {
+        // Mend's state first: a queue kept across a restart is there before Mend's first read.
+        yield* ensureLoaded;
         return yield* locked(
           Effect.gen(function* () {
             if (archived.has(threadId)) {
@@ -3214,7 +3216,7 @@ export const makePersonHub = (input: {
                 "The thread is archived: nothing in its queue is sent until it is unarchived. Unarchive it, then send the message.",
               );
             }
-            let outcome: Queueing.StartQueued = "gone";
+            let outcome: Queueing.StartQueued = "unknown";
             const started = yield* changeKept(threadId, (queue) => {
               outcome = Queueing.startQueued(queue, viewOf(threadId), runId);
               return outcome === "started";
@@ -4556,8 +4558,9 @@ const isOutage = (error: MendUnavailable): boolean => error.status === null || e
 const QUEUE_NOT_KEPT =
   "The gateway could not write this to its state file, so nothing changed. Try again.";
 
-/** t3code's refusal of `queued-run.start` (`Orchestrator.ts`, v0.1.2). */
+/** t3code's refusal of `queued-run.start` (`Orchestrator.ts`, v0.1.2), and Mend's for its own. */
 const START_QUEUED_REFUSALS: Record<Exclude<Queueing.StartQueued, "started">, string> = {
+  unknown: "Mend has not reported this thread's state yet. Try again in a moment.",
   busy: "A queued user message can only be sent now while the thread is stopped.",
   gone: "A queued user message can only be sent now while the thread is stopped.",
 };

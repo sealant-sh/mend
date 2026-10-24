@@ -352,17 +352,18 @@ export const reorder = (queue: ThreadQueue, runId: string, beforeRunId: string |
 };
 
 /**
- * What `queued-run.start` did: the message went first, or why it did not. `busy` is a thread that
- * is not stopped (a Mend turn open, or a message on its way to Mend); `gone` a message no longer
- * waiting.
+ * What `queued-run.start` did: the message went first, or why it did not. `unknown` is a thread
+ * Mend has not reported; `busy` a thread that is not stopped (a Mend turn open, or a message on its
+ * way to Mend); `gone` a message no longer waiting.
  */
-export type StartQueued = "started" | "busy" | "gone";
+export type StartQueued = "started" | "unknown" | "busy" | "gone";
 
 /**
  * `queued-run.start` (t3code's "Send now"), as t3code's server takes it: only on a stopped thread,
  * the waiting message goes first among those still waiting and the queue resumes.
  */
 export const startQueued = (queue: ThreadQueue, view: SessionView, runId: string): StartQueued => {
+  if (!view.known) return "unknown";
   const entry = waiting(queue, runId);
   if (entry === undefined) return "gone";
   const onItsWay = queue.entries.some((other) => canProgress(other) && other.state !== "queued");
