@@ -1,11 +1,11 @@
 # API-key logins (Claude and Codex)
 
-- **Release:** after 0.36 (roadmap: 0.37)
-- **Status:** Proposed · after 0.36 · not decided. This is research only; nothing here is built, and
-  every decision below is open.
-- **PRs:** none yet. Platform asks are in `PLATFORM-FEEDBACK.md`, under "Connected-account providers
-  are a closed set".
-- **Decision records:** this would need a new ADR amending 0005, 0008, 0013 and 0016.
+- **Release:** 0.37
+- **Status:** designed. Yiannis decided D1 to D8 on 2026-10-24; nothing is built yet. The research
+  below was written before the decisions, and the Decisions section overrides it where they differ.
+- **PRs:** none yet; the build is tracked as SLNT-265 to SLNT-278. Platform asks are in
+  `PLATFORM-FEEDBACK.md`, under "Connected-account providers are a closed set".
+- **Decision records:** the build adds a new ADR amending 0005, 0008, 0013 and 0016.
 - **Written:** 2026-10-17 against:
   - mend main `637009289`, plus `feat/cross-harness-own-logins` (mend#684) at `725c71900`;
   - sealant `origin/main` `fa163c6f`;
@@ -165,11 +165,11 @@ providers. Core's `kind` column is free text, so this needs no migration (Core
 | **Core total**                 |                                                                                                                                                                                                                                                                                                                          | **~15–20 files, 500–900 lines, plus 600–1,000 lines of tests** |
 | sealantd                       | Nothing required. Advised: feed per-request env values to the redactor (`crates/sealantd/src/runtime.rs:93-114`); list the key file in `HARNESS_CREDENTIALS` with its table row (`crates/sealant-capture/src/index.rs:106-278`); 0600 on credential writes, since person processes use umask 0002 (`identity.rs:33-34`). | ~50–150 lines                                                  |
 | Mend: API and contracts        | Kind on `ConnectAccountInput`. Feature detection, with words when the platform lacks it. Provider key names reserved as project secret names.                                                                                                                                                                            | ~100–200 lines                                                 |
-| Mend: sessions                 | Login words per kind (pi and opencode included). Session and turn lines name the kind. The shared-layout rule (D4).                                                                                                                                                                                                      | ~100–200 lines                                                 |
+| Mend: sessions                 | Login words per kind (pi and opencode included). Session and turn lines name the kind.                                                                                                                                                                                                                                   | ~100–200 lines                                                 |
 | Mend: CLI                      | `mend connect claude --api-key` and `mend connect codex --api-key`, reading stdin only. The kind and last four characters in `mend doctor`. A deliberate key path past the `codex-grant.ts` refusal.                                                                                                                     | ~150–250 lines                                                 |
 | Mend: web                      | A key field per provider in Settings → Connected accounts, a kind badge, words for an invalid key.                                                                                                                                                                                                                       | ~150–250 lines                                                 |
 | Mend: desktop, mobile, VS Code | Desktop is not shipping. Mobile has no accounts screen. VS Code signs in to Mend only.                                                                                                                                                                                                                                   | 0                                                              |
-| Mend: inference                | Nothing; Mend passes references. Words for the kind if D3 asks for them.                                                                                                                                                                                                                                                 | 0–30 lines                                                     |
+| Mend: inference                | Nothing; Mend passes references. The D3 words on each pass.                                                                                                                                                                                                                                                              | 0–30 lines                                                     |
 | Mend: T3 gateway               | The kind in the provider message. Every refusal stays.                                                                                                                                                                                                                                                                   | ~20–50 lines                                                   |
 | Mend: redaction                | `redactingConsole` handles URL credentials only (`apps/api/src/redacting-console.ts:6-24`). Add the value patterns `redactDetail` already has.                                                                                                                                                                           | ~20–40 lines                                                   |
 | Docs and ADR                   | New ADR amending 0005, 0008, 0013 and 0016. Updates to `concepts/provider-logins`, `guides/provider-accounts`, `reference/cli`, `feature-status`. Changesets.                                                                                                                                                            | ~1 day                                                         |
@@ -177,13 +177,18 @@ providers. Core's `kind` column is free text, so this needs no migration (Core
 
 ## Invariants
 
-1. One person's key is never readable by, spent by, or restored to another person (ADR 0013, ADR
-   0016).
-2. A key never appears in a record, a log line, argv, a captured file or the T3 gateway.
+1. Mend never places, spends or restores one person's key login for another person (ADR 0013, ADR
+   0016). D1 allows a key to be shared; how sharing is modelled is still open. ADR 0016's known
+   limits still apply: a person with sudo in a workspace can read other people's files there.
+2. A key that Mend places never appears in a record Mend writes, a log line, argv, a file Mend
+   captures, or the T3 gateway. A key that the person's repository or dotfiles settings supply is
+   outside this invariant (D6). Whether output masking must also cover an agent that reads its own
+   key file is still open.
 3. A key has no refresher. Its account turns `invalid` on a provider 401, and no refresh is tried.
 4. A key is written to a person's home with mode 0600, owned by that person, outside every capture
    root.
-5. Every surface that shows which login a turn spent says whether it was a key or a subscription.
+5. For a person who has connected a key, every surface that shows which login a turn spent says
+   whether it was a key or a subscription.
 6. A provider key from a project secret never decides which login a turn spends.
 
 ## Risks a key adds over an OAuth login
@@ -192,7 +197,7 @@ providers. Core's `kind` column is free text, so this needs no migration (Core
    - **Risk:** ADR 0008 makes every OAuth copy non-refreshing, so a leaked copy lapses within hours.
      A leaked key works until it is revoked in the provider's console.
    - **Contain:** show the last four characters everywhere. Disconnect says the key stays valid
-     until revoked. Advise one key per person per Mend instance.
+     until revoked.
 2. **Spend has no plan cap.**
    - **Risk:** a key bills per token; a subscription stops at its usage limits.
    - **Contain:** recommend a spend limit on the Anthropic Console workspace or the OpenAI project.
@@ -202,7 +207,8 @@ providers. Core's `kind` column is free text, so this needs no migration (Core
      `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`. Codex's `ignore_default_excludes` defaults to true, so
      key-shaped names reach its shell tool.
    - **Contain:** no environment variables; files and the helper only. Set both scrubs as defence in
-     depth. The agent can still read its own key file, as it can read `.credentials.json` today.
+     depth. The agent can still read its own key file. Whether that is a stated limit, as it is for
+     `.credentials.json` today, is still with Yiannis.
 4. **A key from another source changes which login a turn spends.**
    - **Risk:** in `--print` mode Claude Code prefers `ANTHROPIC_API_KEY` or `apiKeyHelper` over the
      subscription, without asking. Mend's protocol sessions run `--print`
@@ -233,48 +239,75 @@ providers. Core's `kind` column is free text, so this needs no migration (Core
 9. **The shared layout.**
    - **Risk:** one home holds one set of logins. A join or a shared-control turn there would spend
      the owner's key: cost with no plan cap, for someone who did not send the turn.
-   - **Contain:** D4. The roadmap already plans "No shared control in a shared-layout workspace".
+   - **Contain:** none in this feature. D4 decided that this feature does no shared-layout work and
+     assumes the shared layout is gone. The feature therefore depends on the shared layout's
+     removal, planned as its own 0.37 work, landing first.
 10. **mend#684 widens where a key lands.**
     - **Risk:** a Codex key also goes into the same person's Claude sessions.
     - **Contain:** it is the same person; `selectedOnly` opts out.
 
-## Decisions (all open)
+## Decisions
 
-- **D1. Per person or per organization. Open.**
-  - **Recommended:** per person, as a connected account like the logins.
-  - An organization key is a pooled payer, which ADR 0013 ("whoever sends a turn pays") would have
-    to redefine. Revisit it as an owner-only organization account with its own words.
-- **D2. A key and a subscription for the same provider. Open.**
-  - **Recommended:** both may be connected; one is the person's `default` per provider and runs.
-  - No automatic switch to the key when a plan limit is reached. An opt-in switch could come later,
-    with a line on each turn that used it.
-- **D3. Words for which login a turn spent. Open.**
-  - **Recommended:** the account line reads "Claude · API key ····a1b2 · billed per token" or
-    "Claude · subscription".
-  - The session line, the shared-control line ("Each turn runs on its sender's Claude API key"),
-    inference passes ("read on your Codex API key") and the gateway's provider message use the same
-    words.
-- **D4. Keys in the shared layout. Open.**
-  - **Recommended:** refuse joins and shared control that would spend another person's key in a
-    shared-home executor, and point to the person layout. This matches the planned "No shared
-    control in a shared-layout workspace".
-  - The alternative is a switch that asks first: "spends Alice's API key · billed per token".
-- **D5. The Codex key path that works today. Open.**
-  - **Recommended:** document it and finish it.
-  - First, a small follow-up:
-    - show the kind;
-    - add `mend connect codex --api-key` (stdin);
-    - make the pi and opencode words say the Codex account is an API key.
-  - The Claude kind comes with the full feature.
-- **D6. Provider key names from project secrets, repository settings and dotfiles. Open.**
-  - **Recommended:** refuse the provider key names as project secret names, with words that point to
-    Connected accounts.
-  - Report a key found in repository or dotfiles settings as observed, without stripping it.
-- **D7. Inference on a key. Open.**
-  - **Recommended:** yes, under the same asker-pays rule, with D3's words.
-- **D8. Bedrock, Vertex, a custom base URL, OpenRouter. Open.**
-  - **Recommended:** out of scope. Shape the kind so a "Claude via Bedrock" account can be added
-    later.
+Yiannis decided all eight on 2026-10-24. The comments on SLNT-102 to SLNT-109 record each outcome in
+his words.
+
+- **D1. Per person or per organization. Decided: a key can be used by several people.**
+  - API keys are not subscriptions, so the Claude and Codex subscription terms do not bind them.
+    Sharing a key with others is allowed.
+  - How several people share one key is still with Yiannis (asked 2026-10-24): each person connects
+    the same key as their own login, one person's key login is used by others, or the organization
+    holds a key. Under the second and third, the person who sends a turn and the person whose key it
+    spends differ, and which of them sees the D3 words is open too.
+- **D2. A key and a subscription for the same provider. Decided: both, one default.**
+  - A person may connect a key and a subscription for the same provider. One of them is the person's
+    `default` for that provider, and Mend gives that one to the harness. A key that the person's
+    repository or dotfiles settings supply can still take precedence in the harness. Mend reports it
+    as observed (D6).
+  - Mend never falls back from one to the other on its own, not even when a plan limit is reached.
+- **D3. Words for which login a turn spent. Decided: "API key ····a1b2 · billed per token".**
+  - The account line reads "Claude · API key ····a1b2 · billed per token" or "Claude ·
+    subscription".
+  - The session line, the shared-control line, inference passes and the T3 gateway's provider
+    message use the same words.
+  - The wording appears only for people who have connected a key. A person with only subscription
+    logins sees the same lines as before.
+- **D4. Keys in the shared layout. Decided: no work.**
+  - This feature assumes the shared workspace layout won't be a thing, and adds no shared-layout
+    rule.
+- **D5. The Codex key path that works today. Decided: make both key paths official in 0.37.**
+  - The Codex key path becomes official, and the Claude key path is built and made official in the
+    same release.
+  - The recommendation he accepted also lists, for Codex: show the kind, add
+    `mend connect codex --api-key` reading stdin, and make the pi and opencode words say the Codex
+    account is an API key.
+- **D6. Provider key names from project secrets, repository settings and dotfiles. Decided: refuse
+  and report.**
+  - Mend refuses the provider key names as project secret names, with words that point to Connected
+    accounts.
+  - Mend reports a key it finds in repository or dotfiles settings as observed, and does not strip
+    it.
+- **D7. Inference on a key. Decided: yes, the asker pays.**
+  - Mend's inference passes may run on a key, under the same rule as subscription logins: the person
+    who asked for the pass pays.
+- **D8. Bedrock, Vertex, a custom base URL, OpenRouter. Decided: out of scope.**
+  - None of them is built. The `api-key` kind stays open to a later provider route, such as "Claude
+    via Bedrock".
+
+### Still with Yiannis
+
+These calls came up while designing the build, after the 2026-10-24 decisions. This feature builds
+nothing that depends on one of them until he answers. Two of them describe behaviour that already
+exists today; "Divergences found while writing" says what it does until then.
+
+- How several people share one key (D1, above).
+- Whether Mend's background reads that switch from a Claude login to a Codex login (session names,
+  request intent, Slack thread reading) may switch onto a key.
+- Whether a session agent that reads its own key file is a stated limit, as it is for subscription
+  copies today, or whether stronger masking must ship first.
+- Whether the operator settings `MEND_INFERENCE_CLAUDE_ACCOUNT` and `MEND_INFERENCE_CODEX_ACCOUNT`
+  keep naming one account for every person.
+- Whether the automatic review prep after a settle runs on a key.
+- Whether project secrets that already use a provider key name keep reaching the project's services.
 
 ## Harness behaviour this rests on
 
@@ -306,16 +339,28 @@ costs).
 - **Billing:** a key bills at API rates. Cloud tasks, GitHub review and Slack need a ChatGPT
   sign-in. Models follow the key's API access.
 
+**Observed on 2026-10-24**, with fake keys against a local fake server, on Claude Code 2.1.308 and
+Codex 0.162.1:
+
+- Claude Code used `"apiKeyHelper":"cat <file>"` passed through `--settings`, in `--print` mode and
+  in an interactive terminal once onboarding and folder trust were set, with no approval prompt. It
+  sent the key as `x-api-key` and retried after a 401.
+- The stream-json `system/init` line reports `apiKeySource` as `apiKeyHelper` for the helper, as
+  `ANTHROPIC_API_KEY` when an environment key is present (the environment key wins over the helper),
+  and as `none` with neither.
+- `codex login --with-api-key` writes `{"auth_mode":"apikey","OPENAI_API_KEY":"…"}` with mode 0600.
+
 **pi and opencode** read `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` and keep keys in their own
 `auth.json`. opencode supports Anthropic only by key.
 
 ## Open questions
 
 - **The Codex path has not been run.** It is traced in code from paste to `app-server`, but no
-  session has run on a key `auth.json` in a person's home. Prove it on the box before D5.
-- **Where Claude Code stores the interactive "use this key?" answer is unknown.** It matters only
-  for terminal sessions that start `claude` interactively. It is reported to be in `~/.claude.json`,
-  and is undocumented.
+  session has run on a key `auth.json` in a person's home. Prove it on a local stack before the
+  feature is enabled, and on the box after merge.
+- **The pinned harness versions are not yet checked.** The observations under "Harness behaviour
+  this rests on" were made with Claude Code 2.1.308 and Codex 0.162.1. Check them on the pinned
+  2.1.292 and 0.160.1.
 - **Whether `apiKeyHelper` output reaches child processes is undocumented.** It is presumably not
   inherited, since it isn't an environment variable.
 
@@ -326,8 +371,19 @@ costs).
   provider key names as stripped "even when a project sets one", and sealantd strips them
   (`crates/sealant-process/src/identity.rs:36-68`). The sentence should exclude those names.
 - **The CLI's Codex refusal assumes a key is never wanted.** `apps/cli/src/codex-grant.ts:98-103`
-  refuses a key login, yet the web paste and `--from-stdin` paths accept one. Which is intended is
-  D5.
+  refuses a key login, yet the web paste and `--from-stdin` paths accept one. D5 made the key path
+  official, so the refusal is the divergence.
 - **The Codex-is-not-ChatGPT words name the wrong cause for a key.**
   `packages/sessions/src/harness-layout-steps.ts:287` says "the Codex account is not a ChatGPT
   login" when the account is a key. The words are accurate, but they don't say what the account is.
+- **Background reads already switch onto a Codex key.** When a person's Claude login is missing or
+  invalid, session naming and request intent retry on their Codex login
+  (`packages/inference/src/session-namer.ts:78-86`, `request-intent-reader.ts:66-67`), and the
+  inference provider sends their default Codex account
+  (`packages/inference/src/sealant-provider.ts:31-34`). A person whose Codex account is a key-only
+  `auth.json` already gets these reads on the key. That stays as it is until Yiannis answers the
+  retry question.
+- **Operator settings already name one account for every person.** `MEND_INFERENCE_CLAUDE_ACCOUNT`
+  and `MEND_INFERENCE_CODEX_ACCOUNT` (`packages/inference/src/sealant-provider.ts:29-30`,
+  `apps/docs/src/content/docs/reference/server-environment.md:196-197`) send one account name for
+  every asker. That stays as it is until Yiannis answers.
