@@ -31,7 +31,7 @@ import {
 
 type Target = HarnessProject;
 interface Call {
-  readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  readonly method: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly path: string;
   readonly body?: unknown;
   /** The id a refusal must name. */
@@ -582,6 +582,20 @@ const CASES: ReadonlyArray<AccessCase> = [
     "/api/worktrees",
     "/contents?path=README.md",
   )("worktrees.contents"),
+  child(
+    "project-read",
+    "worktree",
+    "GET",
+    "/api/worktrees",
+    "/raw?path=README.md",
+  )("worktrees.raw"),
+  child(
+    "project-read",
+    "worktree",
+    "HEAD",
+    "/api/worktrees",
+    "/raw?path=README.md",
+  )("worktrees.rawHead"),
   child("project-read", "worktree", "POST", "/api/worktrees", "/checkpoints", {
     trigger: "user-mark",
   })("worktrees.checkpoint"),
@@ -898,6 +912,13 @@ const ADMITTED: Readonly<
   // Chain listing masks diff generation.
   "worktrees.diff": { status: 500, calls: ["checkpoints.listForWorktree"] },
   "worktrees.contents": { status: 500, calls: ["reads.readFile"] },
+  // This world is captured: an admitted raw read is refused as not available yet, before any read.
+  "worktrees.raw": {
+    status: 409,
+    calls: [],
+    body: { _tag: "RawFileUnavailable", mode: "captured" },
+  },
+  "worktrees.rawHead": { status: 409, calls: [], body: "" },
   // newestLiveSessionId masks engine checkpoint after change lookup.
   "worktrees.checkpoint": {
     status: 500,
@@ -1117,7 +1138,8 @@ describe.each(CASES)("$endpoint", (entry) => {
     if (expectation === "refused") {
       expect({ status, id: idOf(body), calls: api.world.calls }).toEqual({
         status: 404,
-        id: call.id,
+        // A HEAD answer has no body to name the target in.
+        id: call.method === "HEAD" ? undefined : call.id,
         calls: [],
       });
     } else if (expectation === "forbidden") {
