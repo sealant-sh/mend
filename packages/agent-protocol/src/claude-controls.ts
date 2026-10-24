@@ -130,12 +130,13 @@ export const makeClaudeControls = Effect.fnUntraced(function* (context: ClaudeCo
     return yield* written;
   });
 
-  // Only a journaled interrupt needs the lane: its record is asynchronous, and the line it
-  // names must be the line the fold happened after. Without a journal nothing is replayed,
-  // and a Stop never waits behind a line's projection.
+  // Only a journaled interrupt needs the lane, and to finish once journaled: its record is
+  // asynchronous, and a rehydrate folds it after the line it names. Without a journal nothing is
+  // replayed, and a Stop never waits behind a line's projection.
   const interrupt = Effect.fn("ClaudeAdapter.interrupt")(function* () {
-    const stop = Effect.uninterruptible(interruptNow);
-    yield* journal === undefined ? stop : lane.withPermits(1)(stop);
+    yield* journal === undefined
+      ? interruptNow
+      : lane.withPermits(1)(Effect.uninterruptible(interruptNow));
   });
 
   const refused = (
