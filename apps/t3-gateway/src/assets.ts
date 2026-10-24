@@ -137,19 +137,27 @@ const served: ReadonlyMap<
     { family, contentType, csp: csp ?? null },
   ]),
 );
-/** A document's directory also serves its dependencies; only media-file URLs name audio or video. */
-const classify = (name: string, preview: "workspace" | "media", child: boolean) => {
-  if (!validPath(name) || (child && name.split("/").some((s) => s.startsWith(".")))) return null;
-  const type = served.get(posix.extname(name).toLowerCase());
-  if (type === undefined) return null;
-  const ranges = type.family === "video" || type.family === "audio";
-  if (child ? ranges : type.family === "dependency" || (ranges && preview !== "media")) return null;
-  return {
-    contentType: type.contentType,
-    csp: type.csp,
-    ranges,
-    directory: type.family === "document",
-  };
+const typeOf = (name: string) =>
+  validPath(name) ? (served.get(posix.extname(name).toLowerCase()) ?? null) : null;
+const ranged = (family: Family) => family === "video" || family === "audio";
+/** What a grant itself may name: no bare dependency, and audio or video only from a media-file. */
+const grantable = (name: string, preview: "workspace" | "media") => {
+  const type = typeOf(name);
+  return type === null ||
+    type.family === "dependency" ||
+    (ranged(type.family) && preview !== "media")
+    ? null
+    : type;
+};
+/**
+ * What a document's directory serves below it, as t3code's rule has it: no dot-segment under the
+ * granted directory (the directory itself may sit in one), and no audio or video.
+ */
+const dependency = (suffix: string) => {
+  const type = typeOf(suffix);
+  return type === null || ranged(type.family) || suffix.split("/").some((s) => s.startsWith("."))
+    ? null
+    : type;
 };
 const headersFor = (contentType: string, csp: string | null): Record<string, string> => ({
   "content-type": contentType,
@@ -161,17 +169,21 @@ const headersFor = (contentType: string, csp: string | null): Record<string, str
 });
 
 type Source =
-  | { readonly kind: "image"; readonly imageId: string; readonly suffix: Redacted.Redacted<string> }
+  | { readonly kind: "image"; readonly imageId: string; readonly name: Redacted.Redacted<string> }
   | {
       readonly kind: "file";
       readonly worktreeId: string;
+      /** The canonical worktree-relative path the grant was minted for. */
       readonly path: Redacted.Redacted<string>;
-      readonly directory: Redacted.Redacted<string>;
-      readonly suffix: Redacted.Redacted<string>;
       readonly preview: "workspace" | "media";
-      readonly extent: "exact" | "directory";
-      /** A media-file grant follows its file's device and inode, as t3code's does. */
-      readonly identity: string | null;
+      readonly extent:
+        | {
+            readonly kind: "exact";
+            /** A media-file grant follows its file's device and inode, as t3code's does. */
+            readonly identity: string | null;
+          }
+        /** A workspace document, with what its directory holds beside and below it. */
+        | { readonly kind: "directory"; readonly directory: string };
     };
 interface Grant {
   readonly sessionId: AuthSessionId;
@@ -281,7 +293,7 @@ export const AssetUrlsLive: Layer.Layer<
             if (subject.kind === "image") {
               const name = Redacted.value(subject.fileName);
               if (!validPath(name) || name.includes("/")) return yield* new AssetUnavailable({});
-              source = { kind: "image", imageId: subject.imageId, suffix: subject.fileName };
+              source = { kind: "image", imageId: subject.imageId, name: subject.fileName };
             } else {
               if (
                 !session.scopes.includes("filesystem:read") ||
@@ -295,23 +307,28 @@ export const AssetUrlsLive: Layer.Layer<
               });
               if (file.status !== 200) return yield* new AssetUnavailable({});
               const name = Redacted.value(file.canonicalPath);
-              const type = classify(name, subject.preview, false);
+              const type = grantable(name, subject.preview);
               if (type === null) return yield* new AssetUnavailable({});
               const directory = posix.dirname(name);
               source = {
                 kind: "file",
                 worktreeId: subject.worktreeId,
                 path: file.canonicalPath,
-                directory: Redacted.make(directory === "." ? "" : directory),
-                suffix: Redacted.make(posix.basename(name)),
                 preview: subject.preview,
                 // As t3code: only a workspace document opens its directory; a media file is exact.
-                extent: type.directory && subject.preview === "workspace" ? "directory" : "exact",
-                identity: subject.preview === "media" ? file.identity : null,
+                extent:
+                  type.family === "document" && subject.preview === "workspace"
+                    ? { kind: "directory", directory: directory === "." ? "" : directory }
+                    : {
+                        kind: "exact",
+                        identity: subject.preview === "media" ? file.identity : null,
+                      },
               };
               if (subject.preview === "media") fileRevision = file.revision;
             }
-            const suffix = Redacted.value(source.suffix);
+            const suffix = posix.basename(
+              Redacted.value(source.kind === "image" ? source.name : source.path),
+            );
             const cost =
               Buffer.byteLength(
                 JSON.stringify({
@@ -321,12 +338,7 @@ export const AssetUrlsLive: Layer.Layer<
                   source:
                     source.kind === "image"
                       ? { imageId: source.imageId, suffix }
-                      : {
-                          ...source,
-                          suffix,
-                          path: Redacted.value(source.path),
-                          directory: Redacted.value(source.directory),
-                        },
+                      : { ...source, path: Redacted.value(source.path) },
                 }),
               ) + 128;
             // Other mints may have published while this one waited for descriptor metadata.
@@ -374,8 +386,9 @@ export const AssetUrlsLive: Layer.Layer<
           const suffix = parts.join("/");
           const source = grant.source;
           if (
-            (source.kind === "image" || source.extent === "exact") &&
-            suffix !== Redacted.value(source.suffix)
+            (source.kind === "image" || source.extent.kind === "exact") &&
+            suffix !==
+              posix.basename(Redacted.value(source.kind === "image" ? source.name : source.path))
           )
             return yield* new AssetUnavailable({});
           yield* reserve(grant.deviceId, false, source.kind === "image");
@@ -402,41 +415,43 @@ export const AssetUrlsLive: Layer.Layer<
             };
           }
           if (!session.scopes.includes("filesystem:read")) return yield* new AssetUnavailable({});
-          const directory = Redacted.value(source.directory);
-          const child = source.extent === "directory";
-          const name = child
-            ? directory === ""
-              ? suffix
-              : `${directory}/${suffix}`
-            : Redacted.value(source.path);
-          const type = classify(name, source.preview, child);
-          if (type === null) return yield* new AssetUnavailable({});
+          const extent = source.extent;
+          const granted = Redacted.value(source.path);
+          const directory = extent.kind === "directory" ? extent.directory : "";
+          const name =
+            extent.kind === "exact"
+              ? granted
+              : directory === ""
+                ? suffix
+                : `${directory}/${suffix}`;
+          const requested =
+            extent.kind === "exact" ? grantable(name, source.preview) : dependency(suffix);
+          if (requested === null) return yield* new AssetUnavailable({});
+          const ranges = ranged(requested.family);
           const file: MendRawFile = yield* opened(session, source.worktreeId, {
             path: Redacted.make(name),
-            within: source.directory,
+            within: Redacted.make(directory),
             method: input.method,
             range:
-              type.ranges && input.method === "GET" && input.ifRange === undefined
+              ranges && input.method === "GET" && input.ifRange === undefined
                 ? input.range
                 : undefined,
           });
           const canonical = Redacted.value(file.canonicalPath);
-          if (
-            !withinDirectory(canonical, directory) ||
-            (!child && canonical !== name) ||
-            (!child && source.identity !== null && source.identity !== file.identity)
-          )
+          const type =
+            extent.kind === "exact"
+              ? canonical === granted &&
+                (extent.identity === null || extent.identity === file.identity)
+                ? requested
+                : null
+              : withinDirectory(canonical, directory)
+                ? dependency(directory === "" ? canonical : canonical.slice(directory.length + 1))
+                : null;
+          if (type === null || (!ranges && file.status !== 200))
             return yield* new AssetUnavailable({});
-          const actual = classify(canonical, source.preview, child);
-          if (
-            actual === null ||
-            actual.ranges !== type.ranges ||
-            (!type.ranges && file.status !== 200)
-          )
-            return yield* new AssetUnavailable({});
-          const headers = headersFor(actual.contentType, actual.csp);
+          const headers = headersFor(type.contentType, type.csp);
           headers["content-length"] = String(file.length);
-          if (actual.ranges) headers["accept-ranges"] = "bytes";
+          if (ranges) headers["accept-ranges"] = "bytes";
           if (file.contentRange !== undefined) headers["content-range"] = file.contentRange;
           return {
             status: file.status,
