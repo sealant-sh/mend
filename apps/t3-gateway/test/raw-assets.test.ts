@@ -464,6 +464,34 @@ it.live("keeps a media URL through an in-place edit and refuses it once the file
   ),
 );
 
+it.live("answers 416 only for the granted file itself, never for a replacement or an alias", () =>
+  withGateway((mend) =>
+    Effect.gen(function* () {
+      const { rpc } = yield* pairAndConnect(mend, "UNSATISFIABLE");
+      const http = yield* HttpClient.HttpClient;
+      const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
+        resource: resource("movie.mp4", "media-file"),
+      });
+      const beyond = { headers: { range: "bytes=256-" } };
+      assert.strictEqual((yield* http.get(url.relativeUrl, beyond)).status, 416);
+      for (const [label, changed] of [
+        ["replaced", { identity: "d".repeat(64) }],
+        ["aliased", { canonicalPath: "song.mp4" }],
+        ["moved out", { canonicalPath: "private/movie.mp4" }],
+      ] as const) {
+        mend.workbench.rawFiles.set("worktree-session-1/movie.mp4", {
+          bytes: BYTES,
+          canonicalPath: "movie.mp4",
+          ...changed,
+        });
+        const response = yield* http.get(url.relativeUrl, beyond);
+        assert.strictEqual(response.status, 404, label);
+        assert.isUndefined(response.headers["content-range"], label);
+      }
+    }),
+  ),
+);
+
 it.live("refuses all upstream failures as the same plain 404", () =>
   withGateway((mend) =>
     Effect.gen(function* () {

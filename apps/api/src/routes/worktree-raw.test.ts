@@ -114,11 +114,25 @@ it("answers single ranges exactly, unsatisfiable 416, and malformed or If-Range 
 });
 it("hides inaccessible files and refuses traversal and symlink escapes", async () => {
   for (const name of ["../secret", "escape.bin", ".git/config"])
-    expect((await get(`path=${encodeURIComponent(name)}`)).status).toBe(404);
+    for (const range of [undefined, "bytes=999999-"])
+      expect(
+        (await get(`path=${encodeURIComponent(name)}`, range === undefined ? {} : { range }))
+          .status,
+      ).toBe(404);
+  expect((await get("path=data.bin&within=docs", { range: "bytes=999999-" })).status).toBe(404);
   for (const user of ["carol", "bob"] as const)
-    expect(
-      (await api.request(user, "GET", `/api/worktrees/${worktree}/raw?path=data.bin`)).status,
-    ).toBe(404);
+    for (const headers of [{}, { range: "bytes=999999-" }])
+      expect(
+        (
+          await api.request(
+            user,
+            "GET",
+            `/api/worktrees/${worktree}/raw?path=data.bin`,
+            undefined,
+            headers,
+          )
+        ).status,
+      ).toBe(404);
   expect(
     (await api.request(null, "GET", `/api/worktrees/${worktree}/raw?path=data.bin`)).status,
   ).toBe(401);
