@@ -456,7 +456,11 @@ export interface ThreadCommands {
     threadId: string,
     runId: string,
   ) => Effect.Effect<number, ThreadCommandFailure>;
-  readonly resumeQueue: (threadId: string) => Effect.Effect<number, ThreadCommandFailure>;
+  /** Resumes a held queue (`queue.resume`), or with `runId` sends that message first (`queued-run.start`). */
+  readonly resumeQueue: (
+    threadId: string,
+    runId?: string,
+  ) => Effect.Effect<number, ThreadCommandFailure>;
   /** New text for a message still waiting in the gateway's queue (`queued-run.edit`). */
   readonly editQueued: (
     threadId: string,
@@ -3179,7 +3183,7 @@ export const makePersonHub = (input: {
         return yield* locked(Effect.sync(() => sequence));
       });
 
-    const resumeQueue: ThreadCommands["resumeQueue"] = (threadId) =>
+    const resumeQueue: ThreadCommands["resumeQueue"] = (threadId, runId) =>
       locked(
         Effect.gen(function* () {
           if (archived.has(threadId)) {
@@ -3187,10 +3191,12 @@ export const makePersonHub = (input: {
               "The thread is archived: nothing in its queue is sent until it is unarchived. Unarchive it, then resume.",
             );
           }
-          yield* changeKept(threadId, (queue) => {
+          const resumed = yield* changeKept(threadId, (queue) => {
+            if (runId !== undefined) return Queueing.sendNow(queue, runId);
             Queueing.resume(queue);
             return true;
           });
+          if (!resumed) return yield* refused("That message is not waiting in the queue any more.");
           yield* publishAll;
           return sequence;
         }),
@@ -4048,7 +4054,7 @@ export const makePersonHub = (input: {
       send: (command) => send({ ...command, threadId: sessionIdOf(command.threadId) }),
       interrupt: (command) => interrupt({ ...command, threadId: sessionIdOf(command.threadId) }),
       cancelQueued: (threadId, runId) => cancelQueued(sessionIdOf(threadId), runId),
-      resumeQueue: (threadId) => resumeQueue(sessionIdOf(threadId)),
+      resumeQueue: (threadId, runId) => resumeQueue(sessionIdOf(threadId), runId),
       editQueued: (threadId, runId, text, imageIds) => {
         const sessionId = sessionIdOf(threadId);
         const selection =

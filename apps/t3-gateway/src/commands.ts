@@ -23,6 +23,7 @@ import type { BearerSession } from "./state.ts";
  *   changed on the picker applies from the agent's next start; the Fast tier or another provider
  *   is refused (`model-options.ts`).
  * - `run.interrupt`, `queued-run.cancel`, `queue.resume`: Mend's interrupt and the gateway's queue.
+ * - `queued-run.start`: a waiting message sent first, and the queue resumed behind it.
  * - `queued-run.edit`, `queued-run.reorder`: a message still waiting in the gateway's queue; one on
  *   its way to Mend is never rewritten.
  * - `runtime-request.respond`, `thread.user-input.dismiss`: Mend's request answers; a dismissal
@@ -195,6 +196,8 @@ export const dispatchCommand = (
       return answered(hub.commands.cancelQueued(command.threadId, command.runId));
     case "queue.resume":
       return answered(hub.commands.resumeQueue(command.threadId));
+    case "queued-run.start":
+      return answered(hub.commands.resumeQueue(command.threadId, command.runId));
     case "queued-run.edit": {
       const attachments = command.attachments;
       if (attachments?.some((attachment) => attachment.type !== "image") === true) {

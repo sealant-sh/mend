@@ -16,7 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
-import { emptyQueue, newEntry, reorder, edit, type ThreadQueue } from "../src/queue.ts";
+import { emptyQueue, newEntry, reorder, edit, sendNow, type ThreadQueue } from "../src/queue.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
@@ -24,8 +24,9 @@ import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 
 /**
- * `queued-run.edit` and `queued-run.reorder` (ADR 0012, phase 2): what still waits in the gateway's
- * queue can be rewritten and moved; what is on its way to Mend cannot.
+ * `queued-run.edit`, `queued-run.reorder` and `queued-run.start` (ADR 0012, phase 2): what still
+ * waits in the gateway's queue can be rewritten, moved and sent first; what is on its way to Mend
+ * cannot.
  */
 
 type Item = OrchestrationV2ThreadStreamItem;
@@ -190,6 +191,91 @@ describe("editing and reordering the queue", () => {
   );
 });
 
+describe("sending a held message now", () => {
+  it.live("sends the chosen message first once the queue was held, then the rest in order", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const open = mend.workbench.addTurn("session-1", "A long job");
+        const { rpc } = yield* pairAndConnect(mend, "SEND-NOW");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        for (const [id, text] of [
+          ["message-a", "First"],
+          ["message-b", "Second"],
+          ["message-c", "Third"],
+        ] as const) {
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](message(id, text));
+        }
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        const runOf = (messageId: string) => {
+          const run = projection.runs.find((candidate) => candidate.userMessageId === messageId);
+          if (run === undefined) throw new Error(`no run for ${messageId}`);
+          return run.id;
+        };
+        const running = projection.runs.find((run) => run.status === "running");
+        assert.isDefined(running);
+        if (running === undefined) return;
+
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          type: "run.interrupt",
+          commandId: commandId(),
+          threadId: THREAD,
+          runId: running.id,
+          holdQueue: true,
+        });
+        yield* eventually(() => open.status === "interrupted", "the interrupt");
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "event" }> =>
+            item.kind === "event" &&
+            item.event.type === "run.updated" &&
+            item.event.payload.userMessageId === "message-a" &&
+            item.event.payload.queueHeld === true,
+        );
+        assert.deepStrictEqual(turnInputs(mend), []);
+
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          type: "queued-run.start",
+          commandId: commandId(),
+          threadId: THREAD,
+          runId: runOf("message-c"),
+        });
+        yield* eventually(() => turnInputs(mend).length === 1, "the message sent now");
+        assert.deepStrictEqual(turnInputs(mend), ["Third"]);
+
+        // On its way to Mend, it is not sent again.
+        const again = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "queued-run.start",
+            commandId: commandId(),
+            threadId: THREAD,
+            runId: runOf("message-c"),
+          }),
+        );
+        assert.strictEqual(errorTag(again), "OrchestrationV2DispatchCommandError");
+
+        for (const expected of [
+          ["Third", "First"],
+          ["Third", "First", "Second"],
+        ]) {
+          const last = (mend.workbench.turns.get("session-1") ?? []).at(-1);
+          if (last !== undefined && last.status === "running")
+            mend.workbench.setTurn(last, "completed");
+          yield* eventually(() => turnInputs(mend).length === expected.length, "the next message");
+          assert.deepStrictEqual(turnInputs(mend), expected);
+        }
+      }),
+    ),
+  );
+});
+
 describe("an edit is kept before it is acknowledged (594-R2-1)", () => {
   it.live(
     "refuses an edit the state file will not keep: the old text stays, live and after a restart",
@@ -283,6 +369,15 @@ describe("the queue's own rules", () => {
     assert.deepStrictEqual(order(queue), ["run-0", "run-3", "run-1", "run-2"]);
     assert.isTrue(reorder(queue, "run-3", null));
     assert.deepStrictEqual(order(queue), ["run-0", "run-1", "run-2", "run-3"]);
+  });
+
+  it("sends a waiting message first among those waiting, behind what is on its way", () => {
+    const queue = queueOf("sending", "queued", "queued", "queued");
+    queue.held = true;
+    assert.isTrue(sendNow(queue, "run-3"));
+    assert.deepStrictEqual(order(queue), ["run-0", "run-3", "run-1", "run-2"]);
+    assert.isFalse(queue.held);
+    assert.isFalse(sendNow(queue, "run-0"));
   });
 
   it("never moves or rewrites a message on its way, nor puts one before it", () => {

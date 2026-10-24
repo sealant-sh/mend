@@ -352,6 +352,19 @@ export const reorder = (queue: ThreadQueue, runId: string, beforeRunId: string |
 };
 
 /**
+ * `queued-run.start`: a waiting message goes first among those still waiting, and the queue
+ * resumes. False once it is on its way or settled.
+ */
+export const sendNow = (queue: ThreadQueue, runId: string): boolean => {
+  const entry = waiting(queue, runId);
+  if (entry === undefined) return false;
+  const first = queue.entries.find((candidate) => candidate.state === "queued");
+  if (first !== undefined && first !== entry) reorder(queue, runId, first.runId);
+  resume(queue);
+  return true;
+};
+
+/**
  * Takes a message back, wherever it is on its way. Queued or launching, it is cancelled at once:
  * it stops blocking the thread and stops holding the hub (a launch already asked for may still
  * bring the agent up). Sending, its turn is interrupted when `POST /turns` answers. With
