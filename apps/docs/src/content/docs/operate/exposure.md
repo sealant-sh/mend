@@ -252,6 +252,9 @@ What the overlay does, and what it states on your behalf:
   Docker install, `--exposure` writes the first two.
 - The edge's access log replaces the value of `ticket`, `token` and `code` in every URL and drops
   the `Referer` header. Caddy already redacts `Authorization`, `Cookie` and `Set-Cookie`.
+- A raw file read and a t3code asset URL carry a file name or a credential in the URL, so the edge
+  logs them with `uri` replaced by `REDACTED`. So does Caddy's own line about a response cut short,
+  for every route; the access line with the same `remote_port` holds that request's URL.
 
 What was checked: the merged files render, and the Caddyfile validates with Caddy. What was not: a
 certificate issued and a browser session through it, end to end. Workspace SSH on port 2222 stays on
