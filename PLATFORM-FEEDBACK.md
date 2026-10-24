@@ -7,6 +7,68 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-24 · 0.39.0 · A forward that bounds what it buffers
+
+Live preview (ADR 0017, proposed) would put an HTTP gateway in Mend's API process, in front of
+`workspace.forward`. Each upstream connection to a dev server would be one forward.
+
+- **Today:** the SDK's forward appends every inbound frame to an array with no bound
+  (`facade/workspace.js:833`, `:859`), and `send` calls `ws.send` with no check on the socket's
+  buffer (`:885`), so it gives no signal that the socket is full. Mend's `ServiceHost` waits on its
+  own socket's `drain`, but that cannot slow the frames the SDK has already read. A dev server that
+  writes faster than a slow phone reads grows Mend's memory without a limit.
+- **Mend today:** Services and the CLI tunnel carry this risk for each open connection. ADR 0017
+  proposes that the preview gateway not start without a bounded forward, on any exposure.
+- **Needed:** receive backpressure (the SDK stops reading the WebSocket while the consumer is
+  behind) and a send-ready signal, tested with a fast producer and a slow consumer. ADR 0017
+  delivers a held upload through `send`, so without the signal Mend would buffer the whole upload.
+
+## 2026-10-24 · 0.39.0 · Dial errors a caller can tell apart
+
+- **Today:** Core answers a forward with 409 (the workspace is not ready), 502 (nothing listens on
+  the port), 404 or 403 before the upgrade. The SDK reports each as the same WebSocket `error` ("is
+  anything listening on 127.0.0.1:port").
+- **Mend today:** a failed dial is one error, whatever Core answered. ADR 0017's proposed stopped
+  preview page could only say `workspace connection failed`.
+- **Needed:** a typed error per answer, so that Mend reports what was observed.
+
+## 2026-10-24 · 0.39.0 · A forward bound to a process
+
+- **Today:** `workspace.forward(port, { host, protocol })` names a port. When the process Mend
+  started exits and another process takes its port, the next forward reaches that other process.
+- **Mend today:** a Service's readiness probe accepts any listener that answers on the port
+  (`packages/sessions/src/engine.ts:21846-21850`), so a process that was already listening can
+  satisfy it. ADR 0017 proposes closing a preview's binding when Mend sees its attempt exit, and
+  refusing to start a Service on a port that already answers. The gap between an exit and Mend
+  seeing it would stay open.
+- **Needed:** a forward that names the session (process) it expects to own the listening socket, and
+  refuses when another process holds it.
+
+## 2026-10-24 · 0.39.0 · Workspaces reaching a project's long-running service
+
+Shared long-running services (P-SLNT-46) and live preview (ADR 0017, decision 3) need a workspace to
+reach a database that outlives it.
+
+- **Today:** there are no links between workspaces, and `host` on a forward is a closed set
+  (`127.0.0.1`, `localhost`, `docker`). Forwards go from outside into a workspace, never out of it.
+- **Mend today:** a project's database runs either as a Compose service inside one session's
+  workspace or outside Mend. ADR 0017 proposes that, until this ships, a project service is an
+  endpoint the operator provisions and the workspace reaches over its ordinary egress, and that Mend
+  never relays database traffic over its own session channel.
+- **Needed:** a supported route from a workspace to a named service, with an identity per workspace,
+  scoped credentials and revocation.
+
+## 2026-10-24 · 0.39.0 · Service storage that survives executor replacement
+
+- **Today:** a workspace's Docker service is disposable with the workspace, MicroVM executors are
+  replaced before their 8 h cap, and capture mode mounts nothing. Host bind mounts are host paths,
+  absent in capture mode.
+- **Mend today:** a live Service keeps its workspace up, so its data lasts as long as the workspace
+  does. ADR 0017 proposes that a preview's idle stop never end a stateful dependency, for the same
+  reason.
+- **Needed:** durable storage for a service's data through executor replacement, in capture mode and
+  on Firecracker, with a retention and restore contract.
+
 ## ✅ 2026-10-18 · 0.39.0-next.726 (and next.748) · The SDK does not load on stable Effect 4.0.5
 
 **Shipped in 0.39.0-next.751** — [sealant#398](https://github.com/sealant-sh/sealant/pull/398): the
