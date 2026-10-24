@@ -1088,7 +1088,7 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
             cwd: "/workspace/repo",
             providerSessionId: "11111111-1111-4111-8111-111111111111",
             permissionMode: "bypass",
-            steering: true,
+            sharedControl: true,
             rehydrate: { replayProviderTurnIds: [], resolvedProviderRequestIds: new Set() },
           });
           // A repeated `initialize` is answered with the current set; nothing else is sent.
@@ -1145,7 +1145,7 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
           const session = yield* CodexAdapter.start(fake.transport, {
             cwd: "/workspace/repo",
             permissionMode: "bypass",
-            steering: true,
+            sharedControl: true,
           });
           fake.push({
             method: "turn/started",
@@ -1207,7 +1207,7 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
         const session = yield* CodexAdapter.start(fake.transport, {
           cwd: "/workspace/repo",
           permissionMode: "bypass",
-          steering: true,
+          sharedControl: true,
         });
         yield* fake.drain();
         // An older Codex that refuses both: running terminals would read as none, and the

@@ -323,7 +323,14 @@ export const AgentEvent = Schema.Union([
     delta: Schema.String,
   }),
   Schema.TaggedStruct("request.opened", { request: AgentEventRequest }),
-  Schema.TaggedStruct("request.resolved", { providerRequestId: Schema.String }),
+  /**
+   * A provider request closed. `cancelled` means the harness dropped it (a steered Claude turn
+   * aborted the tool asking); absent means it was answered.
+   */
+  Schema.TaggedStruct("request.resolved", {
+    providerRequestId: Schema.String,
+    disposition: Schema.optional(Schema.Literal("cancelled")),
+  }),
   Schema.TaggedStruct("runtime.warning", { message: Schema.String }),
   Schema.TaggedStruct("runtime.error", { message: Schema.String }),
 ]);

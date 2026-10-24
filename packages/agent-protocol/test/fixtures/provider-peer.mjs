@@ -10,6 +10,7 @@ const record = process.env["FIXTURE_RECORD"];
 assert.ok(record);
 const scenario = process.env["FIXTURE_SCENARIO"];
 const emit = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
+const STEER_ID = "6f1d2c3b-9a8e-4f70-8d61-5c4b3a291807";
 const input = createInterface({ input: process.stdin });
 const lines = input[Symbol.asyncIterator]();
 const read = async () => {
@@ -50,6 +51,43 @@ if (scenario === "hang") {
     emit({
       id: thread.id,
       error: { code: -32000, message: "no rollout found for thread id thread-owned" },
+    });
+  } else if (scenario === "steer") {
+    emit({ id: thread.id, result: { thread: { id: "thread-owned" } } });
+    const turn = await read();
+    assert.equal(turn.method, "turn/start");
+    emit({ id: turn.id, result: { turn: { id: "turn-1" } } });
+    emit({ method: "turn/started", params: { threadId: "thread-owned", turn: { id: "turn-1" } } });
+    const steer = await read();
+    assert.deepEqual(steer, {
+      method: "turn/steer",
+      id: steer.id,
+      params: {
+        threadId: "thread-owned",
+        input: [{ type: "text", text: "steer fixture" }],
+        expectedTurnId: "turn-1",
+      },
+    });
+    emit({ id: steer.id, result: { turnId: "turn-1" } });
+    emit({
+      method: "item/completed",
+      params: {
+        threadId: "thread-owned",
+        turnId: "turn-1",
+        item: { id: "steer-echo", type: "userMessage", clientId: null, content: [] },
+      },
+    });
+    emit({
+      method: "item/completed",
+      params: {
+        threadId: "thread-owned",
+        turnId: "turn-1",
+        item: { id: "message-steered", type: "agentMessage", text: "steered fixture" },
+      },
+    });
+    emit({
+      method: "turn/completed",
+      params: { threadId: "thread-owned", turn: { id: "turn-1", status: "completed" } },
     });
   } else {
     emit({ id: thread.id, result: { thread: { id: "thread-owned" } } });
@@ -127,7 +165,43 @@ if (scenario === "hang") {
     "high",
   ]);
   emit({ type: "system", subtype: "init", session_id: sessionId, tools: ["Edit"] });
-  for (const ordinal of [1, 2]) {
+  const human = (text, steer) => ({
+    type: "user",
+    session_id: sessionId,
+    parent_tool_use_id: null,
+    origin: { kind: "human" },
+    message: { role: "user", content: [{ type: "text", text }] },
+    ...steer,
+  });
+  if (scenario === "steer") {
+    assert.deepEqual(await read(), human("steer fixture start"));
+    assert.deepEqual(await read(), human("steer fixture", { priority: "now", uuid: STEER_ID }));
+    emit({ type: "system", subtype: "init", session_id: sessionId });
+    emit({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      terminal_reason: "aborted_streaming",
+      uuid: "segment-aborted",
+      session_id: sessionId,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      errors: ["Error: Request was aborted."],
+    });
+    emit({ type: "system", subtype: "init", uuid: "segment-continued", session_id: sessionId });
+    emit({
+      type: "assistant",
+      session_id: sessionId,
+      message: { id: "message-steered", content: [{ type: "text", text: "steered fixture" }] },
+    });
+    emit({
+      type: "result",
+      subtype: "success",
+      uuid: "segment-final",
+      session_id: sessionId,
+      usage: { input_tokens: 3, output_tokens: 6 },
+    });
+  }
+  for (const ordinal of scenario === "steer" ? [] : [1, 2]) {
     assert.deepEqual(await read(), {
       type: "user",
       session_id: sessionId,

@@ -839,7 +839,7 @@ export const ProtocolHostLive: Layer.Layer<
           cwd: input.cwd,
           providerSessionId: input.process.providerSessionId ?? undefined,
           providerSessionPath: input.resumePath ?? undefined,
-          steering: (input.runsAs ?? null) !== null,
+          sharedControl: (input.runsAs ?? null) !== null,
           model: input.model,
           effort: input.effort,
           permissionMode: input.permissionMode,
