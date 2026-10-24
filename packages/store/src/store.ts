@@ -1365,958 +1365,955 @@ export class Store extends Context.Service<
     readonly sweepHandoffQuarantines: () => Effect.Effect<ReadonlyArray<string>>;
   }
 >()("@mend/store/Store") {
-  static readonly layer = Layer.effect(
-    Store,
-    Effect.gen(function* () {
-      const config = yield* StoreConfig;
-      const rawBlobCache = yield* makeRawBlobCache(config.root);
+  static get layer(): Layer.Layer<Store, never, StoreConfig> {
+    return StoreLive;
+  }
+}
 
-      /**
-       * Dependency and artifact stores are never review content. This is
-       * git-level policy — `$GIT_COMMON_DIR/info/exclude`, which every linked
-       * worktree inherits — so diffs, status, and checkpoints all agree,
-       * without touching the project's own .gitignore. Found live: a workspace
-       * `pnpm install` dumped `.pnpm-store` (62k files) into the worktree of a
-       * repo that doesn't ignore it, and the review diff drowned.
-       */
-      const MEND_EXCLUDES = ["node_modules/", ".pnpm-store/", ".npm/", "__pycache__/", ".venv/"];
-      const ensureExcludes = (storePath: string) =>
-        Effect.sync(() => {
-          const file = path.join(storePath, "info", "exclude");
-          fs.mkdirSync(path.dirname(file), { recursive: true });
-          const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-          const missing = MEND_EXCLUDES.filter((entry) => !current.includes(entry));
-          if (missing.length > 0) {
-            fs.appendFileSync(
-              file,
-              `\n# mend: dependency stores are not review content\n${missing.join("\n")}\n`,
-            );
-          }
-        });
+/** The store owns its immutable-file cache and the lifetime of background unpacking. */
+export const StoreLive: Layer.Layer<Store, never, StoreConfig> = Layer.effect(
+  Store,
+  Effect.gen(function* () {
+    const config = yield* StoreConfig;
+    const rawBlobCache = yield* makeRawBlobCache(config.root);
 
-      /**
-       * Root-uid defense (docs/BUGS.md 2026-08-30): workspace containers run git as ROOT
-       * against this very gitdir (the worktree's real state lives here, so the pod mounts it),
-       * and a root-side `git gc --auto` used to leave `packed-refs` and `refs/heads/mend/`
-       * root-owned — after which this process (uid 1000) could not create a session ref and
-       * every provision failed. `core.sharedRepository=group` makes every git — root's
-       * included — create group-writable files and setgid directories, so whatever uid wrote
-       * last, the group keeps write. The one-time walk repairs what THIS uid already owns;
-       * files another uid left behind need the out-of-band chown (only root may re-group them).
-       * Skipped entirely once the config records the policy — the walk must not tax every
-       * worktree create.
-       */
-      const ensureSharedGroup = Effect.fn("Store.ensureSharedGroup")(function* (storePath: string) {
-        const current = yield* git(["config", "--get", "core.sharedRepository"], storePath).pipe(
-          Effect.catch(() => Effect.succeed("")),
-        );
-        if (current === "group") return;
-        yield* git(["config", "core.sharedRepository", "group"], storePath);
-        yield* Effect.sync(() => shareTree(storePath));
+    /**
+     * Dependency and artifact stores are never review content. This is
+     * git-level policy — `$GIT_COMMON_DIR/info/exclude`, which every linked
+     * worktree inherits — so diffs, status, and checkpoints all agree,
+     * without touching the project's own .gitignore. Found live: a workspace
+     * `pnpm install` dumped `.pnpm-store` (62k files) into the worktree of a
+     * repo that doesn't ignore it, and the review diff drowned.
+     */
+    const MEND_EXCLUDES = ["node_modules/", ".pnpm-store/", ".npm/", "__pycache__/", ".venv/"];
+    const ensureExcludes = (storePath: string) =>
+      Effect.sync(() => {
+        const file = path.join(storePath, "info", "exclude");
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+        const missing = MEND_EXCLUDES.filter((entry) => !current.includes(entry));
+        if (missing.length > 0) {
+          fs.appendFileSync(
+            file,
+            `\n# mend: dependency stores are not review content\n${missing.join("\n")}\n`,
+          );
+        }
       });
 
-      const adopt = Effect.fn("Store.adopt")(function* (
-        directory: string,
-        source: RepositoryCloneUrl,
-        remoteEnv: GitRemoteEnvironment,
-      ) {
-        const projectDir = path.join(config.root, directory);
-        const storePath = path.join(projectDir, "repo.git");
-        const attempt = Effect.gen(function* () {
-          yield* Effect.sync(() => fs.mkdirSync(config.root, { recursive: true }));
-          const env = yield* gitRemoteEnvironment(remoteEnv, {
-            direction: "clone",
-            remote: source,
-            env: {},
-            cwd: config.root,
-            destinationPath: storePath,
-            cloneKind: "bare",
-          });
-          yield* git(["clone", "--bare", "--", source, storePath], config.root, env);
-          // A SHA-256 repository is refused before anything is made of it, and the clone it just
-          // made is removed (and the project directory, when that left it empty).
-          yield* refuseUnsupportedRepository(storePath).pipe(
-            Effect.tapError(() =>
-              Effect.sync(() => {
-                fs.rmSync(storePath, { recursive: true, force: true });
-                if (fs.existsSync(projectDir) && fs.readdirSync(projectDir).length === 0) {
-                  fs.rmdirSync(projectDir);
-                }
-              }),
-            ),
-          );
-          // Bare clones don't fetch new branches by default — make later syncs sane.
-          yield* git(
-            ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
-            storePath,
-          );
-          yield* ensureExcludes(storePath);
-          yield* ensureSharedGroup(storePath);
-          const defaultBranch = yield* git(["symbolic-ref", "--short", "HEAD"], storePath);
-          const head = yield* git(["rev-parse", "HEAD"], storePath);
-          return { storePath, defaultBranch, headSha: sha(head) };
+    /**
+     * Root-uid defense (docs/BUGS.md 2026-08-30): workspace containers run git as ROOT
+     * against this very gitdir (the worktree's real state lives here, so the pod mounts it),
+     * and a root-side `git gc --auto` used to leave `packed-refs` and `refs/heads/mend/`
+     * root-owned — after which this process (uid 1000) could not create a session ref and
+     * every provision failed. `core.sharedRepository=group` makes every git — root's
+     * included — create group-writable files and setgid directories, so whatever uid wrote
+     * last, the group keeps write. The one-time walk repairs what THIS uid already owns;
+     * files another uid left behind need the out-of-band chown (only root may re-group them).
+     * Skipped entirely once the config records the policy — the walk must not tax every
+     * worktree create.
+     */
+    const ensureSharedGroup = Effect.fn("Store.ensureSharedGroup")(function* (storePath: string) {
+      const current = yield* git(["config", "--get", "core.sharedRepository"], storePath).pipe(
+        Effect.catch(() => Effect.succeed("")),
+      );
+      if (current === "group") return;
+      yield* git(["config", "core.sharedRepository", "group"], storePath);
+      yield* Effect.sync(() => shareTree(storePath));
+    });
+
+    const adopt = Effect.fn("Store.adopt")(function* (
+      directory: string,
+      source: RepositoryCloneUrl,
+      remoteEnv: GitRemoteEnvironment,
+    ) {
+      const projectDir = path.join(config.root, directory);
+      const storePath = path.join(projectDir, "repo.git");
+      const attempt = Effect.gen(function* () {
+        yield* Effect.sync(() => fs.mkdirSync(config.root, { recursive: true }));
+        const env = yield* gitRemoteEnvironment(remoteEnv, {
+          direction: "clone",
+          remote: source,
+          env: {},
+          cwd: config.root,
+          destinationPath: storePath,
+          cloneKind: "bare",
         });
-        return yield* attempt.pipe(
-          Effect.catch((cause) => Effect.fail(new AdoptError({ directory, source, cause }))),
-        );
-      }, Effect.scoped);
-
-      /**
-       * Freshen one base ref from the project origin before resolving it — best-effort by
-       * contract: a session must start offline, on a disconnected bridge, or against a gone
-       * remote, just on the base the store already has. `remoteEnv` null means the caller could
-       * not resolve credentials (and said why); no fetch is attempted at all.
-       */
-      const freshenBase = Effect.fn("Store.freshenBase")(function* (
-        storePath: string,
-        baseRef: string,
-        remoteEnv: GitRemoteEnvironment | null,
-      ) {
-        if (remoteEnv === null) {
-          return skippedFreshen("this server has no credential of yours for origin");
-        }
-        const fetched = yield* refuseRemoteCredentials(storePath).pipe(
-          Effect.andThen(
-            gitRemoteEnvironment(remoteEnv, {
-              direction: "read",
-              remote: "origin",
-              repositoryPath: storePath,
-              env: {},
-            }),
-          ),
-          Effect.flatMap((env) => git(["fetch", "origin", baseRef], storePath, env)),
-          Effect.result,
-        );
-        if (Result.isSuccess(fetched)) return fetchedFreshen;
-        yield* Effect.logDebug("store: base freshen skipped").pipe(
-          Effect.annotateLogs({ storePath, baseRef, stderr: fetched.failure.stderr }),
-        );
-        return failedFreshen(fetched.failure.stderr);
-      }, Effect.scoped);
-
-      /**
-       * Resolve a requested base to a commit, preferring what origin says over the store's own
-       * head: local `refs/heads/*` freeze at adoption, while `refs/remotes/origin/*` move with
-       * every fetch — so the remote-tracking name is the current answer and the local name is
-       * the fallback (shas, tags, and never-pushed local branches). A base the store does not
-       * know at all gets one authenticated fetch (a branch pushed but never fetched — adopt
-       * configures the refspec for exactly this). If git then proves both names missing, a
-       * successful fetch reports the unknown base; a failed fetch or refusal keeps its original
-       * reason, and a resolution that failed any other way keeps its own.
-       */
-      const resolveBaseSha = Effect.fn("Store.resolveBaseSha")(function* (
-        storePath: string,
-        baseRef: string,
-        remoteEnv: GitRemoteEnvironment | null,
-      ) {
-        return yield* knownBaseSha(storePath, baseRef).pipe(
-          Effect.catch(() =>
-            Effect.gen(function* () {
-              const fetched = yield* refuseRemoteCredentials(storePath).pipe(
-                Effect.andThen(
-                  // Without a signer, ssh refuses rather than answer as the server process.
-                  gitRemoteEnvironment(remoteEnv ?? noSignerGitEnv(), {
-                    direction: "read",
-                    remote: "origin",
-                    repositoryPath: storePath,
-                    env: {},
-                  }).pipe(Effect.flatMap((env) => git(["fetch", "origin"], storePath, env))),
-                ),
-                Effect.result,
-              );
-              // A ref that became available locally still wins after a failed best-effort fetch.
-              const commit = yield* gitCommitOf(baseRef, storePath).pipe(
-                Effect.flatMap((found) =>
-                  found === null
-                    ? gitCommitOf(`origin/${baseRef}`, storePath)
-                    : Effect.succeed(found),
-                ),
-                Effect.mapError((cause) => (Result.isFailure(fetched) ? fetched.failure : cause)),
-              );
-              if (commit !== null) return commit;
-              return yield* Effect.fail(
-                Result.isFailure(fetched)
-                  ? fetched.failure
-                  : new GitError({
-                      args: ["rev-parse", `${baseRef}^{commit}`],
-                      cwd: storePath,
-                      exitCode: 1,
-                      stderr: `base "${baseRef}" is not a branch, tag, or commit this project's store knows (origin was fetched and it is still unknown) — push it to the project origin or start from another base`,
-                      unknownBase: baseRef,
-                    }),
-              );
+        yield* git(["clone", "--bare", "--", source, storePath], config.root, env);
+        // A SHA-256 repository is refused before anything is made of it, and the clone it just
+        // made is removed (and the project directory, when that left it empty).
+        yield* refuseUnsupportedRepository(storePath).pipe(
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              fs.rmSync(storePath, { recursive: true, force: true });
+              if (fs.existsSync(projectDir) && fs.readdirSync(projectDir).length === 0) {
+                fs.rmdirSync(projectDir);
+              }
             }),
           ),
         );
-      }, Effect.scoped);
-
-      const createWorktree = Effect.fn("Store.createWorktree")(function* (
-        storePath: string,
-        identity: { readonly directory: string; readonly branch: string },
-        base: string | null,
-        remoteEnv: GitRemoteEnvironment | null,
-      ) {
-        // The worktree's admin dir, and on the co-located store the whole store, reach a workspace.
-        yield* refuseRemoteCredentials(storePath);
-        // Idempotent: stores adopted before the exclude or shared-group policies get them here.
+        // Bare clones don't fetch new branches by default — make later syncs sane.
+        yield* git(
+          ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+          storePath,
+        );
         yield* ensureExcludes(storePath);
         yield* ensureSharedGroup(storePath);
-        const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
-        yield* freshenBase(storePath, baseRef, remoteEnv);
-        const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
-        const { directory, branch } = identity;
-        // Backstop behind the worktrees table's uniqueness: a branch that already
-        // exists means the name is in use (possibly by a pre-pivot session row).
-        const taken = yield* git(
-          ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
-          storePath,
-        ).pipe(Effect.result);
-        if (taken._tag === "Success") {
-          return yield* new GitError({
-            args: ["worktree", "add"],
-            cwd: storePath,
-            exitCode: null,
-            stderr: `branch "${branch}" already exists in this project — pick another worktree name`,
-          });
-        }
-        const worktreePath = path.join(path.dirname(storePath), "worktrees", directory);
-        yield* git(["worktree", "add", "-b", branch, worktreePath, baseSha], storePath);
-        // `git worktree add` does not shared-perm its admin dir the way ref writes are; the
-        // checkpoint index and HEAD for this worktree live there, so share it explicitly.
-        yield* Effect.sync(() => shareTree(path.join(storePath, "worktrees", directory)));
-        return { path: worktreePath, name: directory, branch, baseSha: sha(baseSha), baseRef };
+        const defaultBranch = yield* git(["symbolic-ref", "--short", "HEAD"], storePath);
+        const head = yield* git(["rev-parse", "HEAD"], storePath);
+        return { storePath, defaultBranch, headSha: sha(head) };
       });
+      return yield* attempt.pipe(
+        Effect.catch((cause) => Effect.fail(new AdoptError({ directory, source, cause }))),
+      );
+    }, Effect.scoped);
 
-      const resolveBase = Effect.fn("Store.resolveBase")(function* (
-        storePath: string,
-        base: string | null,
-        remoteEnv: GitRemoteEnvironment | null,
-      ) {
-        const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
-        yield* freshenBase(storePath, baseRef, remoteEnv);
-        const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
-        return { baseRef, baseSha: sha(baseSha) };
-      });
+    /**
+     * Freshen one base ref from the project origin before resolving it — best-effort by
+     * contract: a session must start offline, on a disconnected bridge, or against a gone
+     * remote, just on the base the store already has. `remoteEnv` null means the caller could
+     * not resolve credentials (and said why); no fetch is attempted at all.
+     */
+    const freshenBase = Effect.fn("Store.freshenBase")(function* (
+      storePath: string,
+      baseRef: string,
+      remoteEnv: GitRemoteEnvironment | null,
+    ) {
+      if (remoteEnv === null) {
+        return skippedFreshen("this server has no credential of yours for origin");
+      }
+      const fetched = yield* refuseRemoteCredentials(storePath).pipe(
+        Effect.andThen(
+          gitRemoteEnvironment(remoteEnv, {
+            direction: "read",
+            remote: "origin",
+            repositoryPath: storePath,
+            env: {},
+          }),
+        ),
+        Effect.flatMap((env) => git(["fetch", "origin", baseRef], storePath, env)),
+        Effect.result,
+      );
+      if (Result.isSuccess(fetched)) return fetchedFreshen;
+      yield* Effect.logDebug("store: base freshen skipped").pipe(
+        Effect.annotateLogs({ storePath, baseRef, stderr: fetched.failure.stderr }),
+      );
+      return failedFreshen(fetched.failure.stderr);
+    }, Effect.scoped);
 
-      const quarantineRoot = path.join(config.root, "tmp");
+    /**
+     * Resolve a requested base to a commit, preferring what origin says over the store's own
+     * head: local `refs/heads/*` freeze at adoption, while `refs/remotes/origin/*` move with
+     * every fetch — so the remote-tracking name is the current answer and the local name is
+     * the fallback (shas, tags, and never-pushed local branches). A base the store does not
+     * know at all gets one authenticated fetch (a branch pushed but never fetched — adopt
+     * configures the refspec for exactly this). If git then proves both names missing, a
+     * successful fetch reports the unknown base; a failed fetch or refusal keeps its original
+     * reason, and a resolution that failed any other way keeps its own.
+     */
+    const resolveBaseSha = Effect.fn("Store.resolveBaseSha")(function* (
+      storePath: string,
+      baseRef: string,
+      remoteEnv: GitRemoteEnvironment | null,
+    ) {
+      return yield* knownBaseSha(storePath, baseRef).pipe(
+        Effect.catch(() =>
+          Effect.gen(function* () {
+            const fetched = yield* refuseRemoteCredentials(storePath).pipe(
+              Effect.andThen(
+                // Without a signer, ssh refuses rather than answer as the server process.
+                gitRemoteEnvironment(remoteEnv ?? noSignerGitEnv(), {
+                  direction: "read",
+                  remote: "origin",
+                  repositoryPath: storePath,
+                  env: {},
+                }).pipe(Effect.flatMap((env) => git(["fetch", "origin"], storePath, env))),
+              ),
+              Effect.result,
+            );
+            // A ref that became available locally still wins after a failed best-effort fetch.
+            const commit = yield* gitCommitOf(baseRef, storePath).pipe(
+              Effect.flatMap((found) =>
+                found === null
+                  ? gitCommitOf(`origin/${baseRef}`, storePath)
+                  : Effect.succeed(found),
+              ),
+              Effect.mapError((cause) => (Result.isFailure(fetched) ? fetched.failure : cause)),
+            );
+            if (commit !== null) return commit;
+            return yield* Effect.fail(
+              Result.isFailure(fetched)
+                ? fetched.failure
+                : new GitError({
+                    args: ["rev-parse", `${baseRef}^{commit}`],
+                    cwd: storePath,
+                    exitCode: 1,
+                    stderr: `base "${baseRef}" is not a branch, tag, or commit this project's store knows (origin was fetched and it is still unknown) — push it to the project origin or start from another base`,
+                    unknownBase: baseRef,
+                  }),
+            );
+          }),
+        ),
+      );
+    }, Effect.scoped);
 
-      const admitHandoff: Store["Service"]["admitHandoff"] = (
+    const createWorktree = Effect.fn("Store.createWorktree")(function* (
+      storePath: string,
+      identity: { readonly directory: string; readonly branch: string },
+      base: string | null,
+      remoteEnv: GitRemoteEnvironment | null,
+    ) {
+      // The worktree's admin dir, and on the co-located store the whole store, reach a workspace.
+      yield* refuseRemoteCredentials(storePath);
+      // Idempotent: stores adopted before the exclude or shared-group policies get them here.
+      yield* ensureExcludes(storePath);
+      yield* ensureSharedGroup(storePath);
+      const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
+      yield* freshenBase(storePath, baseRef, remoteEnv);
+      const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
+      const { directory, branch } = identity;
+      // Backstop behind the worktrees table's uniqueness: a branch that already
+      // exists means the name is in use (possibly by a pre-pivot session row).
+      const taken = yield* git(
+        ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+        storePath,
+      ).pipe(Effect.result);
+      if (taken._tag === "Success") {
+        return yield* new GitError({
+          args: ["worktree", "add"],
+          cwd: storePath,
+          exitCode: null,
+          stderr: `branch "${branch}" already exists in this project — pick another worktree name`,
+        });
+      }
+      const worktreePath = path.join(path.dirname(storePath), "worktrees", directory);
+      yield* git(["worktree", "add", "-b", branch, worktreePath, baseSha], storePath);
+      // `git worktree add` does not shared-perm its admin dir the way ref writes are; the
+      // checkpoint index and HEAD for this worktree live there, so share it explicitly.
+      yield* Effect.sync(() => shareTree(path.join(storePath, "worktrees", directory)));
+      return { path: worktreePath, name: directory, branch, baseSha: sha(baseSha), baseRef };
+    });
+
+    const resolveBase = Effect.fn("Store.resolveBase")(function* (
+      storePath: string,
+      base: string | null,
+      remoteEnv: GitRemoteEnvironment | null,
+    ) {
+      const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
+      yield* freshenBase(storePath, baseRef, remoteEnv);
+      const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
+      return { baseRef, baseSha: sha(baseSha) };
+    });
+
+    const quarantineRoot = path.join(config.root, "tmp");
+
+    const admitHandoff: Store["Service"]["admitHandoff"] = (
+      storePath,
+      defaultBranch,
+      bundle,
+      options,
+    ) =>
+      admitHandoffIn({
         storePath,
         defaultBranch,
         bundle,
-        options,
-      ) =>
-        admitHandoffIn({
-          storePath,
-          defaultBranch,
-          bundle,
-          quarantineRoot,
-          fileBytes: options.fileBytes,
-          defaultTip: knownBaseSha(storePath, defaultBranch).pipe(
-            Effect.map((tip): string | null => tip),
-            Effect.catch(() => Effect.succeed<string | null>(null)),
-          ),
-          freshenDefault: options.freshen,
-        });
+        quarantineRoot,
+        fileBytes: options.fileBytes,
+        defaultTip: knownBaseSha(storePath, defaultBranch).pipe(
+          Effect.map((tip): string | null => tip),
+          Effect.catch(() => Effect.succeed<string | null>(null)),
+        ),
+        freshenDefault: options.freshen,
+      });
 
-      const sweepHandoffQuarantines: Store["Service"]["sweepHandoffQuarantines"] = () =>
-        Clock.currentTimeMillis.pipe(
-          Effect.flatMap((now) => sweepQuarantinesUnder(quarantineRoot, now)),
+    const sweepHandoffQuarantines: Store["Service"]["sweepHandoffQuarantines"] = () =>
+      Clock.currentTimeMillis.pipe(
+        Effect.flatMap((now) => sweepQuarantinesUnder(quarantineRoot, now)),
+      );
+
+    const renameBranch = Effect.fn("Store.renameBranch")(function* (
+      worktreePath: string,
+      newBranch: string,
+    ) {
+      yield* git(["branch", "-m", newBranch], worktreePath);
+    });
+
+    const resetWorktree = Effect.fn("Store.resetWorktree")(function* (
+      storePath: string,
+      name: string,
+      base: string | null,
+      remoteEnv: GitRemoteEnvironment | null,
+    ) {
+      const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
+      yield* refuseRemoteCredentials(storePath);
+      const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
+      yield* freshenBase(storePath, baseRef, remoteEnv);
+      const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
+      yield* git(["reset", "--hard", baseSha], worktreePath);
+      yield* git(["clean", "-fd"], worktreePath);
+      return { path: worktreePath, baseSha: sha(baseSha), baseRef };
+    });
+
+    const refreshFromOrigin = Effect.fn("Store.refreshFromOrigin")(function* (
+      storePath: string,
+      remoteEnv: GitRemoteEnvironment,
+    ) {
+      // Both refspecs in one fetch: heads for the store's own tree reads (files listing,
+      // default-branch resolution), remote-tracking for base resolution. Forced — the store
+      // holds no local work on origin's branches. Sessions commit on `mend/*` only, and
+      // landings push `mend/*` to origin (docs/adr/0007-landing.md), so the negative refspec
+      // keeps origin's `mend/*` from overwriting, or refusing to fetch into, a session branch a
+      // worktree has checked out.
+      yield* refuseRemoteCredentials(storePath);
+      const env = yield* gitRemoteEnvironment(remoteEnv, {
+        direction: "read",
+        remote: "origin",
+        repositoryPath: storePath,
+        env: {},
+      });
+      yield* git(
+        [
+          "fetch",
+          "origin",
+          "+refs/heads/*:refs/heads/*",
+          "+refs/heads/*:refs/remotes/origin/*",
+          `^${SESSION_BRANCHES}`,
+        ],
+        storePath,
+        env,
+      );
+    }, Effect.scoped);
+
+    /** `for-each-ref` line → parts; the formats below join with a tab (refnames cannot hold one). */
+    const branchLine = (line: string): { name: string; sha: Sha; committedAt: string } | null => {
+      const [name, refSha, committedAt] = line.split("\t");
+      if (name === undefined || name === "" || refSha === undefined || committedAt === undefined)
+        return null;
+      return { name, sha: sha(refSha), committedAt };
+    };
+
+    const listBranches = Effect.fn("Store.listBranches")(function* (storePath: string) {
+      const fields = "%09%(objectname)%09%(committerdate:iso-strict)";
+      const defaultBranch = yield* git(["symbolic-ref", "--short", "HEAD"], storePath);
+      // Origin's view wins where both exist: local heads freeze at adoption, remote-tracking
+      // refs move with every fetch. Local-only heads still list (bases can be local).
+      const remote = yield* git(
+        ["for-each-ref", `--format=%(refname:lstrip=3)${fields}`, "refs/remotes/origin"],
+        storePath,
+      );
+      const local = yield* git(
+        ["for-each-ref", `--format=%(refname:lstrip=2)${fields}`, "refs/heads"],
+        storePath,
+      );
+      const byName = new Map<string, { name: string; sha: Sha; committedAt: string }>();
+      // Session branches (`mend/<name>`, `mend/wt/<id>`, `mend/session/<id>`) and the branches
+      // landings push to origin under the same names are never a base.
+      for (const line of local.split("\n")) {
+        const parsed = branchLine(line);
+        if (parsed === null || isSessionBranch(parsed.name)) continue;
+        byName.set(parsed.name, parsed);
+      }
+      for (const line of remote.split("\n")) {
+        const parsed = branchLine(line);
+        if (parsed === null || parsed.name === "HEAD" || isSessionBranch(parsed.name)) continue;
+        byName.set(parsed.name, parsed);
+      }
+      return [...byName.values()]
+        .toSorted((a, b) => b.committedAt.localeCompare(a.committedAt))
+        .map((entry) => ({ ...entry, isDefault: entry.name === defaultBranch }));
+    });
+
+    const removeWorktree = Effect.fn("Store.removeWorktree")(function* (
+      storePath: string,
+      name: string,
+    ) {
+      const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
+      yield* git(["worktree", "remove", "--force", worktreePath], storePath);
+    });
+
+    const removeWorktreeForce = Effect.fn("Store.removeWorktreeForce")(function* (
+      storePath: string,
+      name: string,
+    ) {
+      const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
+      yield* git(["worktree", "remove", "--force", worktreePath], storePath).pipe(Effect.ignore);
+      const result = yield* Effect.sync(() => rmBestEffort(worktreePath));
+      // Drop the stale registration when the directory did go away.
+      yield* git(["worktree", "prune"], storePath).pipe(Effect.ignore);
+      return result;
+    });
+
+    const removeProjectStore = Effect.fn("Store.removeProjectStore")(function* (storePath: string) {
+      return yield* Effect.sync(() => rmBestEffort(path.dirname(storePath)));
+    });
+
+    const checkpoint = Effect.fn("Store.checkpoint")(function* (
+      worktreePath: string,
+      scope: string,
+      index: number,
+      parent: Sha | null,
+    ) {
+      const tmpIndex = path.join(os.tmpdir(), `mend-checkpoint-${scope}-${index}-${process.pid}`);
+      const env = { GIT_INDEX_FILE: tmpIndex };
+      const snapshot = Effect.gen(function* () {
+        yield* git(["add", "-A"], worktreePath, env);
+        const tree = yield* git(["write-tree"], worktreePath, env);
+        const message = `mend checkpoint ${index}`;
+        const commitArgs =
+          parent === null
+            ? ["commit-tree", tree, "-m", message]
+            : ["commit-tree", tree, "-p", parent, "-m", message];
+        const commit = yield* git(commitArgs, worktreePath);
+        const ref = `refs/mend/checkpoints/${scope}/${index}`;
+        yield* git(["update-ref", ref, commit], worktreePath);
+        return { ref, sha: sha(commit) };
+      });
+      return yield* snapshot.pipe(
+        Effect.ensuring(Effect.sync(() => fs.rmSync(tmpIndex, { force: true }))),
+      );
+    });
+
+    const diffRange = Effect.fn("Store.diffRange")(function* (
+      dir: string,
+      a: string,
+      b: string,
+      options?: DiffRangeOptions,
+    ) {
+      const args = options?.paths === undefined ? [] : ["--literal-pathspecs"];
+      args.push("diff", "--find-renames");
+      if (options?.ignoreWhitespace === true) args.push("--ignore-all-space");
+      if (options?.contextLines !== undefined) args.push(`--unified=${options.contextLines}`);
+      args.push(a, b);
+      if (options?.paths !== undefined) args.push("--", ...options.paths);
+      if (options?.maxBytes === undefined) return yield* git(args, dir);
+      const out = yield* gitCapped(args, dir, options.maxBytes);
+      if (!out.cut) return out.stdout;
+      // Cut: only the files rendered whole stay; a half file is no patch.
+      const last = out.stdout.lastIndexOf("\ndiff --git ");
+      return last <= 0 ? "" : out.stdout.slice(0, last);
+    });
+
+    const worktreeMatchesCommit = Effect.fn("Store.worktreeMatchesCommit")(function* (
+      worktreePath: string,
+      commit: string,
+    ) {
+      const tmpIndex = path.join(
+        os.tmpdir(),
+        `mend-tree-compare-${process.pid}-${crypto.randomUUID()}`,
+      );
+      const currentTree = yield* Effect.gen(function* () {
+        const env = { GIT_INDEX_FILE: tmpIndex };
+        yield* git(["add", "-A"], worktreePath, env);
+        return yield* git(["write-tree"], worktreePath, env);
+      }).pipe(Effect.ensuring(Effect.sync(() => fs.rmSync(tmpIndex, { force: true }))));
+      const expectedTree = yield* git(["rev-parse", `${commit}^{tree}`], worktreePath);
+      return currentTree === expectedTree;
+    });
+
+    /**
+     * Rendering an untracked file costs one `git diff --no-index` spawn, so
+     * an unreviewable explosion (a dependency store dumped into the worktree
+     * escaped every ignore rule once: 62k files, one spawn each — the review
+     * page "hung") is capped hard. The excluded tail is a count the caller
+     * can surface; it is never silently dropped git-side.
+     */
+    const UNTRACKED_RENDER_LIMIT = 200;
+
+    const diffWorktree = Effect.fn("Store.diffWorktree")(function* (
+      worktreePath: string,
+      base: string,
+    ) {
+      const tracked = yield* git(["diff", base], worktreePath);
+      const untracked = yield* untrackedIn(worktreePath);
+      const rendered = untracked.slice(0, UNTRACKED_RENDER_LIMIT);
+      if (untracked.length > rendered.length) {
+        yield* Effect.logWarning("store: untracked files over render limit").pipe(
+          Effect.annotateLogs({ worktreePath, untracked: untracked.length }),
         );
+      }
+      const additions = yield* Effect.forEach(rendered, (file) =>
+        // Exit 1 means "the files differ" — for /dev/null vs a new file, that IS the diff.
+        git(["diff", "--no-index", "--", "/dev/null", file], worktreePath, undefined, [1]),
+      );
+      return [tracked, ...additions].filter((part) => part !== "").join("\n");
+    });
 
-      const renameBranch = Effect.fn("Store.renameBranch")(function* (
-        worktreePath: string,
-        newBranch: string,
+    const changedFiles = Effect.fn("Store.changedFiles")(function* (
+      dir: string,
+      a: string,
+      b: string | null,
+    ) {
+      const args = b === null ? ["diff", "--numstat", "-z", a] : ["diff", "--numstat", "-z", a, b];
+      const out = yield* git(args, dir);
+      const tracked = parseNumstat(out).map(({ path: file, additions, deletions }) => ({
+        path: file,
+        additions,
+        deletions,
+      }));
+      // A live-worktree comparison (b = null) also owns its untracked files.
+      if (b !== null) return tracked;
+      const untracked = yield* untrackedIn(dir);
+      const rendered = untracked.slice(0, UNTRACKED_RENDER_LIMIT);
+      const elided = untracked.length - rendered.length;
+      const additions = yield* Effect.forEach(rendered, (file) =>
+        git(["diff", "--no-index", "--numstat", "--", "/dev/null", file], dir, undefined, [1]).pipe(
+          Effect.map((line) => {
+            const [added = "0"] = line.split("\t");
+            return {
+              path: file,
+              additions: added === "-" ? 0 : Number(added),
+              deletions: 0,
+            };
+          }),
+        ),
+      );
+      // The elided tail still COUNTS — an honest row instead of silence.
+      return elided > 0
+        ? [
+            ...tracked,
+            ...additions,
+            {
+              path: `… ${elided} more untracked files (not rendered)`,
+              additions: 0,
+              deletions: 0,
+            },
+          ]
+        : [...tracked, ...additions];
+    });
+
+    const diffFileFacts = Effect.fn("Store.diffFileFacts")(function* (
+      dir: string,
+      a: string,
+      b: string,
+      options?: { readonly ignoreWhitespace?: boolean },
+    ) {
+      const whitespace = options?.ignoreWhitespace === true ? ["--ignore-all-space"] : [];
+      const [names, counts] = yield* Effect.all([
+        git(["diff", "--name-status", "-z", "--find-renames", ...whitespace, a, b], dir),
+        git(["diff", "--numstat", "-z", "--find-renames", ...whitespace, a, b], dir),
+      ]);
+      return parseNameStatus(names, parseNumstat(counts));
+    });
+
+    const diffFileFactsBounded = Effect.fn("Store.diffFileFactsBounded")(function* (
+      dir: string,
+      a: string,
+      b: string,
+      options: DiffFileFactsOptions,
+    ) {
+      // One budget for the operation: every git run takes what is left of it.
+      const started = yield* Clock.currentTimeMillis;
+      const left = (until: number | undefined) =>
+        until === undefined
+          ? Effect.succeed(undefined)
+          : Effect.map(Clock.currentTimeMillis, (now) => Math.max(0, until - (now - started)));
+      const run =
+        (until: number | undefined): CappedRun =>
+        (args) =>
+          Effect.flatMap(left(until), (budget) =>
+            budget === 0
+              ? Effect.succeed({ stdout: Buffer.alloc(0), cut: true })
+              : gitCappedBytes(args, dir, options.maxBytes, budget),
+          );
+      const listing = (format: string, pathspecs: ReadonlyArray<string> | undefined) =>
+        Effect.flatMap(left(options.deadlineMs), (budget) => {
+          if (budget === 0) return Effect.succeed({ stdout: Buffer.alloc(0), cut: true });
+          // The caller's paths are literal by flag; a floor's carry their own magic.
+          const args =
+            options.paths === undefined
+              ? pathspecs === undefined
+                ? []
+                : ["--no-literal-pathspecs"]
+              : ["--literal-pathspecs"];
+          args.push("diff", format, "-z", "--find-renames");
+          if (options.ignoreWhitespace === true) args.push("--ignore-all-space");
+          args.push(a, b);
+          if (options.paths !== undefined) args.push("--", ...options.paths);
+          else if (pathspecs !== undefined) args.push("--", ...pathspecs);
+          return gitCappedBytes(args, dir, options.maxBytes, budget);
+        });
+      const list = Effect.fn(function* (
+        pathspecs: ReadonlyArray<string> | undefined,
+        keep?: (listed: Buffer | null) => boolean,
       ) {
-        yield* git(["branch", "-m", newBranch], worktreePath);
+        const [names, counts] = yield* Effect.all(
+          [listing("--name-status", pathspecs), listing("--numstat", pathspecs)],
+          { concurrency: 2 },
+        );
+        // Both listings are git's, record for record: a record kept or dropped in one is in
+        // the other, by its index, before either is read as text.
+        const kept =
+          keep === undefined
+            ? undefined
+            : rawNameStatusPaths(names.stdout).map(
+                (record) => keep(record.newPath) || keep(record.oldPath),
+              );
+        const records = nameStatusRecords(names.stdout.toString("utf8")).filter(
+          (_, index) => kept === undefined || kept[index] === true,
+        );
+        const numbers = numstatRecords(counts.stdout.toString("utf8")).filter(
+          (_, index) => kept === undefined || kept[index] === true,
+        );
+        // Both listings are git's, in the same order: joined record by record while they agree.
+        const facts: Array<DiffFileFact> = [];
+        for (const [index, record] of records.entries()) {
+          const count = numbers[index];
+          if (count === undefined || count.path !== (record.newPath ?? record.oldPath)) break;
+          facts.push({
+            oldPath: record.oldPath,
+            newPath: record.newPath,
+            status: record.status,
+            additions: count.additions,
+            deletions: count.deletions,
+            binary: count.binary,
+          });
+        }
+        return {
+          facts,
+          cut: names.cut || counts.cut || facts.length < records.length,
+        } satisfies DiffFileFactsListing;
       });
-
-      const resetWorktree = Effect.fn("Store.resetWorktree")(function* (
-        storePath: string,
-        name: string,
-        base: string | null,
-        remoteEnv: GitRemoteEnvironment | null,
+      const minFiles = options.minFiles;
+      if (
+        options.paths !== undefined ||
+        minFiles === undefined ||
+        options.deadlineMs === undefined
       ) {
-        const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
-        yield* refuseRemoteCredentials(storePath);
-        const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
-        yield* freshenBase(storePath, baseRef, remoteEnv);
-        const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
-        yield* git(["reset", "--hard", baseSha], worktreePath);
-        yield* git(["clean", "-fd"], worktreePath);
-        return { path: worktreePath, baseSha: sha(baseSha), baseRef };
+        return yield* list(undefined);
+      }
+      // Git prints a range's files only after walking the whole range, so a deadline mid-walk
+      // lists nothing. The first files are found directory by directory and listed by path,
+      // beside the whole listing, from half the deadline on (the whole listing usually answers
+      // first) until it ends: the walk until half of what is then left, the listing by path
+      // until the deadline, so the files the walk found are listed within it.
+      const deadlineMs = options.deadlineMs;
+      const floor = Effect.gen(function* () {
+        yield* Effect.sleep(deadlineMs / 2);
+        const elapsed = (yield* Clock.currentTimeMillis) - started;
+        const walkUntil = elapsed + (deadlineMs - elapsed) / 2;
+        let found: DiffFileFactsListing = { facts: [], cut: true };
+        for (let limit = minFiles; ; limit *= 2) {
+          const selection = yield* firstChangedPaths(a, b, limit, run(walkUntil));
+          // One command line for both listings, within every platform's limit: a selection
+          // past it is shortened, never split, since each listing pairs renames on its own.
+          const items: Array<SelectedPath> = [];
+          const pathspecs: Array<string> = [];
+          let bytes = 0;
+          for (const item of selection.items) {
+            const specs = pathspecsOf(item);
+            bytes += specs.reduce((sum, spec) => sum + Buffer.byteLength(spec) + 1, 0);
+            if (bytes > SELECTION_BYTES) break;
+            items.push(item);
+            pathspecs.push(...specs);
+          }
+          if (items.length === 0) return found;
+          // A host whose argument limit is below the bound refuses the command line (E2BIG):
+          // half the selection is listed instead, as many halvings as it takes, the same
+          // selection for both listings. One pathspec refused answers nothing, cut.
+          let listed: DiffFileFactsListing | undefined;
+          while (listed === undefined) {
+            const attempt = yield* list(pathspecs, selectedBy(items)).pipe(
+              Effect.catchIf(
+                (error) => error.code === "E2BIG",
+                () => Effect.succeed(undefined),
+              ),
+            );
+            if (attempt !== undefined) listed = attempt;
+            else if (items.length <= 1) listed = { facts: [], cut: true };
+            else {
+              items.splice(Math.ceil(items.length / 2));
+              pathspecs.splice(0, pathspecs.length, ...items.flatMap(pathspecsOf));
+            }
+          }
+          const shortened = items.length < selection.items.length;
+          const facts = listed.facts;
+          const complete = selection.complete && !shortened && !listed.cut;
+          if (facts.length >= found.facts.length) found = { facts, cut: !complete };
+          // Renames pair two paths into one fact: more paths until the facts reach the floor.
+          if (complete || shortened || facts.length >= minFiles || selection.cut) {
+            return found;
+          }
+          if ((yield* left(deadlineMs)) === 0) return found;
+        }
+      }).pipe(Effect.forkChild);
+      const floorFiber = yield* floor;
+      const whole = yield* list(undefined);
+      if (!whole.cut || whole.facts.length >= minFiles) {
+        yield* Fiber.interrupt(floorFiber);
+        return whole;
+      }
+      const found = yield* Fiber.join(floorFiber);
+      return found.facts.length > whole.facts.length || !found.cut ? found : whole;
+    });
+
+    const listWorktreeFiles = Effect.fn("Store.listWorktreeFiles")(function* (
+      worktreePath: string,
+      limit: number,
+    ) {
+      // --cached --others in one call: tracked and untracked, ignore rules
+      // applied (the store-level excludes keep dependency stores out). -z so
+      // unusual names survive; git prints paths relative to the cwd.
+      const out = yield* git(
+        ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        worktreePath,
+      );
+      return capListing([...new Set(out.split("\0"))], limit);
+    });
+
+    const readBlob = Effect.fn("Store.readBlob")(function* (
+      dir: string,
+      rev: string,
+      relative: string,
+      maxBytes: number,
+    ) {
+      if (!isWorktreeRelativePath(relative)) return null;
+      const spec = `${rev}:${relative}`;
+      // 128: git found nothing at that path.
+      const type = yield* git(["cat-file", "-t", spec], dir, undefined, [128]);
+      if (type !== "blob") return null;
+      const size = Number.parseInt(yield* git(["cat-file", "-s", spec], dir), 10);
+      const bytes = new Uint8Array(yield* gitHead(["cat-file", "blob", spec], dir, maxBytes));
+      return {
+        bytes,
+        size,
+        truncated: size > bytes.byteLength,
+        binary: binaryOf(bytes),
+      } satisfies FileRead;
+    });
+
+    const readWorktreeFile = Effect.fn("Store.readWorktreeFile")(function* (
+      worktreePath: string,
+      relative: string,
+      maxBytes: number,
+    ) {
+      if (!isWorktreeRelativePath(relative)) return null;
+      return yield* Effect.try({
+        try: (): FileRead | null => {
+          const root = fs.realpathSync(worktreePath);
+          const file = openContained(root, relative);
+          if (file === null) return null;
+          const handle = file.fd;
+          try {
+            // The descriptor, not the path: what was opened is what is checked and read.
+            const stat = fs.fstatSync(handle);
+            if (!stat.isFile() || !descriptorInside(file, root)) return null;
+            const buffer = Buffer.alloc(Math.min(maxBytes, stat.size));
+            const read = fs.readSync(handle, buffer, 0, buffer.byteLength, 0);
+            const bytes = new Uint8Array(buffer.subarray(0, read));
+            return {
+              bytes,
+              size: stat.size,
+              truncated: stat.size > read,
+              binary: binaryOf(bytes),
+            };
+          } finally {
+            fs.closeSync(handle);
+          }
+        },
+        catch: (error) =>
+          new GitError({
+            args: ["read-worktree-file", relative],
+            cwd: worktreePath,
+            exitCode: null,
+            stderr: error instanceof Error ? error.message : String(error),
+          }),
       });
+    });
 
-      const refreshFromOrigin = Effect.fn("Store.refreshFromOrigin")(function* (
-        storePath: string,
-        remoteEnv: GitRemoteEnvironment,
-      ) {
-        // Both refspecs in one fetch: heads for the store's own tree reads (files listing,
-        // default-branch resolution), remote-tracking for base resolution. Forced — the store
-        // holds no local work on origin's branches. Sessions commit on `mend/*` only, and
-        // landings push `mend/*` to origin (docs/adr/0007-landing.md), so the negative refspec
-        // keeps origin's `mend/*` from overwriting, or refusing to fetch into, a session branch a
-        // worktree has checked out.
-        yield* refuseRemoteCredentials(storePath);
+    const grep = Effect.fn("Store.grep")(function* (
+      dir: string,
+      rev: string | null,
+      query: GrepQuery,
+      limit: number,
+    ) {
+      const args = ["grep", "-n", "-z", "-I", "--no-color", `--max-count=${limit + 1}`];
+      if (!query.caseSensitive) args.push("-i");
+      if (query.wholeWord) args.push("-w");
+      args.push(query.regex ? "-E" : "-F", "-e", query.pattern);
+      args.push(...(rev === null ? ["--untracked"] : [rev]));
+      // Bounded as a whole, not per file: git stops at the byte budget or the deadline, and what
+      // it found by then answers, marked truncated. 1: nothing matched.
+      const out = yield* gitCapped(args, dir, GREP_OUTPUT_BYTES, GREP_DEADLINE_MS).pipe(
+        Effect.catchIf(
+          (error) => error.exitCode === 1,
+          () => Effect.succeed({ stdout: "", cut: false }),
+        ),
+      );
+      return parseGrep(out.stdout, rev, limit, out.cut);
+    });
+
+    const listTreeFiles = Effect.fn("Store.listTreeFiles")(function* (
+      dir: string,
+      ref: string,
+      limit: number,
+    ) {
+      const out = yield* git(["ls-tree", "-r", "-z", "--name-only", ref], dir);
+      return capListing(out.split("\0"), limit);
+    });
+
+    const listTopLevel = Effect.fn("Store.listTopLevel")(function* (
+      dir: string,
+      ref: string,
+      limit: number,
+    ) {
+      // `<mode> <type> <sha>\t<name>`, NUL-separated so unusual names survive.
+      const out = yield* git(["ls-tree", "-z", ref], dir);
+      const entries = out.split("\0").flatMap((line) => {
+        const tab = line.indexOf("\t");
+        if (tab === -1) return [];
+        const name = line.slice(tab + 1);
+        return [line.split(" ")[1] === "tree" ? `${name}/` : name];
+      });
+      return capListing(entries, limit);
+    });
+
+    const headSha = Effect.fn("Store.headSha")(function* (dir: string) {
+      const head = yield* git(["rev-parse", "HEAD"], dir);
+      return sha(head);
+    });
+
+    // `_organizations/` cannot collide with a project dir: project stores are ids or names
+    // that went through the API's name check, which rejects a leading underscore.
+    const cloneReference = Effect.fn("Store.cloneReference")(function* (
+      directory: string,
+      source: string,
+      ref: string | null,
+      remoteEnv: GitRemoteEnvironment,
+    ) {
+      const clonePath = path.join(config.root, directory);
+      const referencesRoot = path.dirname(clonePath);
+      const name = path.basename(clonePath);
+      const attempt = Effect.gen(function* () {
+        yield* Effect.sync(() => fs.mkdirSync(referencesRoot, { recursive: true }));
         const env = yield* gitRemoteEnvironment(remoteEnv, {
-          direction: "read",
-          remote: "origin",
-          repositoryPath: storePath,
+          direction: "clone",
+          remote: source,
           env: {},
+          cwd: referencesRoot,
+          destinationPath: clonePath,
+          cloneKind: "checkout",
         });
         yield* git(
           [
-            "fetch",
-            "origin",
-            "+refs/heads/*:refs/heads/*",
-            "+refs/heads/*:refs/remotes/origin/*",
-            `^${SESSION_BRANCHES}`,
+            "clone",
+            "--depth",
+            "1",
+            ...(ref === null ? [] : ["--branch", ref]),
+            "--",
+            source,
+            clonePath,
           ],
-          storePath,
+          referencesRoot,
           env,
         );
-      }, Effect.scoped);
-
-      /** `for-each-ref` line → parts; the formats below join with a tab (refnames cannot hold one). */
-      const branchLine = (line: string): { name: string; sha: Sha; committedAt: string } | null => {
-        const [name, refSha, committedAt] = line.split("\t");
-        if (name === undefined || name === "" || refSha === undefined || committedAt === undefined)
-          return null;
-        return { name, sha: sha(refSha), committedAt };
-      };
-
-      const listBranches = Effect.fn("Store.listBranches")(function* (storePath: string) {
-        const fields = "%09%(objectname)%09%(committerdate:iso-strict)";
-        const defaultBranch = yield* git(["symbolic-ref", "--short", "HEAD"], storePath);
-        // Origin's view wins where both exist: local heads freeze at adoption, remote-tracking
-        // refs move with every fetch. Local-only heads still list (bases can be local).
-        const remote = yield* git(
-          ["for-each-ref", `--format=%(refname:lstrip=3)${fields}`, "refs/remotes/origin"],
-          storePath,
-        );
-        const local = yield* git(
-          ["for-each-ref", `--format=%(refname:lstrip=2)${fields}`, "refs/heads"],
-          storePath,
-        );
-        const byName = new Map<string, { name: string; sha: Sha; committedAt: string }>();
-        // Session branches (`mend/<name>`, `mend/wt/<id>`, `mend/session/<id>`) and the branches
-        // landings push to origin under the same names are never a base.
-        for (const line of local.split("\n")) {
-          const parsed = branchLine(line);
-          if (parsed === null || isSessionBranch(parsed.name)) continue;
-          byName.set(parsed.name, parsed);
-        }
-        for (const line of remote.split("\n")) {
-          const parsed = branchLine(line);
-          if (parsed === null || parsed.name === "HEAD" || isSessionBranch(parsed.name)) continue;
-          byName.set(parsed.name, parsed);
-        }
-        return [...byName.values()]
-          .toSorted((a, b) => b.committedAt.localeCompare(a.committedAt))
-          .map((entry) => ({ ...entry, isDefault: entry.name === defaultBranch }));
-      });
-
-      const removeWorktree = Effect.fn("Store.removeWorktree")(function* (
-        storePath: string,
-        name: string,
-      ) {
-        const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
-        yield* git(["worktree", "remove", "--force", worktreePath], storePath);
-      });
-
-      const removeWorktreeForce = Effect.fn("Store.removeWorktreeForce")(function* (
-        storePath: string,
-        name: string,
-      ) {
-        const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
-        yield* git(["worktree", "remove", "--force", worktreePath], storePath).pipe(Effect.ignore);
-        const result = yield* Effect.sync(() => rmBestEffort(worktreePath));
-        // Drop the stale registration when the directory did go away.
-        yield* git(["worktree", "prune"], storePath).pipe(Effect.ignore);
-        return result;
-      });
-
-      const removeProjectStore = Effect.fn("Store.removeProjectStore")(function* (
-        storePath: string,
-      ) {
-        return yield* Effect.sync(() => rmBestEffort(path.dirname(storePath)));
-      });
-
-      const checkpoint = Effect.fn("Store.checkpoint")(function* (
-        worktreePath: string,
-        scope: string,
-        index: number,
-        parent: Sha | null,
-      ) {
-        const tmpIndex = path.join(os.tmpdir(), `mend-checkpoint-${scope}-${index}-${process.pid}`);
-        const env = { GIT_INDEX_FILE: tmpIndex };
-        const snapshot = Effect.gen(function* () {
-          yield* git(["add", "-A"], worktreePath, env);
-          const tree = yield* git(["write-tree"], worktreePath, env);
-          const message = `mend checkpoint ${index}`;
-          const commitArgs =
-            parent === null
-              ? ["commit-tree", tree, "-m", message]
-              : ["commit-tree", tree, "-p", parent, "-m", message];
-          const commit = yield* git(commitArgs, worktreePath);
-          const ref = `refs/mend/checkpoints/${scope}/${index}`;
-          yield* git(["update-ref", ref, commit], worktreePath);
-          return { ref, sha: sha(commit) };
-        });
-        return yield* snapshot.pipe(
-          Effect.ensuring(Effect.sync(() => fs.rmSync(tmpIndex, { force: true }))),
-        );
-      });
-
-      const diffRange = Effect.fn("Store.diffRange")(function* (
-        dir: string,
-        a: string,
-        b: string,
-        options?: DiffRangeOptions,
-      ) {
-        const args = options?.paths === undefined ? [] : ["--literal-pathspecs"];
-        args.push("diff", "--find-renames");
-        if (options?.ignoreWhitespace === true) args.push("--ignore-all-space");
-        if (options?.contextLines !== undefined) args.push(`--unified=${options.contextLines}`);
-        args.push(a, b);
-        if (options?.paths !== undefined) args.push("--", ...options.paths);
-        if (options?.maxBytes === undefined) return yield* git(args, dir);
-        const out = yield* gitCapped(args, dir, options.maxBytes);
-        if (!out.cut) return out.stdout;
-        // Cut: only the files rendered whole stay; a half file is no patch.
-        const last = out.stdout.lastIndexOf("\ndiff --git ");
-        return last <= 0 ? "" : out.stdout.slice(0, last);
-      });
-
-      const worktreeMatchesCommit = Effect.fn("Store.worktreeMatchesCommit")(function* (
-        worktreePath: string,
-        commit: string,
-      ) {
-        const tmpIndex = path.join(
-          os.tmpdir(),
-          `mend-tree-compare-${process.pid}-${crypto.randomUUID()}`,
-        );
-        const currentTree = yield* Effect.gen(function* () {
-          const env = { GIT_INDEX_FILE: tmpIndex };
-          yield* git(["add", "-A"], worktreePath, env);
-          return yield* git(["write-tree"], worktreePath, env);
-        }).pipe(Effect.ensuring(Effect.sync(() => fs.rmSync(tmpIndex, { force: true }))));
-        const expectedTree = yield* git(["rev-parse", `${commit}^{tree}`], worktreePath);
-        return currentTree === expectedTree;
-      });
-
-      /**
-       * Rendering an untracked file costs one `git diff --no-index` spawn, so
-       * an unreviewable explosion (a dependency store dumped into the worktree
-       * escaped every ignore rule once: 62k files, one spawn each — the review
-       * page "hung") is capped hard. The excluded tail is a count the caller
-       * can surface; it is never silently dropped git-side.
-       */
-      const UNTRACKED_RENDER_LIMIT = 200;
-
-      const diffWorktree = Effect.fn("Store.diffWorktree")(function* (
-        worktreePath: string,
-        base: string,
-      ) {
-        const tracked = yield* git(["diff", base], worktreePath);
-        const untracked = yield* untrackedIn(worktreePath);
-        const rendered = untracked.slice(0, UNTRACKED_RENDER_LIMIT);
-        if (untracked.length > rendered.length) {
-          yield* Effect.logWarning("store: untracked files over render limit").pipe(
-            Effect.annotateLogs({ worktreePath, untracked: untracked.length }),
-          );
-        }
-        const additions = yield* Effect.forEach(rendered, (file) =>
-          // Exit 1 means "the files differ" — for /dev/null vs a new file, that IS the diff.
-          git(["diff", "--no-index", "--", "/dev/null", file], worktreePath, undefined, [1]),
-        );
-        return [tracked, ...additions].filter((part) => part !== "").join("\n");
-      });
-
-      const changedFiles = Effect.fn("Store.changedFiles")(function* (
-        dir: string,
-        a: string,
-        b: string | null,
-      ) {
-        const args =
-          b === null ? ["diff", "--numstat", "-z", a] : ["diff", "--numstat", "-z", a, b];
-        const out = yield* git(args, dir);
-        const tracked = parseNumstat(out).map(({ path: file, additions, deletions }) => ({
-          path: file,
-          additions,
-          deletions,
-        }));
-        // A live-worktree comparison (b = null) also owns its untracked files.
-        if (b !== null) return tracked;
-        const untracked = yield* untrackedIn(dir);
-        const rendered = untracked.slice(0, UNTRACKED_RENDER_LIMIT);
-        const elided = untracked.length - rendered.length;
-        const additions = yield* Effect.forEach(rendered, (file) =>
-          git(
-            ["diff", "--no-index", "--numstat", "--", "/dev/null", file],
-            dir,
-            undefined,
-            [1],
-          ).pipe(
-            Effect.map((line) => {
-              const [added = "0"] = line.split("\t");
-              return {
-                path: file,
-                additions: added === "-" ? 0 : Number(added),
-                deletions: 0,
-              };
-            }),
-          ),
-        );
-        // The elided tail still COUNTS — an honest row instead of silence.
-        return elided > 0
-          ? [
-              ...tracked,
-              ...additions,
-              {
-                path: `… ${elided} more untracked files (not rendered)`,
-                additions: 0,
-                deletions: 0,
-              },
-            ]
-          : [...tracked, ...additions];
-      });
-
-      const diffFileFacts = Effect.fn("Store.diffFileFacts")(function* (
-        dir: string,
-        a: string,
-        b: string,
-        options?: { readonly ignoreWhitespace?: boolean },
-      ) {
-        const whitespace = options?.ignoreWhitespace === true ? ["--ignore-all-space"] : [];
-        const [names, counts] = yield* Effect.all([
-          git(["diff", "--name-status", "-z", "--find-renames", ...whitespace, a, b], dir),
-          git(["diff", "--numstat", "-z", "--find-renames", ...whitespace, a, b], dir),
-        ]);
-        return parseNameStatus(names, parseNumstat(counts));
-      });
-
-      const diffFileFactsBounded = Effect.fn("Store.diffFileFactsBounded")(function* (
-        dir: string,
-        a: string,
-        b: string,
-        options: DiffFileFactsOptions,
-      ) {
-        // One budget for the operation: every git run takes what is left of it.
-        const started = yield* Clock.currentTimeMillis;
-        const left = (until: number | undefined) =>
-          until === undefined
-            ? Effect.succeed(undefined)
-            : Effect.map(Clock.currentTimeMillis, (now) => Math.max(0, until - (now - started)));
-        const run =
-          (until: number | undefined): CappedRun =>
-          (args) =>
-            Effect.flatMap(left(until), (budget) =>
-              budget === 0
-                ? Effect.succeed({ stdout: Buffer.alloc(0), cut: true })
-                : gitCappedBytes(args, dir, options.maxBytes, budget),
-            );
-        const listing = (format: string, pathspecs: ReadonlyArray<string> | undefined) =>
-          Effect.flatMap(left(options.deadlineMs), (budget) => {
-            if (budget === 0) return Effect.succeed({ stdout: Buffer.alloc(0), cut: true });
-            // The caller's paths are literal by flag; a floor's carry their own magic.
-            const args =
-              options.paths === undefined
-                ? pathspecs === undefined
-                  ? []
-                  : ["--no-literal-pathspecs"]
-                : ["--literal-pathspecs"];
-            args.push("diff", format, "-z", "--find-renames");
-            if (options.ignoreWhitespace === true) args.push("--ignore-all-space");
-            args.push(a, b);
-            if (options.paths !== undefined) args.push("--", ...options.paths);
-            else if (pathspecs !== undefined) args.push("--", ...pathspecs);
-            return gitCappedBytes(args, dir, options.maxBytes, budget);
-          });
-        const list = Effect.fn(function* (
-          pathspecs: ReadonlyArray<string> | undefined,
-          keep?: (listed: Buffer | null) => boolean,
-        ) {
-          const [names, counts] = yield* Effect.all(
-            [listing("--name-status", pathspecs), listing("--numstat", pathspecs)],
-            { concurrency: 2 },
-          );
-          // Both listings are git's, record for record: a record kept or dropped in one is in
-          // the other, by its index, before either is read as text.
-          const kept =
-            keep === undefined
-              ? undefined
-              : rawNameStatusPaths(names.stdout).map(
-                  (record) => keep(record.newPath) || keep(record.oldPath),
-                );
-          const records = nameStatusRecords(names.stdout.toString("utf8")).filter(
-            (_, index) => kept === undefined || kept[index] === true,
-          );
-          const numbers = numstatRecords(counts.stdout.toString("utf8")).filter(
-            (_, index) => kept === undefined || kept[index] === true,
-          );
-          // Both listings are git's, in the same order: joined record by record while they agree.
-          const facts: Array<DiffFileFact> = [];
-          for (const [index, record] of records.entries()) {
-            const count = numbers[index];
-            if (count === undefined || count.path !== (record.newPath ?? record.oldPath)) break;
-            facts.push({
-              oldPath: record.oldPath,
-              newPath: record.newPath,
-              status: record.status,
-              additions: count.additions,
-              deletions: count.deletions,
-              binary: count.binary,
-            });
-          }
-          return {
-            facts,
-            cut: names.cut || counts.cut || facts.length < records.length,
-          } satisfies DiffFileFactsListing;
-        });
-        const minFiles = options.minFiles;
-        if (
-          options.paths !== undefined ||
-          minFiles === undefined ||
-          options.deadlineMs === undefined
-        ) {
-          return yield* list(undefined);
-        }
-        // Git prints a range's files only after walking the whole range, so a deadline mid-walk
-        // lists nothing. The first files are found directory by directory and listed by path,
-        // beside the whole listing, from half the deadline on (the whole listing usually answers
-        // first) until it ends: the walk until half of what is then left, the listing by path
-        // until the deadline, so the files the walk found are listed within it.
-        const deadlineMs = options.deadlineMs;
-        const floor = Effect.gen(function* () {
-          yield* Effect.sleep(deadlineMs / 2);
-          const elapsed = (yield* Clock.currentTimeMillis) - started;
-          const walkUntil = elapsed + (deadlineMs - elapsed) / 2;
-          let found: DiffFileFactsListing = { facts: [], cut: true };
-          for (let limit = minFiles; ; limit *= 2) {
-            const selection = yield* firstChangedPaths(a, b, limit, run(walkUntil));
-            // One command line for both listings, within every platform's limit: a selection
-            // past it is shortened, never split, since each listing pairs renames on its own.
-            const items: Array<SelectedPath> = [];
-            const pathspecs: Array<string> = [];
-            let bytes = 0;
-            for (const item of selection.items) {
-              const specs = pathspecsOf(item);
-              bytes += specs.reduce((sum, spec) => sum + Buffer.byteLength(spec) + 1, 0);
-              if (bytes > SELECTION_BYTES) break;
-              items.push(item);
-              pathspecs.push(...specs);
-            }
-            if (items.length === 0) return found;
-            // A host whose argument limit is below the bound refuses the command line (E2BIG):
-            // half the selection is listed instead, as many halvings as it takes, the same
-            // selection for both listings. One pathspec refused answers nothing, cut.
-            let listed: DiffFileFactsListing | undefined;
-            while (listed === undefined) {
-              const attempt = yield* list(pathspecs, selectedBy(items)).pipe(
-                Effect.catchIf(
-                  (error) => error.code === "E2BIG",
-                  () => Effect.succeed(undefined),
-                ),
-              );
-              if (attempt !== undefined) listed = attempt;
-              else if (items.length <= 1) listed = { facts: [], cut: true };
-              else {
-                items.splice(Math.ceil(items.length / 2));
-                pathspecs.splice(0, pathspecs.length, ...items.flatMap(pathspecsOf));
-              }
-            }
-            const shortened = items.length < selection.items.length;
-            const facts = listed.facts;
-            const complete = selection.complete && !shortened && !listed.cut;
-            if (facts.length >= found.facts.length) found = { facts, cut: !complete };
-            // Renames pair two paths into one fact: more paths until the facts reach the floor.
-            if (complete || shortened || facts.length >= minFiles || selection.cut) {
-              return found;
-            }
-            if ((yield* left(deadlineMs)) === 0) return found;
-          }
-        }).pipe(Effect.forkChild);
-        const floorFiber = yield* floor;
-        const whole = yield* list(undefined);
-        if (!whole.cut || whole.facts.length >= minFiles) {
-          yield* Fiber.interrupt(floorFiber);
-          return whole;
-        }
-        const found = yield* Fiber.join(floorFiber);
-        return found.facts.length > whole.facts.length || !found.cut ? found : whole;
-      });
-
-      const listWorktreeFiles = Effect.fn("Store.listWorktreeFiles")(function* (
-        worktreePath: string,
-        limit: number,
-      ) {
-        // --cached --others in one call: tracked and untracked, ignore rules
-        // applied (the store-level excludes keep dependency stores out). -z so
-        // unusual names survive; git prints paths relative to the cwd.
-        const out = yield* git(
-          ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-          worktreePath,
-        );
-        return capListing([...new Set(out.split("\0"))], limit);
-      });
-
-      const readBlob = Effect.fn("Store.readBlob")(function* (
-        dir: string,
-        rev: string,
-        relative: string,
-        maxBytes: number,
-      ) {
-        if (!isWorktreeRelativePath(relative)) return null;
-        const spec = `${rev}:${relative}`;
-        // 128: git found nothing at that path.
-        const type = yield* git(["cat-file", "-t", spec], dir, undefined, [128]);
-        if (type !== "blob") return null;
-        const size = Number.parseInt(yield* git(["cat-file", "-s", spec], dir), 10);
-        const bytes = new Uint8Array(yield* gitHead(["cat-file", "blob", spec], dir, maxBytes));
-        return {
-          bytes,
-          size,
-          truncated: size > bytes.byteLength,
-          binary: binaryOf(bytes),
-        } satisfies FileRead;
-      });
-
-      const readWorktreeFile = Effect.fn("Store.readWorktreeFile")(function* (
-        worktreePath: string,
-        relative: string,
-        maxBytes: number,
-      ) {
-        if (!isWorktreeRelativePath(relative)) return null;
-        return yield* Effect.try({
-          try: (): FileRead | null => {
-            const root = fs.realpathSync(worktreePath);
-            const file = openContained(root, relative);
-            if (file === null) return null;
-            const handle = file.fd;
-            try {
-              // The descriptor, not the path: what was opened is what is checked and read.
-              const stat = fs.fstatSync(handle);
-              if (!stat.isFile() || !descriptorInside(file, root)) return null;
-              const buffer = Buffer.alloc(Math.min(maxBytes, stat.size));
-              const read = fs.readSync(handle, buffer, 0, buffer.byteLength, 0);
-              const bytes = new Uint8Array(buffer.subarray(0, read));
-              return {
-                bytes,
-                size: stat.size,
-                truncated: stat.size > read,
-                binary: binaryOf(bytes),
-              };
-            } finally {
-              fs.closeSync(handle);
-            }
-          },
-          catch: (error) =>
-            new GitError({
-              args: ["read-worktree-file", relative],
-              cwd: worktreePath,
-              exitCode: null,
-              stderr: error instanceof Error ? error.message : String(error),
-            }),
-        });
-      });
-
-      const grep = Effect.fn("Store.grep")(function* (
-        dir: string,
-        rev: string | null,
-        query: GrepQuery,
-        limit: number,
-      ) {
-        const args = ["grep", "-n", "-z", "-I", "--no-color", `--max-count=${limit + 1}`];
-        if (!query.caseSensitive) args.push("-i");
-        if (query.wholeWord) args.push("-w");
-        args.push(query.regex ? "-E" : "-F", "-e", query.pattern);
-        args.push(...(rev === null ? ["--untracked"] : [rev]));
-        // Bounded as a whole, not per file: git stops at the byte budget or the deadline, and what
-        // it found by then answers, marked truncated. 1: nothing matched.
-        const out = yield* gitCapped(args, dir, GREP_OUTPUT_BYTES, GREP_DEADLINE_MS).pipe(
-          Effect.catchIf(
-            (error) => error.exitCode === 1,
-            () => Effect.succeed({ stdout: "", cut: false }),
-          ),
-        );
-        return parseGrep(out.stdout, rev, limit, out.cut);
-      });
-
-      const listTreeFiles = Effect.fn("Store.listTreeFiles")(function* (
-        dir: string,
-        ref: string,
-        limit: number,
-      ) {
-        const out = yield* git(["ls-tree", "-r", "-z", "--name-only", ref], dir);
-        return capListing(out.split("\0"), limit);
-      });
-
-      const listTopLevel = Effect.fn("Store.listTopLevel")(function* (
-        dir: string,
-        ref: string,
-        limit: number,
-      ) {
-        // `<mode> <type> <sha>\t<name>`, NUL-separated so unusual names survive.
-        const out = yield* git(["ls-tree", "-z", ref], dir);
-        const entries = out.split("\0").flatMap((line) => {
-          const tab = line.indexOf("\t");
-          if (tab === -1) return [];
-          const name = line.slice(tab + 1);
-          return [line.split(" ")[1] === "tree" ? `${name}/` : name];
-        });
-        return capListing(entries, limit);
-      });
-
-      const headSha = Effect.fn("Store.headSha")(function* (dir: string) {
-        const head = yield* git(["rev-parse", "HEAD"], dir);
-        return sha(head);
-      });
-
-      // `_organizations/` cannot collide with a project dir: project stores are ids or names
-      // that went through the API's name check, which rejects a leading underscore.
-      const cloneReference = Effect.fn("Store.cloneReference")(function* (
-        directory: string,
-        source: string,
-        ref: string | null,
-        remoteEnv: GitRemoteEnvironment,
-      ) {
-        const clonePath = path.join(config.root, directory);
-        const referencesRoot = path.dirname(clonePath);
-        const name = path.basename(clonePath);
-        const attempt = Effect.gen(function* () {
-          yield* Effect.sync(() => fs.mkdirSync(referencesRoot, { recursive: true }));
-          const env = yield* gitRemoteEnvironment(remoteEnv, {
-            direction: "clone",
-            remote: source,
-            env: {},
-            cwd: referencesRoot,
-            destinationPath: clonePath,
-            cloneKind: "checkout",
-          });
-          yield* git(
-            [
-              "clone",
-              "--depth",
-              "1",
-              ...(ref === null ? [] : ["--branch", ref]),
-              "--",
-              source,
-              clonePath,
-            ],
-            referencesRoot,
-            env,
-          );
-          const head = yield* git(["rev-parse", "HEAD"], clonePath);
-          return { path: clonePath, headSha: sha(head) };
-        });
-        return yield* attempt.pipe(
-          Effect.catch((cause) =>
-            Effect.fail(
-              new ReferenceCloneError({ name, source: redactRepositoryUrl(source), cause }),
-            ),
-          ),
-        );
-      }, Effect.scoped);
-
-      const refreshReference = Effect.fn("Store.refreshReference")(function* (
-        clonePath: string,
-        ref: string | null,
-        remoteEnv: GitRemoteEnvironment,
-      ) {
-        // No pin = follow whatever branch the clone is on. FETCH_HEAD + hard
-        // reset handles branches and tags uniformly, force-pushes included —
-        // a reference clone has no local work to protect.
-        // A reference clone is mounted into co-located workspaces, its config included.
-        yield* refuseRemoteCredentials(clonePath);
-        const target = ref ?? (yield* git(["symbolic-ref", "--short", "HEAD"], clonePath));
-        const env = yield* gitRemoteEnvironment(remoteEnv, {
-          direction: "read",
-          remote: "origin",
-          repositoryPath: clonePath,
-          env: {},
-        });
-        yield* git(["fetch", "--depth", "1", "origin", target], clonePath, env);
-        yield* git(["reset", "--hard", "FETCH_HEAD"], clonePath);
         const head = yield* git(["rev-parse", "HEAD"], clonePath);
         return { path: clonePath, headSha: sha(head) };
-      }, Effect.scoped);
-
-      const removeReference = Effect.fn("Store.removeReference")(function* (clonePath: string) {
-        yield* Effect.sync(() => fs.rmSync(clonePath, { recursive: true, force: true }));
       });
+      return yield* attempt.pipe(
+        Effect.catch((cause) =>
+          Effect.fail(
+            new ReferenceCloneError({ name, source: redactRepositoryUrl(source), cause }),
+          ),
+        ),
+      );
+    }, Effect.scoped);
 
-      const landingCommit = Effect.fn("Store.landingCommit")(function* (
-        storePath: string,
-        input: StoreLandingCommitInput,
-      ) {
-        const landed = yield* writeLandingCommit(storePath, input);
-        if (input.keepFor !== null) {
-          // Mend's own namespace, never `refs/heads`: the agent's branch stays where it was.
-          yield* git(
-            ["update-ref", "-m", "mend: landing", landedRefOf(input.keepFor), landed.head],
-            storePath,
-          );
-        }
-        return landed;
+    const refreshReference = Effect.fn("Store.refreshReference")(function* (
+      clonePath: string,
+      ref: string | null,
+      remoteEnv: GitRemoteEnvironment,
+    ) {
+      // No pin = follow whatever branch the clone is on. FETCH_HEAD + hard
+      // reset handles branches and tags uniformly, force-pushes included —
+      // a reference clone has no local work to protect.
+      // A reference clone is mounted into co-located workspaces, its config included.
+      yield* refuseRemoteCredentials(clonePath);
+      const target = ref ?? (yield* git(["symbolic-ref", "--short", "HEAD"], clonePath));
+      const env = yield* gitRemoteEnvironment(remoteEnv, {
+        direction: "read",
+        remote: "origin",
+        repositoryPath: clonePath,
+        env: {},
       });
+      yield* git(["fetch", "--depth", "1", "origin", target], clonePath, env);
+      yield* git(["reset", "--hard", "FETCH_HEAD"], clonePath);
+      const head = yield* git(["rev-parse", "HEAD"], clonePath);
+      return { path: clonePath, headSha: sha(head) };
+    }, Effect.scoped);
 
-      const push = Effect.fn("Store.push")(function* (storePath: string, input: PushInput) {
-        yield* refuseRemoteCredentials(storePath);
-        return yield* pushBranch(storePath, input);
-      });
+    const removeReference = Effect.fn("Store.removeReference")(function* (clonePath: string) {
+      yield* Effect.sync(() => fs.rmSync(clonePath, { recursive: true, force: true }));
+    });
 
-      const probeRemote = Effect.fn("Store.probeRemote")(function* (
-        storePath: string,
-        input: ProbeInput,
-      ) {
-        yield* refuseRemoteCredentials(storePath);
-        return yield* probeRemoteBranch(storePath, input);
-      });
+    const landingCommit = Effect.fn("Store.landingCommit")(function* (
+      storePath: string,
+      input: StoreLandingCommitInput,
+    ) {
+      const landed = yield* writeLandingCommit(storePath, input);
+      if (input.keepFor !== null) {
+        // Mend's own namespace, never `refs/heads`: the agent's branch stays where it was.
+        yield* git(
+          ["update-ref", "-m", "mend: landing", landedRefOf(input.keepFor), landed.head],
+          storePath,
+        );
+      }
+      return landed;
+    });
 
-      const bundle = Effect.fn("Store.bundle")(function* (storePath: string, input: BundleInput) {
-        return yield* createChangeBundle(storePath, input);
-      });
+    const push = Effect.fn("Store.push")(function* (storePath: string, input: PushInput) {
+      yield* refuseRemoteCredentials(storePath);
+      return yield* pushBranch(storePath, input);
+    });
 
-      return {
-        landingCommit,
-        push,
-        probeRemote,
-        bundle,
-        cloneReference,
-        refreshReference,
-        removeReference,
-        adopt,
-        createWorktree,
-        resolveBase,
-        freshenBase,
-        admitHandoff,
-        sweepHandoffQuarantines,
-        renameBranch,
-        resetWorktree,
-        refreshFromOrigin,
-        listBranches,
-        removeWorktree,
-        removeWorktreeForce,
-        removeProjectStore,
-        checkpoint,
-        diffRange,
-        diffWorktree,
-        worktreeMatchesCommit,
-        changedFiles,
-        diffFileFacts,
-        diffFileFactsBounded,
-        headSha,
-        listWorktreeFiles,
-        readBlob,
-        readWorktreeFile,
-        openRawWorktreeFile,
-        openRawBlobFile: rawBlobCache.open,
-        prepareRawBlobFile: rawBlobCache.prepare,
-        grep,
-        listTreeFiles,
-        listTopLevel,
-      };
-    }),
-  );
-}
+    const probeRemote = Effect.fn("Store.probeRemote")(function* (
+      storePath: string,
+      input: ProbeInput,
+    ) {
+      yield* refuseRemoteCredentials(storePath);
+      return yield* probeRemoteBranch(storePath, input);
+    });
+
+    const bundle = Effect.fn("Store.bundle")(function* (storePath: string, input: BundleInput) {
+      return yield* createChangeBundle(storePath, input);
+    });
+
+    return {
+      landingCommit,
+      push,
+      probeRemote,
+      bundle,
+      cloneReference,
+      refreshReference,
+      removeReference,
+      adopt,
+      createWorktree,
+      resolveBase,
+      freshenBase,
+      admitHandoff,
+      sweepHandoffQuarantines,
+      renameBranch,
+      resetWorktree,
+      refreshFromOrigin,
+      listBranches,
+      removeWorktree,
+      removeWorktreeForce,
+      removeProjectStore,
+      checkpoint,
+      diffRange,
+      diffWorktree,
+      worktreeMatchesCommit,
+      changedFiles,
+      diffFileFacts,
+      diffFileFactsBounded,
+      headSha,
+      listWorktreeFiles,
+      readBlob,
+      readWorktreeFile,
+      openRawWorktreeFile,
+      openRawBlobFile: rawBlobCache.open,
+      prepareRawBlobFile: rawBlobCache.prepare,
+      grep,
+      listTreeFiles,
+      listTopLevel,
+    };
+  }),
+);
