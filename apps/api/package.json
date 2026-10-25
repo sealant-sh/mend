@@ -35,6 +35,7 @@
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
     "esbuild": "catalog:",
+    "fast-check": "catalog:",
     "tsx": "catalog:",
     "vitest": "catalog:"
   }
