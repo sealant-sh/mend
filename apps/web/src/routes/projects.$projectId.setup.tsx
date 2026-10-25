@@ -1494,8 +1494,6 @@ const rowInputClass =
  * The one way to add entries: Key/Value rows with "Add another", a Sensitive toggle, and paste
  * detection — dropping a whole `.env` (comments and all) into ANY field turns it into rows, one
  * per key. Each row shows live where it will land (Configuration, Secrets, or why it is refused).
- * Save posts the rows through the same endpoint `mend env load` uses, which loads the accepted
- * ones and reports the refused; existing names are replaced; refused rows stay in the composer.
  */
 function VariablesComposer({ projectId }: { readonly projectId: string }) {
   const trpc = useTRPC();
@@ -1513,7 +1511,7 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
   const allRevealed = state.rows.filter((row) => row.value !== "").every((row) => row.revealed);
   const rejectedCount = lanes.filter((lane) => lane.kind === "rejected").length;
   const rejectedRows = rejectedCount === 1 ? "row" : `${rejectedCount} rows`;
-  const canSave = phase === "idle" && submission.accepted > 0;
+  const canSave = phase === "idle" && submission.acceptedCount > 0;
 
   const expandFrom = (intoId: number, text: string) =>
     dispatch({ type: "text-expanded", intoId, text });
@@ -1539,7 +1537,7 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
     setPhase("saving");
     setError(null);
     void loadProjectEnvironment(projectId, {
-      contents: serializeRows(submission.rows),
+      contents: serializeRows(submission.postedRows),
       allSecret: state.allSecret,
       secretNames: [],
     })
@@ -1548,7 +1546,7 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
         const loadedNames = new Set(result.loaded.map((entry) => entry.name));
         dispatch({
           type: "rows-cleared",
-          ids: submission.rows.filter((row) => loadedNames.has(row.key)).map((row) => row.id),
+          ids: submission.postedRows.filter((row) => loadedNames.has(row.key)).map((row) => row.id),
         });
         await queryClient.invalidateQueries(trpc.environment.pathFilter());
         return undefined;
@@ -1724,8 +1722,8 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
         >
           {phase === "saving"
             ? "Saving…"
-            : submission.accepted > 1
-              ? `Save ${submission.accepted}`
+            : submission.acceptedCount > 1
+              ? `Save ${submission.acceptedCount}`
               : "Save"}
         </button>
       </div>
@@ -1737,7 +1735,7 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
       )}
       {rejectedCount === 0 ? null : (
         <p className="mt-2 text-xs text-danger" aria-live="polite">
-          {submission.accepted === 0
+          {submission.acceptedCount === 0
             ? `Fix or remove the ${rejectedRows} marked above to save.`
             : `Save leaves the ${rejectedRows} marked above here and loads the rest.`}
         </p>

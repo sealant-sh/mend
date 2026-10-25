@@ -154,9 +154,9 @@ describe("saving an imported .env that names a provider login", () => {
     (sensitive) => {
       const state = sensitive ? imported : reduce(imported, { type: "all-secret-toggled" });
       const submission = composerSubmission(state);
-      expect(submission.accepted).toBe(2);
+      expect(submission.acceptedCount).toBe(2);
 
-      const posted = parseDotenv(serializeRows(submission.rows)).entries;
+      const posted = parseDotenv(serializeRows(submission.postedRows)).entries;
       expect(posted.map((entry) => [entry.name, routeDotenvName(entry.name).lane])).toEqual([
         ["OPENAI_API_KEY", "rejected"],
         ["STRIPE_API_KEY", "secret"],
@@ -166,10 +166,10 @@ describe("saving an imported .env that names a provider login", () => {
       const loaded = new Set(["STRIPE_API_KEY", "PORT"]);
       const after = reduce(state, {
         type: "rows-cleared",
-        ids: submission.rows.filter((row) => loaded.has(row.key)).map((row) => row.id),
+        ids: submission.postedRows.filter((row) => loaded.has(row.key)).map((row) => row.id),
       });
       expect(after.rows.map((row) => row.key)).toEqual(["OPENAI_API_KEY", "bad name"]);
-      expect(composerSubmission(after).accepted).toBe(0);
+      expect(composerSubmission(after).acceptedCount).toBe(0);
     },
   );
 });

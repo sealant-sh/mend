@@ -84,10 +84,6 @@ export const routeDotenvName = (name: string): DotenvRoute => {
   return issue === null ? { lane: "secret" } : { lane: "rejected", issue };
 };
 
-/**
- * Words for a secret stored under a provider login name before Mend refused those names, or null.
- * The row stays as it was; the words ask its owner to rename or remove it.
- */
 export const storedSecretNameRefusal = (name: string): string | null => {
   const issue = validateProjectSecretName(name);
   if (issue === null || issue.rule !== "name-provider-login") return null;

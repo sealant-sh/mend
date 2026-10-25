@@ -169,20 +169,15 @@ export const savableRows = (state: ComposerState): ReadonlyArray<ComposerRow> =>
   state.rows.filter((row) => row.key !== "");
 
 export interface ComposerSubmission {
-  /**
-   * Rows Save posts: refused names go too, so the endpoint reports them beside what it loaded. A
-   * key outside the dotenv grammar stays here, since it would not read back as the same name.
-   */
-  readonly rows: ReadonlyArray<ComposerRow>;
-  /** Rows no rule refuses by name. Save needs one. */
-  readonly accepted: number;
+  readonly postedRows: ReadonlyArray<ComposerRow>;
+  readonly acceptedCount: number;
 }
 
 export const composerSubmission = (state: ComposerState): ComposerSubmission => {
   const keyed = savableRows(state);
   return {
-    rows: keyed.filter((row) => PROJECT_ENV_NAME_PATTERN.test(row.key)),
-    accepted: keyed.filter((row) => rowLane(row, state.allSecret).kind !== "rejected").length,
+    postedRows: keyed.filter((row) => PROJECT_ENV_NAME_PATTERN.test(row.key)),
+    acceptedCount: keyed.filter((row) => rowLane(row, state.allSecret).kind !== "rejected").length,
   };
 };
 
