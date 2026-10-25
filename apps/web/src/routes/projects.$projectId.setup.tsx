@@ -1151,6 +1151,9 @@ function SecretRow({
         <p className="mt-0.5 font-mono text-[12px] text-faint">
           value set · updated {new Date(secret.updatedAt).toLocaleString()}
         </p>
+        {secret.nameRefusal === null ? null : (
+          <p className="mt-1 text-xs leading-relaxed text-warning">{secret.nameRefusal}</p>
+        )}
         {error === null ? null : (
           <p className="mt-1 text-xs leading-relaxed text-danger" aria-live="polite">
             {error}

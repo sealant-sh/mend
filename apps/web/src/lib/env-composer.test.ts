@@ -126,6 +126,14 @@ describe("rowLane", () => {
     expect(rowLane(keyOnly("STRIPE_API_KEY"), false)).toEqual({ kind: "secret" });
     expect(rowLane(keyOnly("GITHUB_TOKEN"), false).kind).toBe("rejected");
   });
+
+  it("rejects a provider login row with words that point to Connected accounts", () => {
+    expect(rowLane(keyOnly("ANTHROPIC_API_KEY"), true)).toEqual({
+      kind: "rejected",
+      reason:
+        "ANTHROPIC_API_KEY is a Claude login. Connect it in Settings → Connected accounts, or with mend connect claude; a project secret never decides which login a session spends.",
+    });
+  });
 });
 
 describe("serializeRows", () => {
