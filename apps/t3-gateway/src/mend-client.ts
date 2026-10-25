@@ -1,5 +1,6 @@
 import { isChosenDefault } from "@mend/domain/default-login";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
@@ -47,6 +48,13 @@ import {
  * (ADR 0012, "A gateway, not a provider"). It does not import `@mend/api-contracts` (Effect
  * beta.93); it decodes only the fields it reads, so Mend can add fields freely.
  */
+
+/**
+ * A second more than Mend's ten-second wait to prepare a captured or checkpoint file
+ * (`RawPreparationWait` in @mend/store), so a cold file usually gets Mend's `RawFilePreparing`
+ * rather than this deadline. Either one shows the preview as unavailable.
+ */
+const RAW_HEADERS_DEADLINE = Duration.seconds(11);
 
 /** A scoped response from Mend's raw endpoint; no upstream request or cause escapes. */
 export interface MendRawFile {
@@ -945,9 +953,8 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             .pipe(
               Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
               Effect.mapError(() => new MendRawFileUnavailable({ status: null })),
-              // Mend's ten-second preparation window must finish before this transport deadline.
               Effect.timeoutOrElse({
-                duration: "11 seconds",
+                duration: RAW_HEADERS_DEADLINE,
                 orElse: () => Effect.fail(new MendRawFileUnavailable({ status: null })),
               }),
             );
