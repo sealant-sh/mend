@@ -517,6 +517,47 @@ Every run landed as uid 40001. In both runs with the setting on, the workspace l
 `editorconfig.editorconfig` with the local gallery uuid and not the theme, and the warm pass planned
 nothing. The two sides overlap again, and every first terminal is far under the 10 s budget.
 
+### Settings Sync (0.36.x patch)
+
+With Settings Sync on, a Mend workspace window asked "Would you like to install and synchronize
+'<X>' extension across your devices?" once for each extension Mend installed. One person met about
+30 of these dialogs. A verify run with four local extensions showed four
+(`.claude/skills/verify/recipes/vscode-editor-dialogs.mjs`).
+
+The cause is in VS Code's workbench, read at commit `30ca50fe7` of its source:
+
+- `workbench.extensions.installExtension` sets `isMachineScoped: true` only when its options carry
+  `donotSync: true`. Otherwise `isMachineScoped` stays undefined
+  (`src/vs/workbench/contrib/extensions/browser/extensions.contribution.ts`, lines 465 to 519).
+- When `isMachineScoped` is undefined, `installFromGallery` calls
+  `hasToFlagExtensionsMachineScoped`. If extension sync is on, that function shows the dialog. When
+  the answer leaves the install unscoped, `installFromGallery` also adds the local extension server
+  to the install targets
+  (`src/vs/workbench/services/extensionManagement/common/extensionManagementService.ts`, lines 532
+  to 537 and 745).
+
+The fix passes `{ donotSync: true }` to the command for each id the window does not already run in
+its UI host. For a workspace-kind id, VS Code then installs a machine-scoped copy in the workspace
+only. It asks nothing and leaves the local copy and Settings Sync as they were.
+
+An id the window already runs in its UI host gets no options. For it the command reaches
+`updateFromGallery`, which installs on the local server. With the same version already there, the
+local server only rewrites the copy's metadata, and it takes `isMachineScoped` from the options when
+they set it (`src/vs/platform/extensionManagement/node/extensionManagementService.ts`, lines 1086
+and 1135 to 1136). Settings Sync ignores every machine-scoped extension
+(`src/vs/platform/userDataSync/common/ignoredExtensions.ts`, line 69). So `donotSync` on such an id,
+such as a theme, would take it out of Settings Sync, with Sync on or off. This path never asked
+before the fix, because `updateFromGallery` does not call `hasToFlagExtensionsMachineScoped`.
+
+The DinD spikes and the PR 1 runs never ran with Settings Sync on. The harness started VS Code
+without `--sync` on a fresh user-data directory, where sync is off. Now
+`scripts/vscode-remote-acceptance.mjs` passes `--sync on`. VS Code reads that flag before the stored
+setting, so sync is on with no account signed in. In an extension test host, VS Code's
+`DialogService.prompt` throws instead of showing a dialog
+(`src/vs/workbench/services/dialogs/common/dialogService.ts`). If the argument is lost, the install
+of `editorconfig.editorconfig` fails, the pass settles `not synced`, and the `remoteEditor` step
+fails.
+
 ## Next implementation step
 
 PR 2: `editor-settings.ts` and the machine-settings half of the pass, as specified above.
