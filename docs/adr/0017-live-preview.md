@@ -6,7 +6,9 @@ on the phone and in the web app after a turn changes the app. Yiannis decided it
 2026-10-24: the domain, public links (who opens a link), a shared database, the setup cache, idle
 defaults, and the gateway on a private instance. He also decided how Mend's cookies change on a
 tailnet, how app cookies are kept apart, and what happens to a write that reaches a stopped preview.
-Each section quotes him. The other choices in the decision log are proposals he may overturn.
+On 2026-10-25 he decided three more: whose **Stop** keeps a preview stopped, what the gateway
+strips, and that a bound dial never falls back to Docker. Each section quotes him. The other choices
+in the decision log are proposals he may overturn.
 
 **What this ADR does not claim.** A preview is not a deployment, and it does not say that a change
 works. It shows what the dev server answered when someone asked
@@ -167,6 +169,11 @@ export type PreviewBinding =
   forward bound to a process (below). Before a start, Mend refuses a port that already answers. That
   shows the port was free at that moment, and so narrows the gap. It cannot show which process
   answers afterwards, and only a forward bound to a process closes the gap.
+- **A bound dial never falls back.** Decided by Yiannis, 2026-10-25. A dial bound to an attempt's
+  process tries the workspace's loopback only. When loopback refuses it, the gateway answers that
+  nothing listens and does not try the Docker route, because a container cannot prove the process. A
+  docker-hosted Service is always port-scoped, and its status says `port-scoped`. Nothing claims a
+  process proof for it. Step 9's recipe key declares which Services are docker-hosted.
 - A second session in the worktree that runs the same name does not take the host over. A
   managed-port claim on (workspace, port) turns that into a named conflict.
 
@@ -213,15 +220,20 @@ browser ──TLS──▶ edge: a site for *.<preview domain>          new site
   `X-Forwarded-Host` and `X-Forwarded-Proto`, which Vite's `server.allowedHosts` and Next's dev
   server expect. `host = "preserve"` sends the preview host. WordPress needs that, because it builds
   absolute URLs and redirects to its configured home.
-- **What the gateway strips and refuses.** Before forwarding, it removes its own cookie, every Mend
-  credential, inbound `Forwarded` and `X-Forwarded-*`, and hop-by-hop headers. It refuses `CONNECT`,
-  a request with two `Host` fields, and an unknown port. On the way back it removes the `Domain`
-  attribute from every `Set-Cookie` and drops any cookie named like the grant. Unless the preview
-  domain is on the Public Suffix List, a page's own JavaScript can still set a cookie for the whole
-  preview domain, which reaches sibling previews. Header stripping cannot stop that, so decision 1
-  names it as a cost. The gateway sets `Cache-Control: private`, so an edge cache cannot serve one
-  viewer's page to another, and `X-Robots-Tag: noindex`. It injects nothing into pages and sets no
-  CSP on them, which would break apps.
+- **What the gateway strips and refuses.** Before forwarding, it removes its own grant cookie (every
+  port's grant name on a tailnet's `ts.net` default), inbound `Forwarded` and `X-Forwarded-*`, and
+  hop-by-hop headers. Decided by Yiannis, 2026-10-25: the app's own `Authorization` header and its
+  own cookies pass untouched, both ways, `better-auth.*` names included. Mend's cookies are
+  host-only on Mend's host, so a browser never sends them to a preview host, and Mend's bearers are
+  never ambient, so a browser sends one only when the app's page asked it to. Stripping them would
+  break an app that uses the same names and protect nothing. It refuses `CONNECT`, a request with
+  two `Host` fields, and an unknown port. On the way back it removes the `Domain` attribute from
+  every `Set-Cookie` and drops any cookie named like the grant, so an app cannot plant one. Unless
+  the preview domain is on the Public Suffix List, a page's own JavaScript can still set a cookie
+  for the whole preview domain, which reaches sibling previews. Header stripping cannot stop that,
+  so decision 1 names it as a cost. The gateway sets `Cache-Control: private`, so an edge cache
+  cannot serve one viewer's page to another, and `X-Robots-Tag: noindex`. It injects nothing into
+  pages and sets no CSP on them, which would break apps.
 - **Refused for now.** A service-worker script gets 403, because a service worker scoped to the root
   could answer the gateway's `/__mend/` routes from the browser's cache. An `https` Service gets a
   stated refusal, because the first slice speaks plain HTTP to the dev server inside the workspace.
@@ -284,15 +296,15 @@ GET  https://k7f2….<preview domain>/pricing                 no grant cookie, a
     shape.
   - **What is lost when the start fails.** If the preview fails to start, or does not answer within
     the timeout, the gateway answers 503 with a page that says what happened
-    (`preview · web · did not start in 3 min · setup failed · your request was not delivered`). The
-    body was never read, so Mend has none of it. It is lost unless the browser kept it: Back may
-    restore a form's fields, and an app's own `fetch` sees the 503 and decides for itself. This is
-    the one remaining case in which a write is lost, and the page says so plainly.
+    (`preview · web · did not start · setup failed · your request was not delivered`, or
+    `did not start in 3 min · start timed out` when it outlasted the hold). The body was never read,
+    so Mend has none of it. It is lost unless the browser kept it: Back may restore a form's fields,
+    and an app's own `fetch` sees the 503 and decides for itself. This is the one remaining case in
+    which a write is lost, and the page says so plainly.
   - **Who it runs as.** A start from a held request runs the approved recipe digest as its last
     starter, exactly as an owner's **Start** does, and one start runs however many requests arrive.
-    Starts count against a wake budget per account. A preview the owner stopped with **Stop** is not
-    started by a request. That stop is the owner's choice, so the request gets a page that says the
-    owner stopped the preview.
+    Starts count against a wake budget per account. A preview a person stopped with **Stop** is not
+    started by a request, and the request gets a page that says who stopped it (Decision log 6).
 - **The phone.** The Mend app mints the ticket with its device token and opens the preview host in
   an in-app browser (`expo-web-browser`), so the person does not sign in again. The `/tty-embed`
   ticket flow is the precedent (`apps/mobile/src/components/ghostty-terminal.tsx:232-298`). A link
@@ -844,8 +856,19 @@ may overturn any of them without touching the rest.
    turn.
 5. **A stop ends the preview's Service, never its stateful dependencies.** Taken, so that what a
    reviewer typed into the app survives.
-6. **A preview the owner stopped is not started by a request.** Taken, because **Stop** is the
-   owner's choice, and the request's page says so. Rejected: letting any visit undo it.
+6. **A preview a person stopped is not started by a request.** Decided by Yiannis, 2026-10-25, as
+   extended from the owner's **Stop** this entry first proposed: any person's **Stop**, the owner's
+   or a steerer's, keeps the preview stopped. The request's page says who stopped it
+   (`preview · web · Maria stopped the preview · your request was not delivered`), naming them as
+   Mend names people to others: their name, or `a member`. A person's **Start** or restart lets
+   requests start it again. The agent's own `mend service stop` does not count, and only a Stop of
+   the Service the preview serves does. Also decided by Yiannis, 2026-10-25: a person's Stop keeps
+   requests from starting the Service; a run the agent starts is served while it lasts, and the Stop
+   holds again when it ends. Only Mend's person-facing Stop, Start and restart decide it: the
+   agent's own `mend service stop`, `run` or `restart` decides nothing, whichever token carries it,
+   so a person executor's agent, which acts with its person's token, cannot stop or clear it either.
+   A Start asked before a person's Stop never clears that Stop, however late it is carried out.
+   Rejected: letting any visit undo it.
 7. **No relay for shared services.** Taken, per AGENTS.md. Rejected: the earlier plan's bridge.
 8. **A durable preparation job with a periodic sweep, not a turn callback.** Taken, because the
    event bus drops events and a checkpoint can fail.
