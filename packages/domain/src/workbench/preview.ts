@@ -186,8 +186,6 @@ export interface PreviewBoundAttempt {
   readonly port: number;
   /** The platform session the process runs in: the forward is bound to it. */
   readonly platformSessionId: string;
-  /** Still `starting`: not yet seen to answer, so a request waits for readiness. */
-  readonly starting: boolean;
 }
 
 /** The last attempt seen to answer: what a request-triggered start runs again. */
@@ -215,6 +213,15 @@ export type PreviewGatewayResolution =
       readonly _tag: "Bound";
       readonly revision: number;
       readonly attempt: PreviewBoundAttempt;
+    }
+  | {
+      /**
+       * A live attempt not yet seen to answer, its process handle perhaps not recorded yet: a
+       * request waits for it, and nothing is delivered to it.
+       */
+      readonly _tag: "Starting";
+      readonly revision: number;
+      readonly attemptId: SessionProcessId;
     }
   | {
       readonly _tag: "Dormant";
@@ -310,6 +317,9 @@ export const previewGatewayResolution = (
     }
   }
   const { service, attempt } = selected;
+  if (attempt.status === "starting") {
+    return { _tag: "Starting", revision: control.revision, attemptId: attempt.id };
+  }
   if (attempt.sealantSessionId === null) {
     return { _tag: "Refused", reason: "process-binding-unavailable" };
   }
@@ -323,7 +333,6 @@ export const previewGatewayResolution = (
       workspaceId: attempt.sealantWorkspaceId,
       port: service.workspacePort,
       platformSessionId: attempt.sealantSessionId,
-      starting: attempt.status === "starting",
     },
   };
 };

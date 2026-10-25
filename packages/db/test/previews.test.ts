@@ -524,7 +524,6 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
         const { preview } = yield* live("bound");
         const previews = yield* PreviewsRepo;
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`UPDATE session_processes SET status = 'starting' WHERE id = 'att-bound-1'`;
         expect(yield* previews.gatewaySnapshot(preview.id)).toEqual({
           preview,
           resolution: {
@@ -537,10 +536,18 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
               workspaceId: "ws-1",
               port: 3000,
               platformSessionId: "pty-att-bound-1",
-              starting: true,
             },
           },
         });
+        yield* sql`UPDATE session_processes SET status = 'starting', sealant_session_id = NULL
+          WHERE id = 'att-bound-1'`;
+        expect((yield* previews.gatewaySnapshot(preview.id))?.resolution).toEqual({
+          _tag: "Starting",
+          revision: 0,
+          attemptId: "att-bound-1",
+        });
+        yield* sql`UPDATE session_processes SET status = 'running', sealant_session_id = 'pty-att-bound-1'
+          WHERE id = 'att-bound-1'`;
         const stopped = yield* previews.changeControl(preview.id, {
           _tag: "OwnerStop",
           by: "alice",

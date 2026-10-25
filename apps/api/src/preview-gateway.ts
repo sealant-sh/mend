@@ -356,12 +356,12 @@ const routeOf = (serviceName: string, resolution: PreviewGatewayResolution | nul
       return refusedWith(gatewayPage(refused.status, notDelivered(serviceName, refused.fact)));
     }
     case "Bound":
-      return resolution.attempt.starting
-        ? {
-            _tag: "Start",
-            from: { revision: resolution.revision, sourceAttemptId: resolution.attempt.attemptId },
-          }
-        : { _tag: "Ready", generation: generationOf(resolution) };
+      return { _tag: "Ready", generation: generationOf(resolution) };
+    case "Starting":
+      return {
+        _tag: "Start",
+        from: { revision: resolution.revision, sourceAttemptId: resolution.attemptId },
+      };
     case "Dormant":
       return {
         _tag: "Start",

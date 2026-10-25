@@ -23566,6 +23566,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         switch (resolution._tag) {
           case "Bound":
             return joinStep(resolution.attempt.attemptId);
+          case "Starting":
+            return joinStep(resolution.attemptId);
           case "Dormant":
             if (resolution.source.sourceAttemptId !== request.sourceAttemptId) {
               return yield* previewRefused("control-changed");

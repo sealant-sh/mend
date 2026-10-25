@@ -365,8 +365,8 @@ describe("gateway resolution", () => {
       control: stopped,
     });
   });
-  it("binds a live attempt with its workspace, port and platform session", () => {
-    const bound = selectPreviewTarget(preview, [live(web, { status: "starting" })]);
+  it("binds a running attempt with its workspace, port and platform session", () => {
+    const bound = selectPreviewTarget(preview, [live(web)]);
     expect(previewGatewayResolution({ _tag: "Automatic", revision: 4 }, bound, [])).toEqual({
       _tag: "Bound",
       revision: 4,
@@ -377,7 +377,6 @@ describe("gateway resolution", () => {
         workspaceId: SealantWorkspaceId.make("workspace"),
         port: 3000,
         platformSessionId: "pty",
-        starting: true,
       },
     });
     const unhandled = selectPreviewTarget(preview, [live(web, { sealantSessionId: null })]);
@@ -385,6 +384,18 @@ describe("gateway resolution", () => {
       _tag: "Refused",
       reason: "process-binding-unavailable",
     });
+  });
+  it("a starting attempt is waited on, before its process handle is recorded too", () => {
+    for (const sealantSessionId of [null, "pty"]) {
+      const starting = selectPreviewTarget(preview, [
+        live(web, { status: "starting", sealantSessionId }),
+      ]);
+      expect(previewGatewayResolution({ _tag: "Automatic", revision: 4 }, starting, [])).toEqual({
+        _tag: "Starting",
+        revision: 4,
+        attemptId: SessionProcessId.make("attempt-web"),
+      });
+    }
   });
   it("a request's start that never answered keeps its source; one that answered replaces it", () => {
     const source = ran("source", 1);

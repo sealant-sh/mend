@@ -14,6 +14,7 @@ import {
   dormant,
   type GatewayWorldOptions,
   gatewayWorld,
+  opening,
   PREVIEWS,
   rawExchange,
   send,
@@ -360,6 +361,41 @@ describe("a request to a stopped preview starts it and is held", () => {
           return answered.path;
         });
         expect(new Set(paths).size, "each request arrived as itself").toBe(100);
+      }),
+    ),
+  );
+
+  it.live("a request while the start's process is still opening joins that start", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { world } = yield* worldWithApp();
+        world.targets.resolutions.set(PREVIEWS.web.id, dormant());
+        const start = yield* gatedStarts(world);
+        const host = world.hostOf("web");
+        const first = yield* Effect.forkChild(
+          fetchAt(world.port, host, world.cookieFor("carol", "web"), "/first"),
+        );
+        yield* Deferred.await(start.asked);
+        world.targets.resolutions.set(PREVIEWS.web.id, opening("attempt-1"));
+        const second = yield* Effect.forkChild(
+          fetchAt(world.port, host, world.cookieFor("dave", "web"), "/second"),
+        );
+        yield* until(
+          "the second request read the binding",
+          () => world.targets.snapshotReads === 2,
+        );
+        yield* realDelay(100);
+        expect(second.pollUnsafe(), "the second request is held").toBeUndefined();
+        yield* start.release;
+        const replies = yield* Effect.forEach([first, second], Fiber.join);
+        expect(
+          replies.map((reply) => reply.status),
+          "both are delivered once the start ends",
+        ).toEqual([200, 200]);
+        expect(replies[1]?.body, "the second reached the app as itself").toContain(
+          '"path":"/second"',
+        );
+        expect(world.targets.starts.length, "one start for both").toBe(1);
       }),
     ),
   );

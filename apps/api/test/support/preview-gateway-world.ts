@@ -26,8 +26,11 @@ import {
   canSeeProject,
   type Preview,
   type PreviewBoundAttempt,
+  previewGatewayResolution,
   type PreviewGatewayResolution,
   type PreviewStartRequest,
+  Service,
+  SessionProcess,
   type Viewer,
 } from "@mend/domain/workbench";
 import { SealantPlatformError, SealantPrincipal } from "@mend/sealant";
@@ -114,7 +117,6 @@ export const attemptOf = (overrides: Partial<PreviewBoundAttempt> = {}): Preview
   workspaceId: WORKSPACE,
   port: APP_PORT,
   platformSessionId: PLATFORM_SESSION,
-  starting: false,
   ...overrides,
 });
 
@@ -122,6 +124,61 @@ export const bound = (
   overrides: Partial<PreviewBoundAttempt> = {},
   revision = 0,
 ): PreviewGatewayResolution => ({ _tag: "Bound", revision, attempt: attemptOf(overrides) });
+
+/**
+ * What a snapshot reads, through the domain's own rule, while a start's process is still opening:
+ * the attempt's row is recorded `starting`, its process handle not yet.
+ */
+export const opening = (attemptId: string, revision = 0): PreviewGatewayResolution => {
+  const at = new Date("2026-10-25T10:00:00Z");
+  const service = new Service({
+    id: ServiceId.make("svc-web"),
+    sessionId: SessionId.make("session-1"),
+    name: "web",
+    declarationSource: "explicit-run",
+    workspacePort: APP_PORT,
+    transport: "tcp",
+    browserScheme: "http",
+    bindAddresses: [],
+    preferredHostPort: null,
+    currentAttemptId: SessionProcessId.make(attemptId),
+    currentForwardId: null,
+    attemptHistoryComplete: true,
+    forwardHistoryComplete: true,
+    observationHistoryComplete: true,
+    createdAt: at,
+    updatedAt: at,
+  });
+  const attempt = new SessionProcess({
+    id: SessionProcessId.make(attemptId),
+    serviceId: service.id,
+    sessionId: service.sessionId,
+    sealantWorkspaceId: WORKSPACE,
+    sealantSessionId: null,
+    sealantRunId: null,
+    launchCorrelationId: null,
+    attemptOrdinal: 2,
+    kind: "service",
+    harness: null,
+    providerSessionId: null,
+    protocolOptions: null,
+    label: "web",
+    argv: ["pnpm", "dev"],
+    status: "starting",
+    exitCode: null,
+    workspacePort: APP_PORT,
+    protocol: "tcp",
+    hostPort: null,
+    createdAt: at,
+    updatedAt: at,
+    exitedAt: null,
+  });
+  return previewGatewayResolution(
+    { _tag: "Automatic", revision },
+    { _tag: "Bound", service, attempt },
+    [],
+  );
+};
 
 export const dormant = (revision = 0): PreviewGatewayResolution => ({
   _tag: "Dormant",

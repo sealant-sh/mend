@@ -295,6 +295,41 @@ describe("ensurePreviewRunning", () => {
     );
   });
 
+  it("a request while a person's start is still opening its process waits for that start", async () => {
+    const platform = servicePlatform();
+    const port = listeningPort(platform.dead);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          port.state.world = world;
+          const { engine, service, preview, session } = yield* preparePreview(world, tmp);
+          yield* engine.stopService(service.id, bySteerer);
+          const known = new Set(serviceAttempts(world, service.id).map((attempt) => attempt.id));
+          const gate = yield* Deferred.make<void>();
+          platform.gate.current = gate;
+          const before = platform.opened.length;
+          const run = yield* Effect.forkChild(
+            engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", OWNER),
+          );
+          const opening = () =>
+            serviceAttempts(world, service.id).find((attempt) => !known.has(attempt.id));
+          yield* until(() => opening() !== undefined, "the person's attempt");
+          const attempt = opening();
+          if (attempt === undefined) return yield* Effect.die("missing attempt");
+          expect(attempt.sealantSessionId, "its process is still opening").toBeNull();
+          const joined = yield* Effect.forkChild(
+            refusalOf(engine.ensurePreviewRunning(requestFor(world, preview, attempt.id))),
+          );
+          yield* Effect.sleep("200 millis");
+          yield* Deferred.succeed(gate, undefined);
+          expect(yield* Fiber.join(joined)).toEqual({ started: attempt.id });
+          yield* Fiber.join(run);
+          expect(platform.opened.length - before, "one process").toBe(1);
+        }),
+      { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
+    );
+  });
+
   it("a request's start that failed is answered as failed again, and never run a second time", async () => {
     const platform = servicePlatform();
     const port = listeningPort(platform.dead);
