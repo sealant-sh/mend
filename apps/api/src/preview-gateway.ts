@@ -1015,26 +1015,42 @@ export const makePreviewGatewayLayer = (
           }
         });
 
+      /** Closes each selected pool whose viewer the workspace no longer lends to. */
+      const recheckLending = (selected: (pool: Pool) => boolean): Effect.Effect<void> =>
+        Effect.suspend(() =>
+          Effect.forEach(
+            [...cells.values()].flatMap((cell) =>
+              [...cell.pools.values()].filter(selected).map((pool) => ({ cell, pool })),
+            ),
+            ({ cell, pool }) =>
+              asSealantUser(pool.viewerId)(
+                caller.mayAct(pool.generation.attempt.workspaceId),
+              ).pipe(Effect.catch(() => Effect.sync(() => closePool(cell, pool)))),
+            { concurrency: 4, discard: true },
+          ),
+        );
+
       const onSignal = (signal: BusSignal): Effect.Effect<void> => {
         if (signal.kind === "resync") return refreshCells([...cells.values()]);
         const { event } = signal;
-        if (event.type !== "worktree" && event.type !== "project") return Effect.void;
-        const { projectId } = event;
-        return refreshCells([...cells.values()].filter((cell) => cell.projectId === projectId));
+        switch (event.type) {
+          case "worktree":
+          case "project": {
+            const { projectId } = event;
+            return refreshCells(
+              [...cells.values()].filter((cell) => cell.projectId === projectId),
+            );
+          }
+          case "user": {
+            const { userId } = event;
+            return recheckLending((pool) => pool.viewerId === userId);
+          }
+          case "organization":
+            return recheckLending(() => true);
+          default:
+            return Effect.void;
+        }
       };
-
-      const lendingSweep = Effect.suspend(() =>
-        Effect.forEach(
-          [...cells.values()].flatMap((cell) =>
-            [...cell.pools.values()].map((pool) => ({ cell, pool })),
-          ),
-          ({ cell, pool }) =>
-            asSealantUser(pool.viewerId)(caller.mayAct(pool.generation.attempt.workspaceId)).pipe(
-              Effect.catch(() => Effect.sync(() => closePool(cell, pool))),
-            ),
-          { concurrency: 4, discard: true },
-        ),
-      );
 
       const supervised = (what: string, effect: Effect.Effect<void>) =>
         effect.pipe(
@@ -1121,7 +1137,10 @@ export const makePreviewGatewayLayer = (
         "preview gateway: a refresh failed",
         Effect.suspend(() => refreshCells([...cells.values()])),
       ).pipe(Effect.repeat(Schedule.spaced(REFRESH_EVERY)), Effect.forkScoped);
-      yield* supervised("preview gateway: a lending sweep failed", lendingSweep).pipe(
+      yield* supervised(
+        "preview gateway: a lending sweep failed",
+        recheckLending(() => true),
+      ).pipe(
         Effect.repeat(Schedule.spaced(LENDING_SWEEP_EVERY)),
         Effect.forkScoped,
       );

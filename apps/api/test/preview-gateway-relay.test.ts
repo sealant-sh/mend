@@ -715,6 +715,55 @@ describe("the preview gateway relays to the app", () => {
   );
 
   it.live(
+    "rechecks lending on a user event and closes only that viewer's upgraded socket",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { world } = yield* relayWorld();
+          const carol = yield* openEchoSocket(world, world.cookieFor("carol", "web"), "carol's");
+          const dave = yield* openEchoSocket(world, world.cookieFor("dave", "web"), "dave's");
+          world.lending.refused.add("carol");
+          world.lending.refused.add("dave");
+          yield* world.publish({
+            kind: "event",
+            event: { type: "user", userId: "carol", facet: "access" },
+            payload: "{}",
+          });
+          expect(
+            yield* Effect.promise(() => happensWithin(2_000, carol.closed)),
+            "carol's socket closes on her user event, well before the 50 s sweep",
+          ).toBe(true);
+          expect(dave.closed(), "dave's user event has not come, so his socket stays").toBe(false);
+        }),
+      ),
+    10_000,
+  );
+
+  it.live(
+    "rechecks every viewer's lending on an organization event",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { world } = yield* relayWorld();
+          const carol = yield* openEchoSocket(world, world.cookieFor("carol", "web"), "carol's");
+          const dave = yield* openEchoSocket(world, world.cookieFor("dave", "web"), "dave's");
+          world.lending.refused.add("dave");
+          yield* world.publish({
+            kind: "event",
+            event: { type: "organization", organizationId: "org-a" },
+            payload: "{}",
+          });
+          expect(
+            yield* Effect.promise(() => happensWithin(2_000, dave.closed)),
+            "dave, no longer lent to, loses his socket",
+          ).toBe(true);
+          expect(carol.closed(), "carol, still lent to, keeps hers").toBe(false);
+        }),
+      ),
+    10_000,
+  );
+
+  it.live(
     "closes an upgraded socket when the preview's attempt changes",
     () =>
       Effect.scoped(
