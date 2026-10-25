@@ -902,6 +902,64 @@ describe("ProtocolHost", () => {
     });
   }
 
+  it.live("carries words for an ended turn at once while a partial tail holds steers", () => {
+    const world = makeConversationWorld();
+    const ended = world.seed("ended");
+    world.turns.set(
+      ended.id,
+      new AgentTurn({ ...ended, status: "completed", providerTurnId: "turn-a", endedAt: now() }),
+    );
+    const queued = world.seed("queued");
+    const peer = makePipe([], { start: () => Promise.resolve() });
+    peer.push({ id: "earlier", result: {} });
+    peer.pushRaw('{"id":"bef');
+    const starts = () => peer.written.filter((request) => request.method === "turn/start");
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* rehydrateCodex(host, peer.pipe, 1n);
+      const steering = yield* host
+        .steerTurn({ turnId: ended.id, sender: "user-1", input: "after it ended" })
+        .pipe(Effect.forkChild);
+      yield* waitUntil(() => starts().length === 1);
+      expect(world.turns.get(queued.id)?.status).toBe("running");
+      const receipt = yield* Fiber.join(steering).pipe(Effect.timeout("1 second"));
+      expect(receipt.delivery).toEqual({
+        _tag: "Queued",
+        turnId: receipt.queuedTurnId,
+        reason: "turn-ended",
+      });
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("queues a steer whose rehydrated process never finishes its last record", () => {
+    const world = makeConversationWorld();
+    const target = world.seed("target");
+    world.turns.set(
+      target.id,
+      new AgentTurn({ ...target, status: "running", providerTurnId: "turn-a", startedAt: now() }),
+    );
+    const peer = makePipe([]);
+    peer.push({ id: "earlier", result: {} });
+    peer.pushRaw('{"id":"bef');
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* rehydrateCodex(host, peer.pipe, 1n);
+      const steering = yield* host
+        .steerTurn({ turnId: target.id, sender: "user-1", input: "while replaying" })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("10 seconds");
+      const receipt = yield* Fiber.join(steering);
+      expect(receipt.delivery).toEqual({
+        _tag: "Queued",
+        turnId: receipt.queuedTurnId,
+        reason: "replaying",
+      });
+      expect(peer.written.filter((request) => request.method === "turn/steer")).toEqual([]);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
   it.effect(
     "saves exact steer text, acknowledges the expected turn, and deduplicates retries",
     () => {

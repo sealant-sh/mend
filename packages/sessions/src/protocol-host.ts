@@ -36,7 +36,7 @@ import {
 } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession } from "@sealant/sdk";
-import { Clock, Deferred, Effect, Fiber, Layer, Schema, Scope, Stream } from "effect";
+import { Clock, Deferred, Effect, Fiber, Layer, Option, Schema, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
@@ -149,6 +149,9 @@ export const INTERRUPTED_BY_HAND_OVER = "interrupted by the hand-over";
 /** How often a waiting turn looks at the process it waits for. */
 const WAIT_POLL = "250 millis";
 
+/** How long a steer waits for a rehydrated process's replay before its words become a turn. */
+const STEER_READY_WAIT = "5 seconds";
+
 /**
  * The quiescence a waiting turn acts on: a session cron, or work the harness would not say anything
  * about, is waited for at most its bound from when this wait first saw it (review of mend#572, P3-2
@@ -184,6 +187,10 @@ interface WaitOutcome {
   readonly endedCrons: number;
 }
 const WAIT_ABANDONED: WaitOutcome = { outcome: "abandoned", endedCrons: 0 };
+
+type SteerTarget =
+  | { readonly _tag: "Carry"; readonly reason: TurnSteerQueueReason }
+  | { readonly _tag: "Running"; readonly turn: AgentTurn; readonly entry: HostedProcess };
 
 /** Options needed to initialize a protocol adapter after the pipe process starts. */
 export interface AttachProtocolProcessInput {
@@ -1136,37 +1143,53 @@ export const ProtocolHostLive: Layer.Layer<
       return receipt;
     });
 
-    const deliverSteer = Effect.fn("ProtocolHost.deliverSteer")(function* (
+    /** The running turn a steer can reach on `entry`, or why its words become the next turn. */
+    const steerTarget = (
       steer: AgentTurnSteer,
       entry: HostedProcess | undefined,
+    ): Effect.Effect<SteerTarget> =>
+      conversations.byTurnId(steer.turnId).pipe(
+        Effect.map((turn): SteerTarget => {
+          if (turn === null || turn.status !== "running") {
+            return {
+              _tag: "Carry",
+              reason: turn?.status === "queued" ? "not-running" : "turn-ended",
+            };
+          }
+          if (
+            entry === undefined ||
+            entry.stopping ||
+            entry.handingOverTo !== null ||
+            hosted.get(entry.process.id) !== entry ||
+            turn.processId !== entry.process.id
+          ) {
+            return { _tag: "Carry", reason: "not-running" };
+          }
+          return { _tag: "Running", turn, entry };
+        }),
+      );
+
+    const sendSteer = Effect.fn("ProtocolHost.sendSteer")(function* (
+      steer: AgentTurnSteer,
+      entry: HostedProcess,
     ) {
-      if (entry !== undefined && entry.steerGate !== null) yield* Deferred.await(entry.steerGate);
       let turn = yield* conversations.byTurnId(steer.turnId);
       for (
         let attempt = 0;
         turn?.status === "running" && turn.providerTurnId === null && attempt < 60;
         attempt += 1
       ) {
-        if (entry === undefined || entry.stopping || hosted.get(entry.process.id) !== entry) break;
+        if (entry.stopping || hosted.get(entry.process.id) !== entry) break;
         yield* Effect.sleep("50 millis");
         turn = yield* conversations.byTurnId(steer.turnId);
       }
-      if (turn === null || turn.status !== "running") {
-        return yield* carrySteer(steer, turn?.status === "queued" ? "not-running" : "turn-ended");
-      }
-      if (
-        entry === undefined ||
-        entry.stopping ||
-        entry.handingOverTo !== null ||
-        hosted.get(entry.process.id) !== entry ||
-        turn.processId !== entry.process.id
-      ) {
-        return yield* carrySteer(steer, "not-running");
-      }
-      if (turn.providerTurnId === null) return yield* carrySteer(steer, "not-acknowledged");
+      const target = yield* steerTarget(steer, entry);
+      if (target._tag === "Carry") return yield* carrySteer(steer, target.reason);
+      const providerTurnId = target.turn.providerTurnId;
+      if (providerTurnId === null) return yield* carrySteer(steer, "not-acknowledged");
       if (!entry.adapter.activeSteering.supported) return yield* carrySteer(steer, "unsupported");
       const result = yield* entry.adapter
-        .steer({ id: steer.id, expectedTurnId: turn.providerTurnId, input: steer.input })
+        .steer({ id: steer.id, expectedTurnId: providerTurnId, input: steer.input })
         .pipe(Effect.result);
       if (result._tag === "Success") {
         return yield* conversations.settleTurnSteer(steer.id, {
@@ -1184,6 +1207,37 @@ export const ProtocolHostLive: Layer.Layer<
         _tag: "Unknown",
         reason: "uncertain",
       });
+    });
+
+    const deliverSteer = Effect.fn("ProtocolHost.deliverSteer")(function* (
+      steer: AgentTurnSteer,
+      entry: HostedProcess | undefined,
+    ) {
+      // An ended or queued target needs nothing from the adapter: its words are carried at once.
+      let target = yield* steerTarget(steer, entry);
+      if (target._tag === "Carry") return yield* carrySteer(steer, target.reason);
+      const gate = target.entry.steerGate;
+      if (gate !== null) {
+        // Replay must be projected before the adapter's state is the harness's present. Nothing
+        // is reserved while it waits, so dispatch goes on behind a record that never completes.
+        const ready = yield* Deferred.await(gate).pipe(Effect.timeoutOption(STEER_READY_WAIT));
+        if (Option.isNone(ready)) return yield* carrySteer(steer, "replaying");
+        target = yield* steerTarget(steer, entry);
+        if (target._tag === "Carry") return yield* carrySteer(steer, target.reason);
+      }
+      const running = target.entry;
+      return yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          running.controls += 1;
+        }),
+        () => sendSteer(steer, running),
+        () =>
+          Effect.gen(function* () {
+            running.controls -= 1;
+            if (hosted.get(running.process.id) === running)
+              yield* Effect.forkIn(dispatchNext(running), scope);
+          }),
+      );
     });
 
     const steerTurn = Effect.fn("ProtocolHost.steerTurn")(function* (input: SteerTurnInput) {
@@ -1226,19 +1280,7 @@ export const ProtocolHostLive: Layer.Layer<
         return admitted.created ? yield* deliverSteer(admitted.steer, entry) : admitted.steer;
       });
       const fiber = yield* Effect.forkIn(
-        Effect.acquireUseRelease(
-          Effect.sync(() => {
-            if (entry !== undefined) entry.controls += 1;
-          }),
-          () => (entry === undefined ? attempt : entry.steerPermit.withPermit(attempt)),
-          () =>
-            Effect.gen(function* () {
-              if (entry === undefined) return;
-              entry.controls -= 1;
-              if (hosted.get(entry.process.id) === entry)
-                yield* Effect.forkIn(dispatchNext(entry), scope);
-            }),
-        ),
+        entry === undefined ? attempt : entry.steerPermit.withPermit(attempt),
         scope,
       );
       return yield* Fiber.join(fiber);

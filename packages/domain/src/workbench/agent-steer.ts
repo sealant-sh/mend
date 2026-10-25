@@ -18,6 +18,7 @@ export const TurnSteerQueueReason = Schema.Literals([
   "turn-ended",
   "not-acknowledged",
   "not-running",
+  "replaying",
 ]);
 export type TurnSteerQueueReason = typeof TurnSteerQueueReason.Type;
 
