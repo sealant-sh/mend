@@ -137,7 +137,90 @@ export const readGrantCookie = (
   return value !== undefined && isPreviewGrantSecret(value) ? Redacted.make(value) : null;
 };
 
-export const withoutGrantCookies = (headers: ReadonlyArray<string>): string | null => {
-  const kept = cookiePairs(headers).filter((cookie) => !isGrantCookieName(cookie.name));
-  return kept.length === 0 ? null : kept.map((cookie) => cookie.pair).join("; ");
+/**
+ * How application cookies cross the gateway. A host per preview isolates them already. Tailnet
+ * previews share one host on different ports and cookies ignore the port, so each preview's
+ * HttpOnly cookies travel in its own namespace (docs/adr/0017, decision 6).
+ */
+export type CookiePolicy =
+  | { readonly mode: "host-per-preview" }
+  | { readonly mode: "tailnet-ports"; readonly label: PreviewLabel };
+
+export const cookiePolicyOf = (
+  routing: PreviewRouting,
+  preview: { readonly label: PreviewLabel },
+): CookiePolicy =>
+  routing.mode === "tailnet-https"
+    ? { mode: "tailnet-ports", label: preview.label }
+    : { mode: "host-per-preview" };
+
+const securityPrefixOf = (name: string) => /^__(?:host|secure)-/i.exec(name)?.[0] ?? "";
+
+/** `__Host-` and `__Secure-` only mean something as the first characters, so they stay first. */
+export const namespacedCookieName = (label: PreviewLabel, name: string): string => {
+  const prefix = securityPrefixOf(name);
+  return `${prefix}p-${label}.${name.slice(prefix.length)}`;
+};
+
+export type CookieNamespace =
+  | { readonly _tag: "Plain" }
+  | { readonly _tag: "Own"; readonly name: string }
+  | { readonly _tag: "Foreign" };
+
+export const cookieNamespaceOf = (label: PreviewLabel, wireName: string): CookieNamespace => {
+  const prefix = securityPrefixOf(wireName);
+  const rest = wireName.slice(prefix.length);
+  const namespace = /^p-([^.]*)\./.exec(rest);
+  if (namespace === null || !isLabel(namespace[1])) return { _tag: "Plain" };
+  return namespace[1] === label
+    ? { _tag: "Own", name: `${prefix}${rest.slice(namespace[0].length)}` }
+    : { _tag: "Foreign" };
+};
+
+/**
+ * The `Cookie` header the application receives, or none. A request carries no HttpOnly bit, so on
+ * a tailnet unprefixed cookies pass as the JavaScript cookies the ADR leaves unisolated.
+ */
+export const appCookieHeader = (
+  headers: ReadonlyArray<string>,
+  policy: CookiePolicy,
+): string | null => {
+  const kept = cookiePairs(headers).flatMap((cookie) => {
+    if (isGrantCookieName(cookie.name)) return [];
+    if (policy.mode === "host-per-preview") return [cookie.pair];
+    const read = cookieNamespaceOf(policy.label, cookie.name);
+    switch (read._tag) {
+      case "Plain":
+        return [cookie.pair];
+      case "Foreign":
+        return [];
+      case "Own":
+        return isGrantCookieName(read.name) ? [] : [`${read.name}=${cookie.value ?? ""}`];
+    }
+  });
+  return kept.length === 0 ? null : kept.join("; ");
+};
+
+const attributeName = (attribute: string) => (attribute.split("=")[0] ?? "").trim().toLowerCase();
+
+/**
+ * One application `Set-Cookie` as the browser may store it, or null to drop it. Never split a
+ * header list on commas: `Expires` contains one.
+ */
+export const appSetCookie = (raw: string, policy: CookiePolicy): string | null => {
+  const [pair = "", ...attributes] = raw.split(";");
+  const equals = pair.indexOf("=");
+  const name = equals === -1 ? "" : pair.slice(0, equals).trim();
+  if (name === "" || isGrantCookieName(name)) return null;
+  const kept = attributes
+    .map((attribute) => attribute.trim())
+    .filter((attribute) => attribute !== "" && attributeName(attribute) !== "domain");
+  const cookie = (wireName: string) =>
+    [`${wireName}=${pair.slice(equals + 1).trim()}`, ...kept].join("; ");
+  if (policy.mode === "host-per-preview") return cookie(name);
+  if (kept.some((attribute) => attributeName(attribute) === "httponly")) {
+    return cookie(namespacedCookieName(policy.label, name));
+  }
+  // A script-visible cookie named like a namespace would arrive at that preview as its own.
+  return cookieNamespaceOf(policy.label, name)._tag === "Plain" ? cookie(name) : null;
 };
