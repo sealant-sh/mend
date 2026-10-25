@@ -240,6 +240,7 @@ export const sealantDeadLayer = Layer.succeed(SealantClient, {
   waitRun: () => Effect.die("not in test"),
   openSession: () => Effect.die("not in test"),
   forward: () => Effect.die("not in test"),
+  openForward: () => Effect.die("not in test"),
   stopWorkspace: () => Effect.die("not in test"),
   captureFlush: () => Effect.die("not in test"),
   captureStatus: () => Effect.succeed(null),
@@ -687,6 +688,7 @@ export const sealantLaunchLayer = (
             ),
           ),
     forward: () => Effect.die("not in test"),
+    openForward: () => Effect.die("not in test"),
     stopWorkspace: (target, options) =>
       (captureOps?.aroundStop?.() ?? Effect.void).pipe(
         Effect.andThen(

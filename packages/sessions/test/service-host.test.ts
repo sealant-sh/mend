@@ -165,6 +165,7 @@ const sealantFakeLayer = Layer.succeed(SealantClient, {
   waitRun: () => Effect.die("not in test"),
   openSession: () => Effect.die("not in test"),
   forward: (workspace, port) => Effect.promise(() => workspace.forward(port)),
+  openForward: () => Effect.die("not in test"),
   stopWorkspace: () => Effect.die("not in test"),
   captureFlush: () => Effect.die("not in test"),
   captureStatus: () => Effect.succeed(null),

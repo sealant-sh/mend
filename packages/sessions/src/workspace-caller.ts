@@ -344,6 +344,8 @@ export const byWorkspaceCreator = (
     exec: (workspace, argv, options) => act(workspace.id)(client.exec(workspace, argv, options)),
     forward: (workspace, port, host, protocol) =>
       act(workspace.id)(client.forward(workspace, port, host, protocol)),
+    openForward: (workspace, port, destination, options) =>
+      act(workspace.id)(client.openForward(workspace, port, destination, options)),
     bindWorkspace: (workspace, options) =>
       act(workspace.id)(client.bindWorkspace(workspace, options)),
     captureReplan: (workspace, options) =>
