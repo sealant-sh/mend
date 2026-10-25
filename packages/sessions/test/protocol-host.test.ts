@@ -102,6 +102,7 @@ const makeConversationWorld = () => {
   };
   const requeued = Effect.runSync(Deferred.make<void>());
   const items = new Map<string, AgentItem>();
+  const cancelSweeps: Array<AgentTurnId> = [];
   const steerStore = makeSteerStore(turns, () => admission.stopping);
   const layer = Layer.succeed(AgentConversationRepo, {
     ...steerStore,
@@ -207,7 +208,7 @@ const makeConversationWorld = () => {
             const turn = [...turns.values()].find(
               (candidate) => candidate.providerTurnId === providerTurnId,
             );
-            return turn === undefined || (turn.status !== "running" && turn.status !== "queued")
+            return turn === undefined
               ? null
               : update(turn.id, { status, usage, error, endedAt: now() });
           }),
@@ -248,6 +249,7 @@ const makeConversationWorld = () => {
     resolveProviderRequest: () => Effect.void,
     cancelOpenForTurn: (turnId) =>
       Effect.sync(() => {
+        cancelSweeps.push(turnId);
         const turn = turns.get(turnId);
         if (turn !== undefined && turn.status === "queued") {
           update(turnId, { status: "cancelled", endedAt: now() });
@@ -260,7 +262,7 @@ const makeConversationWorld = () => {
     requeueQueuedTurns: () => Effect.void,
     saveProtocolCursor: () => Effect.void,
   });
-  return { layer, turns, items, seed, admission, steerStore, requeued };
+  return { layer, turns, items, seed, admission, steerStore, requeued, cancelSweeps };
 };
 
 const processesLayer = (rows: ReadonlyArray<SessionProcess> = [agentProcess]) =>
@@ -1355,10 +1357,10 @@ describe("ProtocolHost", () => {
     },
   );
 
-  it.effect("preserves the first completion when the provider output repeats it", () => {
+  it.effect("sweeps a replayed completion's requests again in a session that never steers", () => {
     const world = makeConversationWorld();
     const turn = world.seed("start");
-    const peer = makePipe(["native", "next-native"]);
+    const peer = makePipe(["native"]);
     const completions: Array<AgentTurn> = [];
     return Effect.gen(function* () {
       const host = yield* ProtocolHost;
@@ -1376,18 +1378,16 @@ describe("ProtocolHost", () => {
             }),
         },
       });
-      const event = {
+      const completed = (status: string) => ({
         method: "turn/completed",
-        params: { threadId: "thread-1", turn: { id: "native", status: "completed" } },
-      };
-      peer.push(event);
+        params: { threadId: "thread-1", turn: { id: "native", status } },
+      });
+      peer.push(completed("interrupted"));
       yield* waitUntil(() => completions.length === 1);
-      const ended = world.turns.get(turn.id);
-      peer.push(event);
-      const next = yield* host.submitTurn(sessionId, "after replay", "user-1");
-      expect(world.turns.get(next.id)?.providerTurnId).toBe("next-native");
-      expect(world.turns.get(turn.id)).toEqual(ended);
-      expect(completions).toHaveLength(1);
+      peer.push(completed("completed"));
+      yield* waitUntil(() => completions.length === 2);
+      expect(completions.map((ended) => ended.status)).toEqual(["interrupted", "completed"]);
+      expect(world.cancelSweeps).toEqual([turn.id, turn.id]);
       yield* host.detach(processId);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });

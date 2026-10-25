@@ -1160,11 +1160,7 @@ export const AgentConversationRepoLive: Layer.Layer<
         .update(agentTurns)
         .set({ status, usage, error, endedAt: yield* DateTime.nowAsDate })
         .where(
-          and(
-            eq(agentTurns.sessionId, sessionId),
-            eq(agentTurns.providerTurnId, providerTurnId),
-            inArray(agentTurns.status, ["queued", "running"]),
-          ),
+          and(eq(agentTurns.sessionId, sessionId), eq(agentTurns.providerTurnId, providerTurnId)),
         )
         .returning()
         .pipe(Effect.orDie);

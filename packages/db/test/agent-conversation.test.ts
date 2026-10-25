@@ -486,10 +486,7 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
           { concurrency: "unbounded" },
         );
         expect(racing.created).toBe(true);
-        expect(
-          yield* repo.completeTurn("native", session, "failed", null, "late replay"),
-        ).toBeNull();
-        expect(yield* repo.byTurnId(turn.id)).toEqual(completed);
+        expect(completed?.status).toBe("completed");
         const after = yield* repo.admitTurnSteer({
           turnId: turn.id,
           author: "user-1",
@@ -519,6 +516,28 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
         });
         const correlated = yield* repo.byLaunchCorrelation(session, `steer:${after.steer.id}`);
         expect(correlated?.id).toBe(carried.queuedTurnId);
+      }),
+    );
+  });
+
+  it("completes an ended turn again on a replayed or late completion, keeping its usage", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const { session, turn } = yield* runningTurn;
+        const stopped = yield* repo.completeTurn("native", session, "interrupted", null, "stopped");
+        expect(stopped?.status).toBe("interrupted");
+        const usage = {
+          inputTokens: 12,
+          outputTokens: 3,
+          cachedInputTokens: null,
+          totalTokens: 15,
+          contextWindow: null,
+        };
+        const late = yield* repo.completeTurn("native", session, "completed", usage, null);
+        expect(late).toMatchObject({ id: turn.id, status: "completed", usage, error: null });
+        const replayed = yield* repo.completeTurn("native", session, "completed", usage, null);
+        expect(replayed).toMatchObject({ id: turn.id, status: "completed", usage });
       }),
     );
   });
