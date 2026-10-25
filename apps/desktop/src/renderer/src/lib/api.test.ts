@@ -4,6 +4,7 @@ import {
   ApiError,
   connectAccount,
   createSession,
+  getSealantIdentity,
   landSession,
   processLogPage,
   processOutput,
@@ -194,5 +195,55 @@ describe("a refused call", () => {
       "Mend could not do that. Try again; the server log has the detail.",
     );
     warn.mockRestore();
+  });
+});
+
+const served = (accounts: ReadonlyArray<Record<string, unknown>>) =>
+  Object.defineProperty(window, "mend", {
+    configurable: true,
+    value: bridgeFixture(async () => ({
+      status: 200,
+      ok: true,
+      body: {
+        sealantUserId: "su-me",
+        accounts: accounts.map((account) => ({
+          id: `account-${String(account["name"])}`,
+          provider: "claude",
+          kind: "oauth-token",
+          status: "active",
+          metadata: {},
+          connectedAt: "2026-09-18T00:00:00.000Z",
+          updatedAt: "2026-09-18T00:00:00.000Z",
+          lastUsedAt: null,
+          ...account,
+        })),
+      },
+    })),
+  });
+
+describe("desktop connected accounts", () => {
+  beforeEach(() => {
+    Reflect.deleteProperty(window, "mend");
+  });
+
+  it("takes the account named default from a Mend server that sends no isDefault", async () => {
+    served([{ name: "default" }, { name: "work" }]);
+    const identity = await getSealantIdentity();
+    expect(identity.accounts.map((account) => [account.name, account.isDefault])).toEqual([
+      ["default", true],
+      ["work", false],
+    ]);
+  });
+
+  it("keeps what a newer server says, false included", async () => {
+    served([
+      { name: "default", isDefault: false },
+      { name: "work", isDefault: true },
+    ]);
+    const identity = await getSealantIdentity();
+    expect(identity.accounts.map((account) => [account.name, account.isDefault])).toEqual([
+      ["default", false],
+      ["work", true],
+    ]);
   });
 });

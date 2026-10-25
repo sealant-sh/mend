@@ -208,6 +208,7 @@ export const moveIssue = (id: string, stage: "triage" | "queued", position: numb
 export const connectAccount = (input: {
   readonly provider: ConnectedAccountProviderDto;
   readonly secret: string;
+  readonly accountId?: string;
 }) => orLogin(trpcClient.platform.connectAccount.mutate(input));
 export const disconnectAccount = (id: string) =>
   orLogin(trpcClient.platform.disconnectAccount.mutate({ id }));

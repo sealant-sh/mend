@@ -225,8 +225,8 @@ describe("GET /ws", () => {
           ],
         ]);
 
-        // The account sessions use is `default` (R650-1): an active backup by another name does
-        // not make an invalid or missing default a working login.
+        // The account sessions use is the chosen default (R650-1): another active account does
+        // not make an invalid or unchosen default a working login.
         mend.setAccounts([
           { provider: "claude", status: "active" },
           { provider: "codex", status: "invalid" },
@@ -246,7 +246,42 @@ describe("GET /ws", () => {
           "codex",
           "warning",
           "unauthenticated",
-          "Mend holds no default Codex login of yours, the one sessions use (only others by name). Connect one with mend connect codex.",
+          "No Codex login chosen: Mend holds 1 of yours, and sessions use only the chosen one. Connect Codex again to choose it: run mend connect codex, or Connect in Settings → Connected accounts.",
+        ]);
+        mend.setAccounts([
+          { provider: "claude", status: "active" },
+          { provider: "codex", status: "active", name: "work", isDefault: false },
+          { provider: "codex", status: "active", name: "home", isDefault: false },
+        ]);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({}))[1], [
+          "codex",
+          "warning",
+          "unauthenticated",
+          "No Codex login chosen: Mend holds 2 of yours, and sessions use only the chosen one. Remove the others with mend connect codex --remove <name>, or Disconnect them in Settings → Connected accounts, then connect the one left again to choose it.",
+        ]);
+        mend.setAccounts([
+          { provider: "claude", status: "active", servedByOlderMend: true },
+          { provider: "codex", status: "active", name: "backup", servedByOlderMend: true },
+        ]);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
+          ["claudeAgent", "ready", "authenticated", null],
+          [
+            "codex",
+            "warning",
+            "unauthenticated",
+            "No Codex login chosen: Mend holds 1 of yours, and sessions use only the chosen one. Connect Codex again to choose it: run mend connect codex, or Connect in Settings → Connected accounts.",
+          ],
+        ]);
+        mend.setAccounts([
+          { provider: "claude", status: "active" },
+          { provider: "codex", status: "invalid", name: "default", isDefault: false },
+          { provider: "codex", status: "active", name: "work", isDefault: true },
+        ]);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({}))[1], [
+          "codex",
+          "ready",
+          "authenticated",
+          null,
         ]);
 
         // Active but observed expired with its refresh failed (R650-2): not known to work.

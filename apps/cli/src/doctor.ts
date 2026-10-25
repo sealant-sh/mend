@@ -6,6 +6,9 @@ import {
   claudeGrantFacts,
   HOST_USER_NAMESPACES_REFUSED,
   hostUserNamespacesFixLine,
+  isChosenDefault,
+  loginChoiceOf,
+  unchosenLoginSummary,
 } from "@mend/domain/workbench";
 
 import {
@@ -244,13 +247,16 @@ interface ConnectionDto {
 interface AccountDto {
   readonly provider: Provider;
   readonly name: string;
+  readonly isDefault: boolean;
   readonly status: string;
   readonly metadata: Readonly<Record<string, unknown>>;
 }
 
-interface IdentityDto {
+interface SealantIdentityWire {
   readonly sealantUserId: string;
-  readonly accounts: ReadonlyArray<AccountDto>;
+  readonly accounts: ReadonlyArray<
+    Omit<AccountDto, "isDefault"> & { readonly isDefault?: boolean | undefined }
+  >;
 }
 
 interface MachineDto {
@@ -535,17 +541,19 @@ export const runChecks = async (
     });
   }
 
-  const identity = signedIn ? await getJson<IdentityDto>(config, "/me/sealant") : null;
-  const platform = identity === null ? null : identity.value;
+  const identity = signedIn ? await getJson<SealantIdentityWire>(config, "/me/sealant") : null;
+  const accounts: ReadonlyArray<AccountDto> | null =
+    identity?.value?.accounts.map((account) => ({
+      ...account,
+      isDefault: isChosenDefault(account),
+    })) ?? null;
   for (const { provider } of HARNESS_CLIS) {
-    if (platform === null) {
+    if (accounts === null) {
       checks.push(notChecked(provider));
       continue;
     }
-    const account =
-      platform.accounts.find((row) => row.provider === provider && row.name === "default") ??
-      platform.accounts.find((row) => row.provider === provider);
-    if (account === undefined) {
+    const choice = loginChoiceOf(accounts, provider);
+    if (choice._tag === "none") {
       checks.push({
         label: provider,
         state: "todo",
@@ -554,6 +562,17 @@ export const runChecks = async (
       });
       continue;
     }
+    if (choice._tag === "unchosen") {
+      const summary = unchosenLoginSummary(provider, choice.accounts.length);
+      checks.push({
+        label: provider,
+        state: "todo",
+        detail: `${summary.words} · ${summary.count} connected`,
+        fix: summary.firstCommand,
+      });
+      continue;
+    }
+    const account = choice.account;
     const who = identityOf(account);
     checks.push(
       account.status === "active"

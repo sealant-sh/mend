@@ -25,7 +25,10 @@ import { ProjectId, SessionId, type OrganizationId } from "@mend/domain";
 import {
   changeOwnerOf,
   currentAgentProcess,
+  isCredentialProvider,
   isLiveProcess,
+  loginChoiceOf,
+  unchosenLoginSummary,
   type AgentTurn,
   type Project,
   type RequestIntent,
@@ -928,9 +931,9 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
     };
 
     /**
-     * Why the owner cannot run this harness, or null. A harness needs the owner's own connected
-     * account named `default`, as the engine asks for it; a platform that does not answer is left
-     * to the launch, which reports its own failure.
+     * Why the owner cannot run this harness, or null. A harness needs the owner's own chosen
+     * default account, as the engine asks for it; a platform that does not answer is left to the
+     * launch, which reports its own failure.
      */
     const credentialProblem = (userId: string, harness: string) =>
       CREDENTIALED_HARNESSES.has(harness)
@@ -938,16 +941,15 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
             .connectedAccounts(userId)
             .list()
             .pipe(
-              Effect.map((accounts) =>
-                accounts.some(
-                  (account) =>
-                    account.provider === harness &&
-                    account.name === "default" &&
-                    account.status === "active",
-                )
-                  ? null
-                  : `no active ${harness} account is connected to your Mend account · connect one in Mend under Settings → Connected accounts`,
-              ),
+              Effect.map((accounts) => {
+                const choice = loginChoiceOf(accounts, harness);
+                if (choice._tag === "chosen" && choice.account.status === "active") return null;
+                if (choice._tag === "unchosen" && isCredentialProvider(harness)) {
+                  const summary = unchosenLoginSummary(harness, choice.accounts.length);
+                  return `${summary.wordsAndSessionUse} ${summary.remedy}`;
+                }
+                return `no active ${harness} account is connected to your Mend account · connect one in Mend under Settings → Connected accounts`;
+              }),
               Effect.catch(() => Effect.succeed(null)),
             )
         : Effect.succeed(null);

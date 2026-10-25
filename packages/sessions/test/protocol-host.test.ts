@@ -518,13 +518,11 @@ describe("ProtocolHost", () => {
       expect(world.turns.get(first.id)?.error).toContain("model unavailable");
       expect(world.turns.get(second.id)?.status).toBe("running");
       expect(completed).toEqual([first.id]);
-      // The accepted turn records the login it ran on: the one the workspace launched with, its
-      // account named and its id unknown. A turn the harness refused ran on nobody's.
       expect(world.turns.get(second.id)).toMatchObject({
         author: "user-1",
         billedUserId: "owner-1",
         billedAccountId: null,
-        billedAccountName: "default",
+        billedAccountName: null,
       });
       expect(world.turns.get(first.id)?.billedUserId).toBeNull();
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
@@ -685,7 +683,7 @@ describe("ProtocolHost", () => {
           input: 'Dynamic workflow "two tiny agents" completed',
           // Nobody sent it; it ran on the login the workspace holds.
           billedUserId: "owner-1",
-          billedAccountName: "default",
+          billedAccountName: null,
         });
         claude.push({
           type: "assistant",

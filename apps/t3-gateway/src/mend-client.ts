@@ -1,3 +1,4 @@
+import { isChosenDefault } from "@mend/domain/default-login";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as HttpClient from "effect/http/HttpClient";
@@ -85,19 +86,20 @@ const decodeBranches = Schema.decodeUnknownEffect(Schema.Array(MendBranch));
 
 /**
  * The person's connected accounts, from `GET /api/me/sealant` (`SealantIdentity` in
- * @mend/api-contracts): which provider each is for, its name (sessions use `default`), its status,
- * and its non-secret metadata (expiries in epoch milliseconds, the last refresh's outcome). Mend
- * never returns secret material here.
+ * @mend/api-contracts). Mend never returns secret material here.
  */
-const MendConnectedAccount = Schema.Struct({
+const MendConnectedAccountWire = Schema.Struct({
   provider: Schema.String,
   name: Schema.String,
+  isDefault: Schema.optional(Schema.Boolean),
   status: Schema.String,
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 });
-export type MendConnectedAccount = typeof MendConnectedAccount.Type;
+export type MendConnectedAccount = Omit<typeof MendConnectedAccountWire.Type, "isDefault"> & {
+  readonly isDefault: boolean;
+};
 const decodeConnectedAccounts = Schema.decodeUnknownEffect(
-  Schema.Struct({ accounts: Schema.Array(MendConnectedAccount) }),
+  Schema.Struct({ accounts: Schema.Array(MendConnectedAccountWire) }),
 );
 
 /** Mend refused the pairing code: unknown, or already claimed or expired. */
@@ -668,7 +670,14 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         }
         const body = yield* readJson(operation, response);
         return yield* decodeConnectedAccounts(body).pipe(
-          Effect.map((identity) => identity.accounts),
+          Effect.map((identity) =>
+            identity.accounts.map(
+              (account): MendConnectedAccount => ({
+                ...account,
+                isDefault: isChosenDefault(account),
+              }),
+            ),
+          ),
           Effect.mapError(
             (cause) => new MendUnavailable({ operation, status: response.status, cause }),
           ),

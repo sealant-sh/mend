@@ -98,6 +98,7 @@ import {
   launchBuildingWords,
   leaseWaitWords,
   reservedSecretFileRoot,
+  unchosenLoginSummary,
   withoutLaunchPhase,
 } from "@mend/domain/workbench";
 import {
@@ -19057,16 +19058,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if ((activeLogins.get(key) ?? 0) > now) return null;
         const login = yield* personPlatform.loginOf(sender, provider);
         const name = provider === "claude" ? "Claude" : "Codex";
-        switch (login) {
+        switch (login._tag) {
           case "active":
             activeLogins.set(key, now + ACTIVE_LOGIN_TTL_MS);
             return null;
+          case "unchosen": {
+            const summary = unchosenLoginSummary(provider, login.count);
+            return `${summary.wordsAndSessionUse} ${summary.remedy}`;
+          }
           case "missing":
             return `Connect ${name} to steer this session. ${connectWay(provider)}`;
           case "invalid":
             return `Your ${name} login needs reconnecting. Reconnect ${name} to steer this session. ${connectWay(provider)}`;
-          case "unknown":
-            // Core could not be asked: the hand-over's own write refuses a login that is not there.
+          case "unreachable":
+            // The hand-over's own write refuses a login that is not there.
             return null;
         }
       });

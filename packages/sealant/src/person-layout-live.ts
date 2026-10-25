@@ -7,6 +7,7 @@
  * answers from Mend's own table.
  */
 import type { WorkspaceImage } from "@mend/domain";
+import { loginChoiceOf } from "@mend/domain/default-login";
 import type {
   CreateOptions,
   Harness,
@@ -26,6 +27,7 @@ import {
   LOGIN_PROVIDERS,
   type LoginProvider,
   PersonLayoutPlatform,
+  type PersonLogin,
   UNKNOWN_IMAGE_REPORT,
 } from "./person-layout.ts";
 
@@ -405,17 +407,18 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
             .connectedAccounts(accountId)
             .list()
             .pipe(
-              Effect.map((accounts) => {
-                const account = accounts.find(
-                  (candidate) =>
-                    candidate.provider === provider &&
-                    candidate.name === "default" &&
-                    candidate.status !== "archived",
-                );
-                if (account === undefined) return "missing" as const;
-                return account.status === "active" ? ("active" as const) : ("invalid" as const);
+              Effect.map((accounts): PersonLogin => {
+                const choice = loginChoiceOf(accounts, provider);
+                switch (choice._tag) {
+                  case "none":
+                    return { _tag: "missing" };
+                  case "unchosen":
+                    return { _tag: "unchosen", count: choice.accounts.length };
+                  case "chosen":
+                    return { _tag: choice.account.status === "active" ? "active" : "invalid" };
+                }
               }),
-              Effect.orElseSucceed(() => "unknown" as const),
+              Effect.orElseSucceed((): PersonLogin => ({ _tag: "unreachable" })),
             ),
         sealantUserOf: (accountId) => clients.sealantUserId(accountId),
         listCredentials: Effect.fn("PersonLayoutPlatform.listCredentials")(function* (workspace) {

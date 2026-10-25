@@ -1,4 +1,9 @@
 import {
+  isCredentialProvider,
+  loginChoiceOf,
+  unchosenLoginSummary,
+} from "@mend/domain/default-login";
+import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ExecutionEnvironmentDescriptor,
@@ -192,14 +197,12 @@ export type Login =
   | { readonly kind: "signed-in" }
   /** No usable login: none, or Mend's marks it invalid or archived. `reason` says which. */
   | { readonly kind: "none"; readonly reason: string }
+  | { readonly kind: "unchosen"; readonly reason: string }
   /** Held, but observed expired or failing to refresh: whether it works is not known. */
   | { readonly kind: "unsure"; readonly reason: string };
 
 /** Each served harness's login, or null when the gateway could not read them. */
 export type PersonLogins = ReadonlyMap<string, Login> | null;
-
-/** The account Mend's sessions use for a harness: the one named `default` (review R650-1). */
-export const SESSION_ACCOUNT = "default";
 
 /** An epoch in milliseconds as an ISO time. */
 const at = (epoch: number) => new Date(epoch).toISOString();
@@ -210,11 +213,10 @@ const numberAt = (metadata: Readonly<Record<string, unknown>> | undefined, key: 
 };
 
 /**
- * A person's logins as their sessions will meet them (reviews R650-1 and R650-2): only the
- * `default` account of each harness counts, as Mend's sessions select it; an active one observed
- * expired with its refresh failed or its refresh grant expired, or with its last refresh failed,
- * is `unsure`, with what was observed. Never "signed in" on a stored status alone when expiry or
- * a failed refresh says otherwise.
+ * A person's logins as their sessions will meet them (reviews R650-1 and R650-2): an active one
+ * observed expired with its refresh failed or its refresh grant expired, or with its last refresh
+ * failed, is `unsure`, with what was observed. Never "signed in" on a stored status alone when
+ * expiry or a failed refresh says otherwise.
  */
 export const loginsOf = (
   accounts: ReadonlyArray<MendConnectedAccount>,
@@ -222,20 +224,22 @@ export const loginsOf = (
 ): ReadonlyMap<string, Login> => {
   const logins = new Map<string, Login>();
   for (const [harness, driver] of Object.entries(HARNESS_DRIVERS)) {
-    const account = accounts.find(
-      (candidate) => candidate.provider === harness && candidate.name === SESSION_ACCOUNT,
-    );
+    const choice = loginChoiceOf(accounts, harness);
     const name = driver.displayName;
-    if (account === undefined) {
-      const others = accounts.some((candidate) => candidate.provider === harness);
+    if (choice._tag === "none") {
+      logins.set(harness, { kind: "none", reason: `Mend holds no ${name} login of yours.` });
+      continue;
+    }
+    if (choice._tag === "unchosen") {
+      if (!isCredentialProvider(harness)) continue;
+      const summary = unchosenLoginSummary(harness, choice.accounts.length);
       logins.set(harness, {
-        kind: "none",
-        reason: others
-          ? `Mend holds no default ${name} login of yours, the one sessions use (only others by name).`
-          : `Mend holds no ${name} login of yours.`,
+        kind: "unchosen",
+        reason: `${summary.wordsAndSessionUse} ${summary.remedy}`,
       });
       continue;
     }
+    const account = choice.account;
     if (account.status !== "active") {
       logins.set(harness, {
         kind: "none",
@@ -317,7 +321,10 @@ export const providersFromMend = (
       ...(login === null || login.kind === "signed-in"
         ? {}
         : {
-            message: `${login.reason} ${login.kind === "none" ? "Connect one" : "If it does not work, connect it again"} with mend connect ${catalog.harness}.`,
+            message:
+              login.kind === "unchosen"
+                ? login.reason
+                : `${login.reason} ${login.kind === "none" ? "Connect one" : "If it does not work, connect it again"} with mend connect ${catalog.harness}.`,
           }),
       checkedAt,
       models: modelsFor(catalog, driver),

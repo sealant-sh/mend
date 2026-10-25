@@ -100,7 +100,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "start",
     summary: "send this machine's provider credential to the platform",
     synopsis: [
-      "<claude|codex|github> [--use-my-login] [--from-stdin] [--remove]",
+      "<claude|codex|github> [--use-my-login] [--from-stdin] [--remove [<name>]]",
       "pi [--dir <path>] [--dry-run] [--remove]",
     ],
     description: [
@@ -114,7 +114,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "claude, codex: send the login this machine already uses; both sides then share it",
       },
       { flag: "--from-stdin", text: "paste a credential instead of reading the provider's file" },
-      { flag: "--remove", text: "disconnect the provider" },
+      {
+        flag: "--remove [<name>]",
+        text: "disconnect the provider's chosen login, or the account of that name",
+      },
     ],
     examples: [
       { command: "mend connect claude", text: "a Claude login of Mend's own, through the browser" },

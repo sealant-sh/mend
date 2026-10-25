@@ -32,6 +32,8 @@ export class ConnectedAccount extends Schema.Class<ConnectedAccount>("ConnectedA
   connectedAt: Timestamp,
   updatedAt: Timestamp,
   lastUsedAt: Schema.NullOr(Timestamp),
+  /** Whether this is the person's chosen default for its provider, the one sessions use. */
+  isDefault: Schema.Boolean,
 }) {}
 
 export class ConnectAccountInput extends Schema.Class<ConnectAccountInput>("ConnectAccountInput")({
@@ -42,8 +44,9 @@ export class ConnectAccountInput extends Schema.Class<ConnectAccountInput>("Conn
    * `~/.codex/auth.json`; a GitHub token (`gh auth token`).
    */
   secret: Schema.String.check(Schema.isNonEmpty()),
-  /** Account name under the provider; `default` is the one sessions attach. */
+  /** The account to write, by name; without it or `accountId`, the person's chosen login. */
   name: Schema.optional(Schema.String),
+  accountId: Schema.optional(Schema.String),
 }) {}
 
 /** What the settings page shows about the signed-in user's platform identity. */

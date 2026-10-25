@@ -219,13 +219,13 @@ interface HostedProcess {
 
 /**
  * The login a conversation's workspace launches with: Mend creates it with `{ claude: true }` or
- * `{ codex: true }`, the launching person's account named `default`. Core does not report that
- * account's id at create, so it stays unknown.
+ * `{ codex: true }`, the launching person's chosen default. Core reports neither that account's id
+ * nor its name at create, so both stay unknown.
  */
 const launchLogin = (userId: string | null): TurnPayer => ({
   userId,
   accountId: null,
-  accountName: userId === null ? null : "default",
+  accountName: null,
 });
 
 /**

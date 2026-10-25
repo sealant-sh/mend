@@ -13,9 +13,13 @@ import {
   agentStartingFacts,
   type AgentStartingProcess,
   claudeGrantFacts,
+  isChosenDefault,
+  type LoginChoice,
+  loginChoiceOf,
   narrowCredential,
   repositoryCloneUrlIssue,
   sameGrant,
+  unchosenLoginSummary,
   validatePiProfile,
 } from "@mend/domain/workbench";
 import { type AgentShareHandle, shareAgent, startAgentShare } from "@mend/local-git/agent-share";
@@ -3248,7 +3252,7 @@ const secretsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
 
 type ConnectedAccountProvider = "claude" | "codex" | "github";
 
-interface ConnectedAccountDto {
+interface ConnectedAccountWire {
   readonly id: string;
   readonly provider: ConnectedAccountProvider;
   readonly name: string;
@@ -3257,12 +3261,27 @@ interface ConnectedAccountDto {
   readonly metadata: Readonly<Record<string, unknown>>;
   readonly connectedAt: string;
   readonly lastUsedAt: string | null;
+  readonly isDefault?: boolean | undefined;
+}
+
+interface ConnectedAccountDto extends ConnectedAccountWire {
+  readonly isDefault: boolean;
 }
 
 interface SealantIdentityDto {
   readonly sealantUserId: string;
   readonly accounts: ReadonlyArray<ConnectedAccountDto>;
 }
+
+interface SealantIdentityWire {
+  readonly sealantUserId: string;
+  readonly accounts: ReadonlyArray<ConnectedAccountWire>;
+}
+
+const sealantIdentityOf = (wire: SealantIdentityWire): SealantIdentityDto => ({
+  sealantUserId: wire.sealantUserId,
+  accounts: wire.accounts.map((account) => ({ ...account, isDefault: isChosenDefault(account) })),
+});
 
 const isProvider = (value: string | undefined): value is ConnectedAccountProvider =>
   value === "claude" || value === "codex" || value === "github";
@@ -3292,7 +3311,7 @@ const localCredential = (provider: ConnectedAccountProvider): string | null => {
   }
 };
 
-const accountLine = (account: ConnectedAccountDto): string => {
+const accountFacts = (account: ConnectedAccountWire): string => {
   const meta = account.metadata;
   const pick = (key: string) => (typeof meta[key] === "string" ? String(meta[key]) : null);
   const identity = pick("login") ?? pick("email") ?? pick("accountEmail") ?? pick("accountId");
@@ -3307,23 +3326,38 @@ const accountLine = (account: ConnectedAccountDto): string => {
     suffix === null ? null : `…${suffix}`,
     `since ${account.connectedAt.slice(0, 10)}`,
   ].filter((fact): fact is string => fact !== null);
-  return `${account.provider.padEnd(8)} ${facts.join(" · ")}`;
+  return facts.join(" · ");
 };
+
+const accountLine = (account: ConnectedAccountWire): string =>
+  `${account.provider.padEnd(8)} ${accountFacts(account)}`;
 
 /**
  * `mend accounts`: the signed-in user's own connected accounts on the platform — each person's
  * subscriptions, under their own Sealant user (docs/SEALANT-IDENTITY.md).
  */
 const accountsLines = async (config: CliConfig): Promise<ReadonlyArray<string>> => {
-  const identity = await request<SealantIdentityDto>(config, "GET", "/me/sealant");
+  const identity = sealantIdentityOf(
+    await request<SealantIdentityWire>(config, "GET", "/me/sealant"),
+  );
   const providers: ReadonlyArray<ConnectedAccountProvider> = ["claude", "codex", "github"];
   return [
     `platform user ${identity.sealantUserId}`,
-    ...providers.map((provider) => {
-      const account =
-        identity.accounts.find((row) => row.provider === provider && row.name === "default") ??
-        identity.accounts.find((row) => row.provider === provider);
-      return `  ${account === undefined ? `${provider.padEnd(8)} not connected` : accountLine(account)}`;
+    ...providers.flatMap((provider) => {
+      const choice = loginChoiceOf(identity.accounts, provider);
+      switch (choice._tag) {
+        case "chosen":
+          return [`  ${accountLine(choice.account)}`];
+        case "unchosen": {
+          const summary = unchosenLoginSummary(provider, choice.accounts.length);
+          return [
+            `  ${provider.padEnd(8)} ${summary.words} · ${summary.count} connected → ${summary.firstCommand}`,
+            ...choice.accounts.map((account) => `    ${account.name} · ${accountFacts(account)}`),
+          ];
+        }
+        case "none":
+          return [`  ${provider.padEnd(8)} not connected`];
+      }
     }),
   ];
 };
@@ -3541,6 +3575,38 @@ const connectPi = async (config: CliConfig, flags: ReadonlyArray<string>) => {
   );
 };
 
+const removableAccount = (
+  provider: ConnectedAccountProvider,
+  accounts: ReadonlyArray<ConnectedAccountDto>,
+  name: string | null,
+): ConnectedAccountDto => {
+  if (name !== null) {
+    const named = accounts.find(
+      (account) =>
+        account.provider === provider && account.name === name && account.status !== "archived",
+    );
+    return named ?? fail(`${provider}: no account named ${name} · nothing removed`);
+  }
+  const choice: LoginChoice<ConnectedAccountDto> = loginChoiceOf(accounts, provider);
+  switch (choice._tag) {
+    case "chosen":
+      return choice.account;
+    case "none":
+      return fail(`${provider}: nothing connected`);
+    case "unchosen": {
+      const [only, ...others] = choice.accounts;
+      if (others.length === 0) return only;
+      const summary = unchosenLoginSummary(provider, choice.accounts.length);
+      return fail(
+        [
+          `${provider}: ${summary.words}, so which one to remove is not known · nothing removed → ${summary.firstCommand}`,
+          ...choice.accounts.map((account) => `  ${account.name} · ${accountFacts(account)}`),
+        ].join("\n"),
+      );
+    }
+  }
+};
+
 const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const [providerArg, ...flags] = args;
   if (providerArg === "pi") return connectPi(config, flags);
@@ -3548,11 +3614,18 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
     return fail(usageOf("connect"));
   }
   const provider = providerArg;
-  if (flags.includes("--remove")) {
-    const identity = await api<SealantIdentityDto>(config, "GET", "/me/sealant");
-    const account = identity.accounts.find((row) => row.provider === provider);
-    if (account === undefined) return fail(`${provider}: nothing connected`);
-    await api<ConnectedAccountDto>(config, "DELETE", `/me/sealant/accounts/${account.id}`);
+  const removeAt = flags.indexOf("--remove");
+  if (removeAt !== -1) {
+    const named = flags[removeAt + 1];
+    const identity = sealantIdentityOf(
+      await api<SealantIdentityWire>(config, "GET", "/me/sealant"),
+    );
+    const account = removableAccount(
+      provider,
+      identity.accounts,
+      named === undefined || named.startsWith("--") ? null : named,
+    );
+    await api<ConnectedAccountWire>(config, "DELETE", `/me/sealant/accounts/${account.id}`);
     process.stdout.write(`${provider}: disconnected\n`);
     return;
   }
@@ -3603,7 +3676,7 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
   }
   const account = await withSpinner(
     `connecting ${provider}`,
-    api<ConnectedAccountDto>(config, "POST", "/me/sealant/accounts", {
+    api<ConnectedAccountWire>(config, "POST", "/me/sealant/accounts", {
       provider,
       secret: narrowed.secret,
     }),
