@@ -167,6 +167,8 @@ const EVERY_FEATURE: SealantFeatures = {
   workspaceSshUser: false,
   personBinding: false,
   sshKeyRemovalEndsConnections: false,
+  connectedAccountDefaults: false,
+  kubernetesPersonLayout: false,
 };
 /** A control plane from before any of them (an older Core reports every flag false). */
 const NO_FEATURE: SealantFeatures = {
@@ -178,6 +180,8 @@ const NO_FEATURE: SealantFeatures = {
   workspaceSshUser: false,
   personBinding: false,
   sshKeyRemovalEndsConnections: false,
+  connectedAccountDefaults: false,
+  kubernetesPersonLayout: false,
 };
 
 const clientsLayer = (
