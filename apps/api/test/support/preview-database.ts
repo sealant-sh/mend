@@ -28,12 +28,8 @@ import { SqlClient } from "effect/sql";
 
 import { ProjectAccessLive } from "../../src/access.ts";
 
-/**
- * A throwaway Postgres database for the preview gateway's tests, migrated and seeded with one
- * shared project, one worktree, one session and two browser Services, each with a live attempt:
- * `web` on workspace port 3000 and `docs` on 3001, both in workspace `ws-1`. alice owns the
- * organization and the session; carol is a member who can see the project.
- */
+/** One viewer's pool holds at most six forwards, so tests that need more forwards use more people. */
+export const PEOPLE = ["alice", "carol", "dave", "erin", "frank", "gina"] as const;
 
 export const PREVIEW_WORKSPACE = "ws-1";
 export const SERVICES = {
@@ -59,7 +55,6 @@ const pgLayer = (url: string) =>
     transformQueryNames: Str.camelToSnake,
   });
 
-/** The repositories the preview identity and the gateway read, as production builds them. */
 export const previewReposLayer = (url: string) =>
   Layer.mergeAll(
     PreviewsRepoLive.pipe(Layer.provide(NodeCrypto.layer)),
@@ -90,12 +85,15 @@ const seed = Effect.gen(function* () {
     ([, migration]) => migration,
     { discard: true },
   );
-  yield* sql`INSERT INTO "user" ("id", "name", "email", "createdAt") VALUES
-    ('alice', 'Alice', 'alice@example.com', now()),
-    ('carol', 'Carol', 'carol@example.com', now())`;
+  for (const userId of PEOPLE) {
+    yield* sql`INSERT INTO "user" ("id", "name", "email", "createdAt")
+      VALUES (${userId}, ${userId}, ${`${userId}@example.com`}, now())`;
+  }
   yield* sql`INSERT INTO organizations (id, name) VALUES ('org-a', 'A')`;
-  yield* sql`INSERT INTO organization_members (organization_id, user_id, role)
-    VALUES ('org-a', 'alice', 'owner'), ('org-a', 'carol', 'member')`;
+  for (const userId of PEOPLE) {
+    yield* sql`INSERT INTO organization_members (organization_id, user_id, role)
+      VALUES ('org-a', ${userId}, ${userId === "alice" ? "owner" : "member"})`;
+  }
   yield* sql`INSERT INTO projects (id, name, store_path, default_branch, organization_id,
       visibility, created_by_user_id)
     VALUES ('p-1', 'p-1', '/store/p-1', 'main', 'org-a', 'shared', 'alice')`;
@@ -138,7 +136,6 @@ const seed = Effect.gen(function* () {
   return { web: yield* kept("web"), docs: yield* kept("docs") };
 });
 
-/** Creates, migrates and seeds a database named after `tag`; `drop` removes it. */
 export const createPreviewDatabase = async (tag: string): Promise<PreviewDatabase> => {
   const postgres = postgresTestConfig();
   const name = `mend_${tag}_${process.pid}_${Date.now()}`;
@@ -165,7 +162,6 @@ export const createPreviewDatabase = async (tag: string): Promise<PreviewDatabas
   }
 };
 
-/** A signed-in Mend session row for `userId`: what a ticket's opener credential names. */
 export const signInRow = (
   userId: string,
 ): Effect.Effect<TicketCredential, never, SqlClient.SqlClient> =>
@@ -180,7 +176,6 @@ export const signInRow = (
     return credential;
   });
 
-/** Marks every attempt of the Service exited: its preview is dormant, its workspace still live. */
 export const exitAttempts = (key: ServiceKey): Effect.Effect<void, never, SqlClient.SqlClient> =>
   Effect.flatMap(SqlClient.SqlClient, (sql) =>
     sql`UPDATE session_processes SET exited_at = now(), status = 'exited'
