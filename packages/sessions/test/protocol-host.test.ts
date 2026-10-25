@@ -92,6 +92,7 @@ const makeConversationWorld = () => {
     beforeHarnessTurn: Effect.Effect<void>;
     beforeComplete: Effect.Effect<void>;
     afterSteerAdmit: Effect.Effect<void>;
+    beforeSteerQueue: Effect.Effect<void>;
   } = {
     stopping: false,
     journalFailure: false,
@@ -99,6 +100,7 @@ const makeConversationWorld = () => {
     beforeHarnessTurn: Effect.void,
     beforeComplete: Effect.void,
     afterSteerAdmit: Effect.void,
+    beforeSteerQueue: Effect.void,
   };
   const requeued = Effect.runSync(Deferred.make<void>());
   const items = new Map<string, AgentItem>();
@@ -108,6 +110,10 @@ const makeConversationWorld = () => {
     ...steerStore,
     admitTurnSteer: (input) =>
       steerStore.admitTurnSteer(input).pipe(Effect.tap(() => admission.afterSteerAdmit)),
+    queueTurnSteer: (id, onProcess, reason) =>
+      Effect.suspend(() => admission.beforeSteerQueue).pipe(
+        Effect.andThen(steerStore.queueTurnSteer(id, onProcess, reason)),
+      ),
     recordProtocolControl: (id, control) =>
       admission.journalFailure
         ? Effect.fail(new AgentControlJournalError({ message: "journal unavailable", cause: null }))
@@ -1096,6 +1102,32 @@ describe("ProtocolHost", () => {
       }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
     },
   );
+
+  it.effect("keeps words as NotSent when a Stop detaches the process as they are queued", () => {
+    const world = makeConversationWorld();
+    const ended = world.seed("ended");
+    world.turns.set(ended.id, new AgentTurn({ ...ended, status: "completed", endedAt: now() }));
+    const peer = makePipe([]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      world.admission.beforeSteerQueue = host.detach(processId);
+      const receipt = yield* host.steerTurn({
+        turnId: ended.id,
+        sender: "user-1",
+        input: "after the stop",
+      });
+      expect(yield* host.has(processId)).toBe(false);
+      expect(receipt).toMatchObject({
+        input: "after the stop",
+        delivery: { _tag: "NotSent", reason: "turn-ended" },
+        queuedTurnId: null,
+      });
+      expect(
+        [...world.turns.values()].filter((turn) => turn.status === "queued").map((t) => t.input),
+      ).toEqual([]);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
 
   it.effect("keeps an uncertain delivery and never queues or resends it", () => {
     const world = makeConversationWorld();

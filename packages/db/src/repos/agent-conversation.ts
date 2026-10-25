@@ -137,6 +137,8 @@ export interface AdmitTurnSteerInput {
   readonly clientSteerId: string | null;
 }
 
+const STEER_NOT_SENT = "The session can no longer take a turn. Your words are saved.";
+
 export class AgentControlJournalError extends Schema.TaggedError<AgentControlJournalError>()(
   "AgentControlJournalError",
   { message: Schema.String, cause: Schema.Defect() },
@@ -190,6 +192,12 @@ export class AgentConversationRepo extends Context.Service<
       processId: SessionProcessId | null,
       reason: TurnSteerQueueReason,
     ) => Effect.Effect<AgentTurnSteer>;
+    /**
+     * A Queued steer whose turn no process will take (its process detached as the turn was
+     * queued): the turn is cancelled and the words stay, NotSent. A turn another process took
+     * meanwhile keeps the receipt.
+     */
+    readonly withdrawTurnSteer: (id: AgentTurnSteerId) => Effect.Effect<AgentTurnSteer>;
     readonly recoverSendingSteers: (processId?: SessionProcessId) => Effect.Effect<void>;
     readonly recordProtocolControl: (
       processId: SessionProcessId,
@@ -371,6 +379,58 @@ export const notifyAgentConversation = Effect.fn("AgentConversationRepo.notify")
   });
 });
 
+type ConversationTx = Pick<MendDatabase, "select" | "insert" | "execute">;
+
+/**
+ * Takes the conversation's lock in the caller's transaction and says whether the session takes a
+ * turn. The idle stop's claim takes the same lock: a claim that landed is seen here, and a claim
+ * after this commits sees the queued turn and does not land. A settled session has no agent to
+ * take a turn either; a resume reopens it first.
+ */
+const lockConversationForTurn = Effect.fn("AgentConversationRepo.lockConversationForTurn")(
+  function* (tx: ConversationTx, sessionId: SessionId) {
+    yield* lockAgentConversation(tx, sessionId);
+    const [stopping] = yield* tx
+      .select({ id: agentSessions.id })
+      .from(agentSessions)
+      .where(
+        and(
+          eq(agentSessions.id, sessionId),
+          or(isNotNull(agentSessions.idleStoppedAt), isNotNull(agentSessions.settledAt)),
+        ),
+      );
+    return stopping === undefined;
+  },
+);
+
+/** A turn queued last in its conversation, in the caller's transaction (under its lock). */
+const insertQueuedTurn = Effect.fn("AgentConversationRepo.insertQueuedTurn")(function* (
+  tx: ConversationTx,
+  turn: {
+    readonly sessionId: SessionId;
+    readonly processId: SessionProcessId;
+    readonly input: string;
+    readonly author: string | null;
+    readonly launchCorrelationId: string | null;
+  },
+) {
+  const [position] = yield* tx
+    .select({ value: max(agentTurns.ordinal) })
+    .from(agentTurns)
+    .where(eq(agentTurns.sessionId, turn.sessionId));
+  const [row] = yield* tx
+    .insert(agentTurns)
+    .values({
+      ...turn,
+      id: AgentTurnId.make(crypto.randomUUID()),
+      ordinal: (position?.value ?? -1) + 1,
+      status: "queued",
+    })
+    .returning();
+  if (row === undefined) return yield* Effect.die("agent turn insert returned no row");
+  return toTurn(row);
+});
+
 /** Cancel queued turns and their open requests in the caller's transaction, without events. */
 export const cancelOpenTurnRows = Effect.fn("AgentConversationRepo.cancelOpenTurnRows")(function* (
   db: Pick<MendDatabase, "update">,
@@ -425,20 +485,9 @@ export const AgentConversationRepoLive: Layer.Layer<
       const created = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            yield* lockAgentConversation(tx, sessionId);
-            // Under the lock the idle stop's claim also takes: a claim that landed is seen here,
-            // and a claim after this commits sees the queued turn and does not land. A settled
-            // session has no agent to take a turn either; a resume reopens it first.
-            const [stopping] = yield* tx
-              .select({ id: agentSessions.id })
-              .from(agentSessions)
-              .where(
-                and(
-                  eq(agentSessions.id, sessionId),
-                  or(isNotNull(agentSessions.idleStoppedAt), isNotNull(agentSessions.settledAt)),
-                ),
-              );
-            if (stopping !== undefined) return { _tag: "stopping" } as const;
+            if (!(yield* lockConversationForTurn(tx, sessionId))) {
+              return { _tag: "stopping" } as const;
+            }
             if (launchCorrelationId !== null) {
               const [existing] = yield* tx
                 .select()
@@ -476,25 +525,13 @@ export const AgentConversationRepoLive: Layer.Layer<
                 return toTurn(existing);
               }
             }
-            const [position] = yield* tx
-              .select({ value: max(agentTurns.ordinal) })
-              .from(agentTurns)
-              .where(eq(agentTurns.sessionId, sessionId));
-            const [row] = yield* tx
-              .insert(agentTurns)
-              .values({
-                id: AgentTurnId.make(crypto.randomUUID()),
-                sessionId,
-                processId,
-                ordinal: (position?.value ?? -1) + 1,
-                author,
-                input,
-                launchCorrelationId,
-                status: "queued",
-              })
-              .returning();
-            if (row === undefined) return yield* Effect.die("agent turn insert returned no row");
-            return toTurn(row);
+            return yield* insertQueuedTurn(tx, {
+              sessionId,
+              processId,
+              input,
+              author,
+              launchCorrelationId,
+            });
           }),
         )
         .pipe(Effect.orDie);
@@ -709,9 +746,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       const result = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            yield* tx.execute(
-              sql`select pg_advisory_xact_lock(hashtext(${agentConversationLockKey(saved.sessionId)}))`,
-            );
+            const takesTurns = yield* lockConversationForTurn(tx, saved.sessionId);
             const [row] = yield* tx
               .select()
               .from(agentTurnSteers)
@@ -719,63 +754,79 @@ export const AgentConversationRepoLive: Layer.Layer<
               .for("update");
             if (row === undefined) return yield* Effect.die("steer disappeared");
             if (row.delivery._tag !== "Sending") return { steer: toSteer(row), changed: false };
-            const [session] = yield* tx
-              .select()
-              .from(agentSessions)
-              .where(eq(agentSessions.id, row.sessionId));
-            let delivery: AgentTurnSteerDelivery;
-            let queuedTurnId: AgentTurnId | null = null;
-            if (
-              processId === null ||
-              session === undefined ||
-              session.idleStoppedAt !== null ||
-              session.settledAt !== null
-            ) {
-              delivery = {
-                _tag: "NotSent",
-                reason,
-                message: "The session can no longer take a turn. Your words are saved.",
-              };
-            } else {
-              const correlation = `steer:${id}`;
-              const [existing] = yield* tx
-                .select()
-                .from(agentTurns)
-                .where(
-                  and(
-                    eq(agentTurns.sessionId, row.sessionId),
-                    eq(agentTurns.launchCorrelationId, correlation),
-                  ),
-                )
-                .limit(1);
-              queuedTurnId = existing?.id ?? AgentTurnId.make(crypto.randomUUID());
-              if (existing === undefined) {
-                const [position] = yield* tx
-                  .select({ value: max(agentTurns.ordinal) })
-                  .from(agentTurns)
-                  .where(eq(agentTurns.sessionId, row.sessionId));
-                yield* tx.insert(agentTurns).values({
-                  id: queuedTurnId,
-                  sessionId: row.sessionId,
-                  processId,
-                  input: row.input,
-                  author: row.author,
-                  ordinal: (position?.value ?? -1) + 1,
-                  status: "queued",
-                  launchCorrelationId: correlation,
-                });
-              }
-              delivery = { _tag: "Queued", turnId: queuedTurnId, reason };
-            }
+            const queued =
+              processId === null || !takesTurns
+                ? null
+                : yield* insertQueuedTurn(tx, {
+                    sessionId: row.sessionId,
+                    processId,
+                    input: row.input,
+                    author: row.author,
+                    launchCorrelationId: `steer:${id}`,
+                  });
+            const delivery: AgentTurnSteerDelivery =
+              queued === null
+                ? { _tag: "NotSent", reason, message: STEER_NOT_SENT }
+                : { _tag: "Queued", turnId: queued.id, reason };
             const [changed] = yield* tx
               .update(agentTurnSteers)
-              .set({ delivery, queuedTurnId, updatedAt: yield* DateTime.nowAsDate })
+              .set({
+                delivery,
+                queuedTurnId: queued?.id ?? null,
+                updatedAt: yield* DateTime.nowAsDate,
+              })
               .where(
                 and(
                   eq(agentTurnSteers.id, id),
                   sql`${agentTurnSteers.delivery}->>'_tag' = 'Sending'`,
                 ),
               )
+              .returning();
+            if (changed === undefined) return yield* Effect.die("locked steer disappeared");
+            return { steer: toSteer(changed), changed: true };
+          }),
+        )
+        .pipe(Effect.orDie);
+      if (result.changed) yield* notify(result.steer.sessionId);
+      return result.steer;
+    });
+
+    const withdrawTurnSteer = Effect.fn("AgentConversationRepo.withdrawTurnSteer")(function* (
+      id: AgentTurnSteerId,
+    ) {
+      const [saved] = yield* db
+        .select()
+        .from(agentTurnSteers)
+        .where(eq(agentTurnSteers.id, id))
+        .pipe(Effect.orDie);
+      if (saved === undefined) return yield* Effect.die("steer disappeared");
+      const result = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            yield* lockConversationForTurn(tx, saved.sessionId);
+            const [row] = yield* tx
+              .select()
+              .from(agentTurnSteers)
+              .where(eq(agentTurnSteers.id, id))
+              .for("update");
+            if (row === undefined) return yield* Effect.die("steer disappeared");
+            const delivery = row.delivery;
+            if (delivery._tag !== "Queued") return { steer: toSteer(row), changed: false };
+            const [turn] = yield* tx
+              .select({ status: agentTurns.status })
+              .from(agentTurns)
+              .where(eq(agentTurns.id, delivery.turnId));
+            // Another process took it meanwhile: it runs, and the receipt stays.
+            if (turn?.status !== "queued") return { steer: toSteer(row), changed: false };
+            yield* cancelOpenTurnRows(tx, [delivery.turnId]);
+            const [changed] = yield* tx
+              .update(agentTurnSteers)
+              .set({
+                delivery: { _tag: "NotSent", reason: delivery.reason, message: STEER_NOT_SENT },
+                queuedTurnId: null,
+                updatedAt: yield* DateTime.nowAsDate,
+              })
+              .where(eq(agentTurnSteers.id, id))
               .returning();
             if (changed === undefined) return yield* Effect.die("locked steer disappeared");
             return { steer: toSteer(changed), changed: true };
@@ -1740,6 +1791,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       steerByClientId,
       settleTurnSteer,
       queueTurnSteer,
+      withdrawTurnSteer,
       recoverSendingSteers,
       recordProtocolControl,
       protocolControls,

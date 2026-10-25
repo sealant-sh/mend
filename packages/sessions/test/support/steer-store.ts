@@ -15,6 +15,7 @@ type SteerMethods = Pick<
   | "steerByClientId"
   | "settleTurnSteer"
   | "queueTurnSteer"
+  | "withdrawTurnSteer"
   | "recoverSendingSteers"
   | "recordProtocolControl"
   | "protocolControls"
@@ -127,6 +128,27 @@ export const makeSteerStore = (
         });
         steers.set(id, queued);
         return Effect.succeed(queued);
+      }),
+    withdrawTurnSteer: (id) =>
+      Effect.sync(() => {
+        const steer = get(id);
+        const delivery = steer.delivery;
+        if (delivery._tag !== "Queued") return steer;
+        const turn = turns.get(delivery.turnId);
+        if (turn?.status !== "queued") return steer;
+        turns.set(turn.id, new AgentTurn({ ...turn, status: "cancelled", endedAt: new Date() }));
+        const withdrawn = new AgentTurnSteer({
+          ...steer,
+          delivery: {
+            _tag: "NotSent",
+            reason: delivery.reason,
+            message: "The session can no longer take a turn. Your words are saved.",
+          },
+          queuedTurnId: null,
+          updatedAt: new Date(),
+        });
+        steers.set(id, withdrawn);
+        return withdrawn;
       }),
     recoverSendingSteers: (processId) =>
       Effect.gen(function* () {

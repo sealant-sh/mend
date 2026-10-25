@@ -623,6 +623,38 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
     );
   });
 
+  it("withdraws a carried steer's turn as NotSent unless a process took it", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const { session, process, turn } = yield* runningTurn;
+        const admit = (input: string) =>
+          repo
+            .admitTurnSteer({ turnId: turn.id, author: "user-1", input, clientSteerId: null })
+            .pipe(Effect.map(({ steer }) => steer));
+        const stranded = yield* repo.queueTurnSteer(
+          (yield* admit("stranded")).id,
+          process,
+          "turn-ended",
+        );
+        const withdrawn = yield* repo.withdrawTurnSteer(stranded.id);
+        expect(withdrawn).toMatchObject({
+          input: "stranded",
+          delivery: { _tag: "NotSent", reason: "turn-ended" },
+          queuedTurnId: null,
+        });
+        expect((yield* repo.byTurnId(stranded.queuedTurnId ?? turn.id))?.status).toBe(
+          "cancelled",
+        );
+        expect(yield* repo.withdrawTurnSteer(stranded.id)).toEqual(withdrawn);
+        yield* repo.completeTurn("native", session, "completed", null, null);
+        const taken = yield* repo.queueTurnSteer((yield* admit("taken")).id, process, "turn-ended");
+        expect((yield* repo.claimNextTurn(process))?.id).toBe(taken.queuedTurnId);
+        expect(yield* repo.withdrawTurnSteer(taken.id)).toEqual(taken);
+      }),
+    );
+  });
+
   it("round trips the control journal and refuses a conflicting checkpoint", async () => {
     await withConversation(
       Effect.gen(function* () {

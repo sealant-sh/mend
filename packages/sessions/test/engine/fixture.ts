@@ -893,6 +893,7 @@ export const agentConversationStub: AgentConversationRepo["Service"] = {
   steerByClientId: () => Effect.succeed(null),
   settleTurnSteer: () => Effect.die("not in test"),
   queueTurnSteer: () => Effect.die("not in test"),
+  withdrawTurnSteer: () => Effect.die("not in test"),
   recoverSendingSteers: () => Effect.void,
   recordProtocolControl: () => Effect.void,
   protocolControls: () => Effect.succeed([]),

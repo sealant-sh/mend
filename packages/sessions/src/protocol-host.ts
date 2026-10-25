@@ -1056,12 +1056,12 @@ export const ProtocolHostLive: Layer.Layer<
       });
     });
 
-    const submitTurn = Effect.fn("ProtocolHost.submitTurn")(function* (
-      sessionId: SessionId,
-      input: string,
-      author: string | null,
-      launchCorrelationId: string | null = null,
-    ) {
+    /**
+     * Where the session's next queued turn goes: its newest live process this Mend hosts, or,
+     * between a hand-over's stop and the next start, the conversation (decision 6). Null: no
+     * process can take it.
+     */
+    const placeTurn = Effect.fnUntraced(function* (sessionId: SessionId) {
       const rows = yield* processes.listForSession(sessionId);
       const process = rows.findLast(
         (candidate) =>
@@ -1069,50 +1069,62 @@ export const ProtocolHostLive: Layer.Layer<
           candidate.exitedAt === null &&
           hosted.has(candidate.id),
       );
-      if (process === undefined) {
-        // Between a hand-over's stop and the next start: the turn queues on the conversation,
-        // and the next process takes it (decision 6).
-        const between = handingOver.get(sessionId);
-        if (between !== undefined) {
-          const queued = yield* conversations
-            .submitTurn(sessionId, between, input, author, launchCorrelationId)
-            .pipe(
-              Effect.catchTag("SessionStoppingError", () =>
-                Effect.fail(new ProtocolHostNotLiveError({ processId: between })),
-              ),
-            );
-          // The next process may have attached meanwhile: the turn moves onto it, never left on
-          // the stopped one.
-          const next = [...hosted.values()].find(
-            (candidate) =>
-              candidate.process.sessionId === sessionId && candidate.process.id !== between,
-          );
-          if (next !== undefined) {
-            yield* takeQueuedTurns(sessionId, next.process.id);
-            yield* dispatchNext(next);
-          }
-          return queued;
+      if (process !== undefined) return { _tag: "Hosted", processId: process.id } as const;
+      const between = handingOver.get(sessionId);
+      return between === undefined ? null : ({ _tag: "Between", processId: between } as const);
+    });
+
+    /**
+     * Dispatches a turn just queued on `place`. False when its process detached while the turn
+     * was being queued (a user stop does not take the lock): nothing will ever dispatch it.
+     */
+    const dispatchPlaced = (
+      sessionId: SessionId,
+      place: { readonly _tag: "Hosted" | "Between"; readonly processId: SessionProcessId },
+      dispatch: (entry: HostedProcess) => Effect.Effect<void>,
+    ): Effect.Effect<boolean> =>
+      Effect.gen(function* () {
+        if (place._tag === "Hosted") {
+          const entry = hosted.get(place.processId);
+          if (entry === undefined) return false;
+          yield* dispatch(entry);
+          return true;
         }
-        return yield* new ProtocolHostNotLiveError({ processId: sessionId });
-      }
+        // The next process may have attached meanwhile: the turn moves onto it, never left on
+        // the stopped one.
+        const next = [...hosted.values()].find(
+          (candidate) =>
+            candidate.process.sessionId === sessionId && candidate.process.id !== place.processId,
+        );
+        if (next !== undefined) {
+          yield* takeQueuedTurns(sessionId, next.process.id);
+          yield* dispatch(next);
+        }
+        return true;
+      });
+
+    const submitTurn = Effect.fn("ProtocolHost.submitTurn")(function* (
+      sessionId: SessionId,
+      input: string,
+      author: string | null,
+      launchCorrelationId: string | null = null,
+    ) {
+      const place = yield* placeTurn(sessionId);
+      if (place === null) return yield* new ProtocolHostNotLiveError({ processId: sessionId });
       // A stop that began after the host was read above is not raced: the idle stop's claim and
       // this admission take the same lock, and a claimed session refuses the turn. The next
       // message resumes the session instead.
       const turn = yield* conversations
-        .submitTurn(sessionId, process.id, input, author, launchCorrelationId)
+        .submitTurn(sessionId, place.processId, input, author, launchCorrelationId)
         .pipe(
           Effect.catchTag("SessionStoppingError", () =>
-            Effect.fail(new ProtocolHostNotLiveError({ processId: process.id })),
+            Effect.fail(new ProtocolHostNotLiveError({ processId: place.processId })),
           ),
         );
-      const entry = hosted.get(process.id);
-      if (entry === undefined) {
-        // Detached while the turn was being queued (a user stop does not take the lock): nothing
-        // will ever dispatch it, so it is cancelled and refused, never acknowledged.
+      if (!(yield* dispatchPlaced(sessionId, place, dispatchNext))) {
         yield* conversations.cancelOpenForTurn(turn.id);
-        return yield* new ProtocolHostNotLiveError({ processId: process.id });
+        return yield* new ProtocolHostNotLiveError({ processId: place.processId });
       }
-      yield* dispatchNext(entry);
       return turn;
     });
 
@@ -1120,27 +1132,18 @@ export const ProtocolHostLive: Layer.Layer<
       steer: AgentTurnSteer,
       reason: TurnSteerQueueReason,
     ) {
-      const rows = yield* processes.listForSession(steer.sessionId);
-      const process = rows.findLast(
-        (row) =>
-          row.kind === "agent-protocol" &&
-          row.exitedAt === null &&
-          hosted.has(row.id) &&
-          hosted.get(row.id)?.stopping === false,
+      const place = yield* placeTurn(steer.sessionId);
+      const receipt = yield* conversations.queueTurnSteer(
+        steer.id,
+        place?.processId ?? null,
+        reason,
       );
-      const processId = process?.id ?? handingOver.get(steer.sessionId) ?? null;
-      const receipt = yield* conversations.queueTurnSteer(steer.id, processId, reason);
-      if (receipt.delivery._tag === "Queued" && processId !== null) {
-        const next = [...hosted.values()].findLast(
-          (entry) => entry.process.sessionId === steer.sessionId && !entry.stopping,
-        );
-        if (next !== undefined) {
-          if (next.process.id !== processId)
-            yield* takeQueuedTurns(steer.sessionId, next.process.id);
-          yield* Effect.forkIn(dispatchNext(next), scope);
-        }
-      }
-      return receipt;
+      if (receipt.delivery._tag !== "Queued" || place === null) return receipt;
+      // Forked: the steer may hold control of the process, and dispatch waits for its release.
+      const live = yield* dispatchPlaced(steer.sessionId, place, (entry) =>
+        Effect.forkIn(dispatchNext(entry), scope).pipe(Effect.asVoid),
+      );
+      return live ? receipt : yield* conversations.withdrawTurnSteer(steer.id);
     });
 
     /** The running turn a steer can reach on `entry`, or why its words become the next turn. */
@@ -1259,12 +1262,7 @@ export const ProtocolHostLive: Layer.Layer<
         const existing = yield* conversations.steerByClientId(input.sender, input.clientSteerId);
         if (existing !== null) return existing;
       }
-      const rows = yield* processes.listForSession(turn.sessionId);
-      if (
-        !rows.some(
-          (row) => row.kind === "agent-protocol" && row.exitedAt === null && hosted.has(row.id),
-        )
-      ) {
+      if ((yield* placeTurn(turn.sessionId))?._tag !== "Hosted") {
         return yield* new ProtocolHostNotLiveError({ processId: turn.processId });
       }
       const entry = hosted.get(turn.processId);
