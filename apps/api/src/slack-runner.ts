@@ -946,7 +946,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
                 if (choice._tag === "chosen" && choice.account.status === "active") return null;
                 if (choice._tag === "unchosen" && isCredentialProvider(harness)) {
                   const summary = unchosenLoginSummary(harness, choice.accounts.length);
-                  return `${summary.reason} ${summary.remedy}`;
+                  return `${summary.wordsAndSessionUse} ${summary.remedy}`;
                 }
                 return `no active ${harness} account is connected to your Mend account · connect one in Mend under Settings → Connected accounts`;
               }),

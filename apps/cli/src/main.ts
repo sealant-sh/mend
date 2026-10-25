@@ -3252,7 +3252,6 @@ const secretsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
 
 type ConnectedAccountProvider = "claude" | "codex" | "github";
 
-/** An account as a Mend server answers it; one older than chosen defaults sends no `isDefault`. */
 interface ConnectedAccountWire {
   readonly id: string;
   readonly provider: ConnectedAccountProvider;
@@ -3352,7 +3351,7 @@ const accountsLines = async (config: CliConfig): Promise<ReadonlyArray<string>> 
         case "unchosen": {
           const summary = unchosenLoginSummary(provider, choice.accounts.length);
           return [
-            `  ${provider.padEnd(8)} ${summary.words} · ${summary.count} connected → ${summary.command}`,
+            `  ${provider.padEnd(8)} ${summary.words} · ${summary.count} connected → ${summary.firstCommand}`,
             ...choice.accounts.map((account) => `    ${account.name} · ${accountFacts(account)}`),
           ];
         }
@@ -3576,7 +3575,6 @@ const connectPi = async (config: CliConfig, flags: ReadonlyArray<string>) => {
   );
 };
 
-/** The account `--remove` disconnects: the one named, else the chosen login, else an only one. */
 const removableAccount = (
   provider: ConnectedAccountProvider,
   accounts: ReadonlyArray<ConnectedAccountDto>,
@@ -3601,7 +3599,7 @@ const removableAccount = (
       const summary = unchosenLoginSummary(provider, choice.accounts.length);
       return fail(
         [
-          `${provider}: ${summary.words}, so which one to remove is not known · nothing removed → ${summary.command}`,
+          `${provider}: ${summary.words}, so which one to remove is not known · nothing removed → ${summary.firstCommand}`,
           ...choice.accounts.map((account) => `  ${account.name} · ${accountFacts(account)}`),
         ].join("\n"),
       );

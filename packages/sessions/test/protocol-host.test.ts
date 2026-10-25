@@ -518,8 +518,6 @@ describe("ProtocolHost", () => {
       expect(world.turns.get(first.id)?.error).toContain("model unavailable");
       expect(world.turns.get(second.id)?.status).toBe("running");
       expect(completed).toEqual([first.id]);
-      // The accepted turn records the login it ran on: the one the workspace launched with, its
-      // account's name and id unknown. A turn the harness refused ran on nobody's.
       expect(world.turns.get(second.id)).toMatchObject({
         author: "user-1",
         billedUserId: "owner-1",

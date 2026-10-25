@@ -424,7 +424,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
                     return { _tag: choice.account.status === "active" ? "active" : "invalid" };
                 }
               }),
-              Effect.orElseSucceed((): PersonLogin => ({ _tag: "unknown" })),
+              Effect.orElseSucceed((): PersonLogin => ({ _tag: "unreachable" })),
             ),
         sealantUserOf: (accountId) => clients.sealantUserId(accountId),
         listCredentials: Effect.fn("PersonLayoutPlatform.listCredentials")(function* (workspace) {

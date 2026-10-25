@@ -1527,9 +1527,8 @@ export const SealantClientsLive: Layer.Layer<
           Effect.mapError(toPlatformError),
         );
       /**
-       * Which account a connect writes. Core refuses a connect with no target once a person holds
-       * several, so one meant for the chosen login names `default`, which Core resolves to it. An
-       * only account nobody chose is the one the person is connecting, and becomes the default.
+       * Core refuses a connect with no target once a person holds several, so one meant for the
+       * chosen login names `default`, which Core resolves to it.
        */
       const targetOf = Effect.fn("SealantClients.connectTarget")(function* (
         ownerUserId: string,
@@ -1573,7 +1572,7 @@ export const SealantClientsLive: Layer.Layer<
             return yield* new SealantPlatformError({
               code: "connected-account-ambiguous",
               status: 409,
-              message: `${summary.reason} ${summary.remedy}`,
+              message: `${summary.wordsAndSessionUse} ${summary.remedy}`,
               cause: null,
             });
           }

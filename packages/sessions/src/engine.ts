@@ -19068,14 +19068,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return null;
           case "unchosen": {
             const summary = unchosenLoginSummary(provider, login.count);
-            return `${summary.reason} ${summary.remedy}`;
+            return `${summary.wordsAndSessionUse} ${summary.remedy}`;
           }
           case "missing":
             return `Connect ${name} to steer this session. ${connectWay(provider)}`;
           case "invalid":
             return `Your ${name} login needs reconnecting. Reconnect ${name} to steer this session. ${connectWay(provider)}`;
-          case "unknown":
-            // Core could not be asked: the hand-over's own write refuses a login that is not there.
+          case "unreachable":
+            // The hand-over's own write refuses a login that is not there.
             return null;
         }
       });

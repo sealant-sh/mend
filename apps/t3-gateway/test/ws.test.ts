@@ -259,11 +259,9 @@ describe("GET /ws", () => {
           "unauthenticated",
           "No Codex login chosen: Mend holds 2 of yours, and sessions use only the chosen one. Remove the others with mend connect codex --remove <name>, or Disconnect them in Settings → Connected accounts, then connect the one left again to choose it.",
         ]);
-        // A Mend server older than chosen defaults sends no isDefault: its default is the account
-        // named default.
         mend.setAccounts([
-          { provider: "claude", status: "active", isDefault: "absent" },
-          { provider: "codex", status: "active", name: "backup", isDefault: "absent" },
+          { provider: "claude", status: "active", servedByOlderMend: true },
+          { provider: "codex", status: "active", name: "backup", servedByOlderMend: true },
         ]);
         assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
           ["claudeAgent", "ready", "authenticated", null],

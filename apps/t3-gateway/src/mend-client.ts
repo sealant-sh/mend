@@ -91,7 +91,6 @@ const decodeBranches = Schema.decodeUnknownEffect(Schema.Array(MendBranch));
 const MendConnectedAccountWire = Schema.Struct({
   provider: Schema.String,
   name: Schema.String,
-  /** Absent from a Mend server older than chosen defaults. */
   isDefault: Schema.optional(Schema.Boolean),
   status: Schema.String,
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),

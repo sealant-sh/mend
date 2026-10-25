@@ -75,12 +75,8 @@ export const UNKNOWN_IMAGE_REPORT: ImageLayoutReport = {
  */
 export type LoginProvider = WorkspaceCredentialSkip["provider"];
 
-/**
- * `invalid`: the chosen login needs reconnecting. `unchosen`: the person holds `count` accounts of
- * the provider and chose none. `unknown`: Core could not be asked.
- */
 export type PersonLogin =
-  | { readonly _tag: "active" | "invalid" | "missing" | "unknown" }
+  | { readonly _tag: "active" | "invalid" | "missing" | "unreachable" }
   | { readonly _tag: "unchosen"; readonly count: number };
 
 export const LOGIN_PROVIDERS: ReadonlyArray<LoginProvider> = [
@@ -259,11 +255,6 @@ export class PersonLayoutPlatform extends Context.Service<
       workspace: Workspace,
       input: { readonly home: string },
     ) => Effect.Effect<void, SealantPlatformError>;
-    /**
-     * A person's own login for a provider, as Core says it stands (their chosen default
-     * account). What a steerer's turn is refused for at submit (docs/adr/0016, decision 6;
-     * ADR 0013): "Connect Claude to steer this session."
-     */
     readonly loginOf: (accountId: string, provider: LoginProvider) => Effect.Effect<PersonLogin>;
     /** The Sealant user a Mend account acts as: what `GET` names a home's person by. */
     readonly sealantUserOf: (accountId: string) => Effect.Effect<string, SealantPlatformError>;
@@ -324,7 +315,7 @@ export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer
       ),
     deleteCredentials: () =>
       Effect.fail(personLayoutUnsupported("release a home's logins", "Core Delivery 7")),
-    loginOf: () => Effect.succeed({ _tag: "unknown" }),
+    loginOf: () => Effect.succeed({ _tag: "unreachable" }),
     sealantUserOf: () =>
       Effect.fail(personLayoutUnsupported("name a person's Sealant user", "Core Delivery 7")),
     listCredentials: () =>

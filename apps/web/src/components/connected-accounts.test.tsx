@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -33,30 +34,33 @@ const render = (accounts: ReadonlyArray<ConnectedAccountDto>) => {
     accounts,
   });
   queryClient.setQueryData(trpc.platform.agentLogins.queryKey(), { selectedOnly: false });
-  const html = renderToStaticMarkup(
+  return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
       <TRPCProvider trpcClient={trpcClient} queryClient={queryClient}>
         <ConnectedAccountsPanel />
       </TRPCProvider>
     </QueryClientProvider>,
   );
-  return html
+};
+
+const linesOf = (html: string) =>
+  html
     .replace(/<[^>]+>/g, "\n")
     .split("\n")
     .filter((line) => line.trim() !== "");
-};
 
 const rows = (accounts: ReadonlyArray<ConnectedAccountDto>) => {
-  const lines = render(accounts);
+  const lines = linesOf(render(accounts));
   return ["Claude", "Codex", "GitHub"].map((label) => [label, lines[lines.indexOf(label) + 1]]);
 };
 
-/** The words a provider's row shows, its detail paragraph left out. */
 const section = (accounts: ReadonlyArray<ConnectedAccountDto>, label: string, next: string) => {
-  const lines = render(accounts);
-  return lines
-    .slice(lines.indexOf(label), lines.indexOf(next))
-    .filter((line) => !line.startsWith("What ") && !line.startsWith("In a per-person"));
+  const root = document.createElement("div");
+  root.innerHTML = render(accounts);
+  const heading = Array.from(root.querySelectorAll("p")).find((p) => p.textContent === label);
+  heading?.parentElement?.nextElementSibling?.remove();
+  const lines = linesOf(root.innerHTML);
+  return lines.slice(lines.indexOf(label), lines.indexOf(next));
 };
 
 describe("Settings, Connected accounts", () => {

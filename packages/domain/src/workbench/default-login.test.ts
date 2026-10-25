@@ -64,11 +64,11 @@ describe("unchosenLoginSummary", () => {
     expect(unchosenLoginSummary("github", 1)).toEqual({
       words: "No GitHub login chosen",
       count: 1,
-      reason:
+      wordsAndSessionUse:
         "No GitHub login chosen: Mend holds 1 of yours, and sessions use only the chosen one.",
       remedy:
         "Connect GitHub again to choose it: run mend connect github, or Connect in Settings → Connected accounts.",
-      command: "mend connect github",
+      firstCommand: "mend connect github",
     });
   });
 

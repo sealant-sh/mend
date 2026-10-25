@@ -197,7 +197,6 @@ export type Login =
   | { readonly kind: "signed-in" }
   /** No usable login: none, or Mend's marks it invalid or archived. `reason` says which. */
   | { readonly kind: "none"; readonly reason: string }
-  /** Held, but none chosen: `reason` says so and what to do. */
   | { readonly kind: "unchosen"; readonly reason: string }
   /** Held, but observed expired or failing to refresh: whether it works is not known. */
   | { readonly kind: "unsure"; readonly reason: string };
@@ -234,7 +233,10 @@ export const loginsOf = (
     if (choice._tag === "unchosen") {
       if (!isCredentialProvider(harness)) continue;
       const summary = unchosenLoginSummary(harness, choice.accounts.length);
-      logins.set(harness, { kind: "unchosen", reason: `${summary.reason} ${summary.remedy}` });
+      logins.set(harness, {
+        kind: "unchosen",
+        reason: `${summary.wordsAndSessionUse} ${summary.remedy}`,
+      });
       continue;
     }
     const account = choice.account;

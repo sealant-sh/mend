@@ -46,7 +46,6 @@ export class ConnectAccountInput extends Schema.Class<ConnectAccountInput>("Conn
   secret: Schema.String.check(Schema.isNonEmpty()),
   /** The account to write, by name; without it or `accountId`, the person's chosen login. */
   name: Schema.optional(Schema.String),
-  /** The account to write, by id: a row's own Replace. */
   accountId: Schema.optional(Schema.String),
 }) {}
 

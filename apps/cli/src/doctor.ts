@@ -252,8 +252,7 @@ interface AccountDto {
   readonly metadata: Readonly<Record<string, unknown>>;
 }
 
-/** `isDefault` is absent from a Mend server older than chosen defaults. */
-interface IdentityDto {
+interface SealantIdentityWire {
   readonly sealantUserId: string;
   readonly accounts: ReadonlyArray<
     Omit<AccountDto, "isDefault"> & { readonly isDefault?: boolean | undefined }
@@ -542,7 +541,7 @@ export const runChecks = async (
     });
   }
 
-  const identity = signedIn ? await getJson<IdentityDto>(config, "/me/sealant") : null;
+  const identity = signedIn ? await getJson<SealantIdentityWire>(config, "/me/sealant") : null;
   const accounts: ReadonlyArray<AccountDto> | null =
     identity?.value?.accounts.map((account) => ({
       ...account,
@@ -569,7 +568,7 @@ export const runChecks = async (
         label: provider,
         state: "todo",
         detail: `${summary.words} · ${summary.count} connected`,
-        fix: summary.command,
+        fix: summary.firstCommand,
       });
       continue;
     }

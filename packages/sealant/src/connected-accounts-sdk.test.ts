@@ -1,7 +1,3 @@
-/**
- * Connecting an account through the REAL SDK against a stand-in control plane on loopback: which
- * account each connect asks Core to write.
- */
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 

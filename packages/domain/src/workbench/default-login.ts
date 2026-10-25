@@ -42,41 +42,37 @@ const PROVIDER_LABELS: Readonly<Record<CredentialProvider, string>> = {
   github: "GitHub",
 };
 
-/** What every surface says about a person who holds accounts for a provider and chose none. */
 export interface UnchosenLoginSummary {
   readonly words: string;
   readonly count: number;
-  /** The words, with what sessions do about it. */
-  readonly reason: string;
+  readonly wordsAndSessionUse: string;
   readonly remedy: string;
-  /** The remedy's first command. */
-  readonly command: string;
+  readonly firstCommand: string;
 }
 
-/** `count`: how many accounts of the provider the person holds, none of them chosen. */
 export const unchosenLoginSummary = (
   provider: CredentialProvider,
-  count: number,
+  heldUnchosen: number,
 ): UnchosenLoginSummary => {
   const label = PROVIDER_LABELS[provider];
   const words = `No ${label} login chosen`;
-  const reason = `${words}: Mend holds ${count} of yours, and sessions use only the chosen one.`;
-  if (count === 1) {
-    const command = `mend connect ${provider}`;
+  const wordsAndSessionUse = `${words}: Mend holds ${heldUnchosen} of yours, and sessions use only the chosen one.`;
+  if (heldUnchosen === 1) {
+    const firstCommand = `mend connect ${provider}`;
     return {
       words,
-      count,
-      reason,
-      command,
-      remedy: `Connect ${label} again to choose it: run ${command}, or Connect in Settings → Connected accounts.`,
+      count: heldUnchosen,
+      wordsAndSessionUse,
+      firstCommand,
+      remedy: `Connect ${label} again to choose it: run ${firstCommand}, or Connect in Settings → Connected accounts.`,
     };
   }
-  const command = `mend connect ${provider} --remove <name>`;
+  const firstCommand = `mend connect ${provider} --remove <name>`;
   return {
     words,
-    count,
-    reason,
-    command,
-    remedy: `Remove the others with ${command}, or Disconnect them in Settings → Connected accounts, then connect the one left again to choose it.`,
+    count: heldUnchosen,
+    wordsAndSessionUse,
+    firstCommand,
+    remedy: `Remove the others with ${firstCommand}, or Disconnect them in Settings → Connected accounts, then connect the one left again to choose it.`,
   };
 };

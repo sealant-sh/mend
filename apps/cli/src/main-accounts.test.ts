@@ -26,7 +26,6 @@ type Account = ReturnType<typeof account>;
 
 type Served = Omit<Account, "isDefault"> & { readonly isDefault: boolean | undefined };
 
-/** As a Mend server older than chosen defaults serves it, with no `isDefault`. */
 const older = (row: Account): Served => ({ ...row, isDefault: undefined });
 
 const startAccountsFake = (accounts: ReadonlyArray<Served>) => {

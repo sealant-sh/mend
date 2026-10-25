@@ -110,16 +110,12 @@ const normalise = (code: string) => code.toUpperCase().replaceAll(/[^0-9A-Z]/g, 
 const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? Object.fromEntries(Object.entries(value)) : {};
 
-/**
- * A connected account as `GET /api/me/sealant` answers it; named `default` unless said, and the
- * chosen default when so named unless said. `absent`: served as a Mend server older than chosen
- * defaults serves it, with no `isDefault`.
- */
 export interface FakeAccount {
   readonly provider: string;
   readonly status: string;
   readonly name?: string;
-  readonly isDefault?: boolean | "absent";
+  readonly isDefault?: boolean;
+  readonly servedByOlderMend?: true;
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
@@ -199,7 +195,7 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
             id: `account-${index}`,
             provider: account.provider,
             name: account.name ?? "default",
-            ...(account.isDefault === "absent"
+            ...(account.servedByOlderMend
               ? {}
               : { isDefault: account.isDefault ?? (account.name ?? "default") === "default" }),
             kind: "oauth-token",

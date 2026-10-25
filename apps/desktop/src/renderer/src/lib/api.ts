@@ -311,7 +311,6 @@ const call = async <M extends Method, P extends PathOf<M>>(
 
 // ─── the signed-in user's platform identity ─────────────────────────────────
 
-/** A Mend server older than chosen defaults sends no `isDefault`: its default is named `default`. */
 export const getSealantIdentity = () =>
   call("GET", "/api/me/sealant").then((identity) => ({
     ...identity,
@@ -321,10 +320,7 @@ export const getSealantIdentity = () =>
     })),
   }));
 
-/**
- * Forwards the credential to the platform under the user's own identity; Mend keeps nothing.
- * Without `accountId`, the server writes the person's chosen login.
- */
+/** Forwards the credential to the platform under the user's own identity; Mend keeps nothing. */
 export const connectAccount = (input: {
   readonly provider: ConnectedAccountProviderDto;
   readonly secret: string;
