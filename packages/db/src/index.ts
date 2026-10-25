@@ -64,6 +64,7 @@ export * from "./repos/store-refs.ts";
 export * from "./repos/worktree-changes.ts";
 export * from "./repos/worktrees.ts";
 export * from "./repos/previews.ts";
+export * from "./repos/preview-grants.ts";
 export * from "./repos/unique-violation.ts";
 export * from "./repos/harness-layouts.ts";
 export * from "./repos/session-git-ops.ts";

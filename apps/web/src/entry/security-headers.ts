@@ -59,7 +59,11 @@ const PERMISSIONS_POLICY = [
 
 /** Pages whose URL carries a credential: nothing about them may leave in a Referer. */
 const isCredentialedPage = (pathname: string): boolean =>
-  pathname === "/tty-embed" || pathname === "/pair" || pathname === "/authorize";
+  pathname === "/tty-embed" ||
+  pathname === "/pair" ||
+  pathname === "/authorize" ||
+  pathname === "/preview-auth" ||
+  pathname === "/api/preview-auth";
 
 export const securityHeaders = (input: SecurityHeaderInput): Readonly<Record<string, string>> => ({
   "content-security-policy": contentSecurityPolicy(input.appUrl),

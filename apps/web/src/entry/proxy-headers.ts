@@ -28,3 +28,21 @@ export const forwardHeaders = (request: ProxyRequestMetadata): http.OutgoingHttp
       .join(", "),
   };
 };
+
+const API_ALIASES = ["/preview-auth"] as const;
+
+export const apiTargetOf = (url: string): string | null => {
+  if (url === "/api" || url.startsWith("/api/")) return url;
+  const alias = API_ALIASES.find((path) => url === path || url.startsWith(`${path}?`));
+  return alias === undefined ? null : `/api${url}`;
+};
+
+/** httpxy prefixes a route's target path to the request's, so an alias's target ends in `/api`. */
+export const devProxyRoutes = (
+  apiTarget: string,
+): Readonly<Record<string, { readonly target: string }>> => ({
+  "/api/**": { target: apiTarget },
+  ...Object.fromEntries(
+    API_ALIASES.map((path) => [path, { target: `${apiTarget.replace(/\/$/, "")}/api` }]),
+  ),
+});

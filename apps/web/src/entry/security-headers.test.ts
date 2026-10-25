@@ -70,7 +70,13 @@ describe("the browser header policy (MEND-11)", () => {
   });
 
   it("sends no referrer from a page whose URL carries a credential", () => {
-    for (const pathname of ["/tty-embed", "/pair", "/authorize"]) {
+    for (const pathname of [
+      "/tty-embed",
+      "/pair",
+      "/authorize",
+      "/preview-auth",
+      "/api/preview-auth",
+    ]) {
       expect(securityHeaders({ pathname, appUrl: "https://mend.example" })["referrer-policy"]).toBe(
         "no-referrer",
       );

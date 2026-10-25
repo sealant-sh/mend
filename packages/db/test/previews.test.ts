@@ -171,6 +171,8 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
         expect(second?.preview.id).not.toBe(first.preview.id);
         expect(second?.preview.label).not.toBe(first.preview.label);
         expect(yield* previews.resolveByLabel(first.preview.label)).toEqual(first);
+        expect(yield* previews.byLabel(first.preview.label)).toEqual(first.preview);
+        expect(yield* previews.byId(first.preview.id)).toEqual(first.preview);
         const sql = yield* SqlClient.SqlClient;
         const count = yield* sql<{
           count: number;
@@ -219,6 +221,8 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
             binding: { _tag: "Unbound", reason: "removed" },
           };
           expect(yield* previews.resolveByLabel(before.preview.label)).toEqual(tombstone);
+          expect(yield* previews.byLabel(before.preview.label)).toEqual(tombstone.preview);
+          expect(yield* previews.byId(before.preview.id)).toEqual(tombstone.preview);
           expect(yield* Effect.flip(previews.ensureForWorktree(worktree))).toEqual(
             new WorktreeNotFoundError({ id: worktree }),
           );

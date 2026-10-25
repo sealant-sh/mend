@@ -3590,6 +3590,20 @@ const previewsMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX previews_project_idx ON previews (project_id)`;
 });
 
+const previewGrantsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE preview_grants (
+    token_hash text PRIMARY KEY CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+    preview_id text NOT NULL REFERENCES previews(id) ON DELETE CASCADE,
+    origin text NOT NULL,
+    user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+    credential text NOT NULL CHECK (credential ~ '^(session|device):.+$'),
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`;
+  yield* sql`CREATE INDEX preview_grants_preview_idx ON preview_grants (preview_id)`;
+  yield* sql`CREATE INDEX preview_grants_user_idx ON preview_grants (user_id)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3728,4 +3742,5 @@ export const migrations = {
   "0134_session_live_marks": sessionLiveMarksMigration,
   "0135_worktree_handoff": worktreeHandoffMigration,
   "0136_previews": previewsMigration,
+  "0137_preview_grants": previewGrantsMigration,
 };

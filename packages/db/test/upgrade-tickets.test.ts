@@ -9,8 +9,10 @@ import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import {
   hashUpgradeTicket,
+  isUpgradeTicket,
   makeUpgradeTicketsMemory,
   mintUpgradeTicket,
+  previewTicketScope,
   type TicketCredential,
   UPGRADE_TICKET_TTL_MS,
   UpgradeTicketsRepo,
@@ -102,6 +104,39 @@ const ticketContract = (
           userId: "alice",
           credential: null,
           expiresAt: new Date("2030-02-01T00:00:30.000Z"),
+        });
+        expect(yield* tickets.consume(request)).toBeNull();
+      }),
+    ));
+
+  it("a preview ticket opens only its own preview at its exact origin", async () =>
+    runFixture(({ tickets, signIn }) =>
+      Effect.gen(function* () {
+        const at = { previewId: "pv-1", origin: "https://k7f2.preview.example" };
+        const minted = yield* tickets.mint({
+          userId: "alice",
+          target: "preview",
+          scope: previewTicketScope(at),
+          credential: signIn,
+        });
+        const request = {
+          ticket: minted.ticket,
+          target: "preview",
+          scope: previewTicketScope(at),
+        } satisfies Parameters<typeof tickets.consume>[0];
+        for (const elsewhere of [
+          { ...at, origin: "https://k7f2.preview.example:8443" },
+          { ...at, origin: "http://k7f2.preview.example" },
+          { ...at, previewId: "pv-2" },
+        ]) {
+          expect(
+            yield* tickets.consume({ ...request, scope: previewTicketScope(elsewhere) }),
+          ).toBeNull();
+        }
+        expect(yield* tickets.consume({ ...request, target: "tty" })).toBeNull();
+        expect(yield* tickets.consume(request)).toMatchObject({
+          userId: "alice",
+          credential: signIn,
         });
         expect(yield* tickets.consume(request)).toBeNull();
       }),
@@ -204,6 +239,10 @@ describe("upgrade tickets", () => {
   it("mints recognisable, url-safe tickets and stores only a hash", () => {
     const ticket = mintUpgradeTicket();
     expect(ticket).toMatch(/^mut_[A-Za-z0-9_-]{43}$/);
+    expect(isUpgradeTicket(ticket)).toBe(true);
+    for (const other of [`${ticket}x`, ticket.slice(0, -1), `mpg_${ticket.slice(4)}`, ""]) {
+      expect(isUpgradeTicket(other)).toBe(false);
+    }
     expect(hashUpgradeTicket(ticket)).toHaveLength(64);
     expect(hashUpgradeTicket(ticket)).not.toContain(ticket);
     expect(mintUpgradeTicket()).not.toBe(ticket);

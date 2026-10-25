@@ -229,9 +229,39 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
         registration,
       });
 
-      const handler = Effect.fn("Auth.handler")((request: Request) =>
-        Effect.promise(() => auth.handler(request)),
-      );
+      // Better Auth logs a sign-in it failed to delete on sign-out and answers success anyway,
+      // which would leave every grant and ticket of that sign-in standing (docs/adr/0017). So a
+      // sign-out it admitted is answered only once that sign-in's row is gone.
+      const signInOf = (headers: Headers) =>
+        Effect.promise(() =>
+          auth.api.getSession({ headers, query: { disableRefresh: true } }),
+        ).pipe(
+          Effect.map((found) =>
+            found === null ? null : { id: found.session.id, userId: found.user.id },
+          ),
+        );
+
+      const handler = Effect.fn("Auth.handler")(function* (request: Request) {
+        const signingOut =
+          request.method === "POST" && new URL(request.url).pathname === "/api/auth/sign-out";
+        const signIn = signingOut ? yield* signInOf(request.headers) : null;
+        const response = yield* Effect.promise(() => auth.handler(request));
+        if (signIn === null || !response.ok) return response;
+        const gone = yield* Effect.tryPromise(async () => {
+          await pool.query(`DELETE FROM "session" WHERE id = $1 AND "userId" = $2`, [
+            signIn.id,
+            signIn.userId,
+          ]);
+          const left = await pool.query(`SELECT 1 FROM "session" WHERE id = $1`, [signIn.id]);
+          return left.rowCount === 0;
+        }).pipe(Effect.orElseSucceed(() => false));
+        if (gone) return response;
+        yield* Effect.logError("auth: a sign-out could not delete its sign-in");
+        return Response.json(
+          { message: "Signing out did not complete. Try again." },
+          { status: 503, headers: { "cache-control": "no-store" } },
+        );
+      });
 
       // A fixed operator token for dev/device testing: MEND_STATIC_TOKEN=xyz
       // makes `Bearer xyz` authenticate as the FIRST user. Opt-in via env,

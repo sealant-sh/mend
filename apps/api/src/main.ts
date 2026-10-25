@@ -61,6 +61,7 @@ import {
   ServiceObservationsRepoLive,
   ServicesRepoLive,
   PreviewsRepoLive,
+  PreviewGrantsRepoLive,
   SkillsRepoLive,
   SlackDefaultsRepoLive,
   SlackEventClaimsRepoLive,
@@ -221,6 +222,7 @@ import { apiMiddleware } from "./http-middleware.ts";
 import { TourRequestsLive } from "./landing-tours.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
 import { OwnerLandingLive } from "./owner-landing.ts";
+import { PreviewConfigOff, PreviewIdentityLive } from "./preview-identity.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
 import { RedactingConsoleLive } from "./redacting-console.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
@@ -231,6 +233,7 @@ import { MendApiLive } from "./routes/api-live.ts";
 import { EventsRoutes } from "./routes/events.ts";
 import { GhLive } from "./routes/github.ts";
 import { WorkspaceHostUserNamespacesLive } from "./routes/machine.ts";
+import { PreviewAuthRoutes } from "./routes/preview-auth.ts";
 import { UrlBearersLive } from "./routes/upgrade-tickets.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
@@ -271,6 +274,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SessionProcessesRepoLive,
   ServicesRepoLive,
   PreviewsRepoLive.pipe(Layer.provide(NodeCrypto.layer)),
+  PreviewGrantsRepoLive,
   ServiceForwardsRepoLive,
   ServiceObservationsRepoLive,
   SessionRunsRepoLive,
@@ -433,6 +437,7 @@ const ServerLive = Layer.unwrap(
         AuthRoutes,
         EventsRoutes,
         WebSocketRoutes,
+        PreviewAuthRoutes,
         // Headers, origin policy, the error boundary and the budgets, in the order they promise
         // (http-middleware.ts; MEND-05, MEND-11).
         apiMiddleware({ network, budgets, trustedProxies, errorDetail }),
@@ -447,6 +452,7 @@ const ServerLive = Layer.unwrap(
         ),
       ),
       Layer.provide(ConnectionRegistryLive),
+      Layer.provide(PreviewIdentityLive.pipe(Layer.provide(PreviewConfigOff))),
       // One LISTEN per process, fanned out to every SSE stream; the worker needs none.
       Layer.provide(EventBusLive),
     );

@@ -1,6 +1,6 @@
 import { encodePreviewLabel, PreviewId, type PreviewLabel, type WorktreeId } from "@mend/domain";
 import { Preview, PreviewView, resolvePreviewBinding } from "@mend/domain/workbench";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, type SQL, sql } from "drizzle-orm";
 import { Context, Crypto, Effect, Layer, Schema } from "effect";
 
 import { type MendDatabase, MendDB } from "../client.ts";
@@ -24,6 +24,8 @@ export class PreviewsRepo extends Context.Service<
       id: WorktreeId,
     ) => Effect.Effect<ReadonlyArray<PreviewView>, WorktreeNotFoundError>;
     readonly resolveByLabel: (label: PreviewLabel) => Effect.Effect<PreviewView | null>;
+    readonly byId: (id: PreviewId) => Effect.Effect<Preview | null>;
+    readonly byLabel: (label: PreviewLabel) => Effect.Effect<Preview | null>;
   }
 >()("@mend/db/PreviewsRepo") {}
 
@@ -185,6 +187,27 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         );
       }, Effect.catchTags(queryErrorsDie));
 
-      return { ensureForWorktree, resolveByLabel };
+      const rowWhere = (where: SQL) =>
+        db
+          .select()
+          .from(previews)
+          .where(where)
+          .limit(1)
+          .pipe(
+            Effect.orDie,
+            Effect.flatMap(([row]) =>
+              row === undefined ? Effect.succeed(null) : decodePreview(row),
+            ),
+          );
+
+      const byId = Effect.fn("PreviewsRepo.byId")(function* (id: PreviewId) {
+        return yield* rowWhere(eq(previews.id, id));
+      });
+
+      const byLabel = Effect.fn("PreviewsRepo.byLabel")(function* (label: PreviewLabel) {
+        return yield* rowWhere(eq(previews.label, label));
+      });
+
+      return { ensureForWorktree, resolveByLabel, byId, byLabel };
     }),
   );

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { loadPublicNetwork } from "@mend/network";
 import { Effect } from "effect";
 
-import { forwardHeaders } from "./proxy-headers.ts";
+import { apiTargetOf, forwardHeaders } from "./proxy-headers.ts";
 import { securityHeaders } from "./security-headers.ts";
 
 /**
@@ -95,13 +95,14 @@ const proxyRequest = (
   target: URL,
   request: http.IncomingMessage,
   response: http.ServerResponse,
+  upstreamPath: string | null,
 ): void => {
   const upstream = http.request(
     {
       host: target.hostname,
       port: target.port,
       method: request.method,
-      path: request.url,
+      path: upstreamPath ?? request.url,
       headers: forwardHeaders({
         headers: request.headers,
         remoteAddress: request.socket.remoteAddress,
@@ -146,7 +147,8 @@ const proxyRequest = (
 const isApiPath = (url: string): boolean => url === "/api" || url.startsWith("/api/");
 
 const server = http.createServer((request, response) => {
-  proxyRequest(isApiPath(request.url ?? "/") ? apiUrl : appUrl, request, response);
+  const apiTarget = apiTargetOf(request.url ?? "/");
+  proxyRequest(apiTarget === null ? appUrl : apiUrl, request, response, apiTarget);
 });
 
 // ─── WebSocket upgrades: pipe both sockets raw, verbatim ────────────────────

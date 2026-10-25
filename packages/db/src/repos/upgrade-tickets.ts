@@ -1,11 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
 
-import { and, eq, gt, lt, sql, type SQLWrapper } from "drizzle-orm";
+import { and, eq, gt, lt, sql } from "drizzle-orm";
 import { Clock, DateTime, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { upgradeTickets } from "../schema/workbench.ts";
+import { credentialStanding } from "./credential-standing.ts";
 
 /**
  * Upgrade tickets (docs/adr/0004-access-without-a-private-network.md, "Upgrade tickets"; MEND-08).
@@ -37,6 +38,7 @@ export const UPGRADE_TICKET_TARGETS = [
   "keys-bridge",
   "tty-embed",
   "tty-renew",
+  "preview",
 ] as const;
 export type UpgradeTicketTarget = (typeof UPGRADE_TICKET_TARGETS)[number];
 
@@ -45,6 +47,8 @@ export const hashUpgradeTicket = (ticket: string): string =>
 
 /** `mut_` + 32 random bytes, base64url: recognisable in a log, and never a session or device token. */
 export const mintUpgradeTicket = (): string => `mut_${randomBytes(32).toString("base64url")}`;
+
+export const isUpgradeTicket = (value: string): boolean => /^mut_[A-Za-z0-9_-]{43}$/.test(value);
 
 /**
  * The parameters a ticket is bound to, as one string: sorted `key=value` pairs of the addressing
@@ -57,6 +61,9 @@ export const upgradeTicketScope = (params: Readonly<Record<string, string | null
     .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
     .toSorted()
     .join("&");
+
+export const previewTicketScope = (at: { readonly previewId: string; readonly origin: string }) =>
+  upgradeTicketScope({ preview: at.previewId, origin: at.origin });
 
 /** The credential that minted a ticket, as stored: a sign-in (`session:<id>`) or a paired device. */
 export type TicketCredential = `session:${string}` | `device:${string}`;
@@ -120,17 +127,6 @@ export class UpgradeTicketsRepo extends Context.Service<
   }
 >()("@mend/db/UpgradeTicketsRepo") {}
 
-/** True while the credential in `column` still stands, judged by the database at `now`. */
-const stands = (column: SQLWrapper, now: Date) => sql<boolean>`(
-  ${column} IS NULL
-  OR (${column} LIKE 'session:%' AND EXISTS (
-    SELECT 1 FROM "session" s
-     WHERE s."id" = substr(${column}, 9) AND s."expiresAt" > ${now.toISOString()}::timestamptz))
-  OR (${column} LIKE 'device:%' AND EXISTS (
-    SELECT 1 FROM device_tokens d
-     WHERE d.id = substr(${column}, 8) AND d.revoked_at IS NULL))
-)`;
-
 export const UpgradeTicketsRepoLive: Layer.Layer<UpgradeTicketsRepo, never, MendDB> = Layer.effect(
   UpgradeTicketsRepo,
   Effect.gen(function* () {
@@ -171,7 +167,7 @@ export const UpgradeTicketsRepoLive: Layer.Layer<UpgradeTicketsRepo, never, Mend
         eq(upgradeTickets.target, input.target),
         eq(upgradeTickets.scope, input.scope),
         gt(upgradeTickets.expiresAt, now),
-        stands(upgradeTickets.credential, now),
+        credentialStanding(upgradeTickets.credential, now),
       );
       const answer = {
         userId: upgradeTickets.userId,
@@ -198,7 +194,9 @@ export const UpgradeTicketsRepoLive: Layer.Layer<UpgradeTicketsRepo, never, Mend
       // A typed select, not `db.execute`: on drizzle-orm 1.0.0-rc.4 `execute` over @effect/sql-pg
       // resolves to pg's raw result object while its type still says an array of rows.
       const rows = yield* db
-        .select({ stands: stands(sql`${credential}::text`, yield* DateTime.nowAsDate) })
+        .select({
+          stands: credentialStanding(sql`${credential}::text`, yield* DateTime.nowAsDate),
+        })
         .from(sql`(SELECT 1) AS credential`)
         .pipe(Effect.orDie);
       return rows[0]?.stands === true;

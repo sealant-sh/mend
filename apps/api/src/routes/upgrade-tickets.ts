@@ -35,6 +35,7 @@ const SCOPE_KEYS: Readonly<Record<UpgradeTicketTarget, ReadonlyArray<string>>> =
   "tty-renew": ["process", "session"],
   "service-tunnel": ["service"],
   "keys-bridge": ["host"],
+  preview: ["preview", "origin"],
 };
 
 export const scopeOf = (

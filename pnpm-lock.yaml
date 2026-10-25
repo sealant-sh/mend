@@ -345,6 +345,9 @@ importers:
       esbuild:
         specifier: 'catalog:'
         version: 0.28.1
+      fast-check:
+        specifier: 'catalog:'
+        version: 4.8.0
       tsx:
         specifier: 'catalog:'
         version: 4.23.12

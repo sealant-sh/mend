@@ -554,6 +554,26 @@ export const previews = pgTable(
   ],
 );
 
+export const previewGrants = pgTable(
+  "preview_grants",
+  {
+    tokenHash: text().primaryKey(),
+    previewId: text()
+      .$type<PreviewId>()
+      .notNull()
+      .references(() => previews.id, { onDelete: "cascade" }),
+    origin: text().notNull(),
+    // FK to "user"(id) ON DELETE CASCADE, declared in the migration.
+    userId: text().notNull(),
+    credential: text().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("preview_grants_preview_idx").on(table.previewId),
+    index("preview_grants_user_idx").on(table.userId),
+  ],
+);
+
 /**
  * Pre-provisioned session skeletons kept ready for instant session starts. `id` is the session id
  * the claiming session adopts; the session socket dir derives from it. The skeleton's worktree is
