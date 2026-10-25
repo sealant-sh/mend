@@ -146,7 +146,6 @@ import { NetworkConfig, NetworkConfigLive, trustedProxyCidrs } from "@mend/netwo
 import {
   asSealantUser,
   PersonLayoutPlatformLive,
-  type SealantClient,
   type SealantClients,
   SealantLiveFromEnv,
 } from "@mend/sealant";
@@ -164,9 +163,7 @@ import {
   CaptureSealsStoreLive,
   DotfilesClonerLive,
   FollowUpDeliveryLive,
-  ForwardAdapter,
   ForwardAdapterLive,
-  ForwardPolicy,
   HarnessLayoutConfigLive,
   FollowUpLauncherLive,
   ProtocolHostLive,
@@ -364,14 +361,7 @@ const SecretCipherLayer: Layer.Layer<SecretCipher> = SecretCipherLive.pipe(
 const BridgeLive: Layer.Layer<AgentBridge> = AgentBridgeLive.pipe(
   Layer.provide(MendKeysConfigLive),
 );
-// ADR 0017's open decision (`BoundDockerRule`). Nothing dials session-bound yet, so `refuse`
-// changes nothing anyone sees today; production's answer goes here.
-const ForwardPolicyLayer: Layer.Layer<ForwardPolicy> = Layer.succeed(ForwardPolicy, {
-  afterBoundLoopbackRefused: "refuse",
-});
-const ForwardAdapterLayer: Layer.Layer<ForwardAdapter, never, SealantClient> =
-  ForwardAdapterLive.pipe(Layer.provide(ForwardPolicyLayer));
-const ServiceHostLayer = ServiceHostLive.pipe(Layer.provide(ForwardAdapterLayer));
+const ServiceHostLayer = ServiceHostLive.pipe(Layer.provide(ForwardAdapterLive));
 const ProtocolHostLayer = ProtocolHostLive;
 // The session channel (docs/KUBERNETES.md): one registry shared by the per-session socket host
 // and the optional network listener; the deployment mode decides whether sockets are created.
@@ -447,7 +437,6 @@ const ServerLive = Layer.unwrap(
     const budgets = yield* Budgets;
     const trustedProxies = yield* trustedProxyCidrs;
     const errorDetail = yield* ErrorDetail;
-    // MEND_PREVIEW_*: refuses to start on a setup that cannot run; nothing set leaves previews off.
     const previews = yield* loadPreviewSetup;
     const router = HttpRouter.serve(
       Layer.mergeAll(
@@ -464,7 +453,6 @@ const ServerLive = Layer.unwrap(
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
       Layer.provide(RawFileTracingDisabledLive),
     );
-    // The preview gateway's own listener (ADR 0017) beside the router, on the router's identity.
     return servePreviews(router, {
       setup: previews,
       appUrl: network.appUrl,
@@ -916,7 +904,7 @@ const MainLive = Layer.unwrap(
       Layer.provide(GhLive),
       Layer.provide(HostEnvironmentLive),
       Layer.provide(AuthLive.pipe(Layer.provide(RegistrationPolicyLive))),
-      Layer.provide(Layer.mergeAll(NetworkConfigLive, ForwardAdapterLayer, ServiceHostLayer)),
+      Layer.provide(Layer.mergeAll(NetworkConfigLive, ForwardAdapterLive, ServiceHostLayer)),
       // One Sealant client per user, provisioned on first use (docs/SEALANT-IDENTITY.md), and
       // every call about a workspace made as the person who created it, for whoever may work in
       // it (`WorkspaceCaller`): a second person's join reaches the holder's executor.

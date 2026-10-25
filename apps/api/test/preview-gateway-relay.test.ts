@@ -746,6 +746,32 @@ describe("the preview gateway relays to the app", () => {
     10_000,
   );
 
+  it.live("never tries the Docker route for the session-bound dial loopback refused", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const forwards = localForwards([
+          {
+            workspaceId: WORKSPACE,
+            port: APP_PORT,
+            entry: { kind: "refused", reason: "connection-refused" },
+          },
+        ]);
+        const world = yield* gatewayWorld({ forwards: forwards.layer });
+        const reply = yield* getAs(world, world.cookieFor("carol", "web"), "/");
+        expect(reply.status, "nothing listened on the process's own loopback").toBe(502);
+        expect(reply.body, "and the page says so").toContain("nothing listens");
+        expect(
+          forwards.opens.map((open) => open.destination.route),
+          "the dial stopped at loopback: the sidecar cannot prove the session",
+        ).toEqual(["loopback"]);
+        expect(
+          forwards.opens.map((open) => open.destination.binding),
+          "and asked for the attempt's session",
+        ).toEqual([{ kind: "session", session: PLATFORM_SESSION }]);
+      }),
+    ),
+  );
+
   it.live(
     "retries a bodiless GET once on a fresh forward when a reused one closes before answering",
     () =>

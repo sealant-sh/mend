@@ -1069,7 +1069,6 @@ export const serviceHostStubLayer = Layer.succeed(ServiceHost, {
 
 export const forwardAdapterReadyLayer: Layer.Layer<ForwardAdapter> = adapterLayer(
   scriptedSealant(async () => fakeForward(echo).forward).layer,
-  "refuse",
 );
 
 /**

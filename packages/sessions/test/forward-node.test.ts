@@ -40,9 +40,7 @@ const connectWith = (
   lookup?: Parameters<typeof scriptedSealant>[1],
 ): Promise<ForwardSocketConnect> =>
   Effect.runPromise(
-    forwardSockets.pipe(
-      Effect.provide(adapterLayer(scriptedSealant(script, lookup).layer, "refuse")),
-    ),
+    forwardSockets.pipe(Effect.provide(adapterLayer(scriptedSealant(script, lookup).layer))),
   );
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

@@ -38,7 +38,6 @@ const options = { timeoutMs: 5_000, purpose: "benchmark" } as const;
 const probeWith = (
   script: DialScript,
   target: ForwardTarget,
-  rule: "refuse" | "allow-port-scoped" = "refuse",
   probeOptions: Parameters<ForwardAdapter["Service"]["probe"]>[1] = options,
 ) => {
   const sealant = scriptedSealant(script);
@@ -48,7 +47,7 @@ const probeWith = (
       const adapter = yield* ForwardAdapter;
       const record = yield* adapter.probe(target, probeOptions);
       return { record, ledger: sealant.ledger, logged: log.records };
-    }).pipe(Effect.provide(Layer.merge(adapterLayer(sealant.layer, rule), log.layer))),
+    }).pipe(Effect.provide(Layer.merge(adapterLayer(sealant.layer), log.layer))),
   );
 };
 
@@ -141,36 +140,17 @@ describe("the forward adapter's dial", () => {
   });
 
   describe("a session-bound target that loopback refuses", () => {
-    it("stops there under `refuse`", async () => {
-      const { record, ledger } = await probeWith(loopbackRefuses, boundTarget, "refuse");
+    it("stops there: the sidecar cannot prove the session", async () => {
+      const { record, ledger } = await probeWith(loopbackRefuses, boundTarget);
       expect(record).toMatchObject({ kind: "failed", issue: { reason: "connection-refused" } });
       expect(ledger.dials.map((dial) => dial.route)).toEqual(["loopback"]);
     });
 
-    it("tries the sidecar port-scoped under `allow-port-scoped`, and says the session was not proved", async () => {
-      const { record, ledger } = await probeWith(loopbackRefuses, boundTarget, "allow-port-scoped");
-      expect(record).toMatchObject({
-        kind: "ready",
-        requested: { kind: "session", session: "pty-7" },
-        arrival: { route: "port-fallback", proof: { kind: "port" }, requested: "pty-7" },
-      });
-      expect(ledger.dials).toEqual([
-        { route: "loopback", binding: { kind: "session", session: "pty-7" } },
-        { route: "docker", binding: { kind: "port" } },
-      ]);
-    });
-
-    it("never tries the sidecar after any other loopback refusal, under either rule", async () => {
-      for (const rule of ["refuse", "allow-port-scoped"] as const) {
-        const { ledger } = await probeWith(
-          async () => {
-            throw refusal("peer-mismatch", 409);
-          },
-          boundTarget,
-          rule,
-        );
-        expect(ledger.dials.map((dial) => dial.route)).toEqual(["loopback"]);
-      }
+    it("never tries the sidecar after any other loopback refusal either", async () => {
+      const { ledger } = await probeWith(async () => {
+        throw refusal("peer-mismatch", 409);
+      }, boundTarget);
+      expect(ledger.dials.map((dial) => dial.route)).toEqual(["loopback"]);
     });
   });
 
@@ -202,7 +182,7 @@ describe("the forward adapter's dial", () => {
       const record = await Effect.runPromise(
         Effect.gen(function* () {
           return yield* (yield* ForwardAdapter).probe(portTarget, options);
-        }).pipe(Effect.provide(adapterLayer(sealant.layer, "refuse"))),
+        }).pipe(Effect.provide(adapterLayer(sealant.layer))),
       );
       expect(record).toMatchObject({ kind: "failed", issue: { reason: code }, attempts: [] });
       expect(sealant.ledger.dials).toEqual([]);
@@ -220,7 +200,7 @@ describe("the forward adapter's dial", () => {
     const record = await Effect.runPromise(
       Effect.gen(function* () {
         return yield* (yield* ForwardAdapter).probe(portTarget, options);
-      }).pipe(Effect.provide(adapterLayer(sealant.layer, "refuse"))),
+      }).pipe(Effect.provide(adapterLayer(sealant.layer))),
     );
     expect(record).toMatchObject({
       kind: "failed",
@@ -252,7 +232,7 @@ describe("the forward adapter's dial", () => {
       const record = await Effect.runPromise(
         Effect.gen(function* () {
           return yield* (yield* ForwardAdapter).probe(portTarget, options);
-        }).pipe(Effect.provide(adapterLayer(sealant.layer, "refuse"))),
+        }).pipe(Effect.provide(adapterLayer(sealant.layer))),
       );
       expect(record).toMatchObject({ kind: "failed", issue: { reason } });
       expect(
@@ -283,7 +263,7 @@ describe("the forward adapter's dial", () => {
     const exit = await Effect.runPromiseExit(
       Effect.gen(function* () {
         return yield* (yield* ForwardAdapter).probe(portTarget, options);
-      }).pipe(Effect.provide(Layer.merge(adapterLayer(sealant.layer, "refuse"), log.layer))),
+      }).pipe(Effect.provide(Layer.merge(adapterLayer(sealant.layer), log.layer))),
     );
     expect(Exit.isFailure(exit)).toBe(true);
     expect(log.records).toEqual([
@@ -305,7 +285,6 @@ describe("the forward adapter's dial", () => {
         return untilAborted(signal);
       },
       portTarget,
-      "refuse",
       { timeoutMs: 150, purpose: "benchmark" },
     );
     expect(Date.now() - started).toBeLessThan(1_000);
@@ -324,12 +303,10 @@ describe("the forward adapter's dial", () => {
 describe("the forward adapter's cancellation", () => {
   it("gives up a dial in flight when the signal aborts, with no sidecar attempt after it", async () => {
     const lifetime = new AbortController();
-    const pending = probeWith(
-      (_destination, signal) => untilAborted(signal),
-      portTarget,
-      "refuse",
-      { ...options, signal: lifetime.signal },
-    );
+    const pending = probeWith((_destination, signal) => untilAborted(signal), portTarget, {
+      ...options,
+      signal: lifetime.signal,
+    });
     setTimeout(() => lifetime.abort(), 20);
     const { record, ledger, logged } = await pending;
     expect(record).toMatchObject({
@@ -352,7 +329,7 @@ describe("the forward adapter's cancellation", () => {
           ...options,
           signal: lifetime.signal,
         });
-      }).pipe(Effect.provide(adapterLayer(sealant.layer, "refuse"))),
+      }).pipe(Effect.provide(adapterLayer(sealant.layer))),
     );
     expect(Date.now() - started).toBeLessThan(1_000);
     expect(record).toMatchObject({
@@ -367,7 +344,7 @@ describe("the forward adapter's cancellation", () => {
   it("does not dial at all when the signal already aborted", async () => {
     const lifetime = new AbortController();
     lifetime.abort();
-    const { record, ledger } = await probeWith(openPort(), portTarget, "refuse", {
+    const { record, ledger } = await probeWith(openPort(), portTarget, {
       ...options,
       signal: lifetime.signal,
     });
@@ -397,7 +374,7 @@ describe("the forward adapter's cancellation", () => {
         yield* Fiber.interrupt(fiber);
         opening.resolve(late);
         yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
-      }).pipe(Effect.provide(Layer.merge(adapterLayer(sealant.layer, "refuse"), log.layer))),
+      }).pipe(Effect.provide(Layer.merge(adapterLayer(sealant.layer), log.layer))),
     );
     expect(late.closedByClient()).toBe(true);
     expect(log.records).toHaveLength(1);
@@ -424,7 +401,7 @@ describe("the forward adapter's cancellation", () => {
             return second.closedByClient();
           }),
         );
-      }).pipe(Effect.provide(adapterLayer(sealant.layer, "refuse"))),
+      }).pipe(Effect.provide(adapterLayer(sealant.layer))),
     );
     expect(exit).toEqual(Exit.succeed(true));
   });
@@ -456,7 +433,7 @@ const withBytes = <A>(
         onFailure: (failure) => ({ ok: false as const, failure }),
         onSuccess: (value) => ({ ok: true as const, value }),
       }),
-      Effect.provide(adapterLayer(scriptedSealant(async () => forward.forward).layer, "refuse")),
+      Effect.provide(adapterLayer(scriptedSealant(async () => forward.forward).layer)),
     ),
   );
 

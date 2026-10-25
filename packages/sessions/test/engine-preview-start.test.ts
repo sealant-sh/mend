@@ -85,7 +85,7 @@ const listeningPort = (dead: ReadonlySet<string>) => {
     if (!listening()) throw refusal("connection-refused");
     return fakeForward(echo).forward;
   });
-  return { state, layer: adapterLayer(scripted.layer, "refuse") };
+  return { state, layer: adapterLayer(scripted.layer) };
 };
 
 const preparePreview = (

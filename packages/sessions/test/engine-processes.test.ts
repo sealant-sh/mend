@@ -57,7 +57,6 @@ import { adapterLayer, echo, fakeForward, scriptedSealant } from "./forward-fixt
  */
 const makeProcessClock = makeEngineClock(["processes", "sessions", "checkpoints"]);
 
-/** A Stop by the sessions' owner in these worlds; none of them has a preview to latch. */
 const ownerStop = { kind: "person", userId: "user-fixture" } as const;
 
 describe("SessionEngine", () => {
@@ -1380,7 +1379,7 @@ describe("SessionEngine", () => {
         }),
       {
         sealantLayer: sealantLaunchLayer(created),
-        forwardAdapterLayer: adapterLayer(gone.layer, "refuse"),
+        forwardAdapterLayer: adapterLayer(gone.layer),
       },
     );
     expect(Date.now() - started).toBeLessThan(5_000);

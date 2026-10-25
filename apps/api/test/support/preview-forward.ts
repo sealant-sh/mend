@@ -18,13 +18,7 @@ import type { BoundedWorkspaceForward, BoundedWorkspaceForwardClose } from "@sea
 import { ForwardResetError } from "@sealant/sdk";
 import { Effect, Layer } from "effect";
 
-/**
- * Workspace ports as local TCP ports, for the preview gateway's tests: a `SealantClient` that only
- * looks workspaces up and opens forwards, under the real `ForwardAdapterLive` with Docker refused
- * after a bound loopback refusal. Each `(workspaceId, port)` dials `127.0.0.1:<localPort>`, or is
- * refused with a typed reason. The sidecar route never answers (`name-unresolved`), so a refusal
- * is reported as loopback's.
- */
+/** The sidecar route never answers (`name-unresolved`), so a refusal is reported as loopback's. */
 
 export type LocalForwardRefusal = "connection-refused" | "binding-unsupported";
 
@@ -38,7 +32,6 @@ export interface LocalForwardRoute {
   readonly entry: LocalForwardEntry;
 }
 
-/** One open the SDK was asked for, the sidecar attempt included. */
 export interface LocalForwardOpen {
   readonly workspaceId: string;
   readonly port: number;
@@ -53,12 +46,9 @@ export interface LocalForwardOptions {
 }
 
 export interface LocalForwards {
-  /** `ForwardAdapter` and `SealantClient`, and a logger that records each dial (it replaces the default). */
   readonly layer: Layer.Layer<ForwardAdapter | SealantClient>;
-  /** Every dial the adapter finished: target, requested binding, purpose, arrival or issue. */
   readonly dials: ReadonlyArray<ForwardDialRecord>;
   readonly opens: ReadonlyArray<LocalForwardOpen>;
-  /** Points `(workspaceId, port)` somewhere else from the next dial on. */
   readonly route: (route: LocalForwardRoute) => void;
 }
 
@@ -276,7 +266,7 @@ export const localForwards = (
   });
   const log = dialLog();
   return {
-    layer: Layer.mergeAll(adapterLayer(sealant, "refuse"), sealant, log.layer),
+    layer: Layer.mergeAll(adapterLayer(sealant), sealant, log.layer),
     dials: log.records,
     opens,
     route,
