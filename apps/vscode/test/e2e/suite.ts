@@ -7,8 +7,9 @@
  *
  * Inputs (environment): MEND_E2E_URL, MEND_E2E_OWNER_TOKEN (the first account's bearer, used only
  * to approve the browser sign-in and to read the change), MEND_E2E_PROJECT, MEND_E2E_RESULT (where
- * the evidence goes as JSON). Each step's evidence is written as it passes, so a failure leaves
- * what did pass on disk.
+ * the evidence goes as JSON), MEND_E2E_PICK (the extension session 1's window installs for session
+ * 2 to get) and MEND_E2E_SEED_UI (a local extension no workspace may get). Each step's evidence is
+ * written as it passes, so a failure leaves what did pass on disk.
  */
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -39,9 +40,8 @@ const projectName = env("MEND_E2E_PROJECT");
 const resultFile = env("MEND_E2E_RESULT");
 const runId = env("MEND_E2E_RUN_ID");
 const editorMode = process.env["MEND_E2E_EDITOR"] === "off" ? "off" : "on";
-const seededWorkspaceExtension = process.env["MEND_E2E_SEED_WORKSPACE"] ?? "";
+const pickedExtension = env("MEND_E2E_PICK");
 const seededUiExtension = process.env["MEND_E2E_SEED_UI"] ?? "";
-const seededUuid = process.env["MEND_E2E_SEED_UUID"] ?? "";
 const priorSession = process.env["MEND_E2E_PRIOR_SESSION"] ?? "";
 
 const evidence: Record<string, unknown> = { serverUrl, home: os.homedir() };
@@ -55,6 +55,11 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** From createTerminal to the first command's answer in the Remote-SSH window. */
 const FIRST_TERMINAL_BUDGET_MS = 10_000;
+/**
+ * VS Code exits when any window's test run ends, so a Remote-SSH window waits for the first window
+ * to finish the run. This bound only ends a stuck run.
+ */
+const REMOTE_WINDOW_OPEN_MS = 25 * 60_000;
 
 const until = async <T>(
   what: string,
@@ -230,20 +235,60 @@ const sshIn = (alias: string, user: string, script: string, timeoutMs = 60_000) 
     { encoding: "utf8", timeout: timeoutMs },
   );
 
+/** Session 1's window lives the owner's story and installs an extension; session 2's only reports. */
+type RemoteRole = "first" | "second";
+
+const rolesFile = `${resultFile}.windows.json`;
+const reportFile = (role: RemoteRole) =>
+  role === "first" ? `${resultFile}.remote.json` : `${resultFile}.second.json`;
+
+const sshUserOf = (folder: vscode.Uri): string =>
+  /^ssh-remote\+([^@]+)@/.exec(folder.authority)?.[1] ?? "";
+
+const roleOf = (folder: vscode.Uri): RemoteRole => {
+  const role = field(JSON.parse(fs.readFileSync(rolesFile, "utf8")), sshUserOf(folder));
+  if (role !== "first" && role !== "second") {
+    throw new Error(`no role for the Remote-SSH window of ${folder.authority}`);
+  }
+  return role;
+};
+
+const carriedOf = (report: unknown): ReadonlyArray<string> => {
+  const carried = field(report, "carried");
+  return Array.isArray(carried) ? carried.map(String) : [];
+};
+
 /**
- * The window step 9 opens is a Remote-SSH window over the managed alias, and extension tests run
- * in every window of the instance: there the suite reads the workspace through Remote-SSH and
- * says what it found, for the first window to wait on.
+ * Install the way the Extensions panel does, in this window's workspace. `donotSync` keeps Settings
+ * Sync from asking, which the test host refuses; Mend still sees a person's install.
  */
-const remoteWindow = async (): Promise<void> => {
-  const enteredAt = Date.now();
-  const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
-  if (folder === undefined) throw new Error("the Remote-SSH window has no folder");
+const pickInWorkspace = async () => {
+  const installed = Date.now();
+  await vscode.commands.executeCommand("workbench.extensions.installExtension", pickedExtension, {
+    donotSync: true,
+  });
+  if (editorMode === "off") {
+    return { report: await vscode.commands.executeCommand("mend.bringMyEditor"), ms: null };
+  }
+  return until(
+    `Mend to carry ${pickedExtension}`,
+    async () => {
+      const report = await vscode.commands.executeCommand("mend.bringMyEditor");
+      return carriedOf(report).includes(pickedExtension)
+        ? { report, ms: Date.now() - installed }
+        : null;
+    },
+    30_000,
+  ).catch((cause: unknown) => ({ report: null, ms: null, error: String(cause) }));
+};
+
+/** The owner's story, in their own VS Code. */
+const ownersStory = async (folder: vscode.Uri) => {
   const file = (name: string) => vscode.Uri.joinPath(folder, name);
   const read = async (name: string) =>
     new TextDecoder().decode(await vscode.workspace.fs.readFile(file(name))).trim();
   const typed = await read("st-vscode-typed.txt");
-  // The owner's story, in their own VS Code: edit a file in the workspace…
+  // Edit a file in the workspace…
   await vscode.workspace.fs.writeFile(
     file("st-vscode-edited.txt"),
     new TextEncoder().encode("edited in VS Code over Remote-SSH\n"),
@@ -278,30 +323,100 @@ const remoteWindow = async (): Promise<void> => {
     },
     120_000,
   );
+  return {
+    readOverRemoteSsh: typed,
+    terminal: { wrote: fromTerminal, user: whoami, ms: terminalMs },
+    forwarded,
+    entries: (await vscode.workspace.fs.readDirectory(folder)).map(([name]) => name).toSorted(),
+  };
+};
+
+/**
+ * Each window step 9 opens is a Remote-SSH window over the managed alias, and extension tests run
+ * in every window of the instance: there the suite reads the workspace through Remote-SSH and
+ * says what it found, for the first window to wait on.
+ */
+const remoteWindow = async (): Promise<void> => {
+  const enteredAt = Date.now();
+  const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+  if (folder === undefined) throw new Error("the Remote-SSH window has no folder");
+  const role = roleOf(folder);
   const mend = await vscode.extensions.getExtension<MendApi>("sealant-sh.mend")?.activate();
   if (mend === undefined) throw new Error("the Mend extension is not loaded in the remote window");
+  const story = role === "first" ? await ownersStory(folder) : {};
   const editor = await mend.workspaceEditor();
-  const warm = await vscode.commands.executeCommand("mend.bringMyEditor");
+  const after =
+    role === "first"
+      ? { picked: await pickInWorkspace() }
+      : { warm: await vscode.commands.executeCommand("mend.bringMyEditor") };
   fs.writeFileSync(
-    `${resultFile}.remote.json`,
+    reportFile(role),
     `${JSON.stringify(
       {
         remoteName: vscode.env.remoteName,
         folder: folder.toString(),
-        readOverRemoteSsh: typed,
-        terminal: { wrote: fromTerminal, user: whoami, ms: terminalMs },
-        forwarded,
         enteredAt,
+        ...story,
         editor,
-        warm,
-        entries: (await vscode.workspace.fs.readDirectory(folder)).map(([name]) => name).toSorted(),
+        ...after,
       },
       null,
       2,
     )}\n`,
   );
-  // The window stays open for the first one to see; the run ends when that one returns.
-  await sleep(120_000);
+  await sleep(REMOTE_WINDOW_OPEN_MS);
+};
+
+const plannedOf = (report: unknown): ReadonlyArray<string> => {
+  const planned = field(report, "planned");
+  return Array.isArray(planned) ? planned.map(String) : [];
+};
+
+/** What a workspace's VS Code server lists, read over plain SSH as its own user. */
+const workspaceExtensions = (alias: string, user: string) => {
+  const listed = sshIn(
+    alias,
+    user,
+    "id -u; cat ~/.vscode-server/extensions/extensions.json 2>/dev/null || echo '[]'",
+  );
+  const [uidLine = "", ...json] = listed.stdout.trim().split("\n");
+  const parsed: unknown = JSON.parse(json.join("\n") || "[]");
+  const entries: ReadonlyArray<unknown> = Array.isArray(parsed) ? parsed : [];
+  return {
+    uid: Number(uidLine),
+    entries,
+    ids: entries.map((entry) => String(field(entry, "identifier", "id")).toLowerCase()),
+  };
+};
+
+const assertPersonAndLocal = (listed: ReturnType<typeof workspaceExtensions>): void => {
+  if (!(listed.uid >= 40_001 && listed.uid <= 49_999)) {
+    throw new Error(`the Remote-SSH window runs as uid ${listed.uid}, not as a person`);
+  }
+  const forbidden = listed.ids.filter(
+    (id) =>
+      id === seededUiExtension || id.startsWith("ms-vscode-remote.") || id === "sealant-sh.mend",
+  );
+  if (forbidden.length > 0) {
+    throw new Error(`the workspace has extensions that belong local: ${forbidden.join(", ")}`);
+  }
+};
+
+const windowRoles: Record<string, RemoteRole> = {};
+
+/** Open a Remote-SSH window for real and wait for its report. */
+const openRemoteWindow = async (folder: vscode.Uri, role: RemoteRole): Promise<unknown> => {
+  windowRoles[sshUserOf(folder)] = role;
+  fs.writeFileSync(rolesFile, JSON.stringify(windowRoles));
+  await original.executeCommand("vscode.openFolder", folder, { forceNewWindow: true });
+  return until(
+    `the ${role} Remote-SSH window to report`,
+    async () =>
+      fs.existsSync(reportFile(role))
+        ? JSON.parse(fs.readFileSync(reportFile(role), "utf8"))
+        : null,
+    300_000,
+  );
 };
 
 export async function run(): Promise<void> {
@@ -511,11 +626,13 @@ export async function run(): Promise<void> {
     /who-([a-z0-9_-]+)/.exec(screen.replaceAll("who-$(id -un)", ""))?.[1] ?? null;
   record("terminal", { answered: "typed-42", user: terminalUser, bytes: screen.length });
 
-  // 8. Review: the change opens in the browser, and the edit made in the terminal is in it.
+  // 8. Review: the change opens in the browser, and the edit made in the terminal is in it. Review
+  // shows in VS Code first; the browser page is its Open in Mend (web), once the change has loaded.
   await vscode.commands.executeCommand("mend.reviewChange", workbenchId);
-  const reviewPage = await until("the review page to open", async () =>
-    opened.find((page) => page.includes("/changes/")),
-  );
+  const reviewPage = await until("the review page to open", async () => {
+    await vscode.commands.executeCommand("mend.change.openInWeb");
+    return opened.find((page) => page.includes("/changes/"));
+  });
   const changeId = reviewPage.split("/changes/")[1] ?? "";
   const page = await fetch(reviewPage);
   const files = await until(
@@ -541,15 +658,7 @@ export async function run(): Promise<void> {
       .getConfiguration("remote.SSH")
       .update("remotePlatform", { [alias]: "linux" }, vscode.ConfigurationTarget.Global);
     const openStarted = Date.now();
-    await original.executeCommand("vscode.openFolder", folder, { forceNewWindow: true });
-    const remote = await until(
-      "the Remote-SSH window to read the workspace",
-      async () =>
-        fs.existsSync(`${resultFile}.remote.json`)
-          ? JSON.parse(fs.readFileSync(`${resultFile}.remote.json`, "utf8"))
-          : null,
-      300_000,
-    );
+    const remote = await openRemoteWindow(folder, "first");
     const server = sshIn(
       alias,
       sshUser,
@@ -573,76 +682,135 @@ export async function run(): Promise<void> {
       );
     }
 
-    const remoteList = sshIn(
-      alias,
-      sshUser,
-      "id -u; cat ~/.vscode-server/extensions/extensions.json 2>/dev/null || echo '[]'",
-    );
-    const [uidLine = "", ...json] = remoteList.stdout.trim().split("\n");
-    const parsedList: unknown = JSON.parse(json.join("\n") || "[]");
-    const remoteIds = (Array.isArray(parsedList) ? parsedList : []).map((entry) =>
-      String(field(entry, "identifier", "id")).toLowerCase(),
-    );
-    const seededEntry = (Array.isArray(parsedList) ? parsedList : []).find(
-      (entry) =>
-        String(field(entry, "identifier", "id")).toLowerCase() === seededWorkspaceExtension,
-    );
-    const uid = Number(uidLine);
+    const first = workspaceExtensions(alias, sshUser);
     const editorReport = field(remote, "editor");
-    const warmReport = field(remote, "warm");
-    const plannedOf = (report: unknown) => {
-      const planned = field(report, "planned");
-      return Array.isArray(planned) ? planned.map(String) : [];
-    };
+    const pickedReport = field(remote, "picked", "report");
     record("remoteEditor", {
       mode: editorMode,
-      uid,
+      uid: first.uid,
       settled: field(editorReport, "state"),
       syncMs: field(editorReport, "syncMs"),
       planned: plannedOf(editorReport),
-      results: field(editorReport, "results"),
-      machineSettings: field(editorReport, "machineSettings"),
-      remoteExtensions: remoteIds,
-      seededRemoteEntry: {
-        uuid: field(seededEntry, "identifier", "uuid") ?? null,
-        source: field(seededEntry, "metadata", "source") ?? null,
-        metadataId: field(seededEntry, "metadata", "id") ?? null,
+      carried: carriedOf(editorReport),
+      picked: {
+        id: pickedExtension,
+        carried: carriedOf(pickedReport),
+        ms: field(remote, "picked", "ms"),
+        error: field(remote, "picked", "error") ?? null,
+      },
+      remoteExtensions: first.ids,
+      firstOpenMs: Number(field(remote, "enteredAt")) - openStarted,
+      terminalMs: field(remote, "terminal", "ms"),
+    });
+    assertPersonAndLocal(first);
+    if (editorMode === "off") {
+      if (
+        field(editorReport, "state", "kind") !== "inactive" ||
+        carriedOf(pickedReport).length > 0
+      ) {
+        throw new Error("bring my editor acted while it was off");
+      }
+    } else {
+      if (field(editorReport, "state", "kind") !== "inSync" || plannedOf(editorReport).length > 0) {
+        throw new Error(
+          `session 1 did not settle in sync with nothing planned: ${JSON.stringify(editorReport)}`,
+        );
+      }
+      if (!first.ids.includes(pickedExtension)) {
+        throw new Error(`the panel install of ${pickedExtension} did not reach the workspace`);
+      }
+      if (!carriedOf(pickedReport).includes(pickedExtension)) {
+        throw new Error(
+          `Mend did not carry ${pickedExtension}: ${JSON.stringify(field(remote, "picked"))}`,
+        );
+      }
+    }
+
+    // A second session of the project, in a fresh worktree and so a fresh home: its window gets
+    // what session 1 installed, and nothing else.
+    const secondSession = await api(`/projects/${project.project.id}/sessions`, {
+      method: "POST",
+      body: JSON.stringify({
+        harness: "shell",
+        mode: "pty",
+        label: "st-vscode-second",
+        base: null,
+        name: null,
+      }),
+    });
+    const secondId = String(field(secondSession, "id"));
+    await api(`/sessions/${secondId}/launch`, {
+      method: "POST",
+      body: JSON.stringify({ mode: "pty" }),
+    });
+    await until(
+      "the second shell session in the view",
+      async () =>
+        (await mend.projects()).some((detail) =>
+          detail.sessions.some((session) => session.id === secondId),
+        ),
+      60_000,
+    );
+    await vscode.commands.executeCommand("mend.openInNewWindow", secondId);
+    const secondFolder = await until(
+      "the second workspace window to open",
+      async () => openedFolders[1],
+      600_000,
+    );
+    const secondUser = sshUserOf(secondFolder);
+    const secondWorkspace = field(
+      await api(`/sessions/${secondId}`),
+      "session",
+      "sealantWorkspaceId",
+    );
+    if (secondWorkspace !== secondUser.replace(/^ws-/, "") || secondUser === sshUser) {
+      throw new Error(`the second window opened ${secondUser}, not the second session's workspace`);
+    }
+    const secondWindow = await openRemoteWindow(secondFolder, "second");
+    const second = workspaceExtensions(alias, secondUser);
+    const secondReport = field(secondWindow, "editor");
+    const warmReport = field(secondWindow, "warm");
+    const pickedEntry = second.entries.find(
+      (entry) => String(field(entry, "identifier", "id")).toLowerCase() === pickedExtension,
+    );
+    record("carriedEditor", {
+      sessionId: secondId,
+      uid: second.uid,
+      settled: field(secondReport, "state"),
+      syncMs: field(secondReport, "syncMs"),
+      planned: plannedOf(secondReport),
+      results: field(secondReport, "results"),
+      carried: carriedOf(secondReport),
+      remoteExtensions: second.ids,
+      pickedEntry: {
+        source: field(pickedEntry, "metadata", "source") ?? null,
+        isMachineScoped: field(pickedEntry, "metadata", "isMachineScoped") ?? null,
       },
       warm: {
         settled: field(warmReport, "state"),
         syncMs: field(warmReport, "syncMs"),
         planned: plannedOf(warmReport),
       },
-      firstOpenMs: Number(field(remote, "enteredAt")) - openStarted,
-      terminalMs: field(remote, "terminal", "ms"),
     });
-    if (!(uid >= 40_001 && uid <= 49_999)) {
-      throw new Error(`the Remote-SSH window runs as uid ${uid}, not as a person`);
-    }
-    const forbidden = remoteIds.filter(
-      (id) =>
-        id === seededUiExtension || id.startsWith("ms-vscode-remote.") || id === "sealant-sh.mend",
-    );
-    if (forbidden.length > 0) {
-      throw new Error(`the workspace has extensions that belong local: ${forbidden.join(", ")}`);
-    }
+    assertPersonAndLocal(second);
     if (editorMode === "off") {
-      if (field(editorReport, "state", "kind") !== "inactive" || remoteIds.length > 0) {
-        throw new Error("bring my editor acted while it was off");
+      if (
+        field(secondReport, "state", "kind") !== "inactive" ||
+        second.ids.includes(pickedExtension)
+      ) {
+        throw new Error("bring my editor carried an extension while it was off");
       }
     } else {
-      if (field(editorReport, "state", "kind") !== "inSync") {
-        throw new Error(`bring my editor settled ${JSON.stringify(field(editorReport, "state"))}`);
-      }
-      if (!remoteIds.includes(seededWorkspaceExtension)) {
-        throw new Error(`the workspace does not list ${seededWorkspaceExtension}`);
-      }
-      const remoteUuid =
-        field(seededEntry, "identifier", "uuid") ?? field(seededEntry, "metadata", "id");
-      if (remoteUuid !== seededUuid) {
+      if (
+        field(secondReport, "state", "kind") !== "inSync" ||
+        JSON.stringify(plannedOf(secondReport)) !== JSON.stringify([pickedExtension])
+      ) {
         throw new Error(
-          `${seededWorkspaceExtension} has gallery uuid ${String(remoteUuid)} in the workspace, ${seededUuid} locally`,
+          `session 2 did not install ${pickedExtension} and settle in sync: ${JSON.stringify(secondReport)}`,
         );
+      }
+      if (!second.ids.includes(pickedExtension)) {
+        throw new Error(`session 2's workspace does not list ${pickedExtension}`);
       }
       if (plannedOf(warmReport).length > 0 || field(warmReport, "state", "kind") !== "inSync") {
         throw new Error(`a second pass was not a no-op: ${JSON.stringify(warmReport)}`);
