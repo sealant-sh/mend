@@ -19637,7 +19637,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             if (!canSteerSession(session, input.sender))
               return yield* new SessionTurnRefusedError({
                 sessionId: session.id,
-                message: "Shared control is off. Only the session's owner may steer it.",
+                message: "Shared control is off, so only the session's owner sends it turns.",
               });
             const retired = yield* retirementRefusalFor(session.sealantWorkspaceId, input.sender);
             if (retired !== null)

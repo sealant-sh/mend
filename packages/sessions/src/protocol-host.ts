@@ -3,6 +3,7 @@ import {
   ClaudeAdapter,
   CodexAdapter,
   type AgentBackgroundWork,
+  type AgentControlCheckpoint,
   type AgentQuiescence,
   type AgentRehydrateOptions,
   type AgentSession,
@@ -914,7 +915,25 @@ export const ProtocolHostLive: Layer.Layer<
         }
         return projectEvent(activeEntry, event, position);
       };
-      const recorded = yield* conversations.protocolControls(input.process.id);
+      // Only Claude replays its controls; Codex acknowledges a steer on the wire.
+      const controlJournal =
+        input.process.harness === "claude"
+          ? {
+              recorded: yield* conversations.protocolControls(input.process.id),
+              record: (control: AgentControlCheckpoint) =>
+                conversations.recordProtocolControl(input.process.id, control).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new AgentProtocolError({
+                        adapter: "claude",
+                        operation: "controlJournal.record",
+                        message: cause.message,
+                        cause,
+                      }),
+                  ),
+                ),
+            }
+          : undefined;
       const adapter = yield* adapterFor(input.process.harness)
         .start(transport, {
           cwd: input.cwd,
@@ -925,21 +944,7 @@ export const ProtocolHostLive: Layer.Layer<
           effort: input.effort,
           permissionMode: input.permissionMode,
           onEvent,
-          controlJournal: {
-            recorded,
-            record: (control) =>
-              conversations.recordProtocolControl(input.process.id, control).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new AgentProtocolError({
-                      adapter: input.process.harness === "claude" ? "claude" : "codex",
-                      operation: "controlJournal.record",
-                      message: cause.message,
-                      cause,
-                    }),
-                ),
-              ),
-          },
+          ...(controlJournal === undefined ? {} : { controlJournal }),
           rehydrate:
             rehydrateInput === null
               ? undefined
