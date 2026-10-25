@@ -336,31 +336,6 @@ const DIAL_DISPOSITION = {
 /** A dial the gateway refused itself, at its forward ceiling. */
 class ForwardCeilingReached extends Error {}
 
-/**
- * Expires a pooled socket only while it is free, so an active one (an SSE stream in a long gap
- * included) never times out. The Agent's own `timeout` would also arm a timeout on every request,
- * whose listener `ForwardSocket.setTimeout(0, listener)` adds again instead of removing it.
- */
-class PoolAgent extends ForwardAgent {
-  readonly #expiries = new WeakMap<Duplex, NodeJS.Timeout>();
-
-  override keepSocketAlive(socket: Duplex): boolean {
-    const kept = super.keepSocketAlive(socket);
-    if (kept) {
-      const expiry = setTimeout(() => socket.destroy(), POOL.freeSocketMs);
-      expiry.unref();
-      this.#expiries.set(socket, expiry);
-    }
-    return kept;
-  }
-
-  override reuseSocket(socket: Duplex, request: ClientRequest): void {
-    clearTimeout(this.#expiries.get(socket));
-    this.#expiries.delete(socket);
-    super.reuseSocket(socket, request);
-  }
-}
-
 const generationOf = (bound: Extract<PreviewGatewayResolution, { _tag: "Bound" }>): Generation => ({
   key: `${bound.revision}:${bound.attempt.attemptId}`,
   attempt: bound.attempt,
@@ -535,9 +510,12 @@ export const makePreviewGatewayLayer = (
           key,
           viewerId,
           generation,
-          agent: new PoolAgent(() => dial(pool, connect, target), {
+          // The Agent's timeout destroys a socket only while it is free: an active SSE stream
+          // in a long gap keeps its forward.
+          agent: new ForwardAgent(() => dial(pool, connect, target), {
             maxSockets: POOL.maxSockets,
             maxFreeSockets: POOL.maxFreeSockets,
+            timeout: POOL.freeSocketMs,
           }),
           requests: new Set(),
           upgraded: new Set(),

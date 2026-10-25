@@ -232,6 +232,11 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
       byLabel: (label) =>
         Effect.succeed(Object.values(PREVIEWS).find((preview) => preview.label === label) ?? null),
       byId: (id) => Effect.succeed(byId(id)),
+      controlOf: () => Effect.die("unused"),
+      changeControl: () => Effect.die("unused"),
+      previewOfService: () => Effect.die("unused"),
+      gatewaySnapshot: () => Effect.die("unused"),
+      gatewaySnapshots: () => Effect.die("unused"),
     };
 
     const access = Layer.mock(ProjectAccess, {
