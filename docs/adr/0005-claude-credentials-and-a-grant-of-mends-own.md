@@ -7,6 +7,9 @@ login that belongs to Mend and not to the person's laptop — and to sending onl
 credential, never the third-party tokens that sit beside it. It closes the over-share this work
 found, states who refreshes what, and names the two platform halves it cannot do alone.
 
+Amended 2026-10-25 by [ADR 0018](0018-api-key-logins-and-organization-keys.md): an API key is a
+login a person chooses beside the grant, not only the fallback the open questions name.
+
 **What this ADR does not claim.** It does not establish that using a Claude subscription credential
 on a server, refreshed by a scheduled job, is permitted by Anthropic's terms. That is a separate
 assessment against the current Consumer Terms and Usage Policy, and it is an open question below.

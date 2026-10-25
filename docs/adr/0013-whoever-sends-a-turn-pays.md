@@ -12,6 +12,10 @@ conversation. A sender change hands the conversation to a new process once the p
 background work has finished. There is no login swap inside a running process and no switch back.
 While control is shared, the agent uses neither person's personal memory nor instructions.
 
+Amended 2026-10-25 by [ADR 0018](0018-api-key-logins-and-organization-keys.md): a sender with no
+login of their own for the provider runs on the organization's key when there is one, and the
+organization pays. The payer line names it.
+
 ## Context
 
 Shared control lets other members steer a session. Today every turn runs on the owner's login (ADR

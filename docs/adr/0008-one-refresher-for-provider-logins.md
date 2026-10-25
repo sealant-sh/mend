@@ -7,6 +7,10 @@ place a Claude or Codex login is refreshed, to handing every other copy a creden
 rotate**, and to pushing a refreshed credential into running sessions without restarting them. Codex
 gets a grant of Mend's own, as Claude did.
 
+Amended 2026-10-25 by [ADR 0018](0018-api-key-logins-and-organization-keys.md): a key is never
+refreshed. The refresher skips key accounts, and the push never writes a subscription copy over a
+key placement.
+
 ## Context
 
 On alpha, 2026-09-30, both of one person's provider logins were dead at once.

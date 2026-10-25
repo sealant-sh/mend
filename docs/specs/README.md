@@ -53,6 +53,6 @@ carries the detail. The per-person homes spec follows with ADR 0016 (mend#534).
 
 ## After 0.36
 
-| File                                   | Feature                                                          | Status                        |
-| -------------------------------------- | ---------------------------------------------------------------- | ----------------------------- |
-| [api-key-logins.md](api-key-logins.md) | API-key logins (Claude and Codex) instead of subscription logins | Designed (decided 2026-10-24) |
+| File                                   | Feature                                                          | Status                                                 |
+| -------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------ |
+| [api-key-logins.md](api-key-logins.md) | API-key logins (Claude and Codex) instead of subscription logins | Building (decided 2026-10-24 and 2026-10-25; ADR 0018) |
