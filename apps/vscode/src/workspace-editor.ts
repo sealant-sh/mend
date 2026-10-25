@@ -257,9 +257,17 @@ export const startWorkspaceEditor = (context: vscode.ExtensionContext): Workspac
       install: async (id) => {
         const started = Date.now();
         try {
+          // Without donotSync, VS Code with Settings Sync on asks before each install into the
+          // workspace. An id this window already runs locally is only rewritten in place, where
+          // donotSync would mark the local copy machine-scoped and drop it from Settings Sync.
+          const runsLocally = vscode.extensions.getExtension(id) !== undefined;
           await within(
             INSTALL_TIMEOUT_MS,
-            vscode.commands.executeCommand("workbench.extensions.installExtension", id),
+            vscode.commands.executeCommand(
+              "workbench.extensions.installExtension",
+              id,
+              runsLocally ? undefined : { donotSync: true },
+            ),
           );
           log(`${id}: reported installed (${Date.now() - started} ms)`);
         } catch (cause) {

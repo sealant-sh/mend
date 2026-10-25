@@ -3,6 +3,12 @@
 The extension's version follows the Mend release it needs: 0.36.x works with a Mend 0.36 server. The
 patch number is the extension's own.
 
+## Unreleased
+
+- A Mend workspace window no longer asks to install and synchronize each extension when Settings
+  Sync is on. Mend installs them for this workspace only, and adds nothing to the local editor or to
+  Settings Sync.
+
 ## 0.36.2
 
 It needs a Mend 0.36 server. The extension is redesigned around sessions and review; 0.36.1 shipped

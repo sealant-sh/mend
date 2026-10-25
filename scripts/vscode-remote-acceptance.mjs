@@ -13,10 +13,10 @@
  * real Remote-SSH extension: the owner's own story, in that window. It edits a file, runs a command
  * in the workspace's integrated terminal, forwards a port the workspace serves on its loopback and
  * opens it from this machine; Mend installs the seeded local extension that runs in a workspace
- * there and leaves the seeded theme local; then Mend's terminal into the session reads the edited
- * file and the change review lists it. Before the editor starts, a session in a fresh worktree must
- * run: it builds the image, so the editor's workbench session boots with an owner map and
- * Remote-SSH lands as the person.
+ * there and leaves the seeded theme local, with Settings Sync on and no question asked;
+ * then Mend's terminal into the session reads the edited file and the change review lists it.
+ * Before the editor starts, a session in a fresh worktree must run: it builds the image, so the
+ * editor's workbench session boots with an owner map and Remote-SSH lands as the person.
  *
  *   MEND_TEST_VERSION=0.36.0-next.656 node scripts/vscode-remote-acceptance.mjs
  *
@@ -234,6 +234,9 @@ const main = async () => {
         "--disable-workspace-trust",
         "--skip-welcome",
         "--skip-release-notes",
+        // VS Code refuses dialogs in a test host, so an install that asks fails.
+        "--sync",
+        "on",
         "--disable-gpu",
         "--ozone-platform=x11",
       ],
