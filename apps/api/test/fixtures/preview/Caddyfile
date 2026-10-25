@@ -1,0 +1,29 @@
+# A local Caddy edge in front of the preview gateway's tests (ADR 0017), from the packaged image
+# and the packaged reverse-proxy shape (deploy/docker/Caddyfile). A template: startEdge
+# (test/support/preview-edge.ts) fills each @@…@@ placeholder per run and runs it with --network host.
+{
+	admin off
+	skip_install_trust
+	local_certs
+	auto_https disable_redirects
+	http_port @@HTTP_PORT@@
+	https_port @@HTTPS_PORT@@
+}
+
+*.@@DOMAIN@@:@@HTTPS_PORT@@, @@DOMAIN@@:@@HTTPS_PORT@@ {
+	bind 127.0.0.1 [::1]
+	tls internal
+
+	reverse_proxy 127.0.0.1:@@UPSTREAM_PORT@@ {
+		# Send each response byte as it arrives: event streams, HMR and downloads.
+		flush_interval -1
+		# Stream request bodies; never hold an upload to measure or buffer it.
+		request_buffers 0
+		# The Host the browser sent, port included: the gateway routes and checks Origin by it.
+		header_up Host {hostport}
+		transport http {
+			# A held request may wait minutes for a Service to start. Reads have no deadline.
+			response_header_timeout 10m
+		}
+	}
+}
