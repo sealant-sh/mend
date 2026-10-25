@@ -8,12 +8,12 @@ import { EventBus, type BusSignal } from "./events-bus.ts";
 
 /**
  * The long-lived connections this process holds for each account: terminals, Service tunnels,
- * the key bridge and event streams (docs/adr/0003-organizations-and-tenancy.md, "Removing a
- * member"). Removing a member closes theirs at once instead of letting an authenticated socket
- * outlive the membership that authorized it.
+ * the key bridge, event streams and preview requests (docs/adr/0003-organizations-and-tenancy.md,
+ * "Removing a member"). Removing a member closes theirs at once instead of letting an
+ * authenticated socket outlive the membership that authorized it.
  */
 /** What a long-lived connection is, for its per-account budget (docs/adr/0004, "Budgets"). */
-export type ConnectionKind = "event-stream" | "terminal" | "tunnel" | "key-bridge";
+export type ConnectionKind = "event-stream" | "terminal" | "tunnel" | "key-bridge" | "preview";
 
 export class ConnectionRegistry extends Context.Service<
   ConnectionRegistry,

@@ -151,11 +151,11 @@ export const forwardResponseHead = (
 const escapeHtml = (text: string) =>
   text.replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
 
-/** The gateway's own page for a request it held and did not deliver. No script, no retry. */
-export const undeliveredAnswer = (fact: PreviewUndelivered): PreviewAnswer => {
-  const line = escapeHtml(previewUndeliveredLine(fact));
+/** A page of the gateway's own: one status line, no script, no retry. */
+export const gatewayPage = (status: number, text: string): PreviewAnswer => {
+  const line = escapeHtml(text);
   return answer(
-    503,
+    status,
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${line}</title></head><body><p>${line}</p></body></html>`,
     {
       "cache-control": "no-store, private",
@@ -164,3 +164,7 @@ export const undeliveredAnswer = (fact: PreviewUndelivered): PreviewAnswer => {
     },
   );
 };
+
+/** The gateway's own page for a request it held and did not deliver. */
+export const undeliveredAnswer = (fact: PreviewUndelivered): PreviewAnswer =>
+  gatewayPage(503, previewUndeliveredLine(fact));

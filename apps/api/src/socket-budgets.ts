@@ -11,6 +11,7 @@ const BUDGET_OF: Readonly<Record<ConnectionKind, BudgetName>> = {
   terminal: "accountTerminals",
   tunnel: "accountTunnels",
   "key-bridge": "accountKeyBridges",
+  preview: "accountPreviewConnections",
 };
 
 /**

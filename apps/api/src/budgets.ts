@@ -50,6 +50,10 @@ export interface BudgetLimits {
   readonly accountRawReads: number;
   /** Raw file reads open at once on this instance, whoever reads. */
   readonly rawReads: number;
+  /** Requests and upgrades one account holds open on the preview gateway, a held one included. */
+  readonly accountPreviewConnections: number;
+  /** Request-triggered preview starts one account may have running at once. */
+  readonly accountPreviewStartsInFlight: number;
 }
 
 export type BudgetName = keyof BudgetLimits;
@@ -77,6 +81,8 @@ export const DEFAULT_BUDGET_LIMITS: BudgetLimits = {
   accountRawReads: 128,
   // Two descriptors each (the file and the socket): bounded well inside the process's table.
   rawReads: 512,
+  accountPreviewConnections: 48,
+  accountPreviewStartsInFlight: 4,
 };
 
 const ENV: Readonly<Record<BudgetName, string>> = {
@@ -99,6 +105,8 @@ const ENV: Readonly<Record<BudgetName, string>> = {
   accountKeyBridges: "MEND_BUDGET_ACCOUNT_KEY_BRIDGES",
   accountRawReads: "MEND_BUDGET_ACCOUNT_RAW_READS",
   rawReads: "MEND_BUDGET_RAW_READS",
+  accountPreviewConnections: "MEND_BUDGET_ACCOUNT_PREVIEW_CONNECTIONS",
+  accountPreviewStartsInFlight: "MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_IN_FLIGHT",
 };
 
 export const budgetEnvName = (name: BudgetName): string => ENV[name];
@@ -123,11 +131,17 @@ const WORDS: Readonly<Record<BudgetName, string>> = {
   accountKeyBridges: "open key bridges for one account",
   accountRawReads: "open raw file reads for one account",
   rawReads: "open raw file reads on this instance",
+  accountPreviewConnections: "open preview requests for one account",
+  accountPreviewStartsInFlight: "preview starts at once for one account",
 };
+
+/** What a refusal at any ceiling says: its limit, what it counts, and that nothing was touched. */
+export const ceilingMessage = (limit: number, words: string): string =>
+  `budget reached · ${limit} ${words} · nothing running was stopped`;
 
 /** What a refusal says. Plain facts: which budget, its limit, and that nothing running was touched. */
 export const budgetMessage = (name: BudgetName, limit: number): string =>
-  `budget reached · ${limit} ${WORDS[name]} · nothing running was stopped`;
+  ceilingMessage(limit, WORDS[name]);
 
 /** The budgets that are off on this instance (`0`), for the gate and the start-up log. */
 export const budgetsOff = (limits: BudgetLimits): ReadonlyArray<BudgetName> =>
@@ -170,6 +184,11 @@ export class Budgets extends Context.Service<
     readonly rawReadSlot: (
       userId: string,
     ) => Effect.Effect<"accountRawReads" | "rawReads" | null, never, Scope.Scope>;
+    /** A request-triggered preview start, paid by the account whose request triggered it. */
+    readonly withPreviewStartSlot: <A, E, R>(
+      userId: string,
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A | null, E, R>;
   }
 >()("@mend/api/Budgets") {}
 
@@ -228,6 +247,7 @@ export const makeBudgets = (limits: BudgetLimits) => ({
   withLaunchSlot: makeSlots(limits.accountLaunchesInFlight),
   withHandoffSlot: makeSlots(limits.accountHandoffsInFlight),
   rawReadSlot: makeRawReadSlots(limits),
+  withPreviewStartSlot: makeSlots(limits.accountPreviewStartsInFlight),
 });
 
 const limit = (name: BudgetName) =>
@@ -253,6 +273,8 @@ export const budgetLimitsConfig = Config.all({
   accountKeyBridges: limit("accountKeyBridges"),
   accountRawReads: limit("accountRawReads"),
   rawReads: limit("rawReads"),
+  accountPreviewConnections: limit("accountPreviewConnections"),
+  accountPreviewStartsInFlight: limit("accountPreviewStartsInFlight"),
 });
 
 export const BudgetsLive: Layer.Layer<Budgets, Config.ConfigError> = Layer.effect(
