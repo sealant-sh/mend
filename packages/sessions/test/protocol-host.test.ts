@@ -553,6 +553,11 @@ const hostLayer = (
     Layer.provide(sessionsLayer),
   );
 
+const nativeCompleted = (status: string) => ({
+  method: "turn/completed",
+  params: { threadId: "thread-1", turn: { id: "native", status } },
+});
+
 const waitUntil = (predicate: () => boolean) =>
   Effect.gen(function* () {
     for (let attempt = 0; attempt < 200; attempt += 1) {
@@ -1547,13 +1552,9 @@ describe("ProtocolHost", () => {
             }),
         },
       });
-      const completed = (status: string) => ({
-        method: "turn/completed",
-        params: { threadId: "thread-1", turn: { id: "native", status } },
-      });
-      peer.push(completed("interrupted"));
+      peer.push(nativeCompleted("interrupted"));
       yield* waitUntil(() => completions.length === 1);
-      peer.push(completed("completed"));
+      peer.push(nativeCompleted("completed"));
       yield* waitUntil(() => completions.length === 2);
       expect(completions.map((ended) => ended.status)).toEqual(["interrupted", "completed"]);
       expect(world.cancelSweeps).toEqual([turn.id, turn.id]);

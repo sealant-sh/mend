@@ -13,7 +13,8 @@ import { Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
 
 import { SessionEngine } from "../src/engine.ts";
-import { ProtocolHost, type SteerTurnInput } from "../src/protocol-host.ts";
+import { ProtocolHost } from "../src/protocol-host.ts";
+import type { SteerTurnInput } from "../src/protocol-steer.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { seedStoppedBeforeRestart } from "./engine/capture-fixture.ts";
 import { agentConversationStub, withEngineEffect } from "./engine/fixture.ts";

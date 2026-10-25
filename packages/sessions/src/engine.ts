@@ -580,9 +580,9 @@ import {
   ProtocolHostNotLiveError,
   type ProtocolSharedControl,
   type RehydrateProtocolProcessInput,
-  type SteerTurnInput,
   type TurnSteerError,
 } from "./protocol-host.ts";
+import type { SteerTurnInput } from "./protocol-steer.ts";
 import {
   mergeRecipes,
   parseServiceRecipes,

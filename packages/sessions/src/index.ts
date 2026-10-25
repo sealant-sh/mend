@@ -13,6 +13,7 @@ export * from "./capture-verify.ts";
 export * from "./worktree-reads.ts";
 export * from "./dependency-cache.ts";
 export * from "./protocol-host.ts";
+export * from "./protocol-steer.ts";
 export * from "./follow-up-delivery.ts";
 export * from "./git-transport.ts";
 export * from "./workspace-git-hooks.ts";
