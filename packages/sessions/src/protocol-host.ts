@@ -149,10 +149,6 @@ export const INTERRUPTED_BY_HAND_OVER = "interrupted by the hand-over";
 /** How often a waiting turn looks at the process it waits for. */
 const WAIT_POLL = "250 millis";
 
-/** How often, and how many times, dispatch looks again while Claude drains a stopped turn. */
-const DRAIN_RETRY_POLL = "250 millis";
-const DRAIN_RETRY_LOOKS = 240;
-
 /**
  * The quiescence a waiting turn acts on: a session cron, or work the harness would not say anything
  * about, is waited for at most its bound from when this wait first saw it (review of mend#572, P3-2
@@ -254,8 +250,6 @@ interface HostedProcess {
   /** The process was told to stop: a turn its harness opens now ends with it. */
   stopping: boolean;
   controls: number;
-  retryDispatch: boolean;
-  drainRetry: { pending: boolean; looks: number };
 }
 
 /**
@@ -442,15 +436,7 @@ export const ProtocolHostLive: Layer.Layer<
             const sent = yield* entry.adapter.sendTurn(turn.input).pipe(Effect.result);
             if (sent._tag === "Failure" && sent.failure._tag === "AgentTurnBusyError") {
               // The harness is in a turn of its own; that turn's end dispatches this one.
-              entry.retryDispatch = true;
               yield* conversations.requeueClaimedTurn(turn.id);
-              // A Claude draining a stopped turn's unanswered steer has no turn left to end, and
-              // its idle line can end a chunk mid-record, so no output acknowledgement follows.
-              const busy = yield* conversations.byProviderTurnId(
-                entry.process.sessionId,
-                sent.failure.providerTurnId,
-              );
-              if (busy !== null && busy.status !== "running") yield* retryWhileDraining(entry);
               return;
             }
             if (sent._tag === "Failure") {
@@ -461,36 +447,12 @@ export const ProtocolHostLive: Layer.Layer<
               if (!hosted.has(entry.process.id)) return;
               continue;
             }
-            entry.drainRetry.looks = 0;
             yield* conversations.setTurnPayer(turn.id, payer).pipe(Effect.orDie);
             yield* conversations.setProviderTurnId(turn.id, sent.success).pipe(Effect.orDie);
             return;
           }
         }),
       );
-
-    const retryWhileDraining = (entry: HostedProcess): Effect.Effect<void> =>
-      Effect.suspend(() => {
-        if (entry.drainRetry.pending) return Effect.void;
-        if (entry.drainRetry.looks >= DRAIN_RETRY_LOOKS) {
-          return Effect.logWarning(
-            "protocol host: the agent still refuses turns; the next turn end dispatches them",
-          ).pipe(Effect.annotateLogs({ processId: entry.process.id }));
-        }
-        entry.drainRetry.pending = true;
-        entry.drainRetry.looks += 1;
-        return Effect.forkIn(
-          Effect.sleep(DRAIN_RETRY_POLL).pipe(
-            Effect.andThen(
-              Effect.suspend(() => {
-                entry.drainRetry.pending = false;
-                return hosted.get(entry.process.id) === entry ? dispatchNext(entry) : Effect.void;
-              }),
-            ),
-          ),
-          scope,
-        ).pipe(Effect.asVoid);
-      });
 
     /**
      * Wait for a hosted process to be quiescent (decision 6): decided, then re-checked once the
@@ -775,6 +737,10 @@ export const ProtocolHostLive: Layer.Layer<
           yield* Effect.forkIn(dispatchNext(entry), scope);
           return;
         }
+        case "drain.ended":
+          // Claude refused turns as busy while it answered a stopped turn's steer; none ends.
+          yield* Effect.forkIn(dispatchNext(entry), scope);
+          return;
         case "item.updated": {
           const turn = yield* lookupTurn(entry.process.sessionId, event.item.providerTurnId);
           // A background task outlives the turn that started it and keeps reporting there.
@@ -861,7 +827,6 @@ export const ProtocolHostLive: Layer.Layer<
       // creation; boot ends live protocol rows rather than re-attaching.)
       let currentOutputSequence = 0n;
       let projectedOutputSequence: bigint | null = null;
-      let activeEntry: HostedProcess | null = null;
       let currentEventIndex = 0;
       const output = Stream.fromAsyncIterable(
         input.pipe.output({ from: 0n, signal: abort.signal }),
@@ -900,17 +865,12 @@ export const ProtocolHostLive: Layer.Layer<
           ),
         ),
         acknowledgeOutput: () =>
-          Effect.gen(function* () {
+          Effect.sync(() => {
             projectedOutputSequence = currentOutputSequence;
-            const entry = activeEntry;
-            if (entry !== null && entry.retryDispatch) {
-              entry.retryDispatch = false;
-              // Claude's idle line can release draining without a turn.completed event.
-              yield* Effect.forkIn(dispatchNext(entry), scope);
-            }
           }),
         close: () => Effect.sync(() => abort.abort()),
       };
+      let activeEntry: HostedProcess | null = null;
       let flushed = false;
       const pendingEvents: Array<{
         readonly event: AgentEvent;
@@ -984,8 +944,6 @@ export const ProtocolHostLive: Layer.Layer<
         handingOverTo: null,
         stopping: false,
         controls: 0,
-        retryDispatch: false,
-        drainRetry: { pending: false, looks: 0 },
       };
       activeEntry = entry;
       hosted.set(input.process.id, entry);
