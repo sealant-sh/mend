@@ -639,6 +639,37 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
     );
   });
 
+  it("names the binding's other unbound reasons as the gateway's refusals", async () => {
+    await run(
+      Effect.gen(function* () {
+        const { worktree } = yield* seed("reasons");
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO services (id, session_id, name, declaration_source, workspace_port, browser_scheme)
+          VALUES ('reasons-adopt', 's-reasons-1', 'adopted', 'explicit-adopt', 3001, 'http'),
+            ('reasons-tls', 's-reasons-1', 'tls', 'explicit-run', 3002, 'https'),
+            ('reasons-raw', 's-reasons-1', 'raw', 'explicit-adopt', 3003, NULL)`;
+        const previews = yield* PreviewsRepo;
+        const views = yield* previews.ensureForWorktree(worktree);
+        yield* sql`UPDATE services SET browser_scheme = NULL WHERE id = 'reasons-adopt'`;
+        const read = yield* previews.gatewaySnapshots(views.map((view) => view.preview.id));
+        expect(
+          views.map((view) => [view.preview.serviceName, read.get(view.preview.id)?.resolution]),
+        ).toEqual([
+          ["adopted", { _tag: "Refused", reason: "not-browser-service" }],
+          ["tls", { _tag: "Refused", reason: "https-unsupported" }],
+          ["web", { _tag: "Refused", reason: "process-binding-unavailable" }],
+        ]);
+        yield* sql`DELETE FROM services WHERE id = 'reasons-tls'`;
+        const [, tls] = views;
+        if (tls === undefined) return yield* Effect.die("missing preview");
+        expect((yield* previews.gatewaySnapshot(tls.preview.id))?.resolution).toEqual({
+          _tag: "Refused",
+          reason: "service-missing",
+        });
+      }),
+    );
+  });
+
   it("answers a removed preview as refused, an unknown one as null, and many in one snapshot", async () => {
     await run(
       Effect.gen(function* () {
