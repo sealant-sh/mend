@@ -251,7 +251,7 @@ describe("refusals before anything starts", () => {
           );
           yield* Deferred.await(start.asked);
           const refused = yield* fetchAt(world.port, world.hostOf("web"), cookie, "/over");
-          expect(refused.status, "a second open request on the preview is refused").toBe(503);
+          expect(refused.status, "a second open request on the preview is refused").toBe(429);
           expect(refused.body, "the refusal says which ceiling").toContain(
             "budget reached · 1 open requests for one preview · nothing running was stopped",
           );
@@ -727,6 +727,42 @@ describe("a held request ends when its viewer's access does", () => {
   );
 });
 
+describe("an account's preview start window", () => {
+  it.effect("refuses a start past the account's window 429 with a Retry-After, and admits one a minute later", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { world } = yield* worldWithApp({ budgets: { accountPreviewStartsPerMinute: 2 } });
+        world.targets.ensureRunning = () =>
+          Effect.succeed(SessionProcessId.make("attempt-0")).pipe(
+            Effect.tap(() => Effect.sync(() => world.targets.resolutions.set(PREVIEWS.web.id, dormant()))),
+          );
+        const startOnce = Effect.gen(function* () {
+          world.targets.resolutions.set(PREVIEWS.web.id, dormant());
+          return yield* fetchAt(world.port, world.hostOf("web"), world.cookieFor("carol", "web"));
+        });
+        for (const turn of [1, 2]) {
+          const reply = yield* startOnce;
+          expect(reply.status, `start ${turn} ran and did not bind`).toBe(503);
+        }
+        expect(world.targets.starts.length, "two starts reached the engine").toBe(2);
+        const refused = yield* startOnce;
+        expect(refused.status, "the third start in a minute is refused as a budget").toBe(429);
+        expect(refused.body, "with the window's words").toContain(
+          "budget reached · 2 preview starts per minute for one account · nothing running was stopped",
+        );
+        expect(refused.headers["retry-after"], "and when to try again").toBe("60");
+        expect(world.targets.starts.length, "the refused start never reached the engine").toBe(2);
+        const dave = yield* fetchAt(world.port, world.hostOf("web"), world.cookieFor("dave", "web"));
+        expect(dave.status, "another account has its own window").toBe(503);
+        expect(world.targets.starts.length, "and its start ran").toBe(3);
+        yield* TestClock.adjust("61 seconds");
+        expect((yield* startOnce).status, "a minute later carol may start again").toBe(503);
+        expect(world.targets.starts.length, "and her start ran").toBe(4);
+      }),
+    ),
+  );
+});
+
 describe("the gateway's own ceilings", () => {
   const capped = { bodyCap: { _tag: "Capped", bytes: 64 * 1024 } } as const;
 
@@ -812,7 +848,7 @@ describe("the gateway's own ceilings", () => {
           world.hostOf("web"),
           world.cookieFor("dave", "web"),
         );
-        expect(refused.status, "another viewer's dial is refused").toBe(503);
+        expect(refused.status, "another viewer's dial is refused").toBe(429);
         expect(refused.body, "with the ceiling's words").toContain(
           "budget reached · 1 open forwards across previews · nothing running was stopped",
         );

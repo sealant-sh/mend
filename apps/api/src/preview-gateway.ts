@@ -281,6 +281,17 @@ const stated = (service: string, fact: string) => `preview · ${service} · ${fa
 const notDelivered = (service: string, fact: string) =>
   `${stated(service, fact)} · your request was not delivered`;
 
+/**
+ * Every ceiling and budget the gateway meets answers 429, as ADR 0004's budgets do; its 503 means
+ * only that the preview is not available.
+ */
+const budgetPage = (message: string, retryAfterSeconds: number | null = null): PreviewAnswer => {
+  const page = gatewayPage(429, message);
+  return retryAfterSeconds === null
+    ? page
+    : { ...page, headers: { ...page.headers, "retry-after": String(retryAfterSeconds) } };
+};
+
 const REFUSED = {
   "service-missing": { status: 503, fact: "no Service of this name in its worktree" },
   "not-browser-service": { status: 503, fact: "the Service serves no browser page" },
@@ -535,7 +546,7 @@ export const makePreviewGatewayLayer = (
 
       const dialAnswer = (cell: Cell, pool: Pool, error: Error): PreviewAnswer => {
         if (error instanceof ForwardCeilingReached) {
-          return gatewayPage(503, ceilingMessage(settings.limits.forwards, LIMIT_WORDS.forwards));
+          return budgetPage(ceilingMessage(settings.limits.forwards, LIMIT_WORDS.forwards));
         }
         if (pool.closed) {
           return gatewayPage(503, notDelivered(cell.serviceName, "the preview restarted"));
@@ -811,16 +822,29 @@ export const makePreviewGatewayLayer = (
             Effect.map(Option.getOrElse(() => didNotStart(cell, "start timed out"))),
           ),
         );
-        return budgets.withPreviewStartSlot(viewerId, bounded).pipe(
+        const { limits } = budgets;
+        const windowed = Effect.suspend(() => {
+          const wait = budgets.previewStarts.take(
+            viewerId,
+            limits.accountPreviewStartsPerMinute,
+            clock.currentTimeMillisUnsafe(),
+          );
+          if (wait === null) return bounded;
+          const message = budgetMessage(
+            "accountPreviewStartsPerMinute",
+            limits.accountPreviewStartsPerMinute,
+          );
+          return Effect.succeed(refusedWith(budgetPage(message, wait)));
+        });
+        return budgets.withPreviewStartSlot(viewerId, windowed).pipe(
           Effect.map(
             (outcome) =>
               outcome ??
               refusedWith(
-                gatewayPage(
-                  429,
+                budgetPage(
                   budgetMessage(
                     "accountPreviewStartsInFlight",
-                    budgets.limits.accountPreviewStartsInFlight,
+                    limits.accountPreviewStartsInFlight,
                   ),
                 ),
               ),
@@ -884,7 +908,7 @@ export const makePreviewGatewayLayer = (
           const held = yield* connections.countFor(viewerId, "preview");
           const accountLimit = budgets.limits.accountPreviewConnections;
           if (overCeiling(held, accountLimit)) {
-            return gatewayPage(429, budgetMessage("accountPreviewConnections", accountLimit));
+            return budgetPage(budgetMessage("accountPreviewConnections", accountLimit));
           }
           const refused = yield* Effect.acquireRelease(
             Effect.sync(() => {
@@ -893,7 +917,7 @@ export const makePreviewGatewayLayer = (
                 overCeiling(open[name], settings.limits[name]),
               );
               if (over !== undefined) {
-                return gatewayPage(503, ceilingMessage(settings.limits[over], LIMIT_WORDS[over]));
+                return budgetPage(ceilingMessage(settings.limits[over], LIMIT_WORDS[over]));
               }
               cell.exchanges += 1;
               openExchanges += 1;

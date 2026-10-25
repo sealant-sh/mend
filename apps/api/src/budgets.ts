@@ -52,8 +52,8 @@ export interface BudgetLimits {
   readonly rawReads: number;
   /** Requests and upgrades one account holds open on the preview gateway, a held one included. */
   readonly accountPreviewConnections: number;
-  /** Request-triggered preview starts one account may have running at once. */
   readonly accountPreviewStartsInFlight: number;
+  readonly accountPreviewStartsPerMinute: number;
 }
 
 export type BudgetName = keyof BudgetLimits;
@@ -83,6 +83,7 @@ export const DEFAULT_BUDGET_LIMITS: BudgetLimits = {
   rawReads: 512,
   accountPreviewConnections: 48,
   accountPreviewStartsInFlight: 4,
+  accountPreviewStartsPerMinute: 4,
 };
 
 const ENV: Readonly<Record<BudgetName, string>> = {
@@ -107,6 +108,7 @@ const ENV: Readonly<Record<BudgetName, string>> = {
   rawReads: "MEND_BUDGET_RAW_READS",
   accountPreviewConnections: "MEND_BUDGET_ACCOUNT_PREVIEW_CONNECTIONS",
   accountPreviewStartsInFlight: "MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_IN_FLIGHT",
+  accountPreviewStartsPerMinute: "MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_PER_MINUTE",
 };
 
 export const budgetEnvName = (name: BudgetName): string => ENV[name];
@@ -133,9 +135,9 @@ const WORDS: Readonly<Record<BudgetName, string>> = {
   rawReads: "open raw file reads on this instance",
   accountPreviewConnections: "open preview requests for one account",
   accountPreviewStartsInFlight: "preview starts at once for one account",
+  accountPreviewStartsPerMinute: "preview starts per minute for one account",
 };
 
-/** What a refusal at any ceiling says: its limit, what it counts, and that nothing was touched. */
 export const ceilingMessage = (limit: number, words: string): string =>
   `budget reached · ${limit} ${words} · nothing running was stopped`;
 
@@ -165,6 +167,7 @@ export class Budgets extends Context.Service<
     readonly signIns: WindowLimiter;
     /** Fetches of origin's branch a viewer asks for, by account. */
     readonly originChecks: WindowLimiter;
+    readonly previewStarts: WindowLimiter;
     /**
      * Hold one launch slot for the account while `effect` runs, or null when the account has
      * `accountLaunchesInFlight` starting already. The slot is released however `effect` ends.
@@ -244,6 +247,7 @@ export const makeBudgets = (limits: BudgetLimits) => ({
   credentials: makeWindowLimiter(),
   signIns: makeWindowLimiter(),
   originChecks: makeWindowLimiter(),
+  previewStarts: makeWindowLimiter(),
   withLaunchSlot: makeSlots(limits.accountLaunchesInFlight),
   withHandoffSlot: makeSlots(limits.accountHandoffsInFlight),
   rawReadSlot: makeRawReadSlots(limits),
@@ -275,6 +279,7 @@ export const budgetLimitsConfig = Config.all({
   rawReads: limit("rawReads"),
   accountPreviewConnections: limit("accountPreviewConnections"),
   accountPreviewStartsInFlight: limit("accountPreviewStartsInFlight"),
+  accountPreviewStartsPerMinute: limit("accountPreviewStartsPerMinute"),
 });
 
 export const BudgetsLive: Layer.Layer<Budgets, Config.ConfigError> = Layer.effect(

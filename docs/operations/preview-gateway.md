@@ -87,11 +87,13 @@ tailnet.
 
 ## Refusals
 
-- A request a budget refuses gets `429` and the budget's words: open preview requests for one
-  account (`MEND_BUDGET_ACCOUNT_PREVIEW_CONNECTIONS`) and preview starts at once for one account
-  (`MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_IN_FLIGHT`). See [Budgets](budgets.md).
-- The gateway's own ceilings on open requests and forwards answer `503`. They bound this process,
-  not an account.
+- A request a budget or ceiling refuses gets `429` and its words, and nothing is started. The
+  account budgets are open preview requests (`MEND_BUDGET_ACCOUNT_PREVIEW_CONNECTIONS`), preview
+  starts at once (`MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_IN_FLIGHT`) and preview starts per minute
+  (`MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_PER_MINUTE`, with a `Retry-After`). See
+  [Budgets](budgets.md). The gateway's own ceilings bound this process rather than an account: open
+  requests for one preview (64), open requests across previews (256) and open forwards (128).
+  A `503` from the gateway always means the preview is not available.
 - A request held for a stopped preview that does not start in time gets `503` and one line, such as
   `preview · web · did not start in 3 min · start timed out · your request was not delivered`. The
   gateway never read the body, so Mend holds none of it.
