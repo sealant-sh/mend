@@ -8,6 +8,7 @@ import {
   ProtocolHostNotLiveError,
   SessionTurnRefusedError,
   TurnSteerForbiddenError,
+  TurnSteerKeyConflictError,
   type SteerTurnInput,
 } from "@mend/sessions";
 import { Effect } from "effect";
@@ -186,6 +187,40 @@ describe("turn steering HTTP", () => {
       } finally {
         await api.dispose();
       }
+    }
+  });
+
+  it("reports a steer key reused for other words or another turn as 409", async () => {
+    const api = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            steerTurn: () =>
+              Effect.fail(
+                new TurnSteerKeyConflictError({
+                  clientSteerId: key,
+                  message: "This steer key was already used for other words or another turn.",
+                }),
+              ),
+          },
+        },
+      },
+    );
+    try {
+      const response = await api.request("alice", "POST", route, {
+        input: "other words",
+        clientSteerId: key,
+      });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        _tag: "TurnSteerKeyConflict",
+        clientSteerId: key,
+        message: "This steer key was already used for other words or another turn.",
+      });
+    } finally {
+      await api.dispose();
     }
   });
 

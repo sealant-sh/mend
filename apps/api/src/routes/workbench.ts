@@ -57,6 +57,7 @@ import {
   SessionNotSteerable,
   TurnSteerForbidden,
   InvalidTurnSteer,
+  TurnSteerKeyConflict,
   WorkspaceReplaceRefused,
   SessionNotLive,
   SettingsFailure,
@@ -2645,6 +2646,13 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
                 ),
               InvalidTurnSteerError: (error) =>
                 Effect.fail(new InvalidTurnSteer({ message: error.message })),
+              TurnSteerKeyConflictError: (error) =>
+                Effect.fail(
+                  new TurnSteerKeyConflict({
+                    clientSteerId: error.clientSteerId,
+                    message: error.message,
+                  }),
+                ),
             }),
           );
       }),

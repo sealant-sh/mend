@@ -74,6 +74,12 @@ export class InvalidTurnSteerError extends Schema.TaggedError<InvalidTurnSteerEr
   { message: Schema.String },
 ) {}
 
+/** A retry's key already names a steer of another turn, or of other words. */
+export class TurnSteerKeyConflictError extends Schema.TaggedError<TurnSteerKeyConflictError>()(
+  "TurnSteerKeyConflictError",
+  { clientSteerId: Schema.String, message: Schema.String },
+) {}
+
 export interface SteerTurnInput {
   readonly turnId: AgentTurnId;
   readonly input: string;
@@ -85,7 +91,8 @@ export type TurnSteerError =
   | ProtocolHostNotLiveError
   | AgentTurnNotFoundError
   | TurnSteerForbiddenError
-  | InvalidTurnSteerError;
+  | InvalidTurnSteerError
+  | TurnSteerKeyConflictError;
 
 /** Hooks that return protocol observations to the owning session engine. */
 export interface ProtocolHostHooks {
@@ -1269,9 +1276,20 @@ export const ProtocolHostLive: Layer.Layer<
               ? "This turn has no recorded sender."
               : "Only this turn's sender may steer it.",
         });
-      if (input.clientSteerId != null) {
-        const existing = yield* conversations.steerByClientId(input.sender, input.clientSteerId);
-        if (existing !== null) return existing;
+      const clientSteerId = input.clientSteerId?.toLowerCase() ?? null;
+      /** A retry gets its first receipt; the same key for another turn or other words is refused. */
+      const retried = (existing: AgentTurnSteer) =>
+        existing.turnId === turn.id && existing.input === input.input
+          ? Effect.succeed(existing)
+          : Effect.fail(
+              new TurnSteerKeyConflictError({
+                clientSteerId: existing.clientSteerId ?? clientSteerId ?? "",
+                message: "This steer key was already used for other words or another turn.",
+              }),
+            );
+      if (clientSteerId !== null) {
+        const existing = yield* conversations.steerByClientId(input.sender, clientSteerId);
+        if (existing !== null) return yield* retried(existing);
       }
       if ((yield* placeTurn(turn.sessionId))?._tag !== "Hosted") {
         return yield* new ProtocolHostNotLiveError({ processId: turn.processId });
@@ -1284,9 +1302,9 @@ export const ProtocolHostLive: Layer.Layer<
           turnId: turn.id,
           author: input.sender,
           input: input.input,
-          clientSteerId: input.clientSteerId ?? null,
+          clientSteerId,
         });
-        if (!admitted.created) return admitted.steer;
+        if (!admitted.created) return yield* retried(admitted.steer);
         // A delivery that fails or dies may have written its words: never left Sending on a live
         // server. An interrupt is a shutdown, which the next start's recovery settles.
         return yield* deliverSteer(admitted.steer, entry).pipe(

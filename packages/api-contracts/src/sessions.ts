@@ -135,6 +135,13 @@ export class TurnSteerForbidden extends Schema.TaggedError<TurnSteerForbidden>()
   { httpApiStatus: 403 },
 ) {}
 
+/** A steer key reused for another turn or other words: the first steer keeps it. */
+export class TurnSteerKeyConflict extends Schema.TaggedError<TurnSteerKeyConflict>()(
+  "TurnSteerKeyConflict",
+  { clientSteerId: Schema.String, message: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
 export class InvalidTurnSteer extends Schema.TaggedError<InvalidTurnSteer>()(
   "InvalidTurnSteer",
   { message: Schema.String },
@@ -332,6 +339,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         SessionNotSteerable,
         TurnSteerForbidden,
         InvalidTurnSteer,
+        TurnSteerKeyConflict,
         ProtocolSessionNotLive,
       ],
     }),

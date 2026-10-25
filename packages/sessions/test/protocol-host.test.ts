@@ -984,7 +984,7 @@ describe("ProtocolHost", () => {
         const receipt = yield* host.steerTurn(input);
         expect(receipt.delivery).toEqual({ _tag: "Accepted", evidence: "provider-acknowledged" });
         expect(receipt.input).toBe(input.input);
-        expect(yield* host.steerTurn({ ...input, input: "different retry" })).toEqual(receipt);
+        expect(yield* host.steerTurn({ ...input })).toEqual(receipt);
         const steers = peer.written.filter((frame) => frame.method === "turn/steer");
         expect(steers).toHaveLength(1);
         expect(steers[0]?.params).toEqual({
@@ -1170,6 +1170,40 @@ describe("ProtocolHost", () => {
       expect(steers.map((row) => [row.input, row.delivery])).toEqual([
         ["lost in delivery", { _tag: "Unknown", reason: "failed" }],
       ]);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("refuses a reused steer key that names another turn or other words", () => {
+    const world = makeConversationWorld();
+    const turn = world.seed("start");
+    const other = world.seed("other");
+    world.turns.set(other.id, new AgentTurn({ ...other, status: "completed", endedAt: now() }));
+    const peer = makePipe(["native"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const input = {
+        turnId: turn.id,
+        sender: "user-1",
+        input: "first words",
+        clientSteerId: crypto.randomUUID(),
+      };
+      const receipt = yield* host.steerTurn(input);
+      for (const reuse of [
+        { ...input, turnId: other.id },
+        { ...input, input: "other words" },
+        { ...input, clientSteerId: input.clientSteerId.toUpperCase(), input: "other words" },
+      ]) {
+        expect(yield* host.steerTurn(reuse).pipe(Effect.flip)).toMatchObject({
+          _tag: "TurnSteerKeyConflictError",
+          clientSteerId: input.clientSteerId,
+        });
+      }
+      expect(
+        yield* host.steerTurn({ ...input, clientSteerId: input.clientSteerId.toUpperCase() }),
+      ).toEqual(receipt);
+      expect(peer.written.filter((frame) => frame.method === "turn/steer")).toHaveLength(1);
       yield* host.detach(processId);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
