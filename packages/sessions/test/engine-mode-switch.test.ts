@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import type { SessionId } from "@mend/domain";
-import { composeLaunchArgv, Session, SessionProcess } from "@mend/domain/workbench";
+import { type AgentTurn, composeLaunchArgv, Session, SessionProcess } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import { sessionStatePathOf } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
@@ -11,12 +11,16 @@ import { Effect } from "effect";
 import { describe, expect } from "vitest";
 
 import {
+  completedTurnOf,
+  harvestExecOf,
   now,
+  recordedTurnsLayer,
   recordingProtocolHostLayer,
   sealantLaunchLayer,
   setup,
   withEngine,
   type World,
+  writeHomeTranscript,
 } from "./engine/fixture.ts";
 
 const BYPASS_FLAGS = [
@@ -46,6 +50,7 @@ describe("a mode switch keeps the session's permission mode (SLNT-147)", () => {
       const created: CreateOptions[] = [];
       const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
       const spawned: Array<ReadonlyArray<string>> = [];
+      const turns: Array<AgentTurn> = [];
       const providerSessionId = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
       const terminal = await withEngine(
         (world, tmp) =>
@@ -72,18 +77,15 @@ describe("a mode switch keeps the session's permission mode (SLNT-147)", () => {
               conversation.id,
               new SessionProcess({ ...conversation, providerSessionId }),
             );
-            const stateDir = sessionStatePathOf(project.storePath, session.id);
-            fs.mkdirSync(stateDir, { recursive: true });
-            fs.writeFileSync(
-              path.join(stateDir, "manifest.json"),
-              JSON.stringify({ harness, providerSessionId, capturedAt: new Date().toISOString() }),
-            );
+            turns.push(completedTurnOf(conversation));
+            writeHomeTranscript(project.storePath, session.id, harness, providerSessionId);
             yield* engine.switchMode(session.id, "pty", { mode: "pty" }, null);
             return liveAgent(world.processes.values(), "agent-pty");
           }),
         {
-          sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned),
+          sealantLayer: savedConversationLayer(created, spawned, harness, providerSessionId),
           protocolHostLayer: recordingProtocolHostLayer(attached, []),
+          conversationLayer: recordedTurnsLayer(turns),
         },
       );
       expect(terminal, "a live terminal agent after the switch").toBeDefined();
@@ -149,6 +151,46 @@ const resumingLayer = (created: CreateOptions[], spawned: Array<ReadonlyArray<st
     [],
   );
 
+const savedConversationLayer = (
+  created: CreateOptions[],
+  spawned: Array<ReadonlyArray<string>>,
+  harness: "claude" | "codex",
+  providerSessionId: string,
+) =>
+  sealantLaunchLayer(
+    created,
+    undefined,
+    undefined,
+    spawned,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    [],
+    undefined,
+    { exec: harvestExecOf(harness, providerSessionId) },
+  );
+
+const turnCompleted = (
+  world: World,
+  turns: Array<AgentTurn>,
+  storePath: string,
+  sessionId: SessionId,
+  harness: "claude" | "codex",
+  providerSessionId: string,
+) => {
+  const conversation = [...world.processes.values()].find(
+    (process) =>
+      process.sessionId === sessionId &&
+      process.kind === "agent-protocol" &&
+      process.exitedAt === null,
+  );
+  if (conversation === undefined) throw new Error("no live conversation");
+  turns.push(completedTurnOf(conversation));
+  writeHomeTranscript(storePath, sessionId, harness, providerSessionId);
+};
+
 const stopped = (world: World, sessionId: SessionId) => {
   for (const process of world.processes.values()) {
     if (process.sessionId !== sessionId || process.exitedAt !== null) continue;
@@ -164,6 +206,8 @@ const stopped = (world: World, sessionId: SessionId) => {
     new Session({ ...session, status: "stopped", settledAt: now(), updatedAt: now() }),
   );
 };
+
+const RESUMED = "0d5c3c1e-7a51-4f0e-9c69-6a1d2b7e4f10";
 
 const claudeTranscript = [
   JSON.stringify({ type: "user", message: { role: "user", content: "add a health endpoint" } }),
@@ -317,6 +361,7 @@ describe("a Resume keeps the session's permission mode (SLNT-147)", () => {
       const created: CreateOptions[] = [];
       const spawned: Array<ReadonlyArray<string>> = [];
       const permissionModes: Array<"bypass" | "ask"> = [];
+      const turns: Array<AgentTurn> = [];
       await withEngine(
         (world, tmp) =>
           Effect.gen(function* () {
@@ -348,13 +393,15 @@ describe("a Resume keeps the session's permission mode (SLNT-147)", () => {
             yield* engine.switchMode(session.id, "protocol", { mode: "protocol" }, null);
             const conversation = liveAgent(world.processes.values(), "agent-protocol");
             expect(conversation?.protocolOptions?.permissionMode).toBe("bypass");
+            turnCompleted(world, turns, project.storePath, session.id, harness, RESUMED);
             yield* engine.switchMode(session.id, "pty", { mode: "pty" }, null);
             expect(liveAgent(world.processes.values(), "agent-pty")).toBeDefined();
             expect(ranFrom(spawned, harness)).toContain(BYPASS_FLAGS[harness === "claude" ? 0 : 1]);
           }),
         {
-          sealantLayer: resumingLayer(created, spawned),
+          sealantLayer: savedConversationLayer(created, spawned, harness, RESUMED),
           protocolHostLayer: recordingProtocolHostLayer([], [], [], permissionModes),
+          conversationLayer: recordedTurnsLayer(turns),
         },
       );
       expect(permissionModes).toEqual(["bypass"]);
@@ -368,6 +415,7 @@ describe("a Resume keeps the session's permission mode (SLNT-147)", () => {
       const created: CreateOptions[] = [];
       const spawned: Array<ReadonlyArray<string>> = [];
       const permissionModes: Array<"bypass" | "ask"> = [];
+      const turns: Array<AgentTurn> = [];
       await withEngine(
         (world, tmp) =>
           Effect.gen(function* () {
@@ -397,6 +445,7 @@ describe("a Resume keeps the session's permission mode (SLNT-147)", () => {
             );
             for (let round = 0; round < 2; round += 1) {
               yield* engine.switchMode(session.id, "protocol", { mode: "protocol" }, null);
+              turnCompleted(world, turns, project.storePath, session.id, harness, RESUMED);
               yield* engine.switchMode(session.id, "pty", { mode: "pty" }, null);
               const ran = ranFrom(spawned, harness);
               for (const flag of BYPASS_FLAGS) expect(ran).not.toContain(flag);
@@ -404,8 +453,9 @@ describe("a Resume keeps the session's permission mode (SLNT-147)", () => {
             }
           }),
         {
-          sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned),
+          sealantLayer: savedConversationLayer(created, spawned, harness, RESUMED),
           protocolHostLayer: recordingProtocolHostLayer([], [], [], permissionModes),
+          conversationLayer: recordedTurnsLayer(turns),
         },
       );
       expect(permissionModes).toEqual(["ask", "ask"]);
@@ -426,6 +476,7 @@ describe("a mode switch to the terminal takes the permission mode it names (SLNT
       const created: CreateOptions[] = [];
       const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
       const spawned: Array<ReadonlyArray<string>> = [];
+      const turns: Array<AgentTurn> = [];
       await withEngine(
         (world, tmp) =>
           Effect.gen(function* () {
@@ -450,16 +501,7 @@ describe("a mode switch to the terminal takes the permission mode it names (SLNT
               conversation.id,
               new SessionProcess({ ...conversation, providerSessionId }),
             );
-            const stateDir = sessionStatePathOf(project.storePath, session.id);
-            fs.mkdirSync(stateDir, { recursive: true });
-            fs.writeFileSync(
-              path.join(stateDir, "manifest.json"),
-              JSON.stringify({
-                harness: "claude",
-                providerSessionId,
-                capturedAt: new Date().toISOString(),
-              }),
-            );
+            turnCompleted(world, turns, project.storePath, session.id, "claude", providerSessionId);
             yield* engine.switchMode(
               session.id,
               "pty",
@@ -468,8 +510,9 @@ describe("a mode switch to the terminal takes the permission mode it names (SLNT
             );
           }),
         {
-          sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned),
+          sealantLayer: savedConversationLayer(created, spawned, "claude", providerSessionId),
           protocolHostLayer: recordingProtocolHostLayer(attached, []),
+          conversationLayer: recordedTurnsLayer(turns),
         },
       );
       const terminal = ranFrom(spawned, "claude");

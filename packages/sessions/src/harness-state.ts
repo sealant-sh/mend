@@ -26,6 +26,7 @@
  * home server-side (`locateLiveTranscript`) instead of refusing.
  */
 
+import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -750,6 +751,167 @@ export const hasLiveHarnessState = (
     return false;
   });
 
+const isAbsent = (error: unknown): boolean =>
+  typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+
+/**
+ * The transcript a conversation continues from, of the candidates left once the caller has set
+ * aside what is not this conversation's: the one `knownId` names, else the newest.
+ */
+export const chooseTranscript = <F>(
+  candidates: ReadonlyArray<F>,
+  idOf: (file: F) => string | null,
+  isNewer: (file: F, than: F) => boolean,
+  knownId: string | null,
+): { readonly file: F; readonly byKnownId: boolean } | null => {
+  const known = knownId === null ? undefined : candidates.find((file) => idOf(file) === knownId);
+  if (known !== undefined) return { file: known, byKnownId: true };
+  const newest = candidates.reduce<F | undefined>(
+    (best, file) => (best === undefined || isNewer(file, best) ? file : best),
+    undefined,
+  );
+  return newest === undefined ? null : { file: newest, byKnownId: false };
+};
+
+/**
+ * The primary transcript in a session's harness home a conversation continues from, server-side
+ * (no workspace exec): the one `knownId` names (`byKnownId`), else the newest, never one Mend
+ * carried in. Null when the harness keeps no locatable transcript or none was written; a home
+ * that could not be read is a `HarnessStateIOError`, never an absence.
+ */
+export const findLiveTranscript = (
+  harnessHomePath: string,
+  harness: string,
+  sessionId: string,
+  knownId: string | null,
+): Effect.Effect<
+  {
+    readonly path: string;
+    readonly providerSessionId: string | null;
+    /** Last write to the transcript — the observed "the agent is (still) working" signal. */
+    readonly mtimeMs: number;
+    readonly size: number;
+    readonly byKnownId: boolean;
+  } | null,
+  HarnessStateIOError
+> =>
+  Effect.tryPromise({
+    try: async () => {
+      const shape = HARNESS_STATE[harness];
+      if (shape === undefined || shape.liveTranscript === null) return null;
+      const pattern = shape.liveTranscript;
+      const carried = parseCarriedTranscripts(
+        await fs
+          .readFile(path.join(harnessHomePath, CARRIED_TRANSCRIPTS), "utf8")
+          .catch((error: unknown) => (isAbsent(error) ? null : Promise.reject(error))),
+      );
+      const entries = await fs
+        .readdir(harnessHomePath, { recursive: true, withFileTypes: true })
+        .catch((error: unknown) => (isAbsent(error) ? [] : Promise.reject(error)));
+      const candidates: Array<{
+        readonly path: string;
+        readonly id: string | null;
+        readonly providerSessionId: string | null;
+        readonly mtimeMs: number;
+        readonly size: number;
+      }> = [];
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const absolute = path.join(entry.parentPath, entry.name);
+        const relative = path.relative(harnessHomePath, absolute);
+        if (!pattern.test(relative)) continue;
+        const id = shape.providerSessionId(relative);
+        if (id !== null && carried.has(id)) continue;
+        const stat = await fs
+          .stat(absolute)
+          .catch((error: unknown) => (isAbsent(error) ? null : Promise.reject(error)));
+        if (stat === null) continue;
+        candidates.push({
+          path: absolute,
+          id,
+          providerSessionId: shape.providerSessionId(absolute),
+          mtimeMs: stat.mtimeMs,
+          size: stat.size,
+        });
+      }
+      const chosen = chooseTranscript(
+        candidates,
+        (file) => file.id,
+        (file, than) => file.mtimeMs > than.mtimeMs,
+        knownId,
+      );
+      if (chosen === null) return null;
+      const { path: at, providerSessionId, mtimeMs, size } = chosen.file;
+      return { path: at, providerSessionId, mtimeMs, size, byKnownId: chosen.byKnownId };
+    },
+    catch: (cause) =>
+      new HarnessStateIOError({
+        sessionId,
+        operation: "read-transcript",
+        path: harnessHomePath,
+        message: `Could not read the ${harness} home of session ${sessionId}.`,
+        cause,
+      }),
+  });
+
+/**
+ * `findLiveTranscript`, and the transcript's text, read from inside the home and never through a
+ * link (docs/adr/0010). Null when there is none, or it went away before it was read.
+ */
+export const readLiveTranscript = (
+  harnessHomePath: string,
+  harness: string,
+  sessionId: string,
+  knownId: string | null,
+): Effect.Effect<
+  {
+    readonly path: string;
+    readonly providerSessionId: string | null;
+    readonly byKnownId: boolean;
+    readonly text: string;
+  } | null,
+  HarnessStateIOError
+> =>
+  Effect.flatMap(findLiveTranscript(harnessHomePath, harness, sessionId, knownId), (found) =>
+    found === null
+      ? Effect.succeed(null)
+      : Effect.tryPromise({
+          try: async () => {
+            const home = await fs.realpath(harnessHomePath);
+            const directory = await fs.realpath(path.dirname(found.path));
+            if (directory !== home && !directory.startsWith(`${home}${path.sep}`)) {
+              throw new Error(`${found.path} is not inside the harness home`);
+            }
+            const handle = await fs
+              .open(found.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+              .catch((error: unknown) => (isAbsent(error) ? null : Promise.reject(error)));
+            if (handle === null) return null;
+            try {
+              if (!(await handle.stat()).isFile()) {
+                throw new Error(`${found.path} is not a file`);
+              }
+              const text = await handle.readFile("utf8");
+              return {
+                path: found.path,
+                providerSessionId: found.providerSessionId,
+                byKnownId: found.byKnownId,
+                text,
+              };
+            } finally {
+              await handle.close();
+            }
+          },
+          catch: (cause) =>
+            new HarnessStateIOError({
+              sessionId,
+              operation: "read-transcript",
+              path: found.path,
+              message: `Could not read the ${harness} transcript of session ${sessionId}.`,
+              cause,
+            }),
+        }),
+  );
+
 /**
  * Find the newest primary transcript in a session's harness home, server-side — no workspace
  * exec, so it works when the workspace is already gone (the crash-recovery path). Returns the
@@ -766,40 +928,14 @@ export const locateLiveTranscript = (
   /** Last write to the transcript — the observed "the agent is (still) working" signal. */
   readonly mtimeMs: number;
 } | null> =>
-  Effect.promise(async () => {
-    const shape = HARNESS_STATE[harness];
-    if (shape === undefined || shape.liveTranscript === null) return null;
-    const pattern = shape.liveTranscript;
-    try {
-      const carried = parseCarriedTranscripts(
-        await fs
-          .readFile(path.join(harnessHomePath, CARRIED_TRANSCRIPTS), "utf8")
-          .catch(() => null),
-      );
-      const entries = await fs.readdir(harnessHomePath, { recursive: true, withFileTypes: true });
-      let newest: { readonly path: string; readonly mtimeMs: number } | null = null;
-      for (const entry of entries) {
-        if (!entry.isFile()) continue;
-        const absolute = path.join(entry.parentPath, entry.name);
-        const relative = path.relative(harnessHomePath, absolute);
-        if (!pattern.test(relative)) continue;
-        const id = shape.providerSessionId(relative);
-        if (id !== null && carried.has(id)) continue;
-        const stat = await fs.stat(absolute);
-        if (newest === null || stat.mtimeMs > newest.mtimeMs) {
-          newest = { path: absolute, mtimeMs: stat.mtimeMs };
-        }
-      }
-      if (newest === null) return null;
-      return {
-        path: newest.path,
-        providerSessionId: shape.providerSessionId(newest.path),
-        mtimeMs: newest.mtimeMs,
-      };
-    } catch {
-      return null;
-    }
-  });
+  findLiveTranscript(harnessHomePath, harness, "", null).pipe(
+    Effect.map((found) =>
+      found === null
+        ? null
+        : { path: found.path, providerSessionId: found.providerSessionId, mtimeMs: found.mtimeMs },
+    ),
+    Effect.orElseSucceed(() => null),
+  );
 
 /**
  * Whether the session's harness home holds a conversation, server-side: a transcript, or for

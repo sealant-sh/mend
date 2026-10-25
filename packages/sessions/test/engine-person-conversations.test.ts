@@ -1,7 +1,6 @@
 // A shared conversation per person (docs/adr/0016, Deliveries 16 to 18): each person's readers,
 // the conversation's home, a terminal takeover, and shared steering through the engine.
 
-import * as fs from "node:fs";
 import * as path from "node:path";
 
 import {
@@ -25,6 +24,8 @@ import {
   PersonLayoutPlatform,
   type PersonLogin,
   type PersonSessionOptions,
+  SealantClient,
+  SealantPlatformError,
 } from "@mend/sealant";
 import {
   NoLiveAgent,
@@ -34,7 +35,6 @@ import {
   SessionEngine,
   WorkspaceHostUserNamespaces,
 } from "@mend/sessions";
-import { processStatePathOf } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, SessionOptions, Workspace } from "@sealant/sdk";
 import { Deferred, Effect, Fiber, Layer, Queue } from "effect";
@@ -54,17 +54,22 @@ import {
   configuredHarnessHomePath,
   headFlush,
   seedStoppedBeforeRestart,
+  shipCaptureFiles,
   shipCapturedHarnessHome,
 } from "./engine/capture-fixture.ts";
 import { signalWrites, signalled, watched } from "./engine/clock-fixture.ts";
 import {
   agentConversationStub,
   agentMemoryLayerOf,
+  completedTurnOf,
   now,
+  recordedTurnsLayer,
   recordingProtocolHostLayer,
   redeemPickupExec,
   sealantLaunchLayer,
   setup,
+  transcriptIn,
+  transcriptLine,
   type World,
   withEngine,
   withEngineEffect,
@@ -712,6 +717,8 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
     }> = [];
     const stops: Array<string> = [];
     const state = makeHarnessLayoutsMemoryState();
+    const memory = makeMemoryCaptureStore();
+    const turns: Array<AgentTurn> = [];
     const provider = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
     let sessionId: SessionId | null = null;
     let takesAtStart = 0;
@@ -756,22 +763,23 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
             alice.id,
             new SessionProcess({ ...alice, providerSessionId: provider }),
           );
-          // What the harvest leaves for the terminal to resume.
-          const stateDir = processStatePathOf(project.storePath, session.id, alice.id);
-          fs.mkdirSync(stateDir, { recursive: true });
-          fs.writeFileSync(
-            path.join(stateDir, "manifest.json"),
-            JSON.stringify({
-              harness: "claude",
-              providerSessionId: provider,
-              capturedAt: new Date().toISOString(),
-            }),
+          turns.push(completedTurnOf(alice));
+          yield* shipCaptureFiles(
+            tmp,
+            memory,
+            session.worktreeId,
+            memory.leases.get(session.worktreeId)?.epoch ?? 0,
+            {
+              [`harness/people/user-fixture/conversations/${session.id}/${transcriptIn("claude", provider)}`]:
+                transcriptLine("claude", provider),
+            },
           );
           takesAtStart = state.conversationHolders.get(session.id)?.fence ?? 0;
           yield* engine.switchMode(session.id, "pty", { mode: "pty" }, "user-fixture");
         }),
       {
-        captured: makeMemoryCaptureStore(),
+        captured: memory,
+        conversationLayer: recordedTurnsLayer(turns),
         prepareWorld: (world) => world.members.set(MARIA, "member"),
         sealantLayer: sealantLaunchLayer(
           [],
@@ -810,6 +818,122 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
     expect(holder?.fence).toBeGreaterThan(takesAtStart);
     const ptyAgent = [...state.conversationHolders.values()][0]?.processId ?? null;
     expect(ptyAgent).not.toBeNull();
+  }, 30_000);
+
+  it("a takeover whose close the platform refuses leaves the conversation's take with the process that still runs", async () => {
+    const calls: Array<string> = [];
+    const attached: Array<{
+      readonly process: SessionProcess;
+      readonly hooks: ProtocolHostHooks;
+      readonly resumePath: string | null;
+    }> = [];
+    const stops: Array<string> = [];
+    const state = makeHarnessLayoutsMemoryState();
+    const memory = makeMemoryCaptureStore();
+    const turns: Array<AgentTurn> = [];
+    const provider = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
+    let sessionId: SessionId | null = null;
+    let aliceId: string | null = null;
+    let refusal: unknown = null;
+    const exec = (argv: ReadonlyArray<string>) => {
+      if (isPrepare(argv)) return { exitCode: 0, stdout: LAYOUT_READY, stderr: "" };
+      if (isStage(argv)) {
+        const moved = (argv[2] ?? "").includes("moved=0") ? "mend-conv moved 1\n" : "";
+        return { exitCode: 0, stdout: `${moved}mend-conv empty\n`, stderr: "" };
+      }
+      if (isExchange(argv)) {
+        return { exitCode: 0, stdout: "mend-conv exchanged renameat2\n", stderr: "" };
+      }
+      return undefined;
+    };
+    const base = sealantLaunchLayer(
+      [],
+      undefined,
+      undefined,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      [],
+      undefined,
+      { exec },
+    );
+    const refusingClose = Layer.effect(
+      SealantClient,
+      Effect.map(SealantClient, (client) => ({
+        ...client,
+        getSession: (workspace, id) =>
+          client.getSession(workspace, id).pipe(
+            Effect.map((pty) => ({
+              ...pty,
+              close: async () => {
+                throw new Error("the platform did not close it");
+              },
+            })),
+          ),
+      })),
+    ).pipe(Layer.provide(base));
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          sessionId = session.id;
+          const row = world.sessions.get(session.id);
+          if (row === undefined) return yield* Effect.die("no session");
+          world.sessions.set(
+            session.id,
+            new Session({ ...row, sharedControlEnabledAt: now(), sharedControlEverAt: now() }),
+          );
+          yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
+          const alice = attached[0]?.process;
+          if (alice === undefined) return yield* Effect.die("no protocol process");
+          aliceId = alice.id;
+          world.processes.set(
+            alice.id,
+            new SessionProcess({ ...alice, providerSessionId: provider }),
+          );
+          turns.push(completedTurnOf(alice));
+          yield* shipCaptureFiles(
+            tmp,
+            memory,
+            session.worktreeId,
+            memory.leases.get(session.worktreeId)?.epoch ?? 0,
+            {
+              [`harness/people/user-fixture/conversations/${session.id}/${transcriptIn("claude", provider)}`]:
+                transcriptLine("claude", provider),
+            },
+          );
+          refusal = yield* engine
+            .switchMode(session.id, "pty", { mode: "pty" }, "user-fixture")
+            .pipe(Effect.flip);
+        }),
+      {
+        captured: memory,
+        conversationLayer: recordedTurnsLayer(turns),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: refusingClose,
+        protocolHostLayer: steeringHost(attached, stops),
+        harnessLayout: { flag: "person", state, platform: personPlatform(calls, { person: true }) },
+      },
+    );
+    if (sessionId === null) throw new Error("no session");
+    expect(refusal instanceof SealantPlatformError ? refusal.code : refusal).toBe(
+      "conversation_not_stopped",
+    );
+    const holder = state.conversationHolders.get(sessionId);
+    expect.soft(holder?.launchId ?? null).not.toBeNull();
+    expect(holder?.processId ?? null).toBe(aliceId);
   }, 30_000);
 
   it("a fresh terminal claude in a once-shared conversation's home carries Mend's hooks and is pinned to a session id its row records (G4)", async () => {
@@ -899,6 +1023,8 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
     }> = [];
     const stops: Array<string> = [];
     const state = makeHarnessLayoutsMemoryState();
+    const memory = makeMemoryCaptureStore();
+    const turns: Array<AgentTurn> = [];
     const provider = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
     let sessionId: SessionId | null = null;
     let takesAtStart = 0;
@@ -944,16 +1070,16 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
             alice.id,
             new SessionProcess({ ...alice, providerSessionId: provider }),
           );
-          // What the harvest leaves for the terminal to resume.
-          const stateDir = processStatePathOf(project.storePath, session.id, alice.id);
-          fs.mkdirSync(stateDir, { recursive: true });
-          fs.writeFileSync(
-            path.join(stateDir, "manifest.json"),
-            JSON.stringify({
-              harness: "claude",
-              providerSessionId: provider,
-              capturedAt: new Date().toISOString(),
-            }),
+          turns.push(completedTurnOf(alice));
+          yield* shipCaptureFiles(
+            tmp,
+            memory,
+            session.worktreeId,
+            memory.leases.get(session.worktreeId)?.epoch ?? 0,
+            {
+              [`harness/people/user-fixture/conversations/${session.id}/${transcriptIn("claude", provider)}`]:
+                transcriptLine("claude", provider),
+            },
           );
           takesAtStart = state.conversationHolders.get(session.id)?.fence ?? 0;
           // Maria's turn waits, and its hand-over takes the conversation first.
@@ -982,7 +1108,8 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
           lostWith = lost.message;
         }),
       {
-        captured: makeMemoryCaptureStore(),
+        captured: memory,
+        conversationLayer: recordedTurnsLayer(turns),
         prepareWorld: (world) => world.members.set(MARIA, "member"),
         sealantLayer: sealantLaunchLayer(
           [],

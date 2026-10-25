@@ -50,20 +50,39 @@ export const shipHarnessCapture = (
   rolloutId: string,
   kind: CaptureKind = "turn",
 ) =>
+  shipCaptureFiles(
+    tmp,
+    memory,
+    worktreeId,
+    epoch,
+    {
+      [`harness/.codex/sessions/2026/09/12/rollout-2026-09-12T10-00-00-${rolloutId}.jsonl`]: `${JSON.stringify(
+        {
+          type: "response_item",
+          payload: { type: "message", role: "user", content: [{ type: "text", text: "go on" }] },
+        },
+      )}\n`,
+    },
+    kind,
+  );
+
+export const shipCaptureFiles = (
+  tmp: string,
+  memory: MemoryCaptureStore,
+  worktreeId: WorktreeId,
+  epoch: number,
+  files: Readonly<Record<string, string>>,
+  kind: CaptureKind = "turn",
+) =>
   Effect.gen(function* () {
     const chain = memory.chains.get(worktreeId);
     const head = chain?.headCapture === null || chain === undefined ? null : chain.headCapture;
     const parent = head === null ? null : (memory.captures.get(head) ?? null);
     const tree = path.join(tmp, `ship-${epoch}`);
-    const rolloutDir = path.join(tree, "harness", ".codex", "sessions", "2026", "09", "12");
-    fs.mkdirSync(rolloutDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(rolloutDir, `rollout-2026-09-12T10-00-00-${rolloutId}.jsonl`),
-      `${JSON.stringify({
-        type: "response_item",
-        payload: { type: "message", role: "user", content: [{ type: "text", text: "go on" }] },
-      })}\n`,
-    );
+    for (const [at, content] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(tree, at)), { recursive: true });
+      fs.writeFileSync(path.join(tree, at), content);
+    }
     const snapshot = snapshotDirectory(tree, captureKeys(worktreeId, epoch), { chunkSize: 64 });
     const built = buildManifest({
       worktreeId,
