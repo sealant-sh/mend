@@ -274,6 +274,15 @@ export default async (h) => {
           },
           limit,
         ),
+      record: (prefix, key, limit = 60_000) =>
+        waitUntil(
+          `${prefix} ${key} in the shell`,
+          () => {
+            const found = new RegExp(`${prefix}:(\\{"${key}"[^\\r\\n]*\\})`).exec(attached.text);
+            return found === null ? null : JSON.parse(found[1]);
+          },
+          limit,
+        ),
       close: () => socket.close(),
     };
   };
@@ -303,9 +312,9 @@ export default async (h) => {
         fired += 1;
         const marker = `MEND-VIEW-${fired}`;
         await shell.lines([
-          `node "$D/standin.mjs" --settings "$(cat "$D/settings.json")"${sessionId === null ? "" : ` --session-id ${sessionId}`} --events ${event} --pause-ms 0 --marker ${marker} && echo ${marker}-DONE:{}`,
+          `node "$D/standin.mjs" --settings "$(cat "$D/settings.json")"${sessionId === null ? "" : ` --session-id ${sessionId}`} --events ${event} --pause-ms 0 --marker ${marker}`,
         ]);
-        await shell.marker(`${marker}-DONE`);
+        await shell.record(marker, "done");
         return event;
       },
     };
