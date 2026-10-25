@@ -18,7 +18,13 @@ import {
   type ServiceStartInput,
 } from "@mend/sessions";
 import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
-import type { Workspace, WorkspaceForward } from "@sealant/sdk";
+import type {
+  BoundedWorkspaceForward,
+  BoundedWorkspaceForwardOptions,
+  Workspace,
+  WorkspaceForward,
+  WorkspaceForwardOptions,
+} from "@sealant/sdk";
 import { Clock, Context, Deferred, Duration, Effect, Exit, Layer, Scope, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -92,6 +98,15 @@ const echoForward = (): WorkspaceForward => {
   };
 };
 
+function echoForwardOf(
+  port: number,
+  options: BoundedWorkspaceForwardOptions,
+): Promise<BoundedWorkspaceForward>;
+function echoForwardOf(port: number, options?: WorkspaceForwardOptions): Promise<WorkspaceForward>;
+async function echoForwardOf(): Promise<WorkspaceForward | BoundedWorkspaceForward> {
+  return echoForward();
+}
+
 const fakeWorkspace: Workspace = {
   id: "workspace-1",
   name: "fake",
@@ -125,7 +140,7 @@ const fakeWorkspace: Workspace = {
     list: async () => [],
   },
   events: async function* () {},
-  forward: async () => echoForward(),
+  forward: echoForwardOf,
   stop: async () => ({ state: "stopped" }),
   restart: async function () {
     return this;

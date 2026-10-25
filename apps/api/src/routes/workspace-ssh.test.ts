@@ -148,6 +148,8 @@ const featuresOf = (ends: boolean): SealantFeatures => ({
   workspaceSshUser: true,
   personBinding: true,
   sshKeyRemovalEndsConnections: ends,
+  connectedAccountDefaults: false,
+  kubernetesPersonLayout: false,
 });
 
 describe("workspace SSH keys", () => {
