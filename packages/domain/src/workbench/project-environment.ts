@@ -5,12 +5,14 @@ import {
   WORKSPACE_ENV_MAX_TOTAL_BYTES,
   WORKSPACE_ENV_MAX_VALUE_BYTES,
   WORKSPACE_ENV_NAME_PATTERN,
+  type providerLoginEnvNames,
   type WorkspaceEnvReservedRule,
 } from "@sealant/api-contracts/workspace-environment";
 import { Schema } from "effect";
 
 import { ProjectEnvironmentVariableId, ProjectId } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
+import { CREDENTIAL_PROVIDER_LABELS } from "./default-login.ts";
 
 /**
  * A project-owned, explicitly NON-SECRET environment name/value pair (plan:
@@ -57,12 +59,19 @@ export const PROJECT_ENV_MAX_VALUE_BYTES = WORKSPACE_ENV_MAX_VALUE_BYTES;
 export const PROJECT_ENV_MAX_ENTRIES = WORKSPACE_ENV_MAX_ENTRIES;
 export const PROJECT_ENV_MAX_TOTAL_BYTES = WORKSPACE_ENV_MAX_TOTAL_BYTES;
 
+export type ProviderLoginProvider = keyof typeof providerLoginEnvNames;
+
 /** Why one submitted name/value was refused. Diagnostics never carry values. */
 export type ProjectEnvironmentIssue =
   | { readonly rule: "name-grammar" }
   | { readonly rule: "name-length" }
   | { readonly rule: "name-reserved"; readonly reservedRule: WorkspaceEnvReservedRule }
   | { readonly rule: "name-mend-prefix" }
+  | {
+      readonly rule: "name-provider-login";
+      readonly name: string;
+      readonly provider: ProviderLoginProvider;
+    }
   | { readonly rule: "value-nul" }
   | { readonly rule: "value-size"; readonly valueBytes: number };
 
@@ -101,6 +110,8 @@ export const formatProjectEnvironmentIssue = (issue: ProjectEnvironmentIssue): s
       return `Names must be at most ${PROJECT_ENV_MAX_NAME_LENGTH} characters.`;
     case "name-mend-prefix":
       return "The MEND_ prefix is reserved for Mend itself.";
+    case "name-provider-login":
+      return `${issue.name} is a ${CREDENTIAL_PROVIDER_LABELS[issue.provider]} login. Connect it in Settings → Connected accounts, or with mend connect ${issue.provider}; a project secret never decides which login a session spends.`;
     case "name-reserved":
       return issue.reservedRule === "secret-marker"
         ? "Secret-looking names (containing TOKEN, SECRET, PASSWORD, PASSWD, CREDENTIAL, or APIKEY, ending in _KEY, or exactly KEY) are not supported: the workspace runtime filters them out, so the variable would silently never reach any process. Environment variables here are for ordinary non-secret configuration."

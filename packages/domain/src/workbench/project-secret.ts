@@ -1,5 +1,8 @@
-import { findWorkspaceSecretEnvReservedRule } from "@sealant/api-contracts/workspace-environment";
-import { Schema } from "effect";
+import {
+  findWorkspaceSecretEnvReservedRule,
+  providerLoginEnvNames,
+} from "@sealant/api-contracts/workspace-environment";
+import { Record, Schema } from "effect";
 
 import { ProjectId, ProjectSecretId } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
@@ -9,6 +12,7 @@ import {
   validateProjectEnvironmentName,
   validateProjectEnvironmentValue,
   type ProjectEnvironmentIssue,
+  type ProviderLoginProvider,
 } from "./project-environment.ts";
 
 /**
@@ -37,6 +41,12 @@ export class ProjectSecretsSnapshot extends Schema.Class<ProjectSecretsSnapshot>
   secrets: Schema.Array(ProjectSecret),
 }) {}
 
+const providerLoginByName: ReadonlyMap<string, ProviderLoginProvider> = new Map(
+  Record.toEntries(providerLoginEnvNames).flatMap(([provider, names]) =>
+    names.map((name) => [name, provider] as const),
+  ),
+);
+
 /**
  * Secret names: same grammar/length as Configuration names, same `MEND_` reservation, and the
  * platform's SECRET-lane policy — every platform-owned class stays reserved, but secret-shaped
@@ -45,7 +55,10 @@ export class ProjectSecretsSnapshot extends Schema.Class<ProjectSecretsSnapshot>
 export const validateProjectSecretName = (name: string): ProjectEnvironmentIssue | null => {
   if (!PROJECT_ENV_NAME_PATTERN.test(name)) return { rule: "name-grammar" };
   if (name.length > PROJECT_ENV_MAX_NAME_LENGTH) return { rule: "name-length" };
-  if (name.toUpperCase().startsWith("MEND_")) return { rule: "name-mend-prefix" };
+  const upper = name.toUpperCase();
+  if (upper.startsWith("MEND_")) return { rule: "name-mend-prefix" };
+  const provider = providerLoginByName.get(upper);
+  if (provider !== undefined) return { rule: "name-provider-login", name: upper, provider };
   const reservedRule = findWorkspaceSecretEnvReservedRule(name);
   if (reservedRule !== undefined) return { rule: "name-reserved", reservedRule };
   return null;
@@ -67,8 +80,9 @@ export type DotenvRoute =
 export const routeDotenvName = (name: string): DotenvRoute => {
   const plain = validateProjectEnvironmentName(name);
   if (plain === null) return { lane: "configuration" };
+  const secret = validateProjectSecretName(name);
+  if (secret?.rule === "name-provider-login") return { lane: "rejected", issue: secret };
   if (plain.rule === "name-reserved" && plain.reservedRule === "secret-marker") {
-    const secret = validateProjectSecretName(name);
     return secret === null ? { lane: "secret" } : { lane: "rejected", issue: secret };
   }
   return { lane: "rejected", issue: plain };

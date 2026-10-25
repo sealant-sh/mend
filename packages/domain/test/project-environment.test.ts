@@ -110,7 +110,6 @@ describe("validateProjectSecretName (the secret lane)", () => {
 
   it.each([
     ["GITHUB_TOKEN", "account-lookup"],
-    ["CLAUDE_CODE_OAUTH_TOKEN", "account-lookup"],
     ["SEALANT_X", "platform-prefix"],
     ["PATH", "process-identity"],
     ["NODE_OPTIONS", "runtime-injection"],
@@ -123,6 +122,62 @@ describe("validateProjectSecretName (the secret lane)", () => {
   it("keeps the MEND_ reservation and grammar", () => {
     expect(validateProjectSecretName("MEND_SECRET")?.rule).toBe("name-mend-prefix");
     expect(validateProjectSecretName("BAD NAME")?.rule).toBe("name-grammar");
+  });
+});
+
+const providerLoginWords = (name: string, label: string, command: string) =>
+  `${name} is a ${label} login. Connect it in Settings → Connected accounts, or with ${command}; a project secret never decides which login a session spends.`;
+
+const providerLoginNames = [
+  ["ANTHROPIC_API_KEY", "Claude", "mend connect claude"],
+  ["ANTHROPIC_AUTH_TOKEN", "Claude", "mend connect claude"],
+  ["CLAUDE_CODE_OAUTH_TOKEN", "Claude", "mend connect claude"],
+  ["OPENAI_API_KEY", "Codex", "mend connect codex"],
+  ["CODEX_API_KEY", "Codex", "mend connect codex"],
+] as const;
+
+describe("provider login names in the secret lane", () => {
+  it.each(providerLoginNames)("refuses %s as a %s login", (name, label, command) => {
+    const issue = validateProjectSecretName(name);
+    expect(issue).not.toBeNull();
+    expect(issue === null ? null : formatProjectEnvironmentIssue(issue)).toBe(
+      providerLoginWords(name, label, command),
+    );
+  });
+
+  it("compares case-insensitively and names the login as the provider reads it", () => {
+    const issue = validateProjectSecretName("openai_api_key");
+    expect(issue === null ? null : formatProjectEnvironmentIssue(issue)).toBe(
+      providerLoginWords("OPENAI_API_KEY", "Codex", "mend connect codex"),
+    );
+  });
+
+  it.each(providerLoginNames)(
+    "refuses %s in a dotenv import with the same words",
+    (name, label, command) => {
+      const route = routeDotenvName(name);
+      expect(route.lane === "rejected" && formatProjectEnvironmentIssue(route.issue)).toBe(
+        providerLoginWords(name, label, command),
+      );
+    },
+  );
+
+  it.each(["ANTHROPIC_BASE_URL", "OPENAI_ORG_ID", "MY_OPENAI_API_KEY", "STRIPE_API_KEY"])(
+    "leaves %s to the rules it had",
+    (name) => {
+      expect(validateProjectSecretName(name)?.rule).not.toBe("name-provider-login");
+    },
+  );
+
+  it("leaves the plain lane's rules as they were", () => {
+    expect(validateProjectEnvironmentName("OPENAI_API_KEY")).toEqual({
+      rule: "name-reserved",
+      reservedRule: "secret-marker",
+    });
+    expect(validateProjectEnvironmentName("CLAUDE_CODE_OAUTH_TOKEN")).toEqual({
+      rule: "name-reserved",
+      reservedRule: "account-lookup",
+    });
   });
 });
 
