@@ -180,6 +180,12 @@ module whose default export is `async (helpers) => {}`. The recipes:
   the recipes after it start clean. Run `v6prov` (2026-10-22, server `0.0.0-dev.shac1ddcd1da5c2`):
   the row read `starting · booting`, then `verify-handoff` `idle · handed off from nix-pc`, all 8
   steps passed.
+- `recipes/vscode-editor-dialogs.mjs` drives what a Mend workspace window asks while Mend brings the
+  editor into it: a shell session started over the API, opened from its row, then every modal dialog
+  the workspace window shows, counted until none has shown for 20 s. It answers each with the button
+  `MEND_VERIFY_DIALOG_ANSWER` names (default `Install (Do not sync)`) and counts the
+  `install and synchronize` ones. It needs a world from
+  `up --settings-sync --local-extensions <id,…>`.
 
 Preconditions:
 
@@ -207,7 +213,9 @@ The commands, from the repository root:
   connection and no setting; `--cli-only` leaves the CLI signed in and the editor not connected;
   `--no-ssh-setup` leaves workspace SSH and Remote-SSH's platform unset; `--no-remote-ssh` leaves
   Microsoft Remote-SSH uninstalled, so the first open installs it from the gallery (the ledger's
-  `remoteSsh` is `false`); `--no-video` records no video. `up` prints
+  `remoteSsh` is `false`); `--no-video` records no video. `--local-extensions <id,…>` installs those
+  gallery ids in the local editor beside Remote-SSH, and `--settings-sync` starts the editor with
+  Settings Sync on (VS Code's `--sync on`, no account signed in). `up` prints
   `export MEND_VERIFY_VSCODE_RUN=<run>`; run that line.
 - **Run a recipe.**
   `node .claude/skills/verify/scripts/drive-vscode.mjs run <recipe.mjs> --out "$E_vscode/vscode-<letter>"`.

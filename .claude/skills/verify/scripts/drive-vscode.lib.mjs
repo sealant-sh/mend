@@ -46,6 +46,14 @@ export const FLAGS = {
       help: "leave Microsoft Remote-SSH uninstalled: the first open installs it as a step",
     },
     "no-video": { value: false, help: "do not record the display with ffmpeg" },
+    "local-extensions": {
+      value: true,
+      help: "comma-separated gallery ids installed locally beside Remote-SSH",
+    },
+    "settings-sync": {
+      value: false,
+      help: "start the editor with Settings Sync on (`--sync on`), no account signed in",
+    },
   },
   run: {
     run: { value: true, help: "the run (default: $MEND_VERIFY_VSCODE_RUN, else the only one)" },

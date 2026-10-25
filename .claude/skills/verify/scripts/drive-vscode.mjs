@@ -6,7 +6,7 @@
 //
 //   node .claude/skills/verify/scripts/drive-vscode.mjs up (--version <v> | --image <ref> | --build)
 //       [--extension <checkout>] [--repo <url>] [--run <name>] [--signed-out | --cli-only]
-//       [--no-ssh-setup] [--no-remote-ssh] [--no-video]
+//       [--no-ssh-setup] [--no-remote-ssh] [--no-video] [--local-extensions <id,…>] [--settings-sync]
 //   node .claude/skills/verify/scripts/drive-vscode.mjs run <recipe.mjs> --out <dir> [--run <name>] [--timeout <ms>]
 //   node .claude/skills/verify/scripts/drive-vscode.mjs logs [--out <dir>] [--run <name>]
 //   node .claude/skills/verify/scripts/drive-vscode.mjs down [--run <name>]
@@ -277,6 +277,12 @@ const up = async () => {
       : "Remote-SSH: not installed (--no-remote-ssh): the first open installs it",
   );
   state({ remoteSsh });
+  const localExtensions = (options["local-extensions"] ?? "").split(",").filter(Boolean);
+  for (const id of localExtensions)
+    say(
+      `local ${id}: ${await world.installExtension(code, { userData, extensions, id, env: installEnv })}`,
+    );
+  state({ localExtensions, settingsSync: options["settings-sync"] === true });
   await world.run("git", ["clone", "-q", sourceUrl, checkout], {
     env: clientEnv,
     timeout: 600_000,
@@ -418,6 +424,7 @@ const up = async () => {
       "--disable-gpu",
       "--ozone-platform=x11",
       `--remote-debugging-port=${cdpPort}`,
+      ...(options["settings-sync"] ? ["--sync", "on"] : []),
       checkout,
     ],
     { env: editorEnv, logFile: join(names.sideDir, "vscode.log"), cwd: checkout },
