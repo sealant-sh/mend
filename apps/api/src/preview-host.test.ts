@@ -17,7 +17,6 @@ const HOST = new URL(ORIGIN).host;
 
 const unreached = Effect.die("admission refused nothing it should have");
 
-/** Admission without the identity store: the stub only says whether a request got past it. */
 const admit = (method: string, target: string, extra: ReadonlyArray<HeaderPair>) => {
   let reachedViewer = false;
   const identity = Layer.succeed(PreviewIdentity, {
@@ -103,6 +102,30 @@ describe("preview admission before anything reaches the application", () => {
       [...SAME_ORIGIN, ["Upgrade", "websocket, h2c"]],
       400,
     ],
+    [
+      "a WebSocket upgrade with a sized body",
+      "GET",
+      "/hmr",
+      [
+        ...SAME_ORIGIN,
+        ["Connection", "Upgrade"],
+        ["Upgrade", "websocket"],
+        ["Content-Length", "3"],
+      ],
+      400,
+    ],
+    [
+      "a WebSocket upgrade with a chunked body",
+      "GET",
+      "/hmr",
+      [
+        ...SAME_ORIGIN,
+        ["Connection", "Upgrade"],
+        ["Upgrade", "websocket"],
+        ["Transfer-Encoding", "chunked"],
+      ],
+      400,
+    ],
     ["CONNECT", "CONNECT", "preview.example:443", [], 405],
   ])("refuses %s", async (_, method, target, headers, status) => {
     expect(await admit(method, target, headers)).toEqual({ status, reachedViewer: false });
@@ -124,6 +147,17 @@ describe("preview admission before anything reaches the application", () => {
       "GET",
       "/hmr",
       [...SAME_ORIGIN, ["Connection", "Upgrade"], ["Upgrade", "WebSocket"]],
+    ],
+    [
+      "a WebSocket upgrade that declares an empty body",
+      "GET",
+      "/hmr",
+      [
+        ...SAME_ORIGIN,
+        ["Connection", "Upgrade"],
+        ["Upgrade", "websocket"],
+        ["Content-Length", "0"],
+      ],
     ],
   ])("admits %s", async (_, method, target, headers) => {
     expect(await admit(method, target, headers)).toEqual({ status: null, reachedViewer: true });

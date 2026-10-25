@@ -187,9 +187,17 @@ const HEAD_REFUSALS: ReadonlyArray<{
     },
     answer: answer(400, "Bad request."),
   },
+  {
+    // Node hands an upgrade's body over as the upgraded socket's first bytes: the app would read
+    // it as WebSocket frames.
+    refuses: ({ headers }) =>
+      membersOf(headers, "upgrade").length > 0 &&
+      (membersOf(headers, "transfer-encoding").length > 0 ||
+        membersOf(headers, "content-length").some((length) => Number(length) > 0)),
+    answer: answer(400, "Bad request."),
+  },
 ];
 
-/** What an admitted origin's request is refused for before anything reads its body. */
 export const headRefusal = (head: PreviewRequestHead): PreviewAnswer | null =>
   HEAD_REFUSALS.find((rule) => rule.refuses(head))?.answer ?? null;
 
