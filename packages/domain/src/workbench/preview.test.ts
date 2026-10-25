@@ -14,7 +14,14 @@ import {
   SessionProcessId,
   WorktreeId,
 } from "../ids.ts";
-import { Preview, type PreviewTarget, resolvePreviewBinding } from "./preview.ts";
+import {
+  decidesPreviewControl,
+  Preview,
+  previewStartReasonOf,
+  type PreviewTarget,
+  previewUndeliveredLine,
+  resolvePreviewBinding,
+} from "./preview.ts";
 import { Service } from "./service.ts";
 import { SessionProcess } from "./session-process.ts";
 
@@ -240,4 +247,43 @@ it("a label preserves all 128 input bits and leaves only two zero padding bits",
       expect(encodedBits).toBe(`${inputBits}00`);
     }),
   );
+});
+
+describe("previewUndeliveredLine", () => {
+  it("says a start did not finish within the configured hold, and that nothing was delivered", () => {
+    expect(
+      previewUndeliveredLine({
+        _tag: "DidNotStart",
+        serviceName: "web",
+        holdMs: 180_000,
+        reason: "setup failed",
+      }),
+    ).toBe(
+      "preview · web · did not start in 3 min · setup failed · your request was not delivered",
+    );
+    expect(
+      previewUndeliveredLine({
+        _tag: "DidNotStart",
+        serviceName: "web",
+        holdMs: 45_000,
+        reason: previewStartReasonOf("start-expired"),
+      }),
+    ).toBe(
+      "preview · web · did not start in 45 s · start timed out · your request was not delivered",
+    );
+  });
+
+  it("says the owner stopped it", () => {
+    expect(previewUndeliveredLine({ _tag: "StoppedByOwner", serviceName: "web" })).toBe(
+      "preview · web · the owner stopped the preview · your request was not delivered",
+    );
+  });
+});
+
+describe("decidesPreviewControl", () => {
+  it("is the Service session's owner, and nobody else, while Decision log 6 stands as written", () => {
+    expect(decidesPreviewControl("owner", "owner")).toBe(true);
+    expect(decidesPreviewControl("steerer", "owner")).toBe(false);
+    expect(decidesPreviewControl("owner", null)).toBe(false);
+  });
 });
