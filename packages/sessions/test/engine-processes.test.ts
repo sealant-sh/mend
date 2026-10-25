@@ -47,6 +47,7 @@ import {
   withPreparedEngineEffect,
   type World,
 } from "./engine/fixture.ts";
+import { adapterLayer, echo, fakeForward, scriptedSealant } from "./forward-fixture.ts";
 
 /**
  * What these scenarios wait on: every row the engine writes (`world.processes`, `world.sessions`,
@@ -1276,6 +1277,50 @@ describe("SessionEngine", () => {
         }),
       { sealantLayer: sealantLaunchLayer(created) },
     );
+  });
+
+  it("ends a Service's readiness wait at once when its workspace is gone, and says why", async () => {
+    const created: CreateOptions[] = [];
+    const gone = scriptedSealant(
+      async () => fakeForward(echo).forward,
+      () =>
+        Effect.fail(
+          new SealantPlatformError({
+            code: "WorkspaceNotFoundError",
+            status: 404,
+            message: "no such workspace",
+            cause: null,
+          }),
+        ),
+    );
+    const started = Date.now();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const service = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
+          expect(service.latestObservation).toMatchObject({
+            state: "unreachable",
+            error: "not-found",
+          });
+          expect(gone.ledger.lookups).toBe(1);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        forwardAdapterLayer: adapterLayer(gone.layer, "refuse"),
+      },
+    );
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 
   it("stamps a start's id on the attempt it began, and refuses the id a second time", async () => {

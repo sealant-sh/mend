@@ -148,6 +148,7 @@ import {
   makeDotfilesClonerLayer,
   HARNESS_HOME_MOUNT_PATH,
   ProtocolHost,
+  ForwardAdapter,
   ServiceHost,
   SessionEngine,
   SessionEngineLive,
@@ -201,6 +202,7 @@ import { Clock, Duration, Effect, Fiber, Layer, Logger, Stream, type Scope } fro
 import { HarnessLayoutConfig } from "../../src/harness-layout-steps.ts";
 import { type MemoryCaptureStore } from ".././capture-store-memory.ts";
 import { memoryStoreRefs } from ".././capture-world.ts";
+import { adapterLayer, echo, fakeForward, scriptedSealant } from "../forward-fixture.ts";
 
 /** What a daemon that reports snapshot health says when every path read (sealantd `Some(0)`). */
 const readEverything: object = { unreadable: 0, carried: 0 };
@@ -969,8 +971,12 @@ export const serviceHostStubLayer = Layer.succeed(ServiceHost, {
   bindAddresses: () => Effect.succeed(["127.0.0.1"]),
   start: () => Effect.succeed({ hostPort: 43127, boundAddresses: ["127.0.0.1"] }),
   stop: () => Effect.void,
-  probe: () => Effect.succeed(true),
 });
+
+export const forwardAdapterReadyLayer: Layer.Layer<ForwardAdapter> = adapterLayer(
+  scriptedSealant(async () => fakeForward(echo).forward).layer,
+  "refuse",
+);
 
 /**
  * Session sockets bind nothing in these worlds; the api each session would serve is kept so a
@@ -3318,6 +3324,7 @@ interface EngineOptions {
   readonly tokensLayer?: Layer.Layer<SessionChannelTokensRepo>;
   /** Where session sockets go; kept in `servedSocketApis` unless a test says. */
   readonly socketHostLayer?: Layer.Layer<SessionSocketHost>;
+  readonly forwardAdapterLayer?: Layer.Layer<ForwardAdapter>;
   /** Every account's Mend key; one shared stub path unless a test says. */
   readonly instanceRolesLayer?: Layer.Layer<InstanceRolesRepo>;
   readonly mendKeysLayer?: Layer.Layer<MendKeys>;
@@ -3518,7 +3525,9 @@ export const withPreparedEngineEffect = <B, A, E>(
           serviceStateLayer(world),
         ),
       ),
-      Layer.provide(serviceHostStubLayer),
+      Layer.provide(
+        Layer.merge(serviceHostStubLayer, options.forwardAdapterLayer ?? forwardAdapterReadyLayer),
+      ),
       Layer.provide(options.socketHostLayer ?? sessionSocketStubLayer),
       Layer.provide(
         options.tokensLayer ??

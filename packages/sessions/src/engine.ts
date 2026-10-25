@@ -361,6 +361,12 @@ import {
   type ResolvedDotfilesArchive,
   snapshotArchive,
 } from "./dotfiles.ts";
+import {
+  ForwardAdapter,
+  type ForwardDialRecord,
+  forwardStartupAction,
+  portTarget,
+} from "./forward.ts";
 import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
@@ -2846,6 +2852,7 @@ type SessionEngineRequirements =
   | ServiceForwardsRepo
   | ServiceObservationsRepo
   | ServiceHost
+  | ForwardAdapter
   | SessionSocketHost
   | ProjectsRepo
   | WorktreeChangesRepo
@@ -8233,6 +8240,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const serviceForwards = yield* ServiceForwardsRepo;
       const serviceObservations = yield* ServiceObservationsRepo;
       const serviceHost = yield* ServiceHost;
+      const forwardAdapter = yield* ForwardAdapter;
       const socketHost = yield* SessionSocketHost;
       const projects = yield* ProjectsRepo;
       const changes = yield* WorktreeChangesRepo;
@@ -21414,13 +21422,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const recordTcpObservation = Effect.fn("SessionEngine.recordTcpObservation")(function* (
         serviceId: ServiceId,
         forwardId: ServiceForwardId,
-        reachable: boolean,
+        probed: ForwardDialRecord,
       ) {
         yield* serviceObservations.record({
           serviceId,
           forwardId,
-          state: reachable ? "reachable" : "unreachable",
+          state: probed.kind === "ready" ? "reachable" : "unreachable",
           source: "probe",
+          error: probed.kind === "ready" ? null : probed.issue.reason,
         });
       });
 
@@ -21457,7 +21466,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* recordTcpObservation(
             service.id,
             forwardId,
-            yield* serviceHost.probe(workspaceId, workspacePort),
+            yield* forwardAdapter.probe(portTarget(workspaceId, workspacePort), {
+              purpose: "readiness",
+            }),
           );
         }
         return yield* readServiceView(service.id);
@@ -21813,7 +21824,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * A supervised Service is ready when its port answers — poll the
        * forward until it does, and treat the command dying first as the
        * failure it is. A slow starter that outlives the wait is not an
-       * error: it surfaces as `unreachable` until it listens.
+       * error: it surfaces as `unreachable` until it listens. A refusal that
+       * will not change (the workspace gone, no standing, the owner exited)
+       * ends the wait at once, with its reason. Each probe gets only the time
+       * left, so a hanging dial cannot stretch the wait.
        */
       const awaitServicePort = (
         pty: {
@@ -21830,9 +21844,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.gen(function* () {
           const deadline = clock.currentTimeMillisUnsafe() + SERVICE_START_TIMEOUT_MS;
           for (;;) {
-            const reachable = yield* serviceHost.probe(workspaceId, workspacePort);
-            if (reachable) {
-              return true;
+            const probed = yield* forwardAdapter.probe(portTarget(workspaceId, workspacePort), {
+              purpose: "readiness",
+              timeoutMs: deadline - clock.currentTimeMillisUnsafe(),
+            });
+            if (probed.kind === "ready" || forwardStartupAction(probed.issue) === "stop") {
+              return probed;
             }
             const status = yield* Effect.tryPromise({
               try: () => pty.status(),
@@ -21851,7 +21868,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               });
             }
             if (clock.currentTimeMillisUnsafe() >= deadline) {
-              return false;
+              return probed;
             }
             yield* Effect.sleep("500 millis");
           }
@@ -21949,7 +21966,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const runningAttempt = (yield* processes.byId(attempt.id)) ?? attempt;
         yield* Effect.forkIn(watchProcess(runningAttempt), scope);
 
-        let reachable = false;
+        let probed: ForwardDialRecord | null = null;
         if (protocol === "udp") {
           yield* Effect.sleep("1500 millis");
           const early = yield* Effect.tryPromise({
@@ -21966,13 +21983,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             });
           }
         } else {
-          reachable = yield* awaitServicePort(
-            pty,
-            workspaceId,
-            workspacePort,
-            attempt.id,
-            sessionId,
-          );
+          probed = yield* awaitServicePort(pty, workspaceId, workspacePort, attempt.id, sessionId);
         }
         yield* processes.setStatus(attempt.id, "running");
         const forwardId = yield* bindServiceForward(
@@ -21981,8 +21992,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspacePort,
           protocol,
         );
-        if (protocol === "tcp") {
-          yield* recordTcpObservation(service.id, forwardId, reachable);
+        if (probed !== null) {
+          yield* recordTcpObservation(service.id, forwardId, probed);
         }
         return yield* readServiceView(service.id);
       });
@@ -22138,11 +22149,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* renewWorkspaceLease(service.sessionId, previous.sealantWorkspaceId);
         const runningAttempt = (yield* processes.byId(attempt.id)) ?? attempt;
         yield* Effect.forkIn(watchProcess(runningAttempt), scope);
-        let reachable = false;
+        let probed: ForwardDialRecord | null = null;
         if (service.transport === "udp") {
           yield* Effect.sleep("1500 millis");
         } else {
-          reachable = yield* awaitServicePort(
+          probed = yield* awaitServicePort(
             pty,
             previous.sealantWorkspaceId,
             service.workspacePort,
@@ -22164,8 +22175,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 service.workspacePort,
                 service.transport,
               );
-        if (service.transport === "tcp") {
-          yield* recordTcpObservation(service.id, forwardId, reachable);
+        if (probed !== null) {
+          yield* recordTcpObservation(service.id, forwardId, probed);
         }
         return yield* readServiceView(service.id);
       });
@@ -23935,7 +23946,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 yield* recordTcpObservation(
                   service.id,
                   forward.id,
-                  yield* serviceHost.probe(previous.sealantWorkspaceId, service.workspacePort),
+                  yield* forwardAdapter.probe(
+                    portTarget(previous.sealantWorkspaceId, service.workspacePort),
+                    { purpose: "readiness" },
+                  ),
                 );
               }
             }),

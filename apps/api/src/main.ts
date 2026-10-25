@@ -146,6 +146,7 @@ import { NetworkConfig, NetworkConfigLive, trustedProxyCidrs } from "@mend/netwo
 import {
   asSealantUser,
   PersonLayoutPlatformLive,
+  type SealantClient,
   type SealantClients,
   SealantLiveFromEnv,
 } from "@mend/sealant";
@@ -163,6 +164,9 @@ import {
   CaptureSealsStoreLive,
   DotfilesClonerLive,
   FollowUpDeliveryLive,
+  ForwardAdapter,
+  ForwardAdapterLive,
+  ForwardPolicy,
   HarnessLayoutConfigLive,
   FollowUpLauncherLive,
   ProtocolHostLive,
@@ -354,7 +358,14 @@ const SecretCipherLayer: Layer.Layer<SecretCipher> = SecretCipherLive.pipe(
 const BridgeLive: Layer.Layer<AgentBridge> = AgentBridgeLive.pipe(
   Layer.provide(MendKeysConfigLive),
 );
-const ServiceHostLayer = ServiceHostLive;
+// ADR 0017's open decision (`BoundDockerRule`). Nothing dials session-bound yet, so `refuse`
+// changes nothing anyone sees today; production's answer goes here.
+const ForwardPolicyLayer: Layer.Layer<ForwardPolicy> = Layer.succeed(ForwardPolicy, {
+  afterBoundLoopbackRefused: "refuse",
+});
+const ForwardAdapterLayer: Layer.Layer<ForwardAdapter, never, SealantClient> =
+  ForwardAdapterLive.pipe(Layer.provide(ForwardPolicyLayer));
+const ServiceHostLayer = ServiceHostLive.pipe(Layer.provide(ForwardAdapterLayer));
 const ProtocolHostLayer = ProtocolHostLive;
 // The session channel (docs/KUBERNETES.md): one registry shared by the per-session socket host
 // and the optional network listener; the deployment mode decides whether sockets are created.
@@ -885,7 +896,7 @@ const MainLive = Layer.unwrap(
       Layer.provide(GhLive),
       Layer.provide(HostEnvironmentLive),
       Layer.provide(AuthLive.pipe(Layer.provide(RegistrationPolicyLive))),
-      Layer.provide(NetworkConfigLive),
+      Layer.provide(Layer.merge(NetworkConfigLive, ForwardAdapterLayer)),
       // One Sealant client per user, provisioned on first use (docs/SEALANT-IDENTITY.md), and
       // every call about a workspace made as the person who created it, for whoever may work in
       // it (`WorkspaceCaller`): a second person's join reaches the holder's executor.

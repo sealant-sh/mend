@@ -10,23 +10,32 @@ import {
   ServiceObservationId,
 } from "@mend/domain";
 import { ServiceObservation } from "@mend/domain/workbench";
-import { SealantClient } from "@mend/sealant";
+import { openBoundedForward, SealantClient, toPlatformError } from "@mend/sealant";
 import {
+  ForwardAdapterLive,
+  ForwardPolicy,
   ServiceHost,
   ServiceHostLive,
   validateServiceBindAddresses,
   type ServiceStartInput,
 } from "@mend/sessions";
 import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
-import type {
-  BoundedWorkspaceForward,
-  BoundedWorkspaceForwardOptions,
-  Workspace,
-  WorkspaceForward,
-  WorkspaceForwardOptions,
-} from "@sealant/sdk";
+import type { Workspace, WorkspaceForward } from "@sealant/sdk";
+import { ForwardDialError } from "@sealant/sdk";
 import { Clock, Context, Deferred, Duration, Effect, Exit, Layer, Scope, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { echo, fakeForward } from "./forward-fixture.ts";
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The error code a client socket closed with, or null for a clean close. */
+const closedWith = (socket: net.Socket) =>
+  new Promise<string | null>((resolve) => {
+    let code: string | null = null;
+    socket.on("error", (error: NodeJS.ErrnoException) => (code = error.code ?? null));
+    socket.on("close", () => resolve(code));
+  });
 
 /**
  * The host side with real sockets and a fake platform: the forward is an
@@ -63,50 +72,6 @@ afterEach(() => {
   else process.env["MEND_SERVICE_PORT_MAX"] = previousMax;
 });
 
-const echoForward = (): WorkspaceForward => {
-  const pending: Uint8Array[] = [];
-  let wake: (() => void) | undefined;
-  let finished = false;
-  const finish = () => {
-    finished = true;
-    wake?.();
-  };
-  return {
-    // Echo: everything sent toward the workspace comes back as output.
-    send: (bytes) => {
-      pending.push(new Uint8Array(bytes));
-      wake?.();
-    },
-    eof: finish,
-    output: {
-      [Symbol.asyncIterator]: () => ({
-        next: async (): Promise<IteratorResult<Uint8Array>> => {
-          for (;;) {
-            const chunk = pending.shift();
-            if (chunk !== undefined) return { done: false, value: chunk };
-            if (finished) return { done: true, value: undefined };
-            await new Promise<void>((resolve) => {
-              wake = resolve;
-            });
-            wake = undefined;
-          }
-        },
-      }),
-    },
-    closed: new Promise<"end" | "closed">(() => {}),
-    close: finish,
-  };
-};
-
-function echoForwardOf(
-  port: number,
-  options: BoundedWorkspaceForwardOptions,
-): Promise<BoundedWorkspaceForward>;
-function echoForwardOf(port: number, options?: WorkspaceForwardOptions): Promise<WorkspaceForward>;
-async function echoForwardOf(): Promise<WorkspaceForward | BoundedWorkspaceForward> {
-  return echoForward();
-}
-
 const fakeWorkspace: Workspace = {
   id: "workspace-1",
   name: "fake",
@@ -140,7 +105,7 @@ const fakeWorkspace: Workspace = {
     list: async () => [],
   },
   events: async function* () {},
-  forward: echoForwardOf,
+  forward: () => new Promise<never>(() => {}),
   stop: async () => ({ state: "stopped" }),
   restart: async function () {
     return this;
@@ -164,8 +129,9 @@ const sealantFakeLayer = Layer.succeed(SealantClient, {
   startHarnessInWorkspace: () => Effect.die("not in test"),
   waitRun: () => Effect.die("not in test"),
   openSession: () => Effect.die("not in test"),
-  forward: (workspace, port) => Effect.promise(() => workspace.forward(port)),
-  openForward: () => Effect.die("not in test"),
+  forward: () => Effect.die("not in test"),
+  openForward: (_workspace, _port, _destination, options) =>
+    openBoundedForward(async () => fakeForward(echo).forward, options.signal, toPlatformError),
   stopWorkspace: () => Effect.die("not in test"),
   captureFlush: () => Effect.die("not in test"),
   captureStatus: () => Effect.succeed(null),
@@ -217,7 +183,13 @@ const observationsStubLayer = Layer.succeed(ServiceObservationsRepo, {
   listForService: () => Effect.succeed([]),
 });
 
-const TestLayer = ServiceHostLive.pipe(
+/** ServiceHost over the real forward adapter; a test provides the platform and the repositories. */
+const ServiceHostOverAdapter = ServiceHostLive.pipe(
+  Layer.provide(ForwardAdapterLive),
+  Layer.provide(Layer.succeed(ForwardPolicy, { afterBoundLoopbackRefused: "refuse" })),
+);
+
+const TestLayer = ServiceHostOverAdapter.pipe(
   Layer.provide(sealantFakeLayer),
   Layer.provide(Layer.mergeAll(forwardsStubLayer, observationsStubLayer)),
 );
@@ -301,6 +273,91 @@ describe("ServiceHost", () => {
         expect(refused).toBe(true);
       }).pipe(Effect.provide(TestLayer)),
     );
+  });
+
+  it("records a refused dial's reason, gives up a dial whose client left, and resets on stop", async () => {
+    const recorded: Array<{ readonly state: string; readonly error: string | null | undefined }> =
+      [];
+    const recordingObservations = Layer.succeed(ServiceObservationsRepo, {
+      record: (input) =>
+        Effect.sync(() => {
+          recorded.push({ state: input.state, error: input.error });
+          return new ServiceObservation({
+            id: ServiceObservationId.make(crypto.randomUUID()),
+            ...input,
+            error: input.error ?? null,
+            firstObservedAt: new Date(),
+            lastObservedAt: new Date(),
+          });
+        }),
+      latestForService: () => Effect.succeed(null),
+      listForService: () => Effect.succeed([]),
+    });
+    const answers: Array<"refuse" | "hang" | "open"> = ["refuse", "hang", "open"];
+    const hanging: { signal: AbortSignal | null } = { signal: null };
+    const opened: Array<ReturnType<typeof fakeForward>> = [];
+    const sealant = Layer.mock(SealantClient, {
+      getWorkspace: () => Effect.succeed(fakeWorkspace),
+      openForward: (_workspace, _port, _destination, options) =>
+        openBoundedForward(
+          async (signal) => {
+            const answer = answers.shift();
+            if (answer === "refuse") {
+              throw new ForwardDialError({ reason: "not-found", status: 404, message: "gone" });
+            }
+            if (answer === "hang") {
+              hanging.signal = signal;
+              return new Promise<never>((_, reject) =>
+                signal.addEventListener("abort", () => reject(signal.reason)),
+              );
+            }
+            const forward = fakeForward(echo);
+            opened.push(forward);
+            return forward.forward;
+          },
+          options.signal,
+          toPlatformError,
+        ),
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const host = yield* ServiceHost;
+        const binding = yield* host.start(clockStartInput);
+        const connectTo = () => net.connect(binding.hostPort, "127.0.0.1");
+        yield* Effect.promise(async () => {
+          const refused = connectTo();
+          expect(await closedWith(refused)).toBe("ECONNRESET");
+          const leaving = connectTo();
+          await once(leaving, "connect");
+          for (let i = 0; i < 100 && hanging.signal === null; i++) await sleep(5);
+          leaving.resetAndDestroy();
+          for (let i = 0; i < 100 && hanging.signal?.aborted !== true; i++) await sleep(5);
+          expect(hanging.signal?.aborted).toBe(true);
+          const held = connectTo();
+          const closing = closedWith(held);
+          held.write("hello");
+          const first = await once(held, "data");
+          expect(String(first[0])).toBe("hello");
+          expect(opened).toHaveLength(1);
+          return { closing };
+        }).pipe(
+          Effect.tap(() => host.stop(SERVICE_ID)),
+          Effect.flatMap(({ closing }) => Effect.promise(() => closing)),
+        );
+        expect(opened[0]?.closedByClient()).toBe(true);
+      }).pipe(
+        Effect.provide(
+          ServiceHostOverAdapter.pipe(
+            Layer.provide(sealant),
+            Layer.provide(Layer.mergeAll(forwardsStubLayer, recordingObservations)),
+          ),
+        ),
+      ),
+    );
+    expect(recorded).toEqual([
+      { state: "unreachable", error: "not-found" },
+      { state: "reachable", error: null },
+    ]);
   });
 
   it("reuses the preferred host port on reconciliation", async () => {
@@ -412,7 +469,7 @@ const udpTestLayer = (
   second: ReturnType<typeof udpCandidate>,
   firstHost = "127.0.0.1",
 ) =>
-  ServiceHostLive.pipe(
+  ServiceHostOverAdapter.pipe(
     Layer.provide(
       Layer.mock(SealantClient, {
         getWorkspace: () => Effect.succeed(fakeWorkspace),
@@ -686,7 +743,7 @@ for (const correction of [
             }).pipe(Effect.andThen(Effect.never)),
         })),
       ).pipe(Layer.provide(forwardsStubLayer));
-      const layer: Layer.Layer<ServiceHost> = ServiceHostLive.pipe(
+      const layer: Layer.Layer<ServiceHost> = ServiceHostOverAdapter.pipe(
         Layer.provide(sealantFakeLayer),
         Layer.provide(Layer.mergeAll(recordingForwards, observationsStubLayer)),
       );
@@ -743,7 +800,7 @@ effectIt.effect("stopping a service releases its port and cancels future Clock p
           }),
       })),
     ).pipe(Layer.provide(forwardsStubLayer));
-    const layer: Layer.Layer<ServiceHost> = ServiceHostLive.pipe(
+    const layer: Layer.Layer<ServiceHost> = ServiceHostOverAdapter.pipe(
       Layer.provide(sealantFakeLayer),
       Layer.provide(Layer.mergeAll(recordingForwards, observationsStubLayer)),
     );
@@ -778,7 +835,7 @@ effectIt.effect("a later Clock pass closes a missing forward while an older pass
           }),
       })),
     ).pipe(Layer.provide(forwardsStubLayer));
-    const layer: Layer.Layer<ServiceHost> = ServiceHostLive.pipe(
+    const layer: Layer.Layer<ServiceHost> = ServiceHostOverAdapter.pipe(
       Layer.provide(sealantFakeLayer),
       Layer.provide(Layer.mergeAll(heldForwards, observationsStubLayer)),
     );
@@ -815,7 +872,7 @@ effectIt.effect(
             ),
         })),
       ).pipe(Layer.provide(forwardsStubLayer));
-      const layer: Layer.Layer<ServiceHost> = ServiceHostLive.pipe(
+      const layer: Layer.Layer<ServiceHost> = ServiceHostOverAdapter.pipe(
         Layer.provide(sealantFakeLayer),
         Layer.provide(Layer.mergeAll(heldForwards, observationsStubLayer)),
       );
@@ -870,7 +927,7 @@ for (const lagMillis of [5_000, 25_000]) {
             }).pipe(Effect.andThen(Effect.never)),
         })),
       ).pipe(Layer.provide(forwardsStubLayer));
-      const layer: Layer.Layer<ServiceHost> = ServiceHostLive.pipe(
+      const layer: Layer.Layer<ServiceHost> = ServiceHostOverAdapter.pipe(
         Layer.provide(sealantFakeLayer),
         Layer.provide(Layer.mergeAll(recordingForwards, observationsStubLayer)),
       );
