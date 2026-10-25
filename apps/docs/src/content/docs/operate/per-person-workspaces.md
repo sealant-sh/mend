@@ -62,8 +62,10 @@ A launch runs per person only when every part says it can. Otherwise a worktree 
 runs with a shared home, and the session says why.
 
 - **The Sealant control plane** reports its per-person routes, the dotfiles verb, partial login
-  writes, pi's and opencode's logins and the capture owner map. Core `0.39.0-next.706` is the first
-  that reports them all.
+  writes, pi's and opencode's logins, the capture owner map and per-person Kubernetes workspaces.
+  Sealant 0.40.0 is the first that reports them all. With an older Sealant every new worktree runs
+  with a shared home, on any runtime, and a worktree that already ran per person is refused until
+  Sealant is upgraded.
 - **The workspace's sealantd** reports `exec.user`, `dotfiles.user` and `restore.owner_map`.
 - **The image** has a setuid `sudo`, `useradd`, `setfacl`, and no user or group with an id in
   40000–49999 other than the `mend` group (gid 40000). Sealant's managed images carry them.
@@ -71,8 +73,8 @@ runs with a shared home, and the session says why.
   executor, since `sudo` cannot work under it. A per-person workspace checks this before it makes
   anyone (`NoNewPrivs` in `/proc/self/status`), so a Docker host with `"no-new-privileges": true` in
   `daemon.json` runs a new worktree with a shared home and says why.
-- **Kubernetes** imposes no-new-privileges (`allowPrivilegeEscalation: false`), so on a Kubernetes
-  workspace runtime every new worktree runs with a shared home and says why; nothing is probed.
+- **Kubernetes** runs per person on the runc runtime: Sealant lets a per-person workspace's Pod
+  raise privileges, so `sudo` works there. It refuses a per-person workspace under gVisor (`runsc`).
 
 Core records what each image can do when it builds it, and Mend records what each executor's prepare
 found, per image digest and runtime. When neither knows yet, the launch runs with a shared home and
@@ -88,23 +90,26 @@ remembered "no" by its reasons:
   checks again, and its answer replaces the "no". Fixing the image heals on its own.
 - **A person who could not be made, or an image that could not be checked:** kept for a day, then
   checked again.
-- **No-new-privileges, an owner map refused, a runtime that cannot run per person (Kubernetes,
-  Cloudflare), or Core's own "no":** kept until the image's digest changes. After fixing the host
-  (removing `"no-new-privileges": true` from `daemon.json`, say), clear Mend's answer for the image
-  in Postgres, and the next launch checks again:
+- **No-new-privileges, an owner map refused, a runtime that cannot run per person (Cloudflare), or
+  Core's own "no":** kept until the image's digest changes. After fixing the host (removing
+  `"no-new-privileges": true` from `daemon.json`, say), clear Mend's answer for the image in
+  Postgres, and the next launch checks again:
 
   ```sql
   SELECT image_key, runtime, missing, observed_at FROM image_layout_capabilities WHERE NOT person;
   DELETE FROM image_layout_capabilities WHERE image_key = '<image_key>' AND runtime = '<runtime>';
   ```
 
-Core reports the runtime it places each image on; on Kubernetes (`k8s`, `k3s`) and Cloudflare
-sandboxes every new worktree runs with a shared home before any launch is tried.
+Core reports the runtime it places each image on; on Cloudflare sandboxes every new worktree runs
+with a shared home before any launch is tried. Upgrading Mend takes out of each remembered "no" the
+reasons recorded only because Kubernetes refused per-person workspaces, and the owner-map refusals
+an older Sealant gave for an image it had not checked. A "no" left with no reason is dropped, so the
+next launch on that image checks again; one that also names something the image lacks (`no sudo`,
+say) keeps that.
 
-**nix images take one person.** Their passwd is in the read-only store, which cannot hold a setuid
-`sudo`, so a nix workspace runs with one shared home: someone who joins it runs on the launcher's
-logins, and a turn steered there under shared control on the session owner's, as in any workspace
-that shares one home. A custom image without `sudo`, `useradd` or ACL support also takes one person.
+**nix images run per person.** Sealant's nix image carries a setuid `sudo` outside the read-only
+store, and each person's `nix` commands go through the workspace's nix daemon. A custom image
+without a setuid `sudo`, `useradd` or ACL support takes one person.
 
 ## Who each process runs as
 

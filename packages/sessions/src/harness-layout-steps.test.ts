@@ -16,11 +16,15 @@ import {
   type LoginSkip,
   PersonLayoutPlatform,
   SealantPlatformError,
+  controlPlaneObstacleOf,
+  imageBuildFailure,
+  toPlatformError,
 } from "@mend/sealant";
 import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
 import {
   claudeCode,
   type Run,
+  SealantError,
   type Workspace,
   type WorkspaceCredentialsOptions,
 } from "@sealant/sdk";
@@ -53,6 +57,7 @@ import {
   NO_NEW_PRIVILEGES_MISSING,
   PASSING_NO_KEPT_MS,
   STANDBY_REASON,
+  UNCHECKED_IMAGE_REFUSAL,
   imageLayoutKeyOf,
   personHomeEnsureScript,
 } from "./harness-layout.ts";
@@ -193,7 +198,6 @@ const platformOf = (
   } = {},
 ) =>
   Layer.succeed(PersonLayoutPlatform, {
-    processUser: true,
     dotfilesUser: can.dotfilesUser ?? true,
     sshUser: Effect.succeed(true),
     sshAsOwnerFor: () => Effect.succeed("yes" as const),
@@ -274,7 +278,6 @@ const stepsWith = (
     readonly revoked?: Array<{ readonly accountId: string; readonly issuedBefore: number }>;
     readonly forks?: Array<Effect.Effect<void>>;
     readonly grace?: Duration.Duration;
-    readonly runtimeObstacle?: string;
     /** How long each exec takes; it says `exec-done:` in the log once it has. */
     readonly execTakes?: Duration.Duration;
     /** The people who chose their selected agent's login only; nobody unless a test says. */
@@ -320,9 +323,6 @@ const stepsWith = (
         },
       },
       harnessHome: "/workspace/harness-home",
-      ...(options.runtimeObstacle === undefined
-        ? {}
-        : { runtimeObstacle: options.runtimeObstacle }),
       fork: (effect) => Effect.sync(() => options.forks?.push(effect)),
       identityTicket: (input) =>
         Effect.sync(() => {
@@ -358,6 +358,20 @@ const stepsWith = (
         harnessLayoutsRepoMemory(state),
         options.platform ?? platformLayer,
         organizationsLayer,
+      ),
+    ),
+  );
+
+/**
+ * A create Core's owner-map guard refused, as Mend's client receives it: the error the SDK's
+ * `ready()` throws for the failed workspace, mapped as `createWorkspace` maps it.
+ */
+const coreRefused = (code: string) =>
+  imageBuildFailure(
+    toPlatformError(
+      new SealantError(
+        'Workspace ws-1 reached terminal status "failed" before becoming ready: The workspace was not launched: its capture source names an owner map, and its image\'s sealantd does not report restore.owner_map.',
+        { code },
       ),
     ),
   );
@@ -476,20 +490,54 @@ describe("the default against images and runtimes that cannot run per person (re
     expect(result.fresh).toEqual({ layout: "shared" });
   });
 
-  it("a Kubernetes runtime is known without asking: shared, no probe, Core not asked", async () => {
+  it("a Kubernetes runtime whose Core says yes runs person: Core's answer passes through", async () => {
     const core = coreCalls();
     const layout = await Effect.runPromise(
       Effect.gen(function* () {
         const { steps } = yield* stepsWith("person", makeHarnessLayoutsMemoryState(), {
-          platform: platformOf(core),
-          runtimeObstacle:
-            "Kubernetes workspaces cannot run per-person users: no one's sudo works there",
+          platform: platformOf(core, { report: { ...k8s, person: true, missing: [] } }),
         });
         return yield* steps.decide(decideInput("launch-k8s"));
       }),
     );
-    expect(layout).toMatchObject({ layout: "shared", probe: false });
-    expect(core.imageReports).toBe(0);
+    expect(layout).toMatchObject({ layout: "person", runtime: "k8s" });
+    expect(core.imageReports).toBe(1);
+  });
+
+  it("a Core without the Kubernetes person layout runs a fresh worktree shared and refuses one already person, on any runtime, naming the Sealant it needs", async () => {
+    const obstacle = controlPlaneObstacleOf({
+      processUserRoutes: true,
+      dotfilesApply: true,
+      credentialsPartialPut: true,
+      credentialsPiOpencode: true,
+      captureOwnerMap: true,
+      kubernetesPersonLayout: false,
+      workspaceSshUser: true,
+      personBinding: true,
+      sshKeyRemovalEndsConnections: true,
+      connectedAccountDefaults: false,
+    });
+    for (const report of [k8s, { ...k8s, runtime: "docker", person: true }]) {
+      const core = coreCalls();
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const state = makeHarnessLayoutsMemoryState();
+          const { steps } = yield* stepsWith("person", state, {
+            platform: platformOf(core, { controlPlaneObstacle: obstacle, report }),
+          });
+          const fresh = yield* steps.decide(decideInput("launch-old-core", "wt-fresh"));
+          state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
+          const sticky = yield* steps.decide(decideInput("launch-sticky")).pipe(Effect.flip);
+          return { fresh, sticky: sticky.message, recorded: [...state.capabilities.values()] };
+        }),
+      );
+      expect(result.fresh).toMatchObject({ layout: "shared", probe: false });
+      expect(result.fresh.layout === "shared" && result.fresh.reason).toContain(obstacle);
+      expect(result.sticky).toContain("Sealant 0.40.0 or later");
+      expect(result.sticky).toContain("This worktree's sessions are saved per person");
+      expect(result.recorded).toEqual([]);
+      expect(core.imageReports).toBe(0);
+    }
   });
 
   it("a shared probe's yes is a prediction: the next fresh launch runs person, but nothing is retired until a person prepare confirms it", async () => {
@@ -730,6 +778,21 @@ describe("a recorded no, checked again or kept (review 2 of mend#582)", () => {
     expect(result.record).toMatchObject({ person: true, confirmed: false });
   });
 
+  it("checks again at once a no migration 0138 left naming only tools, never the no it pruned", async () => {
+    const pruned = makeHarnessLayoutsMemoryState();
+    recordNo(pruned, ["no setfacl", "no sudo"]);
+    expect(await twoLaunches(pruned, unknown)).toMatchObject({
+      first: { layout: "shared", probe: true },
+      second: "person",
+    });
+    const before = makeHarnessLayoutsMemoryState();
+    recordNo(before, ["no setfacl", NO_NEW_PRIVILEGES_MISSING, "no sudo"], PASSING_NO_KEPT_MS * 10);
+    expect(await twoLaunches(before, unknown)).toMatchObject({
+      first: { layout: "shared", probe: false },
+      second: "shared",
+    });
+  });
+
   it("keeps a passing failure for a day, then checks again", async () => {
     const fresh = makeHarnessLayoutsMemoryState();
     recordNo(fresh, ["the users could not be made"]);
@@ -744,6 +807,120 @@ describe("a recorded no, checked again or kept (review 2 of mend#582)", () => {
       first: { layout: "shared", probe: true },
       second: "person",
       record: { person: true, confirmed: false },
+    });
+  });
+
+  it("an image Core could not check replaces an unconfirmed answer: a fresh worktree's next launch runs shared, and a day on one checks again", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    state.capabilities.set(IMAGE, {
+      imageKey: "digest:sha256:img",
+      runtime: "docker",
+      person: true,
+      missing: [],
+      confirmed: false,
+      observedAt: new Date(),
+    });
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", state, {
+          platform: platformOf(coreCalls(), { report: unknown }),
+        });
+        const first = yield* steps.decide(decideInput("launch-1", "wt-1"));
+        const refused = yield* steps.refusedOwnerMap({
+          layout: first,
+          launchId: "launch-1",
+          error: coreRefused("owner-map-unverified"),
+        });
+        const next = yield* steps.decide(decideInput("launch-2", "wt-2"));
+        const recorded = state.capabilities.get(IMAGE);
+        if (recorded !== undefined) {
+          state.capabilities.set(IMAGE, {
+            ...recorded,
+            observedAt: new Date(Date.now() - PASSING_NO_KEPT_MS),
+          });
+        }
+        const dayOn = yield* steps.decide(decideInput("launch-3", "wt-3"));
+        return { first: first.layout, refused: refused?.message ?? null, next, dayOn, recorded };
+      }),
+    );
+    expect(result.first).toBe("person");
+    expect(result.refused).toBe(UNCHECKED_IMAGE_REFUSAL);
+    expect(result.recorded).toMatchObject({
+      person: false,
+      missing: ["the image could not be checked"],
+      confirmed: false,
+    });
+    expect(result.next).toMatchObject({ layout: "shared", probe: false });
+    expect(result.dayOn).toMatchObject({ layout: "shared", probe: true });
+  });
+
+  it("an image Core could not check never replaces a confirmed yes: the next launch runs person", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    state.capabilities.set(IMAGE, {
+      imageKey: "digest:sha256:img",
+      runtime: "docker",
+      person: true,
+      missing: [],
+      confirmed: true,
+      observedAt: new Date(),
+    });
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", state, {
+          platform: platformOf(coreCalls(), { report: unknown }),
+        });
+        const first = yield* steps.decide(decideInput("launch-1", "wt-1"));
+        const refused = yield* steps.refusedOwnerMap({
+          layout: first,
+          launchId: "launch-1",
+          error: coreRefused("owner-map-unverified"),
+        });
+        const next = yield* steps.decide(decideInput("launch-2", "wt-2"));
+        return { refused: refused?.message ?? null, next: next.layout };
+      }),
+    );
+    expect(result.refused).toBe(UNCHECKED_IMAGE_REFUSAL);
+    expect(state.capabilities.get(IMAGE)).toMatchObject({ person: true, confirmed: true });
+    expect(result.next).toBe("person");
+  });
+
+  it("a no made only of passing failures does not refuse a worktree already person: it launches person, and Core decides", async () => {
+    const launch = (missing: ReadonlyArray<string>) => {
+      const state = makeHarnessLayoutsMemoryState();
+      state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
+      recordNo(state, missing);
+      return Effect.runPromise(
+        Effect.gen(function* () {
+          const { steps } = yield* stepsWith("person", state, {
+            platform: platformOf(coreCalls(), { report: unknown }),
+          });
+          const decided = yield* Effect.exit(steps.decide(decideInput("launch-1", "wt-1")));
+          if (decided._tag === "Failure") return { decided: "refused" } as const;
+          const refused = yield* steps.refusedOwnerMap({
+            layout: decided.value,
+            launchId: "launch-1",
+            error: coreRefused("owner-map-unverified"),
+          });
+          return {
+            decided: decided.value.layout,
+            refused: refused?.message ?? null,
+            worktree: state.worktrees.get(WorktreeId.make("wt-1"))?.layout ?? null,
+          };
+        }),
+      );
+    };
+    for (const missing of [
+      ["the image could not be checked"],
+      ["the users could not be made", "mb6r4kq2d: useradd: cannot lock /etc/passwd"],
+    ]) {
+      expect(await launch(missing)).toEqual({
+        decided: "person",
+        refused: UNCHECKED_IMAGE_REFUSAL,
+        worktree: "person",
+      });
+    }
+    expect(await launch(["no sudo", "the image could not be checked"])).toEqual({
+      decided: "refused",
     });
   });
 
@@ -807,17 +984,27 @@ describe("a recorded no, checked again or kept (review 2 of mend#582)", () => {
     expect(result).toMatchObject({ person: false, missing: [NO_NEW_PRIVILEGES_MISSING] });
   });
 
-  it("rules out Core's Kubernetes and Cloudflare runtimes before any launch: none is refused to learn it", async () => {
-    for (const runtime of ["k8s", "k3s", "cloudflare"]) {
-      const state = makeHarnessLayoutsMemoryState();
-      const result = await twoLaunches(state, {
+  it("rules out Core's Cloudflare runtime before any launch: none is refused to learn it", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    const result = await twoLaunches(state, {
+      digest: "sha256:img",
+      runtime: "cloudflare",
+      person: null,
+      missing: [],
+    });
+    expect(result).toMatchObject({ first: { layout: "shared", probe: false }, second: "shared" });
+    expect(state.capabilities.size).toBe(0);
+  });
+
+  it("asks a Kubernetes runtime like any other: an unknown image probes", async () => {
+    for (const runtime of ["k8s", "k3s"]) {
+      const result = await twoLaunches(makeHarnessLayoutsMemoryState(), {
         digest: "sha256:img",
         runtime,
         person: null,
         missing: [],
       });
-      expect(result).toMatchObject({ first: { layout: "shared", probe: false }, second: "shared" });
-      expect(state.capabilities.size).toBe(0);
+      expect(result.first).toEqual({ layout: "shared", probe: true });
     }
   });
 
@@ -2412,34 +2599,40 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     ).toBeNull();
   });
 
-  it("maps a person launch refused for its owner map to Mend's words, and records the image's answer (sealant#333)", async () => {
+  it("maps a person launch refused for its owner map to Mend's words by Core's code, and records the image's answer (sealant#333)", async () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const state = makeHarnessLayoutsMemoryState();
         const { steps } = yield* stepsWith("person", state);
         const layout = yield* steps.decide(decideInput("launch-fresh"));
-        const unsupported = new SealantPlatformError({
-          code: "owner-map-unsupported",
-          status: null,
-          message:
-            "The workspace was not launched: its capture source names an owner map, and its image's sealantd does not report restore.owner_map.",
-          cause: null,
-        });
+        const unsupported = coreRefused("owner-map-unsupported");
         const fresh = yield* steps.refusedOwnerMap({
           layout,
           launchId: "launch-fresh",
           error: unsupported,
         });
         const freshLayout = yield* steps.layoutOfLaunch("launch-fresh");
-        const afterFresh = [...state.capabilities.values()].map((record) => record.missing);
+        const afterFresh = [...state.capabilities.values()].map(({ missing, confirmed }) => ({
+          missing,
+          confirmed,
+        }));
         // A worktree already person: decision 14's words, and it stays person.
         state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
         const sticky = yield* steps
           .decide(decideInput("launch-sticky"))
           .pipe(Effect.catch(() => Effect.succeed(layout)));
-        const kubernetes = yield* steps.refusedOwnerMap({
+        const unverified = yield* steps.refusedOwnerMap({
           layout: sticky.layout === "person" ? { ...sticky, onMissing: "refuse" } : layout,
           launchId: "launch-sticky",
+          error: coreRefused("owner-map-unverified"),
+        });
+        const afterUnverified = [...state.capabilities.values()].map(({ missing, confirmed }) => ({
+          missing,
+          confirmed,
+        }));
+        const oldKubernetesWords = yield* steps.refusedOwnerMap({
+          layout,
+          launchId: "launch-kubernetes",
           error: new SealantPlatformError({
             code: "unsupported-runtime-requirement",
             status: 422,
@@ -2461,9 +2654,11 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
         return {
           fresh: fresh?.message ?? null,
           freshLayout,
-          kubernetes: kubernetes?.message ?? null,
+          unverified: unverified?.message ?? null,
+          oldKubernetesWords,
           other,
           capabilities: afterFresh,
+          afterUnverified,
           worktree: state.worktrees.get(WorktreeId.make("wt-1"))?.layout ?? null,
         };
       }),
@@ -2472,11 +2667,13 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       "This workspace cannot run per-person users (its sealantd does not restore files per person), so nothing was started. The next launch here runs as one person.",
     );
     expect(result.freshLayout).toBe("shared");
-    expect(result.kubernetes).toBe(
-      "This worktree's sessions are saved per person, and its image cannot run per-person users (Kubernetes workspaces cannot run per-person users: no one's sudo works there). Pick an image that can, or start a new worktree.",
-    );
+    expect(result.unverified).toBe(UNCHECKED_IMAGE_REFUSAL);
+    expect(result.oldKubernetesWords).toBeNull();
     expect(result.other).toBeNull();
-    expect(result.capabilities).toEqual([["its sealantd does not restore files per person"]]);
+    expect(result.capabilities).toEqual([
+      { missing: ["its sealantd does not restore files per person"], confirmed: true },
+    ]);
+    expect(result.afterUnverified).toEqual(result.capabilities);
     expect(result.worktree).toBe("person");
   });
 });

@@ -31,7 +31,7 @@ import {
   personPrepareScript,
   personProcessEnv,
   processUserOf,
-  staticLayoutObstacle,
+  runtimeLayoutObstacle,
   worktreeRepairScript,
   type LayoutDecisionInput,
 } from "./harness-layout.ts";
@@ -103,6 +103,7 @@ const fakeRoot = () => {
   stub("chown", `echo "chown $*" >> "${log}"`);
   stub("chgrp", `echo "chgrp $*" >> "${log}"`);
   stub("sudo", "exit 0");
+  fs.chmodSync(path.join(bin, "sudo"), 0o4755);
   stub("setfacl", "exit 0");
   // As the person: the stand-in drops its options and runs the rest as the test's own user.
   stub(
@@ -209,7 +210,7 @@ describe("the layout a launch runs (docs/adr/0016, decision 14)", () => {
   it("refuses a person worktree before create when the image is known not to run it", () => {
     for (const missing of [
       ["no sudo"],
-      ["nix images run one person"],
+      ["no setfacl", "the image could not be checked"],
       ["uid 40001 is taken in this image"],
       ["its sealantd cannot run processes as a user"],
       ["no ACLs on /workspace"],
@@ -231,6 +232,18 @@ describe("the layout a launch runs (docs/adr/0016, decision 14)", () => {
     expect(
       decideHarnessLayout({ ...fresh, worktree: { layout: "person", requested: null } }),
     ).toMatchObject({ layout: "person", onMissing: "refuse" });
+  });
+
+  it("launches a person worktree whose no is made only of passing failures, for Core and prepare to decide", () => {
+    for (const missing of [["the image could not be checked"], ["the users could not be made"]]) {
+      expect(
+        decideHarnessLayout({
+          ...fresh,
+          worktree: { layout: "person", requested: null },
+          capability: { person: false, missing, source: "mend" },
+        }),
+      ).toMatchObject({ layout: "person", onMissing: "refuse" });
+    }
   });
 
   it("with the flag on, runs person only where the image is known to run it", () => {
@@ -261,7 +274,11 @@ describe("the layout a launch runs (docs/adr/0016, decision 14)", () => {
     expect(
       decideHarnessLayout({
         ...on,
-        capability: { person: false, missing: ["nix images run one person"], source: "static" },
+        capability: {
+          person: false,
+          missing: ["this Mend's platform cannot start processes as a user"],
+          source: "static",
+        },
       }),
     ).toMatchObject({ layout: "shared", probe: false });
   });
@@ -287,17 +304,13 @@ describe("the layout a launch runs (docs/adr/0016, decision 14)", () => {
     ).toMatchObject({ kind: "refuse" });
   });
 
-  it("knows statically what rules person out: the platform, and nix images", () => {
-    expect(staticLayoutObstacle(defaultWorkspaceImage, { processUser: false })).toBe(
-      "this Mend's platform cannot start processes as a user",
+  it("rules out only Cloudflare by runtime: Kubernetes asks Core like any other", () => {
+    expect(runtimeLayoutObstacle("cloudflare")).toBe(
+      "Cloudflare sandboxes cannot run per-person users",
     );
-    expect(staticLayoutObstacle(defaultWorkspaceImage, { processUser: true })).toBeNull();
-    expect(
-      staticLayoutObstacle(
-        { mode: "family", os: "nix", packages: [], shell: "bash", services: { docker: false } },
-        { processUser: true },
-      ),
-    ).toBe("nix images run one person");
+    for (const runtime of ["k8s", "k3s", "docker", null]) {
+      expect(runtimeLayoutObstacle(runtime)).toBeNull();
+    }
   });
 
   it("keys an image by Core's digest when known, else by what Mend asks for", () => {
@@ -362,6 +375,28 @@ describe("the image probe (decision 1)", () => {
     );
     expect(report.missing).not.toContain("gid 40000 is taken in this image");
     expect(report.ready).toBe(false);
+  });
+
+  it("finds sudo only when it is setuid, through a link as well", () => {
+    const root = fakeRoot();
+    const sudo = path.join(root.dir, "bin", "sudo");
+    const probe = () => parseLayoutReport(root.run(layoutProbeScript([])).stdout).missing;
+    expect(probe()).not.toContain("no sudo");
+    fs.chmodSync(sudo, 0o755);
+    expect(probe()).toContain("no sudo");
+    const linked = path.join(root.dir, "linked");
+    fs.mkdirSync(linked);
+    fs.symlinkSync(sudo, path.join(linked, "sudo"));
+    const viaLink = () =>
+      parseLayoutReport(
+        spawnSync("sh", ["-c", layoutProbeScript([])], {
+          encoding: "utf8",
+          env: { ...process.env, PATH: `${linked}:${root.dir}/bin:${process.env["PATH"] ?? ""}` },
+        }).stdout,
+      ).missing;
+    expect(viaLink()).toContain("no sudo");
+    fs.chmodSync(sudo, 0o4755);
+    expect(viaLink()).not.toContain("no sudo");
   });
 
   it("reads which people a prepare made", () => {

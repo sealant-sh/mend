@@ -332,10 +332,10 @@ ends up kept beside it. Start your session in a worktree of your own to work fro
 ## A session that joins someone else's executor runs on their logins
 
 Applies to workspaces that share one home: new worktrees on a server where the operator set
-`MEND_HARNESS_LAYOUT=shared`, and worktrees whose workspace cannot run per person (a nix image, no
-`sudo`, a Kubernetes workspace runtime, a Docker host with no-new-privileges). Per-person workspaces
-are the default in 0.36: in a [per-person workspace](#per-person-workspaces) each person's processes
-run as their own user, on their own logins.
+`MEND_HARNESS_LAYOUT=shared`, and worktrees whose workspace cannot run per person (no setuid `sudo`,
+a Docker host with no-new-privileges, a Cloudflare sandbox). Per-person workspaces are the default
+in 0.36: in a [per-person workspace](#per-person-workspaces) each person's processes run as their
+own user, on their own logins.
 
 On a server a worktree has one executor, started by whoever launched first. Every process in it runs
 as root in that person's harness home, whoever started the process. A session you start in a
@@ -545,7 +545,8 @@ is used by the other person's `git push`.
 
 ### Images
 
-- **nix images take one person.** They run with one shared home.
+- **A person's `nix` commands need the workspace's nix daemon.** If it did not start, the workspace
+  still boots and root's `nix` commands work, but each person's fail.
 - An image without `sudo`, `useradd` or ACL support takes one person.
 - A custom image that installs toolchains under `/root` keeps them root's: they run for everyone,
   and each person's own installs land in their home.
@@ -562,14 +563,21 @@ is used by the other person's `git push`.
 ### There is no way back from per-person
 
 A worktree that has run per person always runs per person. Setting `MEND_HARNESS_LAYOUT=shared`
-changes nothing for it, and an image that cannot run it (nix, no `sudo`, a uid clash) is refused for
-that worktree:
+changes nothing for it, and an image that cannot run it (no `sudo`, a uid clash) is refused for that
+worktree:
 
 ```text
 This worktree's sessions are saved per person, and its image cannot run per-person users (no sudo). Pick an image that can, or start a new worktree.
 ```
 
 A new worktree can use that image. A Mend older than 0.36 cannot resume the worktree's sessions.
+
+The same holds for a Sealant older than 0.40.0, whatever the runtime: every worktree that has run
+per person is refused until Sealant is upgraded, and new worktrees run with a shared home.
+
+```text
+This worktree's sessions are saved per person, and its image cannot run per-person users (the Sealant control plane does not report what per-person users need, which Sealant 0.40.0 or later does). Pick an image that can, or start a new worktree.
+```
 
 ### Shared control
 

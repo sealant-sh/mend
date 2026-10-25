@@ -1683,4 +1683,19 @@ benchmark once more, before 0.36 is tagged.
     `2xqepp`).
 - 2026-10-17 (owner): the other agent's login (decision 5's amendment, mend#684) moves into 0.36, so
   pstack runs inside Mend sessions while the rest of 0.36 is built. Its table is migration 0131.
+- 2026-10-24: Kubernetes workspaces on the runc runtime and nix images run per person from this
+  release (SLNT-231, SLNT-232). Core lets a per-person Pod raise privileges and refuses a per-person
+  workspace under gVisor; its nix image carries a setuid `sudo` outside the store and runs a nix
+  daemon for people. Mend drops its static vetoes: the deployment's Kubernetes mode, the `k8s` and
+  `k3s` runtimes, and nix images. Cloudflare stays ruled out. Three guards replace them. The control
+  plane must report `kubernetesPersonLayout`, a release floor for every runtime: with a Core older
+  than the one that reports it, every new worktree runs shared and every worktree already person is
+  refused, and the words name that Core version. The image probe finds `sudo` only when it is
+  setuid. Mend reads Core's owner-map refusal by its code alone: `owner-map-unsupported` is the
+  image's answer, and `owner-map-unverified` (Core read no probe of the image) is recorded as "the
+  image could not be checked", a passing "no" that replaces only an unconfirmed answer and that a
+  shared launch checks again after a day. A "no" made only of passing failures does not refuse a
+  worktree already person before create; Core's guard and the prepare decide. Migration 0138 takes
+  out of every "no" the reasons only Kubernetes caused and the owner-map refusals an older Core gave
+  for an image it had not probed, and drops a "no" left with none. Decision 7a is unchanged here.
 - Open: gate B's history record.

@@ -3604,6 +3604,39 @@ const previewGrantsMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX preview_grants_user_idx ON preview_grants (user_id)`;
 });
 
+/**
+ * 0138 (docs/adr/0016): Kubernetes (runc) workspaces run per person once Core reports
+ * `kubernetesPersonLayout`, so the reasons Mend recorded only because Kubernetes refused them no
+ * longer hold. Core before it also refused an image it had not probed as one whose sealantd does
+ * not restore files per person, on any runtime. The words are frozen as Mend recorded them.
+ */
+const kubernetesPersonLayoutMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const kubernetes = "Kubernetes workspaces cannot run per-person users: no one's sudo works there";
+  const noNewPrivileges = "no-new-privileges is set, so no one's sudo works";
+  const ownerMap = "its sealantd does not restore files per person";
+  yield* sql`
+    WITH pruned AS (
+      SELECT c.image_key, c.runtime, c.missing,
+             COALESCE((
+               SELECT jsonb_agg(reason.word ORDER BY reason.n)
+               FROM jsonb_array_elements_text(c.missing) WITH ORDINALITY AS reason(word, n)
+               WHERE NOT (reason.word IN (${kubernetes}, ${ownerMap})
+                          OR (c.runtime IN ('k8s', 'k3s') AND reason.word = ${noNewPrivileges}))
+             ), '[]'::jsonb) AS kept
+      FROM image_layout_capabilities c
+      WHERE NOT c.person
+    ), stale AS (
+      SELECT * FROM pruned WHERE kept <> missing
+    ), dropped AS (
+      DELETE FROM image_layout_capabilities c USING stale s
+      WHERE c.image_key = s.image_key AND c.runtime = s.runtime AND s.kept = '[]'::jsonb
+    )
+    UPDATE image_layout_capabilities c SET missing = s.kept
+    FROM stale s
+    WHERE c.image_key = s.image_key AND c.runtime = s.runtime AND s.kept <> '[]'::jsonb`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3743,4 +3776,5 @@ export const migrations = {
   "0135_worktree_handoff": worktreeHandoffMigration,
   "0136_previews": previewsMigration,
   "0137_preview_grants": previewGrantsMigration,
+  "0138_kubernetes_person_layout": kubernetesPersonLayoutMigration,
 };

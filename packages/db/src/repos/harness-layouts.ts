@@ -117,8 +117,11 @@ export interface ImageLayoutCapabilityRecord {
 
 /** A capability to record (`HarnessLayoutsRepo.recordCapability`). */
 export type CapabilityWrite = Omit<ImageLayoutCapabilityRecord, "observedAt"> & {
-  /** The reasons of the recorded "no" this unconfirmed answer replaces. */
-  readonly replacing?: ReadonlyArray<string>;
+  /**
+   * The reasons of the recorded "no" this unconfirmed answer replaces, or `unconfirmed`: it
+   * replaces any answer but a confirmed one.
+   */
+  readonly replacing?: ReadonlyArray<string> | "unconfirmed";
 };
 
 const CapabilityRow = Schema.Struct({
@@ -319,7 +322,8 @@ export class HarnessLayoutsRepo extends Context.Service<
     /**
      * What an executor found about an image. A confirmed answer replaces any; an unconfirmed one (a
      * shared launch's probe) is written only where nothing is, or, with `replacing`, over the
-     * "no" with exactly those reasons that it checked again (compare-and-set).
+     * "no" with exactly those reasons that it checked again (compare-and-set), or over any
+     * unconfirmed answer.
      */
     readonly recordCapability: (record: CapabilityWrite) => Effect.Effect<void>;
     /**
@@ -596,8 +600,16 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
           ON CONFLICT (image_key, runtime) DO UPDATE
             SET person = excluded.person, missing = excluded.missing, confirmed = true,
                 observed_at = now()`
-            : record.replacing !== undefined
+            : record.replacing === "unconfirmed"
               ? sql`
+          INSERT INTO image_layout_capabilities (image_key, runtime, person, missing, confirmed)
+          VALUES (${record.imageKey}, ${record.runtime}, ${record.person},
+                  ${JSON.stringify(record.missing)}::jsonb, false)
+          ON CONFLICT (image_key, runtime) DO UPDATE
+            SET person = excluded.person, missing = excluded.missing, observed_at = now()
+            WHERE NOT image_layout_capabilities.confirmed`
+              : record.replacing !== undefined
+                ? sql`
           INSERT INTO image_layout_capabilities (image_key, runtime, person, missing, confirmed)
           VALUES (${record.imageKey}, ${record.runtime}, ${record.person},
                   ${JSON.stringify(record.missing)}::jsonb, false)
@@ -606,7 +618,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
                 observed_at = now()
             WHERE NOT image_layout_capabilities.person
               AND image_layout_capabilities.missing = ${JSON.stringify(record.replacing)}::jsonb`
-              : sql`
+                : sql`
           INSERT INTO image_layout_capabilities (image_key, runtime, person, missing, confirmed)
           VALUES (${record.imageKey}, ${record.runtime}, ${record.person},
                   ${JSON.stringify(record.missing)}::jsonb, false)
@@ -1023,9 +1035,11 @@ export const harnessLayoutsRepoMemory = (
         const current = state.capabilities.get(key);
         if (!record.confirmed && current !== undefined) {
           const replaces =
-            record.replacing !== undefined &&
-            !current.person &&
-            JSON.stringify(current.missing) === JSON.stringify(record.replacing);
+            record.replacing === "unconfirmed"
+              ? !current.confirmed
+              : record.replacing !== undefined &&
+                !current.person &&
+                JSON.stringify(current.missing) === JSON.stringify(record.replacing);
           if (!replaces) return;
         }
         const { replacing: _replacing, ...kept } = record;

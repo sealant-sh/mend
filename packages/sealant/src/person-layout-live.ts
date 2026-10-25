@@ -65,7 +65,6 @@ const MISSING_WORDS: Readonly<Record<string, string>> = {
   setfacl: "no setfacl",
   setpriv: "no setpriv",
   acl: "no ACLs on /workspace",
-  nix: "nix images run one person",
   sealantd: "its sealantd cannot run processes as a user",
   "exec.user": "its sealantd cannot run processes as a user",
   "dotfiles.user": "its sealantd cannot run processes as a user",
@@ -135,30 +134,26 @@ const CONTROL_PLANE_ANSWER_MS = 5 * 60_000;
 /** How long an unreadable answer is kept before the control plane is asked again. */
 const CONTROL_PLANE_FAILURE_MS = 15_000;
 
-/**
- * The features the person layout uses, each one Core reports (`sealant.features()`, Core
- * 0.39.0-next.706): a control plane from before any of them reports it false.
- */
 const PERSON_LAYOUT_FEATURES = [
   "processUserRoutes",
   "dotfilesApply",
   "credentialsPartialPut",
   "credentialsPiOpencode",
   "captureOwnerMap",
+  "kubernetesPersonLayout",
 ] as const satisfies ReadonlyArray<keyof SealantFeatures>;
+
+/** The first Core that reports every feature in `PERSON_LAYOUT_FEATURES`. */
+const PERSON_LAYOUT_CORE_VERSION = "0.40.0";
 
 /**
  * Why a control plane cannot run the person layout, in the words a refusal names, or null when it
- * reports every feature the layout uses. Its as-user routes first: without them no process starts
- * as a person at all.
+ * reports every feature the layout uses.
  */
-export const controlPlaneObstacleOf = (features: SealantFeatures): string | null => {
-  const missing = PERSON_LAYOUT_FEATURES.filter((feature) => !features[feature]);
-  if (missing.length === 0) return null;
-  return missing.includes("processUserRoutes")
-    ? `the Sealant control plane does not run processes as a user (it does not report ${missing.join(", ")})`
-    : `the Sealant control plane lacks what per-person users need (it does not report ${missing.join(", ")})`;
-};
+export const controlPlaneObstacleOf = (features: SealantFeatures): string | null =>
+  PERSON_LAYOUT_FEATURES.every((feature) => features[feature])
+    ? null
+    : `the Sealant control plane does not report what per-person users need, which Sealant ${PERSON_LAYOUT_CORE_VERSION} or later does`;
 
 /**
  * Core runs a workspace's SSH sessions as its owner's user (`features.workspaceSshUser`,
@@ -288,7 +283,6 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
       );
 
       return {
-        processUser: true,
         controlPlaneObstacle,
         sshUser: controlPlaneAnswer.pipe(Effect.map((answer) => answer.sshUser === true)),
         sshAsOwnerFor: (person) =>

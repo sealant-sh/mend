@@ -164,11 +164,11 @@ const EVERY_FEATURE: SealantFeatures = {
   credentialsPartialPut: true,
   credentialsPiOpencode: true,
   captureOwnerMap: true,
+  kubernetesPersonLayout: true,
   workspaceSshUser: false,
   personBinding: false,
   sshKeyRemovalEndsConnections: false,
   connectedAccountDefaults: false,
-  kubernetesPersonLayout: false,
 };
 /** A control plane from before any of them (an older Core reports every flag false). */
 const NO_FEATURE: SealantFeatures = {
@@ -177,11 +177,11 @@ const NO_FEATURE: SealantFeatures = {
   credentialsPartialPut: false,
   credentialsPiOpencode: false,
   captureOwnerMap: false,
+  kubernetesPersonLayout: false,
   workspaceSshUser: false,
   personBinding: false,
   sshKeyRemovalEndsConnections: false,
   connectedAccountDefaults: false,
-  kubernetesPersonLayout: false,
 };
 
 const clientsLayer = (
@@ -228,7 +228,6 @@ describe("the live platform (Core 0.39)", () => {
     const platform = await platformWith(
       PersonLayoutPlatformLive.pipe(Layer.provide(clientsLayer([]))),
     );
-    expect(platform.processUser).toBe(true);
     const calls: Array<string> = [];
     const puts: Array<WorkspaceCredentialsPutOptions> = [];
     const workspace = workspaceRecording(calls, puts);
@@ -523,15 +522,14 @@ const refused = (message: string) =>
   ).message;
 
 describe("the features the person layout needs, and the workspace's own answer (sealant#343)", () => {
-  it("names what a control plane does not report, its as-user routes first", () => {
+  it("names the Sealant version a control plane missing any feature needs, never the feature", () => {
     expect(controlPlaneObstacleOf(EVERY_FEATURE)).toBeNull();
+    const older =
+      "the Sealant control plane does not report what per-person users need, which Sealant 0.40.0 or later does";
     // An older Core: every flag false (it reports none of them, or only `processUser`).
-    expect(controlPlaneObstacleOf(NO_FEATURE)).toBe(
-      "the Sealant control plane does not run processes as a user (it does not report processUserRoutes, dotfilesApply, credentialsPartialPut, credentialsPiOpencode, captureOwnerMap)",
-    );
-    expect(controlPlaneObstacleOf({ ...EVERY_FEATURE, credentialsPiOpencode: false })).toBe(
-      "the Sealant control plane lacks what per-person users need (it does not report credentialsPiOpencode)",
-    );
+    expect(controlPlaneObstacleOf(NO_FEATURE)).toBe(older);
+    expect(controlPlaneObstacleOf({ ...EVERY_FEATURE, credentialsPiOpencode: false })).toBe(older);
+    expect(controlPlaneObstacleOf({ ...EVERY_FEATURE, kubernetesPersonLayout: false })).toBe(older);
   });
 
   it("reads the workspace's answer from its launch, else asks Core, and reads a failure as unknown", async () => {
@@ -639,7 +637,9 @@ describe("a credentials call Core never answers (review 2 of mend#564, P3-5)", (
 describe("a platform with none of the person layout", () => {
   it("can run no part of it, and says so", async () => {
     const platform = await platformWith(PersonLayoutPlatformNone);
-    expect(platform.processUser).toBe(false);
+    expect(await Effect.runPromise(platform.controlPlaneObstacle)).toBe(
+      "this Mend's platform cannot start processes as a user",
+    );
     expect(
       await Effect.runPromise(
         platform.imageReport({
