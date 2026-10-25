@@ -480,6 +480,33 @@ describe.skipIf(postgres.skip)("Mend's MCP server over the session channel", () 
     });
   });
 
+  it("refuses the pages the merge gate stored, a local stylesheet and an entity-encoded vh, and stores neither", async () => {
+    await withChannel(async ({ address, tokens, rows }) => {
+      const client = await connect(address, tokens.alice);
+      const stylesheet = failureOf(
+        await client.render(
+          { ...PAGE, html: '<link rel="stylesheet" href="/tmp/review.css"><main>x</main>' },
+          "gate-link",
+        ),
+      );
+      expect(stylesheet).toMatchObject({
+        code: "invalid_request",
+        message: expect.stringContaining("/tmp/review.css"),
+      });
+      const encoded = failureOf(
+        await client.render(
+          { ...PAGE, html: '<main style="height:100&#118;h">x</main>' },
+          "gate-vh",
+        ),
+      );
+      expect(encoded).toMatchObject({
+        code: "invalid_request",
+        message: expect.stringContaining("viewport height unit (100vh)"),
+      });
+      expect(await rows()).toEqual([]);
+    });
+  });
+
   it("returns a database outage as a failed result the agent can try again", async () => {
     await withChannel(async ({ address, tokens, rows, sql }) => {
       const client = await connect(address, tokens.alice);

@@ -1533,6 +1533,9 @@ importers:
       effect:
         specifier: 'catalog:'
         version: 4.0.5
+      parse5:
+        specifier: 8.0.1
+        version: 8.0.1
       smol-toml:
         specifier: 1.4.2
         version: 1.4.2

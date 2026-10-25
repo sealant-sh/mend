@@ -24,7 +24,7 @@ const PUBLISHED_MESSAGE =
 
 const PAGE_RULES = [
   "Write one self-contained document with inline <style> and <script>.",
-  `Embed images as data: URIs and put scripts and styles inline: a page that names a local file (src="/abs/shot.png", src="chart.png", CSS url(bg.webp)) is refused. Remote http(s) URLs, such as a CDN chart library, load as they are.`,
+  `Embed images as data: URIs and put scripts and styles inline: a page that names a local file (src="/abs/shot.png", src="chart.png", CSS url(bg.webp)) is refused. Remote http(s) URLs, such as a CDN chart library, load as they are. Mend reads the markup and CSS but does not run scripts: in script text it refuses only a quoted absolute image path ("/abs/x.png"), so a local path a script builds or fetches at runtime is not checked, and it will not load.`,
   "Use a fluid width and leave html, body and the outermost element without a background, so the page sits on the conversation's own background.",
   "Let content set the page's height: vh, svh, lvh and dvh units are refused, and height:100% on html or body grows the frame without end. Give charts fixed pixel heights.",
 ].join(" ");
