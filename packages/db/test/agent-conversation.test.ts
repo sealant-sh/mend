@@ -497,7 +497,7 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
           _tag: "Accepted",
           evidence: "provider-acknowledged",
         });
-        yield* repo.settleTurnSteer(first.steer.id, { _tag: "Unknown", reason: "late" });
+        yield* repo.settleTurnSteer(first.steer.id, { _tag: "Unknown", reason: "failed" });
         yield* repo.queueTurnSteer(first.steer.id, process, "turn-ended");
         const carried = yield* repo.queueTurnSteer(after.steer.id, process, "turn-ended");
         expect(yield* repo.queueTurnSteer(after.steer.id, process, "unsupported")).toEqual(carried);
@@ -566,7 +566,7 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
         for (const delivery of [
           { _tag: "Accepted", evidence: "transport-written" },
           { _tag: "Unknown", reason: "uncertain" },
-          { _tag: "NotSent", reason: "not-running", message: "stopped" },
+          { _tag: "NotSent", reason: "not-running" },
         ] as const) {
           const { steer } = yield* repo.admitTurnSteer({
             turnId: one.id,
@@ -576,7 +576,7 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
           });
           const settled = yield* repo.settleTurnSteer(steer.id, delivery);
           expect(
-            yield* repo.settleTurnSteer(steer.id, { _tag: "Unknown", reason: "late" }),
+            yield* repo.settleTurnSteer(steer.id, { _tag: "Unknown", reason: "failed" }),
           ).toEqual(settled);
           expect(yield* repo.queueTurnSteer(steer.id, process, "turn-ended")).toEqual(settled);
         }

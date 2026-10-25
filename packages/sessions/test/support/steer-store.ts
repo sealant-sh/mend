@@ -102,7 +102,6 @@ export const makeSteerStore = (
           return methods.settleTurnSteer(id, {
             _tag: "NotSent",
             reason,
-            message: "The session can no longer take a turn. Your words are saved.",
           });
         const turn = new AgentTurn({
           id: AgentTurnId.make(crypto.randomUUID()),
@@ -142,7 +141,6 @@ export const makeSteerStore = (
           delivery: {
             _tag: "NotSent",
             reason: delivery.reason,
-            message: "The session can no longer take a turn. Your words are saved.",
           },
           queuedTurnId: null,
           updatedAt: new Date(),

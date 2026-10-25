@@ -1180,12 +1180,13 @@ export const ProtocolHostLive: Layer.Layer<
           if (
             entry === undefined ||
             entry.stopping ||
-            entry.handingOverTo !== null ||
             hosted.get(entry.process.id) !== entry ||
             turn.processId !== entry.process.id
           ) {
             return { _tag: "Carry", reason: "not-running" };
           }
+          // A hand-over waits for this process to go quiet; a steer would keep it busy.
+          if (entry.handingOverTo !== null) return { _tag: "Carry", reason: "handing-over" };
           return { _tag: "Running", turn, entry };
         }),
       );

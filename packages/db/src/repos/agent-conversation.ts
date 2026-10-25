@@ -137,8 +137,6 @@ export interface AdmitTurnSteerInput {
   readonly clientSteerId: string | null;
 }
 
-const STEER_NOT_SENT = "The session can no longer take a turn. Your words are saved.";
-
 export class AgentControlJournalError extends Schema.TaggedError<AgentControlJournalError>()(
   "AgentControlJournalError",
   { message: Schema.String, cause: Schema.Defect() },
@@ -767,7 +765,7 @@ export const AgentConversationRepoLive: Layer.Layer<
                   });
             const delivery: AgentTurnSteerDelivery =
               queued === null
-                ? { _tag: "NotSent", reason, message: STEER_NOT_SENT }
+                ? { _tag: "NotSent", reason }
                 : { _tag: "Queued", turnId: queued.id, reason };
             const [changed] = yield* tx
               .update(agentTurnSteers)
@@ -823,7 +821,7 @@ export const AgentConversationRepoLive: Layer.Layer<
             const [changed] = yield* tx
               .update(agentTurnSteers)
               .set({
-                delivery: { _tag: "NotSent", reason: delivery.reason, message: STEER_NOT_SENT },
+                delivery: { _tag: "NotSent", reason: delivery.reason },
                 queuedTurnId: null,
                 updatedAt: yield* DateTime.nowAsDate,
               })

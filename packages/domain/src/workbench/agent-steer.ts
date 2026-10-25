@@ -19,6 +19,7 @@ export const TurnSteerQueueReason = Schema.Literals([
   "not-acknowledged",
   "not-running",
   "replaying",
+  "handing-over",
 ]);
 export type TurnSteerQueueReason = typeof TurnSteerQueueReason.Type;
 
@@ -33,12 +34,12 @@ export const AgentTurnSteerDelivery = Schema.Union([
     turnId: AgentTurnId,
     reason: TurnSteerQueueReason,
   }),
-  Schema.Struct({ _tag: Schema.Literal("Unknown"), reason: Schema.String }),
   Schema.Struct({
-    _tag: Schema.Literal("NotSent"),
-    reason: Schema.String,
-    message: Schema.String,
+    _tag: Schema.Literal("Unknown"),
+    reason: Schema.Literals(["restart", "uncertain", "failed"]),
   }),
+  /** Not delivered for `reason`, and the session could not take the words as a turn either. */
+  Schema.Struct({ _tag: Schema.Literal("NotSent"), reason: TurnSteerQueueReason }),
 ]);
 export type AgentTurnSteerDelivery = typeof AgentTurnSteerDelivery.Type;
 

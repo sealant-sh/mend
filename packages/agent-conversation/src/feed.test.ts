@@ -98,7 +98,7 @@ describe("buildAgentConversation", () => {
       { _tag: "Accepted", evidence: "provider-acknowledged" },
       { _tag: "Accepted", evidence: "transport-written" },
       { _tag: "Unknown", reason: "restart" },
-      { _tag: "NotSent", reason: "turn-ended", message: "Your words are saved." },
+      { _tag: "NotSent", reason: "turn-ended" },
     ] as const;
     for (const delivery of deliveries) {
       const steer = {

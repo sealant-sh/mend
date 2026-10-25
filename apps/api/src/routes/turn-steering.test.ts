@@ -47,7 +47,7 @@ describe("turn steering HTTP", () => {
     { _tag: "Accepted", evidence: "transport-written" },
     { _tag: "Queued", turnId: shared.turn, reason: "turn-ended" },
     { _tag: "Unknown", reason: "uncertain" },
-    { _tag: "NotSent", reason: "not-running", message: "Your words are saved." },
+    { _tag: "NotSent", reason: "not-running" },
   ] satisfies ReadonlyArray<AgentTurnSteerDelivery>)(
     "returns 200 with a saved $_tag receipt",
     async (delivery) => {

@@ -13,7 +13,7 @@ export type AgentSteerDeliveryDto =
   | { readonly _tag: "Accepted"; readonly evidence: "provider-acknowledged" | "transport-written" }
   | { readonly _tag: "Queued"; readonly turnId: string; readonly reason: string }
   | { readonly _tag: "Unknown"; readonly reason: string }
-  | { readonly _tag: "NotSent"; readonly reason: string; readonly message: string };
+  | { readonly _tag: "NotSent"; readonly reason: string };
 
 export interface AgentTurnSteerDto {
   readonly id: string;
