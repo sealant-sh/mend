@@ -15,14 +15,22 @@ import {
   WorktreeId,
 } from "../ids.ts";
 import {
+  changePreviewControl,
   decidesPreviewControl,
   Preview,
+  PREVIEW_CONTROL_INITIAL,
+  type PreviewControl,
+  previewGatewayResolution,
+  previewResumeCandidate,
+  previewStartId,
   previewStartReasonOf,
   type PreviewTarget,
   previewUndeliveredLine,
   resolvePreviewBinding,
+  selectPreviewTarget,
+  startedByPreviewRequest,
 } from "./preview.ts";
-import { Service } from "./service.ts";
+import { Service, serviceStartCorrelation } from "./service.ts";
 import { SessionProcess } from "./session-process.ts";
 
 const preview: Preview = {
@@ -285,5 +293,142 @@ describe("decidesPreviewControl", () => {
     expect(decidesPreviewControl("owner", "owner")).toBe(true);
     expect(decidesPreviewControl("steerer", "owner")).toBe(false);
     expect(decidesPreviewControl("owner", null)).toBe(false);
+  });
+});
+
+describe("changePreviewControl", () => {
+  const stop = { _tag: "OwnerStop", by: "owner", at } as const;
+  it("moves the revision on each change of state, and on nothing else", () => {
+    const stopped = changePreviewControl(PREVIEW_CONTROL_INITIAL, stop);
+    expect(stopped).toEqual({ _tag: "OwnerStopped", revision: 1, by: "owner", at });
+    expect(changePreviewControl(stopped, { ...stop, by: "again", at: new Date(0) })).toBe(stopped);
+    const started = changePreviewControl(stopped, { _tag: "OwnerStart" });
+    expect(started).toEqual({ _tag: "Automatic", revision: 2 });
+    expect(changePreviewControl(started, { _tag: "OwnerStart" })).toBe(started);
+    expect(changePreviewControl(PREVIEW_CONTROL_INITIAL, { _tag: "OwnerStart" })).toBe(
+      PREVIEW_CONTROL_INITIAL,
+    );
+  });
+});
+
+describe("preview start correlation", () => {
+  const request = {
+    previewId: PreviewId.make("preview"),
+    revision: 3,
+    sourceAttemptId: SessionProcessId.make("source"),
+  };
+  it("names the preview, the revision and the source, under the Service's start key", () => {
+    const correlation = serviceStartCorrelation("service", previewStartId(request));
+    expect(correlation).toBe("service-start:service:preview-start:preview:3:source");
+    expect(startedByPreviewRequest("service", correlation)).toBe(true);
+    expect(startedByPreviewRequest("other", correlation)).toBe(false);
+    expect(
+      startedByPreviewRequest("service", serviceStartCorrelation("service", crypto.randomUUID())),
+    ).toBe(false);
+    expect(startedByPreviewRequest("service", null)).toBe(false);
+  });
+});
+
+describe("gateway resolution", () => {
+  const web = service("web", { currentAttemptId: null });
+  const ran = (id: string, seconds: number, overrides: Partial<SessionProcess> = {}) =>
+    attempt(web, {
+      id: SessionProcessId.make(id),
+      createdAt: new Date(at.getTime() + seconds * 1000),
+      exitedAt: new Date(at.getTime() + seconds * 1000 + 500),
+      status: "exited",
+      ...overrides,
+    });
+  const byRequest = (id: string) =>
+    serviceStartCorrelation(
+      web.id,
+      previewStartId({
+        previewId: preview.id,
+        revision: 0,
+        sourceAttemptId: SessionProcessId.make(id),
+      }),
+    );
+  const dormant = selectPreviewTarget(preview, [idle(web, true)]);
+  const stopped: PreviewControl = { _tag: "OwnerStopped", revision: 1, by: "owner", at };
+
+  it("refuses a removed preview whatever its control", () => {
+    const removed = selectPreviewTarget({ ...preview, state: "removed", worktreeId: null }, []);
+    expect(previewGatewayResolution(stopped, removed, [])).toEqual({
+      _tag: "Refused",
+      reason: "service-missing",
+    });
+  });
+  it("an owner's Stop wins over a live attempt", () => {
+    const bound = selectPreviewTarget(preview, [live(web)]);
+    expect(previewGatewayResolution(stopped, bound, [])).toEqual({
+      _tag: "OwnerStopped",
+      control: stopped,
+    });
+  });
+  it("binds a live attempt with its workspace, port and platform session", () => {
+    const bound = selectPreviewTarget(preview, [live(web, { status: "starting" })]);
+    expect(previewGatewayResolution({ _tag: "Automatic", revision: 4 }, bound, [])).toEqual({
+      _tag: "Bound",
+      revision: 4,
+      attempt: {
+        serviceId: web.id,
+        attemptId: SessionProcessId.make("attempt-web"),
+        sessionId: web.sessionId,
+        workspaceId: SealantWorkspaceId.make("workspace"),
+        port: 3000,
+        platformSessionId: "pty",
+        starting: true,
+      },
+    });
+    const unhandled = selectPreviewTarget(preview, [live(web, { sealantSessionId: null })]);
+    expect(previewGatewayResolution(PREVIEW_CONTROL_INITIAL, unhandled, [])).toEqual({
+      _tag: "Refused",
+      reason: "process-binding-unavailable",
+    });
+  });
+  it("a request's start that never answered keeps its source; one that answered replaces it", () => {
+    const source = ran("source", 1);
+    const failed = ran("failed", 2, { launchCorrelationId: byRequest("source") });
+    const history = [
+      { attempt: failed, reachable: false },
+      { attempt: source, reachable: false },
+    ];
+    expect(previewResumeCandidate(dormant)).toBe(web);
+    expect(previewGatewayResolution(PREVIEW_CONTROL_INITIAL, dormant, history)).toEqual({
+      _tag: "Dormant",
+      revision: 0,
+      source: { serviceId: web.id, sourceAttemptId: source.id },
+    });
+    const answered = ran("answered", 3, { launchCorrelationId: byRequest("source") });
+    expect(
+      previewGatewayResolution(PREVIEW_CONTROL_INITIAL, dormant, [
+        ...history,
+        { attempt: answered, reachable: true },
+      ]),
+    ).toMatchObject({ source: { sourceAttemptId: answered.id } });
+  });
+  it("a dormant Service with no attempt to run again has no recorded command", () => {
+    const adopted = ran("adopted", 1, { argv: [] });
+    const failed = ran("failed", 2, { launchCorrelationId: byRequest("adopted") });
+    expect(
+      previewGatewayResolution(PREVIEW_CONTROL_INITIAL, dormant, [
+        { attempt: adopted, reachable: true },
+        { attempt: failed, reachable: false },
+      ]),
+    ).toEqual({ _tag: "Refused", reason: "no-recorded-command" });
+  });
+  it("names every other unbound reason as its refusal", () => {
+    const tls = selectPreviewTarget(preview, [idle(service("tls", { browserScheme: "https" }))]);
+    expect(previewResumeCandidate(tls)).toBeNull();
+    expect(previewGatewayResolution(PREVIEW_CONTROL_INITIAL, tls, [])).toEqual({
+      _tag: "Refused",
+      reason: "https-unsupported",
+    });
+    expect(
+      previewGatewayResolution(PREVIEW_CONTROL_INITIAL, selectPreviewTarget(preview, []), []),
+    ).toEqual({
+      _tag: "Refused",
+      reason: "service-missing",
+    });
   });
 });
