@@ -78,6 +78,9 @@ export const lockAgentConversation = (tx: Pick<MendDatabase, "execute">, session
     sql`select pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${sessionId}`}))`,
   );
 
+const steerKeyLockKey = (author: string, clientSteerId: string): string =>
+  `mend:steer:${author}:${clientSteerId}`;
+
 /** A requested agent-to-human request does not exist. */
 export class AgentRequestNotFoundError extends Schema.TaggedError<AgentRequestNotFoundError>()(
   "AgentRequestNotFoundError",
@@ -380,21 +383,22 @@ export const notifyAgentConversation = Effect.fn("AgentConversationRepo.notify")
 
 type ConversationTx = Pick<MendDatabase, "select" | "insert" | "execute">;
 
-const lockConversationForTurn = Effect.fn("AgentConversationRepo.lockConversationForTurn")(
-  function* (tx: ConversationTx, sessionId: SessionId) {
-    yield* lockAgentConversation(tx, sessionId);
-    const [stopping] = yield* tx
-      .select({ id: agentSessions.id })
-      .from(agentSessions)
-      .where(
-        and(
-          eq(agentSessions.id, sessionId),
-          or(isNotNull(agentSessions.idleStoppedAt), isNotNull(agentSessions.settledAt)),
-        ),
-      );
-    return stopping === undefined;
-  },
-);
+const lockOpenConversation = Effect.fn("AgentConversationRepo.lockOpenConversation")(function* (
+  tx: ConversationTx,
+  sessionId: SessionId,
+) {
+  yield* lockAgentConversation(tx, sessionId);
+  const [stopping] = yield* tx
+    .select({ id: agentSessions.id })
+    .from(agentSessions)
+    .where(
+      and(
+        eq(agentSessions.id, sessionId),
+        or(isNotNull(agentSessions.idleStoppedAt), isNotNull(agentSessions.settledAt)),
+      ),
+    );
+  return stopping === undefined;
+});
 
 const insertQueuedTurn = Effect.fn("AgentConversationRepo.insertQueuedTurn")(function* (
   tx: ConversationTx,
@@ -477,7 +481,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       const created = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            if (!(yield* lockConversationForTurn(tx, sessionId))) {
+            if (!(yield* lockOpenConversation(tx, sessionId))) {
               return { _tag: "stopping" } as const;
             }
             if (launchCorrelationId !== null) {
@@ -648,7 +652,7 @@ export const AgentConversationRepoLive: Layer.Layer<
           Effect.gen(function* () {
             if (clientSteerId !== null) {
               yield* tx.execute(
-                sql`select pg_advisory_xact_lock(hashtext(${`mend:steer:${input.author}:${clientSteerId}`}))`,
+                sql`select pg_advisory_xact_lock(hashtext(${steerKeyLockKey(input.author, clientSteerId)}))`,
               );
               const [existing] = yield* tx
                 .select()
@@ -736,7 +740,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       const result = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            const takesTurns = yield* lockConversationForTurn(tx, saved.sessionId);
+            const takesTurns = yield* lockOpenConversation(tx, saved.sessionId);
             const [row] = yield* tx
               .select()
               .from(agentTurnSteers)
@@ -793,7 +797,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       const result = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            yield* lockConversationForTurn(tx, saved.sessionId);
+            yield* lockOpenConversation(tx, saved.sessionId);
             const [row] = yield* tx
               .select()
               .from(agentTurnSteers)

@@ -37,7 +37,7 @@ export interface SteerTurnInput {
   readonly clientSteerId?: string | null;
 }
 
-const STEER_READY_WAIT = "5 seconds";
+const STEER_REPLAY_WAIT = "5 seconds";
 
 export interface SteerableProcess {
   readonly process: SessionProcess;
@@ -46,14 +46,14 @@ export interface SteerableProcess {
   readonly steerGate: Deferred.Deferred<void> | null;
   readonly stopping: boolean;
   readonly handingOverTo: string | null;
-  controls: number;
+  steerHolds: number;
 }
 
 export interface TurnSteeringHost<P extends SteerableProcess, E> {
   readonly conversations: AgentConversationRepo["Service"];
   readonly hosted: (processId: SessionProcessId) => P | undefined;
   readonly requireLive: (turn: AgentTurn) => Effect.Effect<void, E>;
-  readonly carry: (
+  readonly carryToNextTurn: (
     steer: AgentTurnSteer,
     reason: TurnSteerQueueReason,
   ) => Effect.Effect<AgentTurnSteer>;
@@ -120,10 +120,11 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
       turn = yield* conversations.byTurnId(steer.turnId);
     }
     const target = yield* steerTarget(steer, entry);
-    if (target._tag === "Carry") return yield* host.carry(steer, target.reason);
+    if (target._tag === "Carry") return yield* host.carryToNextTurn(steer, target.reason);
     const providerTurnId = target.turn.providerTurnId;
-    if (providerTurnId === null) return yield* host.carry(steer, "not-acknowledged");
-    if (!entry.adapter.activeSteering.supported) return yield* host.carry(steer, "unsupported");
+    if (providerTurnId === null) return yield* host.carryToNextTurn(steer, "not-acknowledged");
+    if (!entry.adapter.activeSteering.supported)
+      return yield* host.carryToNextTurn(steer, "unsupported");
     const result = yield* entry.adapter
       .steer({ id: steer.id, expectedTurnId: providerTurnId, input: steer.input })
       .pipe(Effect.result);
@@ -137,8 +138,9 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
       });
     }
     const error = result.failure;
-    if (error._tag === "AgentSteerRefusedError") return yield* host.carry(steer, error.reason);
-    if (error.certainty === "not-written") return yield* host.carry(steer, "not-written");
+    if (error._tag === "AgentSteerRefusedError")
+      return yield* host.carryToNextTurn(steer, error.reason);
+    if (error.certainty === "not-written") return yield* host.carryToNextTurn(steer, "not-written");
     return yield* conversations.settleTurnSteer(steer.id, {
       _tag: "Unknown",
       reason: "uncertain",
@@ -150,23 +152,23 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
     entry: P | undefined,
   ) {
     let target = yield* steerTarget(steer, entry);
-    if (target._tag === "Carry") return yield* host.carry(steer, target.reason);
+    if (target._tag === "Carry") return yield* host.carryToNextTurn(steer, target.reason);
     const gate = target.entry.steerGate;
     if (gate !== null) {
-      const ready = yield* Deferred.await(gate).pipe(Effect.timeoutOption(STEER_READY_WAIT));
-      if (Option.isNone(ready)) return yield* host.carry(steer, "replaying");
+      const ready = yield* Deferred.await(gate).pipe(Effect.timeoutOption(STEER_REPLAY_WAIT));
+      if (Option.isNone(ready)) return yield* host.carryToNextTurn(steer, "replaying");
       target = yield* steerTarget(steer, entry);
-      if (target._tag === "Carry") return yield* host.carry(steer, target.reason);
+      if (target._tag === "Carry") return yield* host.carryToNextTurn(steer, target.reason);
     }
     const running = target.entry;
     return yield* Effect.acquireUseRelease(
       Effect.sync(() => {
-        running.controls += 1;
+        running.steerHolds += 1;
       }),
       () => sendSteer(steer, running),
       () =>
         Effect.suspend(() => {
-          running.controls -= 1;
+          running.steerHolds -= 1;
           return host.released(running);
         }),
     );
@@ -188,7 +190,7 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
             : "Only this turn's sender may steer it.",
       });
     const clientSteerId = input.clientSteerId?.toLowerCase() ?? null;
-    const retried = (existing: AgentTurnSteer) =>
+    const firstReceiptOrConflict = (existing: AgentTurnSteer) =>
       existing.turnId === turn.id && existing.input === input.input
         ? Effect.succeed(existing)
         : Effect.fail(
@@ -199,7 +201,7 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
           );
     if (clientSteerId !== null) {
       const existing = yield* conversations.steerByClientId(input.sender, clientSteerId);
-      if (existing !== null) return yield* retried(existing);
+      if (existing !== null) return yield* firstReceiptOrConflict(existing);
     }
     yield* host.requireLive(turn);
     const entry = host.hosted(turn.processId);
@@ -210,7 +212,7 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
         input: input.input,
         clientSteerId,
       });
-      if (!admitted.created) return yield* retried(admitted.steer);
+      if (!admitted.created) return yield* firstReceiptOrConflict(admitted.steer);
       return yield* deliverSteer(admitted.steer, entry).pipe(
         Effect.onExit((exit) =>
           Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)

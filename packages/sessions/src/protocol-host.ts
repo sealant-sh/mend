@@ -235,7 +235,7 @@ interface HostedProcess {
   handingOverTo: string | null;
   /** The process was told to stop: a turn its harness opens now ends with it. */
   stopping: boolean;
-  controls: number;
+  steerHolds: number;
 }
 
 /**
@@ -382,7 +382,7 @@ export const ProtocolHostLive: Layer.Layer<
             if (
               hosted.get(entry.process.id) !== entry ||
               entry.stopping ||
-              entry.controls > 0 ||
+              entry.steerHolds > 0 ||
               entry.handingOverTo !== null
             )
               return;
@@ -600,13 +600,13 @@ export const ProtocolHostLive: Layer.Layer<
                * monitor's event, a goal's turn).
                */
               const stillQuiescent = Effect.gen(function* () {
-                if (hosted.get(entry.process.id) !== entry || entry.controls > 0) return false;
+                if (hosted.get(entry.process.id) !== entry || entry.steerHolds > 0) return false;
                 if (!(yield* stillWanted)) return false;
                 const looked = yield* entry.adapter.quiescence().pipe(Effect.result);
                 if (looked._tag === "Failure") return false;
                 const work = looked.success.work.filter((item) => item.kind !== "cron");
                 return (
-                  entry.controls === 0 &&
+                  entry.steerHolds === 0 &&
                   !looked.success.openTurn &&
                   work.length === 0 &&
                   looked.success.settleMs === 0
@@ -931,7 +931,7 @@ export const ProtocolHostLive: Layer.Layer<
         runsAs: input.runsAs ?? null,
         handingOverTo: null,
         stopping: false,
-        controls: 0,
+        steerHolds: 0,
       };
       activeEntry = entry;
       hosted.set(input.process.id, entry);
@@ -1124,7 +1124,7 @@ export const ProtocolHostLive: Layer.Layer<
               : Effect.fail(new ProtocolHostNotLiveError({ processId: turn.processId })),
           ),
         ),
-      carry: carrySteer,
+      carryToNextTurn: carrySteer,
       released: (entry) =>
         hosted.get(entry.process.id) === entry
           ? Effect.forkIn(dispatchNext(entry), scope).pipe(Effect.asVoid)
