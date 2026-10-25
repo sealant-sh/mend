@@ -13,7 +13,6 @@ const PERIOD = 251;
 export const PATTERN_CHUNK_BYTES = PERIOD * 256;
 const SLAB = Buffer.from(Array.from({ length: PATTERN_CHUNK_BYTES }, (_, i) => i % PERIOD));
 
-/** The payload's chunks in order: views of the shared slab, never copies. */
 export function* patternChunks(bytes: number): Generator<Buffer> {
   for (let sent = 0; sent < bytes; sent += PATTERN_CHUNK_BYTES) {
     yield SLAB.subarray(0, Math.min(PATTERN_CHUNK_BYTES, bytes - sent));
@@ -26,7 +25,6 @@ export const patternSha256 = (bytes: number): string => {
   return hash.digest("hex");
 };
 
-/** Writes the payload with the stream's backpressure, then ends it, unless it went away first. */
 export const writePattern = async (
   stream: NodeJS.WritableStream & { readonly destroyed: boolean },
   bytes: number,
@@ -37,10 +35,13 @@ export const writePattern = async (
     onChunk?.(chunk);
     if (!stream.write(chunk)) {
       const settled = new AbortController();
+      // `once` rejects on the stream's error: a peer that answered and closed mid-body ends it too.
       const drained = await Promise.race([
         once(stream, "drain", { signal: settled.signal }).then(() => true),
         once(stream, "close", { signal: settled.signal }).then(() => false),
-      ]).finally(() => settled.abort());
+      ])
+        .catch(() => false)
+        .finally(() => settled.abort());
       if (!drained) return;
     }
   }
@@ -50,12 +51,9 @@ export const writePattern = async (
 export interface UploadOptions {
   readonly bytes: number;
   readonly method?: string;
-  /** Without it the request carries Content-Length. */
   readonly chunked?: boolean;
-  /** Sends `Expect: 100-continue` and holds the body until the server says Continue. */
   readonly expectContinue?: boolean;
   readonly headers?: http.OutgoingHttpHeaders;
-  /** For an edge's self-signed certificate. */
   readonly rejectUnauthorized?: boolean;
   readonly agent?: http.Agent;
 }
@@ -64,14 +62,11 @@ export interface UploadResult {
   readonly status: number;
   readonly headers: http.IncomingHttpHeaders;
   readonly body: string;
-  /** SHA-256 of what this client wrote, and how many bytes. */
   readonly sentSha256: string;
   readonly sentBytes: number;
-  /** Whether the server sent 100 Continue before the body went out. */
   readonly continued: boolean;
 }
 
-/** Streams a generated body to `url` and reads the whole (small) response. */
 export const uploadGenerated = (url: string, options: UploadOptions): Promise<UploadResult> =>
   new Promise((resolve, reject) => {
     const target = new URL(url);
