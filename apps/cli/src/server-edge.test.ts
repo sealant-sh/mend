@@ -27,6 +27,11 @@ const repositoryFile = (name: string): string =>
 /** What a status line must never say: the report is facts beside a declaration, not a verdict. */
 const VERDICTS = /\bsafe\b|gate passed|passed\b|ready to expose|fit to expose|✓/i;
 
+const logsOf = (file: string) =>
+  [...file.matchAll(/^\t(?:log (\S+) \{|log (\S+)$)\n?((?:\t\t.*\n)*)/gm)].map(
+    ([, block, bare, body = ""]) => ({ name: block ?? bare, body }),
+  );
+
 describe("the edge the CLI carries", () => {
   it("is the repository's overlay and Caddyfile, byte for byte", () => {
     // Regenerate with: node apps/cli/scripts/edge-files.mjs
@@ -480,18 +485,14 @@ describe("what the edge logs (ADR 0004)", () => {
     const uriFree = EDGE_CADDYFILE.match(/^\(uri-free\) \{\n([\s\S]*?)^\}$/m)?.[1] ?? "";
     expect(uriFree).toContain("\t\t\trequest>uri replace REDACTED\n");
     expect(uriFree).toContain("\t\t\tresp_headers>Location delete\n");
-    const logs = (file: string) =>
-      [...file.matchAll(/^\t(?:log (\S+) \{|log (\S+)$)\n?((?:\t\t.*\n)*)/gm)].map(
-        ([, block, bare, body = ""]) => ({ name: block ?? bare, body }),
-      );
-    const all = [...logs(EDGE_CADDYFILE), ...logs(T3_GATEWAY_CADDYFILE)];
+    const all = [...logsOf(EDGE_CADDYFILE), ...logsOf(T3_GATEWAY_CADDYFILE)];
     expect(all.map(({ name }) => name).toSorted()).toEqual([
       "default",
       "mend",
       "mend",
       "t3code-gateway",
     ]);
-    for (const { name, body } of all.filter(({ name }) => name !== "mend"))
+    for (const { name, body } of all.filter((log) => log.name !== "mend"))
       expect(body, name).toContain("\t\timport uri-free\n");
   });
 });
