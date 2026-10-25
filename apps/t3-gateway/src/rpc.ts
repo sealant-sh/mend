@@ -2,6 +2,7 @@ import {
   AcpRegistryOperationError,
   AgentSessionImportProjectNotFoundError,
   AssetAttachmentNotFoundError,
+  AssetWorkspaceAssetNotFoundError,
   AssetWorkspaceContextNotFoundError,
   AuthAccessReadScope,
   AuthOrchestrationReadScope,
@@ -49,6 +50,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Redacted from "effect/Redacted";
 import type * as Rpc from "effect/rpc/Rpc";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
@@ -1077,22 +1079,55 @@ export const makeGatewayRpcHandlers = ({
       ),
     [WS_METHODS.agentSessionsImport]: (input) =>
       Effect.fail(new AgentSessionImportProjectNotFoundError({ projectId: input.projectId })),
-    // A message's images, kept by the gateway until the message is sent (`images.ts`); files in
-    // a workspace are not served.
     [WS_METHODS.assetsCreateUrl]: (input) =>
       Effect.gen(function* () {
         yield* authorize(session);
         const resource = input.resource;
-        if (resource._tag !== "attachment") {
-          return yield* new AssetWorkspaceContextNotFoundError({ resource });
+        if (resource._tag === "project-favicon") {
+          const location = yield* hub
+            .locationOf(resource.cwd)
+            .pipe(Effect.orElseSucceed(() => null));
+          if (location === null) return yield* new AssetWorkspaceContextNotFoundError({ resource });
+          return {
+            relativeUrl: "/api/assets/project-favicon-missing",
+            expiresAt: session.expiresAt,
+          };
         }
+        if (resource._tag === "workspace-file" || resource._tag === "media-file") {
+          if (
+            !resource.path.startsWith("/") ||
+            resource.path.includes("\\") ||
+            resource.path.includes("\0") ||
+            resource.path
+              .split("/")
+              .some((part) => part === "." || part === ".." || part === ".git")
+          )
+            return yield* new AssetWorkspaceAssetNotFoundError({ resource });
+          const file = yield* hub
+            .worktreeFileOf(resource.path, resource.threadId)
+            .pipe(Effect.orElseSucceed(() => null));
+          if (file === null) return yield* new AssetWorkspaceContextNotFoundError({ resource });
+          return yield* assetUrls
+            .issue(session.sessionId, {
+              kind: "file",
+              worktreeId: file.worktreeId,
+              path: Redacted.make(file.relativePath),
+              preview: resource._tag === "media-file" ? "media" : "workspace",
+            })
+            .pipe(Effect.mapError(() => new AssetWorkspaceAssetNotFoundError({ resource })));
+        }
+        if (resource._tag !== "attachment")
+          return yield* new AssetWorkspaceContextNotFoundError({ resource });
         const image = hub.imageOf(resource.attachmentId);
         if (image === null) return yield* new AssetAttachmentNotFoundError({ resource });
-        return yield* assetUrls.issue({
-          mendUserId: session.mendUser.id,
-          imageId: image.id,
-          fileName: image.name,
-        });
+        return yield* assetUrls
+          .issue(session.sessionId, {
+            kind: "image",
+            imageId: image.id,
+            fileName: Redacted.make(image.name),
+            sizeBytes: image.sizeBytes,
+          })
+          .pipe(Effect.mapError(() => new AssetAttachmentNotFoundError({ resource })));
       }),
     // MCP apps run in a t3code server's own provider sessions; Mend's agents have none.
     [WS_METHODS.mcpAppsCallTool]: () => refuse(WS_METHODS.mcpAppsCallTool),

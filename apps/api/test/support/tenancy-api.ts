@@ -1,3 +1,6 @@
+import { createServer } from "node:http";
+
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import {
   AuditEventsRepo,
   MemberRevocationsRepo,
@@ -89,10 +92,14 @@ import {
   Context,
   Duration,
   Effect,
+  Exit,
   Layer,
   ManagedRuntime,
+  Logger,
+  Tracer,
   Queue,
   Schema,
+  Scope,
   Stream,
 } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
@@ -114,6 +121,8 @@ import { ExposureConfig, type ExposureOutcome } from "../../src/exposure.ts";
 import { GithubIdentityLive } from "../../src/github-identity.ts";
 import { HandoffStartLive } from "../../src/handoff-start.ts";
 import { MemberRemovalLive } from "../../src/member-removal.ts";
+import { rawFilePrivacy, RawFileTracingDisabledLive } from "../../src/raw-file-privacy.ts";
+import { apiResponseHeaders } from "../../src/response-headers.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
 import { Gh } from "../../src/routes/github.ts";
@@ -121,6 +130,7 @@ import { ServiceTunnelRoutes } from "../../src/routes/service-tunnel.ts";
 import { TtyRoutes } from "../../src/routes/tty.ts";
 import { UrlBearers } from "../../src/routes/upgrade-tickets.ts";
 import { CheckpointRequestLimit } from "../../src/routes/workbench.ts";
+import { RawReadStallLimit } from "../../src/routes/worktrees.ts";
 import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
 import { SshKeyRevoker } from "../../src/ssh-key-revocation.ts";
@@ -136,6 +146,7 @@ export interface TenancyApi {
     method: string,
     path: string,
     body?: unknown,
+    headers?: Readonly<Record<string, string>>,
   ) => Promise<Response>;
   readonly postBytes: (
     user: HarnessUser | null,
@@ -162,6 +173,8 @@ export interface TenancyApi {
   readonly closeConnectionsOf: (user: HarnessUser) => Promise<number>;
   /** Push-device writes as `method:userId:token`, to prove the caller's id reaches the repo. */
   readonly deviceWrites: ReadonlyArray<string>;
+  /** Where the Node-served API listens on loopback, with the `node` option. */
+  readonly nodeOrigin: string | undefined;
   readonly dispose: () => Promise<void>;
 }
 
@@ -179,6 +192,11 @@ export const createTenancyApi = async (
   /** Budgets for this world; the defaults unless a test wants one tight enough to reach. */
   limits: Partial<BudgetLimits> = {},
   options: {
+    readonly logs?: string[];
+    readonly spans?: Tracer.Span[];
+    readonly browserHeaders?: boolean;
+    /** Also serve the API behind the Node HTTP adapter Mend runs on, at `nodeOrigin`. */
+    readonly node?: boolean;
     readonly urlBearers?: "accept" | "refuse";
     readonly clock?: () => number;
     /** Effect-owned request deadlines, when a test drives them with TestClock. */
@@ -211,6 +229,8 @@ export const createTenancyApi = async (
      */
     /** How long a request that takes a checkpoint may run (`CheckpointRequestLimit`). */
     readonly checkpointRequestLimit?: Duration.Duration;
+    /** How long a raw body waits for its reader (`RawReadStallLimit`). */
+    readonly rawReadStall?: Duration.Duration;
     readonly implement?: {
       readonly previews?: Layer.PartialEffectful<PreviewsRepo["Service"]>;
       readonly storeRefs?: Layer.PartialEffectful<StoreRefsRepo["Service"]>;
@@ -489,6 +509,9 @@ export const createTenancyApi = async (
     options.checkpointRequestLimit === undefined
       ? Layer.empty
       : Layer.succeed(CheckpointRequestLimit, options.checkpointRequestLimit),
+    options.rawReadStall === undefined
+      ? Layer.empty
+      : Layer.succeed(RawReadStallLimit, options.rawReadStall),
   );
   // One registry for the whole world. The API, the socket routes and the event route are separate
   // web handlers here, each building its own layers; they must still see each other's connections,
@@ -513,7 +536,12 @@ export const createTenancyApi = async (
     Layer.provideMerge(ticketsLayer),
     Layer.provideMerge(dependencies),
   );
-  const apiLayer = MendApiLive.pipe(
+  const apiLayer = Layer.mergeAll(
+    MendApiLive,
+    rawFilePrivacy,
+    options.browserHeaders ? apiResponseHeaders : Layer.empty,
+  ).pipe(
+    Layer.provideMerge(RawFileTracingDisabledLive),
     Layer.provide(authorization),
     Layer.provide(HttpServer.layerServices),
   );
@@ -523,7 +551,46 @@ export const createTenancyApi = async (
     options.effectClock === undefined
       ? services
       : Context.add(services, Clock.Clock, options.effectClock);
-  const { handler, dispose } = HttpRouter.toWebHandler(apiLayer, { disableLogger: true });
+  const { handler, dispose } = HttpRouter.toWebHandler(
+    apiLayer.pipe(
+      Layer.provideMerge(
+        Layer.succeed(
+          Tracer.Tracer,
+          Tracer.make({
+            span(spanOptions) {
+              const span = Tracer.nativeTracer.span(spanOptions);
+              options.spans?.push(span);
+              return span;
+            },
+          }),
+        ),
+      ),
+      Layer.provideMerge(
+        options.logs === undefined
+          ? Layer.empty
+          : Logger.layer([
+              Logger.make((entry) => options.logs?.push(String(Logger.formatJson.log(entry)))),
+            ]),
+      ),
+    ),
+    { disableLogger: options.logs === undefined },
+  );
+  const nodeScope = Effect.runSync(Scope.make());
+  const nodeOrigin = options.node
+    ? await Effect.runPromise(
+        Layer.buildWithScope(
+          HttpRouter.serve(apiLayer, { disableLogger: true, disableListenLog: true }).pipe(
+            Layer.provide(Layer.succeedContext(context)),
+            Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+          ),
+          nodeScope,
+        ).pipe(
+          Effect.map((built) =>
+            HttpServer.formatAddress(Context.get(built, HttpServer.HttpServer).address),
+          ),
+        ),
+      )
+    : undefined;
   const rawLayer = Layer.merge(TtyRoutes, ServiceTunnelRoutes).pipe(
     Layer.provide(HttpServer.layerServices),
     Layer.provide(authorization),
@@ -578,8 +645,8 @@ export const createTenancyApi = async (
 
   return {
     world,
-    request: (user, method, path, body) => {
-      const headers = new Headers();
+    request: (user, method, path, body, extraHeaders) => {
+      const headers = new Headers(extraHeaders);
       if (user !== null) headers.set("authorization", `Bearer ${user}`);
       if (body !== undefined) headers.set("content-type", "application/json");
       return handler(
@@ -675,7 +742,9 @@ export const createTenancyApi = async (
         }),
         context,
       ),
+    nodeOrigin,
     dispose: async () => {
+      await Effect.runPromise(Scope.close(nodeScope, Exit.void));
       await dispose();
       await raw.dispose();
       await eventRoutes.dispose();

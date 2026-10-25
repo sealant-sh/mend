@@ -398,7 +398,7 @@ const configStreamOverSmallFeed = Effect.gen(function* () {
     }),
     assetUrls: {
       issue: () => Effect.succeed({ relativeUrl: "/api/assets/x/y", expiresAt: 0 }),
-      resolve: () => Effect.succeedNone,
+      open: () => Effect.die("No asset requests in this fixture"),
     },
     session: testBearerSession,
     hub,

@@ -329,6 +329,8 @@ export const T3_GATEWAY_CADDYFILE = [
   "# origin of its own. A t3code client always uses a server's root path, so it cannot share Mend's.",
   "{$MEND_T3_GATEWAY_EDGE_HOST} {",
   "\tencode zstd gzip",
+  "\t# The raw route's file headers never leave the edge.",
+  "\theader -X-Mend-File-*",
   "",
   `\treverse_proxy mend:${T3_GATEWAY_CONTAINER_PORT} {`,
   "\t\t# The gateway's socket and its streams are long-lived: never buffer them.",

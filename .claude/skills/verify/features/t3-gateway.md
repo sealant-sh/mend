@@ -75,6 +75,12 @@ a checkout beside a Mend server.
 - `t3-files` answers `projects.searchEntries`, `projects.listEntries`, `projects.readFile` and
   `projects.searchContents` from the thread's worktree, and `filesystem.getMetadata` (kind and
   `byteLength`, the composer's file chip sizes) for paths under a project or worktree.
+- `t3-assets` answers `assets.createUrl` for a worktree's files (`workspace-file`, `media-file`) and
+  a message's images (`attachment`) with a device-bound URL, `/api/assets/<token>/<file name>`, for
+  at most an hour; every fetch confirms the device and reads the file through Mend's
+  `GET|HEAD /api/worktrees/:id/raw`, which serves a co-located server's current files only
+  (`apps/t3-gateway/src/assets.ts`, `apps/api/src/routes/worktrees.ts`). A project favicon answers
+  `/api/assets/project-favicon-missing`.
 - `t3-find` answers `orchestration.searchThread` and its streaming form over the hub's projection of
   the thread (`apps/t3-gateway/src/thread-find.ts`).
 - `t3-vcs` answers `subscribeVcsStatus`, `vcs.refreshStatus` and `vcs.listRefs` from the session's
@@ -281,12 +287,13 @@ Preconditions:
   (`blocksStart: false`, `apps/api/src/exposure.ts:159`), so it counts among the `do not`. Restart
   with `MEND_T3_GATEWAY_ENABLED=1` and `MEND_EXPOSURE_DECLARED=t3code-gateway`: the line starts `○`
   and reads `declared`. Restart without either: no `t3code-gateway` line, fourteen items.
-- **Images, approvals, rename, archive, runtime mode, skills in the composer, find highlighting,
-  drag order.** Through a t3code client: not driven yet. **Driving the t3code client**, below,
-  drives pairing, launch, turns, the queue, settle and snooze, the terminal, files and the diff.
-  Approvals and an agent's own output need a real provider login. End state when driven from t3code
-  (from source): an approval answered in t3code reads as answered on the web; a rename shows as the
-  session's label in Mend; an archived thread is still listed in Mend.
+- **Approvals, rename, archive, runtime mode, skills in the composer, find highlighting, drag
+  order.** Through a t3code client: not driven yet. **Driving the t3code client**, below, drives
+  pairing, launch, turns, the queue, settle and snooze, the terminal, files and the diff, the Files
+  tab's previews, a pasted chat image, and revoking the client's device. Approvals and an agent's
+  own output need a real provider login. End state when driven from t3code (from source): an
+  approval answered in t3code reads as answered on the web; a rename shows as the session's label in
+  Mend; an archived thread is still listed in Mend.
 - **Revoke.** On the web, revoke `t3code · verify` in Settings → Devices. Wait more than five
   seconds (one confirmation of the device serves its requests for five seconds,
   `DEVICE_CONFIRMED_FOR_MS` in `apps/t3-gateway/src/auth.ts`). Run the authenticated session `curl`
@@ -309,7 +316,12 @@ with the gateway as a remote environment. Driven on 2026-10-24 on a local verify
 login (evidence `st-verify-1024-t3pv-41b9/t3-client/`). Every step below is an `ok ·` line of the
 recipe's `steps.log`; `observed ·` lines record what was seen where the outcome is not fixed in
 advance, and `rpc ·` lines the client's own calls, read from its WebSocket frames (the gateway logs
-HTTP only).
+HTTP only). The previews, the pasted chat image and the revoke (from **Previews need a co-located
+Mend**, below) were added and driven the same day on a local verify stack (Mend at `6342958bc`,
+served as `faa121b10`), its inner Mend restarted with `MEND_SESSION_STORE=colocated` (evidence
+`st-verify-1024-raw1a-70e2/t3-client/`, `web-attempt4/` and `web-variant/`); `net ·` lines are the
+asset requests the browser made, and `curl ·` lines the minted URLs fetched with `curl` (each token
+read from its frames into the registry, its config on stdin).
 
 Build the client once, outside this repository. The tag is `packages/t3-contracts/t3code.pin.json`'s
 `tag` (`v0.1.2`, commit `044f07257c96`); use the pnpm version t3code's `packageManager` names
@@ -342,7 +354,8 @@ with the gateway; `drive-web.mjs` drives its page only while that record's proce
 answers `index.html`, so a reload of a thread's page loads it. The browser starts empty each run:
 the client keeps its environments in IndexedDB, which `--state` does not carry, so the recipe pairs
 every run and each run adds a `t3code · T3 Code Web` device in Mend. A full run took about 90
-seconds.
+seconds before the previews, and about 3 minutes with them; the previews need `ffmpeg` on this
+machine's `PATH`, and the run ends by revoking every `t3code · T3 Code Web` device.
 
 - **Pair.** The root reads `No computer connected`. **Add pairing link** opens Settings →
   Connections; **Add environment**; the recipe types `http://<gateway>/pair#token=<code>` (a code it
@@ -394,11 +407,76 @@ seconds.
   `verify-terminal.txt`; `README.md` opens with `# Verify fixture`, under the line
   `Read-only connection. Unsaved edits are kept until write access returns.` **Add panel surface** →
   **Diff**: `Changes` against `main`, `1 additions, 0 deletions`, `verify-terminal.txt +1`.
+- **Previews need a co-located Mend.** The verify stack runs the capture store (the default), and
+  Mend answers every raw read there with `409` `{"_tag":"RawFileUnavailable","mode":"captured"}`:
+  `assets.createUrl` fails with `AssetWorkspaceAssetNotFoundError` and the panel reads
+  `Unable to load workspace image.` (observed 2026-10-24, `captured/`). So the run recreates the
+  inner `mend-mend-1` from setup's own Compose files (its labels name them and `server.env`) with
+  one more file setting `MEND_SESSION_STORE=colocated`, through a sibling `mend run` on the
+  session's Docker; Mend then logs `sessionStore: 'colocated'` and its deprecation warning. The
+  sibling's command, with `<label>` read by `docker inspect mend-mend-1` from
+  `com.docker.compose.project.<label>` and `<cli>` the image of `verify-stack-relay`:
+
+  ```sh
+  docker run --rm -v verify-stack-state:<mountpoint> -v <docker socket>:/var/run/docker.sock \
+    --workdir <working_dir> --entrypoint sh <cli> -c "printf 'services:\n  mend:\n    environment:\n      MEND_SESSION_STORE: colocated\n' > <mountpoint>/server/st-verify-session-store.yaml \
+    && docker compose -p mend --project-directory <working_dir> --env-file <environment_file> \
+       -f <each of config_files> -f <mountpoint>/server/st-verify-session-store.yaml up -d --no-deps mend"
+  ```
+
+  `<mountpoint>` is `docker volume inspect -f '{{.Mountpoint}}' verify-stack-state`, and
+  `<docker socket>` the source of `mend-mend-1`'s `/var/run/docker.sock` mount. Threads launched
+  before the restart keep answering `subscribeVcsStatus` with
+  `Mend answered GET /api/changes/:id/stats with 422.` A captured or checkpoint raw read past that
+  refusal is part 1b; nothing more of it is drivable here.
+
+- **The fixtures, pasted into the terminal.** The recipe makes a PNG (64 × 64), an SVG, a one-page
+  PDF, a 10-second VP9 MP4 (Playwright's Chromium decodes no H.264), `site/index.html` with a
+  relative `site/style.css`, a `secret.css` beside `site/`, and 4 KiB of binary, then pastes one
+  script (820 KB of base64) into Mend's shell behind `stty -echo; cat > /tmp/preview-fixtures.sh`,
+  16 KiB a paste event: it took about 5 s. The script links `site/escape.css` to `../secret.css` and
+  prints each file's `sha256sum`, which match the recipe's.
+- **Image and SVG.** **Files** → `preview` → `pixel.png`: the `img` decodes at 64 × 64, from
+  `GET /api/assets/<token>/pixel.png` `200` `image/png`, `cache-control: private, no-store`.
+  `logo.svg` decodes at 96 × 96, served `image/svg+xml` with
+  `content-security-policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`.
+- **PDF.** `doc.pdf` previews as an `embed` of type `application/pdf` on a minted URL. Playwright's
+  headless Chromium has no PDF viewer (`navigator.pdfViewerEnabled` `false`), so the embed fetches
+  nothing; `curl` on the minted URL answers `200` `application/pdf`, the file byte for byte. A
+  rendered PDF in the panel is not observed.
+- **Video.** `clip.mp4` loads its metadata and plays (`videoWidth` 640, no media error). Every
+  request carried a Range and was answered `206` `video/mp4`: `bytes=0-` (`bytes 0-593693/593694`,
+  then aborted by Chromium once it had the metadata), and the seek to 9.2 s `bytes=589824-` (the
+  bytes past it). On the minted URL `Range: bytes=0-99` answers `206` `bytes 0-99/593694`, and
+  `Range: bytes=593694-` answers `416` `content-range: bytes */593694`. `Range: bytes=0-9` on
+  `pixel.png`'s URL answers the whole file, `200`: ranges are for audio and video only.
+- **HTML and its directory.** `site/index.html` previews in a frame sandboxed
+  `allow-scripts allow-forms allow-popups allow-downloads`, served `text/html; charset=utf-8` with
+  the same `sandbox …` CSP; the frame fetches `/api/assets/<token>/style.css` (`200` `text/css`) and
+  `#styled` computes `rgb(1, 2, 3)`. With the page's token, `<token>/../secret.css` (sent as is),
+  `<token>/%2e%2e/secret.css`, `<token>/..%2fsecret.css` and `<token>/escape.css` (the symlink)
+  answer `404` `Not Found`; `<token>/style.css` answers `200`. `pixel.png`'s token with `logo.svg`
+  in place of its file name answers `404`.
+- **Binary.** `data.bin` reads `The file is binary and cannot be displayed as text.`; no asset URL
+  is fetched. `projects.readFile` of `pixel.png`, `clip.mp4` and `data.bin` fails (`binary_file`),
+  and the client previews the media files anyway.
+- **A pasted chat image.** A PNG pasted into the composer (a `paste` event carrying the file) and
+  sent shows in the message from `GET /api/assets/<token>/pasted.png` `200` `image/png`,
+  `private, no-store`, and again after a reload.
+- **Revoke.** In Mend's web (signed in as the stack's account), Settings → Devices lists the
+  `t3code · T3 Code Web` devices; every minted URL answers `200`. After **Revoke** → **Confirm
+  revoke** on each, they already answered `404` 49 to 124 ms later (observed), and 6 s later all six
+  (`pasted.png`, `pixel.png`, `logo.svg`, `doc.pdf`, `clip.mp4`, `index.html`) answer `404`,
+  `private, no-store`.
+- **No path or token in the logs.** The gateway's log (3,389 lines) and the inner Mend's since its
+  restart (441,304 lines) hold no `ast_`, no `/api/assets/`, no `/raw`, no `preview/` and none of
+  the fixtures' file names (`logs-gateway-grep.txt`, `logs-mend-grep.stdout`). Mend logs
+  `/api/worktrees/<id>`, `/contents` and `/diff` by path without the query, and no raw read.
 - **What the client calls that the gateway refuses.** On every connect:
   `server.discoverSourceControl`
-  (`Mend's t3code gateway does not offer server.discoverSourceControl.`), `assets.createUrl` for the
-  project's favicon (`AssetWorkspaceContextNotFoundError`, at the project's `repo.git`) and
-  `projects.readFile` of `t3.json` (the fixture has none). None shows a toast.
+  (`Mend's t3code gateway does not offer server.discoverSourceControl.`) and `projects.readFile` of
+  `t3.json` (the fixture has none). None shows a toast. Since 1a, `assets.createUrl` for the
+  project's favicon succeeds with `/api/assets/project-favicon-missing`.
 - **A thread interrupted with messages queued reads Working.** After **Stop generation** with
   messages queued, the live page keeps `Working for <n>s` and **Submitting message** while Mend
   records the turn `interrupted`, and the sidebar row reads `Working`, on later loads too, until a
@@ -411,7 +489,19 @@ seconds.
   needs a thread older than t3code's default days).
 - **Screenshots.** Claude's logo is one long SVG path, which `drive-web.mjs` takes for a QR code, so
   every view that shows it (each thread) keeps its ARIA snapshot only (`<name>.png.withheld`). The
-  empty root and Settings → Connections keep their screenshots.
+  empty root and Settings → Connections keep their screenshots. Before the image, SVG, binary and
+  chat image captures the recipe removes exactly the client's hidden file-icon sprite and Claude's
+  logos (`svg[viewBox="0 0 256 257"]`), and says how many: those screenshots are kept. A view with a
+  `video`, an `embed` or an `iframe` (the video, PDF and HTML previews) is withheld whole, and
+  Mend's Settings → Devices was withheld as a credential field; their ARIA snapshots stay.
+- **Flakes seen on 2026-10-24.** Of eight full runs with the previews, one passed (`web-attempt4/`),
+  one failed in a preview step since fixed, and six failed earlier, in steps that predate the
+  previews: three times `settledAt` did not arrive within 15 s of **Settle thread** (the thread
+  still read `Snoozed, 59m left`), three times the opening message was refused with
+  `Select a base branch before sending in New worktree mode.` while the combobox read
+  `From main (remote)`. The stack's sidebar then held the threads of every earlier run. A copy of
+  the recipe without the snooze and settle steps, waiting 3 s before the opening message, with the
+  preview steps unchanged, passed (`web-variant/`).
 
 ## Gotchas
 

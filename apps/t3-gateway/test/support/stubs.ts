@@ -5,7 +5,7 @@ import * as Stream from "effect/Stream";
 import { BEARER_TTL_MS, GRANTED_SCOPES } from "../../src/auth.ts";
 import { gateDeviceCalls } from "../../src/device-gate.ts";
 import { ThreadCommandRefused, type PersonHub } from "../../src/hub.ts";
-import { MendUnavailable, type MendClient } from "../../src/mend-client.ts";
+import { MendUnavailable, MendRawFileUnavailable, type MendClient } from "../../src/mend-client.ts";
 import { NO_MODEL_PREFERENCES, settingsWith } from "../../src/model-preferences.ts";
 import { EMPTY_SHELL_SNAPSHOT } from "../../src/shell.ts";
 import type { BearerSession } from "../../src/state.ts";
@@ -47,6 +47,7 @@ export const unreachableMend: MendClient["Service"] = {
   refreshLanding: () => unavailable("POST /api/landings/:id/refresh"),
   worktreeCheckpoints: () => unavailable("GET /api/worktrees/:id"),
   worktreeDiff: () => unavailable("GET /api/worktrees/:id/diff"),
+  openRawFile: () => Effect.fail(new MendRawFileUnavailable({ status: null })),
   worktreeContents: () => unavailable("GET /api/worktrees/:id/contents"),
   createSession: () => unavailable("POST /api/projects/:id/sessions"),
   joinWorktree: () => unavailable("POST /api/worktrees/:id/sessions"),

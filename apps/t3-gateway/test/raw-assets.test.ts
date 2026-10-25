@@ -1,0 +1,799 @@
+import { Agent, get } from "node:http";
+
+import { MessageId, ThreadId, WS_METHODS } from "@mend/t3-contracts";
+import { Deferred, Duration, Effect, Exit, Fiber } from "effect";
+import * as HttpClient from "effect/http/HttpClient";
+
+import { DEFAULT_ASSET_LIMITS, type AssetLimits } from "../src/assets.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
+import {
+  withAssetHarness,
+  pairAssetClient as pairAndConnect,
+  type AssetHarness as FakeMend,
+} from "./support/raw-assets.ts";
+
+const THREAD = ThreadId.make("session-1");
+const ROOT = "/var/lib/mend/store/project-1/worktrees/wt-session-1";
+const BYTES = Uint8Array.from({ length: 256 }, (_, i) => i);
+const withGateway = <A, E, R>(
+  test: (mend: FakeMend, logs: string[]) => Effect.Effect<A, E, R>,
+  limits: Partial<AssetLimits> = {},
+) =>
+  withAssetHarness(
+    (mend, logs) =>
+      Effect.gen(function* () {
+        for (const name of [
+          "image.png",
+          "movie.mp4",
+          "song.opus",
+          "docs/index.html",
+          "docs/book.pdf",
+          "docs/style.css",
+          "docs/nested/a.mjs",
+          "private/secret.css",
+          "vector.svg",
+          "space % #.png",
+        ]) {
+          mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+            bytes: BYTES,
+            canonicalPath: name,
+          });
+        }
+        mend.workbench.rawFiles.set("worktree-session-1/docs/leak.css", {
+          bytes: BYTES,
+          canonicalPath: "private/secret.css",
+        });
+        mend.workbench.rawFiles.set("worktree-session-1/disguised.png", {
+          bytes: BYTES,
+          canonicalPath: "docs/index.html",
+        });
+        return yield* test(mend, logs);
+      }),
+    limits,
+  );
+const resource = (name: string, kind: "workspace-file" | "media-file" = "workspace-file") => ({
+  _tag: kind,
+  threadId: THREAD,
+  path: `${ROOT}/${name}`,
+});
+
+describe("worktree asset URLs", () => {
+  it.live(
+    "mints fresh canonical file URLs and returns exact binary bytes and browser headers without logging paths",
+    () =>
+      withGateway((mend, logs) =>
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "RAW");
+          const http = yield* HttpClient.HttpClient;
+          for (const [name, mime] of [
+            ["image.png", "image/png"],
+            ["space % #.png", "image/png"],
+            ["docs/book.pdf", "application/pdf"],
+            ["vector.svg", "image/svg+xml"],
+            ["disguised.png", "text/html; charset=utf-8"],
+          ]) {
+            const input = { resource: resource(name ?? "") };
+            const a = yield* rpc[WS_METHODS.assetsCreateUrl](input);
+            const b = yield* rpc[WS_METHODS.assetsCreateUrl](input);
+            assert.notStrictEqual(a.relativeUrl, b.relativeUrl);
+            const response = yield* http.get(a.relativeUrl, { headers: { range: "bytes=2-5" } });
+            assert.strictEqual(response.status, 200);
+            assert.strictEqual(response.headers["content-type"], mime);
+            assert.strictEqual(response.headers["cache-control"], "private, no-store");
+            assert.strictEqual(response.headers["x-content-type-options"], "nosniff");
+            assert.isUndefined(response.headers["x-frame-options"]);
+            assert.deepStrictEqual(new Uint8Array(yield* response.arrayBuffer), BYTES);
+            if (name === "vector.svg")
+              assert.strictEqual(
+                response.headers["content-security-policy"],
+                "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+              );
+            if (name === "disguised.png") {
+              assert.isTrue(a.relativeUrl.endsWith("/index.html"));
+              assert.strictEqual(
+                response.headers["content-security-policy"],
+                "sandbox allow-scripts allow-forms allow-popups allow-downloads",
+              );
+            }
+            const traces = JSON.stringify(
+              mend.spans.map((span) => [span.name, [...span.attributes]]),
+            );
+            assert.isFalse(
+              traces.includes(a.relativeUrl) ||
+                traces.includes(name ?? "") ||
+                traces.includes(ROOT),
+            );
+            assert.isFalse(
+              logs.some(
+                (log) =>
+                  log.includes(a.relativeUrl) || log.includes(name ?? "") || log.includes(ROOT),
+              ),
+            );
+          }
+          assert.isAbove(mend.spans.length, 0);
+          const wrongThread = yield* Effect.exit(
+            rpc[WS_METHODS.assetsCreateUrl]({
+              resource: { ...resource("image.png"), threadId: ThreadId.make("elsewhere") },
+            }),
+          );
+          assert.isTrue(Exit.isFailure(wrongThread));
+        }),
+      ),
+  );
+  it.live(
+    "serves each kind with t3code v0.1.2's content type, nosniff and sandbox, from the opened file",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "TYPES");
+          const http = yield* HttpClient.HttpClient;
+          const svg = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+          const html = "sandbox allow-scripts allow-forms allow-popups allow-downloads";
+          for (const name of ["icon.ico", "photo.avif", "Shot.JPG", "docs/font.woff2"])
+            mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+              bytes: BYTES,
+              canonicalPath: name,
+            });
+          const served = [
+            ["icon.ico", "image/x-icon", undefined],
+            ["photo.avif", "image/avif", undefined],
+            ["Shot.JPG", "image/jpeg", undefined],
+            ["image.png", "image/png", undefined],
+            ["vector.svg", "image/svg+xml", svg],
+            ["docs/index.html", "text/html; charset=utf-8", html],
+            ["docs/book.pdf", "application/pdf", undefined],
+          ] as const;
+          for (const kind of ["workspace-file", "media-file"] as const)
+            for (const [name, type, csp] of served) {
+              const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
+                resource: resource(name, kind),
+              });
+              const response = yield* http.get(url.relativeUrl);
+              assert.strictEqual(response.status, 200, `${kind} ${name}`);
+              assert.strictEqual(response.headers["content-type"], type, `${kind} ${name}`);
+              assert.strictEqual(response.headers["x-content-type-options"], "nosniff");
+              assert.strictEqual(response.headers["content-security-policy"], csp);
+            }
+          for (const [name, type] of [
+            ["movie.mp4", "video/mp4"],
+            ["song.opus", "audio/ogg"],
+          ] as const) {
+            const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
+              resource: resource(name, "media-file"),
+            });
+            assert.strictEqual(
+              (yield* http.get(url.relativeUrl)).headers["content-type"],
+              type,
+              name,
+            );
+            assert.isTrue(
+              Exit.isFailure(
+                yield* Effect.exit(rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(name) })),
+              ),
+              `workspace-file ${name}`,
+            );
+          }
+          const page = yield* rpc[WS_METHODS.assetsCreateUrl]({
+            resource: resource("docs/index.html"),
+          });
+          const directory = page.relativeUrl.slice(0, page.relativeUrl.lastIndexOf("/"));
+          for (const [suffix, type] of [
+            ["style.css", "text/css"],
+            ["nested/a.mjs", "text/javascript"],
+            ["font.woff2", "font/woff2"],
+          ] as const) {
+            const response = yield* http.get(`${directory}/${suffix}`);
+            assert.strictEqual(response.headers["content-type"], type, suffix);
+            assert.isUndefined(response.headers["content-security-policy"]);
+          }
+        }),
+      ),
+  );
+  it.live(
+    "keeps tokens and names out of logs and traces in every spelling the router accepts",
+    () =>
+      withGateway((mend, logs) =>
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "SPELLING");
+          const url = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") });
+          const token = url.relativeUrl.split("/")[3] ?? "";
+          for (const target of [
+            url.relativeUrl.replace("/api/assets", "/API/Assets"),
+            url.relativeUrl.replace("/api/assets", "/api//assets"),
+            url.relativeUrl.replace("/api/assets", "/api/%61ssets"),
+            `${url.relativeUrl}/`,
+            url.relativeUrl.replace("/image.png", ";v=1/image.png"),
+          ]) {
+            const response = yield* mend.fetch(target);
+            yield* Effect.promise(() => response.text());
+            const traces = JSON.stringify(
+              mend.spans.map((span) => [span.name, [...span.attributes]]),
+            );
+            assert.isFalse(traces.includes(token) || traces.includes("image.png"), target);
+            assert.isFalse(
+              logs.some((line) => line.includes(token) || line.includes("image.png")),
+              target,
+            );
+          }
+        }),
+      ),
+  );
+  it.live("forwards media Range as 206/416, ignores If-Range and supplies HEAD and CORS", () =>
+    withGateway((mend, logs) =>
+      Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "MEDIA");
+        const http = yield* HttpClient.HttpClient;
+        for (const name of ["movie.mp4", "song.opus"]) {
+          const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
+            resource: resource(name, "media-file"),
+          });
+          const partial = yield* http.get(url.relativeUrl, { headers: { range: "bytes=2-5" } });
+          assert.strictEqual(partial.status, 206);
+          assert.strictEqual(partial.headers["content-range"], "bytes 2-5/256");
+          assert.deepStrictEqual(new Uint8Array(yield* partial.arrayBuffer), BYTES.slice(2, 6));
+          assert.strictEqual(
+            (yield* http.get(url.relativeUrl, { headers: { range: "bytes=256-" } })).status,
+            416,
+          );
+          assert.strictEqual(
+            (yield* http.get(url.relativeUrl, {
+              headers: { range: "bytes=2-5", "if-range": "unknown" },
+            })).status,
+            200,
+          );
+          const head = yield* http.head(url.relativeUrl);
+          assert.strictEqual(head.status, 200);
+          assert.strictEqual(head.headers["content-length"], "256");
+          assert.strictEqual(yield* head.text, "");
+          const options = yield* http.options(url.relativeUrl, {
+            headers: {
+              origin: "null",
+              "access-control-request-method": "GET",
+              "access-control-request-headers": "range",
+            },
+          });
+          assert.include(options.headers["access-control-allow-headers"], "range");
+          assert.isFalse(
+            logs.some((line) => line.includes(url.relativeUrl) || line.includes("movie.mp4")),
+          );
+        }
+      }),
+    ),
+  );
+  it.live(
+    "binds exact files, confines document children and returns the missing favicon marker",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "BOUND");
+          const http = yield* HttpClient.HttpClient;
+          const image = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") });
+          const base = image.relativeUrl.slice(0, image.relativeUrl.lastIndexOf("/"));
+          for (const suffix of ["vector.svg", "image.png/extra", "%2e%2e/secret", "%2fetc", "%ZZ"])
+            assert.strictEqual((yield* http.get(`${base}/${suffix}`)).status, 404);
+          const html = yield* rpc[WS_METHODS.assetsCreateUrl]({
+            resource: resource("docs/index.html"),
+          });
+          const directory = html.relativeUrl.slice(0, html.relativeUrl.lastIndexOf("/"));
+          for (const suffix of ["style.css", "nested/a.mjs"])
+            assert.strictEqual((yield* http.get(`${directory}/${suffix}`)).status, 200);
+          for (const suffix of ["leak.css", ".git/config", "file.ts", "%2e%2e/private/secret.css"])
+            assert.strictEqual((yield* http.get(`${directory}/${suffix}`)).status, 404);
+          const favicon = yield* rpc[WS_METHODS.assetsCreateUrl]({
+            resource: { _tag: "project-favicon", cwd: "/var/lib/mend/store/project-1/repo.git" },
+          });
+          assert.isTrue(favicon.relativeUrl.endsWith("/project-favicon-missing"));
+          mend.workbench.goneWorktrees.add("worktree-session-1");
+          const denied = yield* http.get(image.relativeUrl);
+          assert.strictEqual(denied.status, 404);
+          assert.strictEqual(yield* denied.text, "Not Found");
+        }),
+      ),
+  );
+  it.effect(
+    "expires grants and revokes both file and chat-image URLs with the originating device after five seconds",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "REVOKE");
+          const http = yield* HttpClient.HttpClient;
+          const image = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") });
+          const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+          const kept = yield* rpc[WS_METHODS.assetsPersistChatAttachments]({
+            threadId: THREAD,
+            messageId: MessageId.make("raw-image"),
+            attachments: [
+              {
+                type: "image",
+                name: "chat.png",
+                mimeType: "image/png",
+                sizeBytes: png.length,
+                dataUrl: `data:image/png;base64,${Buffer.from(png).toString("base64")}`,
+              },
+            ],
+          });
+          const chat = yield* rpc[WS_METHODS.assetsCreateUrl]({
+            resource: { _tag: "attachment", attachmentId: kept.attachments[0]?.id ?? "" },
+          });
+          const second = yield* pairAndConnect(mend, "SECOND");
+          const other = yield* second.rpc[WS_METHODS.assetsCreateUrl]({
+            resource: resource("image.png"),
+          });
+          assert.strictEqual((yield* http.get(chat.relativeUrl)).status, 200);
+          mend.revoke(mend.claims[0]?.token ?? "");
+          yield* TestClock.adjust("5001 millis");
+          for (const url of [image, chat])
+            assert.strictEqual((yield* http.get(url.relativeUrl)).status, 404);
+          assert.strictEqual((yield* http.get(other.relativeUrl)).status, 200);
+          yield* TestClock.adjust("1 hour");
+          assert.strictEqual((yield* http.get(other.relativeUrl)).status, 404);
+        }),
+      ),
+  );
+});
+
+/** What a browser on a real socket sees of one response: its end, a reset, or no end at all. */
+const readOverSocket = (url: string) =>
+  Effect.callback<{
+    readonly status: number;
+    readonly length: number;
+    readonly received: number;
+    readonly outcome: "end" | "reset" | "hang";
+  }>((resume) => {
+    let status = 0;
+    let length = 0;
+    let received = 0;
+    let settled = false;
+    const finish = (outcome: "end" | "reset" | "hang") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      request.destroy();
+      agent.destroy();
+      resume(Effect.succeed({ status, length, received, outcome }));
+    };
+    const timer = setTimeout(() => finish("hang"), 3000);
+    // A browser keeps the connection open, so only a reset tells it the body stopped short.
+    const agent = new Agent({ keepAlive: true });
+    const request = get(url, { agent }, (response) => {
+      status = response.statusCode ?? 0;
+      length = Number(response.headers["content-length"]);
+      response.on("data", (chunk: Buffer) => (received += chunk.length));
+      response.on("end", () => finish("end"));
+      response.on("close", () => finish("reset"));
+      response.on("error", () => finish("reset"));
+    });
+    request.on("error", () => finish("reset"));
+  });
+
+it.live("resets the socket when Mend's body fails after the gateway sent its headers", () =>
+  withGateway((mend) =>
+    Effect.gen(function* () {
+      const { rpc } = yield* pairAndConnect(mend, "RESET");
+      for (const [name, kind] of [
+        ["broken.mp4", "media-file"],
+        ["broken.png", "workspace-file"],
+      ] as const) {
+        mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+          bytes: BYTES,
+          canonicalPath: name,
+          size: 1024 * 1024,
+          failAfter: 64 * 1024,
+        });
+        const url = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(name, kind) });
+        const seen = yield* readOverSocket(`${mend.nodeOrigin}${url.relativeUrl}`);
+        assert.strictEqual(seen.status, 200, name);
+        assert.strictEqual(seen.length, 1024 * 1024, name);
+        assert.isBelow(seen.received, 1024 * 1024, name);
+        assert.strictEqual(seen.outcome, "reset", name);
+      }
+      const whole = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") });
+      const seen = yield* readOverSocket(`${mend.nodeOrigin}${whole.relativeUrl}`);
+      assert.deepStrictEqual(seen, { status: 200, length: 256, received: 256, outcome: "end" });
+    }),
+  ),
+);
+
+it.live("streams large files under backpressure, cancels upstream and aborts late failures", () =>
+  withGateway((mend) =>
+    Effect.gen(function* () {
+      const { rpc } = yield* pairAndConnect(mend, "LARGE");
+      for (const size of [512 * 1024 * 1024, 1024 * 1024 * 1024]) {
+        const file = {
+          bytes: BYTES,
+          canonicalPath: "large.mp4",
+          size,
+          pulled: 0,
+          cancelled: false,
+        };
+        mend.workbench.rawFiles.set("worktree-session-1/large.mp4", file);
+        const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
+          resource: resource("large.mp4", "media-file"),
+        });
+        assert.strictEqual(file.pulled, 0);
+        const response = yield* mend.fetch(url.relativeUrl);
+        assert.strictEqual(response.status, 200);
+        const reader = response.body?.getReader();
+        assert.isDefined(reader);
+        if (reader === undefined) return;
+        const first = yield* Effect.promise(() => reader.read());
+        assert.strictEqual(first.value?.byteLength, 64 * 1024);
+        assert.isBelow(file.pulled, 1024 * 1024);
+        yield* Effect.promise(() => reader.cancel());
+        assert.isTrue(file.cancelled);
+      }
+      mend.workbench.rawFiles.set("worktree-session-1/broken.mp4", {
+        bytes: BYTES,
+        canonicalPath: "broken.mp4",
+        size: 1024 * 1024,
+        failAfter: 64 * 1024,
+      });
+      const broken = yield* rpc[WS_METHODS.assetsCreateUrl]({
+        resource: resource("broken.mp4", "media-file"),
+      });
+      const response = yield* mend.fetch(broken.relativeUrl);
+      assert.strictEqual(response.status, 200);
+      const body = yield* Effect.result(Effect.tryPromise(() => response.arrayBuffer()));
+      assert.strictEqual(body._tag, "Failure");
+    }),
+  ),
+);
+
+it.effect(
+  "refuses new grants at capacity, keeps existing grants and releases expired capacity",
+  () =>
+    withGateway(
+      (mend) =>
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "CAPACITY");
+          const mint = (name: string) =>
+            rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(name) });
+          const first = yield* mint("image.png");
+          yield* mint("vector.svg");
+          yield* mint("space % #.png");
+          assert.isTrue(Exit.isFailure(yield* Effect.exit(mint("docs/book.pdf"))));
+          const response = yield* mend.fetch(first.relativeUrl);
+          assert.strictEqual(response.status, 200);
+          yield* Effect.promise(() => response.arrayBuffer());
+          yield* TestClock.adjust("1 hour");
+          const fresh = yield* mint("docs/book.pdf");
+          assert.notStrictEqual(first.relativeUrl, fresh.relativeUrl);
+        }),
+      { grantsPerDevice: 3 },
+    ),
+);
+
+it.effect(
+  "keeps minting through hours of a thread's re-mints, retiring each image's oldest URLs",
+  () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "LONG");
+        for (let i = 0; i < 60; i++)
+          mend.workbench.rawFiles.set(`worktree-session-1/shots/${i}.png`, {
+            bytes: BYTES,
+            canonicalPath: `shots/${i}.png`,
+          });
+        const mintAll = Effect.forEach(
+          Array.from({ length: 60 }, (_, i) => i),
+          (i) => rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(`shots/${i}.png`) }),
+          { concurrency: 8 },
+        );
+        // A screenshot-heavy thread, open for four hours: its images minted again every ten
+        // minutes (t3code's 30-minute refresh, and a remount once a view went stale).
+        const rounds = [];
+        for (let round = 0; round < 24; round++) {
+          rounds.push(yield* mintAll);
+          yield* TestClock.adjust("10 minutes");
+        }
+        const status = (url: string) =>
+          Effect.flatMap(mend.fetch(url), (response) =>
+            Effect.promise(() => response.arrayBuffer().then(() => response.status)),
+          );
+        const last = rounds.length - 1;
+        for (const back of [0, 1, 2])
+          assert.strictEqual(yield* status(rounds[last - back]?.[7]?.relativeUrl ?? ""), 200);
+        assert.strictEqual(yield* status(rounds[last - 3]?.[7]?.relativeUrl ?? ""), 404);
+      }),
+    ),
+);
+
+it.live(
+  "binds a media URL of any kind to its file: kept through an edit, refused once replaced",
+  () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "IDENTITY");
+        const http = yield* HttpClient.HttpClient;
+        for (const name of ["movie.mp4", "image.png", "docs/index.html", "docs/book.pdf"]) {
+          const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
+            resource: resource(name, "media-file"),
+          });
+          assert.strictEqual(url.fileRevision, "a".repeat(64));
+          // As t3code's media-file-exact claim: the file itself, never its directory.
+          const sibling = url.relativeUrl.replace(/\/[^/]+$/, "/style.css");
+          assert.strictEqual((yield* http.get(sibling)).status, 404, `${name} sibling`);
+          const edited = BYTES.toReversed();
+          mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+            bytes: edited,
+            canonicalPath: name,
+            revision: "b".repeat(64),
+          });
+          const response = yield* http.get(url.relativeUrl);
+          assert.strictEqual(response.status, 200, `${name} after an edit`);
+          assert.deepStrictEqual(new Uint8Array(yield* response.arrayBuffer), edited);
+          mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+            bytes: BYTES,
+            canonicalPath: name,
+            identity: "d".repeat(64),
+          });
+          assert.strictEqual(
+            (yield* http.get(url.relativeUrl)).status,
+            404,
+            `${name} after a replacement`,
+          );
+        }
+      }),
+    ),
+);
+
+it.live("serves documents and their dependencies from inside a dot-directory", () =>
+  withGateway((mend) =>
+    Effect.gen(function* () {
+      const { rpc } = yield* pairAndConnect(mend, "DOT");
+      const http = yield* HttpClient.HttpClient;
+      for (const name of [
+        ".reports/index.html",
+        ".reports/book.pdf",
+        ".reports/style.css",
+        ".reports/.cache/hidden.css",
+        "docs/.vitepress/dist/index.html",
+      ])
+        mend.workbench.rawFiles.set(`worktree-session-1/${name}`, {
+          bytes: BYTES,
+          canonicalPath: name,
+        });
+      for (const name of [
+        ".reports/index.html",
+        ".reports/book.pdf",
+        "docs/.vitepress/dist/index.html",
+      ]) {
+        const url = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(name) });
+        const response = yield* http.get(url.relativeUrl);
+        assert.strictEqual(response.status, 200, name);
+        assert.deepStrictEqual(new Uint8Array(yield* response.arrayBuffer), BYTES);
+      }
+      const page = yield* rpc[WS_METHODS.assetsCreateUrl]({
+        resource: resource(".reports/index.html"),
+      });
+      const directory = page.relativeUrl.slice(0, page.relativeUrl.lastIndexOf("/"));
+      assert.strictEqual((yield* http.get(`${directory}/style.css`)).status, 200);
+      // Below the granted directory, a dot-segment stays hidden, as t3code's rule has it.
+      assert.strictEqual((yield* http.get(`${directory}/.cache/hidden.css`)).status, 404);
+    }),
+  ),
+);
+
+it.live("answers 416 only for the granted file itself, never for a replacement or an alias", () =>
+  withGateway((mend) =>
+    Effect.gen(function* () {
+      const { rpc } = yield* pairAndConnect(mend, "UNSATISFIABLE");
+      const http = yield* HttpClient.HttpClient;
+      const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
+        resource: resource("movie.mp4", "media-file"),
+      });
+      const beyond = { headers: { range: "bytes=256-" } };
+      assert.strictEqual((yield* http.get(url.relativeUrl, beyond)).status, 416);
+      for (const [label, changed] of [
+        ["replaced", { identity: "d".repeat(64) }],
+        ["aliased", { canonicalPath: "song.mp4" }],
+        ["moved out", { canonicalPath: "private/movie.mp4" }],
+      ] as const) {
+        mend.workbench.rawFiles.set("worktree-session-1/movie.mp4", {
+          bytes: BYTES,
+          canonicalPath: "movie.mp4",
+          ...changed,
+        });
+        const response = yield* http.get(url.relativeUrl, beyond);
+        assert.strictEqual(response.status, 404, label);
+        assert.isUndefined(response.headers["content-range"], label);
+      }
+    }),
+  ),
+);
+
+it.live("refuses all upstream failures as the same plain 404", () =>
+  withGateway((mend) =>
+    Effect.gen(function* () {
+      const { rpc } = yield* pairAndConnect(mend, "ERRORS");
+      for (const status of [403, 404, 409, 413, 429, 500, 503, 401]) {
+        const file = { bytes: BYTES, canonicalPath: "image.png", status };
+        mend.workbench.rawFiles.set("worktree-session-1/image.png", {
+          bytes: BYTES,
+          canonicalPath: "image.png",
+        });
+        const current = yield* rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") });
+        mend.workbench.rawFiles.set("worktree-session-1/image.png", file);
+        const response = yield* mend.fetch(current.relativeUrl);
+        assert.strictEqual(response.status, 404);
+        assert.strictEqual(response.headers.get("cache-control"), "private, no-store");
+        assert.strictEqual(yield* Effect.promise(() => response.text()), "Not Found");
+      }
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(rpc[WS_METHODS.assetsCreateUrl]({ resource: resource("image.png") })),
+        ),
+      );
+    }),
+  ),
+);
+
+it.live("keeps grant publication within capacity when mints overlap", () =>
+  withGateway(
+    (mend) =>
+      Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "RACING");
+        const mint = (name: string) =>
+          rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(name) });
+        yield* mint("image.png");
+        yield* mint("vector.svg");
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let pending = 0;
+        mend.beforeRaw(() =>
+          Effect.gen(function* () {
+            pending++;
+            if (pending === 2) yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(release);
+          }),
+        );
+        const a = yield* Effect.forkChild(Effect.exit(mint("space % #.png")));
+        const b = yield* Effect.forkChild(Effect.exit(mint("docs/book.pdf")));
+        yield* Deferred.await(entered);
+        yield* Deferred.succeed(release, undefined);
+        const results = [yield* Fiber.join(a), yield* Fiber.join(b)];
+        assert.strictEqual(results.filter(Exit.isSuccess).length, 1);
+      }),
+    { grantsPerDevice: 3 },
+  ),
+);
+
+it.live("mints a thread's hundred images at once, each waiting its turn instead of failing", () =>
+  withGateway((mend) =>
+    Effect.gen(function* () {
+      const { rpc } = yield* pairAndConnect(mend, "PAGE");
+      for (let i = 0; i < 100; i++)
+        mend.workbench.rawFiles.set(`worktree-session-1/shots/${i}.png`, {
+          bytes: BYTES,
+          canonicalPath: `shots/${i}.png`,
+        });
+      let atMend = 0;
+      let most = 0;
+      mend.beforeRaw(() =>
+        Effect.gen(function* () {
+          atMend++;
+          most = Math.max(most, atMend);
+          yield* Effect.sleep("5 millis");
+          atMend--;
+        }),
+      );
+      const urls = yield* Effect.forEach(
+        Array.from({ length: 100 }, (_, i) => i),
+        (i) => rpc[WS_METHODS.assetsCreateUrl]({ resource: resource(`shots/${i}.png`) }),
+        { concurrency: "unbounded" },
+      );
+      assert.strictEqual(urls.length, 100);
+      assert.isAtMost(most, DEFAULT_ASSET_LIMITS.mints.perKey);
+    }),
+  ),
+);
+
+it.live("loads a message's images in parallel", () =>
+  withGateway((mend) =>
+    Effect.gen(function* () {
+      const { rpc } = yield* pairAndConnect(mend, "CHAT");
+      const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const kept = yield* rpc[WS_METHODS.assetsPersistChatAttachments]({
+        threadId: THREAD,
+        messageId: MessageId.make("many-images"),
+        attachments: Array.from({ length: 20 }, (_, i) => ({
+          type: "image" as const,
+          name: `shot-${i}.png`,
+          mimeType: "image/png",
+          sizeBytes: png.length,
+          dataUrl: `data:image/png;base64,${Buffer.from(png).toString("base64")}`,
+        })),
+      });
+      const urls = yield* Effect.forEach(kept.attachments, (attachment) =>
+        rpc[WS_METHODS.assetsCreateUrl]({
+          resource: { _tag: "attachment", attachmentId: attachment.id },
+        }),
+      );
+      // Every response open at once, as a browser holds a page of <img> loads.
+      const responses = yield* Effect.forEach(urls, (url) => mend.fetch(url.relativeUrl), {
+        concurrency: "unbounded",
+      });
+      assert.deepStrictEqual(
+        responses.map((response) => response.status),
+        responses.map(() => 200),
+      );
+      for (const response of responses)
+        assert.deepStrictEqual(
+          new Uint8Array(yield* Effect.promise(() => response.arrayBuffer())),
+          png,
+        );
+    }),
+  ),
+);
+
+it.live("holds a device's reads past its share until one ends, and refuses past the wait", () =>
+  withGateway(
+    (mend) =>
+      Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "READS");
+        const other = yield* pairAndConnect(mend, "OTHER");
+        mend.workbench.rawFiles.set("worktree-session-1/large.mp4", {
+          bytes: BYTES,
+          canonicalPath: "large.mp4",
+          size: 1024 * 1024 * 1024,
+        });
+        const media = { resource: resource("large.mp4", "media-file") };
+        const url = yield* rpc[WS_METHODS.assetsCreateUrl](media);
+        const held = [yield* mend.fetch(url.relativeUrl), yield* mend.fetch(url.relativeUrl)];
+        for (const response of held) assert.strictEqual(response.status, 200);
+        const waiting = yield* Effect.forkChild(mend.fetch(url.relativeUrl));
+        // Another device is not behind this one.
+        const theirs = yield* other.rpc[WS_METHODS.assetsCreateUrl](media);
+        const beside = yield* mend.fetch(theirs.relativeUrl);
+        assert.strictEqual(beside.status, 200);
+        yield* Effect.sleep("50 millis");
+        assert.isUndefined(waiting.pollUnsafe());
+        yield* Effect.promise(() => held[0]?.body?.cancel() ?? Promise.resolve());
+        const admitted = yield* Fiber.join(waiting);
+        assert.strictEqual(admitted.status, 200);
+        // Past the wait, a read that never found room is refused.
+        const late = yield* mend.fetch(url.relativeUrl);
+        assert.strictEqual(late.status, 404);
+        for (const response of [held[1], beside, admitted])
+          yield* Effect.promise(() => response?.body?.cancel() ?? Promise.resolve());
+      }),
+    { reads: { total: 8, perKey: 2, queue: 8 }, wait: Duration.millis(300) },
+  ),
+);
+
+it.live("resets a reader that stops taking bytes, which stops Mend's read and frees its slot", () =>
+  withGateway(
+    (mend) =>
+      Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "STALL");
+        const file = {
+          bytes: BYTES,
+          canonicalPath: "paused.mp4",
+          size: 1024 * 1024 * 1024,
+          cancelled: false,
+        };
+        mend.workbench.rawFiles.set("worktree-session-1/paused.mp4", file);
+        const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
+          resource: resource("paused.mp4", "media-file"),
+        });
+        const agent = new Agent({ keepAlive: true });
+        yield* Effect.callback<void>((resume) => {
+          const request = get(`${mend.nodeOrigin}${url.relativeUrl}`, { agent }, (response) => {
+            // A paused video: one chunk, then nothing, and the connection stays open.
+            response.once("data", () => {
+              response.pause();
+              resume(Effect.void);
+            });
+          });
+          request.on("error", () => undefined);
+        });
+        for (let attempt = 0; attempt < 100 && !file.cancelled; attempt++)
+          yield* Effect.sleep("20 millis");
+        assert.isTrue(file.cancelled);
+        const next = yield* mend.fetch(url.relativeUrl, { method: "HEAD" });
+        assert.strictEqual(next.status, 200);
+        agent.destroy();
+      }),
+    { reads: { total: 4, perKey: 1, queue: 4 }, stall: Duration.millis(300) },
+  ),
+);

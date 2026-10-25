@@ -373,7 +373,10 @@ export interface PersonHub {
    * Where an absolute path is in one of the person's threads' worktrees, or null when it is in
    * none of them.
    */
-  readonly worktreeFileOf: (path: string) => Effect.Effect<WorktreeFile | null, HubReadError>;
+  readonly worktreeFileOf: (
+    path: string,
+    threadId?: string,
+  ) => Effect.Effect<WorktreeFile | null, HubReadError>;
 }
 
 export interface WorktreeFile {
@@ -4471,13 +4474,14 @@ export const makePersonHub = (input: {
     // A hub that goes ends its terminals' sockets.
     yield* Effect.addFinalizer(() => terminals.closeAll);
 
-    const worktreeFileOf = (path: string) =>
+    const worktreeFileOf = (path: string, threadId?: string) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
         const normalized = posix.normalize(path).replace(/(?<=.)\/+$/, "");
         return yield* locked(
           Effect.sync((): WorktreeFile | null => {
             for (const thread of threadSources()) {
+              if (threadId !== undefined && thread.session.id !== sessionIdOf(threadId)) continue;
               const top = worktreePathOf(thread.project, thread.session);
               if (normalized !== top && !normalized.startsWith(`${top}/`)) continue;
               return {

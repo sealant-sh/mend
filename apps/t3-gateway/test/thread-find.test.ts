@@ -648,7 +648,7 @@ const environment = makeGatewayEnvironment({
 
 const assetUrls: AssetUrls["Service"] = {
   issue: () => Effect.succeed({ relativeUrl: "/api/assets/x/y", expiresAt: 0 }),
-  resolve: () => Effect.succeedNone,
+  open: () => Effect.die("No asset requests in this fixture"),
 };
 
 const projectionsOver = (mendUrl: URL) =>
