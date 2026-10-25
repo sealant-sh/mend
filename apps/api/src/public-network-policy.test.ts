@@ -25,7 +25,7 @@ import {
 } from "@mend/db";
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { SealantClient } from "@mend/sealant";
-import { ForwardAdapter, SessionEngine, WorkspaceCaller } from "@mend/sessions";
+import { ForwardAdapter, ServiceHost, SessionEngine, WorkspaceCaller } from "@mend/sessions";
 import { AgentBridge, AgentBridgeLive, MendKeys, MendKeysConfig, MendKeysLive } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
 import { HttpRouter } from "effect/http";
@@ -113,6 +113,7 @@ const startServer = async () => {
     Layer.mock(AgentConversationRepo, {}),
     Layer.mock(SealantClient, {}),
     Layer.mock(ForwardAdapter, {}),
+    Layer.mock(ServiceHost, {}),
     Layer.mock(WorkspaceCaller, {
       observe: () => (self) => self,
       act: () => (self) => self,

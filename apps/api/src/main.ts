@@ -388,7 +388,6 @@ const SessionEngineLayer = SessionEngineBaseLive.pipe(
   // MEND_EXECUTOR_MAX_SECONDS and the planning margins.
   Layer.provide(CaptureDrainPolicyLive),
   Layer.provide(ProtocolHostLayer),
-  Layer.provide(ServiceHostLayer),
   Layer.provide(SessionSocketHostLayer),
   Layer.provide(DotfilesStoreLayer),
   Layer.provide(DeploymentConfigLive),
@@ -896,7 +895,7 @@ const MainLive = Layer.unwrap(
       Layer.provide(GhLive),
       Layer.provide(HostEnvironmentLive),
       Layer.provide(AuthLive.pipe(Layer.provide(RegistrationPolicyLive))),
-      Layer.provide(Layer.merge(NetworkConfigLive, ForwardAdapterLayer)),
+      Layer.provide(Layer.mergeAll(NetworkConfigLive, ForwardAdapterLayer, ServiceHostLayer)),
       // One Sealant client per user, provisioned on first use (docs/SEALANT-IDENTITY.md), and
       // every call about a workspace made as the person who created it, for whoever may work in
       // it (`WorkspaceCaller`): a second person's join reaches the holder's executor.

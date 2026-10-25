@@ -22100,6 +22100,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Resolve the retained workspace before committing a new live-attempt row. A failed
         // lookup therefore leaves nothing for boot recovery or the one-live-attempt index.
         const workspace = yield* sealant.getWorkspace(previous.sealantWorkspaceId);
+        yield* serviceHost.sever(service.id, "service-restarting");
         if (previous.exitedAt === null && previous.sealantSessionId !== null) {
           if (!(yield* closeProcessPty(previous.sealantWorkspaceId, previous.sealantSessionId))) {
             yield* notStopped(previous);
@@ -22648,6 +22649,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           service.currentAttemptId === null
             ? null
             : yield* processes.byId(service.currentAttemptId);
+        yield* serviceHost.sever(service.id, "service-stopping");
         if (attempt !== null && attempt.exitedAt === null) {
           if (
             attempt.sealantSessionId !== null &&

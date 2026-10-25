@@ -7,15 +7,16 @@ import {
   UpgradeTicketsRepo,
 } from "@mend/db";
 import { ServiceId } from "@mend/domain";
-import { asSealantUser, SealantClient } from "@mend/sealant";
-import { Effect, Option } from "effect";
+import { asSealantUser, type ForwardIssueReason } from "@mend/sealant";
+import { ForwardAdapter, portTarget, ServiceHost } from "@mend/sessions";
+import { type Cause, Effect, Option, Queue, Semaphore } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 
 import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry, guardSocket } from "../connections.ts";
 import { SessionSteering } from "../session-steering.ts";
-import { connectionRefusal, forEachFrame, makeFrameGuard } from "../socket-budgets.ts";
+import { connectionRefusal, makeFrameGuard } from "../socket-budgets.ts";
 import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tickets.ts";
 
 /**
@@ -25,7 +26,7 @@ import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tic
  * machine, useless when it is a Pod or a VPS. This route is the
  * location-independent path: `mend service connect` binds the port on the
  * CLIENT's loopback and pumps each accepted connection over one WebSocket
- * here, which dials the same `workspace.forward` pipe the listener uses.
+ * here, which dials through the same forward adapter as the listener.
  * Rides the ONE endpoint every deployment already exposes (the Mend API),
  * and unlike the raw listener every connection is authenticated as a Mend
  * user.
@@ -34,12 +35,68 @@ import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tic
  *   client → server   binary = bytes toward the workspace port
  *   client → server   text   = `{"t":"eof"}` half-close (no more outbound bytes)
  *   server → client   binary = bytes from the workspace port
- *   server → client   close  = the workspace side ended
+ *   server → client   close 1000 = the workspace side ended, after every byte it sent
+ *   server → client   close 1011 = the forward was reset: what arrived is all there is
+ *   server → client   close 4410 = the Service is stopping or restarting; the reason says which
+ *   server → client   close 4xxx = the dial was refused; the reason names why (below)
  *
  * Auth: session cookie (browser) or `?token=` (CLI; WebSocket cannot set
  * headers). Addressing: `?service=<id>`. TCP only — UDP has no connection to
  * pump; its relay stays a server-listener concern.
  */
+
+const UPLOAD_HOLD_BYTES = 1024 * 1024;
+
+const SERVICE_GONE_CLOSE = 4410;
+
+const frameSize = (frame: string | Uint8Array): number =>
+  typeof frame === "string" ? frame.length : frame.byteLength;
+
+/**
+ * The close code a refused dial ends the tunnel with: 4000 plus the HTTP status the refusal would
+ * have had. The reason text is the refusal's name, never Core's message.
+ */
+const TUNNEL_REFUSAL_CLOSE = {
+  "connection-refused": 4502,
+  "name-unresolved": 4502,
+  "network-unreachable": 4502,
+  "dial-failed": 4502,
+  "transport-unavailable": 4502,
+  internal: 4502,
+  "platform-failed": 4502,
+  "unrecognized-refusal": 4502,
+  "workspace-not-ready": 4503,
+  "runtime-unreachable": 4503,
+  "runtime-untargetable": 4503,
+  "protocol-unsupported": 4503,
+  "dial-timeout": 4504,
+  "deadline-exceeded": 4504,
+  "budget-exceeded": 4429,
+  unauthorized: 4401,
+  NO_PRINCIPAL: 4401,
+  UNKNOWN_USER: 4401,
+  forbidden: 4403,
+  no_standing: 4403,
+  creator_no_access: 4403,
+  "not-found": 4404,
+  "owner-exited": 4409,
+  "peer-mismatch": 4409,
+  "binding-unverifiable": 4409,
+  "binding-unsupported": 4409,
+  "invalid-target": 4409,
+  "owner-required": 4409,
+  cancelled: 4499,
+} as const satisfies Record<ForwardIssueReason, number>;
+
+const isEof = (data: string): boolean => {
+  try {
+    const frame: unknown = JSON.parse(data);
+    return typeof frame === "object" && frame !== null && "t" in frame && frame.t === "eof";
+  } catch {
+    return false;
+  }
+};
+
 export const ServiceTunnelRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* Auth;
@@ -52,7 +109,8 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
     const forwards = yield* ServiceForwardsRepo;
     const sessions = yield* SessionsRepo;
     const steering = yield* SessionSteering;
-    const sealant = yield* SealantClient;
+    const forwardAdapter = yield* ForwardAdapter;
+    const serviceHost = yield* ServiceHost;
 
     yield* router.add("GET", "/api/service-tunnel", (request) =>
       Effect.gen(function* () {
@@ -119,28 +177,12 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
           return HttpServerResponse.text("the Service has no live workspace", { status: 409 });
         }
 
-        // The same two-element dial chain as the server-side listener: the
-        // container loopback first, then the workspace-scoped dind sidecar.
-        const dialed = yield* Effect.gen(function* () {
-          const workspace = yield* sealant.getWorkspace(workspaceId);
-          const pipe = yield* sealant
-            .forward(workspace, service.workspacePort, "127.0.0.1")
-            .pipe(Effect.catch(() => sealant.forward(workspace, service.workspacePort, "docker")));
-          return { ok: true as const, pipe };
-        }).pipe(
-          // As the session's owner, after the caller was authorized above; the client asks about
-          // a joined session's executor as its creator (`WorkspaceCaller`).
-          asSealantUser(ownerUserId),
-          Effect.catch((error) =>
-            Effect.succeed({ ok: false as const, message: String(error.message) }),
-          ),
-        );
-        if (!dialed.ok) return HttpServerResponse.text(dialed.message, { status: 502 });
-        const pipe = dialed.pipe;
+        const target = portTarget(workspaceId, service.workspacePort);
 
+        // The dial runs after the upgrade: a WebSocket client cannot read an HTTP refusal, but it
+        // can read a close code.
         yield* Effect.scoped(
           Effect.gen(function* () {
-            yield* Effect.addFinalizer(() => Effect.sync(() => pipe.close()));
             const socket = yield* request.upgrade;
             const { write } = yield* socket.writer;
             // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
@@ -153,34 +195,103 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
               "tunnel",
             );
             const frames = makeFrameGuard(budgets.limits.frameBytes, write);
+            const inbound = yield* Queue.unbounded<
+              { readonly pulled: ReadonlyArray<string | Uint8Array>; readonly held: number },
+              Cause.Done
+            >();
+            const room = yield* Semaphore.make(UPLOAD_HOLD_BYTES);
+            // The client leaving ends the reader: that gives the dial up, or resets the forward.
+            const lifetime = new AbortController();
+            yield* Effect.addFinalizer(() => Effect.sync(() => lifetime.abort()));
+            yield* serviceHost.hold(service.id, (reason) =>
+              write(new Socket.CloseEvent(SERVICE_GONE_CLOSE, reason)).pipe(
+                Effect.ignore,
+                Effect.andThen(Effect.sync(() => lifetime.abort())),
+              ),
+            );
+            const { pull } = yield* socket.reader;
+            yield* Effect.forkScoped(
+              pull.pipe(
+                Effect.flatMap((pulled) => {
+                  const held = Math.min(
+                    UPLOAD_HOLD_BYTES,
+                    pulled.reduce((sum, frame) => sum + frameSize(frame), 0),
+                  );
+                  return room
+                    .take(held)
+                    .pipe(Effect.andThen(Queue.offer(inbound, { pulled, held })));
+                }),
+                Effect.forever,
+                Effect.ensuring(
+                  Effect.sync(() => lifetime.abort()).pipe(Effect.andThen(Queue.end(inbound))),
+                ),
+                Effect.ignore,
+              ),
+            );
 
-            const iterator = pipe.output[Symbol.asyncIterator]();
-            const pumpOutput = Effect.gen(function* () {
+            const opened = yield* forwardAdapter
+              .open(target, { purpose: "tunnel", signal: lifetime.signal })
+              .pipe(
+                // As the session's owner, after the caller was authorized above; the client asks
+                // about a joined session's executor as its creator (`WorkspaceCaller`).
+                asSealantUser(ownerUserId),
+                Effect.map((connection) => ({ ok: true as const, connection })),
+                Effect.catchTag("ForwardDialFailure", (failure) =>
+                  Effect.succeed({ ok: false as const, issue: failure.record.issue }),
+                ),
+              );
+            if (!opened.ok) {
+              if (opened.issue.reason !== "cancelled") {
+                yield* write(
+                  new Socket.CloseEvent(
+                    TUNNEL_REFUSAL_CLOSE[opened.issue.reason],
+                    opened.issue.reason,
+                  ),
+                ).pipe(Effect.ignore);
+              }
+              return;
+            }
+            const { bytes } = opened.connection;
+
+            // Workspace to client: its FIN is a normal close, after every byte; a reset is not.
+            yield* Effect.forkScoped(
+              Effect.gen(function* () {
+                for (;;) {
+                  const next = yield* bytes.read();
+                  if (next.kind === "eof") break;
+                  yield* write(next.bytes);
+                }
+                yield* write(new Socket.CloseEvent(1000, "workspace side ended"));
+              }).pipe(
+                Effect.catchTag("ForwardIoFailure", (failure) =>
+                  write(new Socket.CloseEvent(1011, `reset: ${failure.reason}`)),
+                ),
+                Effect.ignore,
+              ),
+            );
+
+            // Client to workspace, one frame at a time: each write waits for the workspace's room.
+            yield* Effect.gen(function* () {
               for (;;) {
-                const next = yield* Effect.promise(() => iterator.next());
-                if (next.done === true) break;
-                yield* write(next.value);
+                const batch = yield* Queue.take(inbound);
+                for (const data of batch.pulled) {
+                  if (guard.revoked()) continue;
+                  const overFrame = frames.refuse(data);
+                  if (overFrame !== null) {
+                    yield* overFrame;
+                    continue;
+                  }
+                  if (typeof data !== "string") yield* bytes.write(data);
+                  else if (isEof(data)) yield* bytes.finish();
+                }
+                yield* room.release(batch.held);
               }
-              yield* write(new Socket.CloseEvent(1000, "workspace side ended"));
-            }).pipe(Effect.ignore);
-            yield* Effect.forkScoped(pumpOutput);
-
-            yield* forEachFrame(socket, (data) => {
-              if (guard.revoked()) return Effect.void;
-              const overFrame = frames.refuse(data);
-              if (overFrame !== null) return overFrame;
-              if (typeof data !== "string") {
-                pipe.send(data);
-                return Effect.void;
-              }
-              try {
-                const frame = JSON.parse(data) as { readonly t?: string };
-                if (frame.t === "eof") pipe.eof();
-              } catch {
-                // Unknown text frame — ignore.
-              }
-              return Effect.void;
-            });
+            }).pipe(
+              Effect.catchTag("ForwardIoFailure", (failure) =>
+                write(new Socket.CloseEvent(1011, `reset: ${failure.reason}`)),
+              ),
+              Effect.ignore,
+            );
           }),
         );
 

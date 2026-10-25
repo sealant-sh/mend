@@ -241,7 +241,7 @@ export const sealantDeadLayer = Layer.succeed(SealantClient, {
   startHarnessInWorkspace: () => Effect.die("not in test"),
   waitRun: () => Effect.die("not in test"),
   openSession: () => Effect.die("not in test"),
-  forward: () => Effect.die("not in test"),
+  forwardUdp: () => Effect.die("not in test"),
   openForward: () => Effect.die("not in test"),
   stopWorkspace: () => Effect.die("not in test"),
   captureFlush: () => Effect.die("not in test"),
@@ -689,7 +689,7 @@ export const sealantLaunchLayer = (
               }),
             ),
           ),
-    forward: () => Effect.die("not in test"),
+    forwardUdp: () => Effect.die("not in test"),
     openForward: () => Effect.die("not in test"),
     stopWorkspace: (target, options) =>
       (captureOps?.aroundStop?.() ?? Effect.void).pipe(
@@ -970,6 +970,8 @@ export const recordingProtocolHostLayer = (
 export const serviceHostStubLayer = Layer.succeed(ServiceHost, {
   bindAddresses: () => Effect.succeed(["127.0.0.1"]),
   start: () => Effect.succeed({ hostPort: 43127, boundAddresses: ["127.0.0.1"] }),
+  hold: () => Effect.void,
+  sever: () => Effect.void,
   stop: () => Effect.void,
 });
 
@@ -3325,6 +3327,7 @@ interface EngineOptions {
   /** Where session sockets go; kept in `servedSocketApis` unless a test says. */
   readonly socketHostLayer?: Layer.Layer<SessionSocketHost>;
   readonly forwardAdapterLayer?: Layer.Layer<ForwardAdapter>;
+  readonly serviceHostLayer?: Layer.Layer<ServiceHost>;
   /** Every account's Mend key; one shared stub path unless a test says. */
   readonly instanceRolesLayer?: Layer.Layer<InstanceRolesRepo>;
   readonly mendKeysLayer?: Layer.Layer<MendKeys>;
@@ -3526,7 +3529,10 @@ export const withPreparedEngineEffect = <B, A, E>(
         ),
       ),
       Layer.provide(
-        Layer.merge(serviceHostStubLayer, options.forwardAdapterLayer ?? forwardAdapterReadyLayer),
+        Layer.merge(
+          options.serviceHostLayer ?? serviceHostStubLayer,
+          options.forwardAdapterLayer ?? forwardAdapterReadyLayer,
+        ),
       ),
       Layer.provide(options.socketHostLayer ?? sessionSocketStubLayer),
       Layer.provide(

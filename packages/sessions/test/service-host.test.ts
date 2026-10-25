@@ -129,7 +129,7 @@ const sealantFakeLayer = Layer.succeed(SealantClient, {
   startHarnessInWorkspace: () => Effect.die("not in test"),
   waitRun: () => Effect.die("not in test"),
   openSession: () => Effect.die("not in test"),
-  forward: () => Effect.die("not in test"),
+  forwardUdp: () => Effect.die("not in test"),
   openForward: (_workspace, _port, _destination, options) =>
     openBoundedForward(async () => fakeForward(echo).forward, options.signal, toPlatformError),
   stopWorkspace: () => Effect.die("not in test"),
@@ -343,6 +343,7 @@ describe("ServiceHost", () => {
         }).pipe(
           Effect.tap(() => host.stop(SERVICE_ID)),
           Effect.flatMap(({ closing }) => Effect.promise(() => closing)),
+          Effect.map((code) => expect(code).toBe("ECONNRESET")),
         );
         expect(opened[0]?.closedByClient()).toBe(true);
       }).pipe(
@@ -358,6 +359,52 @@ describe("ServiceHost", () => {
       { state: "unreachable", error: "not-found" },
       { state: "reachable", error: null },
     ]);
+  });
+
+  it("resets open connections and held ones on sever, keeps the listener, and drops a hold whose scope closed", async () => {
+    const severed: string[] = [];
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const host = yield* ServiceHost;
+        const binding = yield* host.start({
+          serviceId: SERVICE_ID,
+          forwardId: FORWARD_ID,
+          workspaceId: WORKSPACE_ID,
+          workspacePort: 3000,
+          protocol: "tcp",
+          ownerUserId: null,
+          bindAddresses: ["127.0.0.1"],
+        });
+        yield* Effect.scoped(
+          host.hold(SERVICE_ID, () => Effect.sync(() => severed.push("ended tunnel"))),
+        );
+        yield* host.hold(SERVICE_ID, (reason) => Effect.sync(() => severed.push(reason)));
+        yield* host.hold(ServiceId.make("svc-other"), () =>
+          Effect.sync(() => severed.push("another Service")),
+        );
+        const code = yield* Effect.promise(async () => {
+          const socket = net.connect(binding.hostPort, "127.0.0.1");
+          const closing = closedWith(socket);
+          socket.write("hello");
+          await once(socket, "data");
+          return { closing };
+        }).pipe(
+          Effect.tap(() => host.sever(SERVICE_ID, "service-restarting")),
+          Effect.flatMap(({ closing }) => Effect.promise(() => closing)),
+        );
+        expect(code).toBe("ECONNRESET");
+        expect(severed).toEqual(["service-restarting"]);
+        const echoed = yield* Effect.promise(async () => {
+          const socket = net.connect(binding.hostPort, "127.0.0.1");
+          socket.end("still listening");
+          const [chunk] = await once(socket, "data");
+          return String(chunk);
+        });
+        expect(echoed).toBe("still listening");
+        yield* host.stop(SERVICE_ID);
+        expect(severed).toEqual(["service-restarting", "service-stopping"]);
+      }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+    );
   });
 
   it("reuses the preferred host port on reconciliation", async () => {
@@ -473,7 +520,7 @@ const udpTestLayer = (
     Layer.provide(
       Layer.mock(SealantClient, {
         getWorkspace: () => Effect.succeed(fakeWorkspace),
-        forward: (_workspace, _port, target) =>
+        forwardUdp: (_workspace, _port, target) =>
           Effect.promise(() => (target === firstHost ? first : second).connect()),
       }),
     ),

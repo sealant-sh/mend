@@ -1,4 +1,6 @@
-import * as net from "node:net";
+import type * as net from "node:net";
+
+import { tunnelListener } from "@mend/network/tunnel-client";
 
 import { createSseParser } from "./workbench-events.ts";
 
@@ -59,41 +61,6 @@ export const touchesSessionServices = (payload: string, sessionId: string): bool
   const type = "type" in parsed ? parsed.type : undefined;
   const session = "sessionId" in parsed ? parsed.sessionId : undefined;
   return (type === "session-process" || type === "session") && session === sessionId;
-};
-
-/**
- * Pump one accepted local connection over a tunnel socket: local bytes are held until the socket
- * opens, binary frames both ways, a `{t:"eof"}` text frame for a half-close. No URL (the ticket
- * was refused) ends the local connection the way a refused one would.
- */
-export const pumpConnection = (socket: net.Socket, url: Promise<URL>): void => {
-  // Hold local bytes until the tunnel is open; loopback buffers are tiny.
-  socket.pause();
-  // A peer that resets is an ordinary close: the 'close' that follows shuts its tunnel. Without
-  // a listener the reset is an uncaught exception, and it can land while the ticket is minted.
-  socket.on("error", () => {});
-  void url.then(
-    (target) => {
-      if (socket.destroyed) return null;
-      const ws = new WebSocket(target);
-      ws.binaryType = "arraybuffer";
-      ws.addEventListener("open", () => socket.resume(), { once: true });
-      ws.addEventListener("message", (event: MessageEvent<unknown>) => {
-        if (event.data instanceof ArrayBuffer) socket.write(Buffer.from(event.data));
-      });
-      ws.addEventListener("close", () => socket.end(), { once: true });
-      ws.addEventListener("error", () => socket.destroy(), { once: true });
-      // Copy per chunk: the WS client wants an ArrayBuffer-backed view, and
-      // Buffer pools share their backing store.
-      socket.on("data", (chunk: Buffer) => ws.send(new Uint8Array(chunk)));
-      socket.on("end", () => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: "eof" }));
-      });
-      socket.on("close", () => ws.close());
-      return null;
-    },
-    () => socket.destroy(),
-  );
 };
 
 /**
@@ -226,10 +193,11 @@ export const createServiceTunnels = (options: ServiceTunnelsOptions): ServiceTun
 
   const openFor = async (service: TunnelService): Promise<void> => {
     const sockets = new Set<net.Socket>();
-    const server = net.createServer((socket) => {
-      sockets.add(socket);
-      socket.on("close", () => sockets.delete(socket));
-      pumpConnection(socket, options.tunnelUrl(service.id));
+    const server = tunnelListener(() => options.tunnelUrl(service.id), {
+      onConnection: (socket) => {
+        sockets.add(socket);
+        socket.on("close", () => sockets.delete(socket));
+      },
     });
     let port: number;
     try {

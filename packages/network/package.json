@@ -6,7 +6,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./address-kind": "./src/address-kind.ts"
+    "./address-kind": "./src/address-kind.ts",
+    "./tunnel-client": "./src/tunnel-client.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",

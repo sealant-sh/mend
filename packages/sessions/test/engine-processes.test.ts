@@ -24,6 +24,7 @@ import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
   HarnessStateNotFoundError,
   LegacyBenchReadOnlyError,
+  ServiceHost,
   SessionEngine,
   SessionNotLiveError,
 } from "@mend/sessions";
@@ -1276,6 +1277,65 @@ describe("SessionEngine", () => {
           expect(rerun.service.currentAttemptId).toBe(rerun.attempts.at(-1)?.id);
         }),
       { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("resets a Service's open connections before it closes the process, on restart and on stop", async () => {
+    const created: CreateOptions[] = [];
+    const log: string[] = [];
+    const closingLogged = Layer.effect(
+      SealantClient,
+      Effect.map(SealantClient, (client) => ({
+        ...client,
+        getSession: (workspace, ptyId) =>
+          client.getSession(workspace, ptyId).pipe(
+            Effect.map((pty) => ({
+              ...pty,
+              close: () => {
+                log.push(`close ${pty.id}`);
+                return pty.close();
+              },
+            })),
+          ),
+      })),
+    ).pipe(Layer.provide(sealantLaunchLayer(created)));
+    const host = Layer.succeed(ServiceHost, {
+      bindAddresses: () => Effect.succeed(["127.0.0.1"]),
+      start: () => Effect.succeed({ hostPort: 43127, boundAddresses: ["127.0.0.1"] }),
+      stop: () => Effect.sync(() => log.push("stop")),
+      sever: (_serviceId, reason) => Effect.sync(() => log.push(`sever ${reason}`)),
+      hold: () => Effect.void,
+    });
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const service = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
+          const first = service.attempts[0]?.sealantSessionId;
+
+          log.length = 0;
+          const restarted = yield* engine.restartService(service.service.id);
+          expect(log).toEqual(["sever service-restarting", `close ${first}`]);
+
+          log.length = 0;
+          yield* engine.stopService(service.service.id);
+          expect(log).toEqual([
+            "sever service-stopping",
+            `close ${restarted.attempts[1]?.sealantSessionId}`,
+            "stop",
+          ]);
+        }),
+      { sealantLayer: closingLogged, serviceHostLayer: host },
     );
   });
 

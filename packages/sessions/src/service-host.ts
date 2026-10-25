@@ -72,6 +72,8 @@ export interface ServiceHostBinding {
   readonly boundAddresses: ReadonlyArray<string>;
 }
 
+export type ServiceSeverReason = "service-stopping" | "service-restarting";
+
 export class ServiceHost extends Context.Service<
   ServiceHost,
   {
@@ -81,7 +83,20 @@ export class ServiceHost extends Context.Service<
     readonly start: (
       input: ServiceStartInput,
     ) => Effect.Effect<ServiceHostBinding, ServiceBindError>;
-    /** Close the listener(s) and drop live relays. Idempotent. */
+    /**
+     * Hold a connection to a Service that is not the listener's (a tunnel) while the scope is
+     * open: `sever` resets it when the Service stops or restarts.
+     */
+    readonly hold: (
+      serviceId: ServiceId,
+      sever: (reason: ServiceSeverReason) => Effect.Effect<void>,
+    ) => Effect.Effect<void, never, Scope.Scope>;
+    /**
+     * Reset every open connection to a Service, the listener's and every held one, and keep the
+     * listener.
+     */
+    readonly sever: (serviceId: ServiceId, reason: ServiceSeverReason) => Effect.Effect<void>;
+    /** Reset every open connection and close the listener(s). Idempotent. */
     readonly stop: (serviceId: ServiceId) => Effect.Effect<void>;
   }
 >()("@mend/sessions/ServiceHost") {}
@@ -242,6 +257,13 @@ interface ActiveService {
   last: { readonly state: "reachable" | "unreachable"; readonly error: string | null } | null;
 }
 
+const resetSockets = (entry: ActiveService): void => {
+  for (const socket of entry.sockets) {
+    socket.resetAndDestroy();
+  }
+  entry.sockets.clear();
+};
+
 const PROBE_INTERVAL_MS = 20_000;
 
 /** A UDP flow with no datagram either way for this long is over. */
@@ -261,6 +283,7 @@ export const ServiceHostLive: Layer.Layer<
     const clock = yield* Clock.Clock;
     const scope = yield* Scope.Scope;
     const active = new Map<ServiceId, ActiveService>();
+    const held = new Map<ServiceId, Set<(reason: ServiceSeverReason) => Effect.Effect<void>>>();
 
     // Schedule.fixed uses epoch milliseconds. Native intervals were independent of
     // wall-clock corrections, so keep these boundaries on the monotonic clock.
@@ -358,11 +381,37 @@ export const ServiceHostLive: Layer.Layer<
       entry.flows.clear();
       // server.close() only stops accepting; established relays must be
       // severed or they hold the event loop (and a graceful shutdown) open.
-      for (const socket of entry.sockets) {
-        socket.destroy();
-      }
-      entry.sockets.clear();
+      resetSockets(entry);
     };
+
+    const hold = (
+      serviceId: ServiceId,
+      sever: (reason: ServiceSeverReason) => Effect.Effect<void>,
+    ) =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const severs = held.get(serviceId) ?? new Set();
+          severs.add(sever);
+          held.set(serviceId, severs);
+        }),
+        () =>
+          Effect.sync(() => {
+            const severs = held.get(serviceId);
+            severs?.delete(sever);
+            if (severs?.size === 0) held.delete(serviceId);
+          }),
+      );
+
+    const sever = Effect.fn("ServiceHost.sever")(function* (
+      serviceId: ServiceId,
+      reason: ServiceSeverReason,
+    ) {
+      const entry = active.get(serviceId);
+      if (entry !== undefined) resetSockets(entry);
+      yield* Effect.forEach([...(held.get(serviceId) ?? [])], (close) => close(reason), {
+        discard: true,
+      });
+    });
 
     const bindAddresses = Effect.fn("ServiceHost.bindAddresses")(function* () {
       return yield* configuredBindAddresses();
@@ -474,7 +523,7 @@ export const ServiceHostLive: Layer.Layer<
       Effect.runPromise(
         Effect.gen(function* () {
           const workspace = yield* sealant.getWorkspace(workspaceId);
-          return yield* sealant.forward(workspace, workspacePort, host, "udp");
+          return yield* sealant.forwardUdp(workspace, workspacePort, host);
         }).pipe(
           asSealantUser(ownerUserId),
           Effect.map((forward): WorkspaceForward | null => forward),
@@ -659,9 +708,10 @@ export const ServiceHostLive: Layer.Layer<
     });
 
     const stop = Effect.fn("ServiceHost.stop")(function* (serviceId: ServiceId) {
+      yield* sever(serviceId, "service-stopping");
       yield* Effect.sync(() => stopSync(serviceId));
     });
 
-    return { bindAddresses, start, stop };
+    return { bindAddresses, start, hold, sever, stop };
   }),
 );

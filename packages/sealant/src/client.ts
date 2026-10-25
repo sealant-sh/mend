@@ -686,18 +686,14 @@ export interface SealantClientShape {
     options?: PersonSessionOptions,
   ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
   /**
-   * A raw TCP byte pipe — or a UDP datagram pipe, where one WS frame is
-   * exactly one datagram — into the workspace (host option 0.15.0) —
-   * one held WebSocket per pipe. The target is a closed workspace-private
-   * set: loopback (default) or `docker`, the workspace-scoped Docker
-   * sidecar where inner compose publishes its ports. Fails when nothing
-   * listens, which doubles as the reachability probe for Services.
+   * A UDP datagram pipe into the workspace, where one WS frame is exactly one datagram: one held
+   * WebSocket per pipe. The target is loopback or `docker`, the workspace-scoped Docker sidecar
+   * where inner compose publishes its ports. TCP goes through `openForward`.
    */
-  readonly forward: (
+  readonly forwardUdp: (
     workspace: Workspace,
     port: number,
-    host?: "127.0.0.1" | "docker",
-    protocol?: "tcp" | "udp",
+    host: "127.0.0.1" | "docker",
   ) => Effect.Effect<WorkspaceForward, SealantPlatformError>;
   /**
    * One bounded TCP forward (`flow: "bounded"`), open in the caller's scope until it closes.
@@ -998,19 +994,9 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
         ).pipe(Effect.mapError(personProcessRefusal)),
     );
 
-    const forward = Effect.fn("SealantClient.forward")(
-      (
-        workspace: Workspace,
-        port: number,
-        host?: "127.0.0.1" | "docker",
-        protocol?: "tcp" | "udp",
-      ) =>
-        wrap(() =>
-          workspace.forward(port, {
-            ...(host === undefined ? {} : { host }),
-            ...(protocol === "udp" ? { protocol } : {}),
-          }),
-        ),
+    const forwardUdp = Effect.fn("SealantClient.forwardUdp")(
+      (workspace: Workspace, port: number, host: "127.0.0.1" | "docker") =>
+        wrap(() => workspace.forward(port, { host, protocol: "udp" })),
     );
 
     const openForward = Effect.fn("SealantClient.openForward")(
@@ -1291,7 +1277,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       startHarnessInWorkspace,
       waitRun,
       openSession,
-      forward,
+      forwardUdp,
       openForward,
       stopWorkspace,
       captureFlush,
@@ -1778,8 +1764,7 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
       waitRun: (run) => via((c) => c.waitRun(run)),
       openSession: (workspace, argv, options) =>
         via((c) => c.openSession(workspace, argv, options)),
-      forward: (workspace, port, host, protocol) =>
-        via((c) => c.forward(workspace, port, host, protocol)),
+      forwardUdp: (workspace, port, host) => via((c) => c.forwardUdp(workspace, port, host)),
       openForward: (workspace, port, destination, options) =>
         via((c) => c.openForward(workspace, port, destination, options)),
       stopWorkspace: (workspace, options) => via((c) => c.stopWorkspace(workspace, options)),

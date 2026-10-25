@@ -251,9 +251,9 @@ export const workspacesPerOwner = (
               ),
             ),
           ),
-        forward: (workspace, port, host, protocol) =>
-          guarded("forward", ofWorkspace(workspace.id), () =>
-            client.forward(workspace, port, host, protocol),
+        forwardUdp: (workspace, port, host) =>
+          guarded("forwardUdp", ofWorkspace(workspace.id), () =>
+            client.forwardUdp(workspace, port, host),
           ),
         openForward: (workspace, port, destination, options) =>
           guarded("openForward", ofWorkspace(workspace.id), () =>
