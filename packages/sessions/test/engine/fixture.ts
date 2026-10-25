@@ -897,18 +897,18 @@ export const agentConversationStub: AgentConversationRepo["Service"] = {
   saveProtocolCursor: () => Effect.void,
 };
 
-/**
- * The stub, with the session conversations' turns as `turns` holds them: what a mode switch to
- * the terminal asks before it stops anything (a completed turn, SLNT-142).
- */
-export const recordedTurnsLayer = (turns: Array<AgentTurn>) =>
+export const recordedTurnsLayer = (
+  turns: Array<AgentTurn>,
+  beforeList: () => Effect.Effect<void> = () => Effect.void,
+) =>
   Layer.succeed(AgentConversationRepo, {
     ...agentConversationStub,
     listTurns: (sessionId) =>
-      Effect.sync(() => turns.filter((turn) => turn.sessionId === sessionId)),
+      beforeList().pipe(
+        Effect.andThen(Effect.sync(() => turns.filter((turn) => turn.sessionId === sessionId))),
+      ),
   });
 
-/** A turn of `conversation` that ran and completed, as the protocol host records one. */
 export const completedTurnOf = (conversation: SessionProcess, input = "say hi") =>
   new AgentTurn({
     id: AgentTurnId.make(`turn-completed-${conversation.id}`),
@@ -926,13 +926,11 @@ export const completedTurnOf = (conversation: SessionProcess, input = "say hi") 
     endedAt: now(),
   });
 
-/** Where a claude or codex conversation's transcript lies in a harness home. */
 export const transcriptIn = (harness: "claude" | "codex", providerSessionId: string) =>
   harness === "claude"
     ? `.claude/projects/-workspace-repo/${providerSessionId}.jsonl`
     : `.codex/sessions/2026/10/24/rollout-2026-10-24T10-00-00-${providerSessionId}.jsonl`;
 
-/** One line of a conversation's transcript, in its harness's own shape. */
 export const transcriptLine = (harness: "claude" | "codex", providerSessionId: string) =>
   `${JSON.stringify(
     harness === "claude"
@@ -943,10 +941,6 @@ export const transcriptLine = (harness: "claude" | "codex", providerSessionId: s
         },
   )}\n`;
 
-/**
- * The conversation `providerSessionId` written into the session's durable harness home, where the
- * co-located store's mode switch looks for it before it stops anything (SLNT-142).
- */
 export const writeHomeTranscript = (
   storePath: string,
   sessionId: string,
@@ -961,10 +955,6 @@ export const writeHomeTranscript = (
   fs.writeFileSync(file, transcriptLine(harness, providerSessionId));
 };
 
-/**
- * The executor's answers to a co-located harvest of conversation `providerSessionId`: its archive,
- * where its transcript is, and the transcript. Undefined for anything else.
- */
 export const harvestExecOf =
   (harness: "claude" | "codex", providerSessionId: string) => (argv: ReadonlyArray<string>) => {
     const shape = HARNESS_STATE[harness];

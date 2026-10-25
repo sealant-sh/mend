@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { SessionProcessId } from "@mend/domain";
 import { AgentTurn, Session, SessionProcess } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
@@ -10,28 +11,27 @@ import {
   ProtocolHostNotLiveError,
   SessionEngine,
 } from "@mend/sessions";
-import { processStatePathOf } from "@mend/store";
+import { harnessHomePathOf, processStatePathOf } from "@mend/store";
 import type { CreateOptions, InteractiveSessionStatus } from "@sealant/sdk";
-import { Deferred, Effect, Fiber, Layer, Result } from "effect";
+import { Deferred, Effect, Fiber, Layer, Result, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import {
   completedTurnOf,
+  fakeExecRun,
   harvestExecOf,
+  now,
   recordedTurnsLayer,
   recordingProtocolHostLayer,
   sealantLaunchLayer,
   setup,
   withEngine,
+  transcriptIn,
   type World,
   writeHomeTranscript,
 } from "./engine/fixture.ts";
 
-/**
- * The recording host, made to refuse a turn to a process it has let go, as the real host does: a
- * conversation the engine detached takes no more turns.
- */
 const detachingProtocolHostLayer = (
   attached: Array<{ readonly process: SessionProcess; readonly mode: string }>,
   submitted: Array<string>,
@@ -73,29 +73,23 @@ const claudeHarness = HARNESS_STATE["claude"];
 if (claudeHarness === undefined) throw new Error("no claude harness state shape");
 const HARVEST_ARCHIVE = harvestHarnessStateScript(claudeHarness.paths);
 
-/**
- * A claude conversation's world: what the platform was asked (creates, opens, PTY closes,
- * workspace stops, execs), what the protocol host attached, sent and let go, and the session's
- * turns as the conversation store holds them. `watcherFirst`: the platform ends the process
- * inside its close and answers the close only once the engine's process watcher (a 2 s poll) has
- * seen the exit, as in the vscode lane's r2a and r3a. `openFails`: the next `sessions.open`
- * fails while it answers true. `exec`: a command inside the executor as an effect, before the
- * harvest's own answers.
- */
 const conversationWorld = (
   options: {
-    readonly watcherFirst?: boolean;
-    readonly closeFails?: boolean;
-    readonly openFails?: () => boolean;
-    readonly exec?: (argv: ReadonlyArray<string>) =>
+    readonly closeAnswersOnceTheWatcherSawTheExit?: boolean;
+    readonly closeRefused?: boolean;
+    readonly openFailsWhile?: () => boolean;
+    readonly answerExec?: (argv: ReadonlyArray<string>) =>
       | Effect.Effect<{
           readonly exitCode: number;
           readonly stdout: string;
           readonly stderr: string;
         }>
       | undefined;
+    readonly firstRunSettlesOn?: Effect.Effect<void>;
+    readonly beforeTurnsAreRead?: () => Effect.Effect<void>;
   } = {},
 ) => {
+  let runsWaited = 0;
   const created: Array<CreateOptions> = [];
   const spawned: Array<ReadonlyArray<string>> = [];
   const workspaceStops: Array<string> = [];
@@ -121,8 +115,19 @@ const conversationWorld = (
     undefined,
     {
       exec: harvestExecOf("claude", PROVIDER),
-      ...(options.exec === undefined ? {} : { execEffect: options.exec }),
-      ...(options.openFails === undefined ? {} : { openFails: options.openFails }),
+      ...(options.answerExec === undefined ? {} : { execEffect: options.answerExec }),
+      ...(options.openFailsWhile === undefined ? {} : { openFails: options.openFailsWhile }),
+      ...(options.firstRunSettlesOn === undefined
+        ? {}
+        : {
+            record: () => Stream.empty,
+            waitRun: () => {
+              runsWaited += 1;
+              return runsWaited === 1 && options.firstRunSettlesOn !== undefined
+                ? options.firstRunSettlesOn.pipe(Effect.as(fakeExecRun))
+                : Effect.never;
+            },
+          }),
     },
   );
   const sealantLayer = Layer.effect(
@@ -140,8 +145,8 @@ const conversationWorld = (
             },
             close: async () => {
               closes.push(pty.id);
-              if (options.closeFails === true) throw new Error("the platform did not close it");
-              if (options.watcherFirst !== true) return;
+              if (options.closeRefused === true) throw new Error("the platform did not close it");
+              if (options.closeAnswersOnceTheWatcherSawTheExit !== true) return;
               const seen = new Promise<void>((resolve) => watcherSaw.set(pty.id, resolve));
               ptyStates.set(pty.id, { status: "exited", exitCode: 0, outputHighWater: 0n });
               await seen;
@@ -164,12 +169,11 @@ const conversationWorld = (
     layers: {
       sealantLayer,
       protocolHostLayer: detachingProtocolHostLayer(attached, submitted, detached),
-      conversationLayer: recordedTurnsLayer(turns),
+      conversationLayer: recordedTurnsLayer(turns, options.beforeTurnsAreRead),
     },
   };
 };
 
-/** A claude conversation of a new session, launched with `prompt` (none: no turn ran). */
 const launchConversation = (world: World, tmp: string, prompt?: string) =>
   Effect.gen(function* () {
     const project = yield* setup(tmp, world);
@@ -194,10 +198,6 @@ const launchConversation = (world: World, tmp: string, prompt?: string) =>
     return { engine, project, session, conversation };
   });
 
-/**
- * The conversation's first turn ran and completed, as claude leaves one: the turn on record, and
- * its transcript, named by the conversation's provider id, in the harness home (`transcript`).
- */
 const firstTurnCompleted = (
   world: World,
   turns: Array<AgentTurn>,
@@ -251,7 +251,6 @@ describe("a mode switch to the terminal the conversation cannot make (SLNT-142)"
             ownerUserId: "user-fixture",
             start: { kind: "base", base: null },
           });
-          // A conversation launched with no prompt: no turn has run, so no transcript exists.
           yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
           refusal = yield* engine
             .switchMode(session.id, "pty", { mode: "pty" }, "user-fixture")
@@ -375,7 +374,7 @@ describe("a mode switch to the terminal the conversation cannot make (SLNT-142)"
   it("a terminal that fails to open after the conversation stopped starts the conversation again, which takes the next turn", async () => {
     let failNextOpen = false;
     const run = conversationWorld({
-      openFails: () => {
+      openFailsWhile: () => {
         const fails = failNextOpen;
         failNextOpen = false;
         return fails;
@@ -425,7 +424,7 @@ describe("a mode switch to the terminal the conversation cannot make (SLNT-142)"
 
 describe("a mode switch to the terminal whose conversation the platform does not close (SLNT-142)", () => {
   it("attaches the conversation again, opens no terminal, and the conversation takes the next turn", async () => {
-    const run = conversationWorld({ closeFails: true });
+    const run = conversationWorld({ closeRefused: true });
     let refusal: unknown = null;
     let row: SessionProcess | undefined;
     let status: string | undefined;
@@ -453,7 +452,7 @@ describe("a mode switch to the terminal whose conversation the platform does not
     );
     expect(codeOf(refusal)).toBe("conversation_not_stopped");
     expect(refusal instanceof SealantPlatformError ? refusal.message : "").toContain(
-      "the conversation goes on",
+      "its open turns were cancelled · the conversation goes on",
     );
     expect.soft(row?.exitedAt).toBeNull();
     expect.soft(run.attached.map((entry) => entry.process.id)).toEqual([row?.id, row?.id]);
@@ -463,9 +462,8 @@ describe("a mode switch to the terminal whose conversation the platform does not
   }, 30_000);
 });
 
-/** A claude conversation with a completed turn, switched to the terminal. */
-const switchAfterACompletedTurn = async (watcherFirst: boolean) => {
-  const run = conversationWorld({ watcherFirst });
+const switchAfterACompletedTurn = async (closeAnswersOnceTheWatcherSawTheExit: boolean) => {
+  const run = conversationWorld({ closeAnswersOnceTheWatcherSawTheExit });
   let outcome = "not switched";
   let status: string | undefined;
   let terminal: SessionProcess | undefined;
@@ -521,7 +519,7 @@ describe("a mode switch to the terminal beside the conversation's own end (SLNT-
     const harvestStarted = Deferred.makeUnsafe<void>();
     const releaseHarvest = Deferred.makeUnsafe<void>();
     const run = conversationWorld({
-      exec: (argv) =>
+      answerExec: (argv) =>
         argv[2] === HARVEST_ARCHIVE
           ? Deferred.succeed(harvestStarted, undefined).pipe(
               Effect.andThen(Deferred.await(releaseHarvest)),
@@ -539,7 +537,6 @@ describe("a mode switch to the terminal beside the conversation's own end (SLNT-
             tmp,
             "say hi",
           );
-          // Its transcript is only where the harvest reads it, in the running workspace.
           firstTurnCompleted(world, run.turns, project.storePath, conversation, {
             transcript: false,
           });
@@ -568,7 +565,7 @@ describe("a mode switch to the terminal beside the conversation's own end (SLNT-
     const harvestStarted = Deferred.makeUnsafe<void>();
     const releaseHarvest = Deferred.makeUnsafe<void>();
     const run = conversationWorld({
-      exec: (argv) =>
+      answerExec: (argv) =>
         argv[2] === HARVEST_ARCHIVE
           ? Deferred.succeed(harvestStarted, undefined).pipe(
               Effect.andThen(Deferred.await(releaseHarvest)),
@@ -613,5 +610,348 @@ describe("a mode switch to the terminal beside the conversation's own end (SLNT-
     expect.soft(live, "nothing runs after the Stop").toBe(0);
     expect.soft(run.attached, "the conversation was not started again").toHaveLength(1);
     expect(status).toBe("stopped");
+  }, 30_000);
+});
+
+const EARLIER = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+const NEWER = "9f8e7d6c-5b4a-4c3d-9e2f-1a0b9c8d7e6f";
+
+const homeTranscriptOf = (storePath: string, sessionId: string, providerSessionId: string) =>
+  path.join(harnessHomePathOf(storePath, sessionId), transcriptIn("claude", providerSessionId));
+
+const answeringNewerAsLatest = (argv: ReadonlyArray<string>) =>
+  argv[2] === claudeHarness.latestTranscript
+    ? Effect.succeed({
+        exitCode: 0,
+        stdout: `/home/agent/${transcriptIn("claude", NEWER)}\n`,
+        stderr: "",
+      })
+    : undefined;
+
+describe("a mode switch to the terminal continues the conversation it checked (SLNT-142)", () => {
+  it("one whose run ends first waits for the run's end, its harvest included, and continues from what it saved", async () => {
+    const runEnds = Deferred.makeUnsafe<void>();
+    const harvestStarted = Deferred.makeUnsafe<void>();
+    const releaseHarvest = Deferred.makeUnsafe<void>();
+    const run = conversationWorld({
+      firstRunSettlesOn: Deferred.await(runEnds),
+      answerExec: (argv) =>
+        argv[2] === HARVEST_ARCHIVE
+          ? Deferred.succeed(harvestStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseHarvest)),
+              Effect.as({ exitCode: 0, stdout: "eA==", stderr: "" }),
+            )
+          : undefined,
+    });
+    let outcome = "not switched";
+    let terminal: SessionProcess | undefined;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, project, session, conversation } = yield* launchConversation(
+            world,
+            tmp,
+            "say hi",
+          );
+          firstTurnCompleted(world, run.turns, project.storePath, conversation, {
+            transcript: false,
+          });
+          yield* Deferred.succeed(runEnds, undefined);
+          yield* Deferred.await(harvestStarted);
+          const switched = yield* engine
+            .switchMode(session.id, "pty", { mode: "pty" }, "user-fixture")
+            .pipe(Effect.result, Effect.forkChild);
+          yield* Effect.sleep("200 millis");
+          yield* Deferred.succeed(releaseHarvest, undefined);
+          const result = yield* Fiber.join(switched);
+          outcome = Result.isSuccess(result) ? "switched" : (codeOf(result.failure) ?? "failed");
+          terminal = liveOf(world, session.id, "agent-pty")[0];
+        }),
+      run.layers,
+    );
+    const argv = run.spawned.at(-1) ?? [];
+    expect(outcome).toBe("switched");
+    expect(terminal).toBeDefined();
+    expect(argv[argv.indexOf("--resume") + 1]).toBe(PROVIDER);
+  }, 30_000);
+
+  it.each([
+    ["opens", false],
+    ["does not open, and the conversation starts again", true],
+  ] as const)(
+    "a home holding a newer conversation than the one checked: the terminal %s on the checked one",
+    async (_case, terminalFails) => {
+      let failNextOpen = false;
+      const run = conversationWorld({
+        answerExec: answeringNewerAsLatest,
+        openFailsWhile: () => {
+          const fails = failNextOpen;
+          failNextOpen = false;
+          return fails;
+        },
+      });
+      let outcome = "not switched";
+      let conversations: ReadonlyArray<SessionProcess> = [];
+      let sessionProvider: string | null = null;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, project, session, conversation } = yield* launchConversation(
+              world,
+              tmp,
+              "say hi",
+            );
+            firstTurnCompleted(world, run.turns, project.storePath, conversation);
+            writeHomeTranscript(project.storePath, session.id, "claude", NEWER);
+            const later = new Date(Date.now() + 60_000);
+            fs.utimesSync(homeTranscriptOf(project.storePath, session.id, NEWER), later, later);
+            failNextOpen = terminalFails;
+            const switched = yield* engine
+              .switchMode(session.id, "pty", { mode: "pty" }, "user-fixture")
+              .pipe(Effect.result);
+            outcome = Result.isSuccess(switched)
+              ? "switched"
+              : (codeOf(switched.failure) ?? "failed");
+            conversations = liveOf(world, session.id, "agent-protocol");
+            sessionProvider = world.sessions.get(session.id)?.providerSessionId ?? null;
+          }),
+        run.layers,
+      );
+      const argv = run.spawned.at(-1) ?? [];
+      if (terminalFails) {
+        expect(outcome).toBe("mode_switch_terminal_not_opened");
+        expect.soft(conversations).toHaveLength(1);
+        expect.soft(conversations[0]?.providerSessionId ?? null).not.toBe(NEWER);
+        expect.soft(argv.join(" ")).toContain(PROVIDER);
+        expect(argv.join(" ")).not.toContain(NEWER);
+      } else {
+        expect(outcome).toBe("switched");
+        expect(argv[argv.indexOf("--resume") + 1]).toBe(PROVIDER);
+      }
+      expect(sessionProvider).not.toBe(NEWER);
+    },
+    30_000,
+  );
+
+  it.skipIf(process.getuid?.() === 0)(
+    "a transcript that does not read is refused before anything of the conversation stops",
+    async () => {
+      const run = conversationWorld();
+      let refusal: unknown = null;
+      let before: SessionProcess | undefined;
+      let after: SessionProcess | undefined;
+      let status: string | undefined;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, project, session, conversation } = yield* launchConversation(
+              world,
+              tmp,
+              "say hi",
+            );
+            firstTurnCompleted(world, run.turns, project.storePath, conversation);
+            fs.chmodSync(homeTranscriptOf(project.storePath, session.id, PROVIDER), 0o000);
+            before = world.processes.get(conversation.id);
+            refusal = yield* engine
+              .switchMode(session.id, "pty", { mode: "pty" }, "user-fixture")
+              .pipe(Effect.flip);
+            after = world.processes.get(conversation.id);
+            status = world.sessions.get(session.id)?.status;
+          }),
+        run.layers,
+      );
+      expect(codeOf(refusal)).toBe("mode_switch_state_unreadable");
+      expect(refusal instanceof SealantPlatformError ? refusal.message : "").toContain(
+        "nothing was stopped",
+      );
+      expect.soft(run.detached).toEqual([]);
+      expect.soft(run.closes).toEqual([]);
+      expect.soft(after).toEqual(before);
+      expect.soft(run.execCalls.some((argv) => argv[2] === HARVEST_ARCHIVE)).toBe(false);
+      expect(status).toBe("running");
+    },
+    30_000,
+  );
+
+  it("a completed turn of an earlier conversation of the session does not let a new one with no reply yet switch", async () => {
+    const run = conversationWorld();
+    let refusal: unknown = null;
+    let ended: unknown = "not read";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, project, session, conversation } = yield* launchConversation(
+            world,
+            tmp,
+            "say hi",
+          );
+          const earlier = new SessionProcess({
+            ...conversation,
+            id: SessionProcessId.make("process-earlier-conversation"),
+            providerSessionId: EARLIER,
+            exitedAt: now(),
+          });
+          world.processes.set(earlier.id, earlier);
+          run.turns.push(completedTurnOf(earlier));
+          writeHomeTranscript(project.storePath, session.id, "claude", EARLIER);
+          const current = world.processes.get(conversation.id);
+          if (current === undefined) return yield* Effect.die("no conversation row");
+          world.processes.set(
+            conversation.id,
+            new SessionProcess({ ...current, providerSessionId: PROVIDER }),
+          );
+          writeHomeTranscript(project.storePath, session.id, "claude", PROVIDER);
+          refusal = yield* engine
+            .switchMode(session.id, "pty", { mode: "pty" }, "user-fixture")
+            .pipe(Effect.flip);
+          ended = world.processes.get(conversation.id)?.exitedAt;
+        }),
+      run.layers,
+    );
+    expect(codeOf(refusal)).toBe("mode_switch_state_missing");
+    expect.soft(run.closes).toEqual([]);
+    expect(ended).toBeNull();
+  }, 30_000);
+
+  it("a harvest that dies after the conversation stopped starts the conversation again, which takes the next turn", async () => {
+    let died = false;
+    const run = conversationWorld({
+      answerExec: (argv) => {
+        if (argv[2] !== HARVEST_ARCHIVE || died) return undefined;
+        died = true;
+        return Effect.die(new Error("the executor broke"));
+      },
+    });
+    let refusal: unknown = null;
+    let conversations: ReadonlyArray<SessionProcess> = [];
+    let laterTurn = "not sent";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, project, session, conversation } = yield* launchConversation(
+            world,
+            tmp,
+            "say hi",
+          );
+          firstTurnCompleted(world, run.turns, project.storePath, conversation);
+          refusal = yield* engine
+            .switchMode(session.id, "pty", { mode: "pty" }, "user-fixture")
+            .pipe(Effect.flip);
+          conversations = liveOf(world, session.id, "agent-protocol");
+          const turn = yield* engine
+            .submitTurn(session.id, "still here?", "user-fixture")
+            .pipe(Effect.result);
+          laterTurn = Result.isSuccess(turn) ? "delivered" : turn.failure._tag;
+        }),
+      run.layers,
+    );
+    expect(codeOf(refusal)).toBe("mode_switch_terminal_not_opened");
+    expect.soft(conversations).toHaveLength(1);
+    expect.soft(conversations[0]?.providerSessionId).toBe(PROVIDER);
+    expect(laterTurn).toBe("delivered");
+  }, 30_000);
+
+  it("a Stop while the switch checks the conversation settles the session and frees its workspace before the switch ends", async () => {
+    let holdTurns = false;
+    const checking = Deferred.makeUnsafe<void>();
+    const resumeCheck = Deferred.makeUnsafe<void>();
+    const run = conversationWorld({
+      beforeTurnsAreRead: () =>
+        holdTurns
+          ? Deferred.succeed(checking, undefined).pipe(Effect.andThen(Deferred.await(resumeCheck)))
+          : Effect.void,
+    });
+    let stopped = "not stopped";
+    let statusDuring: string | undefined;
+    let freedDuring: ReadonlyArray<string> = [];
+    let outcome = "not switched";
+    let statusAfter: string | undefined;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, project, session, conversation } = yield* launchConversation(
+            world,
+            tmp,
+            "say hi",
+          );
+          firstTurnCompleted(world, run.turns, project.storePath, conversation);
+          holdTurns = true;
+          const switched = yield* engine
+            .switchMode(session.id, "pty", { mode: "pty" }, "user-fixture")
+            .pipe(Effect.result, Effect.forkChild);
+          yield* Deferred.await(checking);
+          holdTurns = false;
+          const stop = yield* engine
+            .stop(session.id)
+            .pipe(Effect.timeout("10 seconds"), Effect.result);
+          stopped = Result.isSuccess(stop) ? "stopped" : "stop did not return";
+          for (let polls = 0; polls < 50 && run.workspaceStops.length === 0; polls += 1) {
+            yield* Effect.sleep("100 millis");
+          }
+          statusDuring = world.sessions.get(session.id)?.status;
+          freedDuring = [...run.workspaceStops];
+          yield* Deferred.succeed(resumeCheck, undefined);
+          const result = yield* Fiber.join(switched).pipe(Effect.timeout("10 seconds"));
+          outcome = Result.isSuccess(result) ? "switched" : (codeOf(result.failure) ?? "failed");
+          statusAfter = world.sessions.get(session.id)?.status;
+        }),
+      run.layers,
+    );
+    expect(stopped).toBe("stopped");
+    expect.soft(statusDuring, "the switch still checking").not.toBe("running");
+    expect.soft(freedDuring, "the Stop's sweep, not refused as in use").not.toEqual([]);
+    expect.soft(outcome).not.toBe("switched");
+    expect.soft(run.attached, "nothing started again").toHaveLength(1);
+    expect(statusAfter).toBe("stopped");
+  }, 30_000);
+
+  it("an end its run reports while a refused switch checks the conversation is recorded once the switch lets it go", async () => {
+    let holdTurns = false;
+    const checking = Deferred.makeUnsafe<void>();
+    const resumeCheck = Deferred.makeUnsafe<void>();
+    const runEnds = Deferred.makeUnsafe<void>();
+    const run = conversationWorld({
+      firstRunSettlesOn: Deferred.await(runEnds),
+      beforeTurnsAreRead: () =>
+        holdTurns
+          ? Deferred.succeed(checking, undefined).pipe(Effect.andThen(Deferred.await(resumeCheck)))
+          : Effect.void,
+    });
+    let refusal: unknown = null;
+    let ended: Date | null | undefined;
+    let status: string | undefined;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, project, session, conversation } = yield* launchConversation(
+            world,
+            tmp,
+            "say hi",
+          );
+          firstTurnCompleted(world, run.turns, project.storePath, conversation, {
+            transcript: false,
+          });
+          holdTurns = true;
+          const switched = yield* engine
+            .switchMode(session.id, "pty", { mode: "pty" }, "user-fixture")
+            .pipe(Effect.flip, Effect.forkChild);
+          yield* Deferred.await(checking);
+          holdTurns = false;
+          yield* Deferred.succeed(runEnds, undefined);
+          yield* Effect.sleep("300 millis");
+          yield* Deferred.succeed(resumeCheck, undefined);
+          refusal = yield* Fiber.join(switched);
+          for (let polls = 0; polls < 50; polls += 1) {
+            ended = world.processes.get(conversation.id)?.exitedAt;
+            if (ended !== null && ended !== undefined) break;
+            yield* Effect.sleep("100 millis");
+          }
+          status = world.sessions.get(session.id)?.status;
+        }),
+      run.layers,
+    );
+    expect(codeOf(refusal)).toBe("mode_switch_state_missing");
+    expect.soft(ended ?? null, "the run's end recorded").not.toBeNull();
+    expect(status).not.toBe("running");
   }, 30_000);
 });

@@ -66,7 +66,6 @@ export const shipHarnessCapture = (
     kind,
   );
 
-/** A capture of the workspace class holding `files` (capture path → content), registered as head. */
 export const shipCaptureFiles = (
   tmp: string,
   memory: MemoryCaptureStore,

@@ -77,7 +77,6 @@ describe("a mode switch keeps the session's permission mode (SLNT-147)", () => {
               conversation.id,
               new SessionProcess({ ...conversation, providerSessionId }),
             );
-            // Its first turn completed and left its transcript, which the switch harvests.
             turns.push(completedTurnOf(conversation));
             writeHomeTranscript(project.storePath, session.id, harness, providerSessionId);
             yield* engine.switchMode(session.id, "pty", { mode: "pty" }, null);
@@ -152,7 +151,6 @@ const resumingLayer = (created: CreateOptions[], spawned: Array<ReadonlyArray<st
     [],
   );
 
-/** The platform, its executor answering a harvest of conversation `providerSessionId`. */
 const savedConversationLayer = (
   created: CreateOptions[],
   spawned: Array<ReadonlyArray<string>>,
@@ -174,7 +172,6 @@ const savedConversationLayer = (
     { exec: harvestExecOf(harness, providerSessionId) },
   );
 
-/** A completed turn of the session's live conversation, its transcript in the harness home. */
 const turnCompleted = (
   world: World,
   turns: Array<AgentTurn>,
@@ -210,7 +207,6 @@ const stopped = (world: World, sessionId: SessionId) => {
   );
 };
 
-/** The conversation a terminal resumed, and every conversation after it, continues. */
 const RESUMED = "0d5c3c1e-7a51-4f0e-9c69-6a1d2b7e4f10";
 
 const claudeTranscript = [
