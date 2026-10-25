@@ -79,12 +79,7 @@ export type DotenvRoute =
   | { readonly lane: "rejected"; readonly issue: ProjectEnvironmentIssue };
 
 export const routeDotenvName = (name: string): DotenvRoute => {
-  const plain = validateProjectEnvironmentName(name);
-  if (plain === null) return { lane: "configuration" };
-  const secret = validateProjectSecretName(name);
-  if (secret?.rule === "name-provider-login") return { lane: "rejected", issue: secret };
-  if (plain.rule === "name-reserved" && plain.reservedRule === "secret-marker") {
-    return secret === null ? { lane: "secret" } : { lane: "rejected", issue: secret };
-  }
-  return { lane: "rejected", issue: plain };
+  if (validateProjectEnvironmentName(name) === null) return { lane: "configuration" };
+  const issue = validateProjectSecretName(name);
+  return issue === null ? { lane: "secret" } : { lane: "rejected", issue };
 };
