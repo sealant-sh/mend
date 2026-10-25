@@ -158,6 +158,12 @@ describe("buildAgentConversation", () => {
       kind: "turn",
       key: "turn:next",
       turn: next,
+      fromSteer: steer,
+    });
+    expect(entries.find((entry) => entry.key === "turn:turn-1")).toEqual({
+      kind: "turn",
+      key: "turn:turn-1",
+      turn: { ...first, steers: [steer] },
     });
   });
 

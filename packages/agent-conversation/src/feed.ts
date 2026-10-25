@@ -102,7 +102,13 @@ export type AgentConversationEntry<
   I extends AgentItemDto = AgentItemDto,
   R extends AgentRequestDto = AgentRequestDto,
 > =
-  | { readonly kind: "turn"; readonly key: string; readonly turn: T }
+  | {
+      readonly kind: "turn";
+      readonly key: string;
+      readonly turn: T;
+      /** The steer whose words this turn carries, because the harness did not take them. */
+      readonly fromSteer?: AgentTurnSteerDto;
+    }
   | { readonly kind: "steer"; readonly key: string; readonly steer: AgentTurnSteerDto }
   | { readonly kind: "item"; readonly key: string; readonly item: I }
   | { readonly kind: "request"; readonly key: string; readonly request: R };
@@ -152,9 +158,18 @@ export const buildAgentConversation = <
   const turns = sortedCopy(conversation.turns, (a, b) => a.ordinal - b.ordinal);
   const seenItems = new Set<string>();
   const seenRequests = new Set<string>();
+  const carried = new Map(
+    turns.flatMap((turn) => turn.steers ?? []).map((steer) => [steer.id, steer]),
+  );
 
   for (const turn of turns) {
-    entries.push({ kind: "turn", key: `turn:${turn.id}`, turn });
+    const fromSteer = turn.fromSteer == null ? undefined : carried.get(turn.fromSteer);
+    entries.push({
+      kind: "turn",
+      key: `turn:${turn.id}`,
+      turn,
+      ...(fromSteer === undefined ? {} : { fromSteer }),
+    });
     const children = [
       ...(turn.steers ?? [])
         .filter((steer) => steer.delivery._tag !== "Queued")
