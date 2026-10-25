@@ -198,6 +198,16 @@ export class WorkspaceWindow implements vscode.Disposable {
     if (this.role.kind === "workspace") void this.focusAgentTerminal(null);
   }
 
+  /** After a sign-in or a new connection: a workspace window that found no session looks again. */
+  locateAgain(): Promise<void> {
+    if (this.role.kind !== "workspace") return Promise.resolve();
+    const { workspaceId } = this.role;
+    return this.#inTurn(async () => {
+      if (this.#located === null)
+        await this.#show(workspaceId, await this.intents.take(workspaceId));
+    });
+  }
+
   /**
    * Show the session's agent, attaching it when this window has no live tab for it. With no
    * session named, the one an Open meant, else the one this window already shows.

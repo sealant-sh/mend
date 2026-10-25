@@ -279,8 +279,8 @@ describe("bring my editor", () => {
 
   it("is a person's own setting, which a repository cannot turn on", () => {
     expect(setting).toMatchObject({
-      enum: ["off", "extensions", "extensionsAndSettings"],
-      default: "extensionsAndSettings",
+      enum: ["off", "picked"],
+      default: "picked",
       scope: "application",
     });
   });
