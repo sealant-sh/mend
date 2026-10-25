@@ -1129,6 +1129,28 @@ describe("ProtocolHost", () => {
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
+  it.effect("leaves another Mend's Sending steer alone when the host starts", () => {
+    const world = makeConversationWorld();
+    const turn = world.seed("start");
+    const { steer } = Effect.runSync(
+      world.steerStore.admitTurnSteer({
+        turnId: turn.id,
+        author: "user-1",
+        input: "in flight elsewhere",
+        clientSteerId: null,
+      }),
+    );
+    return Effect.gen(function* () {
+      yield* ProtocolHost;
+      const steers = (yield* world.steerStore.listConversationTurns(sessionId)).flatMap(
+        (row) => row.steers,
+      );
+      expect(steers.map((row) => [row.id, row.delivery])).toEqual([
+        [steer.id, { _tag: "Sending" }],
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
   it.effect("keeps an uncertain delivery and never queues or resends it", () => {
     const world = makeConversationWorld();
     const turn = world.seed("start");

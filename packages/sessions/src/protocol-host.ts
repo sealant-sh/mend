@@ -367,7 +367,6 @@ export const ProtocolHostLive: Layer.Layer<
     const processes = yield* SessionProcessesRepo;
     const sessions = yield* SessionsRepo;
     const scope = yield* Effect.scope;
-    yield* conversations.recoverSendingSteers();
     const hosted = new Map<SessionProcessId, HostedProcess>();
     /**
      * Conversations between a stop and the next start (decision 6): a turn submitted now queues on

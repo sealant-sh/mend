@@ -611,7 +611,7 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
           input: "uncertain words",
           clientSteerId: null,
         });
-        yield* repo.recoverSendingSteers();
+        yield* repo.recoverSendingSteers(process);
         const turns = yield* repo.listConversationTurns(session);
         expect(turns).toHaveLength(1);
         expect(turns[0]?.steers.find((row) => row.id === pending.steer.id)).toMatchObject({

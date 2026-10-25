@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import type { SessionId } from "@mend/domain";
+import { AgentConversationRepo } from "@mend/db";
+import type { SessionId, SessionProcessId } from "@mend/domain";
 import type { SessionProcess } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
@@ -18,6 +19,7 @@ import { describe, expect, it } from "vitest";
 
 import { LAUNCH_UNDER_WAY_WORDS } from "../src/launch-gate.ts";
 import {
+  agentConversationStub,
   makeWorld,
   recordingProtocolHostLayer,
   sealantLaunchLayer,
@@ -202,6 +204,32 @@ describe("SessionEngine launch admission against recovery (SLNT-167)", () => {
           );
         }),
       );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("ends the Sending steers of each agent boot recovers, and of no other process", async () => {
+    const { world, tmp, platform, survivor } = await restartedWorld();
+    const recovered: Array<SessionProcessId | undefined> = [];
+    try {
+      await Effect.runPromise(
+        withPreparedEngineEffect(
+          () => Effect.void,
+          () => until(() => recovered.length > 0, "the steer recovery"),
+          {
+            fixture: { world, tmp },
+            sealantLayer: platform,
+            protocolHostLayer: unrecoverableHost([]),
+            conversationLayer: Layer.succeed(AgentConversationRepo, {
+              ...agentConversationStub,
+              recoverSendingSteers: (processId) =>
+                Effect.sync(() => void recovered.push(processId)),
+            }),
+          },
+        ),
+      );
+      expect(recovered).toEqual([survivor.id]);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

@@ -24557,6 +24557,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const rehydrateProtocolProcess = Effect.fn("SessionEngine.rehydrateProtocolProcess")(
         function* (protocolProcess: SessionProcess) {
+          // Boot owns this process now: no delivery of this Mend's runs for it, and a steer the
+          // last one left Sending may have reached the harness. It is never re-sent.
+          yield* conversations.recoverSendingSteers(protocolProcess.id);
           if (protocolProcess.sealantSessionId === null) return;
           const probed = yield* sealant.getWorkspace(protocolProcess.sealantWorkspaceId).pipe(
             Effect.flatMap((workspace) =>

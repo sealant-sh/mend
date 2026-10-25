@@ -153,7 +153,7 @@ export const makeSteerStore = (
     recoverSendingSteers: (processId) =>
       Effect.gen(function* () {
         for (const steer of steers.values()) {
-          if (processId === undefined || processId === steer.processId)
+          if (processId === steer.processId)
             yield* methods.settleTurnSteer(steer.id, { _tag: "Unknown", reason: "restart" });
         }
       }),

@@ -198,7 +198,8 @@ export class AgentConversationRepo extends Context.Service<
      * meanwhile keeps the receipt.
      */
     readonly withdrawTurnSteer: (id: AgentTurnSteerId) => Effect.Effect<AgentTurnSteer>;
-    readonly recoverSendingSteers: (processId?: SessionProcessId) => Effect.Effect<void>;
+    /** A restart ends the process's steers left Sending as Unknown: they are never re-sent. */
+    readonly recoverSendingSteers: (processId: SessionProcessId) => Effect.Effect<void>;
     readonly recordProtocolControl: (
       processId: SessionProcessId,
       control: AgentProtocolControl,
@@ -838,7 +839,7 @@ export const AgentConversationRepoLive: Layer.Layer<
     });
 
     const recoverSendingSteers = Effect.fn("AgentConversationRepo.recoverSendingSteers")(function* (
-      processId?: SessionProcessId,
+      processId: SessionProcessId,
     ) {
       const rows = yield* db
         .update(agentTurnSteers)
@@ -849,7 +850,7 @@ export const AgentConversationRepoLive: Layer.Layer<
         .where(
           and(
             sql`${agentTurnSteers.delivery}->>'_tag' = 'Sending'`,
-            processId === undefined ? undefined : eq(agentTurnSteers.processId, processId),
+            eq(agentTurnSteers.processId, processId),
           ),
         )
         .returning({ sessionId: agentTurnSteers.sessionId })
