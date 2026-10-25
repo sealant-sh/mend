@@ -191,19 +191,23 @@ describe("turn steering HTTP", () => {
   });
 
   it("reports a steer key reused for other words or another turn as 409", async () => {
+    const submitted: Array<SteerTurnInput> = [];
     const api = await createTenancyApi(
       {},
       {
         implement: {
           engine: {
             launchUnderWay: () => false,
-            steerTurn: () =>
-              Effect.fail(
-                new TurnSteerKeyConflictError({
-                  clientSteerId: key,
-                  message: "This steer key was already used for other words or another turn.",
-                }),
-              ),
+            steerTurn: (input) =>
+              Effect.suspend(() => {
+                submitted.push(input);
+                return Effect.fail(
+                  new TurnSteerKeyConflictError({
+                    clientSteerId: key,
+                    message: "This steer key was already used for other words or another turn.",
+                  }),
+                );
+              }),
           },
         },
       },
@@ -219,6 +223,10 @@ describe("turn steering HTTP", () => {
         clientSteerId: key,
         message: "This steer key was already used for other words or another turn.",
       });
+      expect(submitted).toEqual([
+        { turnId: shared.turn, sender: "alice", input: "other words", clientSteerId: key },
+      ]);
+      expect(api.world.calls).toEqual(["engine.steerTurn"]);
     } finally {
       await api.dispose();
     }

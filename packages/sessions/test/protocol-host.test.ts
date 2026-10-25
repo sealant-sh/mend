@@ -1209,6 +1209,10 @@ describe("ProtocolHost", () => {
         yield* host.steerTurn({ ...input, clientSteerId: input.clientSteerId.toUpperCase() }),
       ).toEqual(receipt);
       expect(peer.written.filter((frame) => frame.method === "turn/steer")).toHaveLength(1);
+      expect(
+        (yield* world.steerStore.listConversationTurns(sessionId)).flatMap((each) => each.steers),
+      ).toEqual([receipt]);
+      expect(world.turns.size).toBe(2);
       yield* host.detach(processId);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
