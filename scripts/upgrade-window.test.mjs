@@ -189,7 +189,8 @@ test("the live markers must agree with npm's list", () => {
 test("every stable release in the window needs its pins; a next build's are read live", () => {
   // Only stable releases are committed: a next build in the window needs nothing here.
   checkPins(pins, ["0.35.1", "0.36.0-next.792"]);
-  assert.deepEqual(Object.keys(pins.releases), ["0.35.1"]);
+  checkPins(pins, ["0.36.0"]);
+  assert.deepEqual(Object.keys(pins.releases), ["0.35.1", "0.36.0"]);
   assert.throws(
     () => checkPins(pins, ["0.35.0", "0.36.0-next.780"]),
     /has no pins for 0\.35\.0, inside the upgrade window/,

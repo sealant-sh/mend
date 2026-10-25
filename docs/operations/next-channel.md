@@ -168,14 +168,20 @@ npm's `next` inside the window when npm's list lacks it.
 
 **Stable pins are committed.** `release/upgrade-from.json` holds, for each stable release, its npm
 integrity and publish time, its `mend` index digest, the sha256 of its four setup assets, and the
-digests of the images its setup starts beside Mend (Postgres and Garage for 0.35.1). Those
-support-image digests are the ones their tags named on 2026-10-16, when the file was written, not
-necessarily the ones the release first ran with. `mend-api` and `mend-web` are not pinned: the
-scenario runs the bundle image only. `release/upgrade-from/<version>/` holds a `package.json` and a
-lockfile for that release's CLI, installed with `npm ci`: the CLI ships no lockfile and depends on
-version ranges, so without one its dependencies would drift. **Each stable release's pull request
-adds the stable release before it**: read every value anonymously from npm, the GitHub release and
-ghcr, write the lockfile once with
+digests of every image its offline setup requires beside Mend. For 0.35.1 that is Postgres and
+Garage. 0.36.0 adds both mirrors (`nginx:1.29-alpine`, `registry:3.1`) and the network guard its
+`mend` image names in the `dev.sealant.mend.network-guard-image` label, kept under that exact
+reference. A missing one fails the scenario's `server setup --offline`, and `--prepare-only` cannot
+tell, since it pulls only what the entry lists. For 0.35.1 those support-image digests are the ones
+their tags named on 2026-10-16, when the file was written, not necessarily the ones it first ran
+with. For 0.36.0 they are the ones its tags named at its publish, unchanged through 2026-10-25.
+`mend-api` and `mend-web` are not pinned: the scenario runs the bundle image only.
+`release/upgrade-from/<version>/` holds a `package.json` and a lockfile for that release's CLI,
+installed with `npm ci`: the CLI ships no lockfile and depends on version ranges, so without one its
+dependencies would drift. **Once a stable release is published, the first pull request to main after
+it adds its pins.** Every later build's window holds it, so the next build after the release fails
+until they land. Read every value anonymously from npm, the GitHub release and ghcr, write the
+lockfile once with
 `npm install --package-lock-only --ignore-scripts --before=<that release's npm publish time + 1 s>`,
 and check the entry against the artifacts with
 `MEND_UPGRADE_FROM=<version> node scripts/check-previous-upgrade.mjs --prepare-only`.

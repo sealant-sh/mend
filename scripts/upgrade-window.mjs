@@ -115,7 +115,7 @@ export function checkPins(pins, window) {
   const missing = stable.filter((version) => pins.releases?.[version] === undefined);
   ensure(
     missing.length === 0,
-    `release/upgrade-from.json has no pins for ${missing.join(", ")}, inside the upgrade window. Add them in this release's pull request (docs/operations/next-channel.md).`,
+    `release/upgrade-from.json has no pins for ${missing.join(", ")}, inside the upgrade window. A published stable release needs its pins in the first pull request to main after it (docs/operations/next-channel.md).`,
   );
   for (const version of stable) {
     const entry = pins.releases[version];
