@@ -30,11 +30,9 @@ interface Seen {
 interface Row {
   readonly rule: string;
   readonly routing?: keyof typeof ROUTINGS;
-  /** The web preview's resolution; bound to the fixture app by default. */
   readonly resolution?: PreviewGatewayResolution;
   readonly ask: (world: GatewayWorld) => Promise<Seen>;
   readonly holds: (seen: Seen, world: GatewayWorld) => void;
-  /** Whether the request reaches the app at all. */
   readonly delivered: boolean;
 }
 
@@ -43,7 +41,6 @@ const Echoed = Schema.fromJsonString(
 );
 const appSaw = (seen: Seen) => Schema.decodeUnknownSync(Echoed)(seen.body).headers;
 
-/** The status line and fields of a raw answer, as a browser's socket would read them. */
 const rawAnswer = (text: string): Seen => {
   const [head = "", body = ""] = text.split("\r\n\r\n");
   const [status = "", ...lines] = head.split("\r\n");

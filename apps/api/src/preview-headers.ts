@@ -72,16 +72,15 @@ const keptFields = (headers: ReadonlyArray<HeaderPair>, dropped: ReadonlySet<str
 
 export interface ForwardRequest {
   readonly origin: PreviewOrigin;
-  /** The Service's port inside the workspace, which the application reads as its own host. */
   readonly port: number;
   readonly cookies: CookiePolicy;
   readonly upgrade: boolean;
 }
 
 /**
- * The head an admitted request carries to the application. A chunked body is marked chunked
- * here rather than left to Node: `http.request` frames a GET, HEAD, DELETE or OPTIONS body
- * only when the header says so, and otherwise writes it raw onto a kept-alive socket.
+ * A chunked body is marked chunked here rather than left to Node: `http.request` frames a GET,
+ * HEAD, DELETE or OPTIONS body only when the header says so, and otherwise writes it raw onto a
+ * kept-alive socket.
  */
 export const forwardRequestHead = (
   headers: ReadonlyArray<HeaderPair>,
@@ -126,10 +125,7 @@ const robotsTags = (values: ReadonlyArray<string>): ReadonlyArray<HeaderPair> =>
   return indexed ? [field("x-robots-tag", "noindex")] : [];
 };
 
-/**
- * The head the viewer's browser receives for the application's answer. A 101 gets exactly
- * `Connection: Upgrade` and `Upgrade: websocket` back, so callers write the result as is.
- */
+/** A 101 gets exactly `Connection: Upgrade` and `Upgrade: websocket` back: write it as is. */
 export const forwardResponseHead = (
   response: { readonly status: number; readonly headers: ReadonlyArray<HeaderPair> },
   cookies: CookiePolicy,
@@ -137,10 +133,9 @@ export const forwardResponseHead = (
   const { headers } = response;
   return [
     ...keptFields(headers, RESPONSE_DROPPED),
-    ...valuesOf(headers, "set-cookie").flatMap((raw) => {
-      const kept = appSetCookie(raw, cookies);
-      return kept === null ? [] : [field("set-cookie", kept)];
-    }),
+    ...valuesOf(headers, "set-cookie").flatMap((raw) =>
+      appSetCookie(raw, cookies).map((kept) => field("set-cookie", kept)),
+    ),
     field("cache-control", privateCacheControl(valuesOf(headers, "cache-control"))),
     ...robotsTags(valuesOf(headers, "x-robots-tag")),
     field("x-accel-buffering", "no"),
@@ -151,7 +146,6 @@ export const forwardResponseHead = (
 const escapeHtml = (text: string) =>
   text.replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
 
-/** A page of the gateway's own: one status line, no script, no retry. */
 export const gatewayPage = (status: number, text: string): PreviewAnswer => {
   const line = escapeHtml(text);
   return answer(
@@ -165,6 +159,5 @@ export const gatewayPage = (status: number, text: string): PreviewAnswer => {
   );
 };
 
-/** The gateway's own page for a request it held and did not deliver. */
 export const undeliveredAnswer = (fact: PreviewUndelivered): PreviewAnswer =>
   gatewayPage(503, previewUndeliveredLine(fact));

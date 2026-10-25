@@ -178,8 +178,8 @@ export const cookieNamespaceOf = (label: PreviewLabel, wireName: string): Cookie
 };
 
 /**
- * The `Cookie` header the application receives, or none. A request carries no HttpOnly bit, so on
- * a tailnet unprefixed cookies pass as the JavaScript cookies the ADR leaves unisolated.
+ * A request carries no HttpOnly bit, so on a tailnet unprefixed cookies pass as the JavaScript
+ * cookies the ADR leaves unisolated.
  */
 export const appCookieHeader = (
   headers: ReadonlyArray<string>,
@@ -203,24 +203,42 @@ export const appCookieHeader = (
 
 const attributeName = (attribute: string) => (attribute.split("=")[0] ?? "").trim().toLowerCase();
 
+const clears = (attributes: ReadonlyArray<string>, now: number) =>
+  attributes.some((attribute) => {
+    const value = attribute.slice(attribute.indexOf("=") + 1).trim();
+    switch (attributeName(attribute)) {
+      case "max-age":
+        return Number(value) <= 0;
+      case "expires":
+        return Date.parse(value) <= now;
+      default:
+        return false;
+    }
+  });
+
 /**
- * One application `Set-Cookie` as the browser may store it, or null to drop it. Never split a
- * header list on commas: `Expires` contains one.
+ * Never split a `Set-Cookie` list on commas: `Expires` contains one. A deletion names no
+ * HttpOnly, as a cookie's identity is its name, so on a tailnet it clears the namespaced cookie
+ * too.
  */
-export const appSetCookie = (raw: string, policy: CookiePolicy): string | null => {
+export const appSetCookie = (
+  raw: string,
+  policy: CookiePolicy,
+  now = Date.now(),
+): ReadonlyArray<string> => {
   const [pair = "", ...attributes] = raw.split(";");
   const equals = pair.indexOf("=");
   const name = equals === -1 ? "" : pair.slice(0, equals).trim();
-  if (name === "" || isGrantCookieName(name)) return null;
+  if (name === "" || isGrantCookieName(name)) return [];
   const kept = attributes
     .map((attribute) => attribute.trim())
     .filter((attribute) => attribute !== "" && attributeName(attribute) !== "domain");
   const cookie = (wireName: string) =>
     [`${wireName}=${pair.slice(equals + 1).trim()}`, ...kept].join("; ");
-  if (policy.mode === "host-per-preview") return cookie(name);
-  if (kept.some((attribute) => attributeName(attribute) === "httponly")) {
-    return cookie(namespacedCookieName(policy.label, name));
-  }
+  if (policy.mode === "host-per-preview") return [cookie(name)];
+  const namespaced = cookie(namespacedCookieName(policy.label, name));
+  if (kept.some((attribute) => attributeName(attribute) === "httponly")) return [namespaced];
   // A script-visible cookie named like a namespace would arrive at that preview as its own.
-  return cookieNamespaceOf(policy.label, name)._tag === "Plain" ? cookie(name) : null;
+  if (cookieNamespaceOf(policy.label, name)._tag !== "Plain") return [];
+  return clears(kept, now) ? [cookie(name), namespaced] : [cookie(name)];
 };

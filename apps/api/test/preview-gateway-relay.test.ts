@@ -35,7 +35,6 @@ const decodeEvent = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Struct({ i: Schema.Number, sentAt: Schema.Number })),
 );
 
-/** Polls `read` until it answers; the test fails naming `what` after `ms`. */
 const waitFor = <A>(what: string, ms: number, read: () => A | null): Promise<A> =>
   new Promise((resolve, reject) => {
     const started = Date.now();
@@ -153,7 +152,6 @@ const rawClient = (world: GatewayWorld) =>
 interface RawHead {
   readonly status: number;
   readonly fields: ReadonlyArray<readonly [string, string]>;
-  /** Bytes up to and including the blank line. */
   readonly size: number;
 }
 
@@ -224,7 +222,6 @@ interface Frame {
   readonly text: string;
 }
 
-/** A short frame at the start of `bytes`, or null until all of it arrived. */
 const readFrame = (bytes: Buffer): Frame | null => {
   if (bytes.length < 2) return null;
   const first = bytes.readUInt8(0);
@@ -248,7 +245,6 @@ const readFrame = (bytes: Buffer): Frame | null => {
   };
 };
 
-/** The upgrade's answer head and the first frame after it; a refused upgrade has no frame. */
 const upgradedFrame = (bytes: Buffer) => {
   const head = readHead(bytes);
   if (head === null) return null;
@@ -257,7 +253,6 @@ const upgradedFrame = (bytes: Buffer) => {
   return frame === null ? null : { head, frame };
 };
 
-/** Opens a WebSocket through the gateway as `cookie`'s viewer and proves one echo. */
 const openEchoSocket = (world: GatewayWorld, cookie: string, text: string) =>
   Effect.gen(function* () {
     const client = yield* rawClient(world);
@@ -281,7 +276,6 @@ const openEchoSocket = (world: GatewayWorld, cookie: string, text: string) =>
     return client;
   });
 
-/** A dev server that answers any upgrade with its 101 and a first frame in one write. */
 const serveEagerUpgrade = async (text: string) => {
   const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
@@ -322,7 +316,6 @@ const serveEagerUpgrade = async (text: string) => {
 
 interface ReceivedEvent {
   readonly i: number;
-  /** When this client read it, epoch ms. */
   readonly at: number;
 }
 
@@ -779,7 +772,11 @@ describe("the preview gateway relays to the app", () => {
         Effect.gen(function* () {
           const app = yield* closesReusedConnections;
           const forwards = localForwards([
-            { workspaceId: WORKSPACE, port: APP_PORT, entry: { kind: "listen", localPort: app.port } },
+            {
+              workspaceId: WORKSPACE,
+              port: APP_PORT,
+              entry: { kind: "listen", localPort: app.port },
+            },
           ]);
           const world = yield* gatewayWorld({ forwards: forwards.layer });
           const cookie = world.cookieFor("carol", "web");
@@ -800,7 +797,11 @@ describe("the preview gateway relays to the app", () => {
       Effect.gen(function* () {
         const app = yield* closesReusedConnections;
         const forwards = localForwards([
-          { workspaceId: WORKSPACE, port: APP_PORT, entry: { kind: "listen", localPort: app.port } },
+          {
+            workspaceId: WORKSPACE,
+            port: APP_PORT,
+            entry: { kind: "listen", localPort: app.port },
+          },
         ]);
         const world = yield* gatewayWorld({ forwards: forwards.layer });
         const cookie = world.cookieFor("carol", "web");

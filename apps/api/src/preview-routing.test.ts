@@ -206,6 +206,23 @@ describe("preview origins in the browser's own form", () => {
   });
 });
 
+const jarAfter = (setCookies: ReadonlyArray<string>, now: number) => {
+  const jar = new Map<string, string>();
+  for (const line of setCookies) {
+    const [pair = "", ...attributes] = line.split(";").map((part) => part.trim());
+    const name = pair.slice(0, pair.indexOf("="));
+    const expired = attributes.some((attribute) => {
+      const [key = "", value = ""] = attribute.split("=");
+      const field = key.trim().toLowerCase();
+      if (field === "max-age") return Number(value) <= 0;
+      return field === "expires" && Date.parse(value) <= now;
+    });
+    if (expired) jar.delete(name);
+    else jar.set(name, pair);
+  }
+  return [...jar.values()].join("; ");
+};
+
 describe("application cookies through the gateway", () => {
   const own = (name: string) => namespacedCookieName(LABEL, name);
   const other = (name: string) => namespacedCookieName(OTHER.label, name);
@@ -249,8 +266,8 @@ describe("application cookies through the gateway", () => {
     fc.assert(
       fc.property(labels, tokens, tokens, (label, name, value) => {
         const policy: CookiePolicy = { mode: "tailnet-ports", label };
-        const stored = appSetCookie(`${name}=${value}; Path=/; HttpOnly`, policy);
-        if (stored === null) return;
+        const [stored] = appSetCookie(`${name}=${value}; Path=/; HttpOnly`, policy);
+        if (stored === undefined) return;
         const sent = stored.slice(0, stored.indexOf(";"));
         expect(sent.startsWith(`p-${label}.`)).toBe(true);
         expect(appCookieHeader([sent], policy)).toBe(`${name}=${value}`);
@@ -329,6 +346,19 @@ describe("application cookies through the gateway", () => {
     ["a nameless cookie is dropped", "abc; Path=/", HOSTED, null],
     ["an empty name is dropped", "=abc; Path=/", HOSTED, null],
   ])("Set-Cookie: %s", (_, raw, policy, expected) => {
-    expect(appSetCookie(raw, policy)).toBe(expected);
+    expect(appSetCookie(raw, policy)).toEqual(expected === null ? [] : [expected]);
   });
+
+  it.each([
+    ["Max-Age=0", "session=; Path=/; Max-Age=0"],
+    ["Expires in the past", "session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT"],
+  ])(
+    "on a tailnet, an app's logout clears its HttpOnly cookie with %s and no HttpOnly",
+    (_, clear) => {
+      const set = appSetCookie("session=secret; Path=/; HttpOnly; Secure", OWN_PORT);
+      const cleared = appSetCookie(clear, OWN_PORT);
+      const next = appCookieHeader([jarAfter([...set, ...cleared], Date.now())], OWN_PORT);
+      expect(next, "the next request carries no session").toBeNull();
+    },
+  );
 });
