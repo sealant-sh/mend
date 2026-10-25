@@ -1,11 +1,14 @@
 # API-key logins (Claude and Codex)
 
 - **Release:** 0.37
-- **Status:** designed. Yiannis decided D1 to D8 on 2026-10-24; nothing is built yet. The research
-  below was written before the decisions, and the Decisions section overrides it where they differ.
-- **PRs:** none yet; the build is tracked as SLNT-265 to SLNT-278. Platform asks are in
-  `PLATFORM-FEEDBACK.md`, under "Connected-account providers are a closed set".
-- **Decision records:** the build adds a new ADR amending 0005, 0008, 0013 and 0016.
+- **Status:** building. Yiannis decided D1 to D8 on 2026-10-24 and the calls that came out of the
+  design on 2026-10-25, D1's organization key among them. The research below was written before the
+  decisions, and the Decisions section overrides it where they differ.
+- **PRs:** merged so far: mend#1137, mend#1145, mend#1146, sealant#403, sealant#414, sealant#415.
+  The build is tracked as SLNT-265 onwards. Platform asks are in `PLATFORM-FEEDBACK.md`, under
+  "Connected-account providers are a closed set".
+- **Decision records:** [ADR 0018](../adr/0018-api-key-logins-and-organization-keys.md), amending
+  0005, 0008, 0013 and 0016.
 - **Written:** 2026-10-17 against:
   - mend main `637009289`, plus `feat/cross-harness-own-logins` (mend#684) at `725c71900`;
   - sealant `origin/main` `fa163c6f`;
@@ -178,12 +181,14 @@ providers. Core's `kind` column is free text, so this needs no migration (Core
 ## Invariants
 
 1. Mend never places, spends or restores one person's key login for another person (ADR 0013, ADR
-   0016). D1 allows a key to be shared; how sharing is modelled is still open. ADR 0016's known
-   limits still apply: a person with sudo in a workspace can read other people's files there.
+   0016). An organization key is no person's login: a member with no login of their own for the
+   provider runs on it (D1, ADR 0018). ADR 0016's known limits still apply: a person with sudo in a
+   workspace can read other people's files there.
 2. A key that Mend places never appears in a record Mend writes, a log line, argv, a file Mend
    captures, or the T3 gateway. A key that the person's repository or dotfiles settings supply is
-   outside this invariant (D6). Whether output masking must also cover an agent that reads its own
-   key file is still open.
+   outside this invariant (D6). An agent that reads its own key file is a stated limit (2026-10-25):
+   Mend masks key-shaped text where it stores records, and sealantd's masking is extended across
+   output chunk boundaries.
 3. A key has no refresher. Its account turns `invalid` on a provider 401, and no refresh is tried.
 4. A key is written to a person's home with mode 0600, owned by that person, outside every capture
    root.
@@ -207,8 +212,8 @@ providers. Core's `kind` column is free text, so this needs no migration (Core
      `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`. Codex's `ignore_default_excludes` defaults to true, so
      key-shaped names reach its shell tool.
    - **Contain:** no environment variables; files and the helper only. Set both scrubs as defence in
-     depth. The agent can still read its own key file. Whether that is a stated limit, as it is for
-     `.credentials.json` today, is still with Yiannis.
+     depth. The agent can still read its own key file. Yiannis made that a stated limit on
+     2026-10-25, as it is for `.credentials.json` today.
 4. **A key from another source changes which login a turn spends.**
    - **Risk:** in `--print` mode Claude Code prefers `ANTHROPIC_API_KEY` or `apiKeyHelper` over the
      subscription, without asking. Mend's protocol sessions run `--print`
@@ -241,7 +246,8 @@ providers. Core's `kind` column is free text, so this needs no migration (Core
      the owner's key: cost with no plan cap, for someone who did not send the turn.
    - **Contain:** none in this feature. D4 decided that this feature does no shared-layout work and
      assumes the shared layout is gone. The feature therefore depends on the shared layout's
-     removal, planned as its own 0.37 work, landing first.
+     removal, planned as its own 0.37 work, landing first. Until then Core refuses a Claude key in
+     the launcher's `/root`, a temporary guard that the removal retires (ADR 0018 decision 4).
 10. **mend#684 widens where a key lands.**
     - **Risk:** a Codex key also goes into the same person's Claude sessions.
     - **Contain:** it is the same person; `selectedOnly` opts out.
@@ -254,10 +260,11 @@ his words.
 - **D1. Per person or per organization. Decided: a key can be used by several people.**
   - API keys are not subscriptions, so the Claude and Codex subscription terms do not bind them.
     Sharing a key with others is allowed.
-  - How several people share one key is still with Yiannis (asked 2026-10-24): each person connects
-    the same key as their own login, one person's key login is used by others, or the organization
-    holds a key. Under the second and third, the person who sends a turn and the person whose key it
-    spends differ, and which of them sees the D3 words is open too.
+  - How several people share one key: **an organization key** (2026-10-25). An owner of an
+    organization adds a key for a provider, and members who have no login of their own for that
+    provider run on it. It is never used when a member's own login is invalid, expired or over its
+    limit. Only owners add, rotate or remove it. Every member's sessions can read it, a stated limit
+    the owner's add form says.
 - **D2. A key and a subscription for the same provider. Decided: both, one default.**
   - A person may connect a key and a subscription for the same provider. One of them is the person's
     `default` for that provider, and Mend gives that one to the harness. A key that the person's
@@ -271,6 +278,8 @@ his words.
     message use the same words.
   - The wording appears only for people who have connected a key. A person with only subscription
     logins sees the same lines as before.
+  - An organization key's words name the organization: "Claude · API key of Acme ····a1b2 · billed
+    per token", shown only where a key is involved (2026-10-25).
 - **D4. Keys in the shared layout. Decided: no work.**
   - This feature assumes the shared workspace layout won't be a thing, and adds no shared-layout
     rule.
@@ -288,26 +297,28 @@ his words.
     it.
 - **D7. Inference on a key. Decided: yes, the asker pays.**
   - Mend's inference passes may run on a key, under the same rule as subscription logins: the person
-    who asked for the pass pays.
+    who asked for the pass pays. On an organization key the organization pays (2026-10-25).
 - **D8. Bedrock, Vertex, a custom base URL, OpenRouter. Decided: out of scope.**
   - None of them is built. The `api-key` kind stays open to a later provider route, such as "Claude
     via Bedrock".
 
-### Still with Yiannis
+### Decided 2026-10-25
 
-These calls came up while designing the build, after the 2026-10-24 decisions. This feature builds
-nothing that depends on one of them until he answers. Two of them describe behaviour that already
-exists today; "Divergences found while writing" says what it does until then.
+These calls came up while designing the build. Yiannis decided them on 2026-10-25; SLNT-102 records
+them, and ADR 0018 carries them.
 
-- How several people share one key (D1, above).
-- Whether Mend's background reads that switch from a Claude login to a Codex login (session names,
-  request intent, Slack thread reading) may switch onto a key.
-- Whether a session agent that reads its own key file is a stated limit, as it is for subscription
-  copies today, or whether stronger masking must ship first.
-- Whether the operator settings `MEND_INFERENCE_CLAUDE_ACCOUNT` and `MEND_INFERENCE_CODEX_ACCOUNT`
-  keep naming one account for every person.
-- Whether the automatic review prep after a settle runs on a key.
-- Whether project secrets that already use a provider key name keep reaching the project's services.
+- How several people share one key: an organization key (D1, above).
+- Mend's background reads that switch from a Claude login to a Codex login (session names, request
+  intent, Slack thread reading) never switch onto a key, an organization key included.
+- A session agent that reads its own key file is a stated limit, as it is for subscription copies
+  today. Masking where Mend stores records ships with the feature, and sealantd's masking across
+  output chunk boundaries follows in 0.37.
+- `MEND_INFERENCE_CLAUDE_ACCOUNT` and `MEND_INFERENCE_CODEX_ACCOUNT` must be unset or `default`; any
+  other value is refused at startup with words.
+- The automatic review prep after a settle is skipped when the login is a key, an organization key
+  included. A pass the person asks for still runs.
+- Project secrets that already use a provider key name are kept, listed with the refusal words, and
+  delivered at launch as before.
 
 ## Harness behaviour this rests on
 
@@ -381,9 +392,9 @@ Codex 0.162.1:
   (`packages/inference/src/session-namer.ts:78-86`, `request-intent-reader.ts:66-67`), and the
   inference provider sends their default Codex account
   (`packages/inference/src/sealant-provider.ts:31-34`). A person whose Codex account is a key-only
-  `auth.json` already gets these reads on the key. That stays as it is until Yiannis answers the
-  retry question.
+  `auth.json` already gets these reads on the key. The retry rule (2026-10-25: never onto a key)
+  ends that.
 - **Operator settings already name one account for every person.** `MEND_INFERENCE_CLAUDE_ACCOUNT`
   and `MEND_INFERENCE_CODEX_ACCOUNT` (`packages/inference/src/sealant-provider.ts:29-30`,
   `apps/docs/src/content/docs/reference/server-environment.md:196-197`) send one account name for
-  every asker. That stays as it is until Yiannis answers.
+  every asker. The 2026-10-25 decision (unset or `default` only) ends that.

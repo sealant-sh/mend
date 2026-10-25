@@ -14,6 +14,11 @@ control), [ADR 0010](0010-secret-files.md) (where secret files go) and
 against Mend `c9b645b0b` with mend#526 (`ac3bdce06`) open, Sealant Core `bc9ec42` (SDK 0.38.1) with
 sealant#315 and sealant#316 open, and sealantd `07ada50`.
 
+Amended 2026-10-25 by [ADR 0018](0018-api-key-logins-and-organization-keys.md): an organization key
+is no person's login, so a member running on it does not run on anyone else's. Core places it in the
+member's home like their own login (this ADR's decision 5). Where this ADR says a project's secrets
+reach every person under any name, the provider login names sealantd withholds are the exception.
+
 ## Context
 
 In capture mode (ADR 0002) a worktree has one live executor, a container whose processes all run as
