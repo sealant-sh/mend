@@ -57,6 +57,9 @@ import { adapterLayer, echo, fakeForward, scriptedSealant } from "./forward-fixt
  */
 const makeProcessClock = makeEngineClock(["processes", "sessions", "checkpoints"]);
 
+/** A Stop by the sessions' owner in these worlds; none of them has a preview to latch. */
+const ownerStop = { kind: "person", userId: "user-fixture" } as const;
+
 describe("SessionEngine", () => {
   it("keeps a legacy bench review-only", async () => {
     const created: CreateOptions[] = [];
@@ -1117,7 +1120,7 @@ describe("SessionEngine", () => {
             const shell = yield* engine.openShell(session.id);
             expect(shell.label).toBe("shell 1");
 
-            const ended = yield* engine.stopService(service.service.id);
+            const ended = yield* engine.stopService(service.service.id, ownerStop);
             expect(ended.service.currentAttemptId).toBeNull();
             expect(ended.service.currentForwardId).toBeNull();
             expect(stopped).toEqual([]);
@@ -1153,7 +1156,7 @@ describe("SessionEngine", () => {
                 4000,
                 "worker",
               );
-              yield* engine.stopService(ended.service.id);
+              yield* engine.stopService(ended.service.id, ownerStop);
 
               yield* engine.stop(session.id);
               const agentExited = () =>
@@ -1164,13 +1167,13 @@ describe("SessionEngine", () => {
               // The stop ended the agent; two Services still hold the workspace.
               expect(stopped).toEqual([]);
 
-              expect(yield* engine.stopServices(session.id)).toBe(2);
+              expect(yield* engine.stopServices(session.id, ownerStop)).toBe(2);
               expect(world.services.get(web.service.id)?.currentAttemptId).toBeNull();
               expect(world.services.get(db.service.id)?.currentForwardId).toBeNull();
               expect(stopped).toEqual(["workspace-1"]);
               expect(world.sessions.get(session.id)?.status).toBe("stopped");
               // Nothing left: a second press stops nothing and says so.
-              expect(yield* engine.stopServices(session.id)).toBe(0);
+              expect(yield* engine.stopServices(session.id, ownerStop)).toBe(0);
             }),
           {
             prepareWorld: clock.prepareWorld,
@@ -1260,7 +1263,7 @@ describe("SessionEngine", () => {
           expect(restarted.attempts[1]?.status).toBe("running");
           expect(restarted.currentForward?.id).toBe(forwardId);
 
-          const stopped = yield* engine.stopService(service.service.id);
+          const stopped = yield* engine.stopService(service.service.id, ownerStop);
           expect(stopped.service.currentAttemptId).toBeNull();
           expect(stopped.service.currentForwardId).toBeNull();
           expect(stopped.attempts.at(-1)?.status).toBe("stopped");
@@ -1328,7 +1331,7 @@ describe("SessionEngine", () => {
           expect(log).toEqual(["sever service-restarting", `close ${first}`]);
 
           log.length = 0;
-          yield* engine.stopService(service.service.id);
+          yield* engine.stopService(service.service.id, ownerStop);
           expect(log).toEqual([
             "sever service-stopping",
             `close ${restarted.attempts[1]?.sealantSessionId}`,
@@ -1414,7 +1417,7 @@ describe("SessionEngine", () => {
           expect(service.attempts.at(-1)?.launchCorrelationId).toBe(
             serviceStartCorrelation(service.service.id, startId),
           );
-          yield* engine.stopService(service.service.id);
+          yield* engine.stopService(service.service.id, ownerStop);
 
           const again = yield* engine
             .runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", null, undefined, startId)
@@ -1497,7 +1500,7 @@ describe("SessionEngine", () => {
               "user-fixture",
               startId,
             );
-            yield* engine.stopService(hers.service.id);
+            yield* engine.stopService(hers.service.id, ownerStop);
 
             const theirs = yield* engine.provision({
               projectId: theirProject.id,

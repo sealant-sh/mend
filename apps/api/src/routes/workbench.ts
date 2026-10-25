@@ -696,7 +696,9 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const projectSessions = yield* sessions.listForProject(params.id);
         for (const session of projectSessions) {
           for (const service of yield* services.listForSession(session.id)) {
-            yield* engine.stopService(service.id).pipe(Effect.ignore);
+            yield* engine
+              .stopService(service.id, { kind: "system", reason: "removal" })
+              .pipe(Effect.ignore);
           }
         }
         const projectSessionIds = new Set(projectSessions.map((session) => session.id));
@@ -2974,7 +2976,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const steering = yield* SessionSteering;
         yield* steering.service(params.id);
         const engine = yield* SessionEngine;
-        return yield* engine.restartService(params.id).pipe(
+        const caller = yield* CurrentUser;
+        return yield* engine.restartService(params.id, caller.user.id).pipe(
           Effect.catchTag("ServiceNotFoundError", () =>
             Effect.fail(new NotFound({ id: params.id })),
           ),
@@ -2992,8 +2995,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const steering = yield* SessionSteering;
         yield* steering.service(params.id);
         const engine = yield* SessionEngine;
+        const caller = yield* CurrentUser;
         return yield* engine
-          .stopService(params.id)
+          .stopService(params.id, { kind: "person", userId: caller.user.id })
           .pipe(
             Effect.catchTag("ServiceNotFoundError", () =>
               Effect.fail(new NotFound({ id: params.id })),
@@ -3157,8 +3161,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         yield* steering.stop(params.id);
         const engine = yield* SessionEngine;
         const sessions = yield* SessionsRepo;
+        const caller = yield* CurrentUser;
         const stopped = yield* engine
-          .stopServices(params.id)
+          .stopServices(params.id, { kind: "person", userId: caller.user.id })
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         yield* recordControl(params.id, "services-stop", null);
         const session = yield* sessions
