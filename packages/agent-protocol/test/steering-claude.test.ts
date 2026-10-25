@@ -152,6 +152,8 @@ const projection = (
       event._tag !== "session.ready" &&
       event._tag !== "turn.started" &&
       event._tag !== "harness-turn.started" &&
+      // A live signal to dispatch: a replay that already knows the next turn never drains.
+      event._tag !== "drain.ended" &&
       !(event._tag === "request.opened" && settled.has(event.request.providerRequestId)) &&
       !(event._tag === "request.resolved" && settled.has(event.providerRequestId)),
   );
@@ -711,6 +713,31 @@ describe("Claude steering, synthetic", () => {
       ]);
       expect(run.events.some((event) => event._tag === "harness-turn.started")).toBe(false);
       yield* expectDeterministicReplay(steps);
+    }),
+  );
+
+  it.effect("says when a drained Stop stops refusing turns, on idle or on Claude's own turn", () =>
+    Effect.gen(function* () {
+      const stopped: ReadonlyArray<Step> = [
+        { send: "first" },
+        init("init-1"),
+        { steer: "second", id: STEER_ID },
+        { interrupt: true },
+        aborted("result-1"),
+      ];
+      for (const [ending, opens] of [
+        [idle, null],
+        [init("init-2"), "harness:init-2"],
+      ] as const) {
+        const run = yield* Effect.scoped(runSteps([...stopped, ending, { end: true }]));
+        const tags = run.events.map((event) => event._tag);
+        expect(tags.filter((tag) => tag === "drain.ended")).toHaveLength(1);
+        expect(tags.indexOf("drain.ended")).toBeGreaterThan(tags.indexOf("turn.completed"));
+        expect(startedTurnIds(run.events).at(-1)).toBe(opens ?? startedTurnIds(run.events)[0]);
+        yield* expectDeterministicReplay([...stopped, ending, { end: true }]);
+      }
+      const run = yield* Effect.scoped(runSteps([{ send: "first" }, init("init-1"), idle]));
+      expect(run.events.some((event) => event._tag === "drain.ended")).toBe(false);
     }),
   );
 
