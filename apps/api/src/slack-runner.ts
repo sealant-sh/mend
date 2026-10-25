@@ -25,8 +25,10 @@ import { ProjectId, SessionId, type OrganizationId } from "@mend/domain";
 import {
   changeOwnerOf,
   currentAgentProcess,
+  isCredentialProvider,
   isLiveProcess,
   loginChoiceOf,
+  unchosenLoginSummary,
   type AgentTurn,
   type Project,
   type RequestIntent,
@@ -942,9 +944,11 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
               Effect.map((accounts) => {
                 const choice = loginChoiceOf(accounts, harness);
                 if (choice._tag === "chosen" && choice.account.status === "active") return null;
-                return choice._tag === "unchosen"
-                  ? `no ${harness} login chosen · your Mend account holds ${choice.accounts.length} and sessions use only the chosen one`
-                  : `no active ${harness} account is connected to your Mend account · connect one in Mend under Settings → Connected accounts`;
+                if (choice._tag === "unchosen" && isCredentialProvider(harness)) {
+                  const summary = unchosenLoginSummary(harness, choice.accounts.length);
+                  return `${summary.reason} ${summary.remedy}`;
+                }
+                return `no active ${harness} account is connected to your Mend account · connect one in Mend under Settings → Connected accounts`;
               }),
               Effect.catch(() => Effect.succeed(null)),
             )

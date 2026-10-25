@@ -20,6 +20,7 @@ import type {
   SliceCommentTargetRequest,
   TranscriptEvent,
 } from "@mend/api-contracts";
+import { isChosenDefault } from "@mend/domain/default-login";
 import {
   isAgentProcessKind as isAgentKind,
   LIVE_PROCESS_STATUSES,
@@ -310,12 +311,24 @@ const call = async <M extends Method, P extends PathOf<M>>(
 
 // ─── the signed-in user's platform identity ─────────────────────────────────
 
-export const getSealantIdentity = () => call("GET", "/api/me/sealant");
+/** A Mend server older than chosen defaults sends no `isDefault`: its default is named `default`. */
+export const getSealantIdentity = () =>
+  call("GET", "/api/me/sealant").then((identity) => ({
+    ...identity,
+    accounts: identity.accounts.map((account) => ({
+      ...account,
+      isDefault: isChosenDefault(account),
+    })),
+  }));
 
-/** Forwards the credential to the platform under the user's own identity; Mend keeps nothing. */
+/**
+ * Forwards the credential to the platform under the user's own identity; Mend keeps nothing.
+ * Without `accountId`, the server writes the person's chosen login.
+ */
 export const connectAccount = (input: {
   readonly provider: ConnectedAccountProviderDto;
   readonly secret: string;
+  readonly accountId?: string;
 }) => call("POST", "/api/me/sealant/accounts", { body: input });
 
 export const disconnectAccount = (id: string) =>

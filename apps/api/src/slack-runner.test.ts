@@ -1394,7 +1394,7 @@ describe("the Slack runner, before anything starts", () => {
     );
 
     expect(posts(w, "postMessage").map((post) => post.text)).toEqual([
-      "not started · no claude login chosen · your Mend account holds 2 and sessions use only the chosen one",
+      "not started · No Claude login chosen: Mend holds 2 of yours, and sessions use only the chosen one. Remove the others with mend connect claude --remove &lt;name&gt;, or Disconnect them in Settings → Connected accounts, then connect the one left again to choose it.",
     ]);
     expect(w.effects.some((entry) => entry.startsWith("start."))).toBe(false);
   });

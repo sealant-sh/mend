@@ -44,7 +44,10 @@ export class ConnectAccountInput extends Schema.Class<ConnectAccountInput>("Conn
    * `~/.codex/auth.json`; a GitHub token (`gh auth token`).
    */
   secret: Schema.String.check(Schema.isNonEmpty()),
+  /** The account to write, by name; without it or `accountId`, the person's chosen login. */
   name: Schema.optional(Schema.String),
+  /** The account to write, by id: a row's own Replace. */
+  accountId: Schema.optional(Schema.String),
 }) {}
 
 /** What the settings page shows about the signed-in user's platform identity. */

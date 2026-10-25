@@ -1,4 +1,4 @@
-import { loginChoiceOf, noLoginChosenWords } from "@mend/domain/workbench";
+import { type LoginChoice, loginChoiceOf, unchosenLoginSummary } from "@mend/domain/default-login";
 import { Button, buttonVariants } from "@mend/ui/components/ui/button";
 import { Input } from "@mend/ui/components/ui/input";
 import { ToggleGroup, ToggleGroupItem } from "@mend/ui/components/ui/toggle-group";
@@ -338,12 +338,57 @@ const accountHint = (account: ConnectedAccountDto): string => {
   return parts.join(" · ");
 };
 
+interface RowView {
+  readonly hint: string;
+  readonly chosen: ConnectedAccountDto | null;
+  readonly unchosen: {
+    readonly accounts: ReadonlyArray<ConnectedAccountDto>;
+    readonly remedy: string;
+  } | null;
+}
+
+const rowViewOf = (
+  row: (typeof PROVIDERS)[number],
+  choice: LoginChoice<ConnectedAccountDto>,
+): RowView => {
+  switch (choice._tag) {
+    case "chosen":
+      return { hint: accountHint(choice.account), chosen: choice.account, unchosen: null };
+    case "unchosen": {
+      const summary = unchosenLoginSummary(row.provider, choice.accounts.length);
+      return {
+        hint: summary.words,
+        chosen: null,
+        unchosen: { accounts: choice.accounts, remedy: summary.remedy },
+      };
+    }
+    case "none":
+      return { hint: row.hint, chosen: null, unchosen: null };
+  }
+};
+
 /**
  * The signed-in user's own provider accounts (docs/SEALANT-IDENTITY.md in the
  * Mend repo). The credential goes to the platform under their Sealant user
  * and is never shown again; Mend stores nothing.
  */
 const refreshIdentity = () => queryClient.invalidateQueries({ queryKey: ["sealant-identity"] });
+
+function DisconnectButton({
+  busy,
+  account,
+  onDisconnect,
+}: {
+  readonly busy: boolean;
+  readonly account: ConnectedAccountDto;
+  readonly onDisconnect: (account: ConnectedAccountDto) => void;
+}) {
+  return (
+    <Button type="button" variant="ghost" disabled={busy} onClick={() => onDisconnect(account)}>
+      Disconnect
+    </Button>
+  );
+}
 
 function ConnectedAccountsSection() {
   const identity = useQuery(sealantIdentityQuery);
@@ -355,12 +400,16 @@ function ConnectedAccountsSection() {
   const refresh = refreshIdentity;
   const report = (cause: unknown) =>
     setError(cause instanceof Error ? cause.message : String(cause));
-  const submit = (provider: ConnectedAccountProviderDto) => {
+  const submit = (provider: ConnectedAccountProviderDto, chosen: ConnectedAccountDto | null) => {
     const value = secret.trim();
     if (value === "") return;
     setPending(provider);
     setError(null);
-    void connectAccount({ provider, secret: value })
+    void connectAccount({
+      provider,
+      secret: value,
+      ...(chosen === null ? {} : { accountId: chosen.id }),
+    })
       .then(() => {
         setEditing(null);
         setSecret("");
@@ -389,22 +438,12 @@ function ConnectedAccountsSection() {
         </RowShell>
       ) : (
         PROVIDERS.map((row) => {
-          const choice = loginChoiceOf(identity.data.accounts, row.provider);
-          const account = choice._tag === "chosen" ? choice.account : undefined;
+          const view = rowViewOf(row, loginChoiceOf(identity.data.accounts, row.provider));
           const isEditing = editing === row.provider;
           const busy = pending === row.provider;
           return (
             <div key={row.provider}>
-              <RowShell
-                label={row.label}
-                hint={
-                  account !== undefined
-                    ? accountHint(account)
-                    : choice._tag === "unchosen"
-                      ? noLoginChosenWords(row.provider)
-                      : row.hint
-                }
-              >
+              <RowShell label={row.label} hint={view.hint}>
                 <Button
                   type="button"
                   variant="outline"
@@ -415,25 +454,33 @@ function ConnectedAccountsSection() {
                     setEditing(isEditing ? null : row.provider);
                   }}
                 >
-                  {isEditing ? "Cancel" : account === undefined ? "Connect" : "Replace"}
+                  {isEditing ? "Cancel" : view.chosen === null ? "Connect" : "Replace"}
                 </Button>
-                {account !== undefined && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    disabled={busy}
-                    onClick={() => disconnect(account)}
-                  >
-                    Disconnect
-                  </Button>
+                {view.chosen !== null && (
+                  <DisconnectButton busy={busy} account={view.chosen} onDisconnect={disconnect} />
                 )}
               </RowShell>
+              {view.unchosen !== null && (
+                <div className="border-t border-rule px-4 py-3">
+                  {view.unchosen.accounts.map((account) => (
+                    <div key={account.id} className="flex items-center justify-between gap-4">
+                      <span className="font-mono text-[12.5px] text-label">
+                        {`${account.name} · ${accountHint(account)}`}
+                      </span>
+                      <DisconnectButton busy={busy} account={account} onDisconnect={disconnect} />
+                    </div>
+                  ))}
+                  <p className="mt-2 font-sans text-[12.5px] leading-relaxed text-label">
+                    {view.unchosen.remedy}
+                  </p>
+                </div>
+              )}
               {isEditing && (
                 <form
                   className="flex items-center gap-2 border-t border-rule px-4 py-3"
                   onSubmit={(event) => {
                     event.preventDefault();
-                    submit(row.provider);
+                    submit(row.provider, view.chosen);
                   }}
                 >
                   <Input

@@ -1,4 +1,8 @@
-import { loginChoiceOf } from "@mend/domain/workbench";
+import {
+  isCredentialProvider,
+  loginChoiceOf,
+  unchosenLoginSummary,
+} from "@mend/domain/default-login";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
@@ -193,6 +197,8 @@ export type Login =
   | { readonly kind: "signed-in" }
   /** No usable login: none, or Mend's marks it invalid or archived. `reason` says which. */
   | { readonly kind: "none"; readonly reason: string }
+  /** Held, but none chosen: `reason` says so and what to do. */
+  | { readonly kind: "unchosen"; readonly reason: string }
   /** Held, but observed expired or failing to refresh: whether it works is not known. */
   | { readonly kind: "unsure"; readonly reason: string };
 
@@ -226,10 +232,9 @@ export const loginsOf = (
       continue;
     }
     if (choice._tag === "unchosen") {
-      logins.set(harness, {
-        kind: "none",
-        reason: `No ${name} login chosen: Mend holds ${choice.accounts.length} of yours, and sessions use only the chosen one.`,
-      });
+      if (!isCredentialProvider(harness)) continue;
+      const summary = unchosenLoginSummary(harness, choice.accounts.length);
+      logins.set(harness, { kind: "unchosen", reason: `${summary.reason} ${summary.remedy}` });
       continue;
     }
     const account = choice.account;
@@ -314,7 +319,10 @@ export const providersFromMend = (
       ...(login === null || login.kind === "signed-in"
         ? {}
         : {
-            message: `${login.reason} ${login.kind === "none" ? "Connect one" : "If it does not work, connect it again"} with mend connect ${catalog.harness}.`,
+            message:
+              login.kind === "unchosen"
+                ? login.reason
+                : `${login.reason} ${login.kind === "none" ? "Connect one" : "If it does not work, connect it again"} with mend connect ${catalog.harness}.`,
           }),
       checkedAt,
       models: modelsFor(catalog, driver),

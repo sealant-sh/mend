@@ -381,16 +381,16 @@ describe("a person's login for a provider, as Core lists their accounts", () => 
       wireAccount("claude", "default", "active", false),
       wireAccount("claude", "work", "invalid", true),
     ];
-    expect(await loginOf("claude")).toBe("invalid");
+    expect(await loginOf("claude")).toEqual({ _tag: "invalid" });
     expect(received.at(-1)?.query.get("ownerUserId")).toBe("su-maria");
   });
 
-  it("is missing when the person holds accounts and none is chosen", async () => {
+  it("is unchosen when the person holds accounts and none is chosen", async () => {
     connectedAccounts = [
       wireAccount("codex", "work", "active", false),
       wireAccount("codex", "home", "active", false),
     ];
-    expect(await loginOf("codex")).toBe("missing");
+    expect(await loginOf("codex")).toEqual({ _tag: "unchosen", count: 2 });
   });
 
   it("takes the account named default from a Core that reports no default", async () => {
@@ -398,8 +398,10 @@ describe("a person's login for a provider, as Core lists their accounts", () => 
       wireAccount("claude", "backup", "invalid"),
       wireAccount("claude", "default", "active"),
     ];
-    expect(await loginOf("claude")).toBe("active");
+    expect(await loginOf("claude")).toEqual({ _tag: "active" });
     connectedAccounts = [wireAccount("claude", "backup", "active")];
-    expect(await loginOf("claude")).toBe("missing");
+    expect(await loginOf("claude")).toEqual({ _tag: "unchosen", count: 1 });
+    connectedAccounts = [];
+    expect(await loginOf("claude")).toEqual({ _tag: "missing" });
   });
 });

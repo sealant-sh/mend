@@ -1,6 +1,7 @@
 import { linuxLoginNameOf } from "@mend/db";
 import {
   PersonLayoutPlatform,
+  type PersonLogin,
   SealantClient,
   type SealantClientShape,
   SealantPlatformError,
@@ -41,7 +42,7 @@ export const personPlatform = (
     readonly bootstrapEnds: (user: string) => Deferred.Deferred<number> | null;
   },
   /** Each person's own login for a provider, as Core says it stands; `active` unless said. */
-  logins?: (accountId: string) => "active" | "invalid" | "missing" | "unknown",
+  logins?: (accountId: string) => PersonLogin,
   /** A login write Core does not complete (it did not answer). */
   postFails?: (onBehalfOf: string, home: string) => boolean,
   /** What the control plane says of itself, asked each time; it can run per person unless said. */
@@ -82,7 +83,7 @@ export const personPlatform = (
     loginOf: (accountId) =>
       Effect.sync(() => {
         calls.push(`login:${accountId}`);
-        return logins?.(accountId) ?? "active";
+        return logins?.(accountId) ?? { _tag: "active" };
       }),
     postCredentials: (_workspace, input) =>
       Effect.suspend(() => {

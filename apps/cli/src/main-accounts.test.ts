@@ -24,7 +24,12 @@ const account = (
 
 type Account = ReturnType<typeof account>;
 
-const startAccountsFake = (accounts: ReadonlyArray<Account>) => {
+type Served = Omit<Account, "isDefault"> & { readonly isDefault: boolean | undefined };
+
+/** As a Mend server older than chosen defaults serves it, with no `isDefault`. */
+const older = (row: Account): Served => ({ ...row, isDefault: undefined });
+
+const startAccountsFake = (accounts: ReadonlyArray<Served>) => {
   const deleted: Array<string> = [];
   const fake = startFakeMend((request, response) => {
     if (request.url === "/api/me/sealant" && request.method === "GET") {
@@ -46,7 +51,7 @@ const startAccountsFake = (accounts: ReadonlyArray<Account>) => {
   return { fake, deleted };
 };
 
-const run = async (accounts: ReadonlyArray<Account>, args: ReadonlyArray<string>) => {
+const run = async (accounts: ReadonlyArray<Served>, args: ReadonlyArray<string>) => {
   const { fake: started, deleted } = startAccountsFake(accounts);
   const fake = await started;
   try {
@@ -91,7 +96,29 @@ describe("mend accounts", spawning, () => {
     );
     expect(result.code, result.stderr).toBe(0);
     expect(result.stdout).toContain("  claude   connected · work@example.com · since 2026-09-18\n");
-    expect(result.stdout).toContain("  codex    No Codex login chosen · 2 connected\n");
+    expect(result.stdout).toContain(
+      [
+        "  codex    No Codex login chosen · 2 connected → mend connect codex --remove <name>",
+        "    work · connected · work@example.com · since 2026-09-18",
+        "    home · connected · home@example.com · since 2026-09-18",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("takes the account named default from a Mend server that sends no isDefault", async () => {
+    const result = await run(
+      [
+        older(account("claude", "default", false, "me@example.com")),
+        older(account("codex", "work", false, "work@example.com")),
+      ],
+      ["accounts"],
+    );
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain("  claude   connected · me@example.com · since 2026-09-18\n");
+    expect(result.stdout).toContain(
+      "  codex    No Codex login chosen · 1 connected → mend connect codex\n",
+    );
   });
 });
 
@@ -130,12 +157,34 @@ describe("mend connect --remove", spawning, () => {
     expect(result.deleted).toEqual([]);
     expect(result.stderr).toBe(
       [
-        "mend: codex: No Codex login chosen, so which one to remove is not known · nothing removed",
+        "mend: codex: No Codex login chosen, so which one to remove is not known · nothing removed → mend connect codex --remove <name>",
         "  work · connected · work@example.com · since 2026-09-18",
         "  home · connected · home@example.com · since 2026-09-18",
         "",
       ].join("\n"),
     );
+  });
+
+  it("disconnects the account named, chosen or not", async () => {
+    const result = await run(
+      [
+        account("codex", "work", false, "work@example.com"),
+        account("codex", "home", false, "home@example.com"),
+      ],
+      ["connect", "codex", "--remove", "home"],
+    );
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.deleted).toEqual(["account-codex-home"]);
+  });
+
+  it("removes nothing when no account has the name given", async () => {
+    const result = await run(
+      [account("codex", "work", true, "work@example.com")],
+      ["connect", "codex", "--remove", "home"],
+    );
+    expect(result.code).toBe(1);
+    expect(result.deleted).toEqual([]);
+    expect(result.stderr).toBe("mend: codex: no account named home · nothing removed\n");
   });
 
   it("refuses when nothing is connected", async () => {

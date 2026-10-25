@@ -20,7 +20,12 @@ import {
   WorktreeId,
 } from "@mend/domain";
 import { AgentRequest, AgentTurn, Session, SessionProcess } from "@mend/domain/workbench";
-import { type HomeLogins, PersonLayoutPlatform, type PersonSessionOptions } from "@mend/sealant";
+import {
+  type HomeLogins,
+  PersonLayoutPlatform,
+  type PersonLogin,
+  type PersonSessionOptions,
+} from "@mend/sealant";
 import {
   NoLiveAgent,
   ProtocolHost,
@@ -1610,7 +1615,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
    * to Maria asked of its steering, as the host asks once Maria's turn has waited.
    */
   const handOverToMaria = (options: {
-    readonly logins?: (accountId: string) => "active" | "invalid" | "missing" | "unknown";
+    readonly logins?: (accountId: string) => PersonLogin;
     readonly postFails?: (onBehalfOf: string, home: string) => boolean;
     /** What the host says at the stop (review 2 of mend#572, P2-2). */
     readonly stillQuiescent?: Effect.Effect<boolean>;
@@ -1887,7 +1892,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
         const run = yield* handOverToMaria({
           logins: (accountId) => {
             if (accountId === MARIA) withdrawn = true;
-            return "active";
+            return { _tag: "active" };
           },
           stillQuiescent: Effect.sync(() => !withdrawn),
         });
@@ -1942,7 +1947,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       Effect.gen(function* () {
         // Her turn was queued while her login stood; it needs reconnecting by the hand-over.
         const run = yield* handOverToMaria({
-          logins: (accountId) => (accountId === MARIA ? "invalid" : "active"),
+          logins: (accountId) => ({ _tag: accountId === MARIA ? "invalid" : "active" }),
         });
         expect(run.outcome).toEqual({
           code: "person_login_refused",
@@ -1990,7 +1995,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
         prepareWorld: (world) => world.members.set(MARIA, "member"),
         harnessLayout: {
           flag: "person",
-          platform: personPlatform(calls, { person: true }, undefined, () => "missing"),
+          platform: personPlatform(calls, { person: true }, undefined, () => ({ _tag: "missing" })),
         },
       },
     );
@@ -2114,7 +2119,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
   const submitScenario = async (options: {
     readonly harness: "claude" | "opencode";
     readonly author: string;
-    readonly logins?: (accountId: string) => "active" | "invalid" | "missing" | "unknown";
+    readonly logins?: (accountId: string) => PersonLogin;
   }) => {
     const calls: Array<string> = [];
     const submitted: Array<string> = [];
@@ -2162,11 +2167,11 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     return { calls, submitted, refused };
   };
 
-  it("refuses a steerer whose own login is missing or needs reconnecting, before anything is queued", async () => {
+  it("refuses a steerer whose own login is missing, unchosen or needs reconnecting, before anything is queued", async () => {
     const missing = await submitScenario({
       harness: "claude",
       author: MARIA,
-      logins: () => "missing",
+      logins: () => ({ _tag: "missing" }),
     });
     expect(missing.refused).toBe(
       "Connect Claude to steer this session. Connect it in Settings → Connected accounts, or run mend connect claude.",
@@ -2175,11 +2180,20 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     const invalid = await submitScenario({
       harness: "claude",
       author: MARIA,
-      logins: () => "invalid",
+      logins: () => ({ _tag: "invalid" }),
     });
     expect(invalid.refused).toBe(
       "Your Claude login needs reconnecting. Reconnect Claude to steer this session. Connect it in Settings → Connected accounts, or run mend connect claude.",
     );
+    const unchosen = await submitScenario({
+      harness: "claude",
+      author: MARIA,
+      logins: () => ({ _tag: "unchosen", count: 2 }),
+    });
+    expect(unchosen.refused).toBe(
+      "No Claude login chosen: Mend holds 2 of yours, and sessions use only the chosen one. Remove the others with mend connect claude --remove <name>, or Disconnect them in Settings → Connected accounts, then connect the one left again to choose it.",
+    );
+    expect(unchosen.submitted).toEqual([]);
     // Connected: queued, on the conversation, with one look at Core.
     const active = await submitScenario({ harness: "claude", author: MARIA });
     expect(active.refused).toBeNull();
@@ -2191,7 +2205,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     const own = await submitScenario({
       harness: "claude",
       author: "user-fixture",
-      logins: () => "missing",
+      logins: () => ({ _tag: "missing" }),
     });
     expect(own.refused).toBeNull();
     expect(own.calls).toEqual([]);

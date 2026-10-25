@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { loginChoiceOf, noLoginChosenWords } from "./default-login.ts";
+import { isChosenDefault, loginChoiceOf, unchosenLoginSummary } from "./default-login.ts";
 
 const account = (
   id: string,
@@ -47,8 +47,34 @@ describe("loginChoiceOf", () => {
   });
 });
 
-describe("noLoginChosenWords", () => {
-  it("names the provider as people write it", () => {
-    expect(noLoginChosenWords("github")).toBe("No GitHub login chosen");
+describe("isChosenDefault", () => {
+  it("takes the flag when it is sent, false included", () => {
+    expect(isChosenDefault({ name: "work", isDefault: true })).toBe(true);
+    expect(isChosenDefault({ name: "default", isDefault: false })).toBe(false);
+  });
+
+  it("takes the account named default when the flag is absent", () => {
+    expect(isChosenDefault({ name: "default" })).toBe(true);
+    expect(isChosenDefault({ name: "work" })).toBe(false);
+  });
+});
+
+describe("unchosenLoginSummary", () => {
+  it("asks for the only account to be connected again", () => {
+    expect(unchosenLoginSummary("github", 1)).toEqual({
+      words: "No GitHub login chosen",
+      count: 1,
+      reason:
+        "No GitHub login chosen: Mend holds 1 of yours, and sessions use only the chosen one.",
+      remedy:
+        "Connect GitHub again to choose it: run mend connect github, or Connect in Settings → Connected accounts.",
+      command: "mend connect github",
+    });
+  });
+
+  it("asks for the others to be removed when several are held", () => {
+    expect(unchosenLoginSummary("claude", 2).remedy).toBe(
+      "Remove the others with mend connect claude --remove <name>, or Disconnect them in Settings → Connected accounts, then connect the one left again to choose it.",
+    );
   });
 });

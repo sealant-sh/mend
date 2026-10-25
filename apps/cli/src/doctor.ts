@@ -6,8 +6,9 @@ import {
   claudeGrantFacts,
   HOST_USER_NAMESPACES_REFUSED,
   hostUserNamespacesFixLine,
+  isChosenDefault,
   loginChoiceOf,
-  noLoginChosenWords,
+  unchosenLoginSummary,
 } from "@mend/domain/workbench";
 
 import {
@@ -251,9 +252,12 @@ interface AccountDto {
   readonly metadata: Readonly<Record<string, unknown>>;
 }
 
+/** `isDefault` is absent from a Mend server older than chosen defaults. */
 interface IdentityDto {
   readonly sealantUserId: string;
-  readonly accounts: ReadonlyArray<AccountDto>;
+  readonly accounts: ReadonlyArray<
+    Omit<AccountDto, "isDefault"> & { readonly isDefault?: boolean | undefined }
+  >;
 }
 
 interface MachineDto {
@@ -539,13 +543,17 @@ export const runChecks = async (
   }
 
   const identity = signedIn ? await getJson<IdentityDto>(config, "/me/sealant") : null;
-  const platform = identity === null ? null : identity.value;
+  const accounts: ReadonlyArray<AccountDto> | null =
+    identity?.value?.accounts.map((account) => ({
+      ...account,
+      isDefault: isChosenDefault(account),
+    })) ?? null;
   for (const { provider } of HARNESS_CLIS) {
-    if (platform === null) {
+    if (accounts === null) {
       checks.push(notChecked(provider));
       continue;
     }
-    const choice = loginChoiceOf(platform.accounts, provider);
+    const choice = loginChoiceOf(accounts, provider);
     if (choice._tag === "none") {
       checks.push({
         label: provider,
@@ -556,11 +564,12 @@ export const runChecks = async (
       continue;
     }
     if (choice._tag === "unchosen") {
+      const summary = unchosenLoginSummary(provider, choice.accounts.length);
       checks.push({
         label: provider,
         state: "todo",
-        detail: `${noLoginChosenWords(provider)} · ${choice.accounts.length} connected`,
-        fix: null,
+        detail: `${summary.words} · ${summary.count} connected`,
+        fix: summary.command,
       });
       continue;
     }

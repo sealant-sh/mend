@@ -246,7 +246,33 @@ describe("GET /ws", () => {
           "codex",
           "warning",
           "unauthenticated",
-          "No Codex login chosen: Mend holds 1 of yours, and sessions use only the chosen one. Connect one with mend connect codex.",
+          "No Codex login chosen: Mend holds 1 of yours, and sessions use only the chosen one. Connect Codex again to choose it: run mend connect codex, or Connect in Settings → Connected accounts.",
+        ]);
+        mend.setAccounts([
+          { provider: "claude", status: "active" },
+          { provider: "codex", status: "active", name: "work", isDefault: false },
+          { provider: "codex", status: "active", name: "home", isDefault: false },
+        ]);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({}))[1], [
+          "codex",
+          "warning",
+          "unauthenticated",
+          "No Codex login chosen: Mend holds 2 of yours, and sessions use only the chosen one. Remove the others with mend connect codex --remove <name>, or Disconnect them in Settings → Connected accounts, then connect the one left again to choose it.",
+        ]);
+        // A Mend server older than chosen defaults sends no isDefault: its default is the account
+        // named default.
+        mend.setAccounts([
+          { provider: "claude", status: "active", isDefault: "absent" },
+          { provider: "codex", status: "active", name: "backup", isDefault: "absent" },
+        ]);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
+          ["claudeAgent", "ready", "authenticated", null],
+          [
+            "codex",
+            "warning",
+            "unauthenticated",
+            "No Codex login chosen: Mend holds 1 of yours, and sessions use only the chosen one. Connect Codex again to choose it: run mend connect codex, or Connect in Settings → Connected accounts.",
+          ],
         ]);
         mend.setAccounts([
           { provider: "claude", status: "active" },

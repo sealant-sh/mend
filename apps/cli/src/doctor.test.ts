@@ -397,7 +397,7 @@ describe("the claude grant line", () => {
 });
 
 describe("the provider lines", () => {
-  const providerLines = async (accounts: ReadonlyArray<ReturnType<typeof account>>) => {
+  const providerLines = async (accounts: ReadonlyArray<object>) => {
     const fake = await startFakeMend((request, response) => {
       if (request.url === "/api/me/sealant") {
         response.writeHead(200, { "content-type": "application/json" });
@@ -439,8 +439,24 @@ describe("the provider lines", () => {
         account("claude", "home@example.com", { name: "home", isDefault: false }),
       ]),
     ).toEqual([
-      "○ claude      No Claude login chosen · 2 connected",
+      "○ claude      No Claude login chosen · 2 connected → mend connect claude --remove <name>",
       "○ codex       not connected → mend connect codex",
+    ]);
+  });
+
+  it("takes the account named default from a Mend server that sends no isDefault", async () => {
+    const older = (provider: string, login: string, name: string) => ({
+      ...account(provider, login, { name, isDefault: false }),
+      isDefault: undefined,
+    });
+    expect(
+      await providerLines([
+        older("claude", "me@example.com", "default"),
+        older("codex", "work@example.com", "work"),
+      ]),
+    ).toEqual([
+      "✓ claude      connected · me@example.com",
+      "○ codex       No Codex login chosen · 1 connected → mend connect codex",
     ]);
   });
 });

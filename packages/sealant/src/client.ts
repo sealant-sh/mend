@@ -1,4 +1,5 @@
 import type { WorkspaceImageOs } from "@mend/domain";
+import { isChosenDefault, loginChoiceOf, unchosenLoginSummary } from "@mend/domain/default-login";
 import type {
   WorkspaceBind,
   WorkspaceBindOptions,
@@ -1406,9 +1407,7 @@ const toConnectedAccount = (wire: {
     connectedAt: new Date(wire.connectedAt),
     updatedAt: new Date(wire.updatedAt),
     lastUsedAt: wire.lastUsedAt === null ? null : new Date(wire.lastUsedAt),
-    // A control plane without `connectedAccountDefaults` sends no isDefault: its default is the
-    // account named `default`.
-    isDefault: wire.isDefault ?? wire.name === "default",
+    isDefault: isChosenDefault(wire),
   });
 
 const platformFailure = (code: string, message: string) =>
@@ -1521,21 +1520,85 @@ export const SealantClientsLive: Layer.Layer<
             ),
           ),
         );
+      const listOf = (ownerUserId: string) =>
+        listConnectedAccountsOp(ownerUserId).pipe(
+          Effect.map((response) => response.items.map(toConnectedAccount)),
+          Effect.provideContext(adminContext),
+          Effect.mapError(toPlatformError),
+        );
+      /**
+       * Which account a connect writes. Core refuses a connect with no target once a person holds
+       * several, so one meant for the chosen login names `default`, which Core resolves to it. An
+       * only account nobody chose is the one the person is connecting, and becomes the default.
+       */
+      const targetOf = Effect.fn("SealantClients.connectTarget")(function* (
+        ownerUserId: string,
+        input: ConnectAccountInput,
+      ) {
+        if (input.name !== undefined && input.accountId !== undefined) {
+          return yield* new SealantPlatformError({
+            code: "connected-account-target-conflict",
+            status: 400,
+            message: "A connect names an account or gives its id, not both.",
+            cause: null,
+          });
+        }
+        if (input.name !== undefined) return { name: input.name };
+        const features = yield* wrap(() => admin.features());
+        if (input.accountId !== undefined) {
+          if (features.connectedAccountDefaults) return { accountId: input.accountId };
+          const accounts = yield* listOf(ownerUserId);
+          const account = accounts.find((candidate) => candidate.id === input.accountId);
+          if (account === undefined) {
+            return yield* new SealantPlatformError({
+              code: "connected-account-not-found",
+              status: 404,
+              message: `No connected account ${input.accountId} of yours.`,
+              cause: null,
+            });
+          }
+          return { name: account.name };
+        }
+        if (!features.connectedAccountDefaults) return {};
+        const choice = loginChoiceOf(yield* listOf(ownerUserId), input.provider);
+        switch (choice._tag) {
+          case "none":
+            return {};
+          case "chosen":
+            return { name: "default" };
+          case "unchosen": {
+            const [only, ...others] = choice.accounts;
+            if (others.length === 0) return { accountId: only.id, makeDefault: true };
+            const summary = unchosenLoginSummary(input.provider, choice.accounts.length);
+            return yield* new SealantPlatformError({
+              code: "connected-account-ambiguous",
+              status: 409,
+              message: `${summary.reason} ${summary.remedy}`,
+              cause: null,
+            });
+          }
+        }
+      });
       return {
-        list: () =>
-          withOwner((ownerUserId) =>
-            listConnectedAccountsOp(ownerUserId).pipe(
-              Effect.map((response) => response.items.map(toConnectedAccount)),
-            ),
-          ),
+        list: () => sealantUserIdFor(userId).pipe(Effect.flatMap(listOf)),
         connect: (input) =>
-          withOwner((ownerUserId) =>
-            createConnectedAccountOp({
-              ownerUserId,
-              provider: input.provider,
-              secret: input.secret,
-              ...(input.name === undefined ? {} : { name: input.name }),
-            }).pipe(Effect.map(toConnectedAccount)),
+          sealantUserIdFor(userId).pipe(
+            Effect.flatMap((ownerUserId) =>
+              targetOf(ownerUserId, input).pipe(
+                Effect.flatMap((target) =>
+                  createConnectedAccountOp({
+                    ownerUserId,
+                    provider: input.provider,
+                    secret: input.secret,
+                    ...target,
+                  }).pipe(
+                    Effect.map(toConnectedAccount),
+                    Effect.provideContext(adminContext),
+                    Effect.mapError(toPlatformError),
+                  ),
+                ),
+              ),
+            ),
           ),
         disconnect: (id) =>
           withOwner((ownerUserId) =>
