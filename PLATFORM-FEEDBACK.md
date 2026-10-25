@@ -7,6 +7,25 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-26 · 0.40.0-next.763 · A per-project, per-person home a capture workspace can mount
+
+A Mend workspace window gets a fresh VS Code server home (`~/.vscode-server`) in every session, so
+an extension a person installs in one session of a project is gone in the next (SLNT-328).
+
+- **Today:** a capture workspace mounts nothing. `WorkspaceCaptureSource` says "the platform mounts
+  nothing and clones nothing". The only state Mend keeps for a person across executors is
+  `PERSON_SAVED_STATE` (`packages/sessions/src/harness-layout.ts`): harness paths such as
+  `.claude/projects`, saved with the worktree, so a new worktree of the same project starts empty
+  too.
+- **Mend today:** the VS Code extension records what the person installs in a project's workspace
+  window in its own `globalState`, which Settings Sync carries, and reinstalls those extensions on
+  each open (SLNT-328). Each session downloads and installs them again, and the list follows the
+  person only through Settings Sync. SLNT-329 moves the list to the Mend server for 0.37.
+- **Needed:** a volume per project and person that a capture workspace can mount at a path in the
+  person's home, such as `~/.vscode-server`, kept across executors and worktrees, with a size limit
+  and a way to delete it. Two live sessions of one project would share it, so the contract should
+  say whether concurrent mounts are allowed.
+
 ## 2026-10-24 · 0.39.0 · A forward that bounds what it buffers
 
 Live preview (ADR 0017, proposed) would put an HTTP gateway in Mend's API process, in front of

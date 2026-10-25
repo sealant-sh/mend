@@ -331,6 +331,25 @@ member from the organization removes theirs, and Mend keeps retrying any key the
 remove at once. `mend uninstall --home` removes the key of the machine it runs on. The mobile app
 does not list keys.
 
+### Extensions in a workspace
+
+Each session's workspace starts with a fresh VS Code server home, so an extension you install in one
+session is not there in the next. Mend carries the extensions you install yourself. Install one from
+the Extensions panel in a project's workspace window, and Mend installs it again, in the background,
+in every later session of that project. The status item reads `installing extensions 1/1`, then
+`extensions in sync`, and nothing asks a question. Uninstall it in any session of the project and
+later sessions no longer get it.
+
+Mend never installs your other local extensions in a workspace. An extension installed from a VSIX
+file is not carried. Mend keeps the list per project in VS Code's global state, which Settings Sync
+copies to your other machines. While Mend cannot tell the window's project, for example when you are
+signed out, the status item reads `extensions not carried · not signed in`.
+
+The setting `mend.workspaces.bringMyEditor` takes `picked`, the default, or `off`, which leaves
+workspaces as VS Code makes them. Mend copies no settings. VS Code already applies your User
+settings in a workspace window, except settings of scope `machine` and `machine-overridable`, which
+stay on your machine because they are mostly local paths.
+
 ## Type to the agent
 
 The workspace window attaches the session's agent terminal in its panel and focuses it, named
