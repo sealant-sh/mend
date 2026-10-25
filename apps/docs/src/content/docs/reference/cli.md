@@ -164,7 +164,7 @@ it installs runs as `private` and `single`.
 | `mend adopt [git-url] [--name <name>] [--auth <mode>] [--private\|--shared]`                  | Clone a network Git repository into the store; with no URL, the current checkout's `origin`                  |
 | `mend refresh [project]`                                                                      | Fetch origin's branches into the store so new sessions base on current tips                                  |
 | `mend projects [--json]`                                                                      | List adopted projects and their live sessions; `--json` for scripts                                          |
-| `mend env load [file] [--secret [A,B]] [--project <name>]`                                    | Load dotenv values into project configuration and secrets                                                    |
+| `mend env load [file] [--secret [A,B]] [--project <name>]`                                    | Load dotenv values into project configuration and secrets; provider login names are refused                  |
 | `mend env show [--project <name>]`                                                            | List configuration, secret, and cluster-binding names; never secret values                                   |
 | `mend env cluster add secret\|configmap <name>`, `remove <kind>/<name>`, `sa <name>\|--clear` | Bind Kubernetes Secrets, ConfigMaps, and a service account to a project's workspaces; Mend stores names only |
 

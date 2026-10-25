@@ -148,6 +148,15 @@ Mend rejects names that belong to the platform or can change process startup. Ex
 - `GITHUB_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN`, which come from connected accounts;
 - names beginning with `MEND_` or `SEALANT_`.
 
+Secrets also refuse the names of provider logins, in any case: `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` are Claude logins, and `OPENAI_API_KEY` and
+`CODEX_API_KEY` are Codex logins. Connect those in Settings → Connected accounts, so that a project
+secret never decides which login a session spends. `mend env load` and the web app's **Add
+variables** refuse each of these entries and load the rest of the file.
+
+A secret stored under one of these names before Mend refused them is kept as it was. Its row in the
+web app and in `mend env show` says so. You can rename it or remove it, but not give it a new value.
+
 Use [provider accounts](/guides/provider-accounts/) for Claude, Codex, and GitHub credentials rather
 than copying those credentials into project secrets.
 
