@@ -3,6 +3,7 @@ import { IncomingMessage } from "node:http";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import {
   CurrentUser,
+  RawFileBusy,
   RawFilePreparing,
   RawFileNotFound,
   RawFileTooLarge,
@@ -107,9 +108,11 @@ const rawFile = (
         Effect.mapError((error) =>
           error.reason === "preparing"
             ? new RawFilePreparing({})
-            : error.reason === "too-large"
-              ? new RawFileTooLarge({})
-              : new RawFileNotFound({}),
+            : error.reason === "full" || error.reason === "busy"
+              ? new RawFileBusy({ reason: error.reason })
+              : error.reason === "too-large"
+                ? new RawFileTooLarge({})
+                : new RawFileNotFound({}),
         ),
       );
     const headers: Record<string, string> = {

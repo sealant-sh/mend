@@ -4,10 +4,12 @@ import * as fs from "node:fs";
 import { Context, Duration, Effect, Schema, Stream } from "effect";
 
 /**
- * Raw reads report no filesystem paths or underlying I/O errors.
+ * Raw reads report no filesystem paths or underlying I/O errors. `preparing`: the file is still
+ * being prepared, for a later open. `full` (every cached file is being read) and `busy` (too many
+ * preparations are in flight) started nothing.
  */
 export class RawReadError extends Schema.TaggedError<RawReadError>()("RawReadError", {
-  reason: Schema.Literals(["missing", "io", "too-large", "preparing"]),
+  reason: Schema.Literals(["missing", "io", "too-large", "preparing", "full", "busy"]),
 }) {}
 
 const ObjectId = Schema.String.check(Schema.isPattern(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/));
@@ -58,20 +60,21 @@ export interface RawTreeSource {
   readonly tree: ImmutableTree;
 }
 
+/** Every bound is one API process's: each process keeps its own cache. */
 export const DEFAULT_RAW_CACHE_LIMITS = {
   fileBytes: 2 * 1024 ** 3,
   totalBytes: 8 * 1024 ** 3,
   entries: 256,
-  preparations: 2,
-  pending: 32,
-  /** A cache file no process refreshed for this long is idle, or abandoned by a crash. */
-  leaseMillis: 60_000,
-  /** How often a process refreshes the files it reads, writes or locks. */
-  heartbeatMillis: 10_000,
-  /** How often a process waiting on another's lock looks again. */
-  pollMillis: 50,
-  /** Prepared paths remembered on disk; past this the oldest are forgotten and prepared again. */
+  /** Files over this share `largeUnpacks` slots; smaller ones take `smallUnpacks`, never waiting behind them. */
+  largeBytes: 16 * 1024 ** 2,
+  largeUnpacks: 2,
+  smallUnpacks: 4,
+  /** Prepared paths remembered, so an open needs no Git; the least recently used are forgotten. */
   paths: 16_384,
+  /** A tree lookup's deadline, and an unpack's before its size is counted. */
+  gitMillis: 60_000,
+  /** An unpack may take a further second for each this many bytes. */
+  unpackBytesPerSecond: 8 * 1024 ** 2,
 };
 export const RawCacheLimits = Context.Reference<typeof DEFAULT_RAW_CACHE_LIMITS>(
   "@mend/store/RawCacheLimits",

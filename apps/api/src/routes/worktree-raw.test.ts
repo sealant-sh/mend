@@ -8,6 +8,8 @@ import { CheckpointId, SequenceNumber, Sha } from "@mend/domain";
 import { Checkpoint } from "@mend/domain/workbench";
 import {
   parseImmutableTree,
+  RawBlobCache,
+  RawBlobCacheLive,
   type RawBlobTarget,
   RawReadError,
   Store,
@@ -23,7 +25,8 @@ const worktree = ids("private-alice").worktree;
 let api: TenancyApi;
 let root: string;
 let store: Store["Service"];
-let storeRuntime: ManagedRuntime.ManagedRuntime<Store, never>;
+let raw: RawBlobCache["Service"];
+let storeRuntime: ManagedRuntime.ManagedRuntime<Store | RawBlobCache, never>;
 const bytes = Uint8Array.from({ length: 256 }, (_, i) => i);
 const checkpointFile = (
   commit: string,
@@ -37,18 +40,19 @@ const checkpointFile = (
       path: target.path,
       within: target.within,
     };
-    yield* store.prepareRawBlobFile(file, { repository: root, tree });
-    return (
-      (yield* store.openRawBlobFile(file)) ?? (yield* new RawReadError({ reason: "preparing" }))
-    );
+    yield* raw.prepare(file, { repository: root, tree });
+    return (yield* raw.open(file)) ?? (yield* new RawReadError({ reason: "preparing" }));
   });
 beforeAll(async () => {
   root = fs.mkdtempSync(join(tmpdir(), "mend-raw-http-"));
   fs.writeFileSync(join(root, "data.bin"), bytes);
   fs.writeFileSync(join(root, "empty.bin"), "");
   fs.symlinkSync("/etc/passwd", join(root, "escape.bin"));
-  storeRuntime = ManagedRuntime.make(Store.layer.pipe(Layer.provide(StoreConfig.layerFor(root))));
+  storeRuntime = ManagedRuntime.make(
+    Layer.merge(Store.layer, RawBlobCacheLive).pipe(Layer.provide(StoreConfig.layerFor(root))),
+  );
   store = await storeRuntime.runPromise(Store);
+  raw = await storeRuntime.runPromise(RawBlobCache);
   const git = (...args: string[]) =>
     execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@localhost", ...args], {
       cwd: root,
@@ -203,10 +207,12 @@ it("serves checkpoint bytes instead of current bytes and hides unknown or foreig
   expect((await get("path=data.bin&at=unknown")).status).toBe(404);
   expect((await get("path=data.bin&at=checkpoint-foreign")).status).toBe(404);
 });
-it("answers preparation and oversize refusals with typed 503 and 413", async () => {
-  for (const [reason, status, tag] of [
-    ["preparing", 503, "RawFilePreparing"],
-    ["too-large", 413, "RawFileTooLarge"],
+it("answers preparation, a full or busy cache, and oversize refusals with typed 503 and 413", async () => {
+  for (const [reason, status, body] of [
+    ["preparing", 503, { _tag: "RawFilePreparing" }],
+    ["full", 503, { _tag: "RawFileBusy", reason: "full" }],
+    ["busy", 503, { _tag: "RawFileBusy", reason: "busy" }],
+    ["too-large", 413, { _tag: "RawFileTooLarge" }],
   ] as const) {
     const captured = await createTenancyApi(
       {},
@@ -222,7 +228,7 @@ it("answers preparation and oversize refusals with typed 503 and 413", async () 
         `/api/worktrees/${worktree}/raw?path=data.bin`,
       );
       expect(response.status).toBe(status);
-      expect(await response.json()).toMatchObject({ _tag: tag });
+      expect(await response.json()).toMatchObject(body);
     } finally {
       await captured.dispose();
     }

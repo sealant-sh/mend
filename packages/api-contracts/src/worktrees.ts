@@ -41,6 +41,16 @@ export class RawFilePreparing extends Schema.TaggedError<RawFilePreparing>()(
   { httpApiStatus: 503 },
 ) {}
 
+/**
+ * Nothing was started: every file in Mend's raw cache is being read (`full`), or too many
+ * preparations are already in flight (`busy`). A later open starts again.
+ */
+export class RawFileBusy extends Schema.TaggedError<RawFileBusy>()(
+  "RawFileBusy",
+  { reason: Schema.Literals(["full", "busy"]) },
+  { httpApiStatus: 503 },
+) {}
+
 export class RawFileNotFound extends Schema.TaggedError<RawFileNotFound>()(
   "RawFileNotFound",
   {},
@@ -75,6 +85,7 @@ const rawErrors = [
   WorktreeNotFound,
   RawFileNotFound,
   RawFilePreparing,
+  RawFileBusy,
   RawFileTooLarge,
   BudgetExceeded,
 ] as const;

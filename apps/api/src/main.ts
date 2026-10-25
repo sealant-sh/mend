@@ -198,6 +198,9 @@ import {
   FolderStore,
   FolderStoreLive,
   type MendKeys,
+  type RawBlobCache,
+  RawBlobCacheLive,
+  RawBlobCacheOff,
   MendKeysConfigLive,
   MendKeysLive,
   type SecretCipher,
@@ -801,9 +804,15 @@ const MainLive = Layer.unwrap(
           Layer.provide(DatabaseLive),
         )
       : SessionRepositoryLocalLive.pipe(Layer.provide(StoreLive), Layer.provide(DatabaseLive));
-    const worktreeReads = captured
-      ? WorktreeReadsCapturedLive.pipe(Layer.provide(captureStore))
-      : WorktreeReadsColocatedLive.pipe(Layer.provide(StoreLive), Layer.provide(DatabaseLive));
+    // Only the API serves raw file reads: it keeps its own unpack cache under the store root, and
+    // a worker-only process keeps none, so no two processes share one.
+    const rawBlobCache: Layer.Layer<RawBlobCache> =
+      mode === "worker" ? RawBlobCacheOff : RawBlobCacheLive.pipe(Layer.provide(StoreConfig.layer));
+    const worktreeReads = (
+      captured
+        ? WorktreeReadsCapturedLive.pipe(Layer.provide(captureStore))
+        : WorktreeReadsColocatedLive.pipe(Layer.provide(StoreLive), Layer.provide(DatabaseLive))
+    ).pipe(Layer.provide(rawBlobCache));
     // Landing's git half by store kind: the runner cache for a capture-backed worktree, the
     // project's bare store beside Mend for a co-located one. The routes read it too (the probe).
     const landingGit: Layer.Layer<

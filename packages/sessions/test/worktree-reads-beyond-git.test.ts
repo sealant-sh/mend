@@ -11,6 +11,7 @@ import {
   encodeDirObject,
   FORMAT_DIR_PACKS,
   GitOpsRunner,
+  RawBlobCacheOff,
   sha256Hex,
 } from "@mend/store";
 import { buildManifest, uploadObjects, writeCdcPack } from "@mend/store/testing";
@@ -47,6 +48,7 @@ describe("WorktreeReads.pathsBeyondGit (captured)", () => {
       Layer.provide(blobs),
       Layer.provide(memoryStoreRefs()),
       Layer.provide(Layer.mock(GitOpsRunner, {})),
+      Layer.provide(RawBlobCacheOff),
     );
     const worktreeId = WorktreeId.make("wt-beyond-git");
     const project = ProjectId.make("p-beyond-git");

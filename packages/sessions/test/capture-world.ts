@@ -23,6 +23,8 @@ import {
   captureKeys,
   type GitOpsRunner,
   GitOpsRunnerLive,
+  type RawBlobCache,
+  RawBlobCacheLive,
   packIdxKeyOf,
   sha256Hex,
   Store,
@@ -284,7 +286,7 @@ export interface CaptureWorld {
   readonly blobRoot: string;
   /** The capture channel alone, over the world's store and bucket: build it fresh for a restart. */
   readonly channel: Layer.Layer<CaptureChannel>;
-  /** Store, StoreConfig, BlobStore, CaptureStoreRepo, StoreRefsRepo, GitOpsRunner, CaptureChannel, ProjectsRepo, WorktreesRepo. */
+  /** Store, StoreConfig, BlobStore, CaptureStoreRepo, StoreRefsRepo, GitOpsRunner, CaptureChannel, ProjectsRepo, WorktreesRepo, RawBlobCache. */
   readonly layer: Layer.Layer<
     | Store
     | StoreConfig
@@ -295,6 +297,7 @@ export interface CaptureWorld {
     | StoreRefsRepo
     | GitOpsRunner
     | CaptureChannel
+    | RawBlobCache
   >;
 }
 
@@ -358,6 +361,7 @@ export const makeCaptureWorld = (
     refs,
     runner,
     channel,
+    RawBlobCacheLive.pipe(Layer.provide(storeConfig)),
   );
   return {
     scratch,

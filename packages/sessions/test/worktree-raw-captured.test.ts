@@ -10,6 +10,8 @@ import {
   BlobStore,
   decodeManifest,
   GitOpsRunner,
+  RawBlobCache,
+  RawBlobCacheLive,
   RawPreparationWait,
   Store,
   StoreConfig,
@@ -18,7 +20,7 @@ import {
 } from "@mend/store";
 import { buildManifest, recordGit, uploadObjects } from "@mend/store/testing";
 import { Duration, Effect, Exit, Layer, Logger, Scope, Stream, Tracer } from "effect";
-import type * as Context from "effect/Context";
+import * as Context from "effect/Context";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { SessionRepositoryCapturedLive } from "../src/session-repository-captured.ts";
@@ -63,7 +65,7 @@ describe("raw reads of captured worktrees", () => {
     WorktreeReadsCapturedLive.pipe(Layer.provide(counted), Layer.provide(world.layer)),
     world.layer,
   );
-  type Services = SessionRepository | WorktreeReads | CaptureStoreRepo | BlobStore;
+  type Services = SessionRepository | WorktreeReads | CaptureStoreRepo | BlobStore | RawBlobCache;
   const scope = Scope.makeUnsafe();
   let context: Context.Context<Services>;
   const tracer = Tracer.make({
@@ -259,12 +261,16 @@ describe("raw reads of captured worktrees", () => {
     expect(ensures).toBe(0);
   });
 
-  it("serves a grant's later opens and seeks from a process with no metadata cached: no git, no restoration", async () => {
+  it("serves a grant's later opens and seeks from the process's cache alone: no git, no restoration", async () => {
     const captureId = captures[1] ?? "";
     await read({ kind: "capture", captureId });
     const fresh = await Effect.runPromise(
       Layer.build(
-        WorktreeReadsCapturedLive.pipe(Layer.provide(counted), Layer.provide(world.layer)),
+        WorktreeReadsCapturedLive.pipe(
+          Layer.provide(counted),
+          Layer.provide(Layer.succeed(RawBlobCache, Context.get(context, RawBlobCache))),
+          Layer.provide(world.layer),
+        ),
       ).pipe(Effect.provideService(Scope.Scope, scope)),
     );
     recorder.clear();
@@ -450,7 +456,11 @@ describe("raw reads of co-located checkpoints", () => {
         fs.writeFileSync(path.join(dir, "image.png"), "edited current bytes");
       }
       const layer = WorktreeReadsColocatedLive.pipe(
-        Layer.provide(Store.layer.pipe(Layer.provide(StoreConfig.layerFor(root)))),
+        Layer.provide(
+          Layer.merge(Store.layer, RawBlobCacheLive).pipe(
+            Layer.provide(StoreConfig.layerFor(root)),
+          ),
+        ),
         Layer.provide(Layer.mock(ProjectsRepo, { byId: () => Effect.succeed(projectRow) })),
         Layer.provide(
           Layer.mock(WorktreesRepo, {
@@ -477,9 +487,11 @@ describe("raw reads of co-located checkpoints", () => {
                 );
               }),
             );
-          expect(
-            fs.readdirSync(path.join(root, "_cache/raw")).filter((file) => file.endsWith(".blob")),
-          ).toHaveLength(1);
+          const unpacked = fs
+            .readdirSync(path.join(root, "_cache/raw"), { recursive: true, encoding: "utf8" })
+            .map((name) => path.join(root, "_cache/raw", name))
+            .filter((file) => fs.statSync(file).isFile());
+          expect(unpacked.map((file) => [...fs.readFileSync(file)])).toEqual([[5, 0, 255]]);
         }).pipe(Effect.provide(layer)),
       );
     } finally {

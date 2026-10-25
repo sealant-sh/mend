@@ -27,4 +27,6 @@ export {
   type OpenRawFile,
   type RawBlobTarget,
   type RawTreeName,
+  type RawTreeSource,
 } from "./raw-file.ts";
+export { RawBlobCache, RawBlobCacheLive, RawBlobCacheOff } from "./raw-blob-cache.ts";

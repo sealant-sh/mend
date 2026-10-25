@@ -1,11 +1,14 @@
 import { execFile, spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
+import { connect, createServer, type Server } from "node:net";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-import { Cache, Deferred, Effect, Exit, Scope, Semaphore } from "effect";
+import { Deferred, Duration, Effect, Exit, Layer, Scope, Semaphore } from "effect";
+import * as Context from "effect/Context";
 
 import {
   parseBlobId,
@@ -14,11 +17,30 @@ import {
   RawReadError,
   readRawDescriptor,
   revisionFingerprint,
-  type ImmutableTree,
   type OpenRawFile,
   type RawBlobTarget,
   type RawTreeSource,
 } from "./raw-file.ts";
+import { StoreConfig } from "./store.ts";
+
+/**
+ * Immutable files unpacked for raw reads. Each process keeps its own directory and decides
+ * everything about it in memory, so no two processes share a cache file, a lock or a clock.
+ */
+export class RawBlobCache extends Context.Service<
+  RawBlobCache,
+  {
+    /** A file this process prepared, held by the caller's scope; null when it has not. Runs no Git. */
+    readonly open: (
+      target: RawBlobTarget,
+    ) => Effect.Effect<OpenRawFile | null, RawReadError, Scope.Scope>;
+    /** Find `target` in `source`'s tree and unpack it, once however many callers ask. */
+    readonly prepare: (
+      target: RawBlobTarget,
+      source: RawTreeSource,
+    ) => Effect.Effect<void, RawReadError>;
+  }
+>()("@mend/store/RawBlobCache") {}
 
 interface Blob {
   readonly oid: BlobId;
@@ -26,7 +48,7 @@ interface Blob {
 }
 interface Lookup {
   readonly repository: string;
-  readonly tree: ImmutableTree;
+  readonly tree: string;
   readonly path: string;
 }
 
@@ -34,15 +56,23 @@ const io = <A>(body: () => A) =>
   Effect.try({ try: body, catch: () => new RawReadError({ reason: "io" }) });
 const isErrno = (error: unknown, code: string) =>
   error instanceof Error && "code" in error && error.code === code;
-/** Cache files are shared with other processes, so their times follow the wall clock. */
-const wallClock = () => Date.now();
-const unlock = (file: string) => Effect.sync(() => fs.rmSync(file, { force: true }));
 const validPath = (path: string) =>
   path.length > 0 &&
   Buffer.byteLength(path) <= 4096 &&
   !path.includes("\\") &&
   !path.includes("\0") &&
   path.split("/").every((part) => part !== "" && part !== "." && part !== ".." && part !== ".git");
+const contained = (target: RawBlobTarget) =>
+  validPath(target.path) &&
+  (target.within === "" ||
+    (validPath(target.within) && target.path.startsWith(`${target.within}/`)));
+const deadline =
+  (millis: number) =>
+  <A, R>(effect: Effect.Effect<A, RawReadError, R>) =>
+    Effect.timeoutOrElse(effect, {
+      duration: Duration.millis(millis),
+      orElse: () => Effect.fail(new RawReadError({ reason: "io" })),
+    });
 
 const lookupBlob = (input: Lookup): Effect.Effect<Blob, RawReadError> =>
   Effect.gen(function* () {
@@ -79,12 +109,8 @@ const lookupBlob = (input: Lookup): Effect.Effect<Blob, RawReadError> =>
     return { oid, size };
   });
 
-/** Stream and verify before the atomic rename; stderr never enters an error or trace. */
-const unpack = (
-  repository: string,
-  blob: Blob,
-  temporary: string,
-): Effect.Effect<void, RawReadError> =>
+/** Stream into `file` and verify; stderr never enters an error or trace. */
+const unpack = (repository: string, blob: Blob, file: string): Effect.Effect<void, RawReadError> =>
   Effect.callback<void, RawReadError>((resume) => {
     const controller = new AbortController();
     const write = async (signal: AbortSignal) => {
@@ -115,12 +141,9 @@ const unpack = (
       try {
         const results = await Promise.allSettled([
           ended,
-          pipeline(
-            child.stdout,
-            bounded,
-            fs.createWriteStream(temporary, { flags: "r+", mode: 0o600 }),
-            { signal },
-          ).catch((error: unknown) => {
+          pipeline(child.stdout, bounded, fs.createWriteStream(file, { flags: "w", mode: 0o600 }), {
+            signal,
+          }).catch((error: unknown) => {
             child.kill();
             throw error;
           }),
@@ -140,7 +163,7 @@ const unpack = (
       () => resume(Effect.void),
       () => resume(Effect.fail(new RawReadError({ reason: "io" }))),
     );
-    // Wait for Node to close its streams before the finalizer removes the temporary file.
+    // Wait for Node to close its streams before a failed file is removed.
     return Effect.promise(async () => {
       controller.abort();
       await done;
@@ -148,323 +171,287 @@ const unpack = (
   });
 
 /**
- * The directory every process on the store shares. Its listing is the only accounting:
- *
- * - `<key>.blob` a published file; its mtime is its lease, refreshed while any process reads it;
- * - `<key>.tmp-<size>-<id>` a file being unpacked, its size reserved, refreshed while it is;
- * - `<key>.lock` the one preparation of a blob, across processes;
- * - `<key>.evict-<id>` a file being evicted;
- * - `<path key>.path` the blob a named tree holds at a path, so a later open needs no Git;
- * - `admit.lock` held while one process counts the directory and reserves room.
- *
- * A file left behind by a crashed process stops being refreshed and goes stale after the lease.
+ * One blob's file in this process's directory. Only `unpacking` and `ready` hold bytes against the
+ * cap: a preparation waiting for a slot reserves nothing.
  */
-const BLOB = /^([a-f0-9]{64})\.blob$/;
-const TEMPORARY = /^[a-f0-9]{64}\.tmp-(\d+)-[a-f0-9-]+$/;
-const ABANDONABLE = /^[a-f0-9]{64}\.(?:lock|evict-[a-f0-9-]+|path-[a-f0-9-]+)$/;
-const PATH = /^[a-f0-9]{64}\.path$/;
-
-const digest = (...parts: ReadonlyArray<string>) =>
-  createHash("sha256").update(parts.join("\0")).digest("hex");
-const blobKey = (project: string, oid: BlobId) => digest(project, oid);
-const pathKey = (target: RawBlobTarget) =>
-  digest(
-    target.project,
-    target.name.kind === "capture"
-      ? `capture:${target.name.captureId}`
-      : `commit:${target.name.commit}`,
-    target.path,
-  );
-const contained = (target: RawBlobTarget) =>
-  validPath(target.path) &&
-  (target.within === "" ||
-    (validPath(target.within) && target.path.startsWith(`${target.within}/`)));
-
-interface RawBlobCache {
-  readonly open: (
-    target: RawBlobTarget,
-  ) => Effect.Effect<OpenRawFile | null, RawReadError, Scope.Scope>;
-  readonly prepare: (
-    target: RawBlobTarget,
-    source: RawTreeSource,
-  ) => Effect.Effect<void, RawReadError>;
+interface Pending {
+  readonly state: "waiting" | "unpacking";
+  readonly size: number;
+  readonly done: Deferred.Deferred<void, RawReadError>;
 }
+type Waiting = Pending & { readonly state: "waiting" };
+type Entry = Pending | { readonly state: "ready"; readonly size: number };
 
-export const makeRawBlobCache = (root: string): Effect.Effect<RawBlobCache, never, Scope.Scope> =>
+const shortHash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 8);
+const firstLine = (...files: ReadonlyArray<string>) =>
+  files
+    .map((file) => {
+      try {
+        return fs.readFileSync(file, "utf8").trim();
+      } catch {
+        return "";
+      }
+    })
+    .find((line) => line !== "") ?? "";
+/** No boot id to read (macOS): a beacon is probed only from the same host name. */
+const UNKNOWN_BOOT = "00000000";
+/** The kernel boot and the machine a directory's process ran on, hashed into its name. */
+export const rawCacheOwner = () => {
+  const boot = firstLine("/proc/sys/kernel/random/boot_id");
+  return {
+    boot: boot === "" ? UNKNOWN_BOOT : shortHash(boot),
+    host: shortHash(`${hostname()}\0${firstLine("/etc/machine-id", "/var/lib/dbus/machine-id")}`),
+  };
+};
+const INSTANCE = /^([a-f0-9]{8})-([a-f0-9]{8})-[a-f0-9]{12}(?:\.sock)?$/;
+
+/**
+ * Whether the process behind a beacon still runs. Only a socket this kernel bound answers
+ * `ECONNREFUSED` once its listener is gone, so that is the one answer taken as proof of death.
+ */
+const probe = (socket: string) =>
+  Effect.callback<"live" | "dead" | "unknown">((resume) => {
+    const client = connect(socket);
+    const timer = setTimeout(() => {
+      client.destroy();
+      resume(Effect.succeed("unknown"));
+    }, 1000);
+    client.once("connect", () => {
+      clearTimeout(timer);
+      client.destroy();
+      resume(Effect.succeed("live"));
+    });
+    client.once("error", (error) => {
+      clearTimeout(timer);
+      resume(Effect.succeed(isErrno(error, "ECONNREFUSED") ? "dead" : "unknown"));
+    });
+    return Effect.sync(() => {
+      clearTimeout(timer);
+      client.destroy();
+    });
+  });
+
+const listen = (socket: string) =>
+  Effect.callback<Server | null>((resume) => {
+    const server = createServer((connection) => connection.destroy());
+    server.once("error", () => resume(Effect.succeed(null)));
+    server.listen(socket, () => {
+      server.unref();
+      resume(Effect.succeed(server));
+    });
+  });
+
+/**
+ * Removes the directories of processes that are provably gone, and nothing else:
+ *
+ * - from this kernel boot: its beacon refuses connections. A Unix socket answers `ECONNREFUSED`
+ *   once the process that bound it has exited, and only this kernel can tell;
+ * - from an earlier boot of this machine: no process of that boot still runs.
+ *
+ * A directory of another machine, or one whose beacon answers or cannot be probed, is left alone.
+ * Machines that share one store must have distinct host names or machine ids.
+ */
+const sweep = (parent: string, own: string, owner: ReturnType<typeof rawCacheOwner>) =>
+  Effect.gen(function* () {
+    const names = new Set(
+      (yield* io(() => fs.readdirSync(parent)))
+        .map((name) => name.replace(/\.sock$/, ""))
+        .filter((name) => name !== own && INSTANCE.test(name)),
+    );
+    let kept = 0;
+    for (const name of names) {
+      const [boot, host] = name.split("-");
+      const thisBoot = boot === owner.boot && (boot !== UNKNOWN_BOOT || host === owner.host);
+      const gone = thisBoot
+        ? (yield* probe(join(parent, `${name}.sock`))) === "dead"
+        : host === owner.host;
+      if (!gone) {
+        kept++;
+        continue;
+      }
+      yield* Effect.tryPromise(() =>
+        fs.promises.rm(join(parent, name), { recursive: true, force: true }),
+      );
+      yield* io(() => fs.rmSync(join(parent, `${name}.sock`), { force: true }));
+    }
+    if (kept > 0)
+      yield* Effect.logInfo("raw cache: directories of other processes left in place").pipe(
+        Effect.annotateLogs({ count: kept }),
+      );
+  }).pipe(Effect.ignore);
+
+const blobKey = (project: string, oid: BlobId) =>
+  createHash("sha256").update(`${project}\0${oid}`).digest("hex");
+const pathKey = (target: RawBlobTarget) =>
+  [
+    target.project,
+    target.name.kind === "capture" ? target.name.captureId : target.name.commit,
+    target.path,
+  ].join("\0");
+/** Moves `key` to the end of `map`'s insertion order: the most recently used. */
+const touch = <V>(map: Map<string, V>, key: string, value: V) => {
+  map.delete(key);
+  map.set(key, value);
+};
+
+const makeRawBlobCache = (
+  parent: string,
+): Effect.Effect<RawBlobCache["Service"], RawReadError, Scope.Scope> =>
   Effect.gen(function* () {
     const lifetime = yield* Scope.Scope;
     const limits = yield* RawCacheLimits;
-    const permits = yield* Semaphore.make(limits.preparations);
-    const directory = join(root, "_cache/raw");
-    const pending = new Map<string, Deferred.Deferred<void, RawReadError>>();
-    const filename = (key: string) => join(directory, `${key}.blob`);
-    const touch = (file: string) => {
-      const now = new Date(wallClock());
-      fs.utimesSync(file, now, now);
-    };
-    const stale = (file: string) => {
-      try {
-        return wallClock() - fs.statSync(file).mtimeMs > limits.leaseMillis;
-      } catch (error) {
-        if (isErrno(error, "ENOENT")) return false;
-        throw error;
-      }
-    };
-    const removeIfStale = (file: string) => {
-      if (stale(file)) fs.rmSync(file, { force: true });
-    };
-    /** O_EXCL across processes; a holder that stops refreshing it loses it after the lease. */
-    const tryLock = (file: string) => {
-      try {
-        fs.writeFileSync(file, "", { flag: "wx", mode: 0o600 });
-        return true;
-      } catch (error) {
-        if (isErrno(error, "EEXIST")) return false;
-        throw error;
-      }
-    };
-    const lock = (file: string, until: () => boolean = () => false) =>
-      Effect.gen(function* () {
-        while (true) {
-          if (yield* io(until)) return false;
-          if (yield* io(() => tryLock(file))) return true;
-          yield* io(() => removeIfStale(file));
-          yield* Effect.sleep(limits.pollMillis);
-        }
-      });
-    /** Keeps a lease, lock or reservation fresh for as long as the caller's scope holds it. */
-    const heartbeat = (refresh: () => void) =>
-      Effect.forkScoped(
-        Effect.ignore(io(refresh)).pipe(Effect.delay(limits.heartbeatMillis), Effect.forever),
-      );
-
-    /** Moves an idle file aside, then restores it if a reader leased it in the meantime. */
-    const evict = (key: string) => {
-      const evicting = join(directory, `${key}.evict-${randomUUID()}`);
-      try {
-        fs.renameSync(filename(key), evicting);
-      } catch (error) {
-        if (isErrno(error, "ENOENT")) return true;
-        throw error;
-      }
-      if (wallClock() - fs.statSync(evicting).mtimeMs > limits.leaseMillis) {
-        fs.rmSync(evicting, { force: true });
-        return true;
-      }
-      try {
-        fs.linkSync(evicting, filename(key));
-      } catch (error) {
-        if (!isErrno(error, "EEXIST")) throw error;
-      }
-      fs.rmSync(evicting, { force: true });
-      return false;
-    };
-    /** Counts the shared directory, evicts idle files to fit, and reserves `size` bytes. */
-    const admit = (key: string, size: number) =>
-      Effect.acquireUseRelease(
-        lock(join(directory, "admit.lock")),
-        () =>
-          io(() => {
-            const now = wallClock();
-            const idle: Array<{ key: string; size: number; mtime: number }> = [];
-            const paths: Array<{ file: string; mtime: number }> = [];
-            let used = 0;
-            let files = 0;
-            for (const name of fs.readdirSync(directory)) {
-              const file = join(directory, name);
-              let stat: fs.Stats;
-              try {
-                stat = fs.lstatSync(file);
-              } catch (error) {
-                if (isErrno(error, "ENOENT")) continue;
-                throw error;
-              }
-              const age = now - stat.mtimeMs;
-              const blob = BLOB.exec(name);
-              const temporary = TEMPORARY.exec(name);
-              if (blob !== null) {
-                used += stat.size;
-                files++;
-                if (age > limits.leaseMillis)
-                  idle.push({ key: blob[1] ?? "", size: stat.size, mtime: stat.mtimeMs });
-              } else if (temporary !== null) {
-                if (age > limits.leaseMillis) fs.rmSync(file, { force: true });
-                else {
-                  used += Number(temporary[1]);
-                  files++;
-                }
-              } else if (PATH.test(name)) paths.push({ file, mtime: stat.mtimeMs });
-              else if (ABANDONABLE.test(name) && age > limits.leaseMillis)
-                fs.rmSync(file, { force: true });
-            }
-            if (paths.length > limits.paths)
-              for (const entry of paths
-                .toSorted((a, b) => a.mtime - b.mtime)
-                .slice(0, paths.length - limits.paths))
-                fs.rmSync(entry.file, { force: true });
-            const fits = () => used + size <= limits.totalBytes && files + 1 <= limits.entries;
-            for (const entry of idle.toSorted((a, b) => a.mtime - b.mtime)) {
-              if (fits()) break;
-              if (evict(entry.key)) {
-                used -= entry.size;
-                files--;
-              }
-            }
-            if (!fits()) return null;
-            const temporary = join(directory, `${key}.tmp-${size}-${randomUUID()}`);
-            fs.writeFileSync(temporary, "", { flag: "wx", mode: 0o600 });
-            return temporary;
-          }),
-        (locked) => (locked ? unlock(join(directory, "admit.lock")) : Effect.void),
-      );
-    /** One unpack per blob across processes: a loser waits for the winner's published file. */
-    const publish = (repository: string, blob: Blob, key: string) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const published = filename(key);
-          const blobLock = join(directory, `${key}.lock`);
-          const exists = () => fs.existsSync(published);
-          const locked = yield* Effect.acquireRelease(lock(blobLock, exists), (held) =>
-            held ? unlock(blobLock) : Effect.void,
-          );
-          if (!locked || (yield* io(exists))) return;
-          const temporary = yield* admit(key, blob.size);
-          if (temporary === null) return yield* new RawReadError({ reason: "preparing" });
-          yield* Effect.addFinalizer(() =>
-            Effect.sync(() => fs.rmSync(temporary, { force: true })),
-          );
-          yield* heartbeat(() => [blobLock, temporary].forEach(touch));
-          yield* permits.withPermits(1)(unpack(repository, blob, temporary));
-          yield* io(() => {
-            const fd = fs.openSync(temporary, "r");
-            try {
-              fs.fsyncSync(fd);
-            } finally {
-              fs.closeSync(fd);
-            }
-            fs.renameSync(temporary, published);
-          });
-        }),
-      );
-    const initialize = yield* Effect.cached(
-      io(() => {
-        fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const owner = rawCacheOwner();
+    const own = `${owner.boot}-${owner.host}-${randomBytes(6).toString("hex")}`;
+    const directory = join(parent, own);
+    yield* io(() => fs.mkdirSync(parent, { recursive: true, mode: 0o700 }));
+    // The beacon is bound before the directory exists, so no sweep sees the directory unowned.
+    const beacon = join(parent, `${own}.sock`);
+    const server = yield* listen(beacon);
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        server?.close();
+        fs.rmSync(beacon, { force: true });
       }),
     );
-    const metadata = yield* Cache.makeWith(
-      (key: Lookup) => permits.withPermits(1)(lookupBlob(key)),
-      {
-        capacity: 4096,
-        timeToLive: (exit) => (Exit.isSuccess(exit) ? "Infinity" : 0),
-      },
+    if (server === null)
+      yield* Effect.logWarning(
+        "raw cache: no liveness beacon · a crash leaves this process's directory in place",
+      );
+    yield* io(() => fs.mkdirSync(directory, { mode: 0o700 }));
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(() => fs.promises.rm(directory, { recursive: true, force: true })),
     );
-    const prepare = (repository: string, blob: Blob, key: string) =>
-      Effect.gen(function* () {
-        if (yield* io(() => fs.existsSync(filename(key)))) return;
-        const existing = pending.get(key);
-        if (existing !== undefined) return yield* Deferred.await(existing);
-        if (pending.size >= limits.pending) return yield* new RawReadError({ reason: "preparing" });
-        const completion = yield* Deferred.make<void, RawReadError>();
-        pending.set(key, completion);
-        yield* publish(repository, blob, key).pipe(
-          Effect.exit,
-          Effect.flatMap((exit) => Deferred.done(completion, exit)),
-          Effect.ensuring(
+    yield* Effect.forkIn(sweep(parent, own, owner), lifetime);
+
+    const large = yield* Semaphore.make(limits.largeUnpacks);
+    const small = yield* Semaphore.make(limits.smallUnpacks);
+    /** In least recently used order: a use moves a key to the end. */
+    const entries = new Map<string, Entry>();
+    const readers = new Map<string, number>();
+    const paths = new Map<string, Blob>();
+    let used = 0;
+    const fileOf = (key: string) => join(directory, key);
+    const recall = (target: RawBlobTarget) => {
+      const key = pathKey(target);
+      const blob = paths.get(key);
+      if (blob !== undefined) touch(paths, key, blob);
+      return blob ?? null;
+    };
+    const remember = (target: RawBlobTarget, blob: Blob) => {
+      touch(paths, pathKey(target), blob);
+      for (const key of paths.keys()) {
+        if (paths.size <= limits.paths) break;
+        paths.delete(key);
+      }
+    };
+    const drop = (key: string, entry: Entry) => {
+      entries.delete(key);
+      if (entry.state !== "waiting") used -= entry.size;
+      fs.rmSync(fileOf(key), { force: true });
+    };
+    /** Evicts idle files, oldest use first, until `size` fits; then reserves it. */
+    const reserve = (key: string, entry: Waiting) =>
+      Effect.flatMap(
+        io(() => {
+          let files = [...entries.values()].filter((other) => other.state !== "waiting").length;
+          const fits = () => used + entry.size <= limits.totalBytes && files < limits.entries;
+          for (const [other, held] of entries) {
+            if (fits()) break;
+            if (held.state !== "ready" || readers.has(other)) continue;
+            drop(other, held);
+            files--;
+          }
+          if (!fits()) return false;
+          entries.set(key, { ...entry, state: "unpacking" });
+          used += entry.size;
+          return true;
+        }),
+        (reserved) => (reserved ? Effect.void : Effect.fail(new RawReadError({ reason: "full" }))),
+      );
+    const unpackOnce = (repository: string, blob: Blob, key: string) =>
+      Effect.suspend(() => {
+        const existing = entries.get(key);
+        if (existing?.state === "ready") {
+          touch(entries, key, existing);
+          return Effect.void;
+        }
+        if (existing !== undefined) return Deferred.await(existing.done);
+        const entry: Waiting = {
+          state: "waiting",
+          size: blob.size,
+          done: Deferred.makeUnsafe<void, RawReadError>(),
+        };
+        entries.set(key, entry);
+        const job = (blob.size > limits.largeBytes ? large : small).withPermits(1)(
+          reserve(key, entry).pipe(
+            Effect.andThen(
+              unpack(repository, blob, fileOf(key)).pipe(
+                deadline(limits.gitMillis + (blob.size / limits.unpackBytesPerSecond) * 1000),
+              ),
+            ),
+          ),
+        );
+        return job.pipe(
+          Effect.onExit((exit) =>
             Effect.sync(() => {
-              pending.delete(key);
-            }),
+              const current = entries.get(key) ?? entry;
+              if (Exit.isSuccess(exit)) touch(entries, key, { state: "ready", size: blob.size });
+              else drop(key, current);
+            }).pipe(Effect.andThen(Deferred.done(entry.done, exit))),
           ),
           Effect.forkIn(lifetime),
+          Effect.andThen(Deferred.await(entry.done)),
         );
-        yield* Deferred.await(completion);
       });
-    const remember = (target: RawBlobTarget, blob: Blob) =>
-      io(() => {
-        const file = join(directory, `${pathKey(target)}.path`);
-        const written = `${file}-${randomUUID()}`;
-        fs.writeFileSync(written, `${blob.oid} ${blob.size}`, { flag: "wx", mode: 0o600 });
-        fs.renameSync(written, file);
-      });
-    const recall = (target: RawBlobTarget) =>
-      Effect.gen(function* () {
-        const file = join(directory, `${pathKey(target)}.path`);
-        const text = yield* io(() => {
-          try {
-            return fs.readFileSync(file, "utf8");
-          } catch (error) {
-            if (isErrno(error, "ENOENT")) return null;
-            throw error;
-          }
-        });
-        const match = /^([a-f0-9]+) (\d+)$/.exec(text ?? "");
-        const size = Number(match?.[2]);
-        const oid = yield* Effect.option(parseBlobId(match?.[1] ?? ""));
-        if (oid._tag === "None" || !Number.isSafeInteger(size)) return null;
-        return { oid: oid.value, size };
-      });
-    const prepareFile: RawBlobCache["prepare"] = (target, source) =>
+    const prepare: RawBlobCache["Service"]["prepare"] = (target, source) =>
       Effect.gen(function* () {
         if (!contained(target)) return yield* new RawReadError({ reason: "missing" });
-        yield* initialize;
-        const blob = yield* Cache.get(metadata, {
-          repository: source.repository,
-          tree: source.tree,
-          path: target.path,
-        });
+        const blob =
+          recall(target) ??
+          (yield* lookupBlob({
+            repository: source.repository,
+            tree: source.tree,
+            path: target.path,
+          }).pipe(deadline(limits.gitMillis)));
         if (blob.size > limits.fileBytes) return yield* new RawReadError({ reason: "too-large" });
-        yield* prepare(source.repository, blob, blobKey(target.project, blob.oid));
-        yield* remember(target, blob);
+        remember(target, blob);
+        yield* unpackOnce(source.repository, blob, blobKey(target.project, blob.oid));
       });
-    /**
-     * A descriptor of the published file, leased by its refreshed mtime; null when another process
-     * evicted it first. The path is checked after the lease, so an eviction that moved the file
-     * aside before the lease landed is seen here, not served.
-     */
-    const lease = (key: string, size: number) =>
+    /** A reader holds its file against eviction from open until its scope closes. */
+    const lease = (key: string, entry: Entry) =>
       Effect.acquireRelease(
         io(() => {
           let fd: number;
           try {
-            fd = fs.openSync(filename(key), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+            fd = fs.openSync(fileOf(key), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
           } catch (error) {
-            if (isErrno(error, "ENOENT")) return null;
-            throw error;
+            if (!isErrno(error, "ENOENT")) throw error;
+            drop(key, entry);
+            return null;
           }
-          try {
-            const stat = fs.fstatSync(fd);
-            const now = new Date(wallClock());
-            fs.futimesSync(fd, now, now);
-            const named = fs.statSync(filename(key), { throwIfNoEntry: false });
-            if (
-              stat.isFile() &&
-              stat.size === size &&
-              named?.ino === stat.ino &&
-              named.dev === stat.dev
-            )
-              return fd;
-          } catch (error) {
-            fs.closeSync(fd);
-            throw error;
-          }
-          fs.closeSync(fd);
-          return null;
+          readers.set(key, (readers.get(key) ?? 0) + 1);
+          touch(entries, key, entry);
+          return fd;
         }),
         (fd) =>
           Effect.sync(() => {
-            if (fd !== null) fs.closeSync(fd);
+            if (fd === null) return;
+            fs.closeSync(fd);
+            const left = (readers.get(key) ?? 1) - 1;
+            if (left > 0) readers.set(key, left);
+            else readers.delete(key);
           }),
       );
-    const open: RawBlobCache["open"] = (target) =>
+    const open: RawBlobCache["Service"]["open"] = (target) =>
       Effect.gen(function* () {
         if (!contained(target)) return yield* new RawReadError({ reason: "missing" });
-        const blob = yield* recall(target);
+        const blob = recall(target);
         if (blob === null) return null;
-        const fd = yield* lease(blobKey(target.project, blob.oid), blob.size);
+        const key = blobKey(target.project, blob.oid);
+        const entry = entries.get(key);
+        if (entry?.state !== "ready") return null;
+        const fd = yield* lease(key, entry);
         if (fd === null) return null;
-        yield* heartbeat(() => {
-          const now = new Date(wallClock());
-          fs.futimesSync(fd, now, now);
-        });
         const revision = revisionFingerprint({ kind: "blob", oid: blob.oid });
         return {
           canonicalPath: target.path,
@@ -474,5 +461,32 @@ export const makeRawBlobCache = (root: string): Effect.Effect<RawBlobCache, neve
           read: readRawDescriptor(fd, blob.size),
         };
       });
-    return { open, prepare: prepareFile };
+    return { open, prepare };
   });
+
+const off: RawBlobCache["Service"] = {
+  open: () => Effect.succeed(null),
+  prepare: () => Effect.fail(new RawReadError({ reason: "io" })),
+};
+
+/** A process that never opens raw files (the worker) keeps no cache and no directory. */
+export const RawBlobCacheOff: Layer.Layer<RawBlobCache> = Layer.succeed(RawBlobCache, off);
+
+/**
+ * `<store root>/_cache/raw/<boot>-<host>-<id>/`, made empty at start and removed at shutdown,
+ * beside the `<id>.sock` beacon that proves its process alive. A directory the store cannot hold
+ * leaves this process without a cache: raw reads it would prepare fail, others are unaffected.
+ */
+export const RawBlobCacheLive: Layer.Layer<RawBlobCache, never, StoreConfig> = Layer.effect(
+  RawBlobCache,
+  Effect.gen(function* () {
+    const config = yield* StoreConfig;
+    return yield* makeRawBlobCache(join(config.root, "_cache", "raw")).pipe(
+      Effect.catch(() =>
+        Effect.logWarning("raw cache: unavailable · its directory could not be made").pipe(
+          Effect.as(off),
+        ),
+      ),
+    );
+  }),
+);

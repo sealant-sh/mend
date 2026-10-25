@@ -20,7 +20,9 @@ import {
   type FileListing,
   type FileRead,
   type OpenRawFile,
+  RawBlobCache,
   type RawBlobTarget,
+  type RawTreeSource,
   RawReadError,
   RawPreparationWait,
   parseImmutableTree,
@@ -121,27 +123,32 @@ export interface RawFileObservation extends OpenRawFile {
 }
 
 /**
- * A prepared file opens at once, with no Git or capture. Otherwise `prepare` runs in `lifetime`,
- * so it outlives a read that stops waiting, and the read waits `RawPreparationWait` for it.
+ * A prepared file opens at once, with no Git or capture. Otherwise `source` and the unpack run in
+ * `lifetime`, so they outlive a read that stops waiting, and the read waits `RawPreparationWait`.
  */
-const openOrPrepare =
-  (lifetime: Scope.Scope) =>
-  (
-    open: Effect.Effect<OpenRawFile | null, RawReadError, Scope.Scope>,
-    prepare: Effect.Effect<void, RawReadError>,
+const rawFilesOf = Effect.gen(function* () {
+  const lifetime = yield* Scope.Scope;
+  const cache = yield* RawBlobCache;
+  return (
+    file: RawBlobTarget,
+    source: Effect.Effect<RawTreeSource, RawReadError>,
   ): Effect.Effect<OpenRawFile, RawReadError, Scope.Scope> =>
     Effect.gen(function* () {
-      const ready = yield* open;
+      const ready = yield* cache.open(file);
       if (ready !== null) return ready;
-      const preparing = yield* Effect.forkIn(prepare, lifetime);
+      const preparing = yield* Effect.forkIn(
+        Effect.flatMap(source, (tree) => cache.prepare(file, tree)),
+        lifetime,
+      );
       yield* Fiber.join(preparing).pipe(
         Effect.timeoutOrElse({
           duration: yield* RawPreparationWait,
           orElse: () => Effect.fail(new RawReadError({ reason: "preparing" })),
         }),
       );
-      return (yield* open) ?? (yield* new RawReadError({ reason: "preparing" }));
+      return (yield* cache.open(file)) ?? (yield* new RawReadError({ reason: "preparing" }));
     });
+});
 
 export class WorktreeReads extends Context.Service<
   WorktreeReads,
@@ -232,14 +239,14 @@ export class WorktreeReads extends Context.Service<
 export const WorktreeReadsColocatedLive: Layer.Layer<
   WorktreeReads,
   never,
-  Store | ProjectsRepo | WorktreesRepo
+  Store | ProjectsRepo | WorktreesRepo | RawBlobCache
 > = Layer.effect(
   WorktreeReads,
   Effect.gen(function* () {
     const store = yield* Store;
     const projects = yield* ProjectsRepo;
     const worktrees = yield* WorktreesRepo;
-    const rawFiles = openOrPrepare(yield* Scope.Scope);
+    const rawFiles = yield* rawFilesOf;
     const pathOf = (projectId: ProjectId, worktreeId: WorktreeId) =>
       Effect.gen(function* () {
         const project = yield* projects.byId(projectId);
@@ -299,8 +306,8 @@ export const WorktreeReadsColocatedLive: Layer.Layer<
               within: target.within,
             };
             return yield* rawFiles(
-              store.openRawBlobFile(file),
-              store.prepareRawBlobFile(file, { repository: project.storePath, tree: commit }),
+              file,
+              Effect.succeed({ repository: project.storePath, tree: commit }),
             );
           }
           const dir = yield* pathOf(projectId, worktreeId).pipe(
@@ -526,7 +533,7 @@ const restoreCapture = Effect.fnUntraced(function* (
 export const WorktreeReadsCapturedLive: Layer.Layer<
   WorktreeReads,
   never,
-  CaptureStoreRepo | BlobStore | GitOpsRunner | StoreRefsRepo
+  CaptureStoreRepo | BlobStore | GitOpsRunner | StoreRefsRepo | RawBlobCache
 > = Layer.effect(
   WorktreeReads,
   Effect.gen(function* () {
@@ -544,7 +551,7 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
         Effect.provideService(GitOpsRunner, runner),
         Effect.provideService(StoreRefsRepo, refs),
       );
-    const rawFiles = openOrPrepare(yield* Scope.Scope);
+    const rawFiles = yield* rawFilesOf;
     const preparationSlots = yield* Semaphore.make(2);
     const rawCaptures = yield* Cache.makeWith(
       (key: {
@@ -649,20 +656,20 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
             within: target.within,
           };
           const opened = yield* rawFiles(
-            runner.openRawBlobFile(file),
+            file,
             Effect.gen(function* () {
               const ready = yield* Cache.get(rawCaptures, {
                 projectId,
                 worktreeId,
                 captureId: head.id,
               });
-              yield* runner.prepareRawBlobFile(
-                ready.cache,
-                file,
-                file.name.kind === "commit"
-                  ? file.name.commit
-                  : yield* parseImmutableTree(ready.worktreeTree),
-              );
+              return {
+                repository: ready.cache.path,
+                tree:
+                  file.name.kind === "commit"
+                    ? file.name.commit
+                    : yield* parseImmutableTree(ready.worktreeTree),
+              };
             }),
           );
           return { ...opened, stamp: stampOf(head) };
