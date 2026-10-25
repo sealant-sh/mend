@@ -38,6 +38,7 @@ import type {
   ProjectClusterBindingId,
   ProjectEnvironmentVariableId,
   ProjectId,
+  PageId,
   PreviewId,
   PreviewLabel,
   ProjectSecretId,
@@ -1792,6 +1793,29 @@ export const agentItems = pgTable(
     unique("agent_items_process_provider_key").on(table.processId, table.providerItemId),
     index("agent_items_session_seq_idx").on(table.sessionId, table.seq),
     index("agent_items_turn_seq_idx").on(table.turnId, table.seq),
+  ],
+);
+
+export const sessionPages = pgTable(
+  "session_pages",
+  {
+    id: text().$type<PageId>().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    callKey: text().notNull(),
+    accountId: text(),
+    title: text().notNull(),
+    height: integer().notNull(),
+    html: text().notNull(),
+    sha256: text().notNull(),
+    bytes: integer().notNull(),
+    publishedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("session_pages_session_call_key").on(table.sessionId, table.callKey),
+    index("session_pages_session_published_idx").on(table.sessionId, table.publishedAt),
   ],
 );
 

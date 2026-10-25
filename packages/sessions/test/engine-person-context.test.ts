@@ -2918,6 +2918,44 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
     });
   });
 
+  it("answers Mend's MCP server as the person a person executor's token names, and never the workspace's own token there", async () => {
+    await livePersonJoin({
+      flag: "person",
+      inspect: (_engine, join) =>
+        Effect.gen(function* () {
+          const own = yield* grantOf(join.holder, { launchId: join.launchId, accountId: null });
+          if (!own.ok) throw new Error(own.message);
+          const refused = yield* own.api.mcpCaller().pipe(Effect.exit);
+          expect(failureText(refused)).toContain(CONTAINER_TOKEN_REFUSED);
+          const maria = yield* grantOf(shareControl(join.world, join.holder), {
+            launchId: join.launchId,
+            accountId: MARIA,
+          });
+          if (!maria.ok) throw new Error(maria.message);
+          expect(yield* maria.api.mcpCaller()).toEqual({
+            sessionId: join.holder.id,
+            accountId: MARIA,
+          });
+        }),
+    });
+  });
+
+  it("answers Mend's MCP server as the session's owner for a shared executor's own token", async () => {
+    await livePersonJoin({
+      flag: "shared",
+      inspect: (_engine, join) =>
+        Effect.gen(function* () {
+          const own = yield* grantOf(join.holder, { launchId: join.launchId, accountId: null });
+          if (!own.ok) throw new Error(own.message);
+          expect(yield* own.api.mcpCaller()).toEqual({
+            sessionId: join.holder.id,
+            accountId: join.holder.ownerUserId,
+          });
+          expect(join.holder.ownerUserId).toBe("user-fixture");
+        }),
+    });
+  });
+
   it("a shared executor's push with the workspace's token still works, as its owner", async () => {
     const keysAsked: Array<string> = [];
     await livePersonJoin({

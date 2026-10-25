@@ -79,6 +79,7 @@ const inertApi: Omit<SessionSocketApi, "capture"> = {
   stopSession: () => Effect.succeed({}),
   land: () => Effect.succeed({ landed: false, lines: ["not landed · not in this test"] }),
   agentHook: () => Effect.succeed("ignored"),
+  mcpCaller: () => Effect.die("not in test"),
   listRepositories: () => Effect.succeed([]),
   addableProjects: () => Effect.succeed([]),
   addRepository: () => Effect.die("not in test"),

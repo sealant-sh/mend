@@ -34,6 +34,7 @@ import {
   withHarnessSetup,
   withoutCodexDaemon,
 } from "./harness-seeds.ts";
+import { mendMcpFlags } from "./mend-mcp/launch.ts";
 
 const homes: Array<string> = [];
 afterEach(() => {
@@ -679,6 +680,7 @@ describe("claude onboarding seed: the plugins its settings enable", () => {
       CLAUDE_ONBOARDING_SEED,
       "sh",
       "claude",
+      ...mendMcpFlags("claude"),
       "-p",
     ]);
     expect(CLAUDE_ONBOARDING_SEED).toContain(
@@ -1187,7 +1189,7 @@ describe("Codex's memory (docs/adr/0009, Codex)", () => {
       "resume",
       "abc",
     ]);
-    expect(withHarnessSetup("codex", ["codex", "app-server"]).slice(-8)).toEqual([
+    expect(withHarnessSetup("codex", ["codex", "app-server"]).slice(4)).toEqual([
       "codex",
       "-c",
       "features.shell_snapshot=false",
@@ -1195,6 +1197,7 @@ describe("Codex's memory (docs/adr/0009, Codex)", () => {
       "features.daemon_auto_start=false",
       "-c",
       "features.memories=true",
+      ...mendMcpFlags("codex"),
       "app-server",
     ]);
     const own = ["codex", "-c", "features.memories=false"];
@@ -1340,6 +1343,7 @@ describe("Codex's background server", () => {
       expect(withHarnessSetup("codex", ["codex", ...tail]).slice(4)).toEqual([
         "codex",
         ...flags,
+        ...mendMcpFlags("codex"),
         ...tail,
       ]);
     }

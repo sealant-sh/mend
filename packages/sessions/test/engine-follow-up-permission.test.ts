@@ -12,6 +12,7 @@ import type { CreateOptions } from "@sealant/sdk";
 import { Effect } from "effect";
 import { describe, expect } from "vitest";
 
+import { mendMcpFlags } from "../src/mend-mcp/launch.ts";
 import { now, sealantLaunchLayer, setup, withEngine, type World } from "./engine/fixture.ts";
 
 const BYPASS_FLAGS = [
@@ -331,6 +332,7 @@ describe("a follow-up into a terminal session keeps its permission mode (SLNT-23
       encoding: "utf8",
     });
     expect(printed.split("\0").slice(0, -1)).toEqual([
+      ...mendMcpFlags("claude"),
       ...permission,
       "Address the review comments.",
     ]);

@@ -13,6 +13,7 @@ import { type LinuxIdentity, MEND_GROUP, linuxHomeOf } from "@mend/domain/workbe
 
 import { CLAUDE_AGENT_HOOKS, CLAUDE_NEUTRAL_ENV, claudeSettingsOf } from "./claude-settings.ts";
 import { assertScriptSafe, PEOPLE_DIR, savedDirOf } from "./harness-layout.ts";
+import { withMendMcp } from "./mend-mcp/launch.ts";
 import { shellQuote } from "./workspace-files.ts";
 
 export {
@@ -210,10 +211,10 @@ export const conversationArgv = (input: {
   readonly terminal: boolean;
 }): ReadonlyArray<string> => {
   if (input.harness === "codex") {
-    const [head, ...rest] = input.argv;
+    const [head, ...rest] = withMendMcp(input.argv);
     return head === "codex" ? [head, ...CODEX_CONVERSATION_FLAGS, ...rest] : input.argv;
   }
-  const argv = [...input.argv];
+  const argv = [...withMendMcp(input.argv)];
   const resume = argv.indexOf("--resume");
   if (resume >= 0 && input.resumePath !== null) argv[resume + 1] = input.resumePath;
   const neutral = claudeSettingsOf("neutral");

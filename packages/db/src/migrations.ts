@@ -3662,6 +3662,26 @@ const previewControlsMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE session_processes ADD COLUMN reached_at timestamptz`;
 });
 
+const sessionPagesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE session_pages (
+      id text PRIMARY KEY,
+      session_id text NOT NULL REFERENCES agent_sessions (id) ON DELETE CASCADE,
+      call_key text NOT NULL,
+      account_id text,
+      title text NOT NULL,
+      height integer NOT NULL,
+      html text NOT NULL,
+      sha256 text NOT NULL,
+      bytes integer NOT NULL,
+      published_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT session_pages_session_call_key UNIQUE (session_id, call_key)
+    )`;
+  yield* sql`
+    CREATE INDEX session_pages_session_published_idx ON session_pages (session_id, published_at)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3803,4 +3823,5 @@ export const migrations = {
   "0137_preview_grants": previewGrantsMigration,
   "0138_kubernetes_person_layout": kubernetesPersonLayoutMigration,
   "0139_preview_controls": previewControlsMigration,
+  "0140_session_pages": sessionPagesMigration,
 };

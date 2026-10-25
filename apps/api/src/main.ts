@@ -75,6 +75,8 @@ import {
   SessionProcessesRepoLive,
   SessionRunsRepoLive,
   SessionChannelTokensRepoLive,
+  type SessionPagesRepo,
+  SessionPagesRepoLive,
   SessionsRepoLive,
   SettingsRepoLive,
   UserDotfilesRepoLive,
@@ -166,8 +168,11 @@ import {
   ForwardAdapterLive,
   HarnessLayoutConfigLive,
   FollowUpLauncherLive,
+  type MendMcp,
+  MendMcpLive,
   ProtocolHostLive,
   ServiceHostLive,
+  SessionPagesLive,
   SessionEngine,
   SessionEngineLive as SessionEngineBaseLive,
   SessionChannelNetworkHostLive,
@@ -333,6 +338,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   BriefCommentsRepoLive,
   SessionsRepoLive,
   SessionChannelTokensRepoLive,
+  SessionPagesRepoLive,
   UpgradeTicketsRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive));
 
@@ -373,6 +379,10 @@ const SessionSocketHostLayer = SessionSocketHostLive.pipe(
 );
 const SessionChannelNetworkLayer = SessionChannelNetworkHostLive.pipe(
   Layer.provide(DeploymentConfigLive),
+  Layer.provide(SessionChannelRegistryLayer),
+);
+const MendMcpLayer: Layer.Layer<MendMcp, never, SessionPagesRepo> = MendMcpLive.pipe(
+  Layer.provide(SessionPagesLive),
   Layer.provide(SessionChannelRegistryLayer),
 );
 // The session-workspace authority (identity-keyed port over Store + ProjectsRepo) and the
@@ -832,9 +842,7 @@ const MainLive = Layer.unwrap(
         : mode === "worker"
           ? WorkerLive
           : Layer.merge(ServerLive, WorkerLive);
-    // The network session channel is a sibling service: it serves workspaces, nothing depends
-    // on it, so it must be launched explicitly rather than provided.
-    return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
+    return Layer.mergeAll(parts, SessionChannelNetworkLayer, MendMcpLayer).pipe(
       // Session steering, landing (docs/adr/0007-landing.md) for the landing routes, and
       // receiving a handoff (docs/specs/mend-handoff.md) for the handoff routes.
       Layer.provide(

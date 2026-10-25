@@ -163,3 +163,6 @@ export type SessionControlEventId = typeof SessionControlEventId.Type;
 
 export const ChangeLandingId = Schema.String.pipe(Schema.brand("ChangeLandingId"));
 export type ChangeLandingId = typeof ChangeLandingId.Type;
+
+export const PageId = Schema.String.pipe(Schema.brand("PageId"));
+export type PageId = typeof PageId.Type;

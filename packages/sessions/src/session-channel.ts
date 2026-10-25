@@ -6,13 +6,19 @@ import type * as net from "node:net";
 
 import { SessionChannelTokensRepo } from "@mend/db";
 import { SessionId } from "@mend/domain";
-import { AgentHookReport, type ServiceBrowserScheme } from "@mend/domain/workbench";
+import {
+  AgentHookReport,
+  PAGE_REQUEST_MAX_BYTES,
+  type ServiceBrowserScheme,
+} from "@mend/domain/workbench";
 import { DeploymentConfig } from "@mend/store";
 import { Effect, Exit, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { CAPTURE_ROUTES, dispatchCaptureRoute, MAX_CAPTURE_BODY_BYTES } from "./capture-channel.ts";
 import { frame, makeFrameFeed, makePushSniffer, type GitTransportPlan } from "./git-transport.ts";
+import { MEND_MCP_CALL_KEY_HEADER, MEND_MCP_PATH } from "./mend-mcp/caller.ts";
+import type { MendMcp } from "./mend-mcp/server.ts";
 import type { SessionSocketApi } from "./session-socket.ts";
 
 /**
@@ -41,6 +47,8 @@ export class SessionChannelRegistry extends Context.Service<
     readonly unregister: (sessionId: SessionId) => void;
     readonly lookup: (sessionId: SessionId) => SessionSocketApi | undefined;
     readonly size: () => number;
+    readonly serveMcp: (server: MendMcp["Service"] | undefined) => void;
+    readonly mcp: () => MendMcp["Service"] | undefined;
   }
 >()("@mend/sessions/SessionChannelRegistry") {}
 
@@ -48,6 +56,7 @@ export const SessionChannelRegistryLive: Layer.Layer<SessionChannelRegistry> = L
   SessionChannelRegistry,
   () => {
     const live = new Map<SessionId, SessionSocketApi>();
+    let mcp: MendMcp["Service"] | undefined;
     return {
       register: (sessionId, api) => {
         live.set(sessionId, api);
@@ -57,6 +66,10 @@ export const SessionChannelRegistryLive: Layer.Layer<SessionChannelRegistry> = L
       },
       lookup: (sessionId) => live.get(sessionId),
       size: () => live.size,
+      serveMcp: (server) => {
+        mcp = server;
+      },
+      mcp: () => mcp,
     };
   },
 );
@@ -102,6 +115,109 @@ const readBody = (
     });
   });
 
+const readBytes = (request: http.IncomingMessage, maxBytes: number): Promise<Buffer | null> =>
+  new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let length = 0;
+    request.on("data", (chunk: Buffer) => {
+      if (length > maxBytes) return;
+      length += chunk.length;
+      if (length > maxBytes) resolve(null);
+      else chunks.push(chunk);
+    });
+    request.on("end", () => resolve(Buffer.concat(chunks)));
+    request.on("error", reject);
+  });
+
+const MCP_REQUEST_HEADERS = [
+  "content-type",
+  "accept",
+  "mcp-session-id",
+  "mcp-protocol-version",
+  "last-event-id",
+  MEND_MCP_CALL_KEY_HEADER,
+] as const;
+
+const isToolCall = (body: Buffer): boolean => {
+  try {
+    return asRecord(JSON.parse(body.toString("utf8")))["method"] === "tools/call";
+  } catch {
+    return false;
+  }
+};
+
+const relayMcp = async (
+  api: SessionSocketApi,
+  server: MendMcp["Service"] | undefined,
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+): Promise<void> => {
+  const unavailable = (message: string) => {
+    response.writeHead(503, { "content-type": "application/json" });
+    response.end(JSON.stringify({ message }));
+  };
+  const caller = await Effect.runPromise(Effect.result(api.mcpCaller()));
+  if (caller._tag === "Failure") return unavailable(caller.failure.message);
+  if (server === undefined) return unavailable("Mend's MCP server is not running on this instance");
+  const method = request.method ?? "GET";
+  const body = method === "POST" ? await readBytes(request, PAGE_REQUEST_MAX_BYTES) : undefined;
+  if (body === null) {
+    response.writeHead(413, { "content-type": "application/json", connection: "close" });
+    response.end(
+      JSON.stringify({
+        message: `an MCP request may be at most ${PAGE_REQUEST_MAX_BYTES} bytes`,
+      }),
+      () => request.destroy(),
+    );
+    return;
+  }
+  // Effect's MCP server keeps a session's `initialize` until the session ends.
+  if (body !== undefined && body.length > MAX_BODY_BYTES && !isToolCall(body)) {
+    response.writeHead(413, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        message: `an MCP request other than a tool call may be at most ${MAX_BODY_BYTES} bytes`,
+      }),
+    );
+    return;
+  }
+  const headers = new Headers();
+  for (const name of MCP_REQUEST_HEADERS) {
+    const value = request.headers[name];
+    if (typeof value === "string") headers.set(name, value);
+  }
+  const left = new AbortController();
+  response.once("close", () => left.abort());
+  const answer = await Effect.runPromise(
+    server.handle(
+      new Request(`http://mend.session${MEND_MCP_PATH}`, {
+        method,
+        headers,
+        signal: left.signal,
+        ...(body === undefined ? {} : { body: body.toString("utf8") }),
+      }),
+      caller.success,
+    ),
+  );
+  response.writeHead(answer.status, Object.fromEntries(answer.headers));
+  if (answer.body === null) {
+    response.end();
+    return;
+  }
+  const reader = answer.body.getReader();
+  const cancel = () => void reader.cancel().catch(() => undefined);
+  if (left.signal.aborted) cancel();
+  else left.signal.addEventListener("abort", cancel);
+  try {
+    for (let read = await reader.read(); !read.done; read = await reader.read()) {
+      response.write(read.value);
+    }
+    response.end();
+  } catch {
+    response.destroy();
+  }
+};
+
 const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 
@@ -131,6 +247,7 @@ export const handleSessionRequest = async (
   api: SessionSocketApi,
   request: http.IncomingMessage,
   response: http.ServerResponse,
+  mcp: SessionChannelRegistry["Service"]["mcp"],
 ): Promise<void> => {
   const respond = (status: number, payload: unknown): void => {
     response.writeHead(status, { "content-type": "application/json" });
@@ -139,6 +256,7 @@ export const handleSessionRequest = async (
   const url = new URL(request.url ?? "/", "http://mend.sock");
   const route = `${request.method} ${url.pathname}`;
   try {
+    if (url.pathname === MEND_MCP_PATH) return await relayMcp(api, mcp(), request, response);
     if (request.method === "POST" && CAPTURE_ROUTES.has(url.pathname)) {
       // sealantd's registrar (ADR-0002 "Session channel routes"): a manifest can run to
       // megabytes, so these read a larger body than the helper's tiny requests. Arrival is
@@ -532,7 +650,7 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
             response.end(JSON.stringify(pickupOnlyRefusal));
             return;
           }
-          return handleSessionRequest(auth.api, request, response);
+          return handleSessionRequest(auth.api, request, response, registry.mcp);
         })
         .catch((cause: unknown) => {
           unanswered(cause);
