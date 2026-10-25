@@ -4181,7 +4181,11 @@ interface ProjectEnvironmentDto {
 }
 interface ProjectSecretsDto {
   readonly revision: number;
-  readonly secrets: ReadonlyArray<{ readonly name: string; readonly updatedAt: string }>;
+  readonly secrets: ReadonlyArray<{
+    readonly name: string;
+    readonly updatedAt: string;
+    readonly nameRefusal?: string | null;
+  }>;
 }
 interface ProjectClusterBindingsDto {
   readonly revision: number;
@@ -4299,6 +4303,8 @@ const envShow = async (config: CliConfig, args: ReadonlyArray<string>) => {
   }
   for (const secret of secrets.secrets) {
     say(`  ${secret.name.padEnd(width)}  secret ${dim("· value set, never shown")}`);
+    const nameRefusal = secret.nameRefusal ?? null;
+    if (nameRefusal !== null) say(amber(`  ${" ".repeat(width)}  ${nameRefusal}`));
   }
   for (const name of bindingNames) {
     say(
