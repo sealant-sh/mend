@@ -69,6 +69,12 @@ export const DEFAULT_RAW_CACHE_LIMITS = {
   largeBytes: 16 * 1024 ** 2,
   largeUnpacks: 2,
   smallUnpacks: 4,
+  /** Capture restores for raw preparation at once. */
+  restores: 2,
+  /** Preparations queued or running; past this a miss is refused as busy. */
+  inFlight: 32,
+  /** One preparation from start to end: capture restore, lookup and unpack. */
+  preparationMillis: 10 * 60_000,
   /** Prepared paths remembered, so an open needs no Git; the least recently used are forgotten. */
   paths: 16_384,
   /** A tree lookup's deadline, and an unpack's before its size is counted. */

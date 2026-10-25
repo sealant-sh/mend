@@ -10,10 +10,12 @@ import {
   BlobStore,
   captureKeys,
   decodeManifest,
+  DEFAULT_RAW_CACHE_LIMITS,
   GitOpsRunner,
   packIdxKeyOf,
   RawBlobCache,
   RawBlobCacheLive,
+  RawCacheLimits,
   RawPreparationWait,
   Store,
   StoreConfig,
@@ -94,6 +96,13 @@ const packCommit = (
       [packIdxKeyOf(key), idx],
     ]),
   };
+};
+
+const until = async (done: () => boolean) => {
+  for (let tries = 0; !done(); tries++) {
+    if (tries > 200) throw new Error("never prepared");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 };
 
 /**
@@ -250,6 +259,25 @@ describe("raw reads of captured worktrees", () => {
         yield* repo.attachWorktree(world.project.id, id);
       }),
     );
+
+  /** A worktree of its own whose one capture holds `files`, so no earlier test prepared them. */
+  const isolated = async (files: Record<string, Uint8Array>) => {
+    const id = newWorktreeId();
+    await attach(id);
+    const captureId = await register(id, 1, (dir) => {
+      for (const [name, bytes] of Object.entries(files))
+        fs.writeFileSync(path.join(dir, name), bytes);
+    });
+    return { id, captureId };
+  };
+  const cachedCopies = (bytes: Uint8Array) =>
+    fs
+      .readdirSync(path.join(world.scratch, "store", "_cache", "raw"), {
+        recursive: true,
+        encoding: "utf8",
+      })
+      .map((name) => path.join(world.scratch, "store", "_cache", "raw", name))
+      .filter((file) => fs.statSync(file).isFile() && fs.readFileSync(file).equals(bytes)).length;
 
   beforeAll(async () => {
     context = await Effect.runPromise(
@@ -523,6 +551,97 @@ describe("raw reads of captured worktrees", () => {
       expect(Buffer.from((await read(view, "notes.txt", undefined, raw)).bytes).toString()).toBe(
         crlf,
       );
+  });
+
+  it("prepares a file again after the runner's repository for its capture was pruned", async () => {
+    const { id, captureId } = await isolated({
+      "first.bin": clip.slice(0, 1400),
+      "second.bin": clip.slice(0, 1500),
+    });
+    const view: RawView = { kind: "capture", captureId };
+    expect((await read(view, "first.bin", undefined, id)).bytes).toEqual(clip.slice(0, 1400));
+    fs.rmSync(path.join(world.scratch, "store", "_cache", "runner", world.project.id), {
+      recursive: true,
+      force: true,
+    });
+    expect((await read(view, "second.bin", undefined, id)).bytes).toEqual(clip.slice(0, 1500));
+  });
+
+  it("keeps preparing after the wait ends: the next open runs no git and restores nothing", async () => {
+    const name = "later.bin";
+    const expected = clip.slice(0, 9000);
+    const { id, captureId } = await isolated({ [name]: expected });
+    const view: RawView = { kind: "capture", captureId };
+    const cold = await run(
+      Effect.scoped(
+        Effect.flatMap(WorktreeReads, (reads) =>
+          reads.openRawFile(world.project.id, id, { path: name, within: "", view }),
+        ),
+      ).pipe(Effect.flip, Effect.provideService(RawPreparationWait, Duration.zero)),
+    );
+    expect(cold.reason).toBe("preparing");
+    await until(() => cachedCopies(expected) > 0);
+    recorder.clear();
+    ensures = 0;
+    expect((await read(view, name, undefined, id)).bytes).toEqual(expected);
+    expect(recorder.runs()).toEqual([]);
+    expect(ensures).toBe(0);
+  });
+
+  it("joins a preparation in flight, refuses a miss past the bound as busy, and ends a stuck one at its deadline", async () => {
+    const { id } = await isolated({
+      "stuck.bin": clip.slice(0, 1300),
+      "other.bin": clip.slice(0, 1200),
+    });
+    let hang = true;
+    const hanging = Layer.effect(
+      BlobStore,
+      Effect.map(BlobStore, (blobs) => ({
+        ...blobs,
+        get: (key: string) => (hang ? Effect.never : blobs.get(key)),
+      })),
+    ).pipe(Layer.provide(world.layer));
+    const stuck = await Effect.runPromise(
+      Layer.build(
+        WorktreeReadsCapturedLive.pipe(
+          Layer.provide(hanging),
+          Layer.provide(counted),
+          Layer.provide(world.layer),
+          Layer.provide(
+            Layer.succeed(RawCacheLimits, {
+              ...DEFAULT_RAW_CACHE_LIMITS,
+              inFlight: 1,
+              preparationMillis: 300,
+            }),
+          ),
+        ),
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    );
+    const open = (name: string, wait: Duration.Duration) =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const file = yield* (yield* WorktreeReads).openRawFile(world.project.id, id, {
+              path: name,
+              within: "",
+              view: { kind: "current" },
+            });
+            return file.size;
+          }),
+        ).pipe(
+          Effect.flip,
+          Effect.map((error) => error.reason),
+          Effect.catch(() => Effect.succeed("served")),
+          Effect.provide(stuck),
+          Effect.provideService(RawPreparationWait, wait),
+        ),
+      );
+    expect(await open("stuck.bin", Duration.zero)).toBe("preparing");
+    expect(await open("other.bin", Duration.zero)).toBe("busy");
+    expect(await open("stuck.bin", Duration.zero)).toBe("preparing");
+    hang = false;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(await open("stuck.bin", Duration.seconds(10))).toBe("served");
   });
 
   it("says nothing of a file's path in logs or traces", () => {
