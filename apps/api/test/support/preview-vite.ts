@@ -10,16 +10,11 @@ const APP = fileURLToPath(new URL("../fixtures/preview/vite-app", import.meta.ur
 
 export interface ViteFixture {
   readonly port: number;
-  /** Rewrites `src/message.js` so the page's message becomes `text` (through HMR). */
   readonly edit: (text: string) => Promise<void>;
   readonly stop: () => Promise<void>;
 }
 
-/**
- * The fixture Vite app, copied to a temporary directory and served by Vite's dev server on
- * 127.0.0.1 and an ephemeral port, its config file and default HMR included.
- */
-export const startViteFixture = async (): Promise<ViteFixture> => {
+export const startViteFixture = async (port = 0): Promise<ViteFixture> => {
   const root = await mkdtemp(join(tmpdir(), "mend-preview-vite-"));
   await cp(APP, root, { recursive: true });
   const server = await createServer({
@@ -27,7 +22,7 @@ export const startViteFixture = async (): Promise<ViteFixture> => {
     configFile: join(root, "vite.config.ts"),
     logLevel: "silent",
     clearScreen: false,
-    server: { host: "127.0.0.1", port: 0, strictPort: true },
+    server: { host: "127.0.0.1", port, strictPort: true },
   });
   await server.listen();
   const address: AddressInfo | string | null | undefined = server.httpServer?.address();

@@ -29,7 +29,6 @@ export type FixtureKind = "digest" | "download" | "sse" | "websocket" | "cookies
 
 export interface DigestAnswer {
   readonly method: string;
-  /** The request target as received: path and query. */
   readonly path: string;
   readonly bytes: number;
   readonly sha256: string;
@@ -46,7 +45,6 @@ export interface EchoedHeaders {
   readonly rawHeaders: ReadonlyArray<readonly [string, string]>;
 }
 
-/** What `/set-cookies` sets, in order: one per attribute the gateway must handle. */
 export const FIXTURE_COOKIES = [
   "plain=1; Path=/",
   "scoped=2; Domain=localhost; Path=/",
@@ -234,7 +232,6 @@ export interface RunningFixture {
   readonly stop: () => Promise<void>;
 }
 
-/** Serves one fixture in this process on 127.0.0.1 and an ephemeral (or the given) port. */
 export const serveFixture = async (kind: FixtureKind, port = 0): Promise<RunningFixture> => {
   const app = APPS[kind];
   const server = http.createServer({ requestTimeout: 0, keepAliveTimeout: 60_000 }, app.request);
@@ -257,13 +254,15 @@ export const serveFixture = async (kind: FixtureKind, port = 0): Promise<Running
 const CHILD_ENTRY = fileURLToPath(new URL("./serve.ts", import.meta.url));
 
 /**
- * Serves one fixture in a child Node process, so its memory is not the caller's. The child prints
- * `{"port":N}` once listening and exits on SIGTERM.
+ * Serves one fixture in a child Node process, so its memory is not the caller's, on an ephemeral
+ * (or the given) port. The child prints `{"port":N}` once listening and exits on SIGTERM.
  */
-export const spawnFixture = async (kind: FixtureKind): Promise<RunningFixture> => {
-  const child = spawn(process.execPath, ["--experimental-strip-types", CHILD_ENTRY, kind], {
-    stdio: ["ignore", "pipe", "inherit"],
-  });
+export const spawnFixture = async (kind: FixtureKind, at = 0): Promise<RunningFixture> => {
+  const child = spawn(
+    process.execPath,
+    ["--experimental-strip-types", CHILD_ENTRY, kind, String(at)],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
   const exited = once(child, "exit");
   const port = await new Promise<number>((resolve, reject) => {
     let seen = "";
