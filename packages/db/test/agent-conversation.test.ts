@@ -37,7 +37,6 @@ const foreignKeyRefusal = (statement: Effect.Effect<unknown, SqlError>) =>
     Effect.map((error) => Schema.decodeUnknownSync(ConstraintDiagnostic)(error.reason.cause)),
   );
 
-/** Until another backend waits on a lock this test holds; the pg_locks row says it waits. */
 const untilWaiting = (relation: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -53,7 +52,6 @@ const untilWaiting = (relation: string) =>
     return yield* Effect.die(`nothing waited on ${relation}`);
   });
 
-/** A running turn with a provider id on the fixture's process. */
 const runningTurn = Effect.gen(function* () {
   const repo = yield* AgentConversationRepo;
   const session = SessionId.make("sess-codex");
@@ -691,8 +689,6 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
         const repo = yield* AgentConversationRepo;
         const sql = yield* SqlClient.SqlClient;
         const process = SessionProcessId.make("p-codex-1");
-        // The journal is read through a view whose first read fails, as a dropped connection
-        // would fail the read that follows a write.
         yield* sql`ALTER TABLE agent_protocol_control_journal RENAME TO journal_rows`;
         yield* sql`CREATE SEQUENCE journal_reads`;
         yield* sql.unsafe(`CREATE FUNCTION journal_read() RETURNS boolean LANGUAGE plpgsql AS $$

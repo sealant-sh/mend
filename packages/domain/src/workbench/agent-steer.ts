@@ -58,7 +58,6 @@ export class AgentTurnSteer extends Schema.Class<AgentTurnSteer>("AgentTurnSteer
   updatedAt: Timestamp,
 }) {}
 
-/** An author-less turn belongs to its recorded payer, never implicitly to the session owner. */
 export const turnSteerSender = (turn: Pick<AgentTurn, "author" | "billedUserId">): string | null =>
   turn.author ?? turn.billedUserId;
 

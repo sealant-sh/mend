@@ -380,12 +380,6 @@ export const notifyAgentConversation = Effect.fn("AgentConversationRepo.notify")
 
 type ConversationTx = Pick<MendDatabase, "select" | "insert" | "execute">;
 
-/**
- * Takes the conversation's lock in the caller's transaction and says whether the session takes a
- * turn. The idle stop's claim takes the same lock: a claim that landed is seen here, and a claim
- * after this commits sees the queued turn and does not land. A settled session has no agent to
- * take a turn either; a resume reopens it first.
- */
 const lockConversationForTurn = Effect.fn("AgentConversationRepo.lockConversationForTurn")(
   function* (tx: ConversationTx, sessionId: SessionId) {
     yield* lockAgentConversation(tx, sessionId);
@@ -402,7 +396,6 @@ const lockConversationForTurn = Effect.fn("AgentConversationRepo.lockConversatio
   },
 );
 
-/** A turn queued last in its conversation, in the caller's transaction (under its lock). */
 const insertQueuedTurn = Effect.fn("AgentConversationRepo.insertQueuedTurn")(function* (
   tx: ConversationTx,
   turn: {
@@ -596,7 +589,6 @@ export const AgentConversationRepoLive: Layer.Layer<
 
     const listConversationTurns = Effect.fn("AgentConversationRepo.listConversationTurns")(
       function* (sessionId: SessionId) {
-        // One snapshot keeps a Queued receipt and the turn displaying its words together.
         const rows = yield* db
           .select({ turn: agentTurns, steer: agentTurnSteers })
           .from(agentTurns)
@@ -654,7 +646,6 @@ export const AgentConversationRepoLive: Layer.Layer<
       const admitted = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            // The key is global to its author, including retries naming another session.
             if (clientSteerId !== null) {
               yield* tx.execute(
                 sql`select pg_advisory_xact_lock(hashtext(${`mend:steer:${input.author}:${clientSteerId}`}))`,
@@ -815,7 +806,6 @@ export const AgentConversationRepoLive: Layer.Layer<
               .select({ status: agentTurns.status })
               .from(agentTurns)
               .where(eq(agentTurns.id, delivery.turnId));
-            // Another process took it meanwhile: it runs, and the receipt stays.
             if (turn?.status !== "queued") return { steer: toSteer(row), changed: false };
             yield* cancelOpenTurnRows(tx, [delivery.turnId]);
             const [changed] = yield* tx
@@ -856,7 +846,6 @@ export const AgentConversationRepoLive: Layer.Layer<
       for (const sessionId of new Set(rows.map((row) => row.sessionId))) yield* notify(sessionId);
     });
 
-    /** Writes the control into its slot unless one is there, and reads the slot, atomically. */
     const claimControlSlot = (processId: SessionProcessId, control: AgentProtocolControl) =>
       db.transaction((tx) =>
         Effect.gen(function* () {

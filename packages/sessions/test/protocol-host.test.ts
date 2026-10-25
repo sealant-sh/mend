@@ -417,7 +417,6 @@ const makePipe = (
   let sequence = 0n;
   const interrupted: string[] = [];
   const written: Array<PeerRequest> = [];
-  /** One output chunk carrying exactly these bytes, so a record can end mid-line. */
   const pushRaw = (text: string) => {
     pending.push({ sequence: sequence++, data: new TextEncoder().encode(text) });
     notify?.();

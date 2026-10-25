@@ -19645,8 +19645,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 sessionId: session.id,
                 message: retired,
               });
-            // Words the harness does not take become the sender's next turn, so they are refused
-            // as such a turn would be.
             const refusal = yield* steeringRefusal(session, input.sender);
             if (refusal !== null)
               return yield* new SessionTurnRefusedError({
@@ -24560,8 +24558,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const rehydrateProtocolProcess = Effect.fn("SessionEngine.rehydrateProtocolProcess")(
         function* (protocolProcess: SessionProcess) {
-          // Boot owns this process now: no delivery of this Mend's runs for it, and a steer the
-          // last one left Sending may have reached the harness. It is never re-sent.
           yield* conversations.recoverSendingSteers(protocolProcess.id);
           if (protocolProcess.sealantSessionId === null) return;
           const probed = yield* sealant.getWorkspace(protocolProcess.sealantWorkspaceId).pipe(

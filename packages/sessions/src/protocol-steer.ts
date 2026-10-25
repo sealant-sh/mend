@@ -25,7 +25,6 @@ export class InvalidTurnSteerError extends Schema.TaggedError<InvalidTurnSteerEr
   { message: Schema.String },
 ) {}
 
-/** A retry's key already names a steer of another turn, or of other words. */
 export class TurnSteerKeyConflictError extends Schema.TaggedError<TurnSteerKeyConflictError>()(
   "TurnSteerKeyConflictError",
   { clientSteerId: Schema.String, message: Schema.String },
@@ -38,33 +37,26 @@ export interface SteerTurnInput {
   readonly clientSteerId?: string | null;
 }
 
-/** How long a steer waits for a rehydrated process's replay before its words become a turn. */
 const STEER_READY_WAIT = "5 seconds";
 
-/** What a steer reads and reserves on a process the host holds. */
 export interface SteerableProcess {
   readonly process: SessionProcess;
   readonly adapter: AgentSession;
   readonly steerPermit: Semaphore.Semaphore;
-  /** Non-null on rehydrate: opens once replay is projected up to its high water; steers wait. */
   readonly steerGate: Deferred.Deferred<void> | null;
   readonly stopping: boolean;
   readonly handingOverTo: string | null;
-  /** Steers holding the process: dispatch and a hand-over's stop wait while any does. */
   controls: number;
 }
 
 export interface TurnSteeringHost<P extends SteerableProcess, E> {
   readonly conversations: AgentConversationRepo["Service"];
   readonly hosted: (processId: SessionProcessId) => P | undefined;
-  /** Fails when no live process of the turn's session is hosted here. */
   readonly requireLive: (turn: AgentTurn) => Effect.Effect<void, E>;
-  /** The words become the sender's next queued turn, or NotSent when none can take them. */
   readonly carry: (
     steer: AgentTurnSteer,
     reason: TurnSteerQueueReason,
   ) => Effect.Effect<AgentTurnSteer>;
-  /** A steer gave its process back. */
   readonly released: (entry: P) => Effect.Effect<void>;
   readonly scope: Scope.Scope;
 }
@@ -73,26 +65,21 @@ type SteerTarget<P> =
   | { readonly _tag: "Carry"; readonly reason: TurnSteerQueueReason }
   | { readonly _tag: "Running"; readonly turn: AgentTurn; readonly entry: P };
 
-/** Opens a rehydrated process's steer gate once its replay is projected up to its high water. */
 export const openSteerGate = (
   gate: Deferred.Deferred<void>,
   projected: () => boolean,
   stillHosted: () => boolean,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
-    // A steer acts on the adapter's state, so it waits for the last recorded line to be
-    // projected, not for its bytes; a partial final record holds steers only, never dispatch.
     while (stillHosted() && !projected()) {
       yield* Effect.sleep("100 millis");
     }
     yield* Deferred.succeed(gate, undefined);
   });
 
-/** Native mid-turn steering of a hosted turn by its sender (docs/adr/0013, docs/adr/0016). */
 export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeringHost<P, E>) => {
   const { conversations } = host;
 
-  /** The running turn a steer can reach on `entry`, or why its words become the next turn. */
   const steerTarget = (
     steer: AgentTurnSteer,
     entry: P | undefined,
@@ -113,7 +100,6 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
         ) {
           return { _tag: "Carry", reason: "not-running" };
         }
-        // A hand-over waits for this process to go quiet; a steer would keep it busy.
         if (entry.handingOverTo !== null) return { _tag: "Carry", reason: "handing-over" };
         return { _tag: "Running", turn, entry };
       }),
@@ -163,13 +149,10 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
     steer: AgentTurnSteer,
     entry: P | undefined,
   ) {
-    // An ended or queued target needs nothing from the adapter: its words are carried at once.
     let target = yield* steerTarget(steer, entry);
     if (target._tag === "Carry") return yield* host.carry(steer, target.reason);
     const gate = target.entry.steerGate;
     if (gate !== null) {
-      // Replay must be projected before the adapter's state is the harness's present. Nothing
-      // is reserved while it waits, so dispatch goes on behind a record that never completes.
       const ready = yield* Deferred.await(gate).pipe(Effect.timeoutOption(STEER_READY_WAIT));
       if (Option.isNone(ready)) return yield* host.carry(steer, "replaying");
       target = yield* steerTarget(steer, entry);
@@ -205,7 +188,6 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
             : "Only this turn's sender may steer it.",
       });
     const clientSteerId = input.clientSteerId?.toLowerCase() ?? null;
-    /** A retry gets its first receipt; the same key for another turn or other words is refused. */
     const retried = (existing: AgentTurnSteer) =>
       existing.turnId === turn.id && existing.input === input.input
         ? Effect.succeed(existing)
@@ -221,8 +203,6 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
     }
     yield* host.requireLive(turn);
     const entry = host.hosted(turn.processId);
-    // Admission and delivery share a host-owned lane, so ordinals also order wire attempts.
-    // HTTP cancellation stops only the join; Stop and output projection never take this lane.
     const attempt = Effect.gen(function* () {
       const admitted = yield* conversations.admitTurnSteer({
         turnId: turn.id,
@@ -231,8 +211,6 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
         clientSteerId,
       });
       if (!admitted.created) return yield* retried(admitted.steer);
-      // A delivery that fails or dies may have written its words: never left Sending on a live
-      // server. An interrupt is a shutdown, which the next start's recovery settles.
       return yield* deliverSteer(admitted.steer, entry).pipe(
         Effect.onExit((exit) =>
           Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)

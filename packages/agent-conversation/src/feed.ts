@@ -106,7 +106,6 @@ export type AgentConversationEntry<
       readonly kind: "turn";
       readonly key: string;
       readonly turn: T;
-      /** The steer whose words this turn carries, because the harness did not take them. */
       readonly fromSteer?: AgentTurnSteerDto;
     }
   | { readonly kind: "steer"; readonly key: string; readonly steer: AgentTurnSteerDto }

@@ -317,10 +317,6 @@ export const AgentEvent = Schema.Union([
     usage: Schema.NullOr(AgentTurnUsage),
     error: Schema.NullOr(Schema.String),
   }),
-  /**
-   * The agent stopped answering a stopped turn's unanswered steer (Claude): it reported idle or
-   * opened a turn of its own, so a turn it refused as busy meanwhile can be sent again.
-   */
   Schema.TaggedStruct("drain.ended", {}),
   Schema.TaggedStruct("item.updated", { item: AgentEventItem }),
   Schema.TaggedStruct("content.delta", {

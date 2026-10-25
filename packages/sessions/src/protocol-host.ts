@@ -75,7 +75,6 @@ export interface ProtocolHostHooks {
   readonly sharedControl?: ProtocolSharedControl;
 }
 
-/** What the next queued turn of a person's process needs (`ProtocolSharedControl.decide`). */
 export type SharedControlDecision =
   | { readonly kind: "send" }
   /** Another person's turn, or this person's in the neutral context: a new process runs it. */
@@ -225,7 +224,6 @@ interface HostedProcess {
   readonly abort: AbortController;
   /** Non-null while a rehydrate replay is still behind its high water — dispatch waits on it. */
   readonly gate: Deferred.Deferred<void> | null;
-  /** Non-null on rehydrate: opens once replay is projected up to its high water; steers wait. */
   readonly steerGate: Deferred.Deferred<void> | null;
   /**
    * The login the workspace holds (docs/adr/0013, "The host remembers what the workspace holds"):
@@ -725,7 +723,6 @@ export const ProtocolHostLive: Layer.Layer<
           return;
         }
         case "drain.ended":
-          // Claude refused turns as busy while it answered a stopped turn's steer; none ends.
           yield* Effect.forkIn(dispatchNext(entry), scope);
           return;
         case "item.updated": {
@@ -1036,11 +1033,6 @@ export const ProtocolHostLive: Layer.Layer<
       });
     });
 
-    /**
-     * Where the session's next queued turn goes: its newest live process this Mend hosts, or,
-     * between a hand-over's stop and the next start, the conversation (decision 6). Null: no
-     * process can take it.
-     */
     const placeTurn = Effect.fnUntraced(function* (sessionId: SessionId) {
       const rows = yield* processes.listForSession(sessionId);
       const process = rows.findLast(
@@ -1054,10 +1046,6 @@ export const ProtocolHostLive: Layer.Layer<
       return between === undefined ? null : ({ _tag: "Between", processId: between } as const);
     });
 
-    /**
-     * Dispatches a turn just queued on `place`. False when its process detached while the turn
-     * was being queued (a user stop does not take the lock): nothing will ever dispatch it.
-     */
     const dispatchPlaced = (
       sessionId: SessionId,
       place: { readonly _tag: "Hosted" | "Between"; readonly processId: SessionProcessId },
@@ -1119,7 +1107,6 @@ export const ProtocolHostLive: Layer.Layer<
         reason,
       );
       if (receipt.delivery._tag !== "Queued" || place === null) return receipt;
-      // Forked: the steer may hold control of the process, and dispatch waits for its release.
       const live = yield* dispatchPlaced(steer.sessionId, place, (entry) =>
         Effect.forkIn(dispatchNext(entry), scope).pipe(Effect.asVoid),
       );

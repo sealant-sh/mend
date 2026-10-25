@@ -152,7 +152,6 @@ const projection = (
       event._tag !== "session.ready" &&
       event._tag !== "turn.started" &&
       event._tag !== "harness-turn.started" &&
-      // A live signal to dispatch: a replay that already knows the next turn never drains.
       event._tag !== "drain.ended" &&
       !(event._tag === "request.opened" && settled.has(event.request.providerRequestId)) &&
       !(event._tag === "request.resolved" && settled.has(event.providerRequestId)),
