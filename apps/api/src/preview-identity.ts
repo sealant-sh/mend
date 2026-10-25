@@ -11,7 +11,6 @@ import {
 } from "@mend/db";
 import { PreviewId, type OrganizationId } from "@mend/domain";
 import { canSeeProject, type Preview, type Viewer } from "@mend/domain/workbench";
-import { NetworkConfig } from "@mend/network";
 import {
   Array as Arr,
   Cause,
@@ -42,14 +41,6 @@ export class PreviewConfig extends Context.Service<
   PreviewConfig,
   { readonly appUrl: string; readonly routing: PreviewRouting | null }
 >()("@mend/api/PreviewConfig") {}
-
-export const PreviewConfigOff: Layer.Layer<PreviewConfig, never, NetworkConfig> = Layer.effect(
-  PreviewConfig,
-  Effect.gen(function* () {
-    const network = yield* NetworkConfig;
-    return { appUrl: network.appUrl, routing: null };
-  }),
-);
 
 type KeptPreview = Extract<Preview, { readonly state: "kept" }>;
 

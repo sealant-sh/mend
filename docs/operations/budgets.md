@@ -29,8 +29,8 @@ refusal never says whether something you may not see exists).
 | `MEND_BUDGET_ACCOUNT_KEY_BRIDGES`              | `4`        | Open ssh-agent shares for one account.                                                                                                                                         |
 | `MEND_BUDGET_ACCOUNT_RAW_READS`                | `128`      | Raw file reads (`GET /worktrees/:id/raw`) one account has open at once. Each holds a descriptor until its body ends; above it, a new read is refused with 429.                 |
 | `MEND_BUDGET_RAW_READS`                        | `512`      | Raw file reads open at once on the instance, whoever reads.                                                                                                                    |
-| `MEND_BUDGET_ACCOUNT_PREVIEW_CONNECTIONS`      | `48`       | Requests and WebSocket upgrades one account holds open on the preview gateway, a request held while its preview starts included. Over it, the gateway answers 503.             |
-| `MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_IN_FLIGHT` | `4`        | Preview starts one account's requests may have running at once. The account whose request triggered a start pays for it; requests that join it pay nothing. Over it, 503.      |
+| `MEND_BUDGET_ACCOUNT_PREVIEW_CONNECTIONS`      | `48`       | Requests and WebSocket upgrades one account holds open on the preview gateway, a request held while its preview starts included. Over it, the gateway answers 429.             |
+| `MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_IN_FLIGHT` | `4`        | Preview starts one account's requests may have running at once. The account whose request triggered a start pays for it; requests that join it pay nothing. Over it, 429.      |
 
 `0` turns one budget off. The API logs at start which are off, and the public exposure gate needs
 every one of them set.

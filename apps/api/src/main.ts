@@ -229,7 +229,9 @@ import { apiMiddleware } from "./http-middleware.ts";
 import { TourRequestsLive } from "./landing-tours.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
 import { OwnerLandingLive } from "./owner-landing.ts";
-import { PreviewConfigOff, PreviewIdentityLive } from "./preview-identity.ts";
+import { loadPreviewSetup } from "./preview-config.ts";
+import { PreviewIdentityLive } from "./preview-identity.ts";
+import { servePreviews } from "./preview-serving.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
 import { RawFileTracingDisabledLive } from "./raw-file-privacy.ts";
 import { RedactingConsoleLive } from "./redacting-console.ts";
@@ -445,7 +447,9 @@ const ServerLive = Layer.unwrap(
     const budgets = yield* Budgets;
     const trustedProxies = yield* trustedProxyCidrs;
     const errorDetail = yield* ErrorDetail;
-    return HttpRouter.serve(
+    // MEND_PREVIEW_*: refuses to start on a setup that cannot run; nothing set leaves previews off.
+    const previews = yield* loadPreviewSetup;
+    const router = HttpRouter.serve(
       Layer.mergeAll(
         MendApiLive,
         AuthRoutes,
@@ -459,6 +463,13 @@ const ServerLive = Layer.unwrap(
     ).pipe(
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
       Layer.provide(RawFileTracingDisabledLive),
+    );
+    // The preview gateway's own listener (ADR 0017) beside the router, on the router's identity.
+    return servePreviews(router, {
+      setup: previews,
+      appUrl: network.appUrl,
+      identity: PreviewIdentityLive,
+    }).pipe(
       // Removing a member revokes, closes their connections on every process, stops their sessions.
       Layer.provide(
         MemberRemovalLive.pipe(
@@ -467,7 +478,6 @@ const ServerLive = Layer.unwrap(
         ),
       ),
       Layer.provide(ConnectionRegistryLive),
-      Layer.provide(PreviewIdentityLive.pipe(Layer.provide(PreviewConfigOff))),
       // One LISTEN per process, fanned out to every SSE stream; the worker needs none.
       Layer.provide(EventBusLive),
     );

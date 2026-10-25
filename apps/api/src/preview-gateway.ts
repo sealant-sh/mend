@@ -791,7 +791,7 @@ export const makePreviewGatewayLayer = (
               outcome ??
               refusedWith(
                 gatewayPage(
-                  503,
+                  429,
                   budgetMessage(
                     "accountPreviewStartsInFlight",
                     budgets.limits.accountPreviewStartsInFlight,
@@ -858,7 +858,7 @@ export const makePreviewGatewayLayer = (
           const held = yield* connections.countFor(viewerId, "preview");
           const accountLimit = budgets.limits.accountPreviewConnections;
           if (overCeiling(held, accountLimit)) {
-            return gatewayPage(503, budgetMessage("accountPreviewConnections", accountLimit));
+            return gatewayPage(429, budgetMessage("accountPreviewConnections", accountLimit));
           }
           const refused = yield* Effect.acquireRelease(
             Effect.sync(() => {

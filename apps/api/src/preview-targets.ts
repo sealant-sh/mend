@@ -1,22 +1,19 @@
+import { PreviewsRepo } from "@mend/db";
 import type { PreviewId, SessionProcessId } from "@mend/domain";
 import {
   type PreviewGatewayResolution,
   PreviewStartRefusal,
   type PreviewStartRequest,
 } from "@mend/domain/workbench";
-import { type Effect, Schema } from "effect";
+import { type PreviewStartRefused, SessionEngine } from "@mend/sessions";
+import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
-/** A request-triggered start the engine refused, or saw not answer within the deadline. */
 export class PreviewStartFailed extends Schema.TaggedError<PreviewStartFailed>()(
   "PreviewStartFailed",
   { reason: PreviewStartRefusal },
 ) {}
 
-/**
- * What the preview gateway reads and asks of the engine (ADR 0017, delivery 7). Step 12 replaces
- * the implementation behind it, not its consumers.
- */
 export class PreviewTargets extends Context.Service<
   PreviewTargets,
   {
@@ -32,3 +29,52 @@ export class PreviewTargets extends Context.Service<
     ) => Effect.Effect<SessionProcessId, PreviewStartFailed>;
   }
 >()("@mend/api/PreviewTargets") {}
+
+/** Drops `detail`: it is for logs, never for a browser. */
+export const previewStartFailure = (refused: PreviewStartRefused): PreviewStartFailed =>
+  new PreviewStartFailed({ reason: refused.reason });
+
+export const PreviewTargetsLive: Layer.Layer<PreviewTargets, never, PreviewsRepo | SessionEngine> =
+  Layer.effect(
+    PreviewTargets,
+    Effect.gen(function* () {
+      const previews = yield* PreviewsRepo;
+      const engine = yield* SessionEngine;
+      return {
+        snapshot: (id) =>
+          previews
+            .gatewaySnapshot(id)
+            .pipe(
+              Effect.map((read) =>
+                read === null || read.preview.state === "removed" ? null : read.resolution,
+              ),
+            ),
+        snapshots: (ids) =>
+          previews
+            .gatewaySnapshots(ids)
+            .pipe(
+              Effect.map(
+                (read) =>
+                  new Map(
+                    [...read].flatMap(([id, found]) =>
+                      found.preview.state === "removed" ? [] : [[id, found.resolution] as const],
+                    ),
+                  ),
+              ),
+            ),
+        ensureRunning: (request) =>
+          engine.ensurePreviewRunning(request).pipe(
+            Effect.tapError((refused) =>
+              Effect.logWarning("preview: a request-triggered start was refused").pipe(
+                Effect.annotateLogs({
+                  previewId: request.previewId,
+                  reason: refused.reason,
+                  detail: refused.detail ?? "",
+                }),
+              ),
+            ),
+            Effect.mapError(previewStartFailure),
+          ),
+      };
+    }),
+  );

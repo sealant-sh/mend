@@ -663,6 +663,41 @@ describe("a held request ends when its viewer's access does", () => {
     ),
   );
 
+  it.live("refuses an account's request past its open preview connections, 429", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { world, forwards } = yield* worldWithApp({
+          budgets: { accountPreviewConnections: 1 },
+        });
+        world.targets.resolutions.set(PREVIEWS.web.id, dormant());
+        const start = yield* gatedStarts(world);
+        const held = yield* Effect.forkChild(
+          fetchAt(world.port, world.hostOf("web"), world.cookieFor("carol", "web"), "/held"),
+        );
+        yield* Deferred.await(start.asked);
+        const refused = yield* fetchAt(
+          world.port,
+          world.hostOf("docs"),
+          world.cookieFor("carol", "docs"),
+          "/over",
+        );
+        expect(refused.status, "carol's second open request is refused as a budget").toBe(429);
+        expect(refused.body, "with the budget's words").toContain(
+          "budget reached · 1 open preview requests for one account · nothing running was stopped",
+        );
+        const other = yield* Effect.forkChild(
+          fetchAt(world.port, world.hostOf("web"), world.cookieFor("dave", "web"), "/dave"),
+        );
+        yield* start.release;
+        expect((yield* Fiber.join(held)).status, "carol's held request is still delivered").toBe(
+          200,
+        );
+        expect((yield* Fiber.join(other)).status, "another account is not counted").toBe(200);
+        expect(forwards.dials.length, "only the two delivered requests were dialled").toBe(2);
+      }),
+    ),
+  );
+
   it.live("refuses a second start for an account at its in-flight start budget", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -681,7 +716,7 @@ describe("a held request ends when its viewer's access does", () => {
           world.hostOf("docs"),
           world.cookieFor("carol", "docs"),
         );
-        expect(refused.status, "a second preview start for carol is refused").toBe(503);
+        expect(refused.status, "a second preview start for carol is refused as a budget").toBe(429);
         expect(refused.body, "with the budget's words").toContain(
           "budget reached · 1 preview starts at once for one account · nothing running was stopped",
         );
