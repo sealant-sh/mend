@@ -811,6 +811,32 @@ describe("a viewer's pool", () => {
   );
 });
 
+describe("the gateway's refresh", () => {
+  it.effect("reads only previews with something open, and forgets one left empty", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { world } = yield* worldWithApp();
+        const host = world.hostOf("web");
+        world.lending.refused.add("carol");
+        const refused = yield* fetchAt(world.port, host, world.cookieFor("carol", "web"));
+        expect(refused.status, "no forward is lent, so no pool opens").toBe(404);
+        world.targets.batchReads.length = 0;
+        yield* TestClock.adjust("3 seconds");
+        yield* realDelay(50);
+        expect(world.targets.batchReads.flat(), "a preview with nothing open").toEqual([]);
+
+        const served = yield* fetchAt(world.port, host, world.cookieFor("dave", "web"));
+        expect(served.status, "dave's pool stays open after the answer").toBe(200);
+        yield* TestClock.adjust("2 seconds");
+        yield* realDelay(50);
+        expect(world.targets.batchReads.flat(), "a preview with an open pool").toContain(
+          PREVIEWS.web.id,
+        );
+      }),
+    ),
+  );
+});
+
 describe("the gateway's layer", () => {
   it.live("closes its listener with its scope", () =>
     Effect.gen(function* () {

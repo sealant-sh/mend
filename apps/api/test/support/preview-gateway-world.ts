@@ -60,13 +60,6 @@ import { grantCookieOf, previewOriginOf, type PreviewRouting } from "../../src/p
 import { type PreviewStartFailed, PreviewTargets } from "../../src/preview-targets.ts";
 import { makeProject } from "./tenancy-harness.ts";
 
-/**
- * The preview gateway as production builds it, on 127.0.0.1: step 6's real identity layer over the
- * in-memory repos `preview-identity.test.ts` uses, a fake `PreviewTargets` the test steers, a
- * lending check that records whose principal asked, and whatever `ForwardAdapter` the test gives
- * (the local forwards of `preview-forward.ts`).
- */
-
 const ORG = OrganizationId.make("org-a");
 const PROJECT = ProjectId.make("p-shared");
 
@@ -91,7 +84,6 @@ export const PREVIEWS = {
 } as const;
 export type PreviewKey = keyof typeof PREVIEWS;
 
-/** alice created the workspace; carol and dave are members who can see the project. */
 export const MEMBERS: ReadonlyArray<Viewer> = [
   { userId: "alice", organizationId: ORG, role: "owner" },
   { userId: "carol", organizationId: ORG, role: "member" },
@@ -125,10 +117,6 @@ export const bound = (
   revision = 0,
 ): PreviewGatewayResolution => ({ _tag: "Bound", revision, attempt: attemptOf(overrides) });
 
-/**
- * What a snapshot reads, through the domain's own rule, while a start's process is still opening:
- * the attempt's row is recorded `starting`, its process handle not yet.
- */
 export const opening = (attemptId: string, revision = 0): PreviewGatewayResolution => {
   const at = new Date("2026-10-25T10:00:00Z");
   const service = new Service({
@@ -233,7 +221,6 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
     };
     const hostOf = (key: PreviewKey) => new URL(originOf(key)).host;
 
-    /** A `Cookie` header that signs `userId` in to the preview, as the exchange would have. */
     const cookieFor = (userId: string, key: PreviewKey): string => {
       const secret = `mpg_${String(++minted).padStart(43, "0")}`;
       const preview = PREVIEWS[key];
@@ -320,6 +307,7 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
       ]),
       starts: new Array<PreviewStartRequest>(),
       snapshotReads: 0,
+      batchReads: new Array<ReadonlyArray<string>>(),
       ensureRunning: (
         _request: PreviewStartRequest,
       ): Effect.Effect<SessionProcessId, PreviewStartFailed> => Effect.die("no start expected"),
@@ -331,15 +319,15 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
           return targets.resolutions.get(id) ?? null;
         }),
       snapshots: (ids) =>
-        Effect.sync(
-          () =>
-            new Map(
-              ids.flatMap((id) => {
-                const resolution = targets.resolutions.get(id) ?? null;
-                return resolution === null ? [] : [[id, resolution] as const];
-              }),
-            ),
-        ),
+        Effect.sync(() => {
+          targets.batchReads.push(ids);
+          return new Map(
+            ids.flatMap((id) => {
+              const resolution = targets.resolutions.get(id) ?? null;
+              return resolution === null ? [] : [[id, resolution] as const];
+            }),
+          );
+        }),
       ensureRunning: (request) =>
         Effect.suspend(() => {
           targets.starts.push(request);
@@ -347,7 +335,6 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
         }),
     });
 
-    /** Whose principal each lending check ran as, and who is refused. */
     const lending = { askers: new Array<string>(), refused: new Set<string>() };
     const callerLayer = Layer.mock(WorkspaceCaller, {
       observe: () => (self) => self,
@@ -413,9 +400,7 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
       cookieFor,
       targets,
       lending,
-      /** The registry member removal closes connections through. */
       connections,
-      /** Ends every grant `userId` holds, as signing out would; open streams close at a recheck. */
       revokeGrants: (userId: string) => revoked.add(userId),
       publish: (signal: BusSignal) => PubSub.publish(pubsub, signal),
     };
@@ -439,7 +424,6 @@ export interface SendOptions {
   readonly agent?: http.Agent | false;
 }
 
-/** One request to the gateway, its whole (small) answer read. */
 export const send = (port: number, options: SendOptions): Promise<Reply> =>
   new Promise((resolve, reject) => {
     const outgoing = http.request({
@@ -467,7 +451,6 @@ export const send = (port: number, options: SendOptions): Promise<Reply> =>
     outgoing.end(options.body);
   });
 
-/** Writes `text` on a fresh TCP connection and answers everything read until the peer closes. */
 export const rawExchange = (port: number, text: string, waitMs = 2_000): Promise<string> =>
   new Promise((resolve, reject) => {
     const socket = net.connect({ host: "127.0.0.1", port });
@@ -486,7 +469,6 @@ export const rawExchange = (port: number, text: string, waitMs = 2_000): Promise
     socket.write(text);
   });
 
-/** The gateway's own server-side socket of each request it parsed, for what it read. */
 export const watchGatewayRequests = (port: number) => {
   const seen: Array<{ readonly path: string; readonly socket: net.Socket }> = [];
   const onStart = (message: unknown) => {

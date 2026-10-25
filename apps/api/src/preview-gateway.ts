@@ -185,10 +185,6 @@ interface Cell {
   readonly pools: Map<string, Pool>;
   wave: Wave | null;
   exchanges: number;
-  /** Last read bound: such a cell is kept while unoccupied, for its activity. */
-  running: boolean;
-  /** The latest admitted delivery, in ms on the gateway's Clock. Step 12's idle stop reads it. */
-  latestActivity: number | null;
 }
 
 const DONE: Effect.Effect<undefined> = Effect.succeed(undefined);
@@ -397,7 +393,10 @@ export const makePreviewGatewayLayer = (
       const run = Effect.runCallbackWith(yield* Effect.context<PreviewIdentity | PreviewConfig>());
       const forwarding = yield* Effect.context<ForwardAdapter>();
 
+      /** Only occupied previews: a cell goes once nothing of it is open. */
       const cells = new Map<PreviewId, Cell>();
+      /** The latest admitted delivery per preview, in ms on the gateway's Clock, for step 12. */
+      const latestActivity = new Map<PreviewId, number>();
       /** Sockets Node stops tracking once it hands them over: upgrades and CONNECTs. */
       const rawSockets = new Set<Duplex>();
       /** Sockets with an exchange outstanding: a pipelined request beyond it is refused. */
@@ -408,9 +407,7 @@ export const makePreviewGatewayLayer = (
 
       const retain = (cell: Cell) => {
         const occupied = cell.exchanges > 0 || cell.pools.size > 0 || cell.wave !== null;
-        if (!occupied && !cell.running && cells.get(cell.previewId) === cell) {
-          cells.delete(cell.previewId);
-        }
+        if (!occupied && cells.get(cell.previewId) === cell) cells.delete(cell.previewId);
       };
 
       const cellOf = (preview: PreviewViewer["preview"]): Cell => {
@@ -423,8 +420,6 @@ export const makePreviewGatewayLayer = (
           pools: new Map(),
           wave: null,
           exchanges: 0,
-          running: false,
-          latestActivity: null,
         };
         cells.set(preview.id, cell);
         return cell;
@@ -589,7 +584,7 @@ export const makePreviewGatewayLayer = (
               return end(gatewayPage(503, notDelivered(cell.serviceName, "the preview restarted")));
             }
             delivered = true;
-            cell.latestActivity = clock.currentTimeMillisUnsafe();
+            latestActivity.set(cell.previewId, clock.currentTimeMillisUnsafe());
             handlers.deliver(upstream, end);
           };
           upstream.once("socket", (socket) => {
@@ -746,7 +741,6 @@ export const makePreviewGatewayLayer = (
 
       const startedOutcome = (cell: Cell, resolution: PreviewGatewayResolution | null): Outcome => {
         if (resolution?._tag === "Bound") {
-          cell.running = true;
           return { _tag: "Ready", generation: generationOf(resolution) };
         }
         const route = routeOf(cell.serviceName, resolution);
@@ -851,7 +845,6 @@ export const makePreviewGatewayLayer = (
             ),
           );
           if (Option.isNone(read)) return refusedWith(UNAVAILABLE);
-          cell.running = read.value?._tag === "Bound";
           const route = routeOf(cell.serviceName, read.value);
           return route._tag === "Start" ? yield* joinWave(cell, route.from, viewerId) : route;
         });
@@ -1015,7 +1008,6 @@ export const makePreviewGatewayLayer = (
               ? (read.value.get(cell.previewId) ?? null)
               : null;
             const current = resolution?._tag === "Bound" ? generationOf(resolution).key : null;
-            if (Option.isSome(read)) cell.running = current !== null;
             for (const pool of cell.pools.values()) {
               if (pool.generation.key !== current) closePool(cell, pool);
             }
