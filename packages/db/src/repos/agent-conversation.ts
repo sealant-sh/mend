@@ -806,51 +806,54 @@ export const AgentConversationRepoLive: Layer.Layer<
       for (const sessionId of new Set(rows.map((row) => row.sessionId))) yield* notify(sessionId);
     });
 
+    /** Writes the control into its slot unless one is there, and reads the slot, atomically. */
+    const claimControlSlot = (processId: SessionProcessId, control: AgentProtocolControl) =>
+      db.transaction((tx) =>
+        Effect.gen(function* () {
+          yield* tx
+            .insert(agentProtocolControlJournal)
+            .values({ processId, ...control })
+            .onConflictDoNothing();
+          const [stored] = yield* tx
+            .select()
+            .from(agentProtocolControlJournal)
+            .where(
+              and(
+                eq(agentProtocolControlJournal.processId, processId),
+                eq(agentProtocolControlJournal.ordinal, control.ordinal),
+              ),
+            );
+          return stored ?? null;
+        }),
+      );
+
     const recordProtocolControl = Effect.fn("AgentConversationRepo.recordProtocolControl")(
       function* (processId: SessionProcessId, control: AgentProtocolControl) {
-        yield* db
-          .insert(agentProtocolControlJournal)
-          .values({ processId, ...control })
-          .onConflictDoNothing()
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new AgentControlJournalError({
-                  message: "The agent control could not be recorded.",
-                  cause,
-                }),
-            ),
-          );
-        const [stored] = yield* db
-          .select()
-          .from(agentProtocolControlJournal)
-          .where(
-            and(
-              eq(agentProtocolControlJournal.processId, processId),
-              eq(agentProtocolControlJournal.ordinal, control.ordinal),
-            ),
-          )
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new AgentControlJournalError({
-                  message: "The recorded agent control could not be read.",
-                  cause,
-                }),
-            ),
-          );
-        if (
-          stored === undefined ||
-          stored.controlId !== control.controlId ||
-          stored.providerTurnId !== control.providerTurnId ||
-          stored.afterOutputLine !== control.afterOutputLine ||
-          stored.action !== control.action
-        ) {
+        const holds = (stored: typeof agentProtocolControlJournal.$inferSelect | null) =>
+          stored !== null &&
+          stored.controlId === control.controlId &&
+          stored.providerTurnId === control.providerTurnId &&
+          stored.afterOutputLine === control.afterOutputLine &&
+          stored.action === control.action;
+        const claimed = yield* claimControlSlot(processId, control).pipe(Effect.result);
+        if (claimed._tag === "Success") {
+          if (holds(claimed.success)) return;
           return yield* new AgentControlJournalError({
             message: "The agent control conflicts with its recorded position.",
             cause: null,
           });
         }
+        // A failed commit may still have landed. A `not-written` claim on the same slot settles
+        // it: it finds the control (written) or takes the slot, so the control can never land.
+        const settled = yield* claimControlSlot(processId, {
+          ...control,
+          action: "not-written",
+        }).pipe(Effect.orDie);
+        if (holds(settled)) return;
+        return yield* new AgentControlJournalError({
+          message: "The agent control could not be recorded.",
+          cause: claimed.failure,
+        });
       },
     );
 

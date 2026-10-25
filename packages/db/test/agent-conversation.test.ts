@@ -655,6 +655,41 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
       }),
     );
   });
+  it("never reports a control whose journal row committed as not written", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const process = SessionProcessId.make("p-codex-1");
+        // The journal is read through a view whose first read fails, as a dropped connection
+        // would fail the read that follows a write.
+        yield* sql`ALTER TABLE agent_protocol_control_journal RENAME TO journal_rows`;
+        yield* sql`CREATE SEQUENCE journal_reads`;
+        yield* sql.unsafe(`CREATE FUNCTION journal_read() RETURNS boolean LANGUAGE plpgsql AS $$
+          BEGIN
+            IF nextval('journal_reads') = 1 THEN RAISE EXCEPTION 'journal read failed'; END IF;
+            RETURN true;
+          END $$`);
+        yield* sql`CREATE VIEW agent_protocol_control_journal AS
+          SELECT * FROM journal_rows WHERE journal_read()`;
+        const control = {
+          ordinal: 0,
+          controlId: crypto.randomUUID(),
+          providerTurnId: "logical-turn",
+          afterOutputLine: 2,
+          action: "steer-now",
+        } as const;
+        const recorded = yield* repo.recordProtocolControl(process, control).pipe(Effect.result);
+        const stored = yield* sql<{ readonly action: string }>`
+          SELECT action FROM journal_rows WHERE control_id = ${control.controlId}`;
+        expect({
+          recorded: recorded._tag,
+          armed: stored.some((row) => row.action === "steer-now"),
+        }).toEqual({ recorded: recorded._tag, armed: recorded._tag === "Success" });
+      }),
+    );
+  });
+
   it("admits a steer only after a completion holding the turn's row commits", async () => {
     await withConversation(
       Effect.gen(function* () {
