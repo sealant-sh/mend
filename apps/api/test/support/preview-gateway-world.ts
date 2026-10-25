@@ -32,7 +32,7 @@ import {
 } from "@mend/domain/workbench";
 import { SealantPlatformError, SealantPrincipal } from "@mend/sealant";
 import { type ForwardAdapter, WorkspaceCaller } from "@mend/sessions";
-import { Effect, Layer, PubSub, Redacted, type Scope } from "effect";
+import { Effect, Layer, PubSub, Redacted } from "effect";
 
 import { ProjectAccess } from "../../src/access.ts";
 import {
@@ -360,7 +360,6 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
   });
 
 export type GatewayWorld = Effect.Success<ReturnType<typeof gatewayWorld>>;
-export type WorldScope = Scope.Scope;
 
 export interface Reply {
   readonly status: number;
